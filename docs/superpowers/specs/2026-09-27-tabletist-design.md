@@ -1,7 +1,8 @@
 # Tabletist: design spec
 
 Date: 2026-09-27
-Status: approved design, awaiting spec review
+Status: implemented. Batches 0 to 8 (through polish and release) are done; see
+`docs/superpowers/plans/`.
 
 ## 1. Purpose
 
