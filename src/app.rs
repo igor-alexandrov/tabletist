@@ -37,6 +37,18 @@ enum SecretPurpose {
     Test { test: RequestId, kind: SecretKind },
 }
 
+/// A keyring write or delete in flight.
+#[derive(Debug)]
+struct PendingStore {
+    conn: crate::connections::ConnectionId,
+    /// The SSH secret rather than the database password.
+    ssh: bool,
+    /// A write rather than a delete.
+    saving: bool,
+    /// Switch the connection to keyring mode once the write lands.
+    adopt: bool,
+}
+
 /// The native title bar the tab bar shares: its height, and how far the
 /// window's own buttons (the macOS traffic lights) reach from the left.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
@@ -62,6 +74,11 @@ pub struct App {
     pub dialog: Option<Dialog>,
     /// Keyring reads in flight, and what each is for.
     pending_secrets: HashMap<RequestId, SecretPurpose>,
+    /// Keyring writes and deletes in flight.
+    pending_stores: HashMap<RequestId, PendingStore>,
+    /// A problem to show above the window's content until dismissed (a
+    /// keyring write that failed).
+    pub notice: Option<String>,
     /// SSH host keys the user trusts, from known_hosts.json.
     pub host_keys: HostKeys,
     /// Why known_hosts.json could not be read; no new host is trusted then.
@@ -99,6 +116,8 @@ impl App {
             connections,
             dialog: None,
             pending_secrets: HashMap::new(),
+            pending_stores: HashMap::new(),
+            notice: None,
             host_keys,
             host_keys_error,
             titlebar: TitleBar::default(),
@@ -808,24 +827,15 @@ impl App {
                 if let Some(removed) = self.connections.remove(&id) {
                     self.save_connections();
                     if removed.password == PasswordMode::Keyring {
-                        let request = RequestId(self.next_id());
-                        self.backend.send(Command::StoreSecret {
-                            request,
-                            account: password_account(&id),
-                            secret: None,
-                        });
+                        self.store_secret(&id, false, None, false);
                     }
                     if removed.ssh_secret == PasswordMode::Keyring {
-                        let request = RequestId(self.next_id());
-                        self.backend.send(Command::StoreSecret {
-                            request,
-                            account: ssh_account(&id),
-                            secret: None,
-                        });
+                        self.store_secret(&id, true, None, false);
                     }
                 }
             }
             Action::CloseDialog => self.dialog = None,
+            Action::DismissNotice => self.notice = None,
             Action::PickSqliteFile => {
                 let request = RequestId(self.next_id());
                 if let Some(Dialog::Connection(form)) = &mut self.dialog {
@@ -1190,23 +1200,9 @@ impl App {
         let Some(password) = workspace.secrets.password.clone() else {
             return;
         };
-        workspace.password_mode = PasswordMode::Keyring;
         let conn = workspace.conn_id.clone();
-        let request = RequestId(self.next_id());
-        self.backend.send(Command::StoreSecret {
-            request,
-            account: password_account(&conn),
-            secret: Some(SecretString(password)),
-        });
-        if let Some(saved) = self
-            .connections
-            .connections
-            .iter_mut()
-            .find(|c| c.id == conn)
-        {
-            saved.password = PasswordMode::Keyring;
-            self.save_connections();
-        }
+        // Keyring mode is recorded once the keyring has it (SecretStored).
+        self.store_secret(&conn, false, Some(SecretString(password)), true);
     }
 
     /// The SSH half of `save_accepted_password`.
@@ -1225,22 +1221,103 @@ impl App {
         let Some(secret) = kind.slot(&mut secrets).clone() else {
             return;
         };
-        workspace.ssh_mode = PasswordMode::Keyring;
         let conn = workspace.conn_id.clone();
+        self.store_secret(&conn, true, Some(SecretString(secret)), true);
+    }
+
+    /// Writes (`Some`) or deletes (`None`) a connection's database password
+    /// or SSH secret in the keyring. With `adopt`, the connection switches
+    /// to keyring mode once the write succeeds. Nothing is written for a
+    /// connection that no longer exists.
+    fn store_secret(
+        &mut self,
+        conn: &crate::connections::ConnectionId,
+        ssh: bool,
+        secret: Option<SecretString>,
+        adopt: bool,
+    ) {
+        if secret.is_some() && self.connections.get(conn).is_none() {
+            return;
+        }
         let request = RequestId(self.next_id());
+        self.pending_stores.insert(
+            request,
+            PendingStore {
+                conn: conn.clone(),
+                ssh,
+                saving: secret.is_some(),
+                adopt,
+            },
+        );
         self.backend.send(Command::StoreSecret {
             request,
-            account: ssh_account(&conn),
-            secret: Some(SecretString(secret)),
+            account: if ssh {
+                ssh_account(conn)
+            } else {
+                password_account(conn)
+            },
+            secret,
         });
-        if let Some(saved) = self
-            .connections
-            .connections
-            .iter_mut()
-            .find(|c| c.id == conn)
-        {
-            saved.ssh_secret = PasswordMode::Keyring;
-            self.save_connections();
+    }
+
+    /// A keyring write or delete finished.
+    fn secret_stored(&mut self, request: RequestId, result: Result<(), String>) {
+        let Some(store) = self.pending_stores.remove(&request) else {
+            return;
+        };
+        fn mode(saved: &mut SavedConnection, ssh: bool) -> &mut PasswordMode {
+            if ssh {
+                &mut saved.ssh_secret
+            } else {
+                &mut saved.password
+            }
+        }
+        match result {
+            Ok(()) if store.adopt => {
+                let Some(saved) = self
+                    .connections
+                    .connections
+                    .iter_mut()
+                    .find(|c| c.id == store.conn)
+                else {
+                    return;
+                };
+                *mode(saved, store.ssh) = PasswordMode::Keyring;
+                self.save_connections();
+                for tab in &mut self.tabs {
+                    if let ConnTabContent::Workspace(workspace) = &mut tab.content
+                        && workspace.conn_id == store.conn
+                    {
+                        if store.ssh {
+                            workspace.ssh_mode = PasswordMode::Keyring;
+                        } else {
+                            workspace.password_mode = PasswordMode::Keyring;
+                        }
+                    }
+                }
+            }
+            Ok(()) => {}
+            Err(error) => {
+                let what = if store.ssh { "SSH secret" } else { "password" };
+                self.notice = Some(if store.saving {
+                    format!("Could not save the {what} in the keyring: {error}.")
+                } else {
+                    format!("Could not remove the {what} from the keyring: {error}.")
+                });
+                // What the keyring holds is unknown now (maybe an older
+                // secret, maybe one for a server the connection no longer
+                // points at): ask next time instead of reading it.
+                if let Some(saved) = self
+                    .connections
+                    .connections
+                    .iter_mut()
+                    .find(|c| c.id == store.conn)
+                    && *mode(saved, store.ssh) == PasswordMode::Keyring
+                {
+                    *mode(saved, store.ssh) = PasswordMode::Ask;
+                    self.save_connections();
+                }
+            }
         }
     }
 
@@ -1581,7 +1658,7 @@ impl App {
                     None => {}
                 }
             }
-            Event::SecretStored { .. } => {}
+            Event::SecretStored { request, result } => self.secret_stored(request, result),
             Event::Databases {
                 session,
                 request,
@@ -1704,41 +1781,19 @@ impl App {
         self.dialog = None;
         self.connections.upsert(saved.clone());
         self.save_connections();
-        let account = password_account(&saved.id);
         if saved.password == PasswordMode::Keyring {
             if typed.is_some() || stale {
-                let request = RequestId(self.next_id());
-                self.backend.send(Command::StoreSecret {
-                    request,
-                    account,
-                    secret: typed.clone().map(SecretString),
-                });
+                self.store_secret(&saved.id, false, typed.clone().map(SecretString), false);
             }
         } else if previous == Some(PasswordMode::Keyring) {
-            let request = RequestId(self.next_id());
-            self.backend.send(Command::StoreSecret {
-                request,
-                account,
-                secret: None,
-            });
+            self.store_secret(&saved.id, false, None, false);
         }
-        let account = ssh_account(&saved.id);
         if saved.ssh_secret == PasswordMode::Keyring {
             if typed_ssh.is_some() || stale_ssh {
-                let request = RequestId(self.next_id());
-                self.backend.send(Command::StoreSecret {
-                    request,
-                    account,
-                    secret: typed_ssh.clone().map(SecretString),
-                });
+                self.store_secret(&saved.id, true, typed_ssh.clone().map(SecretString), false);
             }
         } else if previous_ssh == Some(PasswordMode::Keyring) {
-            let request = RequestId(self.next_id());
-            self.backend.send(Command::StoreSecret {
-                request,
-                account,
-                secret: None,
-            });
+            self.store_secret(&saved.id, true, None, false);
         }
         if connect {
             if !matches!(self.active_tab().content, ConnTabContent::Picker(_)) {
@@ -3535,9 +3590,122 @@ mod tests {
             c,
             Command::StoreSecret { secret: Some(SecretString(p)), .. } if p == "typed"
         )));
+        // Keyring mode only once the keyring has it.
+        assert_eq!(
+            app.connections.get(&conn).unwrap().password,
+            PasswordMode::Ask
+        );
+        answer_last_store(&mut app, Ok(()));
         assert_eq!(
             app.connections.get(&conn).unwrap().password,
             PasswordMode::Keyring
+        );
+        assert_eq!(
+            app.workspace(tab).unwrap().password_mode,
+            PasswordMode::Keyring
+        );
+        assert!(app.notice.is_none());
+    }
+
+    fn answer_last_store(app: &mut App, result: Result<(), String>) {
+        let request = app
+            .backend
+            .sent
+            .iter()
+            .rev()
+            .find_map(|c| match c {
+                Command::StoreSecret { request, .. } => Some(*request),
+                _ => None,
+            })
+            .expect("a StoreSecret");
+        app.apply(Action::Backend(Event::SecretStored { request, result }));
+    }
+
+    fn connect_saving_prompted_password(app: &mut App, conn: &ConnectionId) -> ConnTabId {
+        let tab = app.active_tab_id();
+        app.apply(Action::Connect {
+            tab,
+            conn: conn.clone(),
+        });
+        prompt(app).password = "typed".into();
+        prompt(app).save = true;
+        app.apply(Action::SubmitPassword);
+        let Some(Command::Connect {
+            session, request, ..
+        }) = app.backend.sent.last()
+        else {
+            panic!()
+        };
+        let (session, request) = (*session, *request);
+        app.apply(Action::Backend(Event::Connected {
+            session,
+            request,
+            driver: Driver::Postgres,
+            encrypted: false,
+        }));
+        tab
+    }
+
+    #[test]
+    fn a_failed_keyring_write_is_shown_and_keeps_asking() {
+        let (mut app, _dir) = app();
+        let conn = postgres_saved(&mut app, PasswordMode::Ask);
+        let tab = connect_saving_prompted_password(&mut app, &conn);
+        answer_last_store(&mut app, Err("the keyring is locked".into()));
+        assert_eq!(
+            app.connections.get(&conn).unwrap().password,
+            PasswordMode::Ask
+        );
+        assert_eq!(app.workspace(tab).unwrap().password_mode, PasswordMode::Ask);
+        let notice = app.notice.clone().expect("a notice");
+        assert!(notice.contains("the keyring is locked"), "{notice}");
+        app.apply(Action::DismissNotice);
+        assert!(app.notice.is_none());
+    }
+
+    #[test]
+    fn a_connection_deleted_meanwhile_gets_no_keyring_entry() {
+        let (mut app, _dir) = app();
+        let conn = postgres_saved(&mut app, PasswordMode::Ask);
+        let tab = app.active_tab_id();
+        app.apply(Action::Connect {
+            tab,
+            conn: conn.clone(),
+        });
+        prompt(&mut app).password = "typed".into();
+        prompt(&mut app).save = true;
+        app.apply(Action::SubmitPassword);
+        app.apply(Action::DeleteConnection(conn));
+        let Some(Command::Connect {
+            session, request, ..
+        }) = app.backend.sent.last()
+        else {
+            panic!()
+        };
+        let (session, request) = (*session, *request);
+        app.apply(Action::Backend(Event::Connected {
+            session,
+            request,
+            driver: Driver::Postgres,
+            encrypted: false,
+        }));
+        assert!(sent_secrets(&app).is_empty());
+        assert!(app.connections.connections.is_empty());
+    }
+
+    #[test]
+    fn a_failed_write_from_the_dialog_stops_reading_the_old_entry() {
+        let (mut app, _dir) = app();
+        let conn = postgres_saved(&mut app, PasswordMode::Keyring);
+        app.apply(Action::EditConnection(conn.clone()));
+        form(&mut app).password = "new".into();
+        app.apply(Action::SaveConnection { connect: false });
+        answer_last_store(&mut app, Err("the keyring is not available".into()));
+        assert!(app.notice.is_some());
+        // The keyring may still hold the old password: ask instead.
+        assert_eq!(
+            app.connections.get(&conn).unwrap().password,
+            PasswordMode::Ask
         );
     }
 
@@ -4572,6 +4740,7 @@ mod tests {
             assert!(app.backend.sent.iter().any(|c| matches!(c,
                 Command::StoreSecret { account, secret: Some(_), .. }
                     if account == &crate::secrets::ssh_account(&conn))));
+            answer_last_store(&mut app, Ok(()));
             assert_eq!(
                 app.connections.get(&conn).unwrap().ssh_secret,
                 PasswordMode::Keyring

@@ -72,6 +72,8 @@ pub enum Action {
     DuplicateConnection(ConnectionId),
     DeleteConnection(ConnectionId),
     CloseDialog,
+    /// Hide the notice above the window's content.
+    DismissNotice,
     /// Open the native file dialog for the connection dialog's SQLite path.
     PickSqliteFile,
     /// Open the native file dialog for the SSH key file.
