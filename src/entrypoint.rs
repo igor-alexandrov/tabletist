@@ -184,9 +184,10 @@ pub fn native_options(size: Option<[f32; 2]>, persist: bool) -> eframe::NativeOp
         .with_min_inner_size([720.0, 480.0]);
     // The window and taskbar icon. Not on macOS: eframe would hand it to
     // setApplicationIconImage, replacing the bundle's .icns (on Apple's icon
-    // grid) with this full-bleed plate, which looks too big in the Dock.
+    // grid) with this full-bleed plate, which looks too big in the Dock. An
+    // empty icon, not none: with none, eframe substitutes its own egui logo.
     let viewport = if cfg!(target_os = "macos") {
-        viewport
+        viewport.with_icon(egui::IconData::default())
     } else {
         match eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon/tabletist-256.png"))
         {
@@ -412,8 +413,10 @@ mod tests {
 
     #[test]
     fn the_window_has_the_app_icon_except_on_macos() {
-        // macOS uses the bundle's .icns; a runtime icon would override it.
+        // macOS uses the bundle's .icns: the icon is left empty, which eframe
+        // skips. A missing icon would bring in eframe's egui logo instead.
         let options = native_options(None, false);
-        assert_eq!(options.viewport.icon.is_some(), !cfg!(target_os = "macos"));
+        let icon = options.viewport.icon.expect("an icon is always set");
+        assert_eq!(icon.is_empty(), cfg!(target_os = "macos"));
     }
 }
