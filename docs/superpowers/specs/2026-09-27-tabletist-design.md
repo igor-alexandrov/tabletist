@@ -86,38 +86,67 @@ tabletist/
   mise.toml                  rust, mbx
   compose.yaml               postgres 17, mysql 8.4, openssh-server (tests)
   AGENTS.md                  agent rules (adapted from spotifast)
+  build.rs                   compiles the gettext catalogs in assets/i18n
+  compose/                   MySQL init script, SSH test server Dockerfile
   crates/tabletist-db/       no UI dependencies
-    src/lib.rs               Connection enum, public API
-    src/spec.rs              ConnectSpec, TlsMode, SshSpec, URL parsing
+    src/lib.rs               Connection (driver + optional SSH tunnel), CancelHandle
+    src/spec.rs              ConnectSpec, Driver, TlsMode, SshSpec, Secrets, URL parsing
     src/value.rs             Value, ColumnMeta, ValueKind
     src/catalog.rs           ObjectRef, ObjectInfo, ObjectKind, Structure
     src/query.rs             RowQuery, Filter, Sort, RowPage
     src/dialect.rs           per-dialect SQL builder and identifier quoting
-    src/error.rs             Error
-    src/tls.rs               rustls config per TlsMode
-    src/ssh.rs               russh tunnel
+    src/error.rs             Error, SshStage
+    src/tls.rs               rustls config per TlsMode (libpq sslmode meanings)
+    src/ssh.rs               russh tunnel, host key check
     src/pg.rs  src/mysql.rs  src/sqlite.rs   adapters
-    tests/                   integration tests + fixtures/*.sql
+    src/fixtures.rs          fixture scripts; writes the SQLite demo database
+    fixtures/                postgres.sql, mysql.sql, sqlite.sql
+    tests/                   integration tests per driver and SSH; ssh/ test keys
   src/                       the app: lib + bin
-    main.rs                  entrypoint, CLI (clap), demo flags
+    main.rs                  calls entrypoint::run
+    lib.rs                   module list
+    entrypoint.rs            CLI (clap), demo flags, logging, native window
     app.rs                   App state, apply(Action) reducer
-    model.rs                 Action, ConnTab, Workspace, ObjectTab, Loadable, Dialog
+    model.rs                 Action, ConnTab, Workspace, Tree, ObjectTab, Fetch, Dialog
     backend.rs               runtime thread, Command/Event, sessions
     connections.rs           saved connections store (JSON)
-    credentials.rs           keyring access on a dedicated thread
+    secrets.rs               OS keyring access on a dedicated thread
     known_hosts.rs           SSH host key trust store
-    paths.rs settings.rs theme.rs i18n.rs util.rs
-    demo.rs                  demo mode + headless UI tests
-    ui/mod.rs                panel layout
+    paths.rs                 config and state directories
+    settings.rs              settings.json
+    theme.rs                 palette, look, typography, icons, egui style
+    theme/desktop_font.rs    the desktop's monospace font on Linux (fontconfig)
+    i18n.rs                  bundled gettext catalogs
+    util.rs                  atomic JSON files, fuzzy matching
+    macos.rs                 unified title bar with the tabs (macOS only)
+    testing.rs               headless UI test harness (AccessKit tree + events)
+    shots.rs                 screenshots for visual review (`shots` feature)
+    ui/mod.rs                panel layout, dialogs
     ui/conn_tabs.rs          connection tab bar
     ui/picker.rs             saved-connection picker
-    ui/connect_dialog.rs
-    ui/topbar.rs  ui/sidebar.rs  ui/tree.rs
-    ui/object_tabs.rs  ui/grid.rs  ui/data_view.rs  ui/structure.rs
-    ui/row_panel.rs  ui/filter_bar.rs  ui/quick_open.rs
-    ui/keys.rs  ui/widgets.rs
-  assets/                    icons (Lucide SVG), i18n PO files, fixture.sqlite
-  packaging/                 aur/, macos/, windows/, linux desktop file
+    ui/connect_dialog.rs     new or edit connection, SSH section
+    ui/password_prompt.rs    asks for a password or passphrase
+    ui/host_key_prompt.rs    trust an unknown SSH host key
+    ui/workspace.rs          a connected tab: top bar, disconnected banner, body
+    ui/sidebar.rs            filter, refresh, tree of schemas and objects
+    ui/object_tabs.rs        object tab bar (preview tabs in italics)
+    ui/data_view.rs          footer and grid, or the error or empty state
+    ui/grid.rs               virtualized data grid
+    ui/structure.rs          columns, indexes, foreign keys
+    ui/row_panel.rs          every field of the selected row
+    ui/filter_bar.rs         filter rows and raw WHERE
+    ui/quick_open.rs         Cmd/Ctrl+P
+    ui/help.rs               keyboard shortcuts dialog
+    ui/format.rs             values as text for grid, row panel, clipboard
+    ui/keys.rs               keyboard shortcuts
+    ui/widgets.rs            shared widgets (virtual_rows, tabs, modal, fields)
+  tests/cli.rs               runs the built binary
+  assets/                    app icon, i18n/ (catalogs; English only for now),
+                             icons/ (empty: icons come from fastframe-icons)
+  packaging/                 arch/ (AUR PKGBUILD templates), linux/ (desktop
+                             file, icon), macos/ (bundle, DMG, signing),
+                             windows/ (Inno Setup installer, icon)
+  contrib/omarchy/           Omarchy theme template for Tabletist's palette
 ```
 
 App-id: `dev.tabletist.Tabletist`. Binary: `tabletist`.
