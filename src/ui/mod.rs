@@ -9,6 +9,7 @@ pub mod format;
 pub mod grid;
 pub mod help;
 pub mod host_key_prompt;
+pub mod json_view;
 pub mod keys;
 pub mod object_tabs;
 pub mod password_prompt;
@@ -605,6 +606,74 @@ mod tests {
                 .iter()
                 .any(|label| label.starts_with("Show all"))
         );
+    }
+
+    /// Opens users with `meta` set to `json` on the first row and selects it.
+    fn with_json(harness: &mut Harness, json: &str) {
+        harness.connect_fake();
+        harness.click("users");
+        let mut page = crate::testing::page(1, false);
+        page.rows[0][2] = tabletist_db::Value::Text(json.into());
+        harness.answer_rows(page);
+        harness.click("Row 1");
+    }
+
+    #[test]
+    fn json_in_the_row_panel_is_a_highlighted_tree_that_folds() {
+        let mut harness = Harness::new();
+        with_json(&mut harness, r#"{"plan":"pro","seats":[3,4]}"#);
+        // Keys keep their order and every line is JSON, commas included.
+        assert!(harness.has("{"));
+        assert!(harness.has(r#""plan": "pro","#));
+        assert!(harness.has(r#""seats": ["#));
+        assert!(harness.has("3,"));
+        assert!(harness.has("}"));
+        let palette = harness.app.palette;
+        assert_eq!(
+            harness.painted_color(r#""plan": "pro","#),
+            Some(palette.accent)
+        );
+        assert_eq!(harness.painted_color("3,"), Some(palette.warning));
+        harness.click("Collapse meta.seats");
+        assert!(harness.has(r#""seats": [ 2 items ]"#));
+        assert!(!harness.has("3,"));
+        harness.click("Collapse meta");
+        assert!(harness.has("{ 2 keys }"));
+        harness.click("Copy meta");
+        assert_eq!(
+            harness.copied.as_deref(),
+            Some(r#"{"plan":"pro","seats":[3,4]}"#)
+        );
+    }
+
+    #[test]
+    fn a_long_json_document_opens_its_top_level_and_expand_all_opens_the_rest() {
+        let mut harness = Harness::new();
+        let items = (0..50).map(|n| n.to_string()).collect::<Vec<_>>().join(",");
+        with_json(
+            &mut harness,
+            &format!(r#"{{"ids":[{items}],"deep":{{"a":1}}}}"#),
+        );
+        assert!(harness.has(r#""ids": [ 50 items ],"#));
+        assert!(harness.has(r#""deep": { 1 key }"#));
+        harness.click("Expand all");
+        assert!(harness.has("49"));
+        assert!(harness.has(r#""a": 1"#));
+        harness.click("Collapse all");
+        assert!(harness.has("{ 2 keys }"));
+    }
+
+    #[test]
+    fn invalid_json_in_a_json_column_is_shown_as_text() {
+        let mut harness = Harness::new();
+        with_json(&mut harness, "{not json");
+        let tree = harness.settle();
+        assert!(
+            crate::testing::labels(&tree)
+                .iter()
+                .any(|label| label == "{not json")
+        );
+        assert!(!harness.has("Collapse meta"));
     }
 
     #[test]
