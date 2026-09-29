@@ -36,20 +36,44 @@ fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
     PathBuf::from(name)
 }
 
-/// Writes `bytes` to a temporary file beside `path`, flushes it to disk, then
-/// renames it over `path`, so a crash never leaves a half-written file.
-/// `std::fs::rename` replaces an existing file on every platform.
+/// Creates `dir` and any missing parents. On Unix, directories it creates are
+/// private to the user (0700); existing ones keep their permissions.
+pub fn create_private_dir(dir: &Path) -> std::io::Result<()> {
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+    builder.create(dir)
+}
+
+/// Writes `bytes` to a new temporary file beside `path`, flushes it to disk,
+/// then renames it over `path`, so a crash never leaves a half-written file.
+/// The temporary file has a random name and is created exclusively, so a
+/// leftover file or a symlink planted beside `path` is never followed. On
+/// Unix it is private to the user (0600), and the directory is flushed after
+/// the rename so the new name survives a crash too.
 pub fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let temporary = with_suffix(path, ".tmp");
+    let dir = match path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent,
+        _ => Path::new("."),
+    };
+    create_private_dir(dir)?;
+    let mut file = tempfile::Builder::new()
+        .prefix(".tabletist-")
+        .suffix(".tmp")
+        .tempfile_in(dir)?;
+    file.write_all(bytes)?;
+    file.as_file().sync_all()?;
+    file.persist(path).map_err(|error| error.error)?;
+    #[cfg(unix)]
     {
-        let mut file = std::fs::File::create(&temporary)?;
-        file.write_all(bytes)?;
-        file.sync_all()?;
+        // Best effort: some filesystems cannot sync a directory, and the
+        // file itself is already in place.
+        if let Ok(dir) = std::fs::File::open(dir) {
+            let _ = dir.sync_all();
+        }
     }
-    std::fs::rename(&temporary, path)
+    Ok(())
 }
 
 /// Saves `value` as pretty JSON, atomically.
@@ -179,7 +203,36 @@ mod tests {
         };
         save_json(&path, &value).unwrap();
         assert_eq!(load_json::<Sample>(&path), value);
-        assert!(!dir.path().join("nested").join("sample.json.tmp").exists());
+        let names: Vec<_> = std::fs::read_dir(dir.path().join("nested"))
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(names, ["sample.json"], "no temporary file is left behind");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn atomic_writes_are_private_and_never_follow_a_planted_symlink() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("config");
+        let path = config.join("sample.json");
+        write_atomic(&path, b"first").unwrap();
+        let mode = |path: &Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&config), 0o700, "a new config directory is private");
+        assert_eq!(mode(&path), 0o600);
+
+        // A world-readable file is replaced by a private one.
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        // The old fixed temporary name, pointing somewhere else.
+        let victim = dir.path().join("victim");
+        std::fs::write(&victim, b"untouched").unwrap();
+        std::os::unix::fs::symlink(&victim, config.join("sample.json.tmp")).unwrap();
+
+        write_atomic(&path, b"second").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"second");
+        assert_eq!(mode(&path), 0o600);
+        assert_eq!(std::fs::read(&victim).unwrap(), b"untouched");
     }
 
     #[test]

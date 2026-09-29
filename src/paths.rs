@@ -41,11 +41,12 @@ impl AppDirs {
         }
     }
 
-    /// Creates both directories. Logging needs the state directory before
-    /// anything else runs (fastframe-log does not create it).
+    /// Creates both directories (private to the user on Unix). Logging needs
+    /// the state directory before anything else runs (fastframe-log does not
+    /// create it).
     pub fn ensure(&self) -> std::io::Result<()> {
-        std::fs::create_dir_all(&self.config)?;
-        std::fs::create_dir_all(&self.state)
+        crate::util::create_private_dir(&self.config)?;
+        crate::util::create_private_dir(&self.state)
     }
 
     pub fn settings_file(&self) -> PathBuf {
