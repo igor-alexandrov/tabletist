@@ -1,6 +1,9 @@
 //! TLS for database connections on rustls, with libpq's `sslmode` meanings:
 //! `prefer` and `require` encrypt without checking the certificate,
 //! `verify-ca` checks the chain, `verify-full` checks the chain and the host.
+//! `verify-ca` needs a CA file: any publicly trusted certificate chains to
+//! the system roots, so without the host check those prove nothing (libpq
+//! likewise turns `sslrootcert=system` into `verify-full`).
 
 use std::path::Path;
 use std::sync::Arc;
@@ -22,6 +25,9 @@ fn tls_error(error: impl std::fmt::Display) -> Error {
     Error::Tls(error.to_string())
 }
 
+/// Why `verify-ca` without a CA file is refused.
+const VERIFY_CA_NEEDS_A_CA_FILE: &str = "Verify certificate needs a CA file; use Verify certificate and host to use the system certificates";
+
 /// The rustls configuration for `mode`. `Disable` still gets one (the
 /// connector needs it) but it is never used.
 pub(crate) fn client_config(mode: TlsMode, ca_file: Option<&Path>) -> Result<rustls::ClientConfig> {
@@ -35,9 +41,11 @@ pub(crate) fn client_config(mode: TlsMode, ca_file: Option<&Path>) -> Result<rus
             .with_custom_certificate_verifier(Arc::new(NoVerify(provider)))
             .with_no_client_auth(),
         TlsMode::VerifyCa => {
-            let verifier = WebPkiServerVerifier::builder_with_provider(roots(ca_file)?, provider)
-                .build()
-                .map_err(tls_error)?;
+            let ca_file = ca_file.ok_or_else(|| Error::Tls(VERIFY_CA_NEEDS_A_CA_FILE.into()))?;
+            let verifier =
+                WebPkiServerVerifier::builder_with_provider(roots(Some(ca_file))?, provider)
+                    .build()
+                    .map_err(tls_error)?;
             builder
                 .dangerous()
                 .with_custom_certificate_verifier(Arc::new(IgnoreName(verifier)))
@@ -223,6 +231,23 @@ mod tests {
         for mode in [TlsMode::Disable, TlsMode::Prefer, TlsMode::Require] {
             assert!(client_config(mode, None).is_ok(), "{mode:?}");
         }
+    }
+
+    #[test]
+    fn verify_ca_without_a_ca_file_is_refused() {
+        match client_config(TlsMode::VerifyCa, None) {
+            Err(Error::Tls(message)) => assert_eq!(message, VERIFY_CA_NEEDS_A_CA_FILE),
+            other => panic!("expected a TLS error, got {:?}", other.map(|_| ())),
+        }
+    }
+
+    #[test]
+    fn verify_ca_with_a_ca_file_builds_a_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let ca = dir.path().join("ca.pem");
+        // A self-signed CA certificate; its key was thrown away.
+        std::fs::write(&ca, include_str!("../tests/tls/ca.pem")).unwrap();
+        assert!(client_config(TlsMode::VerifyCa, Some(&ca)).is_ok());
     }
 
     #[test]

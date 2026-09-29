@@ -481,6 +481,15 @@ impl ConnectionForm {
                     return Err("Enter a user name.".into());
                 }
                 let ca_file = self.ca_file.trim();
+                // Without the host check, the system roots vouch for any
+                // public certificate, so verify-ca needs its own CA.
+                if self.tls == TlsMode::VerifyCa && ca_file.is_empty() {
+                    return Err(
+                        "Verify certificate needs a CA file. Choose Verify certificate \
+                                and host to use the system certificates."
+                            .into(),
+                    );
+                }
                 let ssh = if self.ssh {
                     let host = self.ssh_host.trim();
                     if host.is_empty() {
@@ -1257,6 +1266,25 @@ mod tests {
             let error = form.to_spec().unwrap_err();
             assert!(error.contains(message), "{error}");
         }
+    }
+
+    #[test]
+    fn verify_ca_needs_a_ca_file() {
+        let mut form = ConnectionForm {
+            ssh: false,
+            tls: TlsMode::VerifyCa,
+            ..ssh_form()
+        };
+        let error = form.to_spec().unwrap_err();
+        assert!(error.contains("needs a CA file"), "{error}");
+        form.ca_file = "/etc/ssl/db-ca.pem".into();
+        assert_eq!(
+            form.to_spec().unwrap().ca_file,
+            Some("/etc/ssl/db-ca.pem".into())
+        );
+        form.ca_file.clear();
+        form.tls = TlsMode::VerifyFull;
+        assert_eq!(form.to_spec().unwrap().ca_file, None);
     }
 
     #[test]

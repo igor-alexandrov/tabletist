@@ -217,9 +217,16 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
 
                                 if matches!(form.tls, TlsMode::VerifyCa | TlsMode::VerifyFull) {
                                     let label_ca_file = ui.label(gettext(locale, "CA file")).id;
+                                    // verify-ca refuses the system roots: they
+                                    // vouch for any public certificate.
+                                    let hint = if form.tls == TlsMode::VerifyCa {
+                                        gettext(locale, "Required")
+                                    } else {
+                                        gettext(locale, "System certificates")
+                                    };
                                     ui.add(
                                         crate::ui::widgets::single(ui, &mut form.ca_file, &look)
-                                            .hint_text(gettext(locale, "System certificates"))
+                                            .hint_text(hint)
                                             .desired_width(f32::INFINITY),
                                     )
                                     .labelled_by(label_ca_file);

@@ -136,6 +136,16 @@ async fn tls_modes_behave_like_libpq() {
     spec.tls = TlsMode::VerifyFull;
     let result = Connection::connect(&spec, &secrets).await;
     assert!(matches!(result, Err(Error::Tls(_))), "{:?}", result.err());
+    // Without a CA file, verify-ca would trust any public certificate for
+    // any host, so it is refused before connecting.
+    spec.tls = TlsMode::VerifyCa;
+    spec.ca_file = None;
+    let result = Connection::connect(&spec, &secrets).await;
+    assert!(
+        matches!(&result, Err(Error::Tls(message)) if message.contains("needs a CA file")),
+        "{:?}",
+        result.err()
+    );
 }
 
 #[tokio::test]

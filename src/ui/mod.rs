@@ -922,6 +922,44 @@ mod tests {
     }
 
     #[test]
+    fn only_verify_full_offers_the_system_certificates() {
+        let ca_hint = |harness: &mut Harness, tls| {
+            match &mut harness.app.dialog {
+                Some(crate::model::Dialog::Connection(form)) => form.tls = tls,
+                other => panic!("{other:?}"),
+            }
+            let tree = harness.settle();
+            // The field is named by the "CA file" label next to it.
+            let (label, _) = tree
+                .nodes
+                .iter()
+                .find(|(_, node)| node.value() == Some("CA file"))
+                .expect("CA file label");
+            tree.nodes
+                .iter()
+                .find(|(_, node)| {
+                    node.role() == egui::accesskit::Role::TextInput
+                        && node.labelled_by().contains(label)
+                })
+                .expect("CA file field")
+                .1
+                .placeholder()
+                .map(str::to_owned)
+        };
+        let mut harness = Harness::new();
+        harness.press(Key::N, Modifiers::COMMAND);
+        harness.click("PostgreSQL");
+        assert_eq!(
+            ca_hint(&mut harness, tabletist_db::TlsMode::VerifyFull).as_deref(),
+            Some("System certificates")
+        );
+        assert_eq!(
+            ca_hint(&mut harness, tabletist_db::TlsMode::VerifyCa).as_deref(),
+            Some("Required")
+        );
+    }
+
+    #[test]
     fn sqlite_has_no_ssh_section() {
         let mut harness = Harness::new();
         harness.press(Key::N, Modifiers::COMMAND);
