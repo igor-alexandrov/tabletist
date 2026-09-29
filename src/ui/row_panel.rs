@@ -1,13 +1,16 @@
 //! The row panel: every field of the selected row, in full.
 
 use egui::{Frame, Id, Margin, RichText, TextEdit};
-use tabletist_db::ValueKind;
+use std::sync::Arc;
+
+use tabletist_db::{Value, ValueKind};
 
 use crate::app::App;
 use crate::i18n::gettext;
 use crate::model::{ConnTabId, ObjectTabId};
 use crate::theme::{self, Icon};
 use crate::ui::format;
+use crate::ui::json_view;
 use crate::ui::widgets::icon_button;
 
 pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: ObjectTabId) {
@@ -107,8 +110,12 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: Object
                                     .font(theme::mono(theme::TEXT_MONO))
                                     .color(palette.dim),
                             );
+                        } else if let Some(doc) = json_doc(ui, value, column.kind) {
+                            let id =
+                                Id::new(("row-panel-json", tab.0, object_tab.0, cell.row, col));
+                            json_view::show(ui, id, &doc, &column.name, locale, &palette);
                         } else {
-                            let text = format::full_text(value, column.kind);
+                            let text = format::full_text(value);
                             let expanded_id =
                                 Id::new(("row-panel-expanded", tab.0, object_tab.0, cell.row, col));
                             let expanded: bool =
@@ -160,4 +167,14 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: Object
                     }
                 });
         });
+}
+
+/// A JSON column's value as a tree, when it parses and is small enough.
+fn json_doc(ui: &egui::Ui, value: &Value, kind: ValueKind) -> Option<Arc<json_view::Doc>> {
+    match value {
+        Value::Text(text) if kind == ValueKind::Json && text.len() <= json_view::TREE_MAX => {
+            json_view::parsed(ui, text)
+        }
+        _ => None,
+    }
 }

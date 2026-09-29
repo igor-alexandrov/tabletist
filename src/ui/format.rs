@@ -4,7 +4,7 @@ use std::borrow::Cow;
 use std::fmt::Write as _;
 use std::time::Duration;
 
-use tabletist_db::{Value, ValueKind};
+use tabletist_db::Value;
 
 /// Characters a grid cell shows before cutting the value off.
 pub const CELL_MAX_CHARS: usize = 256;
@@ -15,8 +15,6 @@ pub const COLLAPSE_LINES: usize = 20;
 /// Characters of a long value the row panel shows before "Show all", so a
 /// huge single-line value is never laid out whole.
 pub const COLLAPSE_CHARS: usize = 4_000;
-/// JSON larger than this is shown as it is, not re-parsed every frame.
-const PRETTY_JSON_MAX: usize = 256 * 1024;
 
 /// One short line for a grid cell.
 pub fn cell_text(value: &Value) -> Cow<'_, str> {
@@ -73,12 +71,10 @@ pub fn plain_text(value: &Value) -> String {
     }
 }
 
-/// The whole value as the row panel shows it.
-pub fn full_text(value: &Value, kind: ValueKind) -> String {
+/// The whole value as the row panel shows it as text. JSON the panel can
+/// parse is drawn as a tree instead (`json_view`).
+pub fn full_text(value: &Value) -> String {
     match value {
-        Value::Text(text) if kind == ValueKind::Json && text.len() <= PRETTY_JSON_MAX => {
-            pretty_json(text).unwrap_or_else(|| text.to_string())
-        }
         Value::Bytes(bytes) => {
             let shown = &bytes[..bytes.len().min(HEX_LIMIT)];
             let mut text = format!("{}\n{}", human_size(bytes.len()), hex_dump(shown));
@@ -89,11 +85,6 @@ pub fn full_text(value: &Value, kind: ValueKind) -> String {
         }
         other => plain_text(other),
     }
-}
-
-pub fn pretty_json(text: &str) -> Option<String> {
-    let parsed: serde_json::Value = serde_json::from_str(text).ok()?;
-    serde_json::to_string_pretty(&parsed).ok()
 }
 
 /// `00000000  00 01 02 ...`, sixteen bytes a line.
@@ -266,7 +257,7 @@ pub fn for_display(text: &str) -> String {
 mod tests {
     use super::*;
     use std::time::Duration;
-    use tabletist_db::{Value, ValueKind};
+    use tabletist_db::Value;
 
     fn text(value: &str) -> Value {
         Value::Text(value.into())
@@ -318,23 +309,6 @@ mod tests {
     }
 
     #[test]
-    fn json_is_pretty_printed_and_invalid_json_is_left_alone() {
-        let pretty = full_text(&text(r#"{"plan":"pro","tags":["a"]}"#), ValueKind::Json);
-        assert_eq!(
-            pretty,
-            "{\n  \"plan\": \"pro\",\n  \"tags\": [\n    \"a\"\n  ]\n}"
-        );
-        assert_eq!(full_text(&text("not json"), ValueKind::Json), "not json");
-        assert_eq!(full_text(&text("{\"a\":1}"), ValueKind::Text), "{\"a\":1}");
-    }
-
-    #[test]
-    fn huge_json_is_shown_as_it_is() {
-        let huge = format!("[{}1]", "1,".repeat(200_000));
-        assert_eq!(full_text(&text(&huge), ValueKind::Json), huge);
-    }
-
-    #[test]
     fn hex_dumps_have_offsets_and_sixteen_bytes_a_line() {
         let bytes: Vec<u8> = (0u8..20).collect();
         assert_eq!(
@@ -345,10 +319,7 @@ mod tests {
 
     #[test]
     fn hex_dumps_stop_at_the_limit() {
-        let full = full_text(
-            &Value::Bytes(vec![0xab; 10 * 1024 * 1024].into()),
-            ValueKind::Binary,
-        );
+        let full = full_text(&Value::Bytes(vec![0xab; 10 * 1024 * 1024].into()));
         assert!(full.starts_with("10.0 MB\n"));
         assert!(full.ends_with('…'));
         assert!(full.lines().count() <= HEX_LIMIT / 16 + 3);

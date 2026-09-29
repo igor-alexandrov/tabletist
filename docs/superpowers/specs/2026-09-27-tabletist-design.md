@@ -454,7 +454,10 @@ enum Dialog { Connection(..), Password(..), HostKey(..), QuickOpen(..), Help }
 - Resizable right panel, toggled with Space (when the grid has focus) or
   Cmd/Ctrl+Shift+R. Follows the grid selection.
 - One entry per field: name, type, and the full value as selectable read-only
-  text. JSON is pretty-printed in monospace. Binary shows its size and a hex
+  text. JSON up to 256 KiB is a highlighted tree in monospace: keys keep
+  their order, objects and arrays fold (all open up to 40 lines, else only
+  the top level), with Expand all / Collapse all. Larger or invalid JSON is
+  plain text. Binary shows its size and a hex
   preview of the first 4 KiB. Text longer than 20 lines or 4,000 characters
   is collapsed with "Show all". NULL shows a NULL badge.
 - A copy button per field and a filter field for wide tables.
