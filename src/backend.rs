@@ -199,13 +199,8 @@ pub struct Backend {
 }
 
 impl Backend {
-    /// Starts the backend with the OS keyring.
-    pub fn start(waker: Waker) -> Self {
-        Self::start_with(waker, Keyring::native())
-    }
-
-    /// Starts the backend thread and its runtime with the given keyring
-    /// (tests use `Keyring::memory()`).
+    /// Starts the backend thread and its runtime with the given keyring: the
+    /// OS keyring normally, `Keyring::memory()` in demo mode and tests.
     pub fn start_with(waker: Waker, keyring: Keyring) -> Self {
         let (command_tx, command_rx) = tokio_mpsc::unbounded_channel();
         let (event_tx, event_rx) = mpsc::channel();
@@ -774,7 +769,7 @@ mod tests {
     fn a_session_connects_lists_and_fetches_then_wakes_the_ui() {
         let (_dir, spec) = fixture();
         let (waker, wakes) = woken();
-        let mut backend = Backend::start(waker);
+        let mut backend = Backend::start_with(waker, Keyring::memory());
         let session = SessionId(1);
         backend.send(Command::Connect {
             session,
@@ -829,7 +824,7 @@ mod tests {
 
     #[test]
     fn a_failed_connect_reports_its_error() {
-        let mut backend = Backend::start(Waker::default());
+        let mut backend = Backend::start_with(Waker::default(), Keyring::memory());
         backend.send(Command::Connect {
             session: SessionId(1),
             request: RequestId(1),
@@ -848,7 +843,7 @@ mod tests {
 
     #[test]
     fn commands_for_an_unknown_session_fail_as_lost() {
-        let mut backend = Backend::start(Waker::default());
+        let mut backend = Backend::start_with(Waker::default(), Keyring::memory());
         backend.send(Command::ListSchemas {
             session: SessionId(99),
             request: RequestId(1),
@@ -864,7 +859,7 @@ mod tests {
     #[test]
     fn a_test_connects_and_closes_without_a_session() {
         let (_dir, spec) = fixture();
-        let mut backend = Backend::start(Waker::default());
+        let mut backend = Backend::start_with(Waker::default(), Keyring::memory());
         backend.send(Command::Test {
             request: RequestId(5),
             spec,
@@ -883,7 +878,7 @@ mod tests {
     #[test]
     fn cancel_stops_a_running_query_and_the_session_keeps_working() {
         let (_dir, spec) = fixture();
-        let mut backend = Backend::start(Waker::default());
+        let mut backend = Backend::start_with(Waker::default(), Keyring::memory());
         let session = SessionId(1);
         backend.send(Command::Connect {
             session,
@@ -938,7 +933,7 @@ mod tests {
     #[test]
     fn closing_a_session_makes_later_commands_fail() {
         let (_dir, spec) = fixture();
-        let mut backend = Backend::start(Waker::default());
+        let mut backend = Backend::start_with(Waker::default(), Keyring::memory());
         let session = SessionId(1);
         backend.send(Command::Connect {
             session,
@@ -964,7 +959,7 @@ mod tests {
     #[test]
     fn closing_a_session_skips_commands_still_queued() {
         let (_dir, spec) = fixture();
-        let mut backend = Backend::start(Waker::default());
+        let mut backend = Backend::start_with(Waker::default(), Keyring::memory());
         let session = SessionId(1);
         backend.send(Command::Connect {
             session,
@@ -1136,7 +1131,7 @@ mod tests {
     #[test]
     fn sqlite_sessions_list_no_databases() {
         let (_dir, spec) = fixture();
-        let mut backend = Backend::start(Waker::default());
+        let mut backend = Backend::start_with(Waker::default(), Keyring::memory());
         let session = SessionId(1);
         backend.send(Command::Connect {
             session,

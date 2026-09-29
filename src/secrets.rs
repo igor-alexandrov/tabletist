@@ -142,6 +142,8 @@ type Job = Box<dyn FnOnce(&mut dyn SecretStore) + Send>;
 #[derive(Clone)]
 pub struct Keyring {
     jobs: mpsc::Sender<Job>,
+    /// Whether this is the OS keyring (not an in-memory store).
+    native: bool,
 }
 
 /// An answer that will arrive from the keyring thread.
@@ -159,6 +161,10 @@ impl<T> Pending<T> {
 
 impl Keyring {
     pub fn start(store: impl SecretStore + 'static) -> Self {
+        Self::spawn(store, false)
+    }
+
+    fn spawn(store: impl SecretStore + 'static, native: bool) -> Self {
         let (jobs, queue) = mpsc::channel::<Job>();
         let mut store = store;
         let spawned = std::thread::Builder::new()
@@ -171,15 +177,20 @@ impl Keyring {
         if let Err(error) = spawned {
             log::error!("could not start the keyring thread: {error}");
         }
-        Self { jobs }
+        Self { jobs, native }
     }
 
     pub fn native() -> Self {
-        Self::start(NativeStore::default())
+        Self::spawn(NativeStore::default(), true)
     }
 
     pub fn memory() -> Self {
         Self::start(MemoryStore::default())
+    }
+
+    /// Whether secrets go to the OS keyring rather than memory.
+    pub fn is_native(&self) -> bool {
+        self.native
     }
 
     /// Queues `work` now (so calls run in order) and returns its answer.

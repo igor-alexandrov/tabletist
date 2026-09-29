@@ -116,9 +116,10 @@ pub fn main() -> anyhow::Result<()> {
         native_options(cli.demo_size, !demo),
         Box::new(move |cc| {
             let repaint = cc.egui_ctx.clone();
-            let backend = crate::backend::Backend::start(crate::backend::Waker::new(move || {
-                repaint.request_repaint()
-            }));
+            let backend = crate::backend::Backend::start_with(
+                crate::backend::Waker::new(move || repaint.request_repaint()),
+                keyring_for(demo),
+            );
             let mut app = App::new(dirs, settings, backend);
             app.attach(&cc.egui_ctx, !demo);
             if demo {
@@ -134,6 +135,16 @@ pub fn main() -> anyhow::Result<()> {
         }),
     )
     .map_err(|error| anyhow::anyhow!("could not open the window: {error}"))
+}
+
+/// The keyring for saved passwords. Demo runs keep secrets in memory, so a
+/// throwaway profile never reads or writes the user's OS keyring.
+fn keyring_for(demo: bool) -> crate::secrets::Keyring {
+    if demo {
+        crate::secrets::Keyring::memory()
+    } else {
+        crate::secrets::Keyring::native()
+    }
 }
 
 /// A fresh directory under the system temp dir for a demo profile. The name
@@ -316,6 +327,12 @@ mod tests {
     use super::*;
 
     #[test]
+    fn demo_mode_never_uses_the_os_keyring() {
+        assert!(!keyring_for(true).is_native());
+        assert!(keyring_for(false).is_native());
+    }
+
+    #[test]
     fn each_demo_profile_is_fresh_private_and_removed_afterwards() {
         let first = demo_profile().unwrap();
         let second = demo_profile().unwrap();
@@ -402,7 +419,10 @@ mod tests {
             egui::vec2(1280.0, 800.0),
             egui::vec2(2560.0, 1440.0),
         ] {
-            let backend = crate::backend::Backend::start(crate::backend::Waker::default());
+            let backend = crate::backend::Backend::start_with(
+                crate::backend::Waker::default(),
+                keyring_for(true),
+            );
             let mut harness = Harness::with_backend(size, backend);
             demo_setup(&mut harness.app);
             let loaded = harness.run_until(std::time::Duration::from_secs(20), |app| {
