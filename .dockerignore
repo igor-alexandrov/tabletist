@@ -1,0 +1,3 @@
+# Only compose/ssh builds from the repository root: send it the test keys alone.
+*
+!crates/tabletist-db/tests/ssh/*.pub

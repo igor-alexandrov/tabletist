@@ -1,0 +1,127 @@
+name: Packaging
+
+# Builds the macOS app and DMG and the Windows installer the way the release
+# does, and installs them, whenever packaging changes. No signing here.
+on:
+  pull_request:
+    paths: [packaging/**, .cargo/**, Cargo.toml, Cargo.lock, src/main.rs, src/macos.rs, .github/workflows/packaging.yml, .github/workflows/release.yml]
+  push:
+    branches: [main]
+    paths: [packaging/**, .cargo/**, Cargo.toml, Cargo.lock, src/main.rs, src/macos.rs, .github/workflows/packaging.yml, .github/workflows/release.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  macos:
+    name: macOS app and DMG
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
+      - name: Build both architectures
+        run: |
+          cargo build --release --locked --target aarch64-apple-darwin
+          cargo build --release --locked --target x86_64-apple-darwin
+      - name: Universal binary
+        run: |
+          mkdir -p universal
+          lipo -create target/aarch64-apple-darwin/release/tabletist \
+            target/x86_64-apple-darwin/release/tabletist -output universal/tabletist
+          lipo -archs universal/tabletist
+      - name: App and DMG (ad-hoc signed)
+        run: |
+          mkdir -p dist
+          bash packaging/macos/bundle.sh universal/tabletist dist/Tabletist.app 0.0.0-dev
+          bash packaging/macos/dmg.sh dist/Tabletist.app dist/tabletist-dev-macos-universal.dmg
+      - name: The DMG opens and the app runs
+        run: |
+          hdiutil attach -nobrowse -mountpoint /tmp/tabletist-dmg dist/tabletist-dev-macos-universal.dmg
+          /tmp/tabletist-dmg/Tabletist.app/Contents/MacOS/tabletist --version
+          test -f /tmp/tabletist-dmg/Tabletist.app/Contents/Resources/tabletist.icns
+          hdiutil detach /tmp/tabletist-dmg
+
+  windows:
+    name: Windows installer (${{ matrix.target }})
+    runs-on: windows-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [x86_64-pc-windows-msvc, aarch64-pc-windows-msvc]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: rustup target add ${{ matrix.target }}
+      - uses: ilammy/msvc-dev-cmd@v1
+      - run: cargo build --release --locked --target ${{ matrix.target }}
+      - name: No Visual C++ runtime needed
+        shell: pwsh
+        run: |
+          $imports = & dumpbin /dependents "target\${{ matrix.target }}\release\tabletist.exe" | Out-String
+          $runtime = $imports | Select-String -Pattern 'MSVCP[0-9_]*\.dll|VCRUNTIME[0-9_]*\.dll'
+          if ($runtime) { throw "tabletist.exe imports an MSVC runtime:`n$runtime" }
+      - name: Installer
+        shell: pwsh
+        run: |
+          $arch = "${{ matrix.target }}".Split("-")[0]
+          $iscc = (Get-Command iscc -ErrorAction SilentlyContinue).Source
+          if (-not $iscc) { $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" }
+          & $iscc "/DVersion=0.0.0" "/DArch=$arch" `
+            "/DBinary=$PWD\target\${{ matrix.target }}\release\tabletist.exe" `
+            "/DOutputDir=$PWD\dist" packaging\windows\tabletist.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      # The x64 runner can install and run only the x64 build.
+      - name: Install, run and uninstall
+        if: matrix.target == 'x86_64-pc-windows-msvc'
+        shell: pwsh
+        run: |
+          $setup = Get-ChildItem dist\*-setup.exe | Select-Object -First 1
+          Start-Process $setup.FullName -ArgumentList '/VERYSILENT', '/CURRENTUSER', '/SUPPRESSMSGBOXES' -Wait
+          $app = "$env:LOCALAPPDATA\Programs\Tabletist"
+          if (-not (Test-Path "$app\tabletist.exe")) { throw "not installed to $app" }
+          if (-not (Test-Path "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Tabletist.lnk")) {
+            throw "no Start menu entry"
+          }
+          # A GUI program: check the exit code, there is no console output.
+          $run = Start-Process "$app\tabletist.exe" -ArgumentList '--version' -Wait -PassThru
+          if ($run.ExitCode -ne 0) { throw "tabletist --version exited $($run.ExitCode)" }
+          Start-Process "$app\unins000.exe" -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES' -Wait
+          Start-Sleep -Seconds 3
+          if (Test-Path "$app\tabletist.exe") { throw "still installed after uninstall" }
+
+  arch:
+    name: AUR packages
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    container: archlinux:base-devel
+    steps:
+      # makepkg checks the package's runtime dependencies are installed.
+      - run: pacman -Syu --noconfirm --needed git rust dbus libglvnd libxkbcommon wayland libx11
+      - uses: actions/checkout@v4
+      # The source package, built from this commit as the AUR would build a
+      # release, with its check() running the tests.
+      - name: Build the source package
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          useradd -m builder
+          work=/tmp/aur && mkdir -p "$work/src" "$work/bin"
+          git archive --prefix=tabletist-0.0.0/ HEAD | gzip -n > "$work/src/tabletist-0.0.0.tar.gz"
+          sum="$(sha256sum "$work/src/tabletist-0.0.0.tar.gz" | cut -d' ' -f1)"
+          printf '%s\n' \
+            "0000000000000000000000000000000000000000000000000000000000000000  tabletist-v0.0.0-x86_64-unknown-linux-gnu.tar.gz" \
+            "0000000000000000000000000000000000000000000000000000000000000000  tabletist-v0.0.0-aarch64-unknown-linux-gnu.tar.gz" \
+            "$sum  tabletist-v0.0.0-source.tar.gz" > "$work/checksums.txt"
+          packaging/arch/render.sh packaging/arch/tabletist/PKGBUILD.in 0.0.0 "$work/checksums.txt" > "$work/src/PKGBUILD"
+          packaging/arch/render.sh packaging/arch/tabletist-bin/PKGBUILD.in 0.0.0 "$work/checksums.txt" > "$work/bin/PKGBUILD"
+          chown -R builder:builder "$work"
+          sudo -u builder bash -c "cd $work/bin && makepkg --printsrcinfo > .SRCINFO"
+          sudo -u builder bash -c "cd $work/src && makepkg --printsrcinfo > .SRCINFO && makepkg --noconfirm"
+          tar -tf "$work"/src/tabletist-0.0.0-1-*.pkg.tar.zst | grep -x 'usr/bin/tabletist'
+

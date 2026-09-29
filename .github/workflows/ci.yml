@@ -1,0 +1,130 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: GUI build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxkbcommon-dev libwayland-dev libgl1-mesa-dev desktop-file-utils
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+      # The Linux launcher entry the packages install.
+      - run: desktop-file-validate packaging/linux/dev.tabletist.Tabletist.desktop
+      - run: cargo clippy --locked --workspace --all-targets -- -D warnings
+      - run: cargo doc --locked --workspace --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings
+
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: GUI build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxkbcommon-dev libwayland-dev libgl1-mesa-dev
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --locked --workspace --all-targets
+      - name: Native keyring round trip
+        if: runner.os == 'Windows' || runner.os == 'macOS'
+        timeout-minutes: 2
+        run: cargo test --locked --lib secrets::tests::native_store_round_trip -- --ignored --exact
+      - name: SSH agent (Windows OpenSSH)
+        if: runner.os == 'Windows'
+        timeout-minutes: 15
+        shell: pwsh
+        run: |
+          Set-Service ssh-agent -StartupType Manual
+          Start-Service ssh-agent
+          $key = "crates/tabletist-db/tests/ssh/id_ed25519"
+          icacls $key /inheritance:r /grant:r "$($env:USERNAME):(R)"
+          ssh-add $key
+          # --workspace reuses the build from the test step (same features).
+          cargo test --locked --workspace --lib ssh::tests::the_agent_lists_its_keys -- --ignored --exact
+
+  postgres:
+    name: postgres integration
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Start PostgreSQL
+        run: |
+          docker compose up -d postgres
+          for attempt in $(seq 1 60); do
+            pg_isready -h localhost -p 55432 && break
+            sleep 1
+          done
+      - run: cargo test --locked -p tabletist-db --test postgres
+        env:
+          TABLETIST_TEST_PG_URL: postgres://tabletist:tabletist@localhost:55432/tabletist
+
+  mysql:
+    name: mysql integration
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Start MySQL
+        run: docker compose up -d --wait mysql
+      - run: cargo test --locked -p tabletist-db --test mysql
+        env:
+          TABLETIST_TEST_MYSQL_URL: mysql://tabletist:tabletist@localhost:53306/tabletist
+
+  ssh:
+    name: ssh integration
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Start PostgreSQL, MySQL and SSH
+        run: docker compose up -d --build --wait postgres mysql ssh
+      - name: Load the test key into an agent
+        run: |
+          chmod 600 crates/tabletist-db/tests/ssh/id_ed25519
+          eval "$(ssh-agent -s)"
+          ssh-add crates/tabletist-db/tests/ssh/id_ed25519
+          echo "SSH_AUTH_SOCK=$SSH_AUTH_SOCK" >> "$GITHUB_ENV"
+          echo "SSH_AGENT_PID=$SSH_AGENT_PID" >> "$GITHUB_ENV"
+      - run: cargo test --locked -p tabletist-db --test ssh
+        env:
+          TABLETIST_TEST_SSH_URL: ssh://tabletist:tabletist@localhost:52222
+          TABLETIST_TEST_SSH_AGENT: "1"
+      - run: cargo test --locked -p tabletist-db --lib ssh::tests::the_agent_lists_its_keys -- --ignored --exact

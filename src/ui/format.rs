@@ -1,0 +1,507 @@
+//! Turning values into text for the grid, the row panel and the clipboard.
+
+use std::borrow::Cow;
+use std::fmt::Write as _;
+use std::time::Duration;
+
+use tabletist_db::{Value, ValueKind};
+
+/// Characters a grid cell shows before cutting the value off.
+pub const CELL_MAX_CHARS: usize = 256;
+/// Bytes of a binary value the row panel dumps as hex.
+pub const HEX_LIMIT: usize = 4096;
+/// Lines of a long value the row panel shows before "Show all".
+pub const COLLAPSE_LINES: usize = 20;
+/// Characters of a long value the row panel shows before "Show all", so a
+/// huge single-line value is never laid out whole.
+pub const COLLAPSE_CHARS: usize = 4_000;
+/// JSON larger than this is shown as it is, not re-parsed every frame.
+const PRETTY_JSON_MAX: usize = 256 * 1024;
+
+/// One short line for a grid cell.
+pub fn cell_text(value: &Value) -> Cow<'_, str> {
+    match value {
+        Value::Null => Cow::Borrowed("NULL"),
+        Value::Bool(flag) => Cow::Borrowed(if *flag { "true" } else { "false" }),
+        Value::Int(number) => Cow::Owned(number.to_string()),
+        Value::Float(number) => Cow::Owned(number.to_string()),
+        Value::Text(text) => one_line(text),
+        Value::Bytes(bytes) => Cow::Owned(format!("BLOB · {}", human_size(bytes.len()))),
+    }
+}
+
+fn one_line(text: &str) -> Cow<'_, str> {
+    // Only the first CELL_MAX_CHARS characters are ever shown, so never look
+    // past them: a cell may hold megabytes and is drawn every frame.
+    let (end, too_long) = match text.char_indices().nth(CELL_MAX_CHARS) {
+        Some((index, _)) => (index, true),
+        None => (text.len(), false),
+    };
+    let head = &text[..end];
+    if !too_long && !head.contains(['\n', '\r', '\t']) {
+        return Cow::Borrowed(text);
+    }
+    let mut line: String = head
+        .chars()
+        .map(|character| {
+            if matches!(character, '\n' | '\r' | '\t') {
+                ' '
+            } else {
+                character
+            }
+        })
+        .collect();
+    if too_long {
+        line.push('…');
+    }
+    Cow::Owned(line)
+}
+
+/// The whole value as text, for the clipboard. Binary becomes `0x` hex.
+pub fn plain_text(value: &Value) -> String {
+    match value {
+        Value::Bytes(bytes) => {
+            let mut hex = String::with_capacity(2 + bytes.len() * 2);
+            hex.push_str("0x");
+            for byte in bytes.iter() {
+                let _ = write!(hex, "{byte:02x}");
+            }
+            hex
+        }
+        Value::Text(text) => text.to_string(),
+        other => cell_text(other).into_owned(),
+    }
+}
+
+/// The whole value as the row panel shows it.
+pub fn full_text(value: &Value, kind: ValueKind) -> String {
+    match value {
+        Value::Text(text) if kind == ValueKind::Json && text.len() <= PRETTY_JSON_MAX => {
+            pretty_json(text).unwrap_or_else(|| text.to_string())
+        }
+        Value::Bytes(bytes) => {
+            let shown = &bytes[..bytes.len().min(HEX_LIMIT)];
+            let mut text = format!("{}\n{}", human_size(bytes.len()), hex_dump(shown));
+            if bytes.len() > HEX_LIMIT {
+                text.push_str("\n…");
+            }
+            text
+        }
+        other => plain_text(other),
+    }
+}
+
+pub fn pretty_json(text: &str) -> Option<String> {
+    let parsed: serde_json::Value = serde_json::from_str(text).ok()?;
+    serde_json::to_string_pretty(&parsed).ok()
+}
+
+/// `00000000  00 01 02 ...`, sixteen bytes a line.
+pub fn hex_dump(bytes: &[u8]) -> String {
+    let mut out = String::new();
+    for (line, chunk) in bytes.chunks(16).enumerate() {
+        if line > 0 {
+            out.push('\n');
+        }
+        let _ = write!(out, "{:08x} ", line * 16);
+        for byte in chunk {
+            let _ = write!(out, " {byte:02x}");
+        }
+    }
+    out
+}
+
+pub fn human_size(bytes: usize) -> String {
+    const KB: f64 = 1024.0;
+    let size = bytes as f64;
+    if size < KB {
+        format!("{bytes} B")
+    } else if size < KB * KB {
+        format!("{:.1} KB", size / KB)
+    } else {
+        format!("{:.1} MB", size / (KB * KB))
+    }
+}
+
+/// `1.2K`, `3.4M`, `7B`, dropping a trailing `.0`.
+pub fn compact_count(n: u64) -> String {
+    let (value, suffix) = match n {
+        0..=999 => return n.to_string(),
+        1_000..=999_999 => (n as f64 / 1e3, "K"),
+        1_000_000..=999_999_999 => (n as f64 / 1e6, "M"),
+        _ => (n as f64 / 1e9, "B"),
+    };
+    // Round half away from zero first: `{:.1}` alone rounds 1.25 to 1.2.
+    let text = format!("{:.1}", (value * 10.0).round() / 10.0);
+    format!("{}{suffix}", text.trim_end_matches(".0"))
+}
+
+/// `1–300 of ~1.2M`, or `None` when the page is empty.
+pub fn range_label(
+    offset: u64,
+    shown: usize,
+    has_more: bool,
+    estimate: Option<u64>,
+    exact: Option<u64>,
+) -> Option<String> {
+    if shown == 0 {
+        return None;
+    }
+    let first = offset + 1;
+    let last = offset + shown as u64;
+    let total = if let Some(exact) = exact {
+        format!(" of {}", group_digits(exact))
+    } else if !has_more {
+        format!(" of {last}")
+    } else if let Some(estimate) = estimate.filter(|estimate| *estimate >= last) {
+        format!(" of ~{}", compact_count(estimate))
+    } else {
+        String::new()
+    };
+    Some(format!("{first}–{last}{total}"))
+}
+
+/// `1234567` as `1,234,567`.
+pub fn group_digits(number: u64) -> String {
+    let digits = number.to_string();
+    let mut out = String::new();
+    for (index, digit) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(digit);
+    }
+    out
+}
+
+/// What went wrong, in words for someone who is not reading driver
+/// messages; the exact error stays available (as hover text) for the rest.
+/// The server's own words (a query error, a host key prompt) are shown as
+/// they came; every sentence of ours is translated.
+pub fn describe_error(locale: impl fastframe_i18n::Locale, error: &tabletist_db::Error) -> String {
+    use crate::i18n::gettext;
+    use tabletist_db::{Error, SshStage};
+    let sentence = match error {
+        Error::Connect(_) => gettext(
+            locale,
+            "Could not reach the server. Check the host and port, and that the server is running.",
+        ),
+        Error::Auth(_) => gettext(
+            locale,
+            "The server refused the login. Check the user and password.",
+        ),
+        Error::Timeout => gettext(locale, "The server did not answer in time."),
+        Error::ConnectionLost(_) => gettext(locale, "The connection was lost."),
+        Error::Tls(_) => gettext(
+            locale,
+            "The secure connection failed. Try another TLS mode, or check the certificate.",
+        ),
+        Error::Ssh { stage, message } => match stage {
+            SshStage::Connect => gettext(locale, "The SSH server could not be reached."),
+            SshStage::Auth | SshStage::Secret => gettext(locale, "The SSH login failed."),
+            SshStage::Forward => gettext(locale, "The SSH server could not reach the database."),
+            // The host key messages already say what to do.
+            SshStage::HostKeyUnknown { .. } | SshStage::HostKeyMismatch { .. } => {
+                return message.clone();
+            }
+        },
+        Error::Query { message, .. } => return message.clone(),
+        other => return other.to_string(),
+    };
+    sentence.into_owned()
+}
+
+/// A row as tab-separated values on one line.
+pub fn tsv_row(row: &[Value]) -> String {
+    row.iter()
+        .map(|value| plain_text(value).replace(['\t', '\n', '\r'], " "))
+        .collect::<Vec<_>>()
+        .join("\t")
+}
+
+pub fn elapsed(duration: Duration) -> String {
+    if duration < Duration::from_secs(1) {
+        format!("{} ms", duration.as_millis())
+    } else {
+        format!("{:.1} s", duration.as_secs_f64())
+    }
+}
+
+/// Longest line the row panel lays out.
+pub const DISPLAY_LINE_CHARS: usize = 500;
+/// Most text the row panel shows after "Show all".
+pub const DISPLAY_MAX_BYTES: usize = 256 * 1024;
+
+/// Text as the row panel lays it out: at most DISPLAY_MAX_BYTES, with no
+/// line longer than DISPLAY_LINE_CHARS. egui's layout of one very long line
+/// is slow enough to freeze the window, so long lines are broken for display
+/// only; copying still gives the whole value.
+pub fn for_display(text: &str) -> String {
+    let mut cut = text.len().min(DISPLAY_MAX_BYTES);
+    while !text.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    let mut out = String::with_capacity(cut + cut / DISPLAY_LINE_CHARS + 64);
+    for (index, line) in text[..cut].split('\n').enumerate() {
+        if index > 0 {
+            out.push('\n');
+        }
+        let mut count = 0;
+        for character in line.chars() {
+            if count == DISPLAY_LINE_CHARS {
+                out.push('\n');
+                count = 0;
+            }
+            out.push(character);
+            count += 1;
+        }
+    }
+    if cut < text.len() {
+        out.push_str("\n…\n(Copy gives the whole value.)");
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+    use tabletist_db::{Value, ValueKind};
+
+    fn text(value: &str) -> Value {
+        Value::Text(value.into())
+    }
+
+    #[test]
+    fn scalars_render_plainly_and_null_says_so() {
+        assert_eq!(cell_text(&Value::Null), "NULL");
+        assert_eq!(cell_text(&Value::Bool(true)), "true");
+        assert_eq!(cell_text(&Value::Int(-42)), "-42");
+        assert_eq!(cell_text(&Value::Float(99.5)), "99.5");
+        assert_eq!(cell_text(&text("Zoë 🚀")), "Zoë 🚀");
+    }
+
+    #[test]
+    fn long_and_multiline_text_is_one_short_line() {
+        let long = "x".repeat(10_000_000);
+        let value = text(&long);
+        let cell = cell_text(&value);
+        assert_eq!(cell.chars().count(), CELL_MAX_CHARS + 1);
+        assert!(cell.ends_with('…'));
+        assert_eq!(cell_text(&text("a\nb\tc\r\nd")), "a b c  d");
+    }
+
+    #[test]
+    fn short_text_is_not_copied() {
+        let value = text("borrowed");
+        assert!(matches!(cell_text(&value), std::borrow::Cow::Borrowed(_)));
+    }
+
+    #[test]
+    fn blobs_show_their_size_in_the_grid() {
+        assert_eq!(cell_text(&Value::Bytes(vec![0; 3].into())), "BLOB · 3 B");
+        assert_eq!(
+            cell_text(&Value::Bytes(vec![0; 1536].into())),
+            "BLOB · 1.5 KB"
+        );
+    }
+
+    #[test]
+    fn plain_text_is_the_whole_value() {
+        let long = "y".repeat(1000);
+        assert_eq!(plain_text(&text(&long)), long);
+        assert_eq!(
+            plain_text(&Value::Bytes(vec![0x00, 0xff, 0x10].into())),
+            "0x00ff10"
+        );
+        assert_eq!(plain_text(&Value::Null), "NULL");
+    }
+
+    #[test]
+    fn json_is_pretty_printed_and_invalid_json_is_left_alone() {
+        let pretty = full_text(&text(r#"{"plan":"pro","tags":["a"]}"#), ValueKind::Json);
+        assert_eq!(
+            pretty,
+            "{\n  \"plan\": \"pro\",\n  \"tags\": [\n    \"a\"\n  ]\n}"
+        );
+        assert_eq!(full_text(&text("not json"), ValueKind::Json), "not json");
+        assert_eq!(full_text(&text("{\"a\":1}"), ValueKind::Text), "{\"a\":1}");
+    }
+
+    #[test]
+    fn huge_json_is_shown_as_it_is() {
+        let huge = format!("[{}1]", "1,".repeat(200_000));
+        assert_eq!(full_text(&text(&huge), ValueKind::Json), huge);
+    }
+
+    #[test]
+    fn hex_dumps_have_offsets_and_sixteen_bytes_a_line() {
+        let bytes: Vec<u8> = (0u8..20).collect();
+        assert_eq!(
+            hex_dump(&bytes),
+            "00000000  00 01 02 03 04 05 06 07 08 09 0a 0b 0c 0d 0e 0f\n00000010  10 11 12 13"
+        );
+    }
+
+    #[test]
+    fn hex_dumps_stop_at_the_limit() {
+        let full = full_text(
+            &Value::Bytes(vec![0xab; 10 * 1024 * 1024].into()),
+            ValueKind::Binary,
+        );
+        assert!(full.starts_with("10.0 MB\n"));
+        assert!(full.ends_with('…'));
+        assert!(full.lines().count() <= HEX_LIMIT / 16 + 3);
+    }
+
+    #[test]
+    fn sizes_and_counts_are_compact() {
+        assert_eq!(human_size(512), "512 B");
+        assert_eq!(human_size(2048), "2.0 KB");
+        assert_eq!(human_size(5 * 1024 * 1024), "5.0 MB");
+        assert_eq!(compact_count(999), "999");
+        assert_eq!(compact_count(1_234), "1.2K");
+        assert_eq!(compact_count(1_000), "1K");
+        assert_eq!(compact_count(1_250_000), "1.3M");
+        assert_eq!(compact_count(7_000_000_000), "7B");
+    }
+
+    #[test]
+    fn range_labels_describe_the_page() {
+        assert_eq!(
+            range_label(0, 300, true, Some(1_200_000), None).as_deref(),
+            Some("1–300 of ~1.2M")
+        );
+        assert_eq!(
+            range_label(0, 300, true, None, None).as_deref(),
+            Some("1–300")
+        );
+        assert_eq!(
+            range_label(300, 50, false, Some(10), None).as_deref(),
+            Some("301–350 of 350")
+        );
+        assert_eq!(
+            range_label(0, 5, false, None, None).as_deref(),
+            Some("1–5 of 5")
+        );
+        assert_eq!(range_label(0, 0, false, None, None), None);
+    }
+
+    #[test]
+    fn tsv_rows_keep_one_line_per_row() {
+        let row = vec![Value::Int(1), text("a\tb\nc"), Value::Null];
+        assert_eq!(tsv_row(&row), "1\ta b c\tNULL");
+    }
+
+    #[test]
+    fn elapsed_times_read_naturally() {
+        assert_eq!(elapsed(Duration::from_millis(84)), "84 ms");
+        assert_eq!(elapsed(Duration::from_millis(1234)), "1.2 s");
+    }
+
+    #[test]
+    fn a_huge_cell_is_cut_without_scanning_the_whole_value() {
+        let huge = text(&"z".repeat(10 * 1024 * 1024));
+        let started = std::time::Instant::now();
+        for _ in 0..20 {
+            assert!(cell_text(&huge).ends_with('…'));
+        }
+        assert!(
+            started.elapsed() < std::time::Duration::from_millis(20),
+            "20 visible cells took {:?}",
+            started.elapsed()
+        );
+    }
+
+    #[test]
+    fn displayed_text_has_short_lines_and_a_bounded_size() {
+        let shown = for_display(&"q".repeat(1_000_000));
+        assert!(
+            shown
+                .lines()
+                .all(|line| line.chars().count() <= DISPLAY_LINE_CHARS)
+        );
+        // The limit, the display-only line breaks, and the closing note.
+        let bound = DISPLAY_MAX_BYTES + DISPLAY_MAX_BYTES / DISPLAY_LINE_CHARS + 64;
+        assert!(shown.len() <= bound, "{}", shown.len());
+        assert!(shown.ends_with("(Copy gives the whole value.)"));
+        assert_eq!(for_display("short\nlines"), "short\nlines");
+    }
+
+    #[test]
+    fn an_exact_total_replaces_the_estimate() {
+        assert_eq!(
+            range_label(0, 300, true, Some(90_000), Some(123_456)).as_deref(),
+            Some("1–300 of 123,456")
+        );
+        assert_eq!(
+            range_label(0, 300, true, Some(90_000), None).as_deref(),
+            Some("1–300 of ~90K")
+        );
+        assert_eq!(group_digits(0), "0");
+        assert_eq!(group_digits(999), "999");
+        assert_eq!(group_digits(1_234_567), "1,234,567");
+    }
+
+    /// A language whose catalog marks every message it translates.
+    #[derive(Clone, Copy)]
+    struct Marked;
+
+    struct Brackets;
+
+    impl fastframe_i18n::Translator for Brackets {
+        fn translate<'a>(&'a self, string: &'a str, _: Option<&'a str>) -> Cow<'a, str> {
+            Cow::Owned(format!("[{string}]"))
+        }
+
+        fn ntranslate<'a>(
+            &'a self,
+            _: u64,
+            _: &'a str,
+            plural: &'a str,
+            _: Option<&'a str>,
+        ) -> Cow<'a, str> {
+            Cow::Owned(format!("[{plural}]"))
+        }
+    }
+
+    impl fastframe_i18n::Locale for Marked {
+        fn catalog(self) -> Option<&'static dyn fastframe_i18n::Translator> {
+            Some(&Brackets)
+        }
+    }
+
+    #[test]
+    fn error_sentences_are_translated_and_server_words_are_not() {
+        use tabletist_db::{Error, SshStage};
+        let ssh = |stage| Error::Ssh {
+            stage,
+            message: "host key".into(),
+        };
+        for error in [
+            Error::Connect("x".into()),
+            Error::Auth("x".into()),
+            Error::Timeout,
+            Error::ConnectionLost("x".into()),
+            Error::Tls("x".into()),
+            ssh(SshStage::Connect),
+            ssh(SshStage::Auth),
+            ssh(SshStage::Secret),
+            ssh(SshStage::Forward),
+        ] {
+            let described = describe_error(Marked, &error);
+            assert!(
+                described.starts_with('[') && described.ends_with(']'),
+                "{error:?}: {described}"
+            );
+        }
+        let unknown = ssh(SshStage::HostKeyUnknown {
+            fingerprint: "SHA256:abc".into(),
+        });
+        assert_eq!(describe_error(Marked, &unknown), "host key");
+        assert_eq!(
+            describe_error(Marked, &Error::query("syntax error at \"x\"")),
+            "syntax error at \"x\""
+        );
+    }
+}

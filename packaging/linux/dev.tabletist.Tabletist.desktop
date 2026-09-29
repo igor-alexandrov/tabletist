@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Tabletist
+Comment=Browse PostgreSQL, MySQL and SQLite databases
+Exec=tabletist
+Icon=dev.tabletist.Tabletist
+Terminal=false
+Categories=Development;Database;
+StartupWMClass=dev.tabletist.Tabletist
+Keywords=database;sql;postgres;postgresql;mysql;sqlite;
+StartupNotify=true

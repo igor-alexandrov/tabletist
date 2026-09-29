@@ -1,0 +1,139 @@
+[workspace]
+members = [".", "crates/tabletist-db"]
+resolver = "3"
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.98"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+unwrap_used = "warn"
+
+[package]
+name = "tabletist"
+version = "0.1.0"
+description = "A native database client for PostgreSQL, MySQL and SQLite"
+license = "MIT"
+repository = "https://github.com/igor-alexandrov/tabletist"
+readme = "README.md"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+default-run = "tabletist"
+
+[lints]
+workspace = true
+
+[lib]
+name = "tabletist"
+path = "src/lib.rs"
+
+[[bin]]
+name = "tabletist"
+path = "src/main.rs"
+
+[dependencies]
+# Errors at the binary edge (startup, eframe) where callers only report them.
+anyhow = "1"
+# Command-line flags: --verbose and the demo/screenshot flags.
+clap = { version = "4.5", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+log = "0.4"
+# Platform config/state directories (XDG on Linux).
+directories = "6"
+# The whole UI. glow keeps the binary and dependency tree small; a 2D table
+# browser does not need wgpu. AccessKit exposes controls to screen readers and
+# to the headless tests.
+eframe = { version = "0.36", default-features = false, features = ["accesskit", "default_fonts", "glow", "persistence", "wayland", "x11"] }
+egui = "0.36"
+# SVG loading for the Lucide icons.
+egui_extras = { version = "0.36", features = ["svg"] }
+# Writes --demo-shot screenshots as PNG.
+image = { version = "0.25", default-features = false, features = ["png"] }
+# `--features shots`: render test frames to PNG through wgpu, for visual
+# review (tests only; never in release builds).
+egui_kittest = { version = "0.36", optional = true, default-features = false, features = ["wgpu"] }
+# Shared foundation with spotifast (crmne/fastframe). Every crate comes from
+# the same tag; move them together.
+fastframe-text = { git = "https://github.com/crmne/fastframe", tag = "v0.1.7" }
+fastframe-fonts = { git = "https://github.com/crmne/fastframe", tag = "v0.1.7" }
+fastframe-icons = { git = "https://github.com/crmne/fastframe", tag = "v0.1.7" }
+# Palettes, presets, and following the Omarchy theme live.
+fastframe-theme = { git = "https://github.com/crmne/fastframe", tag = "v0.1.7" }
+# gettext catalogs compiled at build time (see build.rs).
+fastframe-i18n = { git = "https://github.com/crmne/fastframe", tag = "v0.1.7" }
+# Log file for bug reports and a panic log without payloads.
+fastframe-log = { git = "https://github.com/crmne/fastframe", tag = "v0.1.7" }
+# The database layer (no UI dependencies).
+tabletist-db = { path = "crates/tabletist-db" }
+# The backend runtime: one OS thread running tokio, where every database
+# call happens (src/backend.rs).
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "macros", "time"] }
+# Native file dialogs (portal on Linux), built on the UI thread and awaited
+# on the backend runtime.
+rfd = "0.17"
+# Stable ids for saved connections, so renaming one keeps its identity.
+uuid = { version = "1", features = ["v4"] }
+
+# One protected-store API for saved passwords; each platform's native
+# provider below. Passwords never go into connections.json.
+keyring-core = "1"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# The desktop's Secret Service (GNOME Keyring, KWallet) over D-Bus.
+zbus-secret-service-keyring-store = { version = "1.0.1", features = ["rt-tokio-crypto-rust"] }
+# Checks that the desktop's monospace font parses before egui loads it (egui
+# panics on a font it cannot read). The version epaint already uses.
+skrifa = { version = "0.44", default-features = false, features = ["std"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+apple-native-keyring-store = { version = "1.0.2", features = ["keychain"] }
+# The unified title bar the tabs share with the window buttons.
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSGeometry"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSResponder", "NSView", "NSWindow", "NSToolbar", "NSControl", "NSButton", "objc2-core-foundation"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-native-keyring-store = { version = "1.1", default-features = false }
+
+[build-dependencies]
+fastframe-i18n = { git = "https://github.com/crmne/fastframe", tag = "v0.1.7", features = ["build"] }
+
+[features]
+shots = ["dep:egui_kittest"]
+
+[dev-dependencies]
+# Throwaway config/state directories for tests.
+tempfile = "3"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
+panic = "abort"
+
+# Immediate-mode layout is too slow at opt-level 0 to try the app in
+# development. Dependencies are optimized; the app crate stays incremental.
+[profile.dev.package."*"]
+opt-level = 2
+
+[patch.crates-io]
+# crmne/egui apps-0.36, shared with spotifast: bidi shaping, the busy-loop
+# fix, and Wayland frame-callback pacing. Every egui crate from one revision.
+ecolor = { git = "https://github.com/crmne/egui", rev = "0b431145c22ee27b20b0aff7243d74f4b32e9a79" }
+eframe = { git = "https://github.com/crmne/egui", rev = "0b431145c22ee27b20b0aff7243d74f4b32e9a79" }
+egui = { git = "https://github.com/crmne/egui", rev = "0b431145c22ee27b20b0aff7243d74f4b32e9a79" }
+egui-winit = { git = "https://github.com/crmne/egui", rev = "0b431145c22ee27b20b0aff7243d74f4b32e9a79" }
+egui_extras = { git = "https://github.com/crmne/egui", rev = "0b431145c22ee27b20b0aff7243d74f4b32e9a79" }
+egui_glow = { git = "https://github.com/crmne/egui", rev = "0b431145c22ee27b20b0aff7243d74f4b32e9a79" }
+egui-wgpu = { git = "https://github.com/crmne/egui", rev = "0b431145c22ee27b20b0aff7243d74f4b32e9a79" }
+egui_kittest = { git = "https://github.com/crmne/egui", rev = "0b431145c22ee27b20b0aff7243d74f4b32e9a79" }
+emath = { git = "https://github.com/crmne/egui", rev = "0b431145c22ee27b20b0aff7243d74f4b32e9a79" }
+epaint = { git = "https://github.com/crmne/egui", rev = "0b431145c22ee27b20b0aff7243d74f4b32e9a79" }
+epaint_default_fonts = { git = "https://github.com/crmne/egui", rev = "0b431145c22ee27b20b0aff7243d74f4b32e9a79" }
+# crmne/winit apps-0.30, used by the eframe fork above.
+winit = { git = "https://github.com/crmne/winit", rev = "fc4f39ff0993dd235952b749dd16b856c0194e1f" }

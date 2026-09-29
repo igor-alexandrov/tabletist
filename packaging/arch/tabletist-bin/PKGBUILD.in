@@ -1,0 +1,30 @@
+# Maintainer: Igor Alexandrov <igor.alexandrov@gmail.com>
+pkgname=tabletist-bin
+pkgver=@VERSION@
+pkgrel=@PKGREL@
+pkgdesc="Native database client for PostgreSQL, MySQL and SQLite"
+arch=('x86_64' 'aarch64')
+url="https://github.com/igor-alexandrov/tabletist"
+license=('MIT')
+# winit and glutin dlopen these at startup; a GUI-only application needs
+# them all to run.
+depends=('dbus' 'libglvnd' 'libxkbcommon' 'wayland' 'libx11')
+optdepends=('libxkbcommon-x11: keyboard handling in X11 sessions')
+provides=("tabletist=$pkgver")
+conflicts=('tabletist')
+options=('!debug' '!strip')
+source_x86_64=("${url}/releases/download/v${pkgver}/tabletist-v${pkgver}-x86_64-unknown-linux-gnu.tar.gz")
+source_aarch64=("${url}/releases/download/v${pkgver}/tabletist-v${pkgver}-aarch64-unknown-linux-gnu.tar.gz")
+sha256sums_x86_64=('@AMD64_SHA256@')
+sha256sums_aarch64=('@ARM64_SHA256@')
+
+package() {
+  local dir="${srcdir}/tabletist-v${pkgver}-${CARCH}-unknown-linux-gnu"
+  install -Dm755 "${dir}/tabletist" "${pkgdir}/usr/bin/tabletist"
+  install -Dm644 "${dir}/LICENSE" "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+  install -Dm644 "${dir}/README.md" "${pkgdir}/usr/share/doc/${pkgname}/README.md"
+  install -Dm644 "${dir}/packaging/linux/dev.tabletist.Tabletist.desktop" \
+    "${pkgdir}/usr/share/applications/dev.tabletist.Tabletist.desktop"
+  install -Dm644 "${dir}/packaging/linux/dev.tabletist.Tabletist.svg" \
+    "${pkgdir}/usr/share/icons/hicolor/scalable/apps/dev.tabletist.Tabletist.svg"
+}

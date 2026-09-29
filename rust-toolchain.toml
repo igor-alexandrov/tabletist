@@ -1,0 +1,5 @@
+# Local builds and CI use the same compiler, clippy and rustfmt. Upgrades are
+# deliberate: bump this, then fix new lints in the same commit.
+[toolchain]
+channel = "1.98.0"
+components = ["rustfmt", "clippy"]

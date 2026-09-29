@@ -1,0 +1,47 @@
+# Maintainer: Igor Alexandrov <igor.alexandrov@gmail.com>
+pkgname=tabletist
+pkgver=@VERSION@
+pkgrel=@PKGREL@
+pkgdesc="Native database client for PostgreSQL, MySQL and SQLite"
+arch=('x86_64' 'aarch64')
+url="https://github.com/igor-alexandrov/tabletist"
+license=('MIT')
+depends=('dbus' 'libglvnd' 'libxkbcommon' 'wayland' 'libx11')
+makedepends=('rust')
+optdepends=('libxkbcommon-x11: keyboard handling in X11 sessions')
+conflicts=('tabletist-bin')
+# !lto: ring compiles its own C, and Arch's default LTO flags leave objects
+# the linker cannot resolve.
+options=('!debug' '!lto')
+source=("${pkgname}-${pkgver}.tar.gz::${url}/releases/download/v${pkgver}/tabletist-v${pkgver}-source.tar.gz")
+sha256sums=('@SOURCE_SHA256@')
+
+prepare() {
+  cd "${srcdir}/tabletist-${pkgver}"
+  export RUSTUP_TOOLCHAIN=stable
+  cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
+}
+
+build() {
+  cd "${srcdir}/tabletist-${pkgver}"
+  export RUSTUP_TOOLCHAIN=stable
+  export CARGO_TARGET_DIR=target
+  cargo build --frozen --release
+}
+
+check() {
+  cd "${srcdir}/tabletist-${pkgver}"
+  export RUSTUP_TOOLCHAIN=stable
+  cargo test --frozen --release --lib
+}
+
+package() {
+  cd "${srcdir}/tabletist-${pkgver}"
+  install -Dm755 target/release/tabletist "${pkgdir}/usr/bin/tabletist"
+  install -Dm644 LICENSE "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+  install -Dm644 README.md "${pkgdir}/usr/share/doc/${pkgname}/README.md"
+  install -Dm644 packaging/linux/dev.tabletist.Tabletist.desktop \
+    "${pkgdir}/usr/share/applications/dev.tabletist.Tabletist.desktop"
+  install -Dm644 packaging/linux/dev.tabletist.Tabletist.svg \
+    "${pkgdir}/usr/share/icons/hicolor/scalable/apps/dev.tabletist.Tabletist.svg"
+}

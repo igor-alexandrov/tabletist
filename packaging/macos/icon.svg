@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!-- The macOS app icon: assets/icon/tabletist.svg on Apple's icon grid, an
+       824 px plate centred in the 1024 px canvas with a soft shadow, so the
+       icon matches the size of other apps in the Dock and Finder. Render with
+       rsvg-convert -w 1024 -h 1024 icon.svg -o icon-1024.png -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#3b82f6"/>
+      <stop offset="1" stop-color="#1d4ed8"/>
+    </linearGradient>
+    <clipPath id="table">
+      <rect x="208" y="248" width="608" height="528" rx="72"/>
+    </clipPath>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="125%">
+      <feDropShadow dx="0" dy="12" stdDeviation="12" flood-color="#000000" flood-opacity="0.3"/>
+    </filter>
+  </defs>
+  <!-- 824 / 960 scales the 960 px plate at 32 onto the 824 px plate at 100. -->
+  <g transform="translate(72.5333 72.5333) scale(0.858333)">
+    <rect x="32" y="32" width="960" height="960" rx="216" fill="url(#bg)" filter="url(#shadow)"/>
+    <g clip-path="url(#table)">
+      <rect x="208" y="248" width="608" height="528" fill="#ffffff" fill-opacity="0.16"/>
+      <!-- The header row, filled. -->
+      <rect x="208" y="248" width="608" height="152" fill="#ffffff"/>
+    </g>
+    <rect x="236" y="276" width="552" height="472" rx="46" fill="none" stroke="#ffffff" stroke-width="56"/>
+    <!-- One column rule, two row rules. The column overlaps the header by 8, so
+         no seam shows where they meet at this scale. -->
+    <line x1="424" y1="392" x2="424" y2="748" stroke="#ffffff" stroke-width="48"/>
+    <line x1="236" y1="516" x2="788" y2="516" stroke="#ffffff" stroke-width="40"/>
+    <line x1="236" y1="632" x2="788" y2="632" stroke="#ffffff" stroke-width="40"/>
+  </g>
+</svg>

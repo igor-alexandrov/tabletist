@@ -1,0 +1,47 @@
+[package]
+name = "tabletist-db"
+version = "0.1.0"
+description = "Access to PostgreSQL, MySQL and SQLite for Tabletist"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+# Typed errors the app shows to the user as-is.
+thiserror = "2"
+# Connection specs are saved in connections.json.
+serde = { version = "1", features = ["derive"] }
+# Adapters are async; SQLite's blocking calls run on spawn_blocking.
+tokio = { version = "1", features = ["rt", "sync", "net", "io-util"] }
+# SSH tunnels, on ring (no aws-lc to build).
+russh = { version = "0.63", default-features = false, features = ["ring", "rsa", "flate2"] }
+# SQLite, compiled in so every platform gets the same, recent version.
+# column_decltype gives each result column's declared type.
+rusqlite = { version = "0.37", features = ["bundled", "column_decltype"] }
+# Parsing postgres:// and mysql:// connection URLs.
+url = "2"
+# Decoding user names, passwords and database names in URLs.
+percent-encoding = "2"
+log = "0.4"
+
+# PostgreSQL, async. Rows are read through its simple-query protocol.
+tokio-postgres = "0.7"
+# TLS for tokio-postgres on rustls (no OpenSSL to build or ship).
+tokio-postgres-rustls = "0.14"
+# ring rather than aws-lc: no cmake/NASM needed to build on Windows.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+# The operating system's trusted roots for verify-ca and verify-full.
+rustls-native-certs = "0.8"
+# Reading a CA file (PEM) the user chose.
+rustls-pki-types = { version = "1", features = ["std"] }
+
+# MySQL, async. rustls on ring (like PostgreSQL); no aws-lc, no OpenSSL.
+mysql_async = { version = "0.37", default-features = false, features = ["default-rustls-ring"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "net"] }
+tempfile = "3"
+serde_json = "1"

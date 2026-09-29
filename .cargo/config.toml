@@ -1,0 +1,7 @@
+# Windows binaries carry their C runtime, so the zip and installer run on a
+# machine without a separately installed Visual C++ redistributable.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[target.aarch64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

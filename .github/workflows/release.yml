@@ -1,0 +1,256 @@
+name: Release
+
+# A v* tag builds every package, publishes a GitHub release with checksums,
+# and updates the AUR. Run it by hand (workflow_dispatch) for a dry run that
+# builds and uploads the artifacts but publishes nothing.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Version label for the dry run's file names (nothing is published)
+        required: true
+        default: v0.0.0-dry
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  TAG: ${{ github.event_name == 'push' && github.ref_name || inputs.tag }}
+
+jobs:
+  # A tag that disagrees with Cargo.toml would publish mislabelled packages,
+  # so check it before anything is built. The dry run has no tag to check.
+  version:
+    name: Tag matches Cargo.toml
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        if: github.event_name == 'push'
+      - name: Tag matches the package version
+        if: github.event_name == 'push'
+        run: |
+          version="$(cargo metadata --no-deps --format-version 1 |
+            jq -r '.packages[] | select(.name == "tabletist") | .version')"
+          if [ "${TAG#v}" != "$version" ]; then
+            echo "::error::Tag ${TAG} does not match version ${version} in Cargo.toml; expected tag v${version}."
+            exit 1
+          fi
+          echo "Tag ${TAG} matches Cargo.toml version ${version}."
+
+  build:
+    name: build (${{ matrix.target }})
+    needs: version
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+          # Cross-compiled on x64 with the MSVC arm64 tools.
+          - os: windows-latest
+            target: aarch64-pc-windows-msvc
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: rustup target add ${{ matrix.target }}
+      - name: GUI build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxkbcommon-dev libwayland-dev libgl1-mesa-dev
+      - name: MSVC environment
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+      # No compiler cache: published binaries never build from restored outputs.
+      - run: cargo build --release --locked --target ${{ matrix.target }}
+      - name: No Visual C++ runtime needed
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $imports = & dumpbin /dependents "target\${{ matrix.target }}\release\tabletist.exe" | Out-String
+          $runtime = $imports | Select-String -Pattern 'MSVCP[0-9_]*\.dll|VCRUNTIME[0-9_]*\.dll'
+          if ($runtime) { throw "tabletist.exe imports an MSVC runtime:`n$runtime" }
+      - name: Archive
+        shell: bash
+        run: |
+          name="tabletist-${TAG}-${{ matrix.target }}"
+          mkdir -p "dist/$name"
+          cp README.md LICENSE "dist/$name/"
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            cp "target/${{ matrix.target }}/release/tabletist.exe" "dist/$name/"
+            (cd dist && 7z a "$name.zip" "$name" >/dev/null)
+          else
+            cp "target/${{ matrix.target }}/release/tabletist" "dist/$name/"
+            cp --parents packaging/linux/dev.tabletist.Tabletist.desktop \
+              packaging/linux/dev.tabletist.Tabletist.svg "dist/$name/"
+            (cd dist && tar czf "$name.tar.gz" "$name")
+          fi
+      - name: Installer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $version = $env:TAG.TrimStart("v")
+          $arch = "${{ matrix.target }}".Split("-")[0]
+          $iscc = (Get-Command iscc -ErrorAction SilentlyContinue).Source
+          if (-not $iscc) { $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" }
+          & $iscc "/DVersion=$version" "/DArch=$arch" `
+            "/DBinary=$PWD\target\${{ matrix.target }}\release\tabletist.exe" `
+            "/DOutputDir=$PWD\dist" packaging\windows\tabletist.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/*-setup.exe
+          if-no-files-found: error
+
+  macos:
+    name: macOS universal app
+    needs: version
+    runs-on: macos-latest
+    timeout-minutes: 90
+    env:
+      APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
+      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+      APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
+      - name: Build both architectures
+        run: |
+          cargo build --release --locked --target aarch64-apple-darwin
+          cargo build --release --locked --target x86_64-apple-darwin
+      - name: Universal binary
+        run: |
+          mkdir -p universal
+          lipo -create target/aarch64-apple-darwin/release/tabletist \
+            target/x86_64-apple-darwin/release/tabletist -output universal/tabletist
+      # With the Developer ID certificate, its password and identity in the
+      # secrets, sign for real, and with the notary secrets too, notarize;
+      # without them the app is ad-hoc signed and the DMG unsigned. A partial
+      # set warns and ships what it can.
+      - name: Signing plan
+        id: plan
+        run: bash packaging/macos/signing-plan.sh
+      - name: Signing keychain
+        if: steps.plan.outputs.sign == 'true'
+        run: |
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          password="$(openssl rand -hex 16)"
+          echo "$APPLE_CERTIFICATE_P12" | base64 --decode > "$RUNNER_TEMP/certificate.p12"
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          security import "$RUNNER_TEMP/certificate.p12" -P "$APPLE_CERTIFICATE_PASSWORD" \
+            -A -t cert -f pkcs12 -k "$keychain"
+          security set-key-partition-list -S apple-tool:,apple: -k "$password" "$keychain"
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          echo "CODESIGN_IDENTITY=$APPLE_SIGNING_IDENTITY" >> "$GITHUB_ENV"
+      - name: App and DMG
+        run: |
+          mkdir -p dist
+          bash packaging/macos/bundle.sh universal/tabletist dist/Tabletist.app "${TAG#v}"
+          bash packaging/macos/dmg.sh dist/Tabletist.app "dist/tabletist-${TAG}-macos-universal.dmg"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-universal
+          path: dist/*.dmg
+          if-no-files-found: error
+
+  publish:
+    name: GitHub release
+    needs: [build, macos]
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    # The only job that writes: it creates the release.
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      # The source archive, so source packages check the same checksums.
+      - name: Source archive and checksums
+        run: |
+          curl --fail --location --retry 3 \
+            "https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/${TAG}.tar.gz" \
+            --output "dist/tabletist-${TAG}-source.tar.gz"
+          (cd dist && sha256sum * > checksums.txt && cat checksums.txt)
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          name: Tabletist ${{ env.TAG }}
+          generate_release_notes: true
+          # v0.2.0-rc1 is a pre-release.
+          prerelease: ${{ contains(env.TAG, '-') }}
+
+  aur:
+    name: AUR
+    needs: publish
+    if: github.event_name == 'push' && !contains(github.ref_name, '-')
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    env:
+      AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}
+      # Ed25519 SHA256:RFzBCUItH9LZS0cKB5UE6ceAYhBD5C8GeOBip8Z11+4, as published
+      # on https://aur.archlinux.org/.
+      AUR_HOST_KEY: aur.archlinux.org ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEuBKrPzbawxA/k2g6NcyV5jmqwJ2s+zpgZGZ7tpLIcN
+    steps:
+      - name: Skipped without AUR_SSH_KEY
+        if: env.AUR_SSH_KEY == ''
+        run: echo "::notice::AUR_SSH_KEY is not set; the AUR packages were not updated."
+      - name: Tools
+        if: env.AUR_SSH_KEY != ''
+        run: pacman -Syu --noconfirm --needed git openssh
+      - uses: actions/checkout@v4
+        if: env.AUR_SSH_KEY != ''
+      - name: Update tabletist-bin and tabletist
+        if: env.AUR_SSH_KEY != ''
+        run: |
+          version="${TAG#v}"
+          useradd -m builder
+          install -d -m 700 -o builder -g builder /home/builder/.ssh
+          printf '%s\n' "$AUR_SSH_KEY" > /home/builder/.ssh/aur
+          printf '%s\n' "$AUR_HOST_KEY" > /home/builder/.ssh/known_hosts
+          printf 'Host aur.archlinux.org\n  IdentityFile ~/.ssh/aur\n  User aur\n  StrictHostKeyChecking yes\n' > /home/builder/.ssh/config
+          chown -R builder:builder /home/builder/.ssh
+          chmod 600 /home/builder/.ssh/aur /home/builder/.ssh/config
+          curl --fail --location --retry 3 \
+            "https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/checksums.txt" \
+            --output /tmp/checksums.txt
+          cp -r packaging/arch /tmp/arch && chown -R builder:builder /tmp/arch
+          for package in tabletist-bin tabletist; do
+            sudo -u builder bash -euo pipefail -c "
+              cd /tmp
+              git clone ssh://aur@aur.archlinux.org/${package}.git aur-${package}
+              cd aur-${package}
+              git config user.name 'Igor Alexandrov'
+              git config user.email 'igor.alexandrov@gmail.com'
+              /tmp/arch/render.sh /tmp/arch/${package}/PKGBUILD.in ${version} /tmp/checksums.txt > PKGBUILD
+              makepkg --printsrcinfo > .SRCINFO
+              git add PKGBUILD .SRCINFO
+              # A re-run for the same tag has nothing to commit.
+              if git diff --cached --quiet; then
+                echo '::notice::${package} is already at ${version}.'
+              else
+                git commit -m 'Update to ${version}'
+                git push origin HEAD:master
+              fi
+            "
+          done
