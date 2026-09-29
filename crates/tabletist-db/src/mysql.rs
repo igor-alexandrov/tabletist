@@ -115,7 +115,8 @@ impl Conn {
         T: mysql_async::prelude::FromRow + Send + 'static,
     {
         let mut conn = self.conn.lock().await;
-        conn.exec(sql, params).await.map_err(query_error)
+        let rows: Vec<mysql_async::Row> = conn.exec(sql, params).await.map_err(query_error)?;
+        rows.into_iter().map(from_row).collect()
     }
 
     pub async fn list_schemas(&self) -> Result<Vec<String>> {
@@ -285,12 +286,23 @@ impl Conn {
             .await
             .map_err(query_error)?;
         let outcome = transaction
-            .exec_first(sql.text.as_str(), params(&sql.params))
+            .exec_first::<mysql_async::Row, _, _>(sql.text.as_str(), params(&sql.params))
             .await
             .map_err(query_error);
-        let count: Option<u64> = finish(transaction, outcome).await?;
-        count.ok_or_else(|| Error::query("the count returned no number"))
+        let row = finish(transaction, outcome).await?;
+        row.map(from_row::<u64>)
+            .transpose()?
+            .ok_or_else(|| Error::query("the count returned no number"))
     }
+}
+
+/// A row as `T`. A server (or proxy) that answers with other types or a
+/// NULL is a query error, not a panic: release builds abort on panic. The
+/// row itself stays out of the message.
+fn from_row<T: mysql_async::prelude::FromRow>(row: mysql_async::Row) -> Result<T> {
+    mysql_async::from_row_opt(row).map_err(|_| {
+        Error::query("unexpected data from the server: a row did not have the expected types")
+    })
 }
 
 /// Up to `limit + 1` rows of a page, so the caller can tell there are more.
