@@ -1,5 +1,9 @@
 //! Database objects and their structure.
 
+/// The most schemas, or objects in one schema, a listing returns, so a
+/// server with a huge catalog cannot make the sidebar hold it all.
+pub const MAX_LISTED: u32 = 10_000;
+
 /// A table, view or materialized view, by schema and name.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ObjectRef {

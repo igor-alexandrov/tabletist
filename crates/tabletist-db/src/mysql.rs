@@ -11,9 +11,9 @@ use mysql_async::prelude::Queryable;
 use mysql_async::{DriverError, IoError, Opts, OptsBuilder, Params, SslOpts, TxOpts};
 
 use crate::{
-    ColumnInfo, ColumnMeta, ConnectSpec, Dialect, Error, ForeignKeyInfo, IndexInfo, ObjectInfo,
-    ObjectKind, ObjectRef, Result, RowPage, RowQuery, Secrets, Structure, TlsMode, Value,
-    ValueKind,
+    ColumnInfo, ColumnMeta, ConnectSpec, Dialect, Error, ForeignKeyInfo, IndexInfo, MAX_LISTED,
+    ObjectInfo, ObjectKind, ObjectRef, Result, RowPage, RowQuery, Secrets, Structure, TlsMode,
+    Value, ValueKind,
 };
 
 /// MySQL's `binary` character set: bytes, not text.
@@ -121,7 +121,10 @@ impl Conn {
 
     pub async fn list_schemas(&self) -> Result<Vec<String>> {
         self.catalog(
-            "SELECT schema_name FROM information_schema.schemata ORDER BY schema_name",
+            &format!(
+                "SELECT schema_name FROM information_schema.schemata \
+                 ORDER BY schema_name LIMIT {MAX_LISTED}"
+            ),
             Params::Empty,
         )
         .await
@@ -130,8 +133,10 @@ impl Conn {
     pub async fn list_objects(&self, schema: &str) -> Result<Vec<ObjectInfo>> {
         let rows: Vec<(String, String, Option<u64>)> = self
             .catalog(
-                "SELECT table_name, table_type, table_rows FROM information_schema.tables \
-                 WHERE table_schema = ? ORDER BY table_name",
+                &format!(
+                    "SELECT table_name, table_type, table_rows FROM information_schema.tables \
+                     WHERE table_schema = ? ORDER BY table_name LIMIT {MAX_LISTED}"
+                ),
                 (schema,),
             )
             .await?;

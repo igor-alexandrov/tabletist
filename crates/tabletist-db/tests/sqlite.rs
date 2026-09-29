@@ -251,6 +251,28 @@ async fn the_schema_is_untrusted() {
 }
 
 #[tokio::test]
+async fn object_listings_are_capped() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("many.db");
+    {
+        let mut setup = rusqlite::Connection::open(&path).unwrap();
+        let transaction = setup.transaction().unwrap();
+        for index in 0..tabletist_db::MAX_LISTED + 5 {
+            transaction
+                .execute_batch(&format!("CREATE TABLE t{index:05} (id INTEGER);"))
+                .unwrap();
+        }
+        transaction.commit().unwrap();
+    }
+    let connection = Connection::connect(&ConnectSpec::sqlite(&path), &Secrets::default())
+        .await
+        .unwrap();
+    let objects = connection.list_objects("main").await.unwrap();
+    assert_eq!(objects.len(), tabletist_db::MAX_LISTED as usize);
+    assert_eq!(objects[0].name, "t00000");
+}
+
+#[tokio::test]
 async fn a_bad_raw_where_is_a_query_error() {
     let (connection, _dir) = fixture().await;
     let mut query = users(50);

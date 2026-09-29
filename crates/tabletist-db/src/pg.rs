@@ -12,9 +12,9 @@ use tokio_postgres::tls::{MakeTlsConnect, TlsConnect};
 use tokio_postgres::{SimpleQueryMessage, Socket};
 
 use crate::{
-    ColumnInfo, ColumnMeta, ConnectSpec, Dialect, Error, ForeignKeyInfo, IndexInfo, ObjectInfo,
-    ObjectKind, ObjectRef, Result, RowPage, RowQuery, Secrets, Structure, Value, ValueKind,
-    value_from_pg_text,
+    ColumnInfo, ColumnMeta, ConnectSpec, Dialect, Error, ForeignKeyInfo, IndexInfo, MAX_LISTED,
+    ObjectInfo, ObjectKind, ObjectRef, Result, RowPage, RowQuery, Secrets, Structure, Value,
+    ValueKind, value_from_pg_text,
 };
 use tokio_postgres::error::SqlState;
 use tokio_postgres_rustls::MakeRustlsConnect;
@@ -244,7 +244,9 @@ impl Conn {
     pub async fn list_schemas(&self) -> Result<Vec<String>> {
         let rows = self
             .catalog(
-                "SELECT nspname::text FROM pg_namespace ORDER BY nspname",
+                &format!(
+                    "SELECT nspname::text FROM pg_namespace ORDER BY nspname LIMIT {MAX_LISTED}"
+                ),
                 &[],
             )
             .await?;
@@ -254,10 +256,12 @@ impl Conn {
     pub async fn list_objects(&self, schema: &str) -> Result<Vec<ObjectInfo>> {
         let rows = self
             .catalog(
-                "SELECT c.relname::text, c.relkind::text, c.reltuples::float8 \
-                 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace \
-                 WHERE n.nspname = $1 AND c.relkind IN ('r', 'p', 'f', 'v', 'm') \
-                 ORDER BY c.relname",
+                &format!(
+                    "SELECT c.relname::text, c.relkind::text, c.reltuples::float8 \
+                     FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace \
+                     WHERE n.nspname = $1 AND c.relkind IN ('r', 'p', 'f', 'v', 'm') \
+                     ORDER BY c.relname LIMIT {MAX_LISTED}"
+                ),
                 &[&schema],
             )
             .await?;

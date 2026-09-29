@@ -9,8 +9,8 @@ use rusqlite::config::DbConfig;
 use rusqlite::{ErrorCode, OpenFlags};
 
 use crate::{
-    ColumnInfo, ColumnMeta, Dialect, Error, ForeignKeyInfo, IndexInfo, ObjectInfo, ObjectKind,
-    ObjectRef, Result, RowPage, RowQuery, Structure, Value, ValueKind,
+    ColumnInfo, ColumnMeta, Dialect, Error, ForeignKeyInfo, IndexInfo, MAX_LISTED, ObjectInfo,
+    ObjectKind, ObjectRef, Result, RowPage, RowQuery, Structure, Value, ValueKind,
 };
 
 /// An open SQLite database.
@@ -191,7 +191,10 @@ impl Conn {
     pub async fn list_schemas(&self) -> Result<Vec<String>> {
         self.run(|connection| {
             let mut statement = connection
-                .prepare("SELECT name FROM pragma_database_list WHERE name <> 'temp' ORDER BY seq")
+                .prepare(&format!(
+                    "SELECT name FROM pragma_database_list WHERE name <> 'temp' \
+                     ORDER BY seq LIMIT {MAX_LISTED}"
+                ))
                 .map_err(map_error)?;
             let names = statement
                 .query_map([], |row| row.get::<_, String>(0))
@@ -207,7 +210,7 @@ impl Conn {
         let sql = format!(
             "SELECT name, type FROM {}.sqlite_master \
              WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\' \
-             ORDER BY name",
+             ORDER BY name LIMIT {MAX_LISTED}",
             crate::Dialect::Sqlite.quote_ident(schema)
         );
         self.run(move |connection| {
