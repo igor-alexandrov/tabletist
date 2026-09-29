@@ -4,6 +4,8 @@
 #   TABLETIST_TEST_MYSQL_URL=mysql://tabletist:tabletist@localhost:53306/tabletist \
 #   TABLETIST_TEST_SSH_URL=ssh://tabletist:tabletist@localhost:52222 \
 #     cargo test --workspace
+#
+# Ports are published on 127.0.0.1 only: the credentials are public.
 services:
   postgres:
     image: postgres:17
@@ -12,7 +14,7 @@ services:
       POSTGRES_PASSWORD: tabletist
       POSTGRES_DB: tabletist
     ports:
-      - "55432:5432"
+      - "127.0.0.1:55432:5432"
     # TLS with the image's self-signed certificate, so every sslmode can be tested.
     command:
       - -c
@@ -34,7 +36,7 @@ services:
       MYSQL_USER: tabletist
       MYSQL_PASSWORD: tabletist
     ports:
-      - "53306:3306"
+      - "127.0.0.1:53306:3306"
     volumes:
       # A second database, so schema listing has more than one.
       - ./compose/mysql-init.sql:/docker-entrypoint-initdb.d/billing.sql:ro
@@ -52,7 +54,7 @@ services:
       context: .
       dockerfile: compose/ssh/Dockerfile
     ports:
-      - "52222:22"
+      - "127.0.0.1:52222:22"
     healthcheck:
       test: ["CMD", "nc", "-z", "127.0.0.1", "22"]
       interval: 2s

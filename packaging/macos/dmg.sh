@@ -3,9 +3,11 @@
 #
 #   packaging/macos/dmg.sh <Tabletist.app> <output.dmg>
 #
-# With CODESIGN_IDENTITY the DMG is signed; with APPLE_ID, APPLE_TEAM_ID and
-# APPLE_APP_PASSWORD as well it is also notarized and stapled (Apple rejects
-# an unsigned one). Without them it is left as is, and says so.
+# With CODESIGN_IDENTITY the DMG is signed; with NOTARY_PROFILE as well (a
+# profile saved by `xcrun notarytool store-credentials`, in NOTARY_KEYCHAIN
+# when that is set) it is also notarized and stapled (Apple rejects an
+# unsigned one). The Apple password never appears on this script's command
+# lines. Without them the DMG is left as is, and says so.
 set -euo pipefail
 
 app="$1"
@@ -20,10 +22,13 @@ hdiutil create -volname Tabletist -srcfolder "$stage" -ov -format UDZO "$dmg"
 if [ -n "${CODESIGN_IDENTITY:-}" ]; then
     codesign --force --timestamp --sign "$CODESIGN_IDENTITY" "$dmg"
 fi
-if [ -n "${CODESIGN_IDENTITY:-}" ] && [ -n "${APPLE_ID:-}" ] && [ -n "${APPLE_TEAM_ID:-}" ] \
-    && [ -n "${APPLE_APP_PASSWORD:-}" ]; then
-    xcrun notarytool submit "$dmg" --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" \
-        --password "$APPLE_APP_PASSWORD" --wait
+if [ -n "${CODESIGN_IDENTITY:-}" ] && [ -n "${NOTARY_PROFILE:-}" ]; then
+    if [ -n "${NOTARY_KEYCHAIN:-}" ]; then
+        xcrun notarytool submit "$dmg" --keychain-profile "$NOTARY_PROFILE" \
+            --keychain "$NOTARY_KEYCHAIN" --wait
+    else
+        xcrun notarytool submit "$dmg" --keychain-profile "$NOTARY_PROFILE" --wait
+    fi
     xcrun stapler staple "$dmg"
 else
     echo "::notice::Not notarized: it takes a signing identity and the Apple notary secrets."
