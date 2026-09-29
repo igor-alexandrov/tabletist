@@ -26,7 +26,7 @@ pub use catalog::{
 pub use dialect::{Dialect, Sql, escape_like, quote_literal};
 pub use error::{Error, Result, SshStage};
 pub use query::{Filter, FilterOp, RowPage, RowQuery, Sort, SortDir};
-pub use spec::{ConnectSpec, Driver, Secrets, SshAuth, SshSpec, TlsMode};
+pub use spec::{ConnectSpec, Driver, ParsedUrl, Secrets, SshAuth, SshSpec, TlsMode};
 pub use ssh::HostKeys;
 pub use value::{ColumnMeta, Value, ValueKind, value_from_pg_text};
 

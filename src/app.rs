@@ -2231,13 +2231,21 @@ impl App {
 
 /// Fills the form from its URL field.
 fn apply_url(form: &mut ConnectionForm) {
-    let (spec, secrets) = match tabletist_db::ConnectSpec::from_url(&form.url) {
+    let tabletist_db::ParsedUrl {
+        spec,
+        secrets,
+        names_tls,
+        names_ca_file,
+        without_password,
+    } = match tabletist_db::ParsedUrl::parse(&form.url) {
         Ok(parsed) => parsed,
         Err(error) => {
             form.message = Some(error.to_string());
             return;
         }
     };
+    // The password moves to the masked field; the URL field is not masked.
+    form.url = without_password;
     match spec.driver {
         Driver::Sqlite => {
             let path = spec
@@ -2261,11 +2269,17 @@ fn apply_url(form: &mut ConnectionForm) {
             form.port = spec.port.to_string();
             form.user = spec.user;
             form.database = spec.database;
-            form.tls = spec.tls;
-            form.ca_file = spec
-                .ca_file
-                .map(|path| path.display().to_string())
-                .unwrap_or_default();
+            // A URL that does not name the TLS settings keeps the form's,
+            // rather than quietly dropping to `prefer`.
+            if names_tls {
+                form.tls = spec.tls;
+            }
+            if names_ca_file {
+                form.ca_file = spec
+                    .ca_file
+                    .map(|path| path.display().to_string())
+                    .unwrap_or_default();
+            }
             if let Some(password) = secrets.password {
                 form.password = password;
             }
@@ -3818,6 +3832,32 @@ mod tests {
         assert_eq!(form.password, "pw");
         assert_eq!(form.tls, tabletist_db::TlsMode::VerifyFull);
         assert_eq!(form.name, "me@db.example.com:6543/app");
+    }
+
+    #[test]
+    fn a_pasted_url_keeps_unnamed_tls_settings_and_hides_its_password() {
+        let (mut app, _dir) = app();
+        postgres_form(&mut app);
+        form(&mut app).tls = tabletist_db::TlsMode::VerifyFull;
+        form(&mut app).ca_file = "/etc/ca.pem".into();
+        form(&mut app).url = "postgres://me:secret@other.example.com/app".into();
+        app.apply(Action::ApplyUrl);
+        let filled = form(&mut app);
+        assert_eq!(filled.host, "other.example.com");
+        assert_eq!(filled.tls, tabletist_db::TlsMode::VerifyFull);
+        assert_eq!(filled.ca_file, "/etc/ca.pem");
+        assert_eq!(filled.password, "secret");
+        assert_eq!(filled.url, "postgres://me@other.example.com/app");
+
+        // A URL that names them wins; one that names them twice is refused.
+        form(&mut app).url = "postgres://me@h/app?sslmode=require".into();
+        app.apply(Action::ApplyUrl);
+        assert_eq!(form(&mut app).tls, tabletist_db::TlsMode::Require);
+        form(&mut app).url = "postgres://me@h2/app?sslmode=verify-full&sslmode=disable".into();
+        app.apply(Action::ApplyUrl);
+        assert!(form(&mut app).message.is_some());
+        assert_eq!(form(&mut app).host, "h");
+        assert_eq!(form(&mut app).tls, tabletist_db::TlsMode::Require);
     }
 
     #[test]
