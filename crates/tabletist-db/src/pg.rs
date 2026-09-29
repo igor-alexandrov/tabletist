@@ -1,6 +1,6 @@
 //! PostgreSQL. Catalog queries use the extended protocol with typed results;
-//! row queries use the simple-query protocol (Task 5), which sends every
-//! value as text.
+//! row queries use the simple-query protocol, which sends every value as
+//! text.
 
 use std::time::{Duration, Instant};
 
