@@ -1371,17 +1371,27 @@ impl App {
                 if let Some(Dialog::Connection(form)) = &mut self.dialog
                     && form.test == TestState::Running(request)
                 {
-                    form.test = match result {
-                        Ok(()) => TestState::Passed,
-                        Err(Error::Ssh {
-                            stage: SshStage::HostKeyUnknown { fingerprint },
-                            ..
-                        }) if self.host_keys_error.is_none() => TestState::Untrusted {
-                            host: form.ssh_host.trim().to_owned(),
-                            port: form.ssh_port.trim().parse().unwrap_or(22),
+                    // The key belongs to the SSH host the test reached, not
+                    // whatever the fields say now.
+                    let tested = form
+                        .test_spec
+                        .as_ref()
+                        .and_then(|spec| spec.ssh.as_ref())
+                        .map(|ssh| (ssh.host.clone(), ssh.port));
+                    form.test = match (result, tested) {
+                        (Ok(()), _) => TestState::Passed,
+                        (
+                            Err(Error::Ssh {
+                                stage: SshStage::HostKeyUnknown { fingerprint },
+                                ..
+                            }),
+                            Some((host, port)),
+                        ) if self.host_keys_error.is_none() => TestState::Untrusted {
+                            host,
+                            port,
                             fingerprint,
                         },
-                        Err(error) => TestState::Failed(error.to_string()),
+                        (Err(error), _) => TestState::Failed(error.to_string()),
                     };
                 }
             }
@@ -4346,6 +4356,38 @@ mod tests {
                 Some(Command::Test { .. })
             ));
             assert!(matches!(super::form(&mut app).test, TestState::Running(_)));
+        }
+
+        #[test]
+        fn trust_from_a_test_names_the_host_tested_not_the_one_typed_since() {
+            let (mut app, _dir) = app();
+            postgres_form(&mut app);
+            let form = form(&mut app);
+            form.ssh = true;
+            form.ssh_host = "bastion".into();
+            form.ssh_user = "ops".into();
+            form.ssh_auth = SshAuthKind::Agent;
+            app.apply(Action::TestConnection);
+            let Some(Command::Test { request, .. }) = app.backend.sent.last() else {
+                panic!("expected a Test");
+            };
+            let request = *request;
+            // Edited while the test runs.
+            super::form(&mut app).ssh_host = "other".into();
+            super::form(&mut app).ssh_port = "2222".into();
+            app.apply(Action::Backend(Event::Tested {
+                request,
+                result: Err(unknown_key()),
+            }));
+            match &super::form(&mut app).test {
+                TestState::Untrusted { host, port, .. } => {
+                    assert_eq!((host.as_str(), *port), ("bastion", 22))
+                }
+                other => panic!("{other:?}"),
+            }
+            app.apply(Action::TrustTestHostKey);
+            assert_eq!(app.host_keys.fingerprint("bastion", 22), Some("SHA256:abc"));
+            assert_eq!(app.host_keys.fingerprint("other", 2222), None);
         }
 
         fn ssh_password_saved(app: &mut App, mode: PasswordMode) -> ConnectionId {
