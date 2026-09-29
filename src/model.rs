@@ -376,6 +376,9 @@ pub struct ConnectionForm {
     pub password_mode: PasswordMode,
     /// Editing a connection whose password is in the keyring.
     pub has_saved_password: bool,
+    /// The connection as saved, when editing one. Saved secrets belong to
+    /// its servers and are never sent to another one.
+    pub saved_spec: Option<ConnectSpec>,
     /// Text in the "Paste URL" field.
     pub url: String,
     /// A validation or URL error shown under the fields.
@@ -400,6 +403,8 @@ pub struct ConnectionForm {
     pub has_saved_ssh_secret: bool,
     /// The SSH login method that secret belongs to.
     pub saved_ssh_auth: Option<SshAuthKind>,
+    /// What a running Test connects to, fixed when it started.
+    pub test_spec: Option<ConnectSpec>,
     /// The secrets a running Test uses, filled as saved ones load.
     pub test_secrets: tabletist_db::Secrets,
     /// Saved secrets the running Test still waits for.
@@ -454,6 +459,7 @@ impl Default for ConnectionForm {
             ca_file: String::new(),
             password_mode: PasswordMode::None,
             has_saved_password: false,
+            saved_spec: None,
             url: String::new(),
             message: None,
             test: TestState::Idle,
@@ -469,6 +475,7 @@ impl Default for ConnectionForm {
             ssh_secret_mode: PasswordMode::Keyring,
             has_saved_ssh_secret: false,
             saved_ssh_auth: None,
+            test_spec: None,
             test_secrets: tabletist_db::Secrets::default(),
             test_waiting: 0,
         }
@@ -519,6 +526,7 @@ impl ConnectionForm {
                 .unwrap_or_default(),
             password_mode: saved.password,
             has_saved_password: saved.password == PasswordMode::Keyring,
+            saved_spec: Some(spec.clone()),
             ssh: spec.ssh.is_some(),
             ssh_host: spec
                 .ssh
@@ -640,10 +648,58 @@ impl ConnectionForm {
         }
     }
 
-    /// Whether the keyring holds the SSH secret for the login method now
-    /// chosen. A passphrase saved for a key is never used as a password.
-    pub fn ssh_secret_is_saved(&self) -> bool {
+    /// Whether the fields still name the database server and login the
+    /// connection was saved with.
+    fn same_server(&self) -> bool {
+        self.saved_spec.as_ref().is_some_and(|saved| {
+            saved.driver == self.driver
+                && saved.host == self.host.trim()
+                && self.port.trim().parse() == Ok(saved.port)
+                && saved.user == self.user.trim()
+        })
+    }
+
+    /// Whether the fields still name the SSH server and login the
+    /// connection was saved with.
+    fn same_ssh_server(&self) -> bool {
+        self.saved_spec
+            .as_ref()
+            .and_then(|saved| saved.ssh.as_ref())
+            .is_some_and(|saved| {
+                saved.host == self.ssh_host.trim()
+                    && self.ssh_port.trim().parse() == Ok(saved.port)
+                    && saved.user == self.ssh_user.trim()
+            })
+    }
+
+    /// Whether the keyring's database password may be used: one is saved and
+    /// the driver, host, port and user are still the ones it was saved for.
+    pub fn password_is_saved(&self) -> bool {
+        self.has_saved_password && self.same_server()
+    }
+
+    /// Whether a saved database password no longer fits the fields (the
+    /// server or user changed): it is dropped on save and asked for instead.
+    pub fn password_is_stale(&self) -> bool {
+        self.has_saved_password && !self.same_server()
+    }
+
+    /// Whether a saved SSH secret belongs to the login method now chosen. A
+    /// passphrase saved for a key is never used as a password.
+    fn ssh_secret_fits_method(&self) -> bool {
         self.has_saved_ssh_secret && self.ssh && self.saved_ssh_auth == Some(self.ssh_auth)
+    }
+
+    /// Whether the keyring holds the SSH secret for the login method now
+    /// chosen, on the SSH host, port and user it was saved for.
+    pub fn ssh_secret_is_saved(&self) -> bool {
+        self.ssh_secret_fits_method() && self.same_ssh_server()
+    }
+
+    /// Whether a saved SSH secret no longer fits the SSH host, port or user:
+    /// it is dropped on save and asked for instead.
+    pub fn ssh_secret_is_stale(&self) -> bool {
+        self.ssh_secret_fits_method() && !self.same_ssh_server()
     }
 
     /// The connection the form describes, or why it cannot be saved.
@@ -671,7 +727,7 @@ impl ConnectionForm {
             // password the server will ask for when connecting.
             _ if self.ssh_secret_mode == PasswordMode::Keyring
                 && self.ssh_secret.is_empty()
-                && !self.ssh_secret_is_saved() =>
+                && !self.ssh_secret_fits_method() =>
             {
                 PasswordMode::None
             }

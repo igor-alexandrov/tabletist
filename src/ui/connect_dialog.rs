@@ -218,7 +218,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                             ui.end_row();
 
                             let label_password = ui.label(gettext(locale, "Password")).id;
-                            let hint = if form.has_saved_password {
+                            let hint = if form.password_is_saved() {
                                 gettext(locale, "Saved in keyring")
                             } else {
                                 gettext(locale, "")
