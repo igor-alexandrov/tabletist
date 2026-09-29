@@ -13,7 +13,6 @@ mod query;
 mod spec;
 mod sqlite;
 mod ssh;
-#[allow(dead_code)]
 mod tls;
 mod value;
 
