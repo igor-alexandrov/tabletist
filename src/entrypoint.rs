@@ -182,20 +182,20 @@ pub fn native_options(size: Option<[f32; 2]>, persist: bool) -> eframe::NativeOp
         .with_app_id(APP_ID)
         .with_inner_size(size.unwrap_or([1280.0, 800.0]))
         .with_min_inner_size([720.0, 480.0]);
-    // The window and taskbar icon. Not on macOS: eframe would hand it to
-    // setApplicationIconImage, replacing the bundle's .icns (on Apple's icon
-    // grid) with this full-bleed plate, which looks too big in the Dock. An
-    // empty icon, not none: with none, eframe substitutes its own egui logo.
-    let viewport = if cfg!(target_os = "macos") {
-        viewport.with_icon(egui::IconData::default())
+    // The window, taskbar and Dock icon. macOS gets the plate on Apple's icon
+    // grid, the same art as the bundle's .icns: eframe hands this icon to
+    // setApplicationIconImage, and a binary run outside Tabletist.app (cargo
+    // run) has no .icns, so without it the Dock shows the generic "exec" icon.
+    let png: &[u8] = if cfg!(target_os = "macos") {
+        include_bytes!("../packaging/macos/icon-1024.png")
     } else {
-        match eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon/tabletist-256.png"))
-        {
-            Ok(icon) => viewport.with_icon(icon),
-            Err(error) => {
-                log::warn!("could not load the window icon: {error}");
-                viewport
-            }
+        include_bytes!("../assets/icon/tabletist-256.png")
+    };
+    let viewport = match eframe::icon_data::from_png_bytes(png) {
+        Ok(icon) => viewport.with_icon(icon),
+        Err(error) => {
+            log::warn!("could not load the window icon: {error}");
+            viewport
         }
     };
     // macOS: no separate title strip. The connection tabs sit in the title
@@ -412,11 +412,11 @@ mod tests {
     }
 
     #[test]
-    fn the_window_has_the_app_icon_except_on_macos() {
-        // macOS uses the bundle's .icns: the icon is left empty, which eframe
-        // skips. A missing icon would bring in eframe's egui logo instead.
+    fn the_window_has_the_app_icon() {
         let options = native_options(None, false);
-        let icon = options.viewport.icon.expect("an icon is always set");
-        assert_eq!(icon.is_empty(), cfg!(target_os = "macos"));
+        let icon = options.viewport.icon.expect("an icon");
+        // macOS gets the plate on Apple's icon grid, like the .icns.
+        let size = if cfg!(target_os = "macos") { 1024 } else { 256 };
+        assert_eq!((icon.width, icon.height), (size, size));
     }
 }
