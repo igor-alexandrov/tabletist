@@ -1,6 +1,6 @@
 //! The row panel: every field of the selected row, in full.
 
-use egui::{Frame, Id, Margin, RichText, TextEdit};
+use egui::{Frame, Id, Margin, Rect, RichText, TextEdit, UiBuilder, pos2, vec2};
 use std::sync::Arc;
 
 use tabletist_db::{Value, ValueKind};
@@ -12,6 +12,11 @@ use crate::theme::{self, Icon};
 use crate::ui::format;
 use crate::ui::json_view;
 use crate::ui::widgets::icon_button;
+
+/// A column's type as the row panel shows it after the field name.
+fn type_label(type_name: &str) -> String {
+    format!("({type_name})")
+}
 
 pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: ObjectTabId) {
     let locale = app.locale;
@@ -26,9 +31,11 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: Object
         .default_size(300.0)
         .size_range(240.0..=560.0)
         .show_separator_line(true)
+        // The content colour: the panel shows the row's data, as the grid
+        // does, and its labels read as secondary against it.
         .frame(
             Frame::new()
-                .fill(palette.panel)
+                .fill(palette.window)
                 .inner_margin(Margin::same(10)),
         )
         .show(ui, |ui| {
@@ -45,16 +52,6 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: Object
                 });
                 return;
             };
-            ui.label(
-                RichText::new(format!(
-                    "{} · {} {}",
-                    object.object.name,
-                    gettext(locale, "Row"),
-                    object.query.offset + cell.row as u64 + 1
-                ))
-                .font(theme::semibold(theme::TEXT_TITLE))
-                .color(palette.text),
-            );
             let mut filter: String = ui.data(|data| data.get_temp(filter_id)).unwrap_or_default();
             let field = crate::ui::widgets::search_field(
                 ui,
@@ -70,40 +67,53 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: Object
             egui::ScrollArea::vertical()
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
+                    // A label sits close to its value and farther from the
+                    // field above, so each pair reads as one.
+                    ui.spacing_mut().item_spacing.y = 2.0;
                     for (col, (column, value)) in page.columns.iter().zip(row.iter()).enumerate() {
                         if !needle.is_empty() && !column.name.to_lowercase().contains(&needle) {
                             continue;
                         }
                         // The field name names its value for screen readers.
-                        let name = ui
-                            .horizontal(|ui| {
+                        // The row is only as tall as its small text (a
+                        // horizontal row is otherwise a control tall), so the
+                        // value sits right under its name.
+                        let row = ui.scope(|ui| {
+                            ui.spacing_mut().interact_size.y = 0.0;
+                            ui.horizontal(|ui| {
+                                // A small, secondary label, so the value
+                                // under it leads.
                                 let name = ui
                                     .label(
                                         RichText::new(&column.name)
-                                            .font(theme::medium(theme::TEXT))
-                                            .color(palette.text),
+                                            .font(theme::medium(theme::TEXT_SMALL))
+                                            .color(palette.secondary),
                                     )
                                     .id;
+                                ui.spacing_mut().item_spacing.x = 4.0;
                                 ui.label(
-                                    RichText::new(&column.type_name)
+                                    RichText::new(type_label(&column.type_name))
                                         .font(theme::regular(theme::TEXT_SMALL))
                                         .color(palette.dim),
                                 );
-                                ui.with_layout(
-                                    egui::Layout::right_to_left(egui::Align::Center),
-                                    |ui| {
-                                        let label =
-                                            format!("{} {}", gettext(locale, "Copy"), column.name);
-                                        if icon_button(ui, Icon::Copy, &label, &look, &palette)
-                                            .clicked()
-                                        {
-                                            ui.ctx().copy_text(format::plain_text(value));
-                                        }
-                                    },
-                                );
                                 name
                             })
-                            .inner;
+                        });
+                        let name = row.inner.inner;
+                        // The copy button overhangs the row rather than
+                        // making it taller.
+                        let center = row.response.rect.center().y;
+                        let button = Rect::from_center_size(
+                            pos2(ui.max_rect().right() - 12.0, center),
+                            vec2(24.0, 24.0),
+                        );
+                        let mut button_ui = ui.new_child(UiBuilder::new().max_rect(button));
+                        let label = format!("{} {}", gettext(locale, "Copy"), column.name);
+                        if icon_button(&mut button_ui, Icon::Copy, &label, &look, &palette)
+                            .clicked()
+                        {
+                            ui.ctx().copy_text(format::plain_text(value));
+                        }
                         if value.is_null() {
                             ui.label(
                                 RichText::new("NULL")
@@ -163,7 +173,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: Object
                                 }
                             }
                         }
-                        ui.add_space(6.0);
+                        ui.add_space(12.0);
                     }
                 });
         });
