@@ -1,7 +1,8 @@
 # Tabletist: design spec
 
 Date: 2026-09-27
-Status: approved design, awaiting spec review
+Status: implemented. Batches 0 to 8 (through polish and release) are done; see
+`docs/superpowers/plans/`.
 
 ## 1. Purpose
 
@@ -85,38 +86,67 @@ tabletist/
   mise.toml                  rust, mbx
   compose.yaml               postgres 17, mysql 8.4, openssh-server (tests)
   AGENTS.md                  agent rules (adapted from spotifast)
+  build.rs                   compiles the gettext catalogs in assets/i18n
+  compose/                   MySQL init script, SSH test server Dockerfile
   crates/tabletist-db/       no UI dependencies
-    src/lib.rs               Connection enum, public API
-    src/spec.rs              ConnectSpec, TlsMode, SshSpec, URL parsing
+    src/lib.rs               Connection (driver + optional SSH tunnel), CancelHandle
+    src/spec.rs              ConnectSpec, Driver, TlsMode, SshSpec, Secrets, URL parsing
     src/value.rs             Value, ColumnMeta, ValueKind
     src/catalog.rs           ObjectRef, ObjectInfo, ObjectKind, Structure
     src/query.rs             RowQuery, Filter, Sort, RowPage
     src/dialect.rs           per-dialect SQL builder and identifier quoting
-    src/error.rs             Error
-    src/tls.rs               rustls config per TlsMode
-    src/ssh.rs               russh tunnel
+    src/error.rs             Error, SshStage
+    src/tls.rs               rustls config per TlsMode (libpq sslmode meanings)
+    src/ssh.rs               russh tunnel, host key check
     src/pg.rs  src/mysql.rs  src/sqlite.rs   adapters
-    tests/                   integration tests + fixtures/*.sql
+    src/fixtures.rs          fixture scripts; writes the SQLite demo database
+    fixtures/                postgres.sql, mysql.sql, sqlite.sql
+    tests/                   integration tests per driver and SSH; ssh/ test keys
   src/                       the app: lib + bin
-    main.rs                  entrypoint, CLI (clap), demo flags
+    main.rs                  calls entrypoint::run
+    lib.rs                   module list
+    entrypoint.rs            CLI (clap), demo flags, logging, native window
     app.rs                   App state, apply(Action) reducer
-    model.rs                 Action, ConnTab, Workspace, ObjectTab, Loadable, Dialog
+    model.rs                 Action, ConnTab, Workspace, Tree, ObjectTab, Fetch, Dialog
     backend.rs               runtime thread, Command/Event, sessions
     connections.rs           saved connections store (JSON)
-    credentials.rs           keyring access on a dedicated thread
+    secrets.rs               OS keyring access on a dedicated thread
     known_hosts.rs           SSH host key trust store
-    paths.rs settings.rs theme.rs i18n.rs util.rs
-    demo.rs                  demo mode + headless UI tests
-    ui/mod.rs                panel layout
+    paths.rs                 config and state directories
+    settings.rs              settings.json
+    theme.rs                 palette, look, typography, icons, egui style
+    theme/desktop_font.rs    the desktop's monospace font on Linux (fontconfig)
+    i18n.rs                  bundled gettext catalogs
+    util.rs                  atomic JSON files, fuzzy matching
+    macos.rs                 unified title bar with the tabs (macOS only)
+    testing.rs               headless UI test harness (AccessKit tree + events)
+    shots.rs                 screenshots for visual review (`shots` feature)
+    ui/mod.rs                panel layout, dialogs
     ui/conn_tabs.rs          connection tab bar
     ui/picker.rs             saved-connection picker
-    ui/connect_dialog.rs
-    ui/topbar.rs  ui/sidebar.rs  ui/tree.rs
-    ui/object_tabs.rs  ui/grid.rs  ui/data_view.rs  ui/structure.rs
-    ui/row_panel.rs  ui/filter_bar.rs  ui/quick_open.rs
-    ui/keys.rs  ui/widgets.rs
-  assets/                    icons (Lucide SVG), i18n PO files, fixture.sqlite
-  packaging/                 aur/, macos/, windows/, linux desktop file
+    ui/connect_dialog.rs     new or edit connection, SSH section
+    ui/password_prompt.rs    asks for a password or passphrase
+    ui/host_key_prompt.rs    trust an unknown SSH host key
+    ui/workspace.rs          a connected tab: top bar, disconnected banner, body
+    ui/sidebar.rs            filter, refresh, tree of schemas and objects
+    ui/object_tabs.rs        object tab bar (preview tabs in italics)
+    ui/data_view.rs          footer and grid, or the error or empty state
+    ui/grid.rs               virtualized data grid
+    ui/structure.rs          columns, indexes, foreign keys
+    ui/row_panel.rs          every field of the selected row
+    ui/filter_bar.rs         filter rows and raw WHERE
+    ui/quick_open.rs         Cmd/Ctrl+P
+    ui/help.rs               keyboard shortcuts dialog
+    ui/format.rs             values as text for grid, row panel, clipboard
+    ui/keys.rs               keyboard shortcuts
+    ui/widgets.rs            shared widgets (virtual_rows, tabs, modal, fields)
+  tests/cli.rs               runs the built binary
+  assets/                    app icon, i18n/ (catalogs; English only for now),
+                             icons/ (empty: icons come from fastframe-icons)
+  packaging/                 arch/ (AUR PKGBUILD templates), linux/ (desktop
+                             file, icon), macos/ (bundle, DMG, signing),
+                             windows/ (Inno Setup installer, icon)
+  contrib/omarchy/           Omarchy theme template for Tabletist's palette
 ```
 
 App-id: `dev.tabletist.Tabletist`. Binary: `tabletist`.
@@ -130,11 +160,11 @@ App-id: `dev.tabletist.Tabletist`. Binary: `tabletist`.
                     App::apply(Action) ──▶ mutates state
                            │ may send
                            ▼
-                    backend.send(Command { session, tab, generation, .. })
+                    backend.send(Command { session, request, .. })
                            │ tokio mpsc (unbounded)
                            ▼
-        backend thread: Worker owns HashMap<SessionId, Session>
-                           │ spawns a task per command
+        backend thread: Worker owns HashMap<SessionId, SessionHandle>
+                           │ queues the command on its session's task
                            ▼
                     std mpsc Event ──▶ waker.wake() (request_repaint)
                            │
@@ -144,13 +174,14 @@ App-id: `dev.tabletist.Tabletist`. Binary: `tabletist`.
 Rules:
 
 - Views never mutate `App` directly; they push `Action`s.
-- Every command carries `(SessionId, request generation)` and, when it belongs
-  to an object tab, its `ObjectTabId`. The reducer drops events whose session
-  or tab is gone or whose generation is not the latest for that slot.
-- One `Session` per connection tab: the driver connection plus an optional SSH
-  tunnel. The worker serializes commands per session on that connection
-  (queries on one connection cannot run concurrently); a separate
-  `CancelHandle` works while a query runs.
+- Every command carries its `SessionId` and a fresh `RequestId`; the slot that
+  waits for the answer (a `Fetch<T>`) records that id as pending. The reducer
+  drops events whose session or tab is gone or that do not answer the slot's
+  pending request.
+- One session per connection tab: the driver connection plus an optional SSH
+  tunnel. Each session runs its commands in order on its own task (queries on
+  one connection cannot run concurrently); a separate `CancelHandle` works
+  while a query runs.
 - The UI is idle when nothing happens: repaints only on input, on backend
   events, or on a scheduled spinner tick while something is loading.
 
@@ -159,11 +190,15 @@ Rules:
 ### 4.1 API
 
 ```rust
-pub enum Connection { Postgres(pg::Conn), MySql(mysql::Conn), Sqlite(sqlite::Conn) }
+pub struct Connection { inner: Inner, tunnel: Option<ssh::Tunnel> }
+enum Inner { Sqlite(sqlite::Conn), Postgres(Box<pg::Conn>), MySql(Box<mysql::Conn>) }
 
 impl Connection {
     pub async fn connect(spec: &ConnectSpec, secrets: &Secrets) -> Result<Connection>;
+    pub async fn connect_with(spec: &ConnectSpec, secrets: &Secrets, host_keys: &HostKeys)
+        -> Result<Connection>;
     pub fn driver(&self) -> Driver;
+    pub fn dialect(&self) -> Dialect;
     pub async fn list_databases(&self) -> Result<Vec<String>>;
     pub async fn list_schemas(&self) -> Result<Vec<String>>;
     pub async fn list_objects(&self, schema: &str) -> Result<Vec<ObjectInfo>>;
@@ -176,7 +211,8 @@ impl Connection {
 ```
 
 A closed enum, not a trait object: there are exactly three drivers, and the
-enum avoids boxed async trait methods.
+enum avoids boxed async trait methods. The public `Connection` wraps it with
+the SSH tunnel, declared after the driver so the driver closes first.
 
 ### 4.2 Values
 
@@ -217,9 +253,9 @@ WHERE clause, can modify data:
 - `Structure { columns: Vec<ColumnInfo>, primary_key: Vec<String>,
   indexes: Vec<IndexInfo>, foreign_keys: Vec<ForeignKeyInfo> }` where
   `ColumnInfo { name, type_name, nullable, default, comment }`,
-  `IndexInfo { name, columns, unique, method }`,
-  `ForeignKeyInfo { name, columns, ref_schema, ref_table, ref_columns,
-  on_update, on_delete }`.
+  `IndexInfo { name, columns, unique, primary, method }`,
+  `ForeignKeyInfo { name: Option<String>, columns, ref_schema, ref_table,
+  ref_columns, on_update, on_delete }`.
 - Sources: `pg_catalog` (PostgreSQL), `information_schema` (MySQL),
   `PRAGMA table_xinfo`, `index_list`, `index_info`, `foreign_key_list`
   (SQLite).
@@ -269,14 +305,14 @@ pub struct ConnectSpec {
     pub ssh: Option<SshSpec>,
 }
 pub struct SshSpec { pub host: String, pub port: u16, pub user: String, pub auth: SshAuth }
-pub enum SshAuth { Password, KeyFile(PathBuf), Agent }
+pub enum SshAuth { Password, KeyFile { path: PathBuf }, Agent }
 ```
 
 - Secrets (database password, SSH password, key passphrase) are passed
   separately in `Secrets`, never stored in `ConnectSpec`, and their `Debug`
   impl prints only `Secrets { .. }`.
 - `ConnectSpec::from_url` parses `postgres://`, `postgresql://`, `mysql://`,
-  `sqlite:` URLs including `sslmode`.
+  `mariadb://`, `sqlite:` URLs including `sslmode` (and MySQL's `ssl-mode`).
 - Connect timeout: 10 s.
 - SSH: `ssh.rs` connects with `russh`, authenticates, binds a listener on
   `127.0.0.1:0`, and forwards every accepted connection through a
@@ -285,7 +321,9 @@ pub enum SshAuth { Password, KeyFile(PathBuf), Agent }
 - SSH host keys: the first connection to a host reports the key's fingerprint
   as `Error::Ssh { stage: HostKeyUnknown { fingerprint } }`; the app asks the
   user to trust it, stores it in `known_hosts.json`, and retries. A changed key
-  is `HostKeyMismatch` and is refused, with no override in the dialog.
+  is `HostKeyMismatch { fingerprint }` and is refused, with no override in the
+  dialog. The trusted keys reach the tunnel as `HostKeys` through
+  `Connection::connect_with`.
 
 ### 4.7 Cancellation
 
@@ -315,21 +353,26 @@ errors or logs.
 
 ```rust
 App { connections: SavedConnections, tabs: Vec<ConnTab>, active: usize,
-      dialogs: Vec<Dialog>, settings: Settings, backend: Backend, actions: Vec<Action> }
+      dialog: Option<Dialog>, settings: Settings, backend: Backend, actions: Vec<Action>,
+      host_keys: HostKeys, palette: Palette, look: Look, .. }
 
 ConnTab { id: ConnTabId, content: ConnTabContent }
-enum ConnTabContent { Picker(PickerState), Workspace(Workspace) }
+enum ConnTabContent { Picker(PickerState), Workspace(Box<Workspace>) }
 
-Workspace { session: SessionId, conn_id: ConnectionId, status: SessionStatus,
-            database: String, tree: Tree, objects: Vec<ObjectTab>,
-            active_object: Option<usize>, preview: Option<ObjectTabId> }
+Workspace { session: SessionId, conn_id: ConnectionId, name, color, spec: ConnectSpec,
+            status: SessionStatus, tree: Tree, objects: Vec<ObjectTab>,
+            active_object: Option<ObjectTabId>, row_panel: bool,
+            databases: Fetch<Vec<String>>, pane: Pane /* Tree | Grid */, .. }
 
-ObjectTab { id: ObjectTabId, object: ObjectRef, view: ObjectView /* Data | Structure */,
-            query: RowQuery, page: Loadable<RowPage>, count: Count /* Estimated | Exact | Counting */,
-            selection: Option<CellPos>, structure: Loadable<Structure> }
+ObjectTab { id: ObjectTabId, object: ObjectRef, kind: ObjectKind, pinned: bool,
+            view: ObjectView /* Data | Structure */, query: RowQuery,
+            rows: Fetch<RowPage>, structure: Fetch<Structure>, selection: Option<CellPos>,
+            estimated_rows: Option<u64>, count: Fetch<u64>, filter: FilterBar }
 
-enum SessionStatus { Connecting, Connected, Disconnected(Error) }
-// In the plans `Loadable` is `Fetch<T> { value, pending: Option<RequestId>, error }`:
+enum SessionStatus { Connecting { request }, Connected, Disconnected(Error), Cancelled }
+enum Dialog { Connection(..), Password(..), HostKey(..), QuickOpen(..), Help }
+
+// Loadable state is `Fetch<T> { value, pending: Option<RequestId>, error }`:
 // only the pending request's result is accepted, which drops stale results.
 ```
 
@@ -337,9 +380,9 @@ enum SessionStatus { Connecting, Connected, Disconnected(Error) }
 
 ```
 ┌ [● prod-db ×] [● staging ×] [○ local.sqlite ×] [+] ───────────────────────────┐  connection tabs
-├ top bar: database ▾ │ SSH ✓ TLS ✓ │ refresh │ disconnect ──────────────────────┤
+├ top bar: database ▾ │ via SSH host │ TLS verified │ disconnect ───────────────┤
 ├ sidebar ──────┬ [users] [orders*] [events] ─────────────┬ row panel ─────────┤  object tabs
-│ filter        │ filter bar: [col ▾][op ▾][value] + x ⏎   │ users #42          │
+│ filter  ⟳     │ filter bar: [col ▾][op ▾][value] + x ⏎   │ users #42          │
 │ ▾ public      ├─────────────────────────────────────────│ id      int4    42 │
 │   ▾ Tables    │ id │ email          │ created_at  │ ... │ email   text  b@.. │
 │     users     │▶42 │ b@example.com  │ 2026-01-03  │     │ meta    jsonb      │
@@ -370,18 +413,19 @@ enum SessionStatus { Connecting, Connected, Disconnected(Error) }
   connects in this tab. New, Edit, Duplicate, Delete.
 - Connection dialog: driver switch; name; color tag (none, red, orange, yellow,
   green, blue, purple, gray); host, port, user, password, database, or SQLite
-  file picker; collapsible TLS section (mode, CA file); collapsible SSH section
-  (host, port, user, auth method, password or key file + passphrase);
+  file picker; TLS mode, with a CA file for the verifying modes; collapsible
+  SSH section (host, port, user, auth method, password or key file +
+  passphrase);
   "Paste URL" to fill fields; **Test**; **Save**; **Save & Connect**.
 - Password storage per secret: "Save in keyring" (default) or "Ask every
   time". Secrets live only in the keyring, keyed by connection id.
 
 ### 5.5 Sidebar tree
 
-- Custom tree widget: lazy children with a per-node spinner, Tab/Enter
-  keyboard access (arrow-key navigation arrives with batch 7's full shortcut
-  map), filter field narrows by name (case-insensitive
-  substring over loaded nodes).
+- Custom tree widget: lazy children with a per-node spinner, keyboard
+  access (arrows, Home/End, Enter move and open when the tree was the last
+  pane used), filter field narrows by name (case-insensitive
+  substring over loaded nodes). A refresh button sits beside the filter.
 - Nodes: schema, then groups (Tables, Views, Materialized views) with counts,
   then objects.
 - Single click opens a **preview tab** that the next single click replaces
@@ -411,8 +455,8 @@ enum SessionStatus { Connecting, Connected, Disconnected(Error) }
   Cmd/Ctrl+Shift+R. Follows the grid selection.
 - One entry per field: name, type, and the full value as selectable read-only
   text. JSON is pretty-printed in monospace. Binary shows its size and a hex
-  preview of the first 4 KiB. Text longer than 20 lines is collapsed with
-  "Show all". NULL shows a NULL badge.
+  preview of the first 4 KiB. Text longer than 20 lines or 4,000 characters
+  is collapsed with "Show all". NULL shows a NULL badge.
 - A copy button per field and a filter field for wide tables.
 
 ### 5.8 Structure view
@@ -443,17 +487,30 @@ read-only table (structure data is small; the data grid is not needed).
 | Cmd/Ctrl+Alt+Left / Right | Previous / next page |
 | Cmd/Ctrl+. | Cancel running query |
 | Space, Cmd/Ctrl+Shift+R | Toggle row panel |
+| Cmd/Ctrl+C, Cmd/Ctrl+Shift+C | Copy cell / copy row |
+| Arrows, Home/End, Enter | Move in the tree |
+| Arrows, Page Up/Down, Home/End | Move in the grid |
 | ? | Shortcuts dialog |
 
-All handled in `ui/keys.rs`, suppressed while a text field has focus.
+All handled in `ui/keys.rs`. Plain keys (arrows, Space, `?`) and copy are
+suppressed while a text field has focus; Cmd/Ctrl shortcuts are not.
 
 ### 5.11 Platform integration
 
 - Theme: `fastframe-theme` presets, following the Omarchy theme live on
   Omarchy and the OS light/dark setting elsewhere; palette mapped onto
   `egui::Visuals` in `theme.rs`.
+- Look: shape and density follow the platform (`theme::Look`: macOS, Omarchy
+  on every Linux desktop, standard on Windows), independent of the palette.
+  See `2026-09-28-platform-looks-design.md`. A palette file in `themes/`
+  chosen in settings overrides the desktop's palette.
 - Text: `fastframe-text` follows desktop hinting; `fastframe-fonts` Inter with
-  tabular figures, plus a monospace face for JSON and hex.
+  tabular figures, plus a monospace face for JSON and hex. On Linux the
+  monospace face is the desktop's when fontconfig resolves one
+  (`theme/desktop_font.rs`), and the Omarchy look draws grid and row panel
+  data in it.
+- macOS: the connection tabs share a unified title bar with the window
+  buttons (`macos.rs`).
 - Wayland first; app-id `dev.tabletist.Tabletist` and a `.desktop` file so
   Hyprland window rules match.
 - eframe persistence restores window geometry and panel widths.
@@ -463,10 +520,11 @@ All handled in `ui/keys.rs`, suppressed while a text field has focus.
 Via `directories::ProjectDirs` (`~/.config/tabletist`, `~/.local/state/tabletist`
 on Linux; platform equivalents elsewhere):
 
-- `config/settings.json`: page size, show system schemas, theme choice.
+- `config/settings.json`: page size, show system schemas, custom palette file.
 - `config/connections.json`: saved connections (no secrets).
 - `config/known_hosts.json`: trusted SSH host keys.
-- `state/tabletist.log`: log file (fastframe-log).
+- `config/themes/`: palette files.
+- `state/tabletist.log`, `state/panic.log`: log files (fastframe-log).
 
 All JSON is written atomically (write `*.tmp`, then rename), versioned, and
 loaded with `#[serde(default)]` so older files keep working. An unreadable file
@@ -477,7 +535,7 @@ falls back to defaults with a warning and is kept aside as `*.bad`.
 - `tabletist-db` unit tests: dialect SQL builder (quoting, parameters, filters,
   sort, paging), URL parsing, value conversion, error mapping.
 - `tabletist-db` integration tests over shared fixtures
-  (`tests/fixtures/{pg,mysql,sqlite}.sql`) covering enums, arrays, JSON/JSONB,
+  (`crates/tabletist-db/fixtures/{postgres,mysql,sqlite}.sql`) covering enums, arrays, JSON/JSONB,
   bytea/BLOB, NULLs, Unicode, a table without a primary key, a 100k-row table,
   views, materialized views, foreign keys, composite indexes. SQLite runs
   always. PostgreSQL, MySQL, and SSH run when `TABLETIST_TEST_PG_URL`,
@@ -485,10 +543,15 @@ falls back to defaults with a warning and is kept aside as `*.bad`.
   provides them locally and CI provides them as service containers on Linux.
 - App reducer tests: apply `Action`s against a recording, offline backend and
   assert state and the commands sent.
-- Headless UI tests (demo mode, bundled `assets/fixture.sqlite`): lay out every
-  screen at several window sizes; assert on the AccessKit tree (no overlaps,
-  expected labels). `--demo-shot PATH --demo-size WxH` writes screenshots for
-  visual review.
+- Headless UI tests (`src/testing.rs`, no window): lay out every screen at
+  several window sizes; assert on the AccessKit tree (no overlaps, expected
+  labels). Demo mode (`--demo`) and tests write the SQLite fixture to a
+  throwaway file with `tabletist_db::fixtures::write_sqlite_demo`.
+- Screenshots for visual review: `--demo --demo-shot PATH --demo-size WxH`
+  saves the running window; `src/shots.rs` (`cargo test --features shots
+  --lib shots -- --ignored`, needs a GPU) renders every scene under each
+  look, light and dark, to `target/shots/`.
+- `tests/cli.rs` runs the built binary.
 - Tests never touch the network or the keyring, except the gated integration
   tests and one `#[ignore]` native keyring round trip.
 
@@ -496,8 +559,9 @@ falls back to defaults with a warning and is kept aside as `*.bad`.
 
 - Edition 2024, Rust 1.98 pinned in `rust-toolchain.toml`; `mise` + `mbx`.
 - `unsafe_code = "forbid"`; CI runs `cargo fmt --check`,
-  `cargo clippy --all-targets -- -D warnings`, `cargo test`, and
-  `RUSTDOCFLAGS=-D warnings cargo doc` on Linux, macOS, and Windows.
+  `cargo clippy --all-targets -- -D warnings`, and
+  `RUSTDOCFLAGS=-D warnings cargo doc` on Linux, and `cargo test` on Linux,
+  macOS, and Windows.
 - Views emit Actions; the reducer applies them after drawing.
 - The UI thread never waits on the database, network, or disk.
 - Platform code sits behind `cfg`; all three targets must keep compiling.
