@@ -225,6 +225,23 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                                     .labelled_by(label_ca_file);
                                     ui.end_row();
                                 }
+
+                                if form.password_can_be_intercepted() {
+                                    ui.label("");
+                                    ui.add(
+                                        egui::Label::new(
+                                            RichText::new(gettext(
+                                                locale,
+                                                "The password can be intercepted on the network. \
+                                                 To prevent it, verify the certificate and host, \
+                                                 or use an SSH tunnel.",
+                                            ))
+                                            .color(palette.warning),
+                                        )
+                                        .wrap(),
+                                    );
+                                    ui.end_row();
+                                }
                             }
 
                             let label_paste_url = ui.label(gettext(locale, "Paste URL")).id;

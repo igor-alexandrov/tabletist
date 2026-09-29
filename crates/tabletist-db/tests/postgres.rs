@@ -128,11 +128,12 @@ async fn tls_modes_behave_like_libpq() {
     // The compose server has a self-signed certificate.
     for mode in [TlsMode::Prefer, TlsMode::Require] {
         spec.tls = mode;
-        assert!(
-            Connection::connect(&spec, &secrets).await.is_ok(),
-            "{mode:?}"
-        );
+        let conn = Connection::connect(&spec, &secrets).await;
+        assert!(conn.is_ok_and(|conn| conn.is_encrypted()), "{mode:?}");
     }
+    spec.tls = TlsMode::Disable;
+    let conn = Connection::connect(&spec, &secrets).await.unwrap();
+    assert!(!conn.is_encrypted());
     spec.tls = TlsMode::VerifyFull;
     let result = Connection::connect(&spec, &secrets).await;
     assert!(matches!(result, Err(Error::Tls(_))), "{:?}", result.err());

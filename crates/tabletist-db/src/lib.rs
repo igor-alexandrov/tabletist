@@ -106,6 +106,17 @@ impl Connection {
         }
     }
 
+    /// Whether the session's traffic to the database runs over TLS (never
+    /// for SQLite). `prefer` falls back to plain text when the server has no
+    /// TLS, so this can be false whatever the spec asked for.
+    pub fn is_encrypted(&self) -> bool {
+        match &self.inner {
+            Inner::Sqlite(_) => false,
+            Inner::Postgres(conn) => conn.encrypted,
+            Inner::MySql(conn) => conn.encrypted,
+        }
+    }
+
     pub fn dialect(&self) -> Dialect {
         match &self.inner {
             Inner::Sqlite(_) => Dialect::Sqlite,

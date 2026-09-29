@@ -1025,6 +1025,127 @@ mod tests {
         assert!(harness.has("via SSH bastion"));
     }
 
+    /// A PostgreSQL tab with `tls`, connected with `encrypted` when given
+    /// (still connecting otherwise).
+    fn tls_top_bar(tls: tabletist_db::TlsMode, encrypted: Option<bool>) -> Harness {
+        let mut harness = Harness::new();
+        let (mut spec, _) = tabletist_db::ConnectSpec::from_url("postgres://me@db/app").unwrap();
+        spec.tls = tls;
+        let saved = crate::connections::SavedConnection {
+            id: crate::connections::ConnectionId::new(),
+            name: "Prod".into(),
+            color: crate::connections::ColorTag::Red,
+            password: crate::connections::PasswordMode::None,
+            ssh_secret: crate::connections::PasswordMode::None,
+            spec,
+        };
+        let conn = saved.id.clone();
+        harness.app.connections.upsert(saved);
+        let tab = harness.app.active_tab_id();
+        harness
+            .app
+            .apply(crate::model::Action::Connect { tab, conn });
+        if let Some(encrypted) = encrypted {
+            let crate::backend::Command::Connect {
+                session, request, ..
+            } = *crate::testing::last_sent(&harness.app)
+            else {
+                panic!("expected Connect");
+            };
+            harness.app.apply(crate::model::Action::Backend(
+                crate::backend::Event::Connected {
+                    session,
+                    request,
+                    driver: tabletist_db::Driver::Postgres,
+                    encrypted,
+                },
+            ));
+        }
+        harness.settle();
+        harness
+    }
+
+    #[test]
+    fn the_top_bar_says_how_far_tls_can_be_trusted() {
+        use tabletist_db::TlsMode;
+        for (tls, encrypted, text, warn) in [
+            (TlsMode::Disable, None, "Not encrypted", true),
+            (TlsMode::Disable, Some(false), "Not encrypted", true),
+            (TlsMode::Prefer, None, "TLS, not verified", true),
+            (TlsMode::Prefer, Some(true), "TLS, not verified", true),
+            (TlsMode::Require, Some(true), "TLS, not verified", true),
+            (
+                TlsMode::VerifyCa,
+                Some(true),
+                "TLS, host name not checked",
+                false,
+            ),
+            (TlsMode::VerifyFull, None, "TLS verified", false),
+            (TlsMode::VerifyFull, Some(true), "TLS verified", false),
+        ] {
+            let mut harness = tls_top_bar(tls, encrypted);
+            assert!(harness.has(text), "{tls:?} {encrypted:?}");
+            let palette = harness.app.palette;
+            let color = if warn {
+                palette.warning
+            } else {
+                palette.secondary
+            };
+            assert_eq!(
+                harness.painted_color(text),
+                Some(color),
+                "{tls:?} {encrypted:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_top_bar_says_when_prefer_fell_back_to_plain_text() {
+        let mut harness = tls_top_bar(tabletist_db::TlsMode::Prefer, Some(false));
+        assert!(harness.has("Not encrypted"));
+        assert!(!harness.has("TLS, not verified"));
+        assert_eq!(
+            harness.painted_color("Not encrypted"),
+            Some(harness.app.palette.warning)
+        );
+    }
+
+    const INTERCEPT_WARNING: &str = "The password can be intercepted on the network. \
+                                     To prevent it, verify the certificate and host, \
+                                     or use an SSH tunnel.";
+
+    #[test]
+    fn the_dialog_warns_when_a_remote_password_is_not_protected() {
+        use tabletist_db::TlsMode;
+        let mut harness = Harness::new();
+        harness.press(Key::N, Modifiers::COMMAND);
+        harness.click("PostgreSQL");
+        let set = |harness: &mut Harness, host: &str, tls: TlsMode, ssh: bool| {
+            match &mut harness.app.dialog {
+                Some(crate::model::Dialog::Connection(form)) => {
+                    form.host = host.into();
+                    form.tls = tls;
+                    form.ssh = ssh;
+                }
+                other => panic!("{other:?}"),
+            }
+            harness.has(INTERCEPT_WARNING)
+        };
+        for tls in [TlsMode::Disable, TlsMode::Prefer, TlsMode::Require] {
+            assert!(set(&mut harness, "db.example.com", tls, false), "{tls:?}");
+            assert!(!set(&mut harness, "localhost", tls, false), "{tls:?}");
+            assert!(!set(&mut harness, "db.example.com", tls, true), "{tls:?}");
+        }
+        for tls in [TlsMode::VerifyCa, TlsMode::VerifyFull] {
+            assert!(!set(&mut harness, "db.example.com", tls, false), "{tls:?}");
+        }
+        assert!(set(&mut harness, "10.0.0.5", TlsMode::Prefer, false));
+        assert_eq!(
+            harness.painted_color(INTERCEPT_WARNING),
+            Some(harness.app.palette.warning)
+        );
+    }
+
     #[test]
     fn the_footer_offers_count_and_then_shows_the_total() {
         let mut harness = Harness::new();

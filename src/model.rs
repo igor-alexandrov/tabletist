@@ -218,6 +218,9 @@ pub struct Workspace {
     pub color: ColorTag,
     pub spec: ConnectSpec,
     pub driver: Driver,
+    /// Whether the session runs over TLS, as negotiated. Set when the
+    /// session connects; `prefer` may have fallen back to plain text.
+    pub encrypted: bool,
     pub status: SessionStatus,
     pub tree: Tree,
     pub objects: Vec<ObjectTab>,
@@ -390,6 +393,19 @@ impl Default for ConnectionForm {
 }
 
 impl ConnectionForm {
+    /// Whether the password crosses a network with nothing to stop someone
+    /// on the way reading it: a remote host, no SSH tunnel, and TLS that is
+    /// off or does not check the server's certificate.
+    pub fn password_can_be_intercepted(&self) -> bool {
+        self.driver != Driver::Sqlite
+            && !self.ssh
+            && matches!(
+                self.tls,
+                TlsMode::Disable | TlsMode::Prefer | TlsMode::Require
+            )
+            && !is_local_host(&self.host)
+    }
+
     pub fn from_saved(saved: &crate::connections::SavedConnection) -> Self {
         let spec = &saved.spec;
         Self {
@@ -658,6 +674,22 @@ pub struct HostKeyPrompt {
 }
 
 /// The file name of `path`, for naming a connection after its file.
+/// Loopback names and addresses, and Unix socket directories (PostgreSQL
+/// reads a host starting with `/` as one). An empty host is not checked yet.
+fn is_local_host(host: &str) -> bool {
+    let host = host.trim();
+    let bare = host
+        .strip_prefix('[')
+        .and_then(|host| host.strip_suffix(']'))
+        .unwrap_or(host);
+    host.is_empty()
+        || host.starts_with('/')
+        || host.eq_ignore_ascii_case("localhost")
+        || bare
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|address| address.is_loopback())
+}
+
 pub fn file_name(path: &str) -> String {
     std::path::Path::new(path)
         .file_name()
@@ -1120,6 +1152,40 @@ mod tests {
         billing.objects.value = Some(vec![info("invoices", ObjectKind::Table)]);
         tree.nodes.insert("billing".into(), billing);
         tree
+    }
+
+    #[test]
+    fn only_remote_hosts_without_a_tunnel_or_verification_expose_the_password() {
+        for host in [
+            "localhost",
+            "LOCALHOST",
+            " 127.0.0.1 ",
+            "127.0.0.2",
+            "::1",
+            "[::1]",
+            "/var/run/postgresql",
+            "",
+        ] {
+            assert!(is_local_host(host), "{host:?}");
+        }
+        for host in ["db.example.com", "10.0.0.5", "::2", "localhost.example.com"] {
+            assert!(!is_local_host(host), "{host:?}");
+        }
+        let mut form = ConnectionForm {
+            driver: Driver::Postgres,
+            host: "db.example.com".into(),
+            tls: TlsMode::Prefer,
+            ..ConnectionForm::default()
+        };
+        assert!(form.password_can_be_intercepted());
+        form.tls = TlsMode::VerifyFull;
+        assert!(!form.password_can_be_intercepted());
+        form.tls = TlsMode::Require;
+        form.ssh = true;
+        assert!(!form.password_can_be_intercepted());
+        form.ssh = false;
+        form.driver = Driver::Sqlite;
+        assert!(!form.password_can_be_intercepted());
     }
 
     fn labels(rows: &[TreeRow]) -> Vec<String> {
