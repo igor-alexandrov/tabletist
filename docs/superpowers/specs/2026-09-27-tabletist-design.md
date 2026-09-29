@@ -353,21 +353,26 @@ errors or logs.
 
 ```rust
 App { connections: SavedConnections, tabs: Vec<ConnTab>, active: usize,
-      dialogs: Vec<Dialog>, settings: Settings, backend: Backend, actions: Vec<Action> }
+      dialog: Option<Dialog>, settings: Settings, backend: Backend, actions: Vec<Action>,
+      host_keys: HostKeys, palette: Palette, look: Look, .. }
 
 ConnTab { id: ConnTabId, content: ConnTabContent }
-enum ConnTabContent { Picker(PickerState), Workspace(Workspace) }
+enum ConnTabContent { Picker(PickerState), Workspace(Box<Workspace>) }
 
-Workspace { session: SessionId, conn_id: ConnectionId, status: SessionStatus,
-            database: String, tree: Tree, objects: Vec<ObjectTab>,
-            active_object: Option<usize>, preview: Option<ObjectTabId> }
+Workspace { session: SessionId, conn_id: ConnectionId, name, color, spec: ConnectSpec,
+            status: SessionStatus, tree: Tree, objects: Vec<ObjectTab>,
+            active_object: Option<ObjectTabId>, row_panel: bool,
+            databases: Fetch<Vec<String>>, pane: Pane /* Tree | Grid */, .. }
 
-ObjectTab { id: ObjectTabId, object: ObjectRef, view: ObjectView /* Data | Structure */,
-            query: RowQuery, page: Loadable<RowPage>, count: Count /* Estimated | Exact | Counting */,
-            selection: Option<CellPos>, structure: Loadable<Structure> }
+ObjectTab { id: ObjectTabId, object: ObjectRef, kind: ObjectKind, pinned: bool,
+            view: ObjectView /* Data | Structure */, query: RowQuery,
+            rows: Fetch<RowPage>, structure: Fetch<Structure>, selection: Option<CellPos>,
+            estimated_rows: Option<u64>, count: Fetch<u64>, filter: FilterBar }
 
-enum SessionStatus { Connecting, Connected, Disconnected(Error) }
-// In the plans `Loadable` is `Fetch<T> { value, pending: Option<RequestId>, error }`:
+enum SessionStatus { Connecting { request }, Connected, Disconnected(Error), Cancelled }
+enum Dialog { Connection(..), Password(..), HostKey(..), QuickOpen(..), Help }
+
+// Loadable state is `Fetch<T> { value, pending: Option<RequestId>, error }`:
 // only the pending request's result is accepted, which drops stale results.
 ```
 
@@ -375,9 +380,9 @@ enum SessionStatus { Connecting, Connected, Disconnected(Error) }
 
 ```
 ┌ [● prod-db ×] [● staging ×] [○ local.sqlite ×] [+] ───────────────────────────┐  connection tabs
-├ top bar: database ▾ │ SSH ✓ TLS ✓ │ refresh │ disconnect ──────────────────────┤
+├ top bar: database ▾ │ via SSH host │ TLS verified │ disconnect ───────────────┤
 ├ sidebar ──────┬ [users] [orders*] [events] ─────────────┬ row panel ─────────┤  object tabs
-│ filter        │ filter bar: [col ▾][op ▾][value] + x ⏎   │ users #42          │
+│ filter  ⟳     │ filter bar: [col ▾][op ▾][value] + x ⏎   │ users #42          │
 │ ▾ public      ├─────────────────────────────────────────│ id      int4    42 │
 │   ▾ Tables    │ id │ email          │ created_at  │ ... │ email   text  b@.. │
 │     users     │▶42 │ b@example.com  │ 2026-01-03  │     │ meta    jsonb      │
@@ -408,18 +413,19 @@ enum SessionStatus { Connecting, Connected, Disconnected(Error) }
   connects in this tab. New, Edit, Duplicate, Delete.
 - Connection dialog: driver switch; name; color tag (none, red, orange, yellow,
   green, blue, purple, gray); host, port, user, password, database, or SQLite
-  file picker; collapsible TLS section (mode, CA file); collapsible SSH section
-  (host, port, user, auth method, password or key file + passphrase);
+  file picker; TLS mode, with a CA file for the verifying modes; collapsible
+  SSH section (host, port, user, auth method, password or key file +
+  passphrase);
   "Paste URL" to fill fields; **Test**; **Save**; **Save & Connect**.
 - Password storage per secret: "Save in keyring" (default) or "Ask every
   time". Secrets live only in the keyring, keyed by connection id.
 
 ### 5.5 Sidebar tree
 
-- Custom tree widget: lazy children with a per-node spinner, Tab/Enter
-  keyboard access (arrow-key navigation arrives with batch 7's full shortcut
-  map), filter field narrows by name (case-insensitive
-  substring over loaded nodes).
+- Custom tree widget: lazy children with a per-node spinner, keyboard
+  access (arrows, Home/End, Enter move and open when the tree was the last
+  pane used), filter field narrows by name (case-insensitive
+  substring over loaded nodes). A refresh button sits beside the filter.
 - Nodes: schema, then groups (Tables, Views, Materialized views) with counts,
   then objects.
 - Single click opens a **preview tab** that the next single click replaces
@@ -449,8 +455,8 @@ enum SessionStatus { Connecting, Connected, Disconnected(Error) }
   Cmd/Ctrl+Shift+R. Follows the grid selection.
 - One entry per field: name, type, and the full value as selectable read-only
   text. JSON is pretty-printed in monospace. Binary shows its size and a hex
-  preview of the first 4 KiB. Text longer than 20 lines is collapsed with
-  "Show all". NULL shows a NULL badge.
+  preview of the first 4 KiB. Text longer than 20 lines or 4,000 characters
+  is collapsed with "Show all". NULL shows a NULL badge.
 - A copy button per field and a filter field for wide tables.
 
 ### 5.8 Structure view
@@ -481,17 +487,30 @@ read-only table (structure data is small; the data grid is not needed).
 | Cmd/Ctrl+Alt+Left / Right | Previous / next page |
 | Cmd/Ctrl+. | Cancel running query |
 | Space, Cmd/Ctrl+Shift+R | Toggle row panel |
+| Cmd/Ctrl+C, Cmd/Ctrl+Shift+C | Copy cell / copy row |
+| Arrows, Home/End, Enter | Move in the tree |
+| Arrows, Page Up/Down, Home/End | Move in the grid |
 | ? | Shortcuts dialog |
 
-All handled in `ui/keys.rs`, suppressed while a text field has focus.
+All handled in `ui/keys.rs`. Plain keys (arrows, Space, `?`) and copy are
+suppressed while a text field has focus; Cmd/Ctrl shortcuts are not.
 
 ### 5.11 Platform integration
 
 - Theme: `fastframe-theme` presets, following the Omarchy theme live on
   Omarchy and the OS light/dark setting elsewhere; palette mapped onto
   `egui::Visuals` in `theme.rs`.
+- Look: shape and density follow the platform (`theme::Look`: macOS, Omarchy
+  on every Linux desktop, standard on Windows), independent of the palette.
+  See `2026-09-28-platform-looks-design.md`. A palette file in `themes/`
+  chosen in settings overrides the desktop's palette.
 - Text: `fastframe-text` follows desktop hinting; `fastframe-fonts` Inter with
-  tabular figures, plus a monospace face for JSON and hex.
+  tabular figures, plus a monospace face for JSON and hex. On Linux the
+  monospace face is the desktop's when fontconfig resolves one
+  (`theme/desktop_font.rs`), and the Omarchy look draws grid and row panel
+  data in it.
+- macOS: the connection tabs share a unified title bar with the window
+  buttons (`macos.rs`).
 - Wayland first; app-id `dev.tabletist.Tabletist` and a `.desktop` file so
   Hyprland window rules match.
 - eframe persistence restores window geometry and panel widths.
@@ -501,10 +520,11 @@ All handled in `ui/keys.rs`, suppressed while a text field has focus.
 Via `directories::ProjectDirs` (`~/.config/tabletist`, `~/.local/state/tabletist`
 on Linux; platform equivalents elsewhere):
 
-- `config/settings.json`: page size, show system schemas, theme choice.
+- `config/settings.json`: page size, show system schemas, custom palette file.
 - `config/connections.json`: saved connections (no secrets).
 - `config/known_hosts.json`: trusted SSH host keys.
-- `state/tabletist.log`: log file (fastframe-log).
+- `config/themes/`: palette files.
+- `state/tabletist.log`, `state/panic.log`: log files (fastframe-log).
 
 All JSON is written atomically (write `*.tmp`, then rename), versioned, and
 loaded with `#[serde(default)]` so older files keep working. An unreadable file
