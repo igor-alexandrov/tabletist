@@ -97,6 +97,21 @@ fn from_sqlite(value: rusqlite::types::ValueRef<'_>) -> Value {
     }
 }
 
+/// Refuses a raw WHERE that ends inside a `/*` comment, which SQLite would
+/// accept and which would hide the page's ORDER BY, LIMIT and OFFSET.
+fn check_raw_where(query: &RowQuery) -> Result<()> {
+    if query
+        .raw_where
+        .as_deref()
+        .is_some_and(crate::dialect::sqlite_ends_in_block_comment)
+    {
+        return Err(Error::query(
+            "The WHERE text ends inside a /* comment. Close it with */.",
+        ));
+    }
+    Ok(())
+}
+
 impl Conn {
     /// Opens `path` read-only. Never creates a file.
     pub async fn open(path: &Path) -> Result<Self> {
@@ -247,6 +262,7 @@ impl Conn {
     }
 
     pub async fn fetch_rows(&self, query: &RowQuery) -> Result<RowPage> {
+        check_raw_where(query)?;
         let query = query.clone();
         let limit = query.limit as usize;
         // One blocking job for the key lookup and the select, so a cancel
@@ -317,6 +333,7 @@ impl Conn {
     }
 
     pub async fn count_rows(&self, query: &RowQuery) -> Result<u64> {
+        check_raw_where(query)?;
         let sql = Dialect::Sqlite.count_rows(query);
         self.run(move |connection| {
             let count: i64 = connection

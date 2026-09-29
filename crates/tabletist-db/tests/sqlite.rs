@@ -184,13 +184,38 @@ async fn a_raw_where_cannot_modify_data() {
 async fn a_raw_where_cannot_drop_the_page_limit() {
     let (connection, _dir) = fixture().await;
     let mut query = RowQuery::new(ObjectRef::new("main", "big"), 10);
-    // An unterminated comment would swallow the builder's LIMIT and OFFSET.
-    for raw in ["1=1) /*", "1=1) --"] {
+    // An unterminated comment would swallow the builder's ORDER BY, LIMIT
+    // and OFFSET, so the second page would repeat the first.
+    for raw in [
+        "1=1) /*",
+        "1=1) --",
+        "1=1 /* note",
+        "1=1) /* ",
+        "label <> '*/' /*",
+    ] {
         query.raw_where = Some(raw.into());
-        if let Ok(page) = connection.fetch_rows(&query).await {
-            assert!(page.rows.len() <= 10, "{raw}: {} rows", page.rows.len());
+        for offset in [0, 10] {
+            query.offset = offset;
+            if let Ok(page) = connection.fetch_rows(&query).await {
+                let first = offset as i64 + 1;
+                assert_eq!(
+                    ids(&page),
+                    (first..first + 10).collect::<Vec<_>>(),
+                    "{raw} at offset {offset}"
+                );
+            }
         }
     }
+    query.offset = 10;
+    query.raw_where = Some("1=1) /*".into());
+    assert!(matches!(
+        connection.fetch_rows(&query).await,
+        Err(Error::Query { .. })
+    ));
+    assert!(connection.count_rows(&query).await.is_err());
+    // A closed comment and comment markers in strings are fine.
+    query.raw_where = Some("label <> '/*' /* note */".into());
+    assert_eq!(ids(&connection.fetch_rows(&query).await.unwrap())[0], 11);
 }
 
 #[tokio::test]

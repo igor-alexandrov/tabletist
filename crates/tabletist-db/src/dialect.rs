@@ -37,6 +37,57 @@ pub fn quote_literal(text: &str) -> String {
     format!("E'{}'", text.replace('\\', "\\\\").replace('\'', "''"))
 }
 
+/// Whether SQLite reads `text` as ending inside a `/* ... */` comment.
+/// SQLite accepts an unterminated block comment and ignores everything
+/// after it, which in a raw WHERE would swallow the builder's ORDER BY,
+/// LIMIT and OFFSET. Quoted strings and names, and `--` comments, are
+/// skipped the way SQLite's tokenizer skips them.
+pub fn sqlite_ends_in_block_comment(text: &str) -> bool {
+    let mut chars = text.chars().peekable();
+    while let Some(character) = chars.next() {
+        match character {
+            '\'' | '"' | '`' => loop {
+                match chars.next() {
+                    // Unterminated: SQLite rejects it anyway.
+                    None => return false,
+                    Some(next) if next == character => {
+                        // A doubled quote stays inside.
+                        if chars.peek() != Some(&character) {
+                            break;
+                        }
+                        chars.next();
+                    }
+                    Some(_) => {}
+                }
+            },
+            '[' => {
+                if !chars.by_ref().any(|next| next == ']') {
+                    return false;
+                }
+            }
+            '-' if chars.peek() == Some(&'-') => {
+                if !chars.by_ref().any(|next| next == '\n') {
+                    return false;
+                }
+            }
+            '/' if chars.peek() == Some(&'*') => {
+                chars.next();
+                let mut previous = None;
+                let closed = chars.by_ref().any(|next| {
+                    let closes = previous == Some('*') && next == '/';
+                    previous = Some(next);
+                    closes
+                });
+                if !closed {
+                    return true;
+                }
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
 impl Dialect {
     pub fn quote_ident(self, ident: &str) -> String {
         match self {
@@ -153,7 +204,10 @@ impl Dialect {
             && !raw.is_empty()
         {
             // On its own lines, so a trailing `--` comment in the raw text
-            // cannot reach the builder's LIMIT.
+            // cannot reach the builder's LIMIT. An unterminated `/*` still
+            // could: PostgreSQL and MySQL reject one, SQLite does not, so the
+            // SQLite adapter refuses such text first
+            // (`sqlite_ends_in_block_comment`).
             conditions.push(format!("(\n{raw}\n)"));
         }
         if conditions.is_empty() {
@@ -425,6 +479,28 @@ mod tests {
             r#"SELECT count(*) FROM "public"."users" WHERE "a" = ?"#
         );
         assert_eq!(sql.params, vec![text("1")]);
+    }
+
+    #[test]
+    fn sqlite_block_comments_are_found_outside_quotes_only() {
+        for open in ["1=1) /*", "a = 1 /* note", "/*", "x = '*/' /*", "a /*/"] {
+            assert!(sqlite_ends_in_block_comment(open), "{open}");
+        }
+        for closed in [
+            "1 = 1",
+            "a = 1 /* note */",
+            "name = '/*'",
+            "\"/*\" = 1",
+            "[/*] = 1",
+            "`/*` = 1",
+            "a = 1 -- /*\n",
+            "a = 1 -- /*",
+            "name = 'it''s /*'",
+            "name = 'unterminated /*",
+            "/**/",
+        ] {
+            assert!(!sqlite_ends_in_block_comment(closed), "{closed}");
+        }
     }
 
     #[test]
