@@ -182,8 +182,12 @@ pub fn native_options(size: Option<[f32; 2]>, persist: bool) -> eframe::NativeOp
         .with_app_id(APP_ID)
         .with_inner_size(size.unwrap_or([1280.0, 800.0]))
         .with_min_inner_size([720.0, 480.0]);
-    // The window and taskbar icon (macOS takes the bundle's .icns instead).
-    let viewport =
+    // The window and taskbar icon. Not on macOS: eframe would hand it to
+    // setApplicationIconImage, replacing the bundle's .icns (on Apple's icon
+    // grid) with this full-bleed plate, which looks too big in the Dock.
+    let viewport = if cfg!(target_os = "macos") {
+        viewport
+    } else {
         match eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon/tabletist-256.png"))
         {
             Ok(icon) => viewport.with_icon(icon),
@@ -191,7 +195,8 @@ pub fn native_options(size: Option<[f32; 2]>, persist: bool) -> eframe::NativeOp
                 log::warn!("could not load the window icon: {error}");
                 viewport
             }
-        };
+        }
+    };
     // macOS: no separate title strip. The connection tabs sit in the title
     // bar next to the window buttons, as in Safari.
     let viewport = if cfg!(target_os = "macos") {
@@ -406,8 +411,9 @@ mod tests {
     }
 
     #[test]
-    fn the_window_has_the_app_icon() {
+    fn the_window_has_the_app_icon_except_on_macos() {
+        // macOS uses the bundle's .icns; a runtime icon would override it.
         let options = native_options(None, false);
-        assert!(options.viewport.icon.is_some());
+        assert_eq!(options.viewport.icon.is_some(), !cfg!(target_os = "macos"));
     }
 }
