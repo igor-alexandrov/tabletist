@@ -5,6 +5,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
+use rusqlite::config::DbConfig;
 use rusqlite::{ErrorCode, OpenFlags};
 
 use crate::{
@@ -104,16 +105,28 @@ impl Conn {
             if !path.is_file() {
                 return Err(Error::Connect(format!("{} does not exist", path.display())));
             }
-            let flags = OpenFlags::SQLITE_OPEN_READ_ONLY
-                | OpenFlags::SQLITE_OPEN_NO_MUTEX
-                | OpenFlags::SQLITE_OPEN_URI;
+            // No SQLITE_OPEN_URI: the path is a file name, never a URI whose
+            // parameters could change how it opens.
+            let flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX;
             let connection =
                 rusqlite::Connection::open_with_flags(&path, flags).map_err(map_error)?;
             connection
                 .busy_timeout(std::time::Duration::from_secs(5))
                 .map_err(map_error)?;
+            // A double-quoted name that matches no column is an error, not a
+            // string literal: a filter on a renamed column must fail rather
+            // than compare against its own name and match every row.
+            // Defensive mode and an untrusted schema keep a crafted file's
+            // views and triggers from reaching risky functions.
+            for (option, on) in [
+                (DbConfig::SQLITE_DBCONFIG_DQS_DML, false),
+                (DbConfig::SQLITE_DBCONFIG_DQS_DDL, false),
+                (DbConfig::SQLITE_DBCONFIG_DEFENSIVE, true),
+            ] {
+                connection.set_db_config(option, on).map_err(map_error)?;
+            }
             connection
-                .execute_batch("PRAGMA query_only = ON;")
+                .execute_batch("PRAGMA query_only = ON; PRAGMA trusted_schema = OFF;")
                 .map_err(map_error)?;
             // A file that is not a database only fails on its first read.
             connection

@@ -194,6 +194,38 @@ async fn a_raw_where_cannot_drop_the_page_limit() {
 }
 
 #[tokio::test]
+async fn a_filter_on_a_missing_column_fails_instead_of_matching_everything() {
+    let (connection, _dir) = fixture().await;
+    // Legacy SQLite read "renamed" as the string 'renamed' when no column
+    // has that name, so `"renamed" <> 'x'` matched every row.
+    let mut query = users(50);
+    query.filters = vec![Filter {
+        column: "renamed".into(),
+        op: FilterOp::Ne,
+        value: "x".into(),
+    }];
+    assert!(matches!(
+        connection.fetch_rows(&query).await,
+        Err(Error::Query { .. })
+    ));
+    assert!(matches!(
+        connection.count_rows(&query).await,
+        Err(Error::Query { .. })
+    ));
+    let mut query = users(50);
+    query.raw_where = Some(r#"name = "Ada Lovelace""#.into());
+    assert!(connection.fetch_rows(&query).await.is_err());
+}
+
+#[tokio::test]
+async fn the_schema_is_untrusted() {
+    let (connection, _dir) = fixture().await;
+    let mut query = users(50);
+    query.raw_where = Some("(SELECT trusted_schema FROM pragma_trusted_schema) = 0".into());
+    assert_eq!(connection.fetch_rows(&query).await.unwrap().rows.len(), 5);
+}
+
+#[tokio::test]
 async fn a_bad_raw_where_is_a_query_error() {
     let (connection, _dir) = fixture().await;
     let mut query = users(50);
