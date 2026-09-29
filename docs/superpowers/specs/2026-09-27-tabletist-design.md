@@ -160,11 +160,11 @@ App-id: `dev.tabletist.Tabletist`. Binary: `tabletist`.
                     App::apply(Action) ──▶ mutates state
                            │ may send
                            ▼
-                    backend.send(Command { session, tab, generation, .. })
+                    backend.send(Command { session, request, .. })
                            │ tokio mpsc (unbounded)
                            ▼
-        backend thread: Worker owns HashMap<SessionId, Session>
-                           │ spawns a task per command
+        backend thread: Worker owns HashMap<SessionId, SessionHandle>
+                           │ queues the command on its session's task
                            ▼
                     std mpsc Event ──▶ waker.wake() (request_repaint)
                            │
@@ -174,13 +174,14 @@ App-id: `dev.tabletist.Tabletist`. Binary: `tabletist`.
 Rules:
 
 - Views never mutate `App` directly; they push `Action`s.
-- Every command carries `(SessionId, request generation)` and, when it belongs
-  to an object tab, its `ObjectTabId`. The reducer drops events whose session
-  or tab is gone or whose generation is not the latest for that slot.
-- One `Session` per connection tab: the driver connection plus an optional SSH
-  tunnel. The worker serializes commands per session on that connection
-  (queries on one connection cannot run concurrently); a separate
-  `CancelHandle` works while a query runs.
+- Every command carries its `SessionId` and a fresh `RequestId`; the slot that
+  waits for the answer (a `Fetch<T>`) records that id as pending. The reducer
+  drops events whose session or tab is gone or that do not answer the slot's
+  pending request.
+- One session per connection tab: the driver connection plus an optional SSH
+  tunnel. Each session runs its commands in order on its own task (queries on
+  one connection cannot run concurrently); a separate `CancelHandle` works
+  while a query runs.
 - The UI is idle when nothing happens: repaints only on input, on backend
   events, or on a scheduled spinner tick while something is loading.
 
