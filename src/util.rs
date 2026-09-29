@@ -105,9 +105,24 @@ pub fn load_json<T: DeserializeOwned + Default>(path: &Path) -> T {
     }
 }
 
-/// Renames a file that could not be loaded to `<name>.bad`.
+/// Renames a file that could not be loaded to `<name>.bad`, or to
+/// `<name>.bad.1`, `<name>.bad.2`... when earlier ones exist, so a second
+/// failure never replaces the first copy.
 fn keep_aside(path: &Path, problem: &str) {
-    let aside = with_suffix(path, ".bad");
+    let Some(aside) = (0..1000)
+        .map(|n| match n {
+            0 => with_suffix(path, ".bad"),
+            n => with_suffix(path, &format!(".bad.{n}")),
+        })
+        // symlink_metadata also sees a dangling symlink, which rename would replace.
+        .find(|candidate| candidate.symlink_metadata().is_err())
+    else {
+        log::warn!(
+            "could not load {} ({problem}) and every .bad name is taken; using defaults",
+            path.display()
+        );
+        return;
+    };
     log::warn!(
         "could not load {} ({problem}); keeping it as {} and using defaults",
         path.display(),
@@ -255,6 +270,20 @@ mod tests {
             std::fs::read(dir.path().join("sample.json.bad")).unwrap(),
             b"{\"name\": "
         );
+    }
+
+    #[test]
+    fn repeated_failures_never_overwrite_an_earlier_copy() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sample.json");
+        for attempt in ["first", "second", "third"] {
+            std::fs::write(&path, attempt).unwrap();
+            assert_eq!(load_json::<Sample>(&path), Sample::default());
+        }
+        let read = |name: &str| std::fs::read_to_string(dir.path().join(name)).unwrap();
+        assert_eq!(read("sample.json.bad"), "first");
+        assert_eq!(read("sample.json.bad.1"), "second");
+        assert_eq!(read("sample.json.bad.2"), "third");
     }
 
     #[cfg(unix)]
