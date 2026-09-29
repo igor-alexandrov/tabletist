@@ -190,11 +190,15 @@ Rules:
 ### 4.1 API
 
 ```rust
-pub enum Connection { Postgres(pg::Conn), MySql(mysql::Conn), Sqlite(sqlite::Conn) }
+pub struct Connection { inner: Inner, tunnel: Option<ssh::Tunnel> }
+enum Inner { Sqlite(sqlite::Conn), Postgres(Box<pg::Conn>), MySql(Box<mysql::Conn>) }
 
 impl Connection {
     pub async fn connect(spec: &ConnectSpec, secrets: &Secrets) -> Result<Connection>;
+    pub async fn connect_with(spec: &ConnectSpec, secrets: &Secrets, host_keys: &HostKeys)
+        -> Result<Connection>;
     pub fn driver(&self) -> Driver;
+    pub fn dialect(&self) -> Dialect;
     pub async fn list_databases(&self) -> Result<Vec<String>>;
     pub async fn list_schemas(&self) -> Result<Vec<String>>;
     pub async fn list_objects(&self, schema: &str) -> Result<Vec<ObjectInfo>>;
@@ -207,7 +211,8 @@ impl Connection {
 ```
 
 A closed enum, not a trait object: there are exactly three drivers, and the
-enum avoids boxed async trait methods.
+enum avoids boxed async trait methods. The public `Connection` wraps it with
+the SSH tunnel, declared after the driver so the driver closes first.
 
 ### 4.2 Values
 
@@ -248,9 +253,9 @@ WHERE clause, can modify data:
 - `Structure { columns: Vec<ColumnInfo>, primary_key: Vec<String>,
   indexes: Vec<IndexInfo>, foreign_keys: Vec<ForeignKeyInfo> }` where
   `ColumnInfo { name, type_name, nullable, default, comment }`,
-  `IndexInfo { name, columns, unique, method }`,
-  `ForeignKeyInfo { name, columns, ref_schema, ref_table, ref_columns,
-  on_update, on_delete }`.
+  `IndexInfo { name, columns, unique, primary, method }`,
+  `ForeignKeyInfo { name: Option<String>, columns, ref_schema, ref_table,
+  ref_columns, on_update, on_delete }`.
 - Sources: `pg_catalog` (PostgreSQL), `information_schema` (MySQL),
   `PRAGMA table_xinfo`, `index_list`, `index_info`, `foreign_key_list`
   (SQLite).
@@ -300,14 +305,14 @@ pub struct ConnectSpec {
     pub ssh: Option<SshSpec>,
 }
 pub struct SshSpec { pub host: String, pub port: u16, pub user: String, pub auth: SshAuth }
-pub enum SshAuth { Password, KeyFile(PathBuf), Agent }
+pub enum SshAuth { Password, KeyFile { path: PathBuf }, Agent }
 ```
 
 - Secrets (database password, SSH password, key passphrase) are passed
   separately in `Secrets`, never stored in `ConnectSpec`, and their `Debug`
   impl prints only `Secrets { .. }`.
 - `ConnectSpec::from_url` parses `postgres://`, `postgresql://`, `mysql://`,
-  `sqlite:` URLs including `sslmode`.
+  `mariadb://`, `sqlite:` URLs including `sslmode` (and MySQL's `ssl-mode`).
 - Connect timeout: 10 s.
 - SSH: `ssh.rs` connects with `russh`, authenticates, binds a listener on
   `127.0.0.1:0`, and forwards every accepted connection through a
@@ -316,7 +321,9 @@ pub enum SshAuth { Password, KeyFile(PathBuf), Agent }
 - SSH host keys: the first connection to a host reports the key's fingerprint
   as `Error::Ssh { stage: HostKeyUnknown { fingerprint } }`; the app asks the
   user to trust it, stores it in `known_hosts.json`, and retries. A changed key
-  is `HostKeyMismatch` and is refused, with no override in the dialog.
+  is `HostKeyMismatch { fingerprint }` and is refused, with no override in the
+  dialog. The trusted keys reach the tunnel as `HostKeys` through
+  `Connection::connect_with`.
 
 ### 4.7 Cancellation
 
