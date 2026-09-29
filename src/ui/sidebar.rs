@@ -83,7 +83,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                 })
                 .inner_margin(Margin::same(8)),
         )
-        .show_separator_line(look.panel_separators)
+        .show_separator_line(true)
         .show(ui, |ui| {
             // Right to left: the button takes its space first and the field
             // exactly the rest (margins included), so nothing asks the

@@ -98,15 +98,20 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                             ui.end_row();
 
                             let label_color = ui.label(gettext(locale, "Color")).id;
-                            let _ = egui::ComboBox::from_id_salt("color-tag")
-                                .selected_text(form.color.label())
-                                .show_ui(ui, |ui| {
+                            let _ = crate::ui::widgets::popup_button(
+                                ui,
+                                egui::ComboBox::from_id_salt("color-tag")
+                                    .selected_text(form.color.label()),
+                                &look,
+                                &palette,
+                                |ui| {
                                     for tag in ColorTag::ALL {
                                         ui.selectable_value(&mut form.color, tag, tag.label());
                                     }
-                                })
-                                .response
-                                .labelled_by(label_color);
+                                },
+                            )
+                            .response
+                            .labelled_by(label_color);
                             ui.end_row();
 
                             if form.driver == Driver::Sqlite {
@@ -167,13 +172,20 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                                 ui.end_row();
 
                                 ui.label("");
-                                let _ = egui::ComboBox::from_id_salt("password-mode")
-                                    .selected_text(match form.password_mode {
-                                        PasswordMode::Keyring => gettext(locale, "Save in keyring"),
-                                        PasswordMode::Ask => gettext(locale, "Ask every time"),
-                                        PasswordMode::None => gettext(locale, "No password"),
-                                    })
-                                    .show_ui(ui, |ui| {
+                                let _ = crate::ui::widgets::popup_button(
+                                    ui,
+                                    egui::ComboBox::from_id_salt("password-mode").selected_text(
+                                        match form.password_mode {
+                                            PasswordMode::Keyring => {
+                                                gettext(locale, "Save in keyring")
+                                            }
+                                            PasswordMode::Ask => gettext(locale, "Ask every time"),
+                                            PasswordMode::None => gettext(locale, "No password"),
+                                        },
+                                    ),
+                                    &look,
+                                    &palette,
+                                    |ui| {
                                         ui.selectable_value(
                                             &mut form.password_mode,
                                             PasswordMode::Keyring,
@@ -189,9 +201,10 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                                             PasswordMode::None,
                                             gettext(locale, "No password"),
                                         );
-                                    })
-                                    .response
-                                    .labelled_by(label_password);
+                                    },
+                                )
+                                .response
+                                .labelled_by(label_password);
                                 ui.end_row();
 
                                 let label_database = ui.label(gettext(locale, "Database")).id;
@@ -204,15 +217,20 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                                 ui.end_row();
 
                                 let label_tls = ui.label(gettext(locale, "TLS")).id;
-                                let _ = egui::ComboBox::from_id_salt("tls-mode")
-                                    .selected_text(tls_label(form.tls))
-                                    .show_ui(ui, |ui| {
+                                let _ = crate::ui::widgets::popup_button(
+                                    ui,
+                                    egui::ComboBox::from_id_salt("tls-mode")
+                                        .selected_text(tls_label(form.tls)),
+                                    &look,
+                                    &palette,
+                                    |ui| {
                                         for (mode, label) in TLS_MODES {
                                             ui.selectable_value(&mut form.tls, mode, label);
                                         }
-                                    })
-                                    .response
-                                    .labelled_by(label_tls);
+                                    },
+                                )
+                                .response
+                                .labelled_by(label_tls);
                                 ui.end_row();
 
                                 if matches!(form.tls, TlsMode::VerifyCa | TlsMode::VerifyFull) {
@@ -388,9 +406,13 @@ fn ssh_section(
                         ui.end_row();
 
                         let label_auth = ui.label(gettext(locale, "Authentication")).id;
-                        let _ = egui::ComboBox::from_id_salt("ssh-auth")
-                            .selected_text(gettext(locale, form.ssh_auth.label()))
-                            .show_ui(ui, |ui| {
+                        let _ = crate::ui::widgets::popup_button(
+                            ui,
+                            egui::ComboBox::from_id_salt("ssh-auth")
+                                .selected_text(gettext(locale, form.ssh_auth.label())),
+                            look,
+                            palette,
+                            |ui| {
                                 for kind in SshAuthKind::ALL {
                                     ui.selectable_value(
                                         &mut form.ssh_auth,
@@ -398,9 +420,10 @@ fn ssh_section(
                                         gettext(locale, kind.label()),
                                     );
                                 }
-                            })
-                            .response
-                            .labelled_by(label_auth);
+                            },
+                        )
+                        .response
+                        .labelled_by(label_auth);
                         ui.end_row();
 
                         if form.ssh_auth == SshAuthKind::KeyFile {
@@ -440,12 +463,17 @@ fn ssh_section(
                             ui.end_row();
 
                             ui.label("");
-                            let _ = egui::ComboBox::from_id_salt("ssh-secret-mode")
-                                .selected_text(match form.ssh_secret_mode {
-                                    PasswordMode::Ask => gettext(locale, "Ask every time"),
-                                    _ => gettext(locale, "Save in keyring"),
-                                })
-                                .show_ui(ui, |ui| {
+                            let _ = crate::ui::widgets::popup_button(
+                                ui,
+                                egui::ComboBox::from_id_salt("ssh-secret-mode").selected_text(
+                                    match form.ssh_secret_mode {
+                                        PasswordMode::Ask => gettext(locale, "Ask every time"),
+                                        _ => gettext(locale, "Save in keyring"),
+                                    },
+                                ),
+                                look,
+                                palette,
+                                |ui| {
                                     ui.selectable_value(
                                         &mut form.ssh_secret_mode,
                                         PasswordMode::Keyring,
@@ -456,9 +484,10 @@ fn ssh_section(
                                         PasswordMode::Ask,
                                         gettext(locale, "Ask every time"),
                                     );
-                                })
-                                .response
-                                .labelled_by(label_secret);
+                                },
+                            )
+                            .response
+                            .labelled_by(label_secret);
                             ui.end_row();
                         }
                     });

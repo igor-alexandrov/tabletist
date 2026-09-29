@@ -144,13 +144,18 @@ fn top_bar(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                     }
                     if databases.len() > 1 {
                         let mut chosen = current.clone();
-                        let combo = egui::ComboBox::from_id_salt(("database", tab.0))
-                            .selected_text(&chosen)
-                            .show_ui(ui, |ui| {
+                        let combo = crate::ui::widgets::popup_button(
+                            ui,
+                            egui::ComboBox::from_id_salt(("database", tab.0))
+                                .selected_text(&chosen),
+                            &look,
+                            &palette,
+                            |ui| {
                                 for database in &databases {
                                     ui.selectable_value(&mut chosen, database.clone(), database);
                                 }
-                            });
+                            },
+                        );
                         // No visible label: name it for screen readers,
                         // keeping the current database as the value.
                         combo.response.widget_info(|| {

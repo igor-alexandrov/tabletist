@@ -516,6 +516,27 @@ mod tests {
     }
 
     #[test]
+    fn the_row_panel_shows_each_fields_type_in_brackets() {
+        let mut harness = Harness::new();
+        with_page(&mut harness);
+        harness.click("Row 1");
+        for type_name in ["(INTEGER)", "(TEXT)", "(JSON)"] {
+            assert!(harness.has(type_name), "{type_name}");
+        }
+    }
+
+    #[test]
+    fn the_row_panel_starts_with_its_filter_not_a_title() {
+        // The object tab and the grid's selection already say which table
+        // and row these fields belong to.
+        let mut harness = Harness::new();
+        with_page(&mut harness);
+        harness.click("Row 1");
+        assert!(harness.has("Copy email"), "the panel shows the row");
+        assert!(!harness.has("users · Row 1"));
+    }
+
+    #[test]
     fn arrow_keys_move_the_selection_and_copy_takes_the_cell_or_row() {
         let mut harness = Harness::new();
         let tab = with_page(&mut harness);

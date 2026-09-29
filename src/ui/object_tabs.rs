@@ -57,10 +57,15 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                     ui.spacing_mut().interact_size.y = interact_height.min(HEIGHT - 6.0);
                     ui.horizontal(|ui| {
                         ui.spacing_mut().interact_size.y = interact_height;
+                        let mut track = crate::ui::widgets::TabTrack::begin(ui, &look);
+                        if track.is_shown() {
+                            ui.spacing_mut().item_spacing.x = 0.0;
+                        }
                         for (id, name, pinned) in tabs {
                             let is_active = Some(id) == active;
                             let (rect, response) = ui
                                 .allocate_exact_size(vec2(TAB_WIDTH, HEIGHT - 6.0), Sense::click());
+                            track.add(rect);
                             let label = format!("{name} {}", gettext(locale, "tab"));
                             response.widget_info(|| {
                                 WidgetInfo::selected(WidgetType::Button, true, is_active, &label)
@@ -126,6 +131,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                             }
                             label_ui.add(egui::Label::new(text).truncate().selectable(false));
                         }
+                        track.end(ui, look.radius, &palette);
                     });
                 });
         });

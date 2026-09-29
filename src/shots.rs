@@ -24,12 +24,13 @@ fn out(name: &str) -> PathBuf {
         .join(name)
 }
 
+/// A made-up bookshop: screenshots never show a real project's names or data.
 fn saved() -> SavedConnection {
     let (spec, _) =
-        ConnectSpec::from_url("postgres://igor@127.0.0.1:5433/safari_development").unwrap();
+        ConnectSpec::from_url("postgres://demo@localhost:5432/bookshop_development").unwrap();
     SavedConnection {
         id: ConnectionId::new(),
-        name: "Safari Portal".into(),
+        name: "Bookshop".into(),
         color: ColorTag::Green,
         password: PasswordMode::None,
         ssh_secret: PasswordMode::None,
@@ -38,36 +39,36 @@ fn saved() -> SavedConnection {
 }
 
 const TABLES: [&str; 30] = [
-    "account_bonding_logos",
-    "account_brand_settings",
-    "account_business_profiles",
-    "account_companies",
-    "account_exchange_rates",
-    "account_favicons",
-    "account_flowbrite_integrations",
-    "account_flywire_integrations",
-    "account_google_integrations",
-    "account_gtm_containers",
-    "account_landing_configs",
-    "account_logos",
-    "account_nmi_integrations",
-    "account_pci_vault_integrations",
-    "account_pps_integrations",
-    "account_privacy_policy_settings",
-    "account_quickbooks_customers",
-    "account_quickbooks_integrations",
-    "account_redpoint_integrations",
-    "account_saved_inputs",
-    "account_stripe_connect_integrations",
-    "account_subscriptions",
-    "accounts",
-    "accounts_custom_mobile_apps",
-    "accounts_font_families",
-    "action_buttons",
-    "activity_events",
     "addresses",
-    "admin_users",
-    "api_tokens",
+    "authors",
+    "book_authors",
+    "book_categories",
+    "book_images",
+    "book_reviews",
+    "books",
+    "carts",
+    "cart_items",
+    "categories",
+    "coupons",
+    "customer_preferences",
+    "customers",
+    "gift_cards",
+    "inventory_movements",
+    "invoices",
+    "newsletter_subscriptions",
+    "order_items",
+    "orders",
+    "payment_methods",
+    "payments",
+    "publishers",
+    "refunds",
+    "returns",
+    "sessions",
+    "shipments",
+    "shipping_zones",
+    "stores",
+    "suppliers",
+    "wishlists",
 ];
 
 fn page() -> RowPage {
@@ -80,10 +81,10 @@ fn page() -> RowPage {
         .map(|i| {
             vec![
                 Value::Int(i + 2),
-                Value::Int(1_628_910_071_209_526_786 + i * 7_919),
-                Value::Text(if i % 2 == 0 { "atol" } else { "abta" }.into()),
+                Value::Int(1_048_576 + i * 7_919),
+                Value::Text(if i % 2 == 0 { "cover" } else { "preview" }.into()),
                 Value::Text(format!(
-                    r#"{{"id": "account/bondinglogo/{}/logo/aea111f831796e6828e311cfdb791394.png", "metadata": {{"filename": "badge (1).png", "height": 504, "mime_type": "image/png", "size": 29795, "width": 1116}}, "storage": "store"}}"#,
+                    r#"{{"id": "books/{}/images/3f9c2a7d.png", "metadata": {{"filename": "cover.png", "height": 1600, "mime_type": "image/png", "size": 184320, "width": 1024}}, "storage": "store"}}"#,
                     i + 2
                 ).into()),
                 Value::Text("2026-06-03 15:47:52.977704".into()),
@@ -94,9 +95,9 @@ fn page() -> RowPage {
     RowPage {
         columns: vec![
             column("id", "int8", ValueKind::Numeric),
-            column("account_id", "int8", ValueKind::Numeric),
+            column("book_id", "int8", ValueKind::Numeric),
             column("kind", "varchar", ValueKind::Text),
-            column("logo_data", "jsonb", ValueKind::Json),
+            column("image_data", "jsonb", ValueKind::Json),
             column("created_at", "timestamp", ValueKind::Temporal),
             column("deleted_at", "timestamp", ValueKind::Temporal),
         ],
@@ -107,7 +108,7 @@ fn page() -> RowPage {
     }
 }
 
-/// What `account_bonding_logos` describes as: the columns of [`page`], its
+/// What `book_images` describes as: the columns of [`page`], its
 /// primary key, two indexes and one foreign key.
 fn structure() -> Structure {
     let column = |name: &str, type_name: &str, nullable, default: Option<&str>| ColumnInfo {
@@ -123,31 +124,31 @@ fn structure() -> Structure {
                 "id",
                 "bigint",
                 false,
-                Some("nextval('account_bonding_logos_id_seq'::regclass)"),
+                Some("nextval('book_images_id_seq'::regclass)"),
             ),
-            column("account_id", "bigint", false, None),
+            column("book_id", "bigint", false, None),
             column(
                 "kind",
                 "character varying",
                 false,
-                Some("'atol'::character varying"),
+                Some("'cover'::character varying"),
             ),
-            column("logo_data", "jsonb", true, None),
+            column("image_data", "jsonb", true, None),
             column("created_at", "timestamp(6) without time zone", false, None),
             column("deleted_at", "timestamp(6) without time zone", true, None),
         ],
         primary_key: vec!["id".into()],
         indexes: vec![
             IndexInfo {
-                name: "account_bonding_logos_pkey".into(),
+                name: "book_images_pkey".into(),
                 columns: vec!["id".into()],
                 unique: true,
                 primary: true,
                 method: Some("btree".into()),
             },
             IndexInfo {
-                name: "index_account_bonding_logos_on_account_id_and_kind".into(),
-                columns: vec!["account_id".into(), "kind".into()],
+                name: "index_book_images_on_book_id_and_kind".into(),
+                columns: vec!["book_id".into(), "kind".into()],
                 unique: true,
                 primary: false,
                 method: Some("btree".into()),
@@ -155,9 +156,9 @@ fn structure() -> Structure {
         ],
         foreign_keys: vec![ForeignKeyInfo {
             name: Some("fk_rails_3b1d8f0c2e".into()),
-            columns: vec!["account_id".into()],
+            columns: vec!["book_id".into()],
             ref_schema: "public".into(),
-            ref_table: "accounts".into(),
+            ref_table: "books".into(),
             ref_columns: vec!["id".into()],
             on_update: "NO ACTION".into(),
             on_delete: "CASCADE".into(),
@@ -187,13 +188,21 @@ fn workspace(harness: &mut Harness) -> ConnTabId {
             })
             .collect(),
     );
-    harness.app.apply(Action::OpenObject {
-        tab,
-        object: ObjectRef::new("public", "account_bonding_logos"),
-        kind: ObjectKind::Table,
-        pin: true,
-    });
-    harness.answer_rows(page());
+    workspace.databases.value = Some(vec![
+        "bookshop_development".into(),
+        "bookshop_test".into(),
+        "postgres".into(),
+    ]);
+    // A second, inactive tab next to the active one.
+    for name in ["books", "book_images"] {
+        harness.app.apply(Action::OpenObject {
+            tab,
+            object: ObjectRef::new("public", name),
+            kind: ObjectKind::Table,
+            pin: true,
+        });
+        harness.answer_rows(page());
+    }
     let object_tab = harness.app.workspace(tab).unwrap().active_object.unwrap();
     harness.app.apply(Action::SelectCell {
         tab,
@@ -263,7 +272,7 @@ fn shots() {
         object.filter.rows = vec![crate::model::FilterRow {
             column: "kind".into(),
             op: tabletist_db::FilterOp::Eq,
-            value: "iata".into(),
+            value: "cover".into(),
         }];
         harness.app.apply(Action::ApplyFilters { tab, object_tab });
         let mut empty = page();
@@ -275,8 +284,8 @@ fn shots() {
         let workspace = harness.app.workspace_mut(tab).unwrap();
         workspace.tree.schemas.value = Some(Vec::new());
         workspace.databases.value = Some(vec![
-            "safari_development".into(),
-            "safari_test".into(),
+            "bookshop_development".into(),
+            "bookshop_test".into(),
             "postgres".into(),
         ]);
     });
