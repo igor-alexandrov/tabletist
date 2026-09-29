@@ -182,6 +182,7 @@ impl Connection {
             Inner::MySql(conn) => CancelHandle(CancelInner::MySql {
                 opts: conn.opts.clone(),
                 id: conn.id,
+                server: conn.server.clone(),
             }),
             Inner::Postgres(conn) => CancelHandle(CancelInner::Postgres {
                 token: conn.cancel.clone(),
@@ -227,6 +228,8 @@ enum CancelInner {
     MySql {
         opts: mysql_async::Opts,
         id: u32,
+        /// The server that thread id belongs to.
+        server: String,
     },
 }
 
@@ -237,15 +240,7 @@ impl CancelHandle {
                 handle.interrupt();
                 Ok(())
             }
-            CancelInner::MySql { opts, id } => {
-                use mysql_async::prelude::Queryable;
-                let mut conn = mysql_async::Conn::new(opts.clone())
-                    .await
-                    .map_err(|error| Error::Connect(format!("could not cancel: {error}")))?;
-                let result = conn.query_drop(format!("KILL QUERY {id}")).await;
-                let _ = conn.disconnect().await;
-                result.map_err(|error| Error::Connect(format!("could not cancel: {error}")))
-            }
+            CancelInner::MySql { opts, id, server } => mysql::cancel(opts, *id, server).await,
             CancelInner::Postgres { token, tls } => token
                 .cancel_query(tls.clone())
                 .await

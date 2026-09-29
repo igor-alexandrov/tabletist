@@ -504,6 +504,28 @@ async fn a_running_query_can_be_cancelled() {
     assert!(connection.fetch_rows(&users(1)).await.is_ok());
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_cancel_on_an_idle_session_leaves_other_sessions_alone() {
+    let Some(connection) = connect().await else {
+        return;
+    };
+    let cancel = connection.cancel_handle();
+    let mut other = admin().await;
+    let running = tokio::spawn(async move {
+        // SLEEP answers 1 when a KILL QUERY interrupts it.
+        let slept = other.query_first::<i64, _>("SELECT SLEEP(2)").await;
+        let _ = other.disconnect().await;
+        slept
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    // Closing a tab cancels whether or not anything runs.
+    for _ in 0..3 {
+        cancel.cancel().await.unwrap();
+    }
+    assert_eq!(running.await.unwrap().unwrap(), Some(0));
+    assert!(connection.fetch_rows(&users(1)).await.is_ok());
+}
+
 /// A writable connection for arranging and probing, outside the adapter.
 async fn admin() -> mysql_async::Conn {
     let opts =

@@ -20,6 +20,7 @@ use crate::{
 const BINARY_CHARSET: u16 = 63;
 const ACCESS_DENIED: u16 = 1045;
 const QUERY_INTERRUPTED: u16 = 1317;
+const UNKNOWN_SYSTEM_VARIABLE: u16 = 1193;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -32,6 +33,8 @@ pub struct Conn {
     /// Whether the session runs over TLS: under `prefer` a server without
     /// TLS gets plain text.
     pub(crate) encrypted: bool,
+    /// The server that thread id belongs to (see `server_identity`).
+    pub(crate) server: String,
 }
 
 impl Conn {
@@ -87,11 +90,13 @@ impl Conn {
         // mysql_async fails rather than go on in plain text when it was
         // given TLS options, so the options that connected say it.
         let encrypted = opts.ssl_opts().is_some();
+        let server = server_identity(&mut conn).await.map_err(query_error)?;
         Ok(Self {
             conn: tokio::sync::Mutex::new(conn),
             opts,
             id,
             encrypted,
+            server,
         })
     }
 
@@ -555,6 +560,56 @@ pub(crate) fn query_error(error: mysql_async::Error) -> Error {
     }
 }
 
+/// Stops the query thread `id` runs on the server named `server`. The cancel
+/// connection resolves the host again, and behind round robin DNS or a load
+/// balancer it can reach another server, where `id` is someone else's
+/// session: so it kills only after checking it reached the same server.
+pub(crate) async fn cancel(opts: &Opts, id: u32, server: &str) -> Result<()> {
+    let failed = |error: mysql_async::Error| Error::Connect(format!("could not cancel: {error}"));
+    let mut conn =
+        match tokio::time::timeout(CONNECT_TIMEOUT, mysql_async::Conn::new(opts.clone())).await {
+            Err(_) => return Err(Error::Timeout),
+            Ok(result) => result.map_err(failed)?,
+        };
+    let result = async {
+        let reached = server_identity(&mut conn).await.map_err(failed)?;
+        same_server(server, &reached)?;
+        conn.query_drop(format!("KILL QUERY {id}"))
+            .await
+            .map_err(failed)
+    }
+    .await;
+    let _ = conn.disconnect().await;
+    result
+}
+
+/// Names the server a connection reached: `@@server_uuid`, or host name and
+/// port on MariaDB, which has no server UUID.
+async fn server_identity(conn: &mut mysql_async::Conn) -> mysql_async::Result<String> {
+    match conn.query_first::<String, _>("SELECT @@server_uuid").await {
+        Ok(Some(uuid)) => return Ok(format!("uuid {uuid}")),
+        Ok(None) => {}
+        Err(mysql_async::Error::Server(error)) if error.code == UNKNOWN_SYSTEM_VARIABLE => {}
+        Err(error) => return Err(error),
+    }
+    let found: Option<(String, u16)> = conn.query_first("SELECT @@hostname, @@port").await?;
+    Ok(found
+        .map(|(host, port)| format!("host {host}:{port}"))
+        .unwrap_or_default())
+}
+
+/// Whether a cancel connection reached the session's server. An unknown
+/// server never matches.
+fn same_server(session: &str, reached: &str) -> Result<()> {
+    if !session.is_empty() && session == reached {
+        Ok(())
+    } else {
+        Err(Error::Connect(
+            "could not cancel: reached a different server".into(),
+        ))
+    }
+}
+
 fn read_only() -> TxOpts {
     let mut options = TxOpts::default();
     options.with_readonly(Some(true));
@@ -736,6 +791,55 @@ mod tests {
             value(My::Float(f32::MAX), "float"),
             Value::Float(3.402_823_5e38)
         );
+    }
+
+    #[test]
+    fn a_cancel_kills_only_on_the_sessions_server() {
+        let uuid = "uuid 3e11fa47-71ca-11e1-9e33-c80aa9429562";
+        assert_eq!(same_server(uuid, uuid), Ok(()));
+        let different = Err(Error::Connect(
+            "could not cancel: reached a different server".into(),
+        ));
+        assert_eq!(
+            same_server(uuid, "uuid 8a94f357-aab4-11df-86ab-c80aa9429562"),
+            different
+        );
+        assert_eq!(same_server("host db1:3306", "host db2:3306"), different);
+        assert_eq!(same_server("host db1:3306", "host db1:3307"), different);
+        assert_eq!(same_server("", ""), different);
+    }
+
+    /// Needs TABLETIST_TEST_MYSQL_URL (see AGENTS.md); skipped without it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_cancel_that_reaches_another_server_kills_nothing() {
+        let Some(url) = std::env::var("TABLETIST_TEST_MYSQL_URL")
+            .ok()
+            .filter(|url| !url.trim().is_empty())
+        else {
+            eprintln!("skipped: TABLETIST_TEST_MYSQL_URL is not set");
+            return;
+        };
+        let (mut spec, secrets) = ConnectSpec::from_url(&url).unwrap();
+        spec.tls = TlsMode::Disable;
+        let session = std::sync::Arc::new(Conn::connect(&spec, &secrets, None).await.unwrap());
+        assert!(session.server.starts_with("uuid "), "{}", session.server);
+        let running = {
+            let session = std::sync::Arc::clone(&session);
+            tokio::spawn(async move {
+                let mut conn = session.conn.lock().await;
+                // SLEEP answers 1 when a KILL QUERY interrupts it.
+                conn.query_first::<i64, _>("SELECT SLEEP(2)").await
+            })
+        };
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let other = "uuid 00000000-0000-0000-0000-000000000000";
+        assert_eq!(
+            cancel(&session.opts, session.id, other).await,
+            Err(Error::Connect(
+                "could not cancel: reached a different server".into()
+            ))
+        );
+        assert_eq!(running.await.unwrap().unwrap(), Some(0));
     }
 
     #[test]
