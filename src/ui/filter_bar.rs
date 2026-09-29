@@ -85,14 +85,19 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: Object
     for index in 0..count {
         let row = &mut bar.rows[index];
         ui.horizontal(|ui| {
-            let combo = egui::ComboBox::from_id_salt(("filter-column", tab.0, object_tab.0, index))
-                .selected_text(&row.column)
-                .width(160.0)
-                .show_ui(ui, |ui| {
+            let combo = crate::ui::widgets::popup_button(
+                ui,
+                egui::ComboBox::from_id_salt(("filter-column", tab.0, object_tab.0, index))
+                    .selected_text(&row.column)
+                    .width(160.0),
+                &look,
+                &palette,
+                |ui| {
                     for column in &columns {
                         ui.selectable_value(&mut row.column, column.clone(), column);
                     }
-                });
+                },
+            );
             // No visible label in the row: name it for screen readers,
             // keeping its selection as the value.
             let selected = Some(row.column.clone());
@@ -105,14 +110,19 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: Object
                 info.current_text_value = selected.clone();
                 info
             });
-            let combo = egui::ComboBox::from_id_salt(("filter-op", tab.0, object_tab.0, index))
-                .selected_text(gettext(locale, op_label(row.op)))
-                .width(110.0)
-                .show_ui(ui, |ui| {
+            let combo = crate::ui::widgets::popup_button(
+                ui,
+                egui::ComboBox::from_id_salt(("filter-op", tab.0, object_tab.0, index))
+                    .selected_text(gettext(locale, op_label(row.op)))
+                    .width(110.0),
+                &look,
+                &palette,
+                |ui| {
                     for op in FILTER_OPS {
                         ui.selectable_value(&mut row.op, op, gettext(locale, op_label(op)));
                     }
-                });
+                },
+            );
             // No visible label in the row: name it for screen readers,
             // keeping its selection as the value.
             let selected = Some(gettext(locale, op_label(row.op)).into_owned());

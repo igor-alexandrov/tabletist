@@ -206,6 +206,9 @@ pub struct Look {
     /// the content by 1 px lines. The sidebar and the row panel always are:
     /// one tone off the content is too faint to mark a pane's edge.
     pub panel_separators: bool,
+    /// Pop-up buttons (combo boxes) stand off their background with a
+    /// raised fill and a soft shadow, and show up and down chevrons.
+    pub raised_popups: bool,
     pub data_font: DataFont,
 }
 
@@ -228,6 +231,7 @@ impl Look {
             capsule_search: false,
             sidebar_tinted: true,
             panel_separators: true,
+            raised_popups: false,
             data_font: DataFont::Proportional,
         }
     }
@@ -250,6 +254,7 @@ impl Look {
             sidebar_tinted: true,
             // Tones and the raised tabs set the bars apart.
             panel_separators: false,
+            raised_popups: true,
             data_font: DataFont::Proportional,
         }
     }
@@ -270,6 +275,7 @@ impl Look {
             capsule_search: false,
             sidebar_tinted: false,
             panel_separators: true,
+            raised_popups: false,
             data_font: DataFont::Monospace,
         }
     }

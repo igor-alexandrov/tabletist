@@ -309,6 +309,72 @@ pub fn active_tab_fill(look: &Look, palette: &Palette) -> Color32 {
     }
 }
 
+/// A pop-up button: `combo` with `contents` as its menu. With
+/// `look.raised_popups` it is drawn as macOS draws one: raised off its
+/// background with a soft shadow and a hairline, and marked with up and
+/// down chevrons. Other looks keep egui's combo box.
+pub fn popup_button<R>(
+    ui: &mut Ui,
+    combo: egui::ComboBox,
+    look: &Look,
+    palette: &Palette,
+    contents: impl FnOnce(&mut Ui) -> R,
+) -> egui::InnerResponse<Option<R>> {
+    if !look.raised_popups {
+        return combo.show_ui(ui, contents);
+    }
+    let shadow = ui.painter().add(egui::Shape::Noop);
+    let fill = raised_fill(palette);
+    let rim = Stroke::new(1.0, palette.text.gamma_multiply(0.1));
+    let inner = ui.scope(|ui| {
+        let widgets = &mut ui.visuals_mut().widgets;
+        for widget in [
+            &mut widgets.inactive,
+            &mut widgets.hovered,
+            &mut widgets.open,
+        ] {
+            widget.weak_bg_fill = fill;
+            widget.bg_stroke = rim;
+        }
+        widgets.active.bg_stroke = rim;
+        combo
+            .icon(|ui, rect, visuals, _open| {
+                paint_chevrons(ui.painter(), rect, visuals.fg_stroke.color);
+            })
+            .show_ui(ui, contents)
+    });
+    let rect = inner.inner.response.rect;
+    if ui.is_rect_visible(rect) {
+        let corner = ui.visuals().widgets.inactive.corner_radius;
+        ui.painter()
+            .set(shadow, raised_shadow(palette).as_shape(rect, corner));
+    }
+    inner.inner
+}
+
+/// Up and down chevrons, centred in `rect`: the mark of a macOS pop-up
+/// button.
+fn paint_chevrons(painter: &egui::Painter, rect: Rect, color: Color32) {
+    let center = rect.center();
+    let half_width = rect.width() * 0.25;
+    let rise = half_width * 0.75;
+    let gap = rect.height() * 0.1;
+    let stroke = Stroke::new(1.5, color);
+    // Up, then down: the wings sit `gap` off the centre, the tip `rise`
+    // further out.
+    for direction in [-1.0, 1.0] {
+        let wings = center.y + direction * gap;
+        painter.line(
+            vec![
+                egui::pos2(center.x - half_width, wings),
+                egui::pos2(center.x, wings + direction * rise),
+                egui::pos2(center.x + half_width, wings),
+            ],
+            stroke,
+        );
+    }
+}
+
 /// How an Omarchy toggle draws in one state.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ToggleColors {
@@ -899,6 +965,32 @@ mod tests {
                     look.name
                 );
             });
+        }
+    }
+
+    #[test]
+    fn pop_up_buttons_keep_their_name_and_value_in_every_look() {
+        for look in crate::theme::Look::ALL {
+            let mut harness = crate::testing::Harness::new();
+            harness.set_look(look);
+            let palette = harness.app.palette;
+            let tree = harness.frame_with(|ui| {
+                let mut chosen = "bookshop_test".to_owned();
+                let combo = egui::ComboBox::from_id_salt("database").selected_text(&chosen);
+                let response = super::popup_button(ui, combo, &look, &palette, |ui| {
+                    ui.selectable_value(&mut chosen, "postgres".into(), "postgres");
+                })
+                .response;
+                response.widget_info(|| {
+                    let mut info = WidgetInfo::labeled(WidgetType::ComboBox, true, "Database");
+                    info.current_text_value = Some("bookshop_test".into());
+                    info
+                });
+            });
+            let id = crate::testing::node(&tree, "Database", egui::accesskit::Role::ComboBox)
+                .unwrap_or_else(|| panic!("{}", look.name));
+            let (_, node) = tree.nodes.iter().find(|(n, _)| *n == id).unwrap();
+            assert_eq!(node.value(), Some("bookshop_test"), "{}", look.name);
         }
     }
 
