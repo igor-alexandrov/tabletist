@@ -232,7 +232,8 @@ impl Look {
         }
     }
 
-    /// macOS 26: rounder, roomier, borderless, with an inset pill selection.
+    /// macOS 26: rounder, roomier, borderless controls, an inset pill
+    /// selection, and tabs in a track.
     pub const fn macos() -> Self {
         Self {
             name: "macos",
@@ -247,6 +248,7 @@ impl Look {
             dialog: DialogStyle::Shadow,
             capsule_search: true,
             sidebar_tinted: true,
+            // Tones and the raised tabs set the bars apart.
             panel_separators: false,
             data_font: DataFont::Proportional,
         }

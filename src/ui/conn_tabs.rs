@@ -64,9 +64,15 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                     .show(ui, |ui| {
                         ui.spacing_mut().item_spacing.x = spacing;
                         ui.horizontal(|ui| {
-                            for index in 0..app.tabs.len() {
-                                tab(app, ui, index);
+                            let mut track = crate::ui::widgets::TabTrack::begin(ui, &look);
+                            if track.is_shown() {
+                                ui.spacing_mut().item_spacing.x = 0.0;
                             }
+                            for index in 0..app.tabs.len() {
+                                track.add(tab(app, ui, index));
+                            }
+                            track.end(ui, look.tab_radius, &palette);
+                            ui.spacing_mut().item_spacing.x = spacing;
                             let new_label = gettext(app.locale, "New connection tab");
                             if icon_button(ui, Icon::Plus, &new_label, &look, &palette).clicked() {
                                 app.actions.push(Action::NewConnTab);
@@ -96,8 +102,9 @@ fn window_drag_area(ui: &mut egui::Ui, width: f32, height: f32) {
 }
 
 /// One tab. The tab's own click area is allocated first and its close button
-/// after it, so the button sits on top and receives its own clicks.
-fn tab(app: &mut App, ui: &mut egui::Ui, index: usize) {
+/// after it, so the button sits on top and receives its own clicks. Returns
+/// the tab's rect.
+fn tab(app: &mut App, ui: &mut egui::Ui, index: usize) -> Rect {
     let palette = app.palette;
     let look = app.look;
     let id = app.tabs[index].id;
@@ -149,6 +156,8 @@ fn tab(app: &mut App, ui: &mut egui::Ui, index: usize) {
             .max_rect(label_rect)
             .layout(Layout::left_to_right(Align::Center)),
     );
+    // Tabs in a track touch; the dot and the title keep their spacing.
+    label_ui.spacing_mut().item_spacing = ui.ctx().global_style().spacing.item_spacing;
     if let Some(color) = status_color {
         let (dot, _) = label_ui.allocate_exact_size(vec2(8.0, 8.0), Sense::hover());
         label_ui.painter().circle_filled(dot.center(), 3.5, color);
@@ -167,4 +176,5 @@ fn tab(app: &mut App, ui: &mut egui::Ui, index: usize) {
         .truncate()
         .selectable(false),
     );
+    rect
 }

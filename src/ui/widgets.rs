@@ -173,8 +173,12 @@ pub fn selection_text(selected: bool, look: &Look, palette: &Palette) -> Color32
     }
 }
 
+/// How far a raised tab sits inside its track.
+const TRACK_INSET: f32 = 2.0;
+
 /// A tab's background: connection tabs (`radius` = `look.tab_radius`) and
-/// object tabs (`look.radius`).
+/// object tabs (`look.radius`). Raised tabs sit in a [`TabTrack`], which
+/// fills the inactive ones.
 pub fn tab(
     ui: &Ui,
     rect: Rect,
@@ -187,26 +191,26 @@ pub fn tab(
     let painter = ui.painter();
     let corner = CornerRadius::same(radius);
     match look.tabs {
-        TabStyle::Outlined | TabStyle::Raised => {
+        TabStyle::Outlined => {
             if active {
-                if look.tabs == TabStyle::Raised {
-                    let shadow = egui::epaint::Shadow {
-                        offset: [0, 1],
-                        blur: 4,
-                        spread: 0,
-                        color: palette.shadow.gamma_multiply(0.6),
-                    };
-                    painter.add(shadow.as_shape(rect, corner));
-                }
                 painter.rect_filled(rect, corner, active_tab_fill(look, palette));
-                if look.tabs == TabStyle::Outlined {
-                    painter.rect_stroke(
-                        rect,
-                        corner,
-                        Stroke::new(1.0, palette.outline),
-                        StrokeKind::Inside,
-                    );
-                }
+                painter.rect_stroke(
+                    rect,
+                    corner,
+                    Stroke::new(1.0, palette.outline),
+                    StrokeKind::Inside,
+                );
+            } else if hovered {
+                painter.rect_filled(rect, corner, palette.surface_hover);
+            }
+        }
+        TabStyle::Raised => {
+            // Inset and concentric with the track, as a segmented control.
+            let rect = rect.shrink(TRACK_INSET);
+            let corner = CornerRadius::same(radius.saturating_sub(TRACK_INSET as u8));
+            if active {
+                painter.add(raised_shadow(palette).as_shape(rect, corner));
+                painter.rect_filled(rect, corner, active_tab_fill(look, palette));
             } else if hovered {
                 painter.rect_filled(rect, corner, palette.surface_hover);
             }
@@ -224,13 +228,82 @@ pub fn tab(
     }
 }
 
+/// The track raised tabs sit in, as Finder's path bar and Safari's tabs:
+/// one rounded surface behind every tab, so inactive tabs read as tabs
+/// rather than as text on the bar. Its extent is known only once the tabs
+/// are laid out, so its shape is reserved first and painted behind them.
+pub struct TabTrack {
+    shape: Option<egui::layers::ShapeIdx>,
+    rect: Rect,
+}
+
+impl TabTrack {
+    /// Reserves the track's place, under everything painted after it.
+    /// Tabs in a track touch: the caller lays them out with no spacing.
+    pub fn begin(ui: &Ui, look: &Look) -> Self {
+        Self {
+            shape: (look.tabs == TabStyle::Raised).then(|| ui.painter().add(egui::Shape::Noop)),
+            rect: Rect::NOTHING,
+        }
+    }
+
+    /// Whether tabs sit in a track, and so touch.
+    pub fn is_shown(&self) -> bool {
+        self.shape.is_some()
+    }
+
+    pub fn add(&mut self, tab: Rect) {
+        self.rect = self.rect.union(tab);
+    }
+
+    pub fn end(self, ui: &Ui, radius: u8, palette: &Palette) {
+        if let Some(shape) = self.shape
+            && self.rect.is_positive()
+        {
+            ui.painter().set(
+                shape,
+                egui::epaint::RectShape::filled(
+                    self.rect,
+                    CornerRadius::same(radius),
+                    track_fill(palette),
+                ),
+            );
+        }
+    }
+}
+
+/// The track under raised tabs: the surface tone, one step off the bar.
+pub fn track_fill(palette: &Palette) -> Color32 {
+    palette.surface
+}
+
+/// The fill of something raised off its bar (a raised tab, a pop-up
+/// button): the window colour, which is lighter than the bar in a light
+/// palette. In a dark palette the window is darker than the bar and would
+/// read as a slot, so it takes the lightest surface instead.
+pub fn raised_fill(palette: &Palette) -> Color32 {
+    if palette.dark {
+        palette.surface_active
+    } else {
+        palette.window
+    }
+}
+
+/// The soft shadow under something raised.
+fn raised_shadow(palette: &Palette) -> egui::epaint::Shadow {
+    egui::epaint::Shadow {
+        offset: [0, 1],
+        blur: 4,
+        spread: 0,
+        color: palette.shadow.gamma_multiply(0.6),
+    }
+}
+
 /// The fill of the active tab: the window colour, so the tab joins the
-/// content below it. A raised tab in a dark palette takes the lighter
-/// surface instead: the window is darker than the bar there, and a dark tab
-/// would read as a slot rather than lifted.
+/// content below it, or the [`raised_fill`] of a raised tab.
 pub fn active_tab_fill(look: &Look, palette: &Palette) -> Color32 {
-    if look.tabs == TabStyle::Raised && palette.dark {
-        palette.surface
+    if look.tabs == TabStyle::Raised {
+        raised_fill(palette)
     } else {
         palette.window
     }
@@ -784,11 +857,14 @@ mod tests {
     }
 
     #[test]
-    fn a_raised_active_tab_stands_above_the_bar_in_dark_palettes() {
+    fn a_raised_active_tab_stands_above_its_track() {
         use crate::theme::{Look, Palette};
         let dark = Palette::dark();
         let light = Palette::light();
-        assert_eq!(super::active_tab_fill(&Look::macos(), &dark), dark.surface);
+        assert_eq!(
+            super::active_tab_fill(&Look::macos(), &dark),
+            dark.surface_active
+        );
         assert_eq!(super::active_tab_fill(&Look::macos(), &light), light.window);
         for look in [Look::standard(), Look::omarchy()] {
             for palette in [dark, light] {
@@ -800,9 +876,30 @@ mod tests {
                 );
             }
         }
-        // Tab bars take the panel colour; the raised tab is lighter than it.
+        // Tab bars take the panel colour, the track is a step off it, and
+        // the raised tab a step further: lighter in the dark palette.
         let sum = |c: Color32| u32::from(c.r()) + u32::from(c.g()) + u32::from(c.b());
-        assert!(sum(dark.surface) > sum(dark.panel));
+        assert!(sum(super::track_fill(&dark)) > sum(dark.panel));
+        assert!(sum(super::raised_fill(&dark)) > sum(super::track_fill(&dark)));
+        assert!(sum(super::track_fill(&light)) < sum(light.panel));
+        assert!(sum(super::raised_fill(&light)) > sum(light.panel));
+    }
+
+    #[test]
+    fn only_raised_tabs_sit_in_a_track() {
+        for look in crate::theme::Look::ALL {
+            let mut harness = crate::testing::Harness::new();
+            harness.set_look(look);
+            harness.frame_with(|ui| {
+                let track = super::TabTrack::begin(ui, &look);
+                assert_eq!(
+                    track.is_shown(),
+                    look.tabs == crate::theme::TabStyle::Raised,
+                    "{}",
+                    look.name
+                );
+            });
+        }
     }
 
     #[test]
