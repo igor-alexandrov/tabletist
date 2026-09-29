@@ -11,10 +11,8 @@ mod mysql;
 mod pg;
 mod query;
 mod spec;
-// Used by pg.rs from the next task.
 mod sqlite;
 mod ssh;
-#[allow(dead_code)]
 mod tls;
 mod value;
 
@@ -31,9 +29,8 @@ pub use spec::{ConnectSpec, Driver, Secrets, SshAuth, SshSpec, TlsMode};
 pub use ssh::HostKeys;
 pub use value::{ColumnMeta, Value, ValueKind, value_from_pg_text};
 
-/// An open, read-only database session. Batches 4 and 5 add PostgreSQL and
-/// MySQL variants.
-/// A database session, and the SSH tunnel it runs through, if any.
+/// An open, read-only database session, and the SSH tunnel it runs through,
+/// if any.
 pub struct Connection {
     inner: Inner,
     /// Declared after `inner`, so the driver closes before its tunnel.
