@@ -115,18 +115,13 @@ jobs:
             dist/*-setup.exe
           if-no-files-found: error
 
-  macos:
-    name: macOS universal app
+  # The build sees no Apple secrets: cargo runs the build scripts and proc
+  # macros of every dependency, so the signing job below never runs cargo.
+  macos-build:
+    name: macOS universal binary
     needs: version
     runs-on: macos-latest
     timeout-minutes: 90
-    env:
-      APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
-      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-      APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-      APPLE_ID: ${{ secrets.APPLE_ID }}
-      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-      APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -140,15 +135,47 @@ jobs:
           mkdir -p universal
           lipo -create target/aarch64-apple-darwin/release/tabletist \
             target/x86_64-apple-darwin/release/tabletist -output universal/tabletist
+      # Only the signing job needs it; publish leaves it out of the release.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-universal-binary
+          path: universal/tabletist
+          if-no-files-found: error
+          retention-days: 1
+
+  # Signs, notarizes and packages the binary without building anything. Each
+  # Apple secret is set only on the steps that use it.
+  macos:
+    name: macOS universal app
+    needs: macos-build
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: macos-universal-binary
+          path: universal
       # With the Developer ID certificate, its password and identity in the
       # secrets, sign for real, and with the notary secrets too, notarize;
       # without them the app is ad-hoc signed and the DMG unsigned. A partial
       # set warns and ships what it can.
       - name: Signing plan
         id: plan
+        env:
+          APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
         run: bash packaging/macos/signing-plan.sh
       - name: Signing keychain
         if: steps.plan.outputs.sign == 'true'
+        env:
+          APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
         run: |
           keychain="$RUNNER_TEMP/signing.keychain-db"
           password="$(openssl rand -hex 16)"
@@ -161,7 +188,13 @@ jobs:
           security set-key-partition-list -S apple-tool:,apple: -k "$password" "$keychain"
           security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
           echo "CODESIGN_IDENTITY=$APPLE_SIGNING_IDENTITY" >> "$GITHUB_ENV"
+      # bundle.sh signs with CODESIGN_IDENTITY from the keychain step; dmg.sh
+      # also notarizes with the notary secrets.
       - name: App and DMG
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
         run: |
           mkdir -p dist
           bash packaging/macos/bundle.sh universal/tabletist dist/Tabletist.app "${TAG#v}"
@@ -184,6 +217,8 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: dist
+          # Everything but the unsigned macOS binary, which the DMG replaces.
+          pattern: "!macos-universal-binary"
           merge-multiple: true
       # The source archive, so source packages check the same checksums.
       - name: Source archive and checksums
