@@ -25,7 +25,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: Object
         .resizable(true)
         .default_size(300.0)
         .size_range(240.0..=560.0)
-        .show_separator_line(look.panel_separators)
+        .show_separator_line(true)
         .frame(
             Frame::new()
                 .fill(palette.panel)

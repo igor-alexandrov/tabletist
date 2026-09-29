@@ -202,7 +202,9 @@ pub struct Look {
     pub capsule_search: bool,
     /// The sidebar takes the panel colour rather than the window's.
     pub sidebar_tinted: bool,
-    /// Panels are separated by 1 px lines.
+    /// Bars (top bar, object tabs, filter bar, footer) are separated from
+    /// the content by 1 px lines. The sidebar and the row panel always are:
+    /// one tone off the content is too faint to mark a pane's edge.
     pub panel_separators: bool,
     pub data_font: DataFont,
 }
