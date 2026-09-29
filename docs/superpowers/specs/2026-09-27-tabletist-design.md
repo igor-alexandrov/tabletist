@@ -535,7 +535,7 @@ falls back to defaults with a warning and is kept aside as `*.bad`.
 - `tabletist-db` unit tests: dialect SQL builder (quoting, parameters, filters,
   sort, paging), URL parsing, value conversion, error mapping.
 - `tabletist-db` integration tests over shared fixtures
-  (`tests/fixtures/{pg,mysql,sqlite}.sql`) covering enums, arrays, JSON/JSONB,
+  (`crates/tabletist-db/fixtures/{postgres,mysql,sqlite}.sql`) covering enums, arrays, JSON/JSONB,
   bytea/BLOB, NULLs, Unicode, a table without a primary key, a 100k-row table,
   views, materialized views, foreign keys, composite indexes. SQLite runs
   always. PostgreSQL, MySQL, and SSH run when `TABLETIST_TEST_PG_URL`,
@@ -543,10 +543,15 @@ falls back to defaults with a warning and is kept aside as `*.bad`.
   provides them locally and CI provides them as service containers on Linux.
 - App reducer tests: apply `Action`s against a recording, offline backend and
   assert state and the commands sent.
-- Headless UI tests (demo mode, bundled `assets/fixture.sqlite`): lay out every
-  screen at several window sizes; assert on the AccessKit tree (no overlaps,
-  expected labels). `--demo-shot PATH --demo-size WxH` writes screenshots for
-  visual review.
+- Headless UI tests (`src/testing.rs`, no window): lay out every screen at
+  several window sizes; assert on the AccessKit tree (no overlaps, expected
+  labels). Demo mode (`--demo`) and tests write the SQLite fixture to a
+  throwaway file with `tabletist_db::fixtures::write_sqlite_demo`.
+- Screenshots for visual review: `--demo --demo-shot PATH --demo-size WxH`
+  saves the running window; `src/shots.rs` (`cargo test --features shots
+  --lib shots -- --ignored`, needs a GPU) renders every scene under each
+  look, light and dark, to `target/shots/`.
+- `tests/cli.rs` runs the built binary.
 - Tests never touch the network or the keyring, except the gated integration
   tests and one `#[ignore]` native keyring round trip.
 
@@ -554,8 +559,9 @@ falls back to defaults with a warning and is kept aside as `*.bad`.
 
 - Edition 2024, Rust 1.98 pinned in `rust-toolchain.toml`; `mise` + `mbx`.
 - `unsafe_code = "forbid"`; CI runs `cargo fmt --check`,
-  `cargo clippy --all-targets -- -D warnings`, `cargo test`, and
-  `RUSTDOCFLAGS=-D warnings cargo doc` on Linux, macOS, and Windows.
+  `cargo clippy --all-targets -- -D warnings`, and
+  `RUSTDOCFLAGS=-D warnings cargo doc` on Linux, and `cargo test` on Linux,
+  macOS, and Windows.
 - Views emit Actions; the reducer applies them after drawing.
 - The UI thread never waits on the database, network, or disk.
 - Platform code sits behind `cfg`; all three targets must keep compiling.
