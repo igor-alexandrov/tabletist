@@ -1,6 +1,7 @@
 //! A connection tab: top bar, disconnected banner, and (batch 3) the body.
 
 use egui::{Frame, Margin, RichText};
+use tabletist_db::TlsMode;
 
 use crate::app::App;
 use crate::i18n::gettext;
@@ -89,7 +90,11 @@ fn top_bar(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
     let driver = workspace.driver.label();
     let databases = workspace.databases.value.clone().unwrap_or_default();
     let current = workspace.spec.database.clone();
-    let tls = (workspace.driver != tabletist_db::Driver::Sqlite).then_some(workspace.spec.tls);
+    let tls = (workspace.driver != tabletist_db::Driver::Sqlite).then(|| {
+        let encrypted =
+            matches!(workspace.status, SessionStatus::Connected).then_some(workspace.encrypted);
+        tls_status(workspace.spec.tls, encrypted)
+    });
     let ssh_host = workspace.spec.ssh.as_ref().map(|ssh| ssh.host.clone());
     let mut actions = Vec::new();
     egui::Panel::top(egui::Id::new(("workspace-top", tab.0)))
@@ -129,19 +134,13 @@ fn top_bar(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                                 .color(palette.secondary),
                         );
                     }
-                    if let Some(mode) = tls {
-                        use tabletist_db::TlsMode;
-                        let (text, color) = match mode {
-                            TlsMode::Disable => (gettext(locale, "Not encrypted"), palette.warning),
-                            TlsMode::Prefer => {
-                                (gettext(locale, "TLS if offered"), palette.secondary)
-                            }
-                            TlsMode::Require => (gettext(locale, "TLS"), palette.secondary),
-                            TlsMode::VerifyCa | TlsMode::VerifyFull => {
-                                (gettext(locale, "TLS verified"), palette.secondary)
-                            }
+                    if let Some((text, warn)) = tls {
+                        let color = if warn {
+                            palette.warning
+                        } else {
+                            palette.secondary
                         };
-                        ui.label(RichText::new(text).color(color));
+                        ui.label(RichText::new(gettext(locale, text)).color(color));
                     }
                     if databases.len() > 1 {
                         let mut chosen = current.clone();
@@ -175,6 +174,19 @@ fn top_bar(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
             });
         });
     app.actions.extend(actions);
+}
+
+/// What the top bar says about TLS, and whether to say it as a warning.
+/// `encrypted` is what the session negotiated, once it has connected.
+/// `prefer` and `require` do not check the certificate (as in libpq), so
+/// anyone on the network path could be the server.
+fn tls_status(mode: TlsMode, encrypted: Option<bool>) -> (&'static str, bool) {
+    match (mode, encrypted) {
+        (TlsMode::Disable, _) | (_, Some(false)) => ("Not encrypted", true),
+        (TlsMode::Prefer | TlsMode::Require, _) => ("TLS, not verified", true),
+        (TlsMode::VerifyCa, _) => ("TLS, host name not checked", false),
+        (TlsMode::VerifyFull, _) => ("TLS verified", false),
+    }
 }
 
 fn banner(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {

@@ -218,6 +218,9 @@ pub struct Workspace {
     pub color: ColorTag,
     pub spec: ConnectSpec,
     pub driver: Driver,
+    /// Whether the session runs over TLS, as negotiated. Set when the
+    /// session connects; `prefer` may have fallen back to plain text.
+    pub encrypted: bool,
     pub status: SessionStatus,
     pub tree: Tree,
     pub objects: Vec<ObjectTab>,

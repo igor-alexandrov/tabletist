@@ -285,6 +285,7 @@ impl Harness {
             session,
             request,
             driver: Driver::Sqlite,
+            encrypted: false,
         }));
         let Command::ListSchemas { request, .. } = *last_sent(&self.app) else {
             panic!("expected ListSchemas");

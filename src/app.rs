@@ -825,6 +825,7 @@ impl App {
             name: saved.name,
             color: saved.color,
             driver: saved.spec.driver,
+            encrypted: false,
             spec: saved.spec,
             status: SessionStatus::Connecting { request },
             tree: Tree::default(),
@@ -1078,6 +1079,7 @@ impl App {
                 session,
                 request,
                 driver,
+                encrypted,
             } => {
                 let adopted = self.tab_for_session(session).and_then(|tab| {
                     let workspace = self.workspace_mut(tab)?;
@@ -1085,6 +1087,7 @@ impl App {
                         SessionStatus::Connecting { request: waiting } if waiting == request => {
                             workspace.status = SessionStatus::Connected;
                             workspace.driver = driver;
+                            workspace.encrypted = encrypted;
                             Some(tab)
                         }
                         _ => None,
@@ -2173,6 +2176,7 @@ mod tests {
             session,
             request,
             driver: Driver::Sqlite,
+            encrypted: false,
         }));
         assert!(matches!(
             app.workspace(tab).unwrap().status,
@@ -2207,6 +2211,7 @@ mod tests {
             session,
             request,
             driver: Driver::Sqlite,
+            encrypted: false,
         }));
         assert!(app.workspace(tab).is_none());
     }
@@ -2221,6 +2226,7 @@ mod tests {
             session: first_session,
             request: first_request,
             driver: Driver::Sqlite,
+            encrypted: false,
         }));
         assert!(matches!(
             app.workspace(tab).unwrap().status,
@@ -2240,6 +2246,7 @@ mod tests {
             session,
             request,
             driver: Driver::Sqlite,
+            encrypted: false,
         }));
         app.apply(Action::Backend(Event::Disconnected {
             session,
@@ -2259,6 +2266,7 @@ mod tests {
             session,
             request,
             driver: Driver::Sqlite,
+            encrypted: false,
         }));
         app.apply(Action::Reconnect(tab));
         let new_session = app.workspace(tab).unwrap().session;
@@ -2610,6 +2618,7 @@ mod tests {
             session,
             request,
             driver: Driver::Sqlite,
+            encrypted: false,
         }));
         let new: Vec<_> = harness.app.backend.sent[before..].iter().collect();
         assert!(
@@ -2645,6 +2654,7 @@ mod tests {
             session,
             request,
             driver: Driver::Sqlite,
+            encrypted: false,
         }));
         let refetched = harness.app.backend.sent[before..]
             .iter()
@@ -2686,6 +2696,7 @@ mod tests {
             session,
             request,
             driver: Driver::Sqlite,
+            encrypted: false,
         }));
         assert!(object(&harness, tab, background).rows.is_loading());
     }
@@ -3220,6 +3231,7 @@ mod tests {
             session,
             request,
             driver: Driver::Postgres,
+            encrypted: false,
         }));
         assert!(app.backend.sent.iter().any(|c| matches!(
             c,
@@ -3326,6 +3338,7 @@ mod tests {
             session,
             request,
             driver: Driver::Postgres,
+            encrypted: false,
         }));
         assert!(app.backend.sent.iter().any(|c| matches!(
             c,
@@ -3565,6 +3578,7 @@ mod tests {
             session,
             request,
             driver: Driver::Postgres,
+            encrypted: false,
         }));
         tab
     }
@@ -3695,6 +3709,7 @@ mod tests {
             session,
             request,
             driver: Driver::MySql,
+            encrypted: false,
         }));
         let Some(Command::ListSchemas { request, .. }) = app
             .backend
@@ -4062,6 +4077,7 @@ mod tests {
                 session,
                 request,
                 driver: Driver::Postgres,
+                encrypted: false,
             }));
             assert!(app.backend.sent.iter().any(|c| matches!(c,
                 Command::StoreSecret { account, secret: Some(_), .. }
@@ -4815,6 +4831,7 @@ mod tests {
                 session,
                 request,
                 driver: Driver::Sqlite,
+                encrypted: false,
             }));
             let object = harness.app.workspace(tab).unwrap().object_tab(id).unwrap();
             assert!(!object.count.is_loading(), "not stuck on Counting");

@@ -113,6 +113,9 @@ pub enum Event {
         session: SessionId,
         request: RequestId,
         driver: Driver,
+        /// Whether the session runs over TLS (`prefer` may have fallen back
+        /// to plain text).
+        encrypted: bool,
     },
     ConnectFailed {
         session: SessionId,
@@ -339,7 +342,7 @@ struct SessionHandle {
 struct Ready {
     session: SessionId,
     request: RequestId,
-    outcome: Result<(Driver, SessionHandle), Error>,
+    outcome: Result<(Driver, bool, SessionHandle), Error>,
 }
 
 /// Runs on the backend runtime. Owns every session.
@@ -393,12 +396,13 @@ impl Worker {
         match done.outcome {
             // Dropping the handle stops the session task, which closes it.
             Ok(_) if closed => {}
-            Ok((driver, handle)) => {
+            Ok((driver, encrypted, handle)) => {
                 self.sessions.insert(done.session, handle);
                 self.outbox.emit(Event::Connected {
                     session: done.session,
                     request: done.request,
                     driver,
+                    encrypted,
                 });
             }
             Err(error) => self.outbox.emit(Event::ConnectFailed {
@@ -426,6 +430,7 @@ impl Worker {
                         .await
                         .map(|connection| {
                             let driver = connection.driver();
+                            let encrypted = connection.is_encrypted();
                             let cancel = connection.cancel_handle();
                             let (queue, commands) = tokio_mpsc::unbounded_channel();
                             let (stop, stopped) = tokio::sync::oneshot::channel();
@@ -434,6 +439,7 @@ impl Worker {
                             ));
                             (
                                 driver,
+                                encrypted,
                                 SessionHandle {
                                     queue,
                                     cancel,

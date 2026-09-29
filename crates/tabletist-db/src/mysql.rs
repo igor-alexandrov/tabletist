@@ -29,6 +29,9 @@ pub struct Conn {
     pub(crate) opts: Opts,
     /// This session's thread id on the server.
     pub(crate) id: u32,
+    /// Whether the session runs over TLS: under `prefer` a server without
+    /// TLS gets plain text.
+    pub(crate) encrypted: bool,
 }
 
 impl Conn {
@@ -81,10 +84,14 @@ impl Conn {
         .await
         .map_err(query_error)?;
         let id = conn.id();
+        // mysql_async fails rather than go on in plain text when it was
+        // given TLS options, so the options that connected say it.
+        let encrypted = opts.ssl_opts().is_some();
         Ok(Self {
             conn: tokio::sync::Mutex::new(conn),
             opts,
             id,
+            encrypted,
         })
     }
 

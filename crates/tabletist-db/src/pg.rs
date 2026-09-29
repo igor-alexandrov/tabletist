@@ -2,9 +2,14 @@
 //! row queries use the simple-query protocol, which sends every value as
 //! text.
 
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use tokio_postgres::SimpleQueryMessage;
+use tokio_postgres::tls::{MakeTlsConnect, TlsConnect};
+use tokio_postgres::{SimpleQueryMessage, Socket};
 
 use crate::{
     ColumnInfo, ColumnMeta, ConnectSpec, Dialect, Error, ForeignKeyInfo, IndexInfo, ObjectInfo,
@@ -18,6 +23,54 @@ pub struct Conn {
     pub(crate) client: tokio::sync::Mutex<tokio_postgres::Client>,
     pub(crate) cancel: tokio_postgres::CancelToken,
     pub(crate) tls: MakeRustlsConnect,
+    /// Whether the session runs over TLS: under `prefer` a server that
+    /// declines TLS gets plain text.
+    pub(crate) encrypted: bool,
+}
+
+/// Wraps the rustls connector to note a finished handshake. tokio-postgres
+/// calls it only when the server accepts TLS, and does not say afterwards
+/// whether `prefer` went on in plain text.
+struct Noted {
+    inner: MakeRustlsConnect,
+    handshake: Arc<AtomicBool>,
+}
+
+type RustlsConnect = <MakeRustlsConnect as MakeTlsConnect<Socket>>::TlsConnect;
+
+struct NotedConnect {
+    inner: RustlsConnect,
+    handshake: Arc<AtomicBool>,
+}
+
+impl MakeTlsConnect<Socket> for Noted {
+    type Stream = <MakeRustlsConnect as MakeTlsConnect<Socket>>::Stream;
+    type TlsConnect = NotedConnect;
+    type Error = <MakeRustlsConnect as MakeTlsConnect<Socket>>::Error;
+
+    fn make_tls_connect(&mut self, domain: &str) -> std::result::Result<NotedConnect, Self::Error> {
+        Ok(NotedConnect {
+            inner: MakeTlsConnect::<Socket>::make_tls_connect(&mut self.inner, domain)?,
+            handshake: Arc::clone(&self.handshake),
+        })
+    }
+}
+
+impl TlsConnect<Socket> for NotedConnect {
+    type Stream = <RustlsConnect as TlsConnect<Socket>>::Stream;
+    type Error = <RustlsConnect as TlsConnect<Socket>>::Error;
+    type Future =
+        Pin<Box<dyn Future<Output = std::result::Result<Self::Stream, Self::Error>> + Send>>;
+
+    fn connect(self, stream: Socket) -> Self::Future {
+        let handshake = self.handshake;
+        let connecting = self.inner.connect(stream);
+        Box::pin(async move {
+            let stream = connecting.await?;
+            handshake.store(true, Ordering::Relaxed);
+            Ok(stream)
+        })
+    }
 }
 
 /// The error and its causes, joined, for messages ("error connecting to
@@ -124,7 +177,11 @@ impl Conn {
         // The config's own timeout covers only the TCP connect, which is
         // instant to a tunnel's local port: bound the whole startup instead.
         let config = config(spec, secrets, via);
-        let connecting = config.connect(tls.clone());
+        let handshake = Arc::new(AtomicBool::new(false));
+        let connecting = config.connect(Noted {
+            inner: tls.clone(),
+            handshake: Arc::clone(&handshake),
+        });
         let (client, connection) = tokio::time::timeout(Duration::from_secs(10), connecting)
             .await
             .map_err(|_| Error::Timeout)?
@@ -145,6 +202,7 @@ impl Conn {
             client: tokio::sync::Mutex::new(client),
             cancel,
             tls,
+            encrypted: handshake.load(Ordering::Relaxed),
         })
     }
 
@@ -439,5 +497,52 @@ mod tests {
         let direct = config(&spec, &secrets, None);
         assert!(direct.get_hostaddrs().is_empty());
         assert_eq!(direct.get_ports(), &[5432]);
+    }
+
+    /// A server that declines TLS and accepts anyone, answering every
+    /// query with one empty result.
+    async fn plain_server() -> u16 {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            // SSLRequest: declined.
+            let mut request = [0u8; 8];
+            socket.read_exact(&mut request).await.unwrap();
+            socket.write_all(b"N").await.unwrap();
+            // StartupMessage: AuthenticationOk, then ReadyForQuery.
+            let length = socket.read_u32().await.unwrap() as usize;
+            let mut startup = vec![0u8; length - 4];
+            socket.read_exact(&mut startup).await.unwrap();
+            socket
+                .write_all(b"R\0\0\0\x08\0\0\0\0Z\0\0\0\x05I")
+                .await
+                .unwrap();
+            while let Ok(kind) = socket.read_u8().await {
+                let length = socket.read_u32().await.unwrap() as usize;
+                let mut body = vec![0u8; length - 4];
+                socket.read_exact(&mut body).await.unwrap();
+                if kind == b'Q' {
+                    socket
+                        .write_all(b"C\0\0\0\x08SET\0Z\0\0\0\x05I")
+                        .await
+                        .unwrap();
+                }
+            }
+        });
+        port
+    }
+
+    #[tokio::test]
+    async fn prefer_says_when_it_fell_back_to_plain_text() {
+        let port = plain_server().await;
+        let (mut spec, secrets) =
+            ConnectSpec::from_url(&format!("postgres://me@127.0.0.1:{port}/app")).unwrap();
+        spec.tls = crate::TlsMode::Prefer;
+        let conn = Conn::connect(&spec, &secrets, None).await.unwrap();
+        assert!(!conn.encrypted);
     }
 }
