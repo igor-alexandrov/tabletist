@@ -1110,6 +1110,42 @@ mod tests {
         );
     }
 
+    const INTERCEPT_WARNING: &str = "The password can be intercepted on the network. \
+                                     To prevent it, verify the certificate and host, \
+                                     or use an SSH tunnel.";
+
+    #[test]
+    fn the_dialog_warns_when_a_remote_password_is_not_protected() {
+        use tabletist_db::TlsMode;
+        let mut harness = Harness::new();
+        harness.press(Key::N, Modifiers::COMMAND);
+        harness.click("PostgreSQL");
+        let set = |harness: &mut Harness, host: &str, tls: TlsMode, ssh: bool| {
+            match &mut harness.app.dialog {
+                Some(crate::model::Dialog::Connection(form)) => {
+                    form.host = host.into();
+                    form.tls = tls;
+                    form.ssh = ssh;
+                }
+                other => panic!("{other:?}"),
+            }
+            harness.has(INTERCEPT_WARNING)
+        };
+        for tls in [TlsMode::Disable, TlsMode::Prefer, TlsMode::Require] {
+            assert!(set(&mut harness, "db.example.com", tls, false), "{tls:?}");
+            assert!(!set(&mut harness, "localhost", tls, false), "{tls:?}");
+            assert!(!set(&mut harness, "db.example.com", tls, true), "{tls:?}");
+        }
+        for tls in [TlsMode::VerifyCa, TlsMode::VerifyFull] {
+            assert!(!set(&mut harness, "db.example.com", tls, false), "{tls:?}");
+        }
+        assert!(set(&mut harness, "10.0.0.5", TlsMode::Prefer, false));
+        assert_eq!(
+            harness.painted_color(INTERCEPT_WARNING),
+            Some(harness.app.palette.warning)
+        );
+    }
+
     #[test]
     fn the_footer_offers_count_and_then_shows_the_total() {
         let mut harness = Harness::new();
