@@ -448,4 +448,186 @@ mod tests {
             );
         }
     }
+
+    /// Every Rust file under `src/`, by its path from the crate root, with
+    /// its text.
+    fn sources() -> Vec<(String, String)> {
+        fn walk(dir: &std::path::Path, into: &mut Vec<std::path::PathBuf>) {
+            for entry in std::fs::read_dir(dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    walk(&path, into);
+                } else if path.extension().is_some_and(|ext| ext == "rs") {
+                    into.push(path);
+                }
+            }
+        }
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let mut paths = Vec::new();
+        walk(&root.join("src"), &mut paths);
+        assert!(paths.len() > 20, "found the sources");
+        paths
+            .into_iter()
+            .map(|path| {
+                let name = path.strip_prefix(root).unwrap().display().to_string();
+                (
+                    name.replace('\\', "/"),
+                    std::fs::read_to_string(&path).unwrap(),
+                )
+            })
+            .collect()
+    }
+
+    /// `text` lower-cased without whitespace, so `0xC2, 0x26, 0x1F` and a
+    /// match arm split over lines read the same wherever they appear.
+    fn squeezed(text: &str) -> String {
+        text.chars()
+            .filter(|c| !c.is_whitespace())
+            .flat_map(char::to_lowercase)
+            .collect()
+    }
+
+    const OWNER: &str = "src/env.rs";
+
+    /// The code of a file: no comment lines, and nothing from its `tests`
+    /// module on. Colours named in prose or as test data are not drawn.
+    fn code(text: &str) -> String {
+        let text = text
+            .find("#[cfg(test)]\nmod tests {")
+            .map_or(text, |at| &text[..at]);
+        text.lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn environment_colours_are_written_only_in_this_module() {
+        // The light palette's text colours the design also gives badge text
+        // (danger, warning, magenta, secondary): the palette may name them.
+        let light = Palette::light();
+        let shared = [light.danger, light.warning, light.magenta, light.secondary];
+        // The value tags' violet slot is the local badge's fill and text.
+        // Pending a decision on recolouring it, only those two, only there.
+        let (_, local_bg, local_fg) = native_table(Environment::Local);
+        let value_tags = [local_bg, local_fg];
+        let mut found = Vec::new();
+        for env in Environment::ALL {
+            let (base, badge_bg, badge_fg) = native_table(env);
+            for color in [base, badge_bg, badge_fg] {
+                let [r, g, b, _] = color.to_array();
+                let forms = [
+                    format!("#{r:02x}{g:02x}{b:02x}"),
+                    format!("0x{r:02x}{g:02x}{b:02x}"),
+                    format!("0x{r:02x},0x{g:02x},0x{b:02x}"),
+                ];
+                for (path, text) in sources() {
+                    if path == OWNER
+                        || (path == "src/theme.rs" && shared.contains(&color))
+                        || (path == "src/ui/value_tags.rs" && value_tags.contains(&color))
+                    {
+                        continue;
+                    }
+                    let text = squeezed(&text);
+                    for form in &forms {
+                        if text.contains(form.as_str()) {
+                            found.push(format!("{path}: {form} ({env:?})"));
+                        }
+                    }
+                }
+            }
+        }
+        assert!(found.is_empty(), "use env_colors():\n{}", found.join("\n"));
+    }
+
+    #[test]
+    fn no_view_writes_a_hex_colour() {
+        // The palette and its theme files, and the screenshots' copy of a
+        // theme, are colours by name, not a connection's.
+        let allowed = [OWNER, "src/theme.rs", "src/shots.rs"];
+        let mut found = Vec::new();
+        for (path, text) in sources() {
+            if allowed.contains(&path.as_str()) {
+                continue;
+            }
+            let text = code(&text);
+            for (at, _) in text.match_indices('#') {
+                let digits = text[at + 1..]
+                    .chars()
+                    .take_while(char::is_ascii_hexdigit)
+                    .count();
+                if digits == 6 {
+                    found.push(format!("{path}: {}", &text[at..at + 7]));
+                }
+            }
+        }
+        assert!(found.is_empty(), "{}", found.join("\n"));
+    }
+
+    #[test]
+    fn environments_are_matched_only_in_this_module() {
+        // Here the match is exhaustive (the lint above), so a new
+        // environment cannot be forgotten anywhere.
+        let mut found = Vec::new();
+        for (path, text) in sources() {
+            if path == OWNER {
+                continue;
+            }
+            let text = squeezed(&text);
+            for (at, _) in text.match_indices("environment::") {
+                let rest = &text[at + "environment::".len()..];
+                let name = rest
+                    .chars()
+                    .take_while(|c| c.is_alphanumeric() || *c == '_')
+                    .count();
+                let after = &rest[name..];
+                if after.starts_with("=>") || (after.starts_with('|') && !after.starts_with("||")) {
+                    found.push(format!("{path}: {}", &text[at..at + 13 + name]));
+                }
+            }
+        }
+        assert!(
+            found.is_empty(),
+            "match in env.rs instead:\n{}",
+            found.join("\n")
+        );
+        let owner = sources()
+            .into_iter()
+            .find(|(path, _)| path == OWNER)
+            .unwrap();
+        assert!(
+            owner
+                .1
+                .contains("#![deny(clippy::wildcard_enum_match_arm)]")
+        );
+    }
+
+    #[test]
+    fn only_the_environment_surfaces_ask_for_its_colours() {
+        // A view that shows an environment calls env_colors(); nothing else
+        // colours a connection, and nothing stores a colour for one.
+        let surfaces = [
+            OWNER,
+            "src/ui/workspace.rs",
+            "src/ui/picker.rs",
+            "src/ui/conn_tabs.rs",
+            "src/ui/connect_dialog.rs",
+            "src/ui/env_tests.rs",
+        ];
+        let mut found = Vec::new();
+        for (path, text) in sources() {
+            if text.contains("env_colors(") && !surfaces.contains(&path.as_str()) {
+                found.push(format!("{path}: calls env_colors()"));
+            }
+            // Spelt in two so this test does not find itself.
+            if text.contains(concat!("Color", "Tag")) {
+                found.push(format!("{path}: names the removed colour tag"));
+            }
+            let stored = ["src/connections.rs", "src/model.rs", "src/settings.rs"];
+            if stored.contains(&path.as_str()) && text.contains("Color32") {
+                found.push(format!("{path}: a stored colour"));
+            }
+        }
+        assert!(found.is_empty(), "{}", found.join("\n"));
+    }
 }

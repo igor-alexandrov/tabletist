@@ -53,12 +53,17 @@ fn environment_segments(
                     colors.badge_fg(),
                 )
                 .layout(ui.ctx());
-                ui.add(
+                // Not `selected`: egui would paint it in the selection
+                // colour instead. The state is announced by hand.
+                let response = ui.add(
                     egui::Button::new(laid.galley)
-                        .selected(true)
                         .fill(colors.badge_bg())
                         .stroke(egui::Stroke::new(1.0, colors.bar_border())),
-                )
+                );
+                response.widget_info(|| {
+                    egui::WidgetInfo::selected(egui::WidgetType::Button, true, true, text)
+                });
+                response
             } else {
                 crate::ui::widgets::toggle(ui, false, text, look, palette)
             };

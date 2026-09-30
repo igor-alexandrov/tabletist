@@ -4,6 +4,8 @@
 pub mod conn_tabs;
 pub mod connect_dialog;
 pub mod data_view;
+#[cfg(test)]
+mod env_tests;
 pub mod filter_bar;
 pub mod format;
 pub mod grid;
@@ -894,7 +896,11 @@ mod tests {
         let opaque = egui::Color32::from_rgb(0x3a, 0x7b, 0xd5);
         let translucent = egui::Color32::from_rgba_unmultiplied(0xe9, 0x4f, 0x37, 0x80);
         let swatches = |harness: &Harness, color: egui::Color32| {
-            harness.filled.iter().filter(|fill| **fill == color).count()
+            harness
+                .fills
+                .iter()
+                .filter(|(_, fill)| *fill == color)
+                .count()
         };
         harness.settle();
         assert_eq!(swatches(&harness, opaque), 1, "the grid's cell");

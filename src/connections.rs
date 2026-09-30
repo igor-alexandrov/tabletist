@@ -192,12 +192,10 @@ impl StoredConnection {
             (Some(StoredEnvironment::Production), _) => (Environment::Production, None),
             (Some(StoredEnvironment::None), _) => (Environment::None, None),
             (Some(StoredEnvironment::Test), _) => {
-                let environment = match Environment::for_spec(&self.spec) {
-                    Environment::Local => Environment::Local,
+                let environment = if Environment::for_spec(&self.spec) == Environment::Local {
+                    Environment::Local
+                } else {
                     Environment::Dev
-                    | Environment::Staging
-                    | Environment::Production
-                    | Environment::None => Environment::Dev,
                 };
                 (environment, Some("environment test".to_owned()))
             }
