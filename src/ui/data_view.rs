@@ -993,6 +993,13 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: Object
                             style: Style::Plain,
                         };
                     }
+                    if let Some(color) = format::color(value) {
+                        return Cell {
+                            text: format::cell_text(value),
+                            null: false,
+                            style: Style::Color(color),
+                        };
+                    }
                     if let (Some(values), tabletist_db::Value::Text(text)) = (&tags[col], value)
                         && let Some(hue) = values.iter().position(|known| known == text)
                     {

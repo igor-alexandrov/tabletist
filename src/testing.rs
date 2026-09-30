@@ -21,6 +21,8 @@ pub struct Harness {
     pub fullscreen: bool,
     /// Every piece of text the last frame painted, with its color.
     pub painted: Vec<(String, egui::Color32)>,
+    /// The fill of every rectangle the last frame painted.
+    pub filled: Vec<egui::Color32>,
     #[cfg(feature = "shots")]
     renderer: Option<egui_kittest::wgpu::WgpuTestRenderer>,
     #[cfg(feature = "shots")]
@@ -70,8 +72,10 @@ impl Harness {
         }
         output.textures_delta.clear();
         self.painted.clear();
+        self.filled.clear();
         for clipped in &output.shapes {
             collect_text(&clipped.shape, &mut self.painted);
+            collect_fills(&clipped.shape, &mut self.filled);
         }
         self.viewport_commands = output
             .viewport_output
@@ -192,6 +196,14 @@ impl Harness {
     pub fn has(&mut self, label: &str) -> bool {
         let tree = self.settle();
         labels(&tree).iter().any(|found| found == label)
+    }
+}
+
+fn collect_fills(shape: &egui::Shape, into: &mut Vec<egui::Color32>) {
+    match shape {
+        egui::Shape::Vec(shapes) => shapes.iter().for_each(|shape| collect_fills(shape, into)),
+        egui::Shape::Rect(rect) => into.push(rect.fill),
+        _ => {}
     }
 }
 
@@ -431,6 +443,7 @@ impl Harness {
             viewport_commands: Vec::new(),
             fullscreen: false,
             painted: Vec::new(),
+            filled: Vec::new(),
             #[cfg(feature = "shots")]
             renderer: None,
             #[cfg(feature = "shots")]

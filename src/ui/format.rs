@@ -55,6 +55,33 @@ fn one_line(text: &str) -> Cow<'_, str> {
     Cow::Owned(line)
 }
 
+/// The colour a `#rgb` or `#rrggbb` value names, as red, green and blue.
+pub fn hex_color(text: &str) -> Option<[u8; 3]> {
+    let digits = text.strip_prefix('#')?;
+    if !matches!(digits.len(), 3 | 6) || !digits.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return None;
+    }
+    let channel = |at: usize, len: usize| u8::from_str_radix(&digits[at..at + len], 16).ok();
+    if digits.len() == 3 {
+        // `#f80` is `#ff8800`.
+        Some([
+            channel(0, 1)? * 17,
+            channel(1, 1)? * 17,
+            channel(2, 1)? * 17,
+        ])
+    } else {
+        Some([channel(0, 2)?, channel(2, 2)?, channel(4, 2)?])
+    }
+}
+
+/// The colour a text value names, for a swatch beside it.
+pub fn color(value: &Value) -> Option<egui::Color32> {
+    match value {
+        Value::Text(text) => hex_color(text).map(|[r, g, b]| egui::Color32::from_rgb(r, g, b)),
+        _ => None,
+    }
+}
+
 /// A timestamp or time shown to the second: `2026-01-12 09:14:03.482915`
 /// becomes `2026-01-12 09:14:03`, keeping any zone after the fraction.
 pub fn to_the_second(text: &str) -> Cow<'_, str> {
@@ -321,6 +348,27 @@ mod tests {
         assert_eq!(to_the_second("09:14:03.5"), "09:14:03");
         assert_eq!(to_the_second("2026-01-12"), "2026-01-12");
         assert_eq!(to_the_second("3.14"), "3.14");
+    }
+
+    #[test]
+    fn hex_colours_are_recognised_in_both_lengths() {
+        use super::hex_color;
+        assert_eq!(hex_color("#3a7bd5"), Some([0x3a, 0x7b, 0xd5]));
+        assert_eq!(hex_color("#FFF"), Some([255, 255, 255]));
+        assert_eq!(hex_color("#f80"), Some([0xff, 0x88, 0x00]));
+        for not in [
+            "",
+            "#",
+            "3a7bd5",
+            "#3a7bd",
+            "#3a7bd5ff",
+            "#ggg",
+            " #fff",
+            "#fff ",
+            "#é12",
+        ] {
+            assert_eq!(hex_color(not), None, "{not:?}");
+        }
     }
 
     #[test]

@@ -60,6 +60,8 @@ pub enum Style {
     Tag(usize),
     /// A JSON document with this many keys: a `{ n }` chip, then the text.
     Json(usize),
+    /// A colour (`#3a7bd5`): a swatch of it, then the text.
+    Color(egui::Color32),
 }
 
 pub struct Cell<'a> {
@@ -165,6 +167,32 @@ pub fn tag_colors(
     }
 }
 
+/// A grid swatch's side, and the space after it.
+const SWATCH: f32 = 12.0;
+const SWATCH_GAP: f32 = 6.0;
+
+/// A square of `color`, `side` points wide, centred on `center`. A hairline
+/// keeps a colour close to the window's visible.
+pub fn paint_swatch(
+    painter: &egui::Painter,
+    ui: &Ui,
+    center: egui::Pos2,
+    side: f32,
+    color: egui::Color32,
+    look: &Look,
+    palette: &Palette,
+) {
+    let rect = Rect::from_center_size(center, vec2(side, side));
+    let corner = CornerRadius::same(look.radius.min(3));
+    painter.rect_filled(rect, corner, color);
+    painter.rect_stroke(
+        rect,
+        corner,
+        Stroke::new(crate::ui::widgets::hairline(ui), palette.border),
+        StrokeKind::Inside,
+    );
+}
+
 /// `text` shortened with "…" to fit `max` points as measured by `width`:
 /// text keeps its start; numbers (`keep_end`) keep their last digits, the
 /// ones that tell rows apart. Never cuts a character in half.
@@ -233,6 +261,7 @@ pub fn initial_widths<'a>(
                         Style::Plain => 0.0,
                         Style::Tag(_) => 16.0,
                         Style::Json(_) => 44.0,
+                        Style::Color(_) => SWATCH + SWATCH_GAP,
                     };
                     width(&cell.text) + chip
                 })
@@ -650,7 +679,7 @@ fn draw_header(
     );
 }
 
-/// One cell: its text, tag or JSON chip, cut to fit.
+/// One cell: its text, tag, JSON chip or colour swatch, cut to fit.
 fn draw_cell(
     ui: &Ui,
     painter: &egui::Painter,
@@ -781,6 +810,33 @@ fn draw_cell(
                 palette.secondary
             };
             paint(&clip, ui, role, &shown, color, left, center, false, look);
+        }
+        Style::Color(color) => {
+            let left = rect.left() + pad;
+            paint_swatch(
+                &clip,
+                ui,
+                pos2(left + SWATCH / 2.0, center),
+                SWATCH,
+                color,
+                look,
+                palette,
+            );
+            let left = left + SWATCH + SWATCH_GAP;
+            let shown = ellipsize(&content.text, rect.right() - pad - left, false, |text| {
+                width(text, role)
+            });
+            paint(
+                &clip,
+                ui,
+                role,
+                &shown,
+                palette.text,
+                left,
+                center,
+                false,
+                look,
+            );
         }
         Style::Plain => {
             let numeric = column.numeric;

@@ -38,6 +38,9 @@ fn line_of(ui: &egui::Ui, role: TextRole, look: &Look) -> f32 {
     role.row_height(ui.ctx(), look.faces)
 }
 
+/// A colour value's swatch.
+const SWATCH: f32 = 14.0;
+
 /// Field labels and notes: 11.5 in both looks.
 fn caption(look: &Look) -> TextRole {
     TextRole::pick(look, TextRole::FieldLabel, TextRole::OCaption)
@@ -768,6 +771,21 @@ fn field(
     };
     let small = widgets::secondary(look);
     ui.horizontal_top(|ui| {
+        // A colour (`#3a7bd5`) leads with a swatch of it, on the first line.
+        if let Some(swatch) = format::color(value) {
+            let (place, _) =
+                ui.allocate_exact_size(vec2(SWATCH, line_of(ui, role, look)), Sense::hover());
+            crate::ui::grid::paint_swatch(
+                ui.painter(),
+                ui,
+                place.center(),
+                SWATCH,
+                swatch,
+                look,
+                palette,
+            );
+            ui.add_space(8.0);
+        }
         let link = follow.as_ref().map_or(0.0, |(text, _)| {
             small.width(ui.ctx(), look.faces, text) + 12.0
         });
