@@ -10,7 +10,8 @@
 //! the window (the connection bar, the picker's header) can be taller, so
 //! every frame also moves each button onto that bar's line. AppKit lays the
 //! buttons out again on resizes and focus changes, and each of those draws
-//! a frame that puts them back.
+//! a frame that puts them back. Nothing here is `unsafe`: the window comes
+//! from `NSApplication` and the buttons' title bar is their shared ancestor.
 
 use objc2::MainThreadMarker;
 use objc2::rc::Retained;
@@ -73,24 +74,35 @@ impl UnifiedTitleBar {
         if self.measure() == TitleBar::default() {
             return;
         }
-        // Window coordinates run up from the bottom edge.
-        let target = NSPoint::new(0.0, window.frame().size.height - f64::from(line));
-        for kind in [
+        let buttons: Vec<_> = [
             NSWindowButton::CloseButton,
             NSWindowButton::MiniaturizeButton,
             NSWindowButton::ZoomButton,
-        ] {
-            let Some(button) = window.standardWindowButton(kind) else {
-                continue;
-            };
-            // SAFETY: the window is main-thread only, so this runs on the
-            // main thread, and the title bar view comes back retained.
-            let Some(bar) = (unsafe { button.superview() }) else {
-                continue;
-            };
+        ]
+        .into_iter()
+        .filter_map(|kind| window.standardWindowButton(kind))
+        .collect();
+        // The view the buttons sit in: the title bar.
+        let [first, .., last] = buttons.as_slice() else {
+            return;
+        };
+        let Some(bar) = first.ancestorSharedWithView(last) else {
+            return;
+        };
+        let bounds = bar.bounds();
+        // Window coordinates run up from the bottom edge.
+        let target = NSPoint::new(0.0, window.frame().size.height - f64::from(line));
+        let center = bar.convertPoint_fromView(target, None).y;
+        for button in &buttons {
             let frame = button.frame();
-            let bounds = bar.bounds();
-            let center = bar.convertPoint_fromView(target, None).y;
+            // Only a button directly in the bar has its frame in the bar's
+            // coordinates; any other stays where AppKit put it.
+            let seen = bar.convertRect_fromView(button.bounds(), Some(button));
+            if (seen.origin.x - frame.origin.x).abs() >= 0.5
+                || (seen.origin.y - frame.origin.y).abs() >= 0.5
+            {
+                continue;
+            }
             let lowest = bounds.origin.y;
             let highest = (lowest + bounds.size.height - frame.size.height).max(lowest);
             let y = (center - frame.size.height / 2.0)
