@@ -18,6 +18,7 @@ pub mod quick_open;
 pub mod row_panel;
 pub mod sidebar;
 pub mod structure;
+pub mod value_tags;
 pub mod widgets;
 pub mod workspace;
 
@@ -1006,6 +1007,7 @@ mod tests {
                 nullable: false,
                 default: None,
                 comment: None,
+                allowed_values: None,
             }],
             primary_key: vec!["id".into()],
             indexes: vec![tabletist_db::IndexInfo {

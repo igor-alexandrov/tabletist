@@ -118,6 +118,8 @@ fn structure() -> Structure {
         nullable,
         default: default.map(Into::into),
         comment: None,
+        // `kind` has a CHECK (kind IN ('cover', 'preview')).
+        allowed_values: (name == "kind").then(|| vec!["cover".into(), "preview".into()]),
     };
     Structure {
         columns: vec![
@@ -451,7 +453,8 @@ mod mock {
         let colors = "mode\tdark\nbackground\t#1a1b26\ndark_background\t#16161e\n\
                       lighter_background\t#292e42\nforeground\t#c0caf5\nmuted\t#565f89\n\
                       accent\t#7aa2f7\nselection\t#283457\nred\t#f7768e\ngreen\t#9ece6a\n\
-                      yellow\t#e0af68\ncyan\t#7dcfff\norange\t#ff9e64\nmagenta\t#bb9af7\n";
+                      yellow\t#e0af68\ncyan\t#7dcfff\norange\t#ff9e64\nmagenta\t#bb9af7\n\
+                      blue\t#7aa2f7\nbright_red\t#f7768e\nbright_green\t#9ece6a\n";
         let rendered = fastframe_theme::omarchy::render_seed::<crate::theme::Palette>(
             include_str!("../contrib/omarchy/tabletist.json.tpl"),
             colors,
@@ -657,6 +660,7 @@ mod mock {
             nullable,
             default: None,
             comment: None,
+            allowed_values: None,
         };
         Structure {
             columns: vec![

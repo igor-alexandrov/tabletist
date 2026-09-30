@@ -4,6 +4,7 @@
 //! opened read-only.
 
 mod catalog;
+mod check;
 mod dialect;
 mod error;
 pub mod fixtures;

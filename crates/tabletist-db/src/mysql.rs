@@ -191,6 +191,7 @@ impl Conn {
                 nullable: nullable == "YES",
                 default,
                 comment: (!comment.is_empty()).then_some(comment),
+                allowed_values: None,
             })
             .collect();
         let index_rows: Vec<(String, i64, String, String)> = self

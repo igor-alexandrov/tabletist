@@ -45,6 +45,10 @@ pub struct ColumnInfo {
     pub nullable: bool,
     pub default: Option<String>,
     pub comment: Option<String>,
+    /// The values the column may hold, in the database's order: a
+    /// PostgreSQL enum's labels, or a text column's `CHECK (col IN (...))`
+    /// list. `None` for every other column.
+    pub allowed_values: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]

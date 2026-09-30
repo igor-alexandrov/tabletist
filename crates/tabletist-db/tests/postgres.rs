@@ -207,6 +207,43 @@ async fn users_structure_has_types_defaults_comments_key_and_indexes() {
 }
 
 #[tokio::test]
+async fn enums_and_check_lists_describe_their_allowed_values() {
+    let Some(connection) = connect().await else {
+        return;
+    };
+    let structure = connection
+        .describe(&ObjectRef::new("public", "tickets"))
+        .await
+        .unwrap();
+    let allowed = |name: &str| {
+        structure
+            .columns
+            .iter()
+            .find(|c| c.name == name)
+            .unwrap()
+            .allowed_values
+            .clone()
+    };
+    let list = |items: &[&str]| Some(items.iter().map(|item| (*item).to_owned()).collect());
+    assert_eq!(
+        allowed("size"),
+        list(&["small", "medium", "large"]),
+        "enum labels in their sort order"
+    );
+    assert_eq!(allowed("status"), list(&["open", "closed"]), "IN (...)");
+    assert_eq!(
+        allowed("channel"),
+        list(&["web", "phone"]),
+        "= ANY (ARRAY[...])"
+    );
+    assert_eq!(allowed("code"), None, "a CHECK that is no list");
+    assert_eq!(allowed("kind"), None, "free text, however it repeats");
+    assert_eq!(allowed("grade").map(|values| values.len()), Some(9));
+    assert_eq!(allowed("done"), None, "booleans need no list");
+    assert_eq!(allowed("id"), None);
+}
+
+#[tokio::test]
 async fn foreign_keys_name_their_target_and_actions() {
     let Some(connection) = connect().await else {
         return;
