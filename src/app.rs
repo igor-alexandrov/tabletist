@@ -87,6 +87,8 @@ pub struct App {
     pub titlebar: TitleBar,
     /// The OS theme seen last frame, to notice light/dark switches.
     system_theme: Option<egui::Theme>,
+    /// The window title last sent, so it is sent only when it changes.
+    window_title: String,
     next_id: u64,
 }
 
@@ -121,6 +123,7 @@ impl App {
             host_keys_error,
             titlebar: TitleBar::default(),
             system_theme: None,
+            window_title: "Tabletist".into(),
             next_id: 1,
         };
         let tab = app.picker_tab();
@@ -130,6 +133,27 @@ impl App {
             app.save_connections();
         }
         app
+    }
+
+    /// The window's title: the active connection, its environment and its
+    /// database, which is how the window switcher, Mission Control and
+    /// Hyprland tell connection windows apart. Plain text: no colour.
+    pub fn window_title(&self) -> String {
+        let ConnTabContent::Workspace(workspace) = &self.tabs[self.active].content else {
+            return "Tabletist".into();
+        };
+        let env = workspace
+            .environment
+            .label(crate::env::Platform::of(&self.look));
+        let database = match &workspace.spec.sqlite_path {
+            Some(path) => crate::model::file_name(&path.display().to_string()),
+            None => workspace.spec.database.clone(),
+        };
+        if database.is_empty() {
+            format!("{} · {env}", workspace.name)
+        } else {
+            format!("{} · {env} — {database}", workspace.name)
+        }
     }
 
     pub fn workspace(&self, tab: ConnTabId) -> Option<&Workspace> {
@@ -2368,6 +2392,12 @@ impl App {
         }
         crate::ui::show(self, ui);
         self.apply_actions();
+        let title = self.window_title();
+        if title != self.window_title {
+            ui.ctx()
+                .send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
+            self.window_title = title;
+        }
     }
 }
 
@@ -2985,6 +3015,43 @@ mod tests {
 
     use crate::model::{TreeNode, TreeRow};
     use crate::testing::Harness;
+
+    #[test]
+    fn the_window_title_names_the_connection_its_environment_and_database() {
+        let mut harness = Harness::new();
+        harness.settle();
+        assert_eq!(harness.app.window_title(), "Tabletist");
+        let tab = harness.connect_fake();
+        let workspace = harness.app.workspace_mut(tab).unwrap();
+        workspace.name = "Bookshop".into();
+        workspace.environment = crate::env::Environment::Production;
+        let title = "Bookshop · production — fixture.db";
+        assert_eq!(harness.app.window_title(), title);
+        let sent = |harness: &mut Harness| {
+            harness.frame(Vec::new());
+            harness
+                .viewport_commands
+                .contains(&egui::ViewportCommand::Title(title.into()))
+        };
+        // Sent when it changes, not every frame.
+        assert!(sent(&mut harness));
+        assert!(!sent(&mut harness));
+        let workspace = harness.app.workspace_mut(tab).unwrap();
+        workspace.spec = tabletist_db::ConnectSpec::from_url(
+            "postgres://app@db.example.com:5432/bookshop_production",
+        )
+        .unwrap()
+        .0;
+        assert_eq!(
+            harness.app.window_title(),
+            "Bookshop · production — bookshop_production"
+        );
+        harness.set_look(crate::theme::Look::omarchy());
+        assert_eq!(
+            harness.app.window_title(),
+            "Bookshop · PROD — bookshop_production"
+        );
+    }
 
     #[test]
     fn connecting_loads_schemas_then_expands_the_default_schema() {

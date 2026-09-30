@@ -7,7 +7,7 @@ use tabletist_db::TlsMode;
 use crate::app::App;
 use crate::i18n::gettext;
 use crate::model::{Action, ConnTabId, ObjectView, SessionStatus};
-use crate::theme::{self, Icon, Look, Palette};
+use crate::theme::{Icon, Look, Palette};
 use crate::typography::{Text, TextRole};
 use crate::ui::widgets;
 
@@ -203,22 +203,7 @@ fn top_bar(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
         return;
     };
     let env = crate::env::env_colors(info.env, crate::env::Platform::of(&look), &palette);
-    let base = if palette.dark {
-        palette.panel
-    } else {
-        egui::Color32::WHITE
-    };
-    let (tint, border) = if look.terminal {
-        (
-            theme::mix(base, env.base(), 0.16),
-            theme::mix(base, env.base(), 0.4),
-        )
-    } else {
-        (
-            theme::mix(base, env.base(), 0.12),
-            theme::mix(base, env.base(), 0.28),
-        )
-    };
+    let (tint, border) = (env.bar_bg(), env.bar_border());
     // macOS: with one connection the bar is the title bar, beside the
     // window buttons.
     let zoom = ui.ctx().zoom_factor();
@@ -300,12 +285,7 @@ fn mac_bar(
 ) {
     let center = rect.center().y;
     // The bar's own rule, and white faces over its tint.
-    let base = if palette.dark {
-        palette.panel
-    } else {
-        egui::Color32::WHITE
-    };
-    let rim = theme::mix(base, env.base(), 0.28);
+    let rim = env.bar_border();
     let face = |alpha: f32| {
         if palette.dark {
             palette.window.gamma_multiply(alpha)
@@ -489,7 +469,7 @@ fn terminal_bar(
     locale: crate::i18n::Locale,
 ) {
     let center = rect.center().y;
-    let connection_line = theme::mix(palette.panel, env.base(), 0.4);
+    let connection_line = env.bar_border();
     // Twelve in and twelve apart, as the design's row.
     let mut x = rect.left() + 12.0;
     x += env_badge(ui, x, center, info.env, env, Badge::Tracked, look) + 12.0;

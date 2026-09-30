@@ -1095,16 +1095,17 @@ mod tests {
     }
 
     #[test]
-    fn escape_with_the_color_list_open_keeps_the_dialog() {
+    fn escape_with_a_list_open_keeps_the_dialog() {
         let mut harness = Harness::new();
         harness.press(Key::N, Modifiers::COMMAND);
+        harness.click("PostgreSQL");
         let tree = harness.settle();
         let combo = tree
             .nodes
             .iter()
             .find(|(_, node)| node.role() == egui::accesskit::Role::ComboBox)
             .map(|(id, _)| *id)
-            .expect("the colour list");
+            .expect("the TLS list");
         harness.frame(vec![egui::Event::AccessKitActionRequest(
             egui::accesskit::ActionRequest {
                 target_tree: egui::accesskit::TreeId::ROOT,
@@ -1120,6 +1121,13 @@ mod tests {
         );
         harness.press(Key::Escape, Modifiers::NONE);
         assert!(harness.app.dialog.is_none());
+    }
+
+    fn form_mut(harness: &mut Harness) -> &mut crate::model::ConnectionForm {
+        match &mut harness.app.dialog {
+            Some(crate::model::Dialog::Connection(form)) => form,
+            _ => panic!("the connection dialog is open"),
+        }
     }
 
     /// The open connection dialog's form.
@@ -1175,27 +1183,56 @@ mod tests {
     fn choosing_an_environment_sets_the_connections() {
         let mut harness = Harness::new();
         harness.press(Key::N, Modifiers::COMMAND);
-        let tree = harness.settle();
-        let combo = crate::testing::node(&tree, "Environment", egui::accesskit::Role::ComboBox)
-            .or_else(|| {
-                tree.nodes
-                    .iter()
-                    .find(|(_, node)| node.role() == egui::accesskit::Role::ComboBox)
-                    .map(|(id, _)| *id)
-            })
-            .expect("the environment list");
-        harness.frame(vec![egui::Event::AccessKitActionRequest(
-            egui::accesskit::ActionRequest {
-                target_tree: egui::accesskit::TreeId::ROOT,
-                target_node: combo,
-                action: egui::accesskit::Action::Click,
-                data: None,
-            },
-        )]);
         harness.click("production");
         let form = form(&harness);
         assert_eq!(form.environment(), crate::env::Environment::Production);
         assert!(form.read_only(), "production is read-only by default");
+        let tree = harness.settle();
+        let selected: Vec<_> = crate::env::Environment::ALL
+            .iter()
+            .filter(|env| {
+                let label = env.label(crate::env::Platform::Native);
+                let id = crate::testing::node(&tree, label, egui::accesskit::Role::Button);
+                tree.nodes.iter().any(|(node, data)| {
+                    Some(*node) == id && data.toggled() == Some(egui::accesskit::Toggled::True)
+                })
+            })
+            .collect();
+        assert_eq!(selected, [&crate::env::Environment::Production]);
+    }
+
+    #[test]
+    fn a_new_connections_environment_follows_its_host_until_chosen() {
+        let mut harness = Harness::new();
+        harness.press(Key::N, Modifiers::COMMAND);
+        harness.click("PostgreSQL");
+        assert_eq!(form(&harness).environment(), crate::env::Environment::Local);
+        form_mut(&mut harness).host = "db.example.com".into();
+        assert_eq!(form(&harness).environment(), crate::env::Environment::None);
+        harness.click("staging");
+        form_mut(&mut harness).host = "localhost".into();
+        assert_eq!(
+            form(&harness).environment(),
+            crate::env::Environment::Staging,
+            "a chosen environment stays"
+        );
+    }
+
+    #[test]
+    fn the_dialog_shows_every_connection_read_only() {
+        let mut harness = Harness::new();
+        harness.press(Key::N, Modifiers::COMMAND);
+        let tree = harness.settle();
+        let (_, node) = tree
+            .nodes
+            .iter()
+            .find(|(_, node)| {
+                node.role() == egui::accesskit::Role::CheckBox && node.label() == Some("Read-only")
+            })
+            .expect("the read-only box");
+        assert_eq!(node.toggled(), Some(egui::accesskit::Toggled::True));
+        assert!(node.is_disabled());
+        assert!(harness.has("Every connection is read-only in 0.1.0"));
     }
 
     #[test]
