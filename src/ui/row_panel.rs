@@ -57,15 +57,17 @@ struct FieldInfo {
 
 /// A column's label: `id · int8 · primary key`. The terminal's half-width
 /// cells name a timestamp alone, as the design does.
+/// Names and types come from the server, so nothing hidden in them shows.
 fn label(name: &str, type_name: &str, kind: ValueKind, info: &FieldInfo, look: &Look) -> String {
+    let name = format::display_safe(name).into_owned();
     if look.terminal && kind == ValueKind::Temporal {
-        return name.to_owned();
+        return name;
     }
-    let mut parts = vec![name.to_owned()];
+    let mut parts = vec![name];
     let type_name = match (kind, type_name) {
         (ValueKind::Temporal, "timestamp") => "timestamp · no tz".to_owned(),
         (ValueKind::Temporal, "timestamptz") => "timestamp · tz".to_owned(),
-        _ => type_name.to_owned(),
+        _ => format::display_safe(type_name).into_owned(),
     };
     parts.push(type_name);
     if info.key {
@@ -77,7 +79,7 @@ fn label(name: &str, type_name: &str, kind: ValueKind, info: &FieldInfo, look: &
     }
     let mut text = parts.join(" · ");
     if let (Some(target), true) = (&info.target, look.terminal) {
-        text.push_str(&format!(" → {}", target.name));
+        text.push_str(&format!(" → {}", format::display_safe(&target.name)));
     }
     text
 }
@@ -97,6 +99,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: Object
     let Some(object) = app.workspace(tab).and_then(|w| w.object_tab(object_tab)) else {
         return;
     };
+    let object_name = format::display_safe(&object.object.name);
     let mut actions = Vec::new();
     egui::Panel::right(Id::new(("row-panel", tab.0)))
         .resizable(true)
@@ -172,15 +175,17 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: Object
                     _ => None,
                 }
             };
-            // The row's name: its key, else its number.
+            // The row's name: its key, else its number. Both as the grid
+            // shows them: short, and nothing hidden.
             let key_column = structure
-                .and_then(|s| (s.primary_key.len() == 1).then(|| s.primary_key[0].clone()));
-            let key_value = key_column.as_ref().and_then(|key| {
+                .and_then(|s| (s.primary_key.len() == 1).then(|| s.primary_key[0].as_str()));
+            let key_value = key_column.and_then(|key| {
                 page.columns
                     .iter()
-                    .position(|column| &column.name == key)
-                    .map(|col| format::plain_text(&row[col]))
+                    .position(|column| column.name == key)
+                    .map(|col| format::cell_text(&row[col]).into_owned())
             });
+            let key_column = key_column.map(|key| format::display_safe(key).into_owned());
             let number = object.query.offset + cell.row as u64 + 1;
             let side = side(&look);
             // Header: 52 (macOS) or 40 (terminal), and its rule.
@@ -308,7 +313,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: Object
                     ui,
                     header.left() + side,
                     top + title_line + sub_line / 2.0,
-                    Text::one(&look, sub_role, &object.object.name, palette.dim),
+                    Text::one(&look, sub_role, &object_name, palette.dim),
                 );
                 // Three 30 pt buttons, 4 apart, 8 in from the right.
                 let y = header.top() + 26.0;
@@ -630,7 +635,8 @@ fn field(
         line.center().y,
         Text::one(look, label_role, &shown, palette.dim),
     );
-    let copy_label = format!("{} {}", gettext(locale, "Copy"), column.name);
+    let column_name = format::display_safe(&column.name);
+    let copy_label = format!("{} {column_name}", gettext(locale, "Copy"));
     let hovered = ui.rect_contains_pointer(line.expand2(vec2(16.0, 30.0)));
     if let Some(doc) = &doc {
         // A document's own controls: fold everything, and copy.
@@ -710,7 +716,7 @@ fn field(
         }
         let id = Id::new(("row-panel-json", tab, object_tab, row, col));
         if look.terminal {
-            json_view::show(ui, id, &doc, &column.name, locale, palette, look);
+            json_view::show(ui, id, &doc, &column_name, locale, palette, look);
         } else {
             Frame::new()
                 .fill(palette.window)
@@ -721,7 +727,7 @@ fn field(
                 .inner_margin(egui::Margin::symmetric(12, 10))
                 .show(ui, |ui| {
                     ui.set_width(ui.available_width());
-                    json_view::show(ui, id, &doc, &column.name, locale, palette, look);
+                    json_view::show(ui, id, &doc, &column_name, locale, palette, look);
                 });
         }
         return;
@@ -758,7 +764,11 @@ fn field(
             ("gd open".to_owned(), target.clone())
         } else {
             (
-                format!("{} {} →", gettext(locale, "Open"), singular(&target.name)),
+                format!(
+                    "{} {} →",
+                    gettext(locale, "Open"),
+                    singular(&format::display_safe(&target.name))
+                ),
                 target.clone(),
             )
         }
@@ -809,7 +819,11 @@ fn field(
                 let link = Text::one(look, small, &text, palette.accent)
                     .layout(ui.ctx())
                     .label_sense(ui, Sense::click());
-                let name = format!("{} {}", gettext(locale, "Open"), target.name);
+                let name = format!(
+                    "{} {}",
+                    gettext(locale, "Open"),
+                    format::display_safe(&target.name)
+                );
                 link.widget_info(|| WidgetInfo::labeled(WidgetType::Link, true, &name));
                 if link.clicked() {
                     actions.push(Action::FollowForeignKey {

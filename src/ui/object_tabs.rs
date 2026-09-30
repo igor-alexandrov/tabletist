@@ -40,7 +40,10 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
     let tabs: Vec<_> = workspace
         .objects
         .iter()
-        .map(|object| (object.id, object.object.name.clone(), object.pinned))
+        .map(|object| {
+            let name = crate::ui::format::display_safe(&object.object.name).into_owned();
+            (object.id, name, object.pinned)
+        })
         .collect();
     let active = workspace.active_object;
     let row_panel = workspace.row_panel;

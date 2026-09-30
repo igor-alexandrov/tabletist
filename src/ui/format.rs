@@ -28,31 +28,98 @@ pub fn cell_text(value: &Value) -> Cow<'_, str> {
     }
 }
 
-fn one_line(text: &str) -> Cow<'_, str> {
-    // Only the first CELL_MAX_CHARS characters are ever shown, so never look
-    // past them: a cell may hold megabytes and is drawn every frame.
-    let (end, too_long) = match text.char_indices().nth(CELL_MAX_CHARS) {
+/// Text on one line, as a grid cell shows it: line breaks and tabs become
+/// spaces, hidden characters are written out.
+pub fn one_line(text: &str) -> Cow<'_, str> {
+    bounded_line(text, CELL_MAX_CHARS, true)
+}
+
+/// Characters of a name (schema, table, column, database) the UI lays out.
+/// SQLite names have no length limit, and names are laid out every frame.
+pub const NAME_MAX_CHARS: usize = 256;
+
+/// A name that came from the server, as the UI shows it: at most
+/// NAME_MAX_CHARS characters, with every hidden character (a line break
+/// included) written out as `<U+202E>`, so `users_\u{202E}atad` can not pass
+/// for `users_data`, nor `users\u{200B}` for `users`. Copying keeps the name
+/// as it is.
+pub fn display_safe(name: &str) -> Cow<'_, str> {
+    bounded_line(name, NAME_MAX_CHARS, false)
+}
+
+/// `text` with every hidden character written out, as in `display_safe`,
+/// and not cut: for text already cut to a size.
+pub fn escape_hidden(text: &str) -> Cow<'_, str> {
+    bounded_line(text, usize::MAX, false)
+}
+
+/// The first `max` characters of `text` with hidden characters written out
+/// and "…" when cut. `spaces` turns line breaks and tabs into spaces instead.
+/// Borrows when there is nothing to change.
+fn bounded_line(text: &str, max: usize, spaces: bool) -> Cow<'_, str> {
+    // Only the first `max` characters are ever shown, so never look past
+    // them: a cell may hold megabytes and is drawn every frame.
+    let (end, too_long) = match text.char_indices().nth(max) {
         Some((index, _)) => (index, true),
         None => (text.len(), false),
     };
     let head = &text[..end];
-    if !too_long && !head.contains(['\n', '\r', '\t']) {
+    if !too_long && !head.chars().any(is_hidden) {
         return Cow::Borrowed(text);
     }
-    let mut line: String = head
-        .chars()
-        .map(|character| {
-            if matches!(character, '\n' | '\r' | '\t') {
-                ' '
-            } else {
-                character
-            }
-        })
-        .collect();
+    let mut line = String::with_capacity(head.len() + 16);
+    for character in head.chars() {
+        if spaces && matches!(character, '\n' | '\r' | '\t') {
+            line.push(' ');
+        } else if is_hidden(character) {
+            push_escaped(&mut line, character);
+        } else {
+            line.push(character);
+        }
+    }
     if too_long {
         line.push('…');
     }
     Cow::Owned(line)
+}
+
+/// Whether `character` draws nothing, or changes how the text around it is
+/// drawn: controls (C0, DEL and C1) and the invisible Unicode format
+/// characters (general category Cf). egui draws none of these, and its bidi
+/// pass obeys the direction ones, so U+202E shows the text after it
+/// backwards.
+///
+/// The Cf list is written out rather than taken from a crate: it is short and
+/// changes rarely. It leaves out the Cf characters that do draw a mark (the
+/// Arabic number signs U+0600 to U+0605, U+06DD, U+070F, U+0890, U+0891,
+/// U+08E2, U+110BD, U+110CD) and adds U+2028 and U+2029, the line and
+/// paragraph separators, which draw nothing either.
+fn is_hidden(character: char) -> bool {
+    if character.is_ascii() {
+        return character.is_ascii_control();
+    }
+    character.is_control()
+        || matches!(
+            character,
+            '\u{00AD}' // soft hyphen
+                | '\u{061C}' // Arabic letter mark
+                | '\u{180E}' // Mongolian vowel separator
+                | '\u{200B}'..='\u{200F}' // zero width space, joiners, LRM, RLM
+                | '\u{2028}'..='\u{202E}' // separators, bidi embeddings and overrides
+                | '\u{2060}'..='\u{2064}' // word joiner, invisible operators
+                | '\u{2066}'..='\u{206F}' // bidi isolates, deprecated format characters
+                | '\u{FEFF}' // byte order mark
+                | '\u{FFF9}'..='\u{FFFB}' // interlinear annotation
+                | '\u{13430}'..='\u{1343F}' // Egyptian hieroglyph format controls
+                | '\u{1BCA0}'..='\u{1BCA3}' // shorthand format controls
+                | '\u{1D173}'..='\u{1D17A}' // musical symbol format controls
+                | '\u{E0001}' // language tag
+                | '\u{E0020}'..='\u{E007F}' // tag characters
+        )
+}
+
+fn push_escaped(out: &mut String, character: char) {
+    let _ = write!(out, "<U+{:04X}>", u32::from(character));
 }
 
 /// The colour a `#rgb`, `#rgba`, `#rrggbb` or `#rrggbbaa` value names, as
@@ -308,28 +375,47 @@ pub const DISPLAY_MAX_BYTES: usize = 256 * 1024;
 /// Text as the row panel lays it out: at most DISPLAY_MAX_BYTES, with no
 /// line longer than DISPLAY_LINE_CHARS. egui's layout of one very long line
 /// is slow enough to freeze the window, so long lines are broken for display
-/// only; copying still gives the whole value.
+/// only; copying still gives the whole value. Hidden characters are written
+/// out as in `display_safe`; line breaks and tabs stay.
 pub fn for_display(text: &str) -> String {
     let mut cut = text.len().min(DISPLAY_MAX_BYTES);
     while !text.is_char_boundary(cut) {
         cut -= 1;
     }
     let mut out = String::with_capacity(cut + cut / DISPLAY_LINE_CHARS + 64);
-    for (index, line) in text[..cut].split('\n').enumerate() {
+    let mut escape = String::new();
+    // A written-out character is longer than the one it stands for, so the
+    // limit is checked on what is shown as well.
+    let mut full = false;
+    'lines: for (index, line) in text[..cut].split('\n').enumerate() {
         if index > 0 {
             out.push('\n');
         }
+        // A CR before the LF is part of the line break.
+        let line = line.strip_suffix('\r').unwrap_or(line);
         let mut count = 0;
         for character in line.chars() {
-            if count == DISPLAY_LINE_CHARS {
-                out.push('\n');
-                count = 0;
+            if out.len() >= DISPLAY_MAX_BYTES {
+                full = true;
+                break 'lines;
             }
-            out.push(character);
-            count += 1;
+            escape.clear();
+            if character != '\t' && is_hidden(character) {
+                push_escaped(&mut escape, character);
+            } else {
+                escape.push(character);
+            }
+            for shown in escape.chars() {
+                if count == DISPLAY_LINE_CHARS {
+                    out.push('\n');
+                    count = 0;
+                }
+                out.push(shown);
+                count += 1;
+            }
         }
     }
-    if cut < text.len() {
+    if full || cut < text.len() {
         out.push_str("\n…\n(Copy gives the whole value.)");
     }
     out
@@ -530,6 +616,93 @@ mod tests {
         assert!(shown.len() <= bound, "{}", shown.len());
         assert!(shown.ends_with("(Copy gives the whole value.)"));
         assert_eq!(for_display("short\nlines"), "short\nlines");
+    }
+
+    #[test]
+    fn a_bidi_override_is_written_out_not_obeyed() {
+        assert_eq!(display_safe("users_\u{202E}atad"), "users_<U+202E>atad");
+        assert_eq!(
+            cell_text(&text("Total: \u{202E}00.0001")),
+            "Total: <U+202E>00.0001"
+        );
+        for character in ['\u{202A}', '\u{202D}', '\u{2066}', '\u{2069}', '\u{061C}'] {
+            let shown = display_safe(&format!("a{character}b")).into_owned();
+            assert_eq!(shown, format!("a<U+{:04X}>b", u32::from(character)));
+        }
+    }
+
+    #[test]
+    fn invisible_characters_make_names_look_different() {
+        assert_ne!(display_safe("users\u{200B}"), display_safe("users"));
+        assert_eq!(display_safe("us\u{200D}ers"), "us<U+200D>ers");
+        assert_eq!(display_safe("\u{FEFF}users"), "<U+FEFF>users");
+        assert_eq!(display_safe("soft\u{00AD}hyphen"), "soft<U+00AD>hyphen");
+        assert_eq!(display_safe("tag\u{E0041}"), "tag<U+E0041>");
+    }
+
+    #[test]
+    fn controls_in_a_name_are_written_out_and_cells_keep_their_spaces() {
+        assert_eq!(
+            display_safe("a\nb\tc\u{7}\u{7F}\u{85}"),
+            "a<U+000A>b<U+0009>c<U+0007><U+007F><U+0085>"
+        );
+        assert_eq!(cell_text(&text("a\nb\u{0}c")), "a b<U+0000>c");
+    }
+
+    #[test]
+    fn mixed_scripts_and_emoji_are_left_alone() {
+        for name in ["Zoë 🚀", "مرحبا", "日本語", "naïve_café", "a-b.c"] {
+            assert!(matches!(display_safe(name), Cow::Borrowed(_)), "{name}");
+        }
+        assert_eq!(
+            display_safe("שלום\u{202C}Zoë\u{2067}"),
+            "שלום<U+202C>Zoë<U+2067>"
+        );
+    }
+
+    #[test]
+    fn a_plain_name_is_not_copied() {
+        assert!(matches!(display_safe("users"), Cow::Borrowed(_)));
+        assert!(matches!(display_safe(""), Cow::Borrowed(_)));
+    }
+
+    #[test]
+    fn a_long_name_is_cut_without_scanning_it_all() {
+        let long = "n".repeat(10 * 1024 * 1024);
+        let started = std::time::Instant::now();
+        for _ in 0..20 {
+            let shown = display_safe(&long);
+            assert_eq!(shown.chars().count(), NAME_MAX_CHARS + 1);
+            assert!(shown.ends_with('…'));
+        }
+        assert!(
+            started.elapsed() < std::time::Duration::from_millis(20),
+            "20 names took {:?}",
+            started.elapsed()
+        );
+        // Hidden characters past the cut are never looked at.
+        let tail = format!("{}\u{202E}", "n".repeat(NAME_MAX_CHARS));
+        assert!(!display_safe(&tail).contains("<U+"));
+    }
+
+    #[test]
+    fn the_row_panel_writes_out_hidden_characters_and_keeps_lines() {
+        assert_eq!(
+            for_display("a\u{202E}b\nc\td\r\ne\rf"),
+            "a<U+202E>b\nc\td\ne<U+000D>f"
+        );
+        // Written-out characters still keep to the size limit.
+        let shown = for_display(&"\u{0}".repeat(DISPLAY_MAX_BYTES));
+        let bound = DISPLAY_MAX_BYTES + DISPLAY_MAX_BYTES / DISPLAY_LINE_CHARS + 64;
+        assert!(shown.len() <= bound, "{}", shown.len());
+        assert!(shown.ends_with("(Copy gives the whole value.)"));
+    }
+
+    #[test]
+    fn copying_keeps_hidden_characters() {
+        let value = text("users_\u{202E}atad");
+        assert_eq!(plain_text(&value), "users_\u{202E}atad");
+        assert_eq!(tsv_row(&[value]), "users_\u{202E}atad");
     }
 
     #[test]

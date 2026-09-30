@@ -7,6 +7,7 @@ use crate::app::App;
 use crate::i18n::gettext;
 use crate::model::{Action, ConnTabId, ObjectTabId};
 use crate::theme::Icon;
+use crate::ui::format::display_safe;
 use crate::ui::widgets::{self, icon_button};
 
 pub const FILTER_OPS: [FilterOp; 11] = [
@@ -90,7 +91,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: Object
                 egui::ComboBox::from_id_salt(("filter-column", tab.0, object_tab.0, index))
                     .selected_text(widgets::galley(
                         ui,
-                        &row.column,
+                        &display_safe(&row.column),
                         egui::Color32::PLACEHOLDER,
                         &look,
                     ))
@@ -99,14 +100,15 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: Object
                 &palette,
                 |ui| {
                     for column in &columns {
-                        let text = widgets::galley(ui, column, egui::Color32::PLACEHOLDER, &look);
+                        let name = display_safe(column);
+                        let text = widgets::galley(ui, &name, egui::Color32::PLACEHOLDER, &look);
                         ui.selectable_value(&mut row.column, column.clone(), text);
                     }
                 },
             );
             // No visible label in the row: name it for screen readers,
             // keeping its selection as the value.
-            let selected = Some(row.column.clone());
+            let selected = Some(display_safe(&row.column).into_owned());
             combo.response.widget_info(|| {
                 let mut info = egui::WidgetInfo::labeled(
                     egui::WidgetType::ComboBox,

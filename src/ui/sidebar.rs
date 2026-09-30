@@ -9,6 +9,7 @@ use crate::i18n::{Locale, gettext};
 use crate::model::{Action, ConnTabId, TreeNode, TreeRow};
 use crate::theme::{Icon, Look, Palette};
 use crate::typography::{Text, TextRole};
+use crate::ui::format::display_safe;
 use crate::ui::widgets::{self, icon_button};
 
 /// The sidebar's width when it opens, per look: the design's 264 and 248
@@ -369,7 +370,7 @@ fn recent_section(
     label_text.paint_left(ui.painter(), label.left() + 16.0, label.center().y);
     for (object, kind) in recent {
         let (row, response) = ui.allocate_exact_size(vec2(width, RECENT_ROW), Sense::click());
-        let name = object.name.clone();
+        let name = display_safe(&object.name);
         response.widget_info(|| {
             WidgetInfo::labeled(WidgetType::Button, true, format!("Recent {name}"))
         });
@@ -381,7 +382,7 @@ fn recent_section(
             (TextRole::UiBody, palette.text)
         };
         let room = row.width() - 32.0;
-        let shown = crate::ui::grid::ellipsize(&object.name, room, false, |text| {
+        let shown = crate::ui::grid::ellipsize(&name, room, false, |text| {
             role.width(ui.ctx(), look.faces, text)
         });
         widgets::paint_text(
@@ -444,7 +445,7 @@ fn schema_header(
     let center = rect.center().y;
     // The schema: a menu of the others.
     if let Some(schema) = shown {
-        let label = widgets::section_label(schema, look, palette).layout(ui.ctx());
+        let label = widgets::section_label(&display_safe(schema), look, palette).layout(ui.ctx());
         let text_width = label.width();
         let (glyph_width, gap) = if look.terminal {
             (8.0, 4.0)
@@ -459,7 +460,7 @@ fn schema_header(
         response.widget_info(|| {
             let mut info =
                 WidgetInfo::labeled(WidgetType::ComboBox, true, gettext(locale, "Schema"));
-            info.current_text_value = Some(schema.to_owned());
+            info.current_text_value = Some(display_safe(schema).into_owned());
             info
         });
         if response.hovered() && !look.terminal {
@@ -479,7 +480,8 @@ fn schema_header(
         egui::Popup::menu(&response).show(|ui| {
             ui.set_min_width(160.0);
             for other in schemas {
-                let text = Text::one(look, widgets::body(look), other, egui::Color32::PLACEHOLDER)
+                let name = display_safe(other);
+                let text = Text::one(look, widgets::body(look), &name, egui::Color32::PLACEHOLDER)
                     .layout(ui.ctx());
                 if ui
                     .add(egui::Button::selectable(
@@ -648,11 +650,13 @@ fn tree_row(
         vec2(ui.available_width(), row_height(row, look)),
         Sense::click(),
     );
+    // Names come from the server: nothing hidden in them.
     let full_name = match &row.node {
-        TreeNode::Object(object, _) => object.name.clone(),
-        _ => row.label.clone(),
+        TreeNode::Object(object, _) => display_safe(&object.name),
+        _ => display_safe(&row.label),
     };
-    response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, &full_name));
+    let label = display_safe(&row.label);
+    response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, &*full_name));
     let selected = matches!(&row.node, TreeNode::Object(object, _) if Some(object) == marks.active);
     // Rows sit in the tree's inset: the macOS pill fills it, the terminal
     // bar spans it.
@@ -746,11 +750,11 @@ fn tree_row(
         0.0
     };
     let room = right - trailing_width - 8.0 - x - marker;
-    let shown = crate::ui::grid::ellipsize(&row.label, room, false, |text| {
+    let shown = crate::ui::grid::ellipsize(&label, room, false, |text| {
         role.width(ui.ctx(), look.faces, text)
     });
-    if shown != row.label || row.label != full_name {
-        response.clone().on_hover_text(&full_name);
+    if shown != label || label != full_name {
+        response.clone().on_hover_text(&*full_name);
     }
     Text::one(look, role, &shown, color)
         .layout(ui.ctx())
