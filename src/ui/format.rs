@@ -600,6 +600,8 @@ mod tests {
             );
         }
         let unknown = ssh(SshStage::HostKeyUnknown {
+            host: "bastion".into(),
+            port: 22,
             fingerprint: "SHA256:abc".into(),
         });
         assert_eq!(describe_error(Marked, &unknown), "host key");

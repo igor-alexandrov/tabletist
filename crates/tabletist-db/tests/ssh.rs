@@ -79,14 +79,19 @@ async fn trusted(ssh: &SshSpec) -> HostKeys {
         panic!("the host key was trusted before it was learned");
     };
     let Error::Ssh {
-        stage: SshStage::HostKeyUnknown { fingerprint },
+        stage:
+            SshStage::HostKeyUnknown {
+                host,
+                port,
+                fingerprint,
+            },
         ..
     } = error
     else {
         panic!("{error:?}");
     };
     let mut keys = HostKeys::default();
-    keys.trust(&ssh.host, ssh.port, &fingerprint);
+    keys.trust(&host, port, &fingerprint);
     keys
 }
 
@@ -97,7 +102,7 @@ async fn an_unknown_host_key_is_reported_with_its_fingerprint() {
     };
     match open(&ssh, &with_password(&password), &HostKeys::default()).await {
         Err(Error::Ssh {
-            stage: SshStage::HostKeyUnknown { fingerprint },
+            stage: SshStage::HostKeyUnknown { fingerprint, .. },
             ..
         }) => assert!(fingerprint.starts_with("SHA256:"), "{fingerprint}"),
         other => panic!("{:?}", other.err()),
@@ -113,7 +118,7 @@ async fn a_changed_host_key_is_refused() {
     keys.trust(&ssh.host, ssh.port, "SHA256:not-the-servers-key");
     match open(&ssh, &with_password(&password), &keys).await {
         Err(Error::Ssh {
-            stage: SshStage::HostKeyMismatch { fingerprint },
+            stage: SshStage::HostKeyMismatch { fingerprint, .. },
             message,
         }) => {
             assert!(fingerprint.starts_with("SHA256:"));

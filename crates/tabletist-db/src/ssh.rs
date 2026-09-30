@@ -311,14 +311,22 @@ impl Tunnel {
                     .unwrap_or_default();
                 return Err(if host_keys.fingerprint(&ssh.host, ssh.port).is_some() {
                     ssh_error(
-                        SshStage::HostKeyMismatch { fingerprint },
+                        SshStage::HostKeyMismatch {
+                            host: ssh.host.clone(),
+                            port: ssh.port,
+                            fingerprint,
+                        },
                         "the host key changed since you trusted it, which can mean someone \
                          is intercepting the connection; if the server's key really changed, \
                          remove its line from known_hosts.json",
                     )
                 } else {
                     ssh_error(
-                        SshStage::HostKeyUnknown { fingerprint },
+                        SshStage::HostKeyUnknown {
+                            host: ssh.host.clone(),
+                            port: ssh.port,
+                            fingerprint,
+                        },
                         format!("{} is not a trusted host yet", ssh.host),
                     )
                 });

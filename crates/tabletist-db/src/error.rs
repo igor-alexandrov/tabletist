@@ -61,10 +61,15 @@ pub enum SshStage {
     Connect,
     /// First connection to this host: the user must trust the key.
     HostKeyUnknown {
+        /// The server the tunnel reached (a Host alias's HostName).
+        host: String,
+        port: u16,
         fingerprint: String,
     },
     /// The host's key changed since it was trusted. Refused.
     HostKeyMismatch {
+        host: String,
+        port: u16,
         fingerprint: String,
     },
     Auth,
@@ -77,8 +82,10 @@ impl fmt::Display for SshStage {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Connect => f.write_str("connect"),
-            Self::HostKeyUnknown { fingerprint } => write!(f, "unknown host key {fingerprint}"),
-            Self::HostKeyMismatch { fingerprint } => write!(f, "changed host key {fingerprint}"),
+            Self::HostKeyUnknown { fingerprint, .. } => write!(f, "unknown host key {fingerprint}"),
+            Self::HostKeyMismatch { fingerprint, .. } => {
+                write!(f, "changed host key {fingerprint}")
+            }
             Self::Auth | Self::Secret => f.write_str("authentication"),
             Self::Forward => f.write_str("port forwarding"),
         }
@@ -107,6 +114,8 @@ mod tests {
     fn ssh_errors_name_their_stage() {
         let error = Error::Ssh {
             stage: SshStage::HostKeyUnknown {
+                host: "bastion".into(),
+                port: 22,
                 fingerprint: "SHA256:abc".into(),
             },
             message: "unknown host key".into(),
