@@ -132,6 +132,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: Object
                 .selection
                 .and_then(|cell| object.page().map(|page| (cell, page)))
                 .and_then(|(cell, page)| page.rows.get(cell.row).map(|row| (cell, page, row)));
+            // Formatted by the app when the selection changed, never here.
+            let texts = object.selected_fields();
             let Some((cell, page, row)) = selected else {
                 ui.centered_and_justified(|ui| {
                     Text::one(
@@ -468,6 +470,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: Object
                                                     palette: &palette,
                                                     locale,
                                                     fold,
+                                                    texts,
                                                 },
                                                 &mut actions,
                                             );
@@ -509,6 +512,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: Object
                                             palette: &palette,
                                             locale,
                                             fold,
+                                            texts,
                                         },
                                         &mut actions,
                                     );
@@ -544,6 +548,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: Object
                                             palette: &palette,
                                             locale,
                                             fold,
+                                            texts,
                                         },
                                         &mut actions,
                                     );
@@ -581,6 +586,8 @@ struct FieldSkin<'a> {
     locale: crate::i18n::Locale,
     /// Fold or unfold documents this frame (`za`).
     fold: bool,
+    /// The selected row's text, formatted by the app.
+    texts: Option<&'a crate::model::RowFields>,
 }
 
 /// One field: its label (with a copy button, or a document's controls),
@@ -604,6 +611,7 @@ fn field(
         palette,
         locale,
         fold,
+        texts,
     } = skin;
     let label_role = caption(look);
     let text = label(&column.name, &column.type_name, column.kind, info, look);
@@ -726,24 +734,16 @@ fn field(
         }
         return;
     }
-    let text = format::full_text(value);
+    let Some(formatted) = texts.and_then(|texts| texts.fields.get(col)) else {
+        return;
+    };
     let expanded_id = Id::new(("row-panel-expanded", tab, object_tab, row, col));
     let expanded: bool = ui.data(|data| data.get_temp(expanded_id)).unwrap_or(false);
-    let lines = text.lines().count();
-    let size = format::human_size(text.len());
-    let long = lines > format::COLLAPSE_LINES || text.len() > format::COLLAPSE_CHARS;
-    let shown: String = if long && !expanded {
-        text.lines()
-            .take(format::COLLAPSE_LINES)
-            .collect::<Vec<_>>()
-            .join("\n")
-            .chars()
-            .take(format::COLLAPSE_CHARS)
-            .collect()
-    } else {
-        text
+    let long = formatted.full.is_some();
+    let shown = match &formatted.full {
+        Some(full) if expanded => full,
+        _ => &formatted.short,
     };
-    let shown = format::for_display(&shown);
     // Values in the data face at 13; the terminal's timestamps at 12.
     let role = if matches!(column.kind, ValueKind::Json | ValueKind::Binary) {
         TextRole::pick(look, TextRole::MonoSecondary, TextRole::OSecondary)
@@ -826,7 +826,7 @@ fn field(
         let label = if expanded {
             gettext(locale, "Show less").into_owned()
         } else {
-            format!("{} ({size})", gettext(locale, "Show all"))
+            format!("{} ({})", gettext(locale, "Show all"), formatted.size)
         };
         let link = Text::one(look, small, &label, palette.accent)
             .layout(ui.ctx())

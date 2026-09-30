@@ -464,6 +464,8 @@ enum Dialog { Connection(..), Password(..), HostKey(..), QuickOpen(..), Help }
   plain text. Binary shows its size and a hex
   preview of the first 4 KiB. Text longer than 20 lines or 4,000 characters
   is collapsed with "Show all". NULL shows a NULL badge.
+- The reducer formats the selected row's text once, when the selection or
+  the page changes; drawing only lays that text out.
 - A copy button per field and a filter field for wide tables.
 
 ### 5.8 Structure view

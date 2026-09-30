@@ -196,6 +196,37 @@ impl App {
                 self.apply(action);
             }
         }
+        self.format_rows();
+    }
+
+    /// Formats the row each open row panel shows, once per selection or
+    /// page, so drawing never reads a whole (possibly huge) value.
+    fn format_rows(&mut self) {
+        for tab in &mut self.tabs {
+            let ConnTabContent::Workspace(workspace) = &mut tab.content else {
+                continue;
+            };
+            let (open, active) = (workspace.row_panel, workspace.active_object);
+            for object in &mut workspace.objects {
+                let row = object
+                    .selection
+                    .filter(|_| open && active == Some(object.id))
+                    .map(|cell| cell.row);
+                let Some((row, page)) = row.zip(object.page()) else {
+                    // Nothing shows it: free the text.
+                    object.fields = None;
+                    continue;
+                };
+                if object.selected_fields().is_some() {
+                    continue;
+                }
+                object.fields = page.rows.get(row).map(|values| crate::model::RowFields {
+                    request: object.rows.loaded,
+                    row,
+                    fields: values.iter().map(crate::ui::format::field_text).collect(),
+                });
+            }
+        }
     }
 
     pub fn apply(&mut self, action: Action) {

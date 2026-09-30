@@ -982,6 +982,32 @@ mod tests {
     }
 
     #[test]
+    fn the_row_panel_formats_a_row_once_not_every_frame() {
+        use crate::ui::format::FULL_TEXTS;
+        let mut harness = Harness::new();
+        harness.connect_fake();
+        harness.click("users");
+        let mut page = crate::testing::page(2, false);
+        page.rows[0][1] = tabletist_db::Value::Text("x".repeat(1_000_000).into());
+        harness.answer_rows(page);
+        harness.click("Row 1");
+        harness.settle();
+        let before = FULL_TEXTS.with(std::cell::Cell::get);
+        for step in 0..5 {
+            let at = egui::pos2(900.0 + step as f32 * 10.0, 300.0);
+            harness.frame(vec![egui::Event::PointerMoved(at)]);
+        }
+        assert_eq!(FULL_TEXTS.with(std::cell::Cell::get), before);
+        // Another row is formatted, once.
+        harness.click("Row 2");
+        let columns = crate::testing::page(1, false).columns.len();
+        let after = FULL_TEXTS.with(std::cell::Cell::get);
+        assert_eq!(after - before, columns);
+        harness.settle();
+        assert_eq!(FULL_TEXTS.with(std::cell::Cell::get), after);
+    }
+
+    #[test]
     fn the_structure_view_lists_columns_indexes_and_keys() {
         let mut harness = Harness::new();
         let tab = with_page(&mut harness);
