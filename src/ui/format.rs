@@ -53,6 +53,17 @@ pub fn escape_hidden(text: &str) -> Cow<'_, str> {
     bounded_line(text, usize::MAX, false)
 }
 
+/// An object as its tab and the row panel name it: the name, or
+/// `schema.name` when `qualified`, both parts as `display_safe` shows them.
+pub fn object_title(object: &tabletist_db::ObjectRef, qualified: bool) -> String {
+    let name = display_safe(&object.name);
+    if qualified {
+        format!("{}.{name}", display_safe(&object.schema))
+    } else {
+        name.into_owned()
+    }
+}
+
 /// The first `max` characters of `text` with hidden characters written out
 /// and "…" when cut. `spaces` turns line breaks and tabs into spaces instead.
 /// Borrows when there is nothing to change.

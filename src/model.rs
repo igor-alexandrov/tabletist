@@ -1345,6 +1345,25 @@ impl Workspace {
     pub fn active_object_tab(&self) -> Option<&ObjectTab> {
         self.object_tab(self.active_object?)
     }
+
+    /// Whether another schema has an object named like `object`, among
+    /// the open tabs or the schemas loaded in the sidebar. Its tab then
+    /// names the schema too, so `public.users` and `audit.users` can be
+    /// told apart.
+    pub fn name_is_shared(&self, object: &ObjectRef) -> bool {
+        let other = |schema: &str| schema != object.schema;
+        self.objects
+            .iter()
+            .any(|tab| tab.object.name == object.name && other(&tab.object.schema))
+            || self.tree.nodes.iter().any(|(schema, node)| {
+                other(schema)
+                    && node
+                        .objects
+                        .value
+                        .as_ref()
+                        .is_some_and(|objects| objects.iter().any(|info| info.name == object.name))
+            })
+    }
 }
 
 // Hand-written so a typed password never reaches logs or panic messages.

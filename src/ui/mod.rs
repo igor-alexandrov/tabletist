@@ -2759,4 +2759,47 @@ mod tests {
         harness.copy(false);
         assert_eq!(harness.copied.as_deref(), Some("Total: \u{202E}00.0001"));
     }
+
+    /// Two schemas with a `users` table: the tab and the row panel name the
+    /// schema, and a name only one schema has stays short.
+    #[test]
+    fn a_name_two_schemas_share_is_shown_with_its_schema() {
+        let (mut harness, tab) = tree_harness();
+        harness.click("orders");
+        harness.answer_rows(crate::testing::page(1, false));
+        assert!(harness.has("orders tab"));
+        let orders = harness.app.workspace(tab).unwrap().active_object.unwrap();
+        harness.app.apply(crate::model::Action::PinObjectTab {
+            tab,
+            object_tab: orders,
+        });
+        let workspace = harness.app.workspace_mut(tab).unwrap();
+        workspace.tree.schemas.value = Some(vec!["main".into(), "audit".into()]);
+        let audit = workspace.tree.nodes.entry("audit".into()).or_default();
+        audit.objects.value = Some(vec![tabletist_db::ObjectInfo {
+            name: "users".into(),
+            kind: tabletist_db::ObjectKind::Table,
+            estimated_rows: None,
+        }]);
+        harness.click("users");
+        harness.answer_rows(crate::testing::page(1, false));
+        let workspace = harness.app.workspace_mut(tab).unwrap();
+        workspace.row_panel = true;
+        let object_tab = workspace.active_object.unwrap();
+        harness.app.apply(crate::model::Action::SelectCell {
+            tab,
+            object_tab,
+            cell: crate::model::CellPos { row: 0, col: 0 },
+        });
+        harness.settle();
+        assert!(harness.has("main.users tab"));
+        assert!(harness.has("orders tab"));
+        // The tab and the row panel's subtitle.
+        let named = harness
+            .painted
+            .iter()
+            .filter(|(text, _)| text == "main.users")
+            .count();
+        assert_eq!(named, 2, "{:?}", harness.painted);
+    }
 }

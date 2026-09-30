@@ -96,10 +96,14 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: Object
         }
         asked
     });
-    let Some(object) = app.workspace(tab).and_then(|w| w.object_tab(object_tab)) else {
+    let Some(workspace) = app.workspace(tab) else {
         return;
     };
-    let object_name = format::display_safe(&object.object.name);
+    let Some(object) = workspace.object_tab(object_tab) else {
+        return;
+    };
+    let object_name =
+        format::object_title(&object.object, workspace.name_is_shared(&object.object));
     let mut actions = Vec::new();
     egui::Panel::right(Id::new(("row-panel", tab.0)))
         .resizable(true)

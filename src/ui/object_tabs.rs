@@ -41,7 +41,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
         .objects
         .iter()
         .map(|object| {
-            let name = crate::ui::format::display_safe(&object.object.name).into_owned();
+            let shared = workspace.name_is_shared(&object.object);
+            let name = crate::ui::format::object_title(&object.object, shared);
             (object.id, name, object.pinned)
         })
         .collect();
