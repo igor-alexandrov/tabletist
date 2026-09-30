@@ -171,8 +171,9 @@ pub fn tag_colors(
 const SWATCH: f32 = 12.0;
 const SWATCH_GAP: f32 = 6.0;
 
-/// A square of `color`, `side` points wide, centred on `center`. A hairline
-/// keeps a colour close to the window's visible.
+/// A square of `color`, `side` points wide, centred on `center`. A
+/// translucent colour sits on a checkerboard that shows through it; a
+/// hairline keeps a colour close to the window's visible.
 pub fn paint_swatch(
     painter: &egui::Painter,
     ui: &Ui,
@@ -183,7 +184,31 @@ pub fn paint_swatch(
     palette: &Palette,
 ) {
     let rect = Rect::from_center_size(center, vec2(side, side));
-    let corner = CornerRadius::same(look.radius.min(3));
+    let radius = look.radius.min(3);
+    let corner = CornerRadius::same(radius);
+    if !color.is_opaque() {
+        // Four squares, light and dark, each rounded at its outer corner.
+        let half = side / 2.0;
+        for (index, (dx, dy)) in [(0.0, 0.0), (half, 0.0), (0.0, half), (half, half)]
+            .into_iter()
+            .enumerate()
+        {
+            let square = Rect::from_min_size(rect.min + vec2(dx, dy), vec2(half, half));
+            let round = |at: usize| if index == at { radius } else { 0 };
+            let corner = CornerRadius {
+                nw: round(0),
+                ne: round(1),
+                sw: round(2),
+                se: round(3),
+            };
+            let shade = if index == 0 || index == 3 {
+                egui::Color32::WHITE
+            } else {
+                egui::Color32::from_gray(204)
+            };
+            painter.rect_filled(square, corner, shade);
+        }
+    }
     painter.rect_filled(rect, corner, color);
     painter.rect_stroke(
         rect,
