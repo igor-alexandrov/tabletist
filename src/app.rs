@@ -8,7 +8,7 @@ use tabletist_db::{
     Driver, Error, FilterOp, HostKeys, ObjectKind, ObjectRef, Secrets, Sort, SortDir, SshStage,
 };
 
-use crate::backend::{Command, Event, RequestId};
+use crate::backend::{Command, Event, RequestId, StateFile};
 use crate::connections::{PasswordMode, SavedConnection};
 use crate::i18n::Locale;
 use crate::model::{Action, ConnTab, ConnTabContent, ConnTabId, PickerState};
@@ -194,6 +194,37 @@ impl App {
         while !self.actions.is_empty() {
             for action in std::mem::take(&mut self.actions) {
                 self.apply(action);
+            }
+        }
+        self.format_rows();
+    }
+
+    /// Formats the row each open row panel shows, once per selection or
+    /// page, so drawing never reads a whole (possibly huge) value.
+    fn format_rows(&mut self) {
+        for tab in &mut self.tabs {
+            let ConnTabContent::Workspace(workspace) = &mut tab.content else {
+                continue;
+            };
+            let (open, active) = (workspace.row_panel, workspace.active_object);
+            for object in &mut workspace.objects {
+                let row = object
+                    .selection
+                    .filter(|_| open && active == Some(object.id))
+                    .map(|cell| cell.row);
+                let Some((row, page)) = row.zip(object.page()) else {
+                    // Nothing shows it: free the text.
+                    object.fields = None;
+                    continue;
+                };
+                if object.selected_fields().is_some() {
+                    continue;
+                }
+                object.fields = page.rows.get(row).map(|values| crate::model::RowFields {
+                    request: object.rows.loaded,
+                    row,
+                    fields: values.iter().map(crate::ui::format::field_text).collect(),
+                });
             }
         }
     }
@@ -440,7 +471,8 @@ impl App {
                 if let Some(workspace) = self.workspace_mut(tab)
                     && let Some(index) = workspace.objects.iter().position(|o| o.id == object_tab)
                 {
-                    workspace.objects.remove(index);
+                    let closed = workspace.objects.remove(index);
+                    let session = workspace.session;
                     if workspace.active_object == Some(object_tab) {
                         workspace.active_object = workspace
                             .objects
@@ -448,6 +480,9 @@ impl App {
                             .or_else(|| workspace.objects.last())
                             .map(|o| o.id);
                     }
+                    // Nothing will show what it was loading (a count can
+                    // hold the connection for minutes).
+                    self.cancel(session, closed.pending());
                 }
             }
             Action::PinObjectTab { tab, object_tab } => {
@@ -591,9 +626,7 @@ impl App {
                     });
                 match active {
                     Some((id, described)) => {
-                        if let Some(object) = self.object_tab_mut(tab, id) {
-                            object.reset_count();
-                        }
+                        self.reset_count(tab, id);
                         self.fetch_rows(tab, id);
                         if described {
                             self.describe(tab, id);
@@ -603,9 +636,19 @@ impl App {
                 }
             }
             Action::CancelQuery(tab) => {
+                // What the tab shows a spinner for: the active object's
+                // loads, or the tree's when no object is open.
                 if let Some(workspace) = self.workspace(tab) {
                     let session = workspace.session;
-                    self.backend.send(Command::Cancel { session });
+                    let pending: Vec<RequestId> = match workspace.active_object_tab() {
+                        Some(object) => object.pending().collect(),
+                        None => std::iter::once(workspace.tree.schemas.pending)
+                            .chain(workspace.tree.nodes.values().map(|n| n.objects.pending))
+                            .chain(std::iter::once(workspace.databases.pending))
+                            .flatten()
+                            .collect(),
+                    };
+                    self.cancel(session, pending);
                 }
             }
             Action::CountRows { tab, object_tab } => self.count_rows(tab, object_tab),
@@ -1657,6 +1700,11 @@ impl App {
                 }
             }
             Event::SecretStored { request, result } => self.secret_stored(request, result),
+            Event::Saved { path, result } => {
+                if let Err(error) = result {
+                    self.notice = Some(format!("Could not save {}: {error}.", path.display()));
+                }
+            }
             Event::Databases {
                 session,
                 request,
@@ -1722,10 +1770,10 @@ impl App {
             return;
         }
         self.host_keys.trust(host, port, fingerprint);
-        if let Err(error) = crate::known_hosts::save(&self.dirs.known_hosts_file(), &self.host_keys)
-        {
-            log::error!("could not save known hosts: {error}");
-        }
+        self.backend.send(Command::Save {
+            path: self.dirs.known_hosts_file(),
+            file: StateFile::KnownHosts(self.host_keys.clone()),
+        });
     }
 
     /// Remembers that `tab`'s saved connection connected now.
@@ -1743,10 +1791,13 @@ impl App {
         self.save_connections();
     }
 
-    fn save_connections(&self) {
-        if let Err(error) = self.connections.save(&self.dirs.connections_file()) {
-            log::error!("could not save connections: {error}");
-        }
+    /// Saves the connections on the backend (writing syncs the disk, which
+    /// can stall a frame).
+    fn save_connections(&mut self) {
+        self.backend.send(Command::Save {
+            path: self.dirs.connections_file(),
+            file: StateFile::Connections(self.connections.clone()),
+        });
     }
 
     fn save_dialog(&mut self, connect: bool) {
@@ -1846,7 +1897,8 @@ impl App {
         // lost connection failed is worth another try.
         for object in &mut workspace.objects {
             if object.count.is_loading() || lost(&object.count) {
-                object.reset_count();
+                // The old session is closed, so its count never runs.
+                let _ = object.reset_count();
             }
         }
         let stale: Vec<(ObjectTabId, bool, bool)> = workspace
@@ -1979,11 +2031,18 @@ impl App {
         } else {
             workspace.objects.iter().position(|o| !o.pinned)
         };
-        match preview {
-            Some(index) => workspace.objects[index] = opened,
-            None => workspace.objects.push(opened),
-        }
+        let session = workspace.session;
+        let replaced = match preview {
+            Some(index) => Some(std::mem::replace(&mut workspace.objects[index], opened)),
+            None => {
+                workspace.objects.push(opened);
+                None
+            }
+        };
         workspace.active_object = Some(new_id);
+        if let Some(replaced) = replaced {
+            self.cancel(session, replaced.pending());
+        }
         // The keys and foreign keys label the grid and the row panel.
         self.describe(tab, new_id);
         self.fetch_rows(tab, new_id);
@@ -2022,6 +2081,27 @@ impl App {
         }
     }
 
+    /// Stops requests nothing waits for any more: a running one is
+    /// cancelled, a queued one never runs.
+    fn cancel(&mut self, session: SessionId, requests: impl IntoIterator<Item = RequestId>) {
+        for request in requests {
+            self.backend.send(Command::Cancel { session, request });
+        }
+    }
+
+    /// Forgets the object tab's exact count and stops it if still running.
+    fn reset_count(&mut self, tab: ConnTabId, id: ObjectTabId) {
+        let Some(workspace) = self.workspace_mut(tab) else {
+            return;
+        };
+        let session = workspace.session;
+        let running = workspace
+            .object_tab_mut(id)
+            .and_then(ObjectTab::reset_count);
+        self.cancel(session, running);
+    }
+
+    /// Loads the object tab's rows, replacing any load still pending.
     pub fn fetch_rows(&mut self, tab: ConnTabId, id: ObjectTabId) {
         let request = RequestId(self.next_id());
         let Some(workspace) = self.workspace_mut(tab) else {
@@ -2031,8 +2111,10 @@ impl App {
         let Some(object) = workspace.object_tab_mut(id) else {
             return;
         };
+        let superseded = object.rows.pending;
         object.rows.start(request);
         let query = object.query.clone();
+        self.cancel(session, superseded);
         self.backend.send(Command::FetchRows {
             session,
             request,
@@ -2168,7 +2250,7 @@ impl App {
         object.query.offset = 0;
         object.pinned = true;
         object.selection = None;
-        object.reset_count();
+        self.reset_count(tab, id);
         self.fetch_rows(tab, id);
     }
 
@@ -2181,8 +2263,10 @@ impl App {
         let Some(object) = workspace.object_tab_mut(id) else {
             return;
         };
+        let superseded = object.count.pending;
         object.count.start(request);
         let query = object.query.clone();
+        self.cancel(session, superseded);
         self.backend.send(Command::CountRows {
             session,
             request,
@@ -2199,8 +2283,10 @@ impl App {
         let Some(object) = workspace.object_tab_mut(id) else {
             return;
         };
+        let superseded = object.structure.pending;
         object.structure.start(request);
         let target = object.object.clone();
+        self.cancel(session, superseded);
         self.backend.send(Command::Describe {
             session,
             request,
@@ -2688,16 +2774,45 @@ mod tests {
         assert_eq!(app.connections.connections.len(), 1);
     }
 
+    /// The newest state file the app asked the backend to save at `path`.
+    fn saved(app: &App, path: &std::path::Path) -> Option<StateFile> {
+        app.backend
+            .sent
+            .iter()
+            .rev()
+            .find_map(|command| match command {
+                Command::Save { path: to, file } if to == path => Some(file.clone()),
+                _ => None,
+            })
+    }
+
     #[test]
-    fn saved_connections_are_written_to_disk() {
+    fn saved_connections_are_written_by_the_backend() {
         let (mut app, dir) = app();
         app.apply(Action::NewConnection);
         form(&mut app).name = "Disk".into();
         form(&mut app).sqlite_path = "/tmp/disk.db".into();
         app.apply(Action::SaveConnection { connect: false });
-        let stored =
-            crate::connections::SavedConnections::load(&AppDirs::at(dir.path()).connections_file());
-        assert_eq!(stored.connections[0].name, "Disk");
+        let path = AppDirs::at(dir.path()).connections_file();
+        assert!(!path.exists(), "the UI thread writes nothing");
+        match saved(&app, &path) {
+            Some(StateFile::Connections(stored)) => {
+                assert_eq!(stored.connections[0].name, "Disk")
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_failed_save_shows_a_notice() {
+        let (mut app, _dir) = app();
+        app.apply(Action::Backend(Event::Saved {
+            path: "/config/connections.json".into(),
+            result: Err("No space left on device".into()),
+        }));
+        let notice = app.notice.clone().expect("a notice");
+        assert!(notice.contains("connections.json"), "{notice}");
+        assert!(notice.contains("No space left"), "{notice}");
     }
 
     #[test]
@@ -3375,15 +3490,91 @@ mod tests {
     }
 
     #[test]
-    fn cancel_sends_cancel_for_the_session_and_refresh_refetches() {
+    fn cancel_names_the_request_it_stops_and_refresh_refetches() {
         let mut harness = Harness::new();
         let tab = connect_tab(&mut harness);
-        open(&mut harness, tab, "users", true);
+        let id = open(&mut harness, tab, "users", true);
+        let rows = object(&harness, tab, id).rows.pending.unwrap();
+        let structure = object(&harness, tab, id).structure.pending.unwrap();
+        let sent = harness.app.backend.sent.len();
         harness.app.apply(Action::CancelQuery(tab));
         let session = harness.app.workspace(tab).unwrap().session;
-        assert!(matches!(last_sent(&harness.app), Command::Cancel { session: s } if *s == session));
+        assert!(
+            harness.app.backend.sent[sent..].iter().all(
+                |command| matches!(command, Command::Cancel { session: s, .. } if *s == session)
+            )
+        );
+        assert_eq!(cancels_since(&harness, sent), vec![rows, structure]);
         harness.app.apply(Action::Refresh(tab));
         assert!(matches!(last_sent(&harness.app), Command::FetchRows { .. }));
+    }
+
+    /// The Cancel commands sent since `from`, by request.
+    fn cancels_since(harness: &Harness, from: usize) -> Vec<RequestId> {
+        harness.app.backend.sent[from..]
+            .iter()
+            .filter_map(|command| match command {
+                Command::Cancel { request, .. } => Some(*request),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_new_load_stops_the_one_it_replaces() {
+        let mut harness = Harness::new();
+        let tab = connect_tab(&mut harness);
+        let id = open(&mut harness, tab, "users", true);
+        let first = object(&harness, tab, id).rows.pending.unwrap();
+        let sent = harness.app.backend.sent.len();
+        // A held Mod+R repeats: each refresh replaces the last.
+        harness.app.apply(Action::Refresh(tab));
+        let second = object(&harness, tab, id).rows.pending.unwrap();
+        harness.app.apply(Action::Refresh(tab));
+        assert_eq!(cancels_since(&harness, sent), vec![first, second]);
+        // The cancel goes out before the load that replaces it.
+        let tail = &harness.app.backend.sent[harness.app.backend.sent.len() - 2..];
+        assert!(matches!(
+            tail,
+            [Command::Cancel { request, .. }, Command::FetchRows { .. }] if *request == second
+        ));
+    }
+
+    #[test]
+    fn closing_an_object_tab_stops_its_count() {
+        let mut harness = Harness::new();
+        let tab = connect_tab(&mut harness);
+        let id = open(&mut harness, tab, "users", true);
+        harness.answer_rows(crate::testing::page(3, true));
+        harness.app.apply(Action::CountRows {
+            tab,
+            object_tab: id,
+        });
+        let counting = object(&harness, tab, id).count.pending.unwrap();
+        let sent = harness.app.backend.sent.len();
+        harness.app.apply(Action::CloseObjectTab {
+            tab,
+            object_tab: id,
+        });
+        // With the describe that opening it started.
+        assert!(cancels_since(&harness, sent).contains(&counting));
+    }
+
+    #[test]
+    fn a_new_filter_stops_the_count_of_the_old_one() {
+        let mut harness = Harness::new();
+        let tab = connect_tab(&mut harness);
+        let id = open(&mut harness, tab, "users", true);
+        harness.answer_rows(crate::testing::page(3, true));
+        harness.app.apply(Action::CountRows {
+            tab,
+            object_tab: id,
+        });
+        let counting = object(&harness, tab, id).count.pending.unwrap();
+        let sent = harness.app.backend.sent.len();
+        harness.app.apply(Action::Refresh(tab));
+        assert!(cancels_since(&harness, sent).contains(&counting));
+        assert!(!object(&harness, tab, id).count.is_loading());
     }
 
     #[test]
@@ -3674,13 +3865,19 @@ mod tests {
         prompt(&mut app).save = true;
         app.apply(Action::SubmitPassword);
         app.apply(Action::DeleteConnection(conn));
-        let Some(Command::Connect {
-            session, request, ..
-        }) = app.backend.sent.last()
-        else {
-            panic!()
-        };
-        let (session, request) = (*session, *request);
+        // Deleting also sent a save; the connect is the one before it.
+        let (session, request) = app
+            .backend
+            .sent
+            .iter()
+            .rev()
+            .find_map(|command| match command {
+                Command::Connect {
+                    session, request, ..
+                } => Some((*session, *request)),
+                _ => None,
+            })
+            .expect("a connect");
         app.apply(Action::Backend(Event::Connected {
             session,
             request,
@@ -4480,9 +4677,12 @@ mod tests {
             app.apply(Action::TrustHostKey);
             assert!(app.dialog.is_none());
             assert_eq!(app.host_keys.fingerprint("bastion", 22), Some("SHA256:abc"));
-            let saved =
-                crate::known_hosts::load(&AppDirs::at(dir.path()).known_hosts_file()).unwrap();
-            assert_eq!(saved.fingerprint("bastion", 22), Some("SHA256:abc"));
+            match saved(&app, &AppDirs::at(dir.path()).known_hosts_file()) {
+                Some(StateFile::KnownHosts(keys)) => {
+                    assert_eq!(keys.fingerprint("bastion", 22), Some("SHA256:abc"))
+                }
+                other => panic!("{other:?}"),
+            }
             match app.backend.sent.last() {
                 Some(Command::Connect { host_keys, .. }) => {
                     assert_eq!(host_keys.fingerprint("bastion", 22), Some("SHA256:abc"))

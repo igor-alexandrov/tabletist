@@ -181,7 +181,11 @@ Rules:
 - One session per connection tab: the driver connection plus an optional SSH
   tunnel. Each session runs its commands in order on its own task (queries on
   one connection cannot run concurrently); a separate `CancelHandle` works
-  while a query runs.
+  while a query runs. A cancel names its request: it stops that request if
+  it is running and skips it if it is still queued, and the session lets a
+  cancel land before it starts the next command. A load that replaces a
+  pending one (refresh, sort, paging, filters) and closing an object tab
+  cancel what nothing waits for any more.
 - The UI is idle when nothing happens: repaints only on input, on backend
   events, or on a scheduled spinner tick while something is loading.
 
@@ -460,6 +464,8 @@ enum Dialog { Connection(..), Password(..), HostKey(..), QuickOpen(..), Help }
   plain text. Binary shows its size and a hex
   preview of the first 4 KiB. Text longer than 20 lines or 4,000 characters
   is collapsed with "Show all". NULL shows a NULL badge.
+- The reducer formats the selected row's text once, when the selection or
+  the page changes; drawing only lays that text out.
 - A copy button per field and a filter field for wide tables.
 
 ### 5.8 Structure view
@@ -529,6 +535,9 @@ on Linux; platform equivalents elsewhere):
 - `config/themes/`: palette files.
 - `state/tabletist.log`, `state/panic.log`: log files (fastframe-log).
 
+Connections and known hosts are saved on the backend runtime, never the UI
+thread; a burst of saves to one file writes only the newest, and quitting
+waits briefly for pending saves.
 All JSON is written atomically (write `*.tmp`, then rename), versioned, and
 loaded with `#[serde(default)]` so older files keep working. An unreadable file
 falls back to defaults with a warning and is kept aside as `*.bad`.

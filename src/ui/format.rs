@@ -153,19 +153,68 @@ pub fn plain_text(value: &Value) -> String {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    /// How many times this thread ran `full_text`.
+    pub static FULL_TEXTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// The whole value as the row panel shows it as text. JSON the panel can
-/// parse is drawn as a tree instead (`json_view`).
-pub fn full_text(value: &Value) -> String {
+/// parse is drawn as a tree instead (`json_view`). Text is borrowed, not
+/// copied.
+pub fn full_text(value: &Value) -> Cow<'_, str> {
+    #[cfg(test)]
+    FULL_TEXTS.with(|count| count.set(count.get() + 1));
     match value {
+        Value::Text(text) => Cow::Borrowed(text),
         Value::Bytes(bytes) => {
             let shown = &bytes[..bytes.len().min(HEX_LIMIT)];
             let mut text = format!("{}\n{}", human_size(bytes.len()), hex_dump(shown));
             if bytes.len() > HEX_LIMIT {
                 text.push_str("\n…");
             }
-            text
+            Cow::Owned(text)
         }
-        other => plain_text(other),
+        other => Cow::Owned(plain_text(other)),
+    }
+}
+
+/// One field of the row panel as text, ready to lay out.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct FieldText {
+    /// What the panel shows first: the whole value, or its start when long.
+    pub short: String,
+    /// The whole value, when `short` is only its start.
+    pub full: Option<String>,
+    /// The value's size, for "Show all".
+    pub size: String,
+}
+
+/// Formats a value for the row panel. Slow for a big value (it reads all of
+/// it), so the app calls it once per selected row, not every frame.
+pub fn field_text(value: &Value) -> FieldText {
+    let text = full_text(value);
+    let long = text.len() > COLLAPSE_CHARS || text.lines().nth(COLLAPSE_LINES).is_some();
+    let size = human_size(text.len());
+    if !long {
+        return FieldText {
+            short: for_display(&text),
+            full: None,
+            size,
+        };
+    }
+    let start: String = text
+        .lines()
+        .take(COLLAPSE_LINES)
+        .collect::<Vec<_>>()
+        .join("\n")
+        .chars()
+        .take(COLLAPSE_CHARS)
+        .collect();
+    FieldText {
+        short: for_display(&start),
+        full: Some(for_display(&text)),
+        size,
     }
 }
 
@@ -442,6 +491,22 @@ mod tests {
     }
 
     #[test]
+    fn a_long_field_keeps_its_start_and_its_whole_text() {
+        let lines: Vec<String> = (0..50).map(|n| format!("line {n}")).collect();
+        let field = field_text(&text(&lines.join("\n")));
+        assert_eq!(field.short.lines().count(), COLLAPSE_LINES);
+        assert_eq!(
+            field.full.as_deref().map(|full| full.lines().count()),
+            Some(50)
+        );
+        let short = field_text(&text("hi"));
+        assert_eq!(
+            (short.short.as_str(), short.full, short.size.as_str()),
+            ("hi", None, "2 B")
+        );
+    }
+
+    #[test]
     fn hex_dumps_have_offsets_and_sixteen_bytes_a_line() {
         let bytes: Vec<u8> = (0u8..20).collect();
         assert_eq!(
@@ -452,7 +517,7 @@ mod tests {
 
     #[test]
     fn hex_dumps_stop_at_the_limit() {
-        let full = full_text(&Value::Bytes(vec![0xab; 10 * 1024 * 1024].into()));
+        let full = full_text(&Value::Bytes(vec![0xab; 10 * 1024 * 1024].into())).into_owned();
         assert!(full.starts_with("10.0 MB\n"));
         assert!(full.ends_with('…'));
         assert!(full.lines().count() <= HEX_LIMIT / 16 + 3);

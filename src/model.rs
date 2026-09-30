@@ -869,6 +869,8 @@ pub struct Fetch<T> {
     pub value: Option<T>,
     pub pending: Option<RequestId>,
     pub error: Option<Error>,
+    /// The request whose answer `value` holds.
+    pub loaded: Option<RequestId>,
 }
 
 impl<T> Default for Fetch<T> {
@@ -877,6 +879,7 @@ impl<T> Default for Fetch<T> {
             value: None,
             pending: None,
             error: None,
+            loaded: None,
         }
     }
 }
@@ -897,6 +900,7 @@ impl<T> Fetch<T> {
             Ok(value) => {
                 self.value = Some(value);
                 self.error = None;
+                self.loaded = Some(request);
             }
             Err(error) => self.error = Some(error),
         }
@@ -1238,6 +1242,20 @@ pub struct ObjectTab {
     /// The exact row count for the current filters, when asked for.
     pub count: Fetch<u64>,
     pub filter: FilterBar,
+    /// The row panel's text for the selected row (see `App::format_rows`).
+    pub fields: Option<RowFields>,
+}
+
+/// The row panel's text for one row, formatted once when the selection or
+/// the page changes: a cell can hold megabytes, too much to format again
+/// every frame.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RowFields {
+    /// The rows request whose page holds the row.
+    pub request: Option<RequestId>,
+    pub row: usize,
+    /// One per column.
+    pub fields: Vec<crate::ui::format::FieldText>,
 }
 
 /// One condition in the filter bar.
@@ -1311,17 +1329,38 @@ impl ObjectTab {
             estimated_rows,
             count: Fetch::default(),
             filter: FilterBar::default(),
+            fields: None,
         }
     }
 
     /// Forgets the exact count: the rows it counted changed (filters,
-    /// refresh), and a count still running for them is ignored.
-    pub fn reset_count(&mut self) {
-        self.count = Fetch::default();
+    /// refresh). Returns the count still running for them, to cancel.
+    #[must_use]
+    pub fn reset_count(&mut self) -> Option<RequestId> {
+        std::mem::take(&mut self.count).pending
+    }
+
+    /// Every request this tab still waits for.
+    pub fn pending(&self) -> impl Iterator<Item = RequestId> {
+        [
+            self.rows.pending,
+            self.structure.pending,
+            self.count.pending,
+        ]
+        .into_iter()
+        .flatten()
     }
 
     pub fn page(&self) -> Option<&RowPage> {
         self.rows.value.as_ref()
+    }
+
+    /// The row panel's text for the selected row, if it is up to date.
+    pub fn selected_fields(&self) -> Option<&RowFields> {
+        let cell = self.selection?;
+        self.fields
+            .as_ref()
+            .filter(|fields| fields.row == cell.row && fields.request == self.rows.loaded)
     }
 
     pub fn sort_of(&self, column: &str) -> Option<SortDir> {
