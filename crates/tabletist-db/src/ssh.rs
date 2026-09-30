@@ -14,6 +14,7 @@ use russh::keys::agent::client::{AgentClient, AgentStream};
 use russh::keys::{HashAlg, PrivateKey, PrivateKeyWithHashAlg, PublicKeyOrCertificate};
 use serde::{Deserialize, Serialize};
 
+use crate::ssh_config::AgentSocket;
 use crate::{Error, Result, Secrets, SshAuth, SshSpec, SshStage};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -120,8 +121,38 @@ pub(crate) fn load_key(path: &Path, passphrase: Option<&str>) -> Result<PrivateK
 
 type Agent = AgentClient<Box<dyn AgentStream + Send + Unpin + 'static>>;
 
+/// The agent for `host`: the one `~/.ssh/config` names (`IdentityAgent`,
+/// as OpenSSH reads it), else the environment's.
+async fn agent(host: &str) -> std::result::Result<Agent, String> {
+    match crate::ssh_config::identity_agent(host) {
+        Some(AgentSocket::Off) => {
+            Err("~/.ssh/config turns the agent off for this host (IdentityAgent none)".into())
+        }
+        Some(AgentSocket::Path(path)) => named_agent(&path)
+            .await
+            .map_err(|error| format!("{} (from ~/.ssh/config): {error}", path.display())),
+        Some(AgentSocket::Environment) | None => default_agent().await,
+    }
+}
+
 #[cfg(unix)]
-async fn agent() -> std::result::Result<Agent, String> {
+async fn named_agent(path: &Path) -> std::result::Result<Agent, String> {
+    AgentClient::connect_uds(path)
+        .await
+        .map(AgentClient::dynamic)
+        .map_err(|error| error.to_string())
+}
+
+#[cfg(windows)]
+async fn named_agent(path: &Path) -> std::result::Result<Agent, String> {
+    AgentClient::connect_named_pipe(path)
+        .await
+        .map(AgentClient::dynamic)
+        .map_err(|error| error.to_string())
+}
+
+#[cfg(unix)]
+async fn default_agent() -> std::result::Result<Agent, String> {
     AgentClient::connect_env()
         .await
         .map(AgentClient::dynamic)
@@ -129,7 +160,7 @@ async fn agent() -> std::result::Result<Agent, String> {
 }
 
 #[cfg(windows)]
-async fn agent() -> std::result::Result<Agent, String> {
+async fn default_agent() -> std::result::Result<Agent, String> {
     match AgentClient::connect_named_pipe(r"\\.\pipe\openssh-ssh-agent").await {
         Ok(agent) => Ok(agent.dynamic()),
         Err(_) => AgentClient::connect_pageant()
@@ -181,7 +212,7 @@ async fn authenticate(
                 .success()
         }
         SshAuth::Agent => {
-            let mut agent = agent().await.map_err(|error| {
+            let mut agent = agent(&ssh.host).await.map_err(|error| {
                 ssh_error(
                     SshStage::Auth,
                     format!("could not reach the SSH agent: {error}"),
@@ -426,7 +457,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "needs an SSH agent with the test key"]
     async fn the_agent_lists_its_keys() {
-        let mut agent = agent().await.unwrap();
+        let mut agent = default_agent().await.unwrap();
         let identities = agent.request_identities().await.unwrap();
         assert!(!identities.is_empty());
     }

@@ -656,7 +656,7 @@ fn mac_row(
     if index + 1 < rows {
         widgets::hline(ui, rect.x_range(), rect.bottom() - 0.5, palette.surface);
     }
-    let env = connection.color.environment();
+    let env = connection.environment();
     let colors = theme::env_colors(env, palette);
     let bar = Rect::from_min_size(rect.min, vec2(6.0, rect.height()));
     ui.painter().rect_filled(
@@ -888,7 +888,7 @@ fn terminal_row(
     }
     // Columns: 22 for the cursor, 110 for the badge, the rest for the
     // name and its line, 96 for last use (14 in from the right).
-    let env = connection.color.environment();
+    let env = connection.environment();
     let colors = theme::env_colors(env, palette);
     super::workspace::env_badge(
         ui,

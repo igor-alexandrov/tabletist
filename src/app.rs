@@ -975,12 +975,14 @@ impl App {
     fn connect_tab(&mut self, tab: ConnTabId, saved: SavedConnection, typed: Secrets) {
         let session = SessionId(self.next_id());
         let request = RequestId(self.next_id());
+        let environment = saved.environment();
         let Some(entry) = self.tabs.iter_mut().find(|t| t.id == tab) else {
             return;
         };
         entry.content = ConnTabContent::Workspace(Box::new(Workspace {
             session,
             conn_id: saved.id,
+            environment,
             name: saved.name,
             color: saved.color,
             driver: saved.spec.driver,
@@ -2350,6 +2352,7 @@ mod tests {
             id: ConnectionId::new(),
             name: "Local".into(),
             color: ColorTag::Green,
+            environment: None,
             password: crate::connections::PasswordMode::None,
             ssh_secret: crate::connections::PasswordMode::None,
             spec: ConnectSpec::sqlite("/tmp/local.db"),
@@ -3322,6 +3325,7 @@ mod tests {
             id: ConnectionId::new(),
             name: "Prod".into(),
             color: ColorTag::Red,
+            environment: None,
             password: mode,
             ssh_secret: crate::connections::PasswordMode::None,
             spec,
@@ -3924,6 +3928,7 @@ mod tests {
             id: ConnectionId::new(),
             name: "Shop".into(),
             color: ColorTag::None,
+            environment: None,
             password: PasswordMode::None,
             ssh_secret: crate::connections::PasswordMode::None,
             spec,
@@ -4030,6 +4035,7 @@ mod tests {
                 id: ConnectionId::new(),
                 name: "Prod".into(),
                 color: ColorTag::Red,
+                environment: None,
                 password: PasswordMode::None,
                 ssh_secret: PasswordMode::None,
                 spec,
