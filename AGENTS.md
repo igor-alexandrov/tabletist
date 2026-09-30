@@ -36,6 +36,9 @@ SSH agent tests also need `TABLETIST_TEST_SSH_AGENT=1` and the test key in a run
 Without the variables those tests print "skipped" and pass; CI runs all three suites on Linux.
 The native keyring test is `#[ignore]`d; run it by hand on a desktop session.
 
+Views draw text only through `TextRole`s (`src/typography.rs`); a view never
+names a font, a family or a size.
+
 Add a focused regression test for every behaviour change. UI behaviour is
 tested headlessly through `src/testing.rs` (AccessKit tree + events). Do not
 weaken a lint, delete a test, or add an `allow` to make CI green without

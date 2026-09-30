@@ -6,19 +6,24 @@ Linux (Omarchy and Hyprland first), macOS and Windows.
 
 ## What it does
 
-- Saved connections in tabs across the top: one tab, one connection.
+- Saved connections grouped in a picker, each tagged with its environment
+  (dev, staging, production, from its colour) and when it was last used.
+  Open more than one and they share a tab bar.
 - Direct connections, TLS in every libpq mode, and SSH tunnels (password,
   key file or agent) with host keys trusted on first use.
 - Passwords live in the system keyring, or are asked for every time.
-- A sidebar of schemas, tables and views; each table opens with a data grid,
-  a row panel showing every field in full, and a Structure view (columns,
-  indexes, foreign keys).
+- A sidebar of recent objects and one schema's tables and views, folded into
+  prefix groups (`book_`) or listed flat; each table opens with a data grid
+  (keys, foreign keys, value tags, JSON at a glance), a row panel showing
+  every field in full with a jump along foreign keys, and a Structure view
+  (columns, indexes, foreign keys).
 - Server-side sorting and paging, a filter bar with a raw WHERE option, exact
   counts on demand, and cancel for any running query.
 - Quick open (Cmd/Ctrl+P) and a full keyboard map: press `?` in the app.
-- Looks native on each platform: a macOS look, and on Linux the Omarchy look
-  (square, bordered, monospace data). It follows the Omarchy theme live on
-  Omarchy, and the system light/dark setting elsewhere.
+- Looks native on each platform: a macOS look in IBM Plex, and on Linux the
+  Omarchy look (square, keyboard first, vim keys, the desktop's monospace
+  font throughout). It follows the Omarchy theme live on Omarchy, and the
+  system light/dark setting elsewhere.
 
 ## Install
 

@@ -1,52 +1,76 @@
-//! Palette, typography, icons, and the mapping onto egui's style.
+//! Palette, shape, icons, and the mapping onto egui's style. Fonts and text
+//! styles live in [`crate::typography`].
 
-pub mod desktop_font;
+use egui::{Color32, CornerRadius, Stroke, Vec2};
 
-use egui::{Color32, CornerRadius, FontId, Stroke, Vec2};
+/// The edit connection dialog's title font (it keeps the pre-role helpers).
+pub use crate::typography::legacy::{TEXT_TITLE, semibold};
 
 /// A palette file from the themes directory.
 pub type CustomTheme = fastframe_theme::CustomTheme<Palette>;
 /// The palette files, the shared presets, and Omarchy's live palette.
 pub type Catalog = fastframe_theme::Catalog<Palette>;
 
-// The type scale. Every text size in the interface comes from here.
-/// Body text: tree, grid, tabs, fields, buttons.
-pub const TEXT: f32 = 13.0;
-/// Secondary text: types, footer, hints, counts.
-pub const TEXT_SMALL: f32 = 11.5;
-/// Dialog and panel titles.
-pub const TEXT_TITLE: f32 = 15.0;
-/// The picker's heading.
-pub const TEXT_HEADING: f32 = 20.0;
-/// JSON, hex and raw SQL.
-pub const TEXT_MONO: f32 = 12.0;
-
 // Spacing, on a 4 pt grid.
 /// Padding inside panels and bars.
 pub const PAD: i8 = 12;
 
-/// Every colour the interface draws with. The names match fastframe's
-/// sixteen base colours so palette files and Omarchy can set them.
+/// Every colour the interface draws with. The first sixteen names match
+/// fastframe's base colours so palette files and Omarchy can set them; the
+/// rest are Tabletist's own, derived from those when a file leaves them out.
 #[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Palette {
     pub dark: bool,
+    /// The content: grid, row panel, object header.
     pub window: Color32,
+    /// Sidebar, status bar, table headers.
     pub panel: Color32,
+    /// Segmented tracks, chips, grid row dividers.
     pub surface: Color32,
+    /// The object tab strip, disabled buttons, minor dividers.
     pub surface_hover: Color32,
     pub surface_active: Color32,
+    /// Pane dividers and major borders.
     pub outline: Color32,
     pub text: Color32,
+    /// Icons, inactive tabs.
     pub secondary: Color32,
+    /// Labels, counts, types.
     pub dim: Color32,
     pub accent: Color32,
+    /// Selected text, hovered links.
     pub accent_hover: Color32,
     pub on_accent: Color32,
     pub danger: Color32,
     pub warning: Color32,
     pub overlay: Color32,
     pub shadow: Color32,
+    /// Name prefixes, the "view" tag, disabled text.
+    pub faint: Color32,
+    /// Fields and secondary buttons.
+    pub border: Color32,
+    /// The selected row or item.
+    pub selection: Color32,
+    /// Verified TLS, JSON strings, the dev environment.
+    pub success: Color32,
+    /// Cool value tags.
+    pub info: Color32,
+    /// Warm value tags, JSON numbers.
+    pub orange: Color32,
+    /// The local environment.
+    pub magenta: Color32,
 }
+
+/// The colours Tabletist adds to fastframe's base ones.
+pub const EXTRA_COLORS: [&str; 7] = [
+    "faint",
+    "border",
+    "selection",
+    "success",
+    "info",
+    "orange",
+    "magenta",
+];
 
 impl Palette {
     pub fn dark() -> Self {
@@ -60,7 +84,7 @@ impl Palette {
             outline: Color32::from_rgb(0x3a, 0x38, 0x35),
             text: Color32::from_rgb(0xec, 0xeb, 0xe8),
             secondary: Color32::from_rgb(0xb0, 0xad, 0xa7),
-            dim: Color32::from_rgb(0x85, 0x81, 0x7b),
+            dim: Color32::from_rgb(0x9a, 0x97, 0x91),
             accent: Color32::from_rgb(0x5a, 0x9f, 0xf8),
             accent_hover: Color32::from_rgb(0x7a, 0xb2, 0xf9),
             on_accent: Color32::from_rgb(0x0b, 0x13, 0x20),
@@ -70,31 +94,64 @@ impl Palette {
             // a dialog as they do off the sidebar.
             overlay: Color32::from_rgb(0x26, 0x25, 0x23),
             shadow: Color32::from_black_alpha(150),
+            faint: Color32::from_rgb(0x85, 0x81, 0x7b),
+            border: Color32::from_rgb(0x48, 0x45, 0x41),
+            selection: Color32::from_rgb(0x28, 0x34, 0x57),
+            success: Color32::from_rgb(0x9e, 0xce, 0x6a),
+            info: Color32::from_rgb(0x7d, 0xcf, 0xff),
+            orange: Color32::from_rgb(0xff, 0x9e, 0x64),
+            magenta: Color32::from_rgb(0xbb, 0x9a, 0xf7),
         }
     }
 
+    /// The macOS design's light colours.
     pub fn light() -> Self {
         Self {
             dark: false,
-            window: Color32::from_rgb(0xfd, 0xfc, 0xfa),
-            panel: Color32::from_rgb(0xf4, 0xf2, 0xee),
-            surface: Color32::from_rgb(0xeb, 0xe8, 0xe3),
-            surface_hover: Color32::from_rgb(0xe4, 0xe1, 0xdb),
-            surface_active: Color32::from_rgb(0xd9, 0xd5, 0xce),
-            outline: Color32::from_rgb(0xe3, 0xe0, 0xda),
-            text: Color32::from_rgb(0x1f, 0x1e, 0x1c),
-            secondary: Color32::from_rgb(0x5c, 0x59, 0x53),
-            // 3:1 or better on every light surface (large-text minimum).
-            dim: Color32::from_rgb(0x7d, 0x79, 0x73),
+            window: Color32::WHITE,
+            panel: Color32::from_rgb(0xfb, 0xfa, 0xf8),
+            surface: Color32::from_rgb(0xf0, 0xef, 0xeb),
+            surface_hover: Color32::from_rgb(0xeb, 0xe9, 0xe4),
+            surface_active: Color32::from_rgb(0xe3, 0xe1, 0xdc),
+            outline: Color32::from_rgb(0xe3, 0xe1, 0xdc),
+            text: Color32::from_rgb(0x1c, 0x1c, 0x1a),
+            secondary: Color32::from_rgb(0x4d, 0x4c, 0x48),
+            // 4.5:1 on every light surface.
+            dim: Color32::from_rgb(0x6b, 0x6a, 0x65),
             // Accent, danger and warning are read as text: 4.5:1 or better.
-            accent: Color32::from_rgb(0x0a, 0x64, 0xcc),
-            accent_hover: Color32::from_rgb(0x0a, 0x55, 0xad),
+            accent: Color32::from_rgb(0x2c, 0x55, 0xc9),
+            accent_hover: Color32::from_rgb(0x1e, 0x3f, 0x9e),
             on_accent: Color32::WHITE,
-            danger: Color32::from_rgb(0xb8, 0x2a, 0x36),
+            danger: Color32::from_rgb(0xa3, 0x23, 0x1b),
             warning: Color32::from_rgb(0x8a, 0x5a, 0x00),
-            overlay: Color32::from_rgb(0xff, 0xff, 0xff),
-            shadow: Color32::from_black_alpha(40),
+            overlay: Color32::WHITE,
+            shadow: Color32::from_rgba_unmultiplied(28, 28, 26, 71),
+            faint: Color32::from_rgb(0x8a, 0x89, 0x84),
+            border: Color32::from_rgb(0xdc, 0xda, 0xd4),
+            selection: Color32::from_rgb(0xe4, 0xeb, 0xfb),
+            success: Color32::from_rgb(0x14, 0x6b, 0x3a),
+            info: Color32::from_rgb(0x1e, 0x4f, 0x8a),
+            orange: Color32::from_rgb(0x9a, 0x4a, 0x0b),
+            magenta: Color32::from_rgb(0x5b, 0x3a, 0xa8),
         }
+    }
+
+    /// Lightens (or darkens) the label colours until they read against the
+    /// content: a theme's muted colour can be too faint (Tokyo Night's is).
+    pub fn with_readable_labels(mut self) -> Self {
+        for (color, minimum) in [(&mut self.secondary, 4.5), (&mut self.dim, 4.5)] {
+            let target = if self.dark {
+                Color32::WHITE
+            } else {
+                Color32::BLACK
+            };
+            let mut step = 0.0;
+            while contrast(*color, self.window) < minimum && step < 1.0 {
+                step += 0.02;
+                *color = color.lerp_to_gamma(target, 0.02);
+            }
+        }
+        self
     }
 }
 
@@ -124,6 +181,13 @@ impl fastframe_theme::Palette for Palette {
             "warning" => self.warning = color,
             "overlay" => self.overlay = color,
             "shadow" => self.shadow = color,
+            "faint" => self.faint = color,
+            "border" => self.border = color,
+            "selection" => self.selection = color,
+            "success" => self.success = color,
+            "info" => self.info = color,
+            "orange" => self.orange = color,
+            "magenta" => self.magenta = color,
             _ => return false,
         }
         true
@@ -131,12 +195,41 @@ impl fastframe_theme::Palette for Palette {
 
     /// Dialogs and popups take the panel colour when a file (such as the
     /// Omarchy template) sets the panel but not the overlay, so they follow
-    /// the theme rather than keeping the default's.
+    /// the theme rather than keeping the default's. A file that sets only
+    /// the base colours gets Tabletist's own from them.
     fn derive(&mut self, given: &std::collections::BTreeSet<&str>) {
         if given.contains("panel") && !given.contains("overlay") {
             self.overlay = self.panel;
         }
+        if given.contains("dim") && !given.contains("faint") {
+            self.faint = self.dim;
+        }
+        if given.contains("outline") && !given.contains("border") {
+            self.border = self.outline;
+        }
+        if given.contains("accent") && !given.contains("selection") {
+            self.selection = self.window.lerp_to_gamma(self.accent, 0.2);
+        }
     }
+}
+
+/// The WCAG contrast ratio of two opaque colours.
+pub fn contrast(a: egui::Color32, b: egui::Color32) -> f64 {
+    let (x, y) = (luminance(a), luminance(b));
+    let (hi, lo) = if x > y { (x, y) } else { (y, x) };
+    (hi + 0.05) / (lo + 0.05)
+}
+
+fn luminance(color: egui::Color32) -> f64 {
+    let channel = |c: u8| {
+        let c = f64::from(c) / 255.0;
+        if c <= 0.039_28 {
+            c / 12.92
+        } else {
+            ((c + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    0.2126 * channel(color.r()) + 0.7152 * channel(color.g()) + 0.0722 * channel(color.b())
 }
 
 /// How a selected row shows it is selected.
@@ -177,6 +270,28 @@ pub enum DataFont {
     Monospace,
 }
 
+/// The typefaces a look draws with (see [`crate::typography`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Faces {
+    /// Inter, with egui's monospace.
+    Inter,
+    /// IBM Plex Sans and IBM Plex Mono.
+    Plex,
+    /// One monospace face for everything.
+    Terminal,
+}
+
+/// How the one primary button in a view draws.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PrimaryStyle {
+    /// Filled with the accent.
+    Accent,
+    /// Filled with the text colour (macOS: near-black on light).
+    Ink,
+    /// Outlined in the accent, accent text on a faint accent fill.
+    Outline,
+}
+
 /// Shape and density: everything about the interface that follows the
 /// platform rather than the colour theme. Any palette draws with any look.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -193,6 +308,8 @@ pub struct Look {
     pub control_height: f32,
     /// Sidebar tree rows.
     pub tree_row: f32,
+    /// Grid rows.
+    pub grid_row: f32,
     /// Omarchy's controls: a faint foreground fill and a 1 px border.
     pub bordered_controls: bool,
     pub selection: Selection,
@@ -210,12 +327,17 @@ pub struct Look {
     /// raised fill and a soft shadow, and show up and down chevrons.
     pub raised_popups: bool,
     pub data_font: DataFont,
+    pub faces: Faces,
+    pub primary: PrimaryStyle,
+    /// A keyboard-first terminal interface (Omarchy): lower-case labels
+    /// that lead with their keys, and key hints in bars.
+    pub terminal: bool,
 }
 
 impl Look {
     pub const ALL: [Look; 3] = [Self::standard(), Self::macos(), Self::omarchy()];
 
-    /// Windows, and today's metrics.
+    /// Windows.
     pub const fn standard() -> Self {
         Self {
             name: "standard",
@@ -224,6 +346,7 @@ impl Look {
             dialog_radius: 8,
             control_height: 26.0,
             tree_row: 24.0,
+            grid_row: 26.0,
             bordered_controls: false,
             selection: Selection::Tint,
             tabs: TabStyle::Outlined,
@@ -233,11 +356,14 @@ impl Look {
             panel_separators: true,
             raised_popups: false,
             data_font: DataFont::Proportional,
+            faces: Faces::Inter,
+            primary: PrimaryStyle::Accent,
+            terminal: false,
         }
     }
 
-    /// macOS 26: rounder, roomier, borderless controls, an inset pill
-    /// selection, and tabs in a track.
+    /// macOS 26: Plex type, bordered buttons, an inset pill selection and
+    /// ink primary buttons.
     pub const fn macos() -> Self {
         Self {
             name: "macos",
@@ -245,29 +371,34 @@ impl Look {
             tab_radius: 8,
             dialog_radius: 12,
             control_height: 28.0,
-            tree_row: 26.0,
+            tree_row: 24.0,
+            grid_row: 37.0,
             bordered_controls: false,
             selection: Selection::Pill,
             tabs: TabStyle::Raised,
             dialog: DialogStyle::Shadow,
-            capsule_search: true,
+            capsule_search: false,
             sidebar_tinted: true,
-            // Tones and the raised tabs set the bars apart.
-            panel_separators: false,
+            panel_separators: true,
             raised_popups: true,
-            data_font: DataFont::Proportional,
+            data_font: DataFont::Monospace,
+            faces: Faces::Plex,
+            primary: PrimaryStyle::Ink,
+            terminal: false,
         }
     }
 
-    /// Omarchy's shell: square, 1 px borders, monospace data.
+    /// Omarchy's shell: square, 1 px borders, monospace everything, keys
+    /// first.
     pub const fn omarchy() -> Self {
         Self {
             name: "omarchy",
             radius: 0,
             tab_radius: 0,
             dialog_radius: 0,
-            control_height: 28.0,
+            control_height: 24.0,
             tree_row: 24.0,
+            grid_row: 30.0,
             bordered_controls: true,
             selection: Selection::Bar,
             tabs: TabStyle::Underline,
@@ -277,6 +408,9 @@ impl Look {
             panel_separators: true,
             raised_popups: false,
             data_font: DataFont::Monospace,
+            faces: Faces::Terminal,
+            primary: PrimaryStyle::Outline,
+            terminal: true,
         }
     }
 
@@ -291,18 +425,106 @@ impl Look {
             Self::standard()
         }
     }
+
+    /// The command modifier as shortcuts spell it: `⌘` on macOS, `Ctrl+`
+    /// elsewhere.
+    pub fn command_key(&self) -> &'static str {
+        if self.faces == Faces::Plex {
+            "⌘"
+        } else {
+            "Ctrl+"
+        }
+    }
+
+    /// `text` as this look labels things: lower case in the terminal look.
+    pub fn label(&self, text: &str) -> String {
+        if self.terminal {
+            text.to_lowercase()
+        } else {
+            text.to_owned()
+        }
+    }
+}
+
+/// How an environment draws: its colour (the bar's stripe and tint), and
+/// its badge's fill and text.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct EnvColors {
+    pub color: Color32,
+    pub badge: Color32,
+    pub badge_text: Color32,
+}
+
+/// An environment's colours: fixed on light palettes (the macOS design's),
+/// from the theme's own colours on dark ones, with a solid badge.
+pub fn env_colors(env: crate::connections::Environment, palette: &Palette) -> EnvColors {
+    use crate::connections::Environment;
+    let rgb = Color32::from_rgb;
+    if !palette.dark {
+        let (color, badge, badge_text) = match env {
+            Environment::Dev => (
+                rgb(0x2c, 0x7a, 0x4b),
+                rgb(0xe3, 0xf1, 0xe6),
+                rgb(0x1f, 0x6b, 0x35),
+            ),
+            Environment::Staging => (
+                rgb(0xd0, 0x8a, 0x12),
+                rgb(0xfb, 0xef, 0xd6),
+                rgb(0x8a, 0x5a, 0x00),
+            ),
+            Environment::Production => (
+                rgb(0xc2, 0x26, 0x1f),
+                rgb(0xfb, 0xe3, 0xe1),
+                rgb(0xa3, 0x23, 0x1b),
+            ),
+            Environment::Local => (
+                rgb(0x7c, 0x4d, 0xdb),
+                rgb(0xef, 0xea, 0xf9),
+                rgb(0x5b, 0x3a, 0xa8),
+            ),
+            Environment::Test => (palette.accent, palette.selection, palette.accent_hover),
+            Environment::None => (
+                rgb(0xb5, 0xb3, 0xad),
+                rgb(0xef, 0xee, 0xe9),
+                rgb(0x4d, 0x4c, 0x48),
+            ),
+        };
+        return EnvColors {
+            color,
+            badge,
+            badge_text,
+        };
+    }
+    let color = match env {
+        Environment::Dev => palette.success,
+        Environment::Staging => palette.warning,
+        Environment::Production => palette.danger,
+        Environment::Local => palette.magenta,
+        Environment::Test => palette.accent,
+        Environment::None => palette.dim,
+    };
+    EnvColors {
+        color,
+        badge: color,
+        badge_text: palette.window,
+    }
+}
+
+/// `amount` of `color` mixed into `base` (CSS color-mix).
+pub fn mix(base: Color32, color: Color32, amount: f32) -> Color32 {
+    base.lerp_to_gamma(color, amount)
 }
 
 /// Picks the palette to draw with: the user's chosen file, else Omarchy's
 /// live palette when the desktop is Omarchy, else the OS light/dark setting.
 pub fn resolve(catalog: &Catalog, custom: Option<&str>, system: Option<egui::Theme>) -> Palette {
     if let Some(theme) = custom.and_then(|name| catalog.find(name)) {
-        return theme.palette;
+        return theme.palette.with_readable_labels();
     }
     if catalog.follows_omarchy()
         && let Some(theme) = catalog.system_theme()
     {
-        return theme.palette;
+        return theme.palette.with_readable_labels();
     }
     match system {
         Some(egui::Theme::Light) => Palette::light(),
@@ -315,25 +537,10 @@ pub fn enable_desktop_themes(catalog: &mut Catalog) {
     catalog.enable_desktop_themes(fastframe_theme::DesktopThemes {
         slug: "tabletist",
         omarchy_template: include_str!("../contrib/omarchy/tabletist.json.tpl"),
-        omarchy_previous_templates: &[],
+        // 0.1 mapped only the base colours; an untouched copy is replaced.
+        omarchy_previous_templates: &[include_str!("../contrib/omarchy/tabletist-0.1.json.tpl")],
         presets: true,
     });
-}
-
-pub fn regular(size: f32) -> FontId {
-    fastframe_fonts::Weight::Regular.font_id(size)
-}
-
-pub fn medium(size: f32) -> FontId {
-    fastframe_fonts::Weight::Medium.font_id(size)
-}
-
-pub fn semibold(size: f32) -> FontId {
-    fastframe_fonts::Weight::SemiBold.font_id(size)
-}
-
-pub fn mono(size: f32) -> FontId {
-    FontId::monospace(size)
 }
 
 /// How the desktop renders text, read once per process. Tests use the
@@ -353,30 +560,15 @@ fn text_rendering() -> fastframe_text::TextRendering {
 /// Installs fonts, image loaders and icons once per egui context.
 /// `system_fallbacks` is off in tests and screenshots for reproducible output.
 pub fn install(ctx: &egui::Context, system_fallbacks: bool, look: &Look) {
-    let mut setup = fastframe_fonts::FontSetup::default().system_fallbacks(system_fallbacks);
+    let mut fonts = fastframe_fonts::FontSetup::default()
+        .system_fallbacks(system_fallbacks)
+        .definitions();
     // Tests and screenshots (no system fallbacks) stay reproducible.
-    if system_fallbacks
-        && look.data_font == DataFont::Monospace
-        && let Some(font) = desktop_font::monospace()
-    {
-        setup = setup.monospace(fastframe_fonts::Monospace::Font {
-            name: "desktop-monospace".into(),
-            data: std::sync::Arc::new(font),
-        });
-    }
-    let mut fonts = setup.definitions();
+    crate::typography::configure(&mut fonts, look, system_fallbacks);
     text_rendering().apply_to(&mut fonts);
     ctx.set_fonts(fonts);
     egui_extras::install_image_loaders(ctx);
     fastframe_icons::install::<Icon>(ctx);
-}
-
-/// The font data is drawn in: monospace on Omarchy, Inter elsewhere.
-pub fn data(look: &Look) -> FontId {
-    match look.data_font {
-        DataFont::Monospace => mono(TEXT_MONO),
-        DataFont::Proportional => regular(TEXT),
-    }
 }
 
 /// Applies the palette and look to egui's own widgets and text styles.
@@ -476,16 +668,7 @@ fn apply_to_style(style: &mut egui::Style, palette: &Palette, look: &Look) {
     visuals.text_cursor.stroke = Stroke::new(2.0, palette.accent);
     visuals.striped = false;
 
-    use egui::FontFamily::{Monospace, Proportional};
-    use egui::TextStyle;
-    style.text_styles = [
-        (TextStyle::Small, FontId::new(TEXT_SMALL, Proportional)),
-        (TextStyle::Body, FontId::new(TEXT, Proportional)),
-        (TextStyle::Button, FontId::new(TEXT, Proportional)),
-        (TextStyle::Heading, FontId::new(TEXT_HEADING, Proportional)),
-        (TextStyle::Monospace, FontId::new(TEXT_MONO, Monospace)),
-    ]
-    .into();
+    style.text_styles = crate::typography::text_styles(look.faces);
     style.spacing.item_spacing = Vec2::new(8.0, 6.0);
     style.spacing.button_padding = Vec2::new(10.0, 4.0);
     style.spacing.interact_size = Vec2::new(40.0, look.control_height);
@@ -497,30 +680,10 @@ fn apply_to_style(style: &mut egui::Style, palette: &Palette, look: &Look) {
     style.animation_time = 0.12;
 }
 
-#[cfg(test)]
-fn luminance(color: egui::Color32) -> f64 {
-    let channel = |c: u8| {
-        let c = f64::from(c) / 255.0;
-        if c <= 0.039_28 {
-            c / 12.92
-        } else {
-            ((c + 0.055) / 1.055).powf(2.4)
-        }
-    };
-    0.2126 * channel(color.r()) + 0.7152 * channel(color.g()) + 0.0722 * channel(color.b())
-}
-
-/// The WCAG contrast ratio of two opaque colours.
-#[cfg(test)]
-pub(crate) fn contrast(a: egui::Color32, b: egui::Color32) -> f64 {
-    let (x, y) = (luminance(a), luminance(b));
-    let (hi, lo) = if x > y { (x, y) } else { (y, x) };
-    (hi + 0.05) / (lo + 0.05)
-}
-
 fastframe_icons::icons! {
-    /// Every icon the interface draws. All are shared Lucide icons from
-    /// fastframe-icons, so no SVG files live in this repository yet.
+    /// Every icon the interface draws: shared Lucide icons from
+    /// fastframe-icons, and Lucide icons of Tabletist's own in
+    /// `assets/icons/` (ISC, see its LICENSE.txt).
     pub enum Icon {
         prefix: "tabletist-icon-",
         directory: "../assets/icons/",
@@ -547,6 +710,17 @@ fastframe_icons::icons! {
         Settings => lucide "settings",
         Trash2 => lucide "trash-2",
         X => lucide "x",
+        ArrowDown => "arrow-down",
+        ArrowUp => "arrow-up",
+        ChevronsUpDown => "chevrons-up-down",
+        Funnel => "funnel",
+        Image => "image",
+        KeyRound => "key-round",
+        List => "list",
+        ListTree => "list-tree",
+        LogIn => "log-in",
+        PanelRight => "panel-right",
+        Table => "table-2",
     }
 }
 
@@ -556,13 +730,13 @@ mod tests {
     use fastframe_theme::Palette as _;
 
     #[test]
-    fn data_is_monospace_only_in_the_omarchy_look() {
-        assert_eq!(data(&Look::omarchy()).family, egui::FontFamily::Monospace);
-        assert_eq!(data(&Look::macos()).family, egui::FontFamily::Proportional);
-        assert_eq!(
-            data(&Look::standard()).family,
-            egui::FontFamily::Proportional
-        );
+    fn data_is_monospace_on_macos_and_omarchy() {
+        use crate::typography::{Kind, TextRole};
+        use crate::ui::grid::data_role;
+        assert_eq!(data_role(&Look::omarchy()), TextRole::OBody);
+        assert_eq!(data_role(&Look::macos()), TextRole::GridCell);
+        assert_eq!(data_role(&Look::macos()).spec().kind, Kind::Mono);
+        assert_eq!(data_role(&Look::standard()).spec().kind, Kind::Sans);
     }
 
     fn nord() -> CustomTheme {
@@ -687,14 +861,41 @@ mod tests {
 
     /// The Omarchy template rendered for Tokyo Night.
     fn tokyo_night() -> Palette {
-        let colors = "mode\tdark\nbackground\t#1a1b26\nforeground\t#a9b1d6\n\
-                      accent\t#7aa2f7\nred\t#f7768e\nyellow\t#e0af68\n";
+        let colors = "mode\tdark\nbackground\t#1a1b26\ndark_background\t#16161e\n\
+                      lighter_background\t#292e42\nforeground\t#c0caf5\nmuted\t#565f89\n\
+                      accent\t#7aa2f7\nselection\t#283457\nred\t#f7768e\n\
+                      green\t#9ece6a\nyellow\t#e0af68\ncyan\t#7dcfff\n\
+                      orange\t#ff9e64\nmagenta\t#bb9af7\n";
         let rendered = fastframe_theme::omarchy::render_seed::<Palette>(
             include_str!("../contrib/omarchy/tabletist.json.tpl"),
             colors,
         )
         .unwrap();
         fastframe_theme::parse_palette(&rendered).unwrap()
+    }
+
+    #[test]
+    fn a_themes_faint_labels_are_lightened_until_they_read() {
+        let palette = tokyo_night();
+        assert!(
+            contrast(palette.secondary, palette.window) < 4.5,
+            "Tokyo Night's muted fails"
+        );
+        let readable = palette.with_readable_labels();
+        assert!(contrast(readable.secondary, readable.window) >= 4.5);
+        assert!(contrast(readable.dim, readable.window) >= 4.5);
+        assert_eq!(readable.success, egui::Color32::from_rgb(0x9e, 0xce, 0x6a));
+    }
+
+    #[test]
+    fn environments_take_the_designs_colours_on_light_and_the_themes_on_dark() {
+        use crate::connections::Environment;
+        let light = env_colors(Environment::Production, &Palette::light());
+        assert_eq!(light.badge, egui::Color32::from_rgb(0xfb, 0xe3, 0xe1));
+        let dark = tokyo_night();
+        let colors = env_colors(Environment::Dev, &dark);
+        assert_eq!(colors.badge, dark.success);
+        assert_eq!(colors.badge_text, dark.window);
     }
 
     #[test]
@@ -731,8 +932,8 @@ mod tests {
                 continue;
             }
             assert!(
-                fastframe_theme::BASE_COLORS.contains(&name),
-                "{name} is not a base colour"
+                fastframe_theme::BASE_COLORS.contains(&name) || EXTRA_COLORS.contains(&name),
+                "{name} is not a colour the palette has"
             );
         }
     }
@@ -790,7 +991,7 @@ mod tests {
         assert_eq!(visuals.widgets.inactive.bg_stroke.width, 1.0);
         assert_eq!(visuals.window_shadow, egui::epaint::Shadow::NONE);
         assert_eq!(visuals.window_stroke, Stroke::new(2.0, palette.accent));
-        assert_eq!(style.spacing.interact_size.y, 28.0);
+        assert_eq!(style.spacing.interact_size.y, 24.0);
     }
 
     #[test]
@@ -835,9 +1036,9 @@ mod tests {
 
     #[test]
     fn the_default_palettes_are_warm() {
-        // Warm neutrals lean red over blue.
+        // Warm neutrals lean red over blue (the light content is white).
         for palette in [Palette::light(), Palette::dark()] {
-            for color in [palette.window, palette.panel, palette.surface] {
+            for color in [palette.panel, palette.surface] {
                 assert!(color.r() > color.b(), "{color:?} is not warm");
             }
         }

@@ -388,7 +388,7 @@ mod tests {
             assert!(loaded, "the demo users table loads at {size:?}");
             assert!(harness.has("users tab"));
             assert!(harness.has("email"));
-            assert!(harness.has("1–5 of 5"));
+            assert!(harness.has("Rows 1–5 of 5"));
             harness.click("Row 3");
             assert!(harness.has("Copy email"));
             harness.click("Structure");

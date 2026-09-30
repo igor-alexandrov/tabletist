@@ -1,11 +1,9 @@
 //! Asks for a connection's password, SSH password or key passphrase.
 
-use egui::RichText;
-
 use crate::app::App;
 use crate::i18n::gettext;
 use crate::model::{Action, Dialog, SecretKind};
-use crate::theme;
+use crate::ui::widgets;
 
 pub fn show(app: &mut App, ctx: &egui::Context) {
     let locale = app.locale;
@@ -19,21 +17,24 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
         ctx,
         |ui| {
             ui.set_width(360.0);
-            ui.label(
-                RichText::new(format!(
-                    "{} {}",
-                    match prompt.kind {
-                        SecretKind::Database => gettext(locale, "Password for"),
-                        SecretKind::SshPassword => gettext(locale, "SSH password for"),
-                        SecretKind::SshPassphrase => gettext(locale, "Key passphrase for"),
-                    },
-                    prompt.name
-                ))
-                .font(theme::semibold(theme::TEXT_TITLE))
-                .color(palette.text),
+            let title = format!(
+                "{} {}",
+                match prompt.kind {
+                    SecretKind::Database => gettext(locale, "Password for"),
+                    SecretKind::SshPassword => gettext(locale, "SSH password for"),
+                    SecretKind::SshPassphrase => gettext(locale, "Key passphrase for"),
+                },
+                prompt.name
+            );
+            widgets::label(
+                ui,
+                widgets::dialog_title(&look),
+                &title,
+                palette.text,
+                &look,
             );
             if let Some(message) = &prompt.message {
-                ui.label(RichText::new(message).color(palette.secondary));
+                widgets::label(ui, widgets::body(&look), message, palette.secondary, &look);
             }
             ui.add_space(6.0);
             let field = ui.add(
@@ -66,7 +67,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                     {
                         actions.push(Action::SubmitPassword);
                     }
-                    if ui.button(gettext(locale, "Cancel")).clicked() {
+                    if widgets::button(ui, &gettext(locale, "Cancel"), &look).clicked() {
                         actions.push(Action::CancelPassword);
                     }
                 });

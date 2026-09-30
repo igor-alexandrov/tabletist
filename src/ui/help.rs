@@ -1,12 +1,10 @@
 //! The keyboard shortcuts dialog (`?`).
 
-use egui::RichText;
-
 use crate::app::App;
 use crate::i18n::gettext;
 use crate::model::{Action, Dialog};
-use crate::theme;
 use crate::ui::keys::{SHORTCUTS, keys_label};
+use crate::ui::widgets;
 
 pub fn show(app: &mut App, ctx: &egui::Context) {
     if !matches!(app.dialog, Some(Dialog::Help)) {
@@ -18,10 +16,12 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
     let mut actions = Vec::new();
     let modal = crate::ui::widgets::modal(egui::Id::new("help"), &look, &palette).show(ctx, |ui| {
         ui.set_width(460.0);
-        ui.label(
-            RichText::new(gettext(locale, "Keyboard shortcuts"))
-                .font(theme::semibold(theme::TEXT_TITLE))
-                .color(palette.text),
+        widgets::label(
+            ui,
+            widgets::dialog_title(&look),
+            &gettext(locale, "Keyboard shortcuts"),
+            palette.text,
+            &look,
         );
         ui.add_space(8.0);
         egui::Grid::new("shortcuts")
@@ -29,18 +29,26 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
             .spacing([16.0, 6.0])
             .show(ui, |ui| {
                 for (keys, what) in SHORTCUTS {
-                    ui.label(
-                        RichText::new(keys_label(keys))
-                            .font(theme::mono(theme::TEXT_MONO))
-                            .color(palette.secondary),
+                    widgets::label(
+                        ui,
+                        widgets::code(&look),
+                        &keys_label(keys),
+                        palette.secondary,
+                        &look,
                     );
-                    ui.label(RichText::new(gettext(locale, what)).color(palette.text));
+                    widgets::label(
+                        ui,
+                        widgets::body(&look),
+                        &gettext(locale, what),
+                        palette.text,
+                        &look,
+                    );
                     ui.end_row();
                 }
             });
         ui.add_space(8.0);
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if ui.button(gettext(locale, "Close")).clicked() {
+            if widgets::button(ui, &gettext(locale, "Close"), &look).clicked() {
                 actions.push(Action::CloseDialog);
             }
         });

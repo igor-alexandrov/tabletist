@@ -29,6 +29,12 @@ pub enum ConnTabContent {
 pub struct PickerState {
     /// Text typed into the picker's search field.
     pub search: String,
+    /// The connection the keys act on.
+    pub selected: Option<ConnectionId>,
+    /// Groups the user folded, by title.
+    pub folded: Vec<String>,
+    /// Focus the search on the next frame.
+    pub focus_search: bool,
 }
 
 /// Everything that changes application state. Views push these; `App::apply`
@@ -45,6 +51,21 @@ pub enum Action {
     CycleConnTab(isize),
     /// A result from the backend.
     Backend(Event),
+    /// Select a saved connection in the picker (`None` clears it).
+    SelectConnection {
+        tab: ConnTabId,
+        conn: Option<ConnectionId>,
+    },
+    /// Move the picker's selection by this many connections.
+    MovePickerSelection {
+        tab: ConnTabId,
+        step: isize,
+    },
+    /// Fold or unfold a group of connections in the picker.
+    FoldConnectionGroup {
+        tab: ConnTabId,
+        group: String,
+    },
     /// Open the connection dialog for a new connection.
     NewConnection,
     EditConnection(ConnectionId),
@@ -80,10 +101,54 @@ pub enum Action {
         tab: ConnTabId,
         schema: String,
     },
+    /// Show this schema's objects in the sidebar (loading them if needed).
+    ShowSchema {
+        tab: ConnTabId,
+        schema: String,
+    },
+    /// Fold or unfold a group of objects sharing a name prefix.
     ToggleGroup {
         tab: ConnTabId,
         schema: String,
-        kind: ObjectKind,
+        prefix: String,
+    },
+    /// Switch the sidebar between prefix groups and one flat list.
+    ToggleFlatTree(ConnTabId),
+    /// Hide or show the sidebar.
+    ToggleSidebar(ConnTabId),
+    /// Show timestamps in the grid to the microsecond, or to the second.
+    ToggleFullPrecision(ConnTabId),
+    /// Drop one applied filter (the raw WHERE counts last) and query again.
+    DropFilter {
+        tab: ConnTabId,
+        object_tab: ObjectTabId,
+        index: usize,
+    },
+    /// Put keyboard focus in the terminal look's WHERE line.
+    FocusWhere(ConnTabId),
+    /// Put keyboard focus in the picker's search.
+    FocusPickerSearch(ConnTabId),
+    /// Fold (or unfold) every JSON document in the row panel (`za`).
+    FoldDocuments {
+        tab: ConnTabId,
+        object_tab: ObjectTabId,
+    },
+    /// Follow the foreign key of the selected cell's column (`gd`).
+    FollowSelectedKey {
+        tab: ConnTabId,
+        object_tab: ObjectTabId,
+    },
+    /// Drop the active object tab's sort, back to the key order.
+    ClearSort {
+        tab: ConnTabId,
+        object_tab: ObjectTabId,
+    },
+    /// Open the table a foreign key points at, filtered to the row it names.
+    FollowForeignKey {
+        tab: ConnTabId,
+        object: ObjectRef,
+        column: String,
+        value: String,
     },
     RefreshTree(ConnTabId),
     OpenObject {
@@ -247,7 +312,19 @@ pub struct Workspace {
     pub needs_ssh_prompt: Option<String>,
     /// Where the arrow keys go.
     pub pane: Pane,
+    /// Objects opened lately, newest first.
+    pub recent: Vec<(ObjectRef, ObjectKind)>,
+    pub sidebar_hidden: bool,
+    /// The grid shows timestamps in full rather than to the second.
+    pub full_precision: bool,
+    /// Focus the WHERE line on the next frame.
+    pub focus_where: bool,
+    /// Fold or unfold the row panel's documents on the next frame (`za`).
+    pub fold_documents: Option<ObjectTabId>,
 }
+
+/// How many objects the sidebar's Recent section keeps.
+pub const RECENT: usize = 5;
 
 #[derive(Debug)]
 pub enum SessionStatus {
@@ -685,7 +762,7 @@ pub struct HostKeyPrompt {
 /// The file name of `path`, for naming a connection after its file.
 /// Loopback names and addresses, and Unix socket directories (PostgreSQL
 /// reads a host starting with `/` as one). An empty host is not checked yet.
-fn is_local_host(host: &str) -> bool {
+pub fn is_local_host(host: &str) -> bool {
     let host = host.trim();
     let bare = host
         .strip_prefix('[')
@@ -775,6 +852,10 @@ pub struct Tree {
     pub cursor: Option<TreeNode>,
     /// Scroll the cursor row into view on the next frame (it moved by key).
     pub reveal_cursor: bool,
+    /// The schema the sidebar shows, once the user picked one.
+    pub schema: Option<String>,
+    /// List objects flat rather than in prefix groups.
+    pub flat: bool,
 }
 
 /// Where the arrow keys go: the pane the user last worked in.
@@ -802,18 +883,20 @@ pub enum TreeKey {
 
 #[derive(Debug, Default)]
 pub struct SchemaNode {
+    /// Its objects were asked for (the sidebar showed it).
     pub expanded: bool,
     pub objects: Fetch<Vec<ObjectInfo>>,
-    /// Groups the user folded (Tables, Views...).
-    pub collapsed: HashSet<ObjectKind>,
+    /// Prefix groups the user unfolded (`book_`).
+    pub open_groups: HashSet<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TreeNode {
-    Schema(String),
-    /// "No tables or views" under a loaded schema that has none.
+    /// "No tables or views" in a loaded schema that has none.
     Empty(String),
-    Group(String, ObjectKind),
+    /// Objects of a schema sharing a name prefix: the schema, the prefix
+    /// without its underscore (`book`).
+    Group(String, String),
     Object(ObjectRef, ObjectKind),
 }
 
@@ -822,7 +905,8 @@ pub enum TreeNode {
 pub struct TreeRow {
     pub node: TreeNode,
     pub depth: u8,
-    /// Schema or object name; empty for groups (the view names the kind).
+    /// What the row shows: a group's prefix (`book_`), an object's name
+    /// without its group's prefix.
     pub label: String,
     /// Objects in a group.
     pub count: Option<usize>,
@@ -832,11 +916,77 @@ pub struct TreeRow {
     pub error: Option<String>,
 }
 
-const KINDS: [ObjectKind; 3] = [
-    ObjectKind::Table,
-    ObjectKind::View,
-    ObjectKind::MaterializedView,
-];
+/// Objects sorted into prefix groups: `book_authors` and `book_reviews`
+/// share the group `book_`, and `orders` joins `orders_archive` in `orders`.
+/// A prefix with one object stays a plain row.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Entry<'a> {
+    Object(&'a ObjectInfo),
+    Group {
+        /// The shared prefix without its underscore.
+        prefix: String,
+        /// `book_`, or `orders` when the bare prefix is an object too.
+        label: String,
+        objects: Vec<&'a ObjectInfo>,
+    },
+}
+
+/// The part of `name` before its first underscore (all of it if none).
+fn prefix_of(name: &str) -> &str {
+    match name.find('_') {
+        Some(at) if at > 0 => &name[..at],
+        _ => name,
+    }
+}
+
+/// What an object in the group `prefix` is called there: its name without
+/// the prefix and underscore, or in full when it is the prefix itself.
+pub fn short_name<'a>(name: &'a str, prefix: &str) -> &'a str {
+    name.strip_prefix(prefix)
+        .and_then(|rest| rest.strip_prefix('_'))
+        .filter(|rest| !rest.is_empty())
+        .unwrap_or(name)
+}
+
+/// `objects` in prefix groups, by name.
+pub fn group_objects<'a>(objects: &[&'a ObjectInfo]) -> Vec<Entry<'a>> {
+    let mut by_prefix: std::collections::BTreeMap<&str, Vec<&'a ObjectInfo>> =
+        std::collections::BTreeMap::new();
+    for object in objects {
+        by_prefix
+            .entry(prefix_of(&object.name))
+            .or_default()
+            .push(object);
+    }
+    let mut entries: Vec<(String, Entry<'a>)> = by_prefix
+        .into_iter()
+        .flat_map(|(prefix, mut members)| {
+            members.sort_by(|a, b| a.name.cmp(&b.name));
+            if members.len() < 2 {
+                return members
+                    .into_iter()
+                    .map(|object| (object.name.clone(), Entry::Object(object)))
+                    .collect::<Vec<_>>();
+            }
+            let bare = members.iter().any(|object| object.name == prefix);
+            let label = if bare {
+                prefix.to_owned()
+            } else {
+                format!("{prefix}_")
+            };
+            vec![(
+                label.clone(),
+                Entry::Group {
+                    prefix: prefix.to_owned(),
+                    label,
+                    objects: members,
+                },
+            )]
+        })
+        .collect();
+    entries.sort_by(|a, b| a.0.cmp(&b.0));
+    entries.into_iter().map(|(_, entry)| entry).collect()
+}
 
 /// Schemas the database keeps for itself, hidden unless the user asks.
 pub fn is_system_schema(driver: Driver, name: &str) -> bool {
@@ -855,97 +1005,120 @@ pub fn is_system_schema(driver: Driver, name: &str) -> bool {
 }
 
 impl Tree {
-    /// The lines to draw. A filter shows every loaded match, unfolded.
+    /// The schemas the sidebar offers, system ones only when asked for.
+    pub fn visible_schemas(&self, driver: Driver, show_system: bool) -> Vec<String> {
+        self.schemas
+            .value
+            .iter()
+            .flatten()
+            .filter(|schema| show_system || !is_system_schema(driver, schema))
+            .cloned()
+            .collect()
+    }
+
+    /// The schema whose objects the sidebar lists: the one picked, else the
+    /// first one opened, else the first one.
+    pub fn shown_schema(&self, driver: Driver, show_system: bool) -> Option<String> {
+        let schemas = self.visible_schemas(driver, show_system);
+        self.schema
+            .as_ref()
+            .filter(|schema| schemas.contains(schema))
+            .cloned()
+            .or_else(|| {
+                schemas
+                    .iter()
+                    .find(|schema| self.nodes.get(*schema).is_some_and(|node| node.expanded))
+                    .cloned()
+            })
+            .or_else(|| schemas.first().cloned())
+    }
+
+    /// The lines to draw: the shown schema's objects, in prefix groups or
+    /// flat. A filter shows every match, unfolded.
     pub fn visible_rows(&self, driver: Driver, show_system: bool) -> Vec<TreeRow> {
         let needle = self.filter.trim().to_lowercase();
         let filtering = !needle.is_empty();
         let mut rows = Vec::new();
-        let Some(schemas) = &self.schemas.value else {
+        let Some(schema) = self.shown_schema(driver, show_system) else {
             return rows;
         };
-        for schema in schemas {
-            if !show_system && is_system_schema(driver, schema) {
-                continue;
-            }
-            let node = self.nodes.get(schema);
-            let expanded = node.is_some_and(|node| node.expanded);
-            let matching: Vec<&ObjectInfo> = node
-                .and_then(|node| node.objects.value.as_ref())
-                .map(|objects| {
-                    objects
-                        .iter()
-                        .filter(|object| !filtering || object.name.to_lowercase().contains(&needle))
-                        .collect()
-                })
-                .unwrap_or_default();
-            if filtering && matching.is_empty() {
-                continue;
-            }
-            let open = expanded || filtering;
+        let Some(node) = self.nodes.get(&schema) else {
+            return rows;
+        };
+        let Some(objects) = node.objects.value.as_ref() else {
+            return rows;
+        };
+        if objects.is_empty() {
             rows.push(TreeRow {
-                node: TreeNode::Schema(schema.clone()),
+                node: TreeNode::Empty(schema.clone()),
                 depth: 0,
-                label: schema.clone(),
+                label: "No tables or views".into(),
                 count: None,
-                expanded: Some(open),
-                loading: node.is_some_and(|node| node.objects.is_loading()),
-                error: node.and_then(|node| node.objects.error.as_ref().map(ToString::to_string)),
+                expanded: None,
+                loading: false,
+                error: None,
             });
-            if !open {
-                continue;
+            return rows;
+        }
+        let matching: Vec<&ObjectInfo> = objects
+            .iter()
+            .filter(|object| !filtering || object.name.to_lowercase().contains(&needle))
+            .collect();
+        let object_row = |object: &ObjectInfo, depth: u8, label: &str| TreeRow {
+            node: TreeNode::Object(
+                ObjectRef::new(schema.clone(), object.name.clone()),
+                object.kind,
+            ),
+            depth,
+            label: label.to_owned(),
+            count: None,
+            expanded: None,
+            loading: false,
+            error: None,
+        };
+        if self.flat {
+            let mut sorted = matching;
+            sorted.sort_by(|a, b| a.name.cmp(&b.name));
+            for object in sorted {
+                rows.push(object_row(object, 0, &object.name));
             }
-            let loaded_empty = node
-                .and_then(|node| node.objects.value.as_ref())
-                .is_some_and(Vec::is_empty);
-            if loaded_empty {
-                rows.push(TreeRow {
-                    node: TreeNode::Empty(schema.clone()),
-                    depth: 1,
-                    label: "No tables or views".into(),
-                    count: None,
-                    expanded: None,
-                    loading: false,
-                    error: None,
-                });
-            }
-            for kind in KINDS {
-                let items: Vec<&&ObjectInfo> = matching
-                    .iter()
-                    .filter(|object| object.kind == kind)
-                    .collect();
-                if items.is_empty() {
-                    continue;
-                }
-                let folded = !filtering && node.is_some_and(|node| node.collapsed.contains(&kind));
-                rows.push(TreeRow {
-                    node: TreeNode::Group(schema.clone(), kind),
-                    depth: 1,
-                    label: String::new(),
-                    count: Some(items.len()),
-                    expanded: Some(!folded),
-                    loading: false,
-                    error: None,
-                });
-                if folded {
-                    continue;
-                }
-                for object in items {
+            return rows;
+        }
+        for entry in group_objects(&matching) {
+            match entry {
+                Entry::Object(object) => rows.push(object_row(object, 0, &object.name)),
+                Entry::Group {
+                    prefix,
+                    label,
+                    objects,
+                } => {
+                    let open = filtering || node.open_groups.contains(&prefix);
                     rows.push(TreeRow {
-                        node: TreeNode::Object(
-                            ObjectRef::new(schema.clone(), object.name.clone()),
-                            kind,
-                        ),
-                        depth: 2,
-                        label: object.name.clone(),
-                        count: None,
-                        expanded: None,
+                        node: TreeNode::Group(schema.clone(), prefix.clone()),
+                        depth: 0,
+                        label,
+                        count: Some(objects.len()),
+                        expanded: Some(open),
                         loading: false,
                         error: None,
                     });
+                    if open {
+                        for object in objects {
+                            rows.push(object_row(object, 1, short_name(&object.name, &prefix)));
+                        }
+                    }
                 }
             }
         }
         rows
+    }
+
+    /// Unfolds the group `object` sits in, so the sidebar shows it.
+    pub fn reveal(&mut self, object: &ObjectRef) {
+        let prefix = prefix_of(&object.name).to_owned();
+        if let Some(node) = self.nodes.get_mut(&object.schema) {
+            node.open_groups.insert(prefix);
+        }
     }
 
     pub fn object_info(&self, object: &ObjectRef) -> Option<&ObjectInfo> {
@@ -1200,52 +1373,105 @@ mod tests {
     fn labels(rows: &[TreeRow]) -> Vec<String> {
         rows.iter()
             .map(|row| match &row.node {
-                TreeNode::Group(_, kind) => format!("{kind:?}({})", row.count.unwrap()),
-                _ => row.label.clone(),
+                TreeNode::Group(..) => format!("{}({})", row.label, row.count.unwrap()),
+                _ => format!("{}{}", "  ".repeat(usize::from(row.depth)), row.label),
             })
             .collect()
     }
 
     #[test]
-    fn expanded_schemas_show_groups_and_objects_and_system_schemas_hide() {
-        let rows = tree().visible_rows(Driver::Postgres, false);
+    fn the_sidebar_lists_the_shown_schema_and_hides_system_ones() {
+        let tree = tree();
         assert_eq!(
-            labels(&rows),
-            [
-                "public",
-                "Table(2)",
-                "orders",
-                "users",
-                "View(1)",
-                "active_users",
-                "billing"
-            ]
+            tree.shown_schema(Driver::Postgres, false).as_deref(),
+            Some("public"),
+            "the opened one"
         );
-        let with_system = tree().visible_rows(Driver::Postgres, true);
-        assert!(labels(&with_system).contains(&"pg_catalog".to_owned()));
+        assert_eq!(
+            labels(&tree.visible_rows(Driver::Postgres, false)),
+            ["active_users", "orders", "users"]
+        );
+        assert_eq!(
+            tree.visible_schemas(Driver::Postgres, false),
+            ["public", "billing"]
+        );
+        assert!(
+            tree.visible_schemas(Driver::Postgres, true)
+                .contains(&"pg_catalog".to_owned())
+        );
+    }
+
+    fn grouped() -> Tree {
+        let mut tree = Tree::default();
+        tree.schemas.value = Some(vec!["public".into()]);
+        let mut public = SchemaNode::default();
+        public.objects.value = Some(vec![
+            info("orders_archive", ObjectKind::Table),
+            info("book_reviews", ObjectKind::Table),
+            info("books", ObjectKind::Table),
+            info("orders", ObjectKind::Table),
+            info("book_authors", ObjectKind::View),
+        ]);
+        tree.nodes.insert("public".into(), public);
+        tree
     }
 
     #[test]
-    fn folded_groups_hide_their_objects() {
-        let mut tree = tree();
+    fn objects_sharing_a_prefix_fold_into_a_group() {
+        let mut tree = grouped();
+        assert_eq!(
+            labels(&tree.visible_rows(Driver::Postgres, false)),
+            ["book_(2)", "books", "orders(2)"]
+        );
+        tree.reveal(&ObjectRef::new("public", "book_reviews"));
         tree.nodes
             .get_mut("public")
             .unwrap()
-            .collapsed
-            .insert(ObjectKind::Table);
+            .open_groups
+            .insert("orders".into());
         assert_eq!(
             labels(&tree.visible_rows(Driver::Postgres, false)),
-            ["public", "Table(2)", "View(1)", "active_users", "billing"]
+            [
+                "book_(2)",
+                "  authors",
+                "  reviews",
+                "books",
+                "orders(2)",
+                "  orders",
+                "  archive"
+            ]
         );
     }
 
     #[test]
-    fn a_filter_shows_loaded_matches_in_every_schema_unfolded() {
-        let mut tree = tree();
-        tree.filter = "IN".into();
+    fn the_flat_list_names_every_object_in_full() {
+        let mut tree = grouped();
+        tree.flat = true;
         assert_eq!(
             labels(&tree.visible_rows(Driver::Postgres, false)),
-            ["billing", "Table(1)", "invoices"]
+            [
+                "book_authors",
+                "book_reviews",
+                "books",
+                "orders",
+                "orders_archive"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_filter_shows_matches_unfolded() {
+        let mut tree = grouped();
+        tree.filter = "REV".into();
+        assert_eq!(
+            labels(&tree.visible_rows(Driver::Postgres, false)),
+            ["book_reviews"],
+            "one match is no group"
+        );
+        tree.filter = "book_".into();
+        assert_eq!(
+            labels(&tree.visible_rows(Driver::Postgres, false)),
+            ["book_(2)", "  authors", "  reviews"]
         );
         tree.filter = "nothing matches".into();
         assert!(tree.visible_rows(Driver::Postgres, false).is_empty());

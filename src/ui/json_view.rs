@@ -3,12 +3,12 @@
 use std::sync::Arc;
 
 use egui::cache::{ComputerMut, FrameCache};
-use egui::text::LayoutJob;
-use egui::{Align, Color32, FontId, Id, Label, Layout, Sense, TextFormat, Ui, WidgetInfo, vec2};
+use egui::{Align, Color32, Id, Label, Layout, Sense, Ui, WidgetInfo, vec2};
 use serde::de::{MapAccess, SeqAccess, Visitor};
 
 use crate::i18n::{Locale, gettext, ngettext};
 use crate::theme::{self, Icon, Palette};
+use crate::typography::{Text, TextRole};
 
 /// JSON larger than this is shown as plain text, not parsed into a tree.
 pub const TREE_MAX: usize = 256 * 1024;
@@ -18,10 +18,8 @@ const OPEN_LINES: usize = 40;
 const MAX_ROWS: usize = 1_000;
 /// Characters of a string the tree shows; copying gives the whole value.
 const STRING_MAX: usize = 2_000;
-/// Indent per nesting level, in points.
-const INDENT: f32 = 14.0;
-/// The fold toggle's width, and the gutter leaves keep so keys line up.
-const TOGGLE: f32 = 14.0;
+/// The fold toggle's width, in the indent left of its line.
+const TOGGLE: f32 = 11.0;
 
 /// A JSON value as the tree shows it. Keys keep their document order
 /// (serde_json's own map sorts them), and strings and keys are stored as
@@ -147,12 +145,101 @@ impl ComputerMut<&str, Option<Arc<Doc>>> for Parser {
 /// `text` parsed, from a cache kept while the value stays on screen, so a
 /// document is not re-parsed every frame.
 pub fn parsed(ui: &Ui, text: &str) -> Option<Arc<Doc>> {
-    ui.memory_mut(|memory| {
+    parsed_in(ui.ctx(), text)
+}
+
+/// [`parsed`], from the context's cache.
+pub fn parsed_in(ctx: &egui::Context, text: &str) -> Option<Arc<Doc>> {
+    ctx.memory_mut(|memory| {
         memory
             .caches
             .cache::<FrameCache<Option<Arc<Doc>>, Parser>>()
             .get(text)
             .clone()
+    })
+}
+
+/// What a JSON cell shows: how many keys (or items) its top level holds,
+/// and its first strings, depth first.
+pub fn summary(doc: &Doc) -> (usize, Vec<String>) {
+    fn strings(value: &Json, out: &mut Vec<String>) {
+        if out.len() >= 2 {
+            return;
+        }
+        match value {
+            Json::String(text) => out.push(unquote(text)),
+            Json::Array(items) => items.iter().for_each(|item| strings(item, out)),
+            Json::Object(entries) => entries.iter().for_each(|(_, item)| strings(item, out)),
+            _ => {}
+        }
+    }
+    let count = match &doc.root {
+        Json::Array(items) => items.len(),
+        Json::Object(entries) => entries.len(),
+        _ => 0,
+    };
+    let mut out = Vec::new();
+    strings(&doc.root, &mut out);
+    (count, out)
+}
+
+/// A JSON literal's text: `"a\"b"` becomes `a"b`.
+fn unquote(literal: &str) -> String {
+    serde_json::from_str::<String>(literal).unwrap_or_else(|_| literal.trim_matches('"').to_owned())
+}
+
+/// A stored file described in JSON (Shrine, CarrierWave and Active Storage
+/// keep one per attachment): its name and what is known about it.
+#[derive(Debug, PartialEq)]
+pub struct Attachment {
+    pub filename: String,
+    /// `image/jpeg · 103 × 102 · 5.9 KB · store`.
+    pub details: String,
+    pub image: bool,
+}
+
+/// The file `doc` describes, when it names one: a `filename` at its top
+/// level or in its `metadata`.
+pub fn attachment(doc: &Doc) -> Option<Attachment> {
+    let Json::Object(entries) = &doc.root else {
+        return None;
+    };
+    fn get<'d>(entries: &'d [(Box<str>, Json)], key: &str) -> Option<&'d Json> {
+        entries
+            .iter()
+            .find(|(name, _)| &name[1..name.len() - 1] == key)
+            .map(|(_, value)| value)
+    }
+    let metadata = match get(entries, "metadata") {
+        Some(Json::Object(inner)) => inner.as_slice(),
+        _ => entries.as_slice(),
+    };
+    let text = |value: Option<&Json>| match value {
+        Some(Json::String(text)) => Some(unquote(text)),
+        Some(Json::Number(number)) => Some(number.to_string()),
+        _ => None,
+    };
+    let filename = text(get(metadata, "filename"))?;
+    let mime = text(get(metadata, "mime_type").or_else(|| get(metadata, "content_type")));
+    let mut details = Vec::new();
+    if let Some(mime) = &mime {
+        details.push(mime.clone());
+    }
+    if let (Some(width), Some(height)) =
+        (text(get(metadata, "width")), text(get(metadata, "height")))
+    {
+        details.push(format!("{width} × {height}"));
+    }
+    if let Some(size) = text(get(metadata, "size")).and_then(|size| size.parse::<usize>().ok()) {
+        details.push(crate::ui::format::human_size(size));
+    }
+    if let Some(storage) = text(get(entries, "storage")) {
+        details.push(storage);
+    }
+    Some(Attachment {
+        image: mime.is_some_and(|mime| mime.starts_with("image/")),
+        filename,
+        details: details.join(" · "),
     })
 }
 
@@ -166,18 +253,35 @@ struct Folding {
 
 /// Draws `doc`. `id` identifies the value; `name` (the column) is the root's
 /// accessible name.
-pub fn show(ui: &mut Ui, id: Id, doc: &Doc, name: &str, locale: Locale, palette: &Palette) {
+pub fn show(
+    ui: &mut Ui,
+    id: Id,
+    doc: &Doc,
+    name: &str,
+    locale: Locale,
+    palette: &Palette,
+    look: &theme::Look,
+) {
     let folding: Folding = ui.data(|data| data.get_temp(id)).unwrap_or_default();
+    let role = TextRole::pick(look, TextRole::Json, TextRole::OJson);
+    let keys = if look.terminal {
+        palette.accent
+    } else {
+        palette.accent_hover
+    };
     let mut view = View {
         locale,
         palette,
-        font: theme::mono(theme::TEXT_MONO),
+        look,
+        role,
+        keys,
         all: folding.all,
         open_all: doc.lines <= OPEN_LINES,
         rows: 0,
         folded: 0,
     };
     ui.scope(|ui| {
+        // The role carries the design's line height.
         ui.spacing_mut().item_spacing = vec2(2.0, 0.0);
         let slot = Slot {
             key: None,
@@ -187,30 +291,81 @@ pub fn show(ui: &mut Ui, id: Id, doc: &Doc, name: &str, locale: Locale, palette:
         view.node(ui, 0, slot, &doc.root, id.with(folding.generation));
     });
     if view.rows >= MAX_ROWS {
-        ui.label(
-            egui::RichText::new(format!(
-                "…\n{}",
-                gettext(locale, "(Copy gives the whole value.)")
-            ))
-            .font(view.font.clone())
-            .color(palette.dim),
-        );
+        Text::one(
+            look,
+            role,
+            &format!("…\n{}", gettext(locale, "(Copy gives the whole value.)")),
+            palette.dim,
+        )
+        .layout(ui.ctx())
+        .label(ui);
     }
-    if doc.containers > 1 {
-        let open = view.folded > 0;
-        let label = if open {
-            gettext(locale, "Expand all")
-        } else {
-            gettext(locale, "Collapse all")
-        };
-        if ui.link(label).clicked() {
-            let folding = Folding {
-                generation: folding.generation.wrapping_add(1),
-                all: Some(open),
-            };
-            ui.data_mut(|data| data.insert_temp(id, folding));
-        }
+    ui.data_mut(|data| data.insert_temp(id.with("folded"), view.folded));
+}
+
+/// Collapse all (or Expand all, once something is folded), right-aligned
+/// at `right` on the line centred at `y`. Nothing for a flat document.
+#[allow(clippy::too_many_arguments)] // the document, its place, and its look
+pub fn fold_all_link(
+    ui: &mut Ui,
+    id: Id,
+    doc: &Doc,
+    right: f32,
+    y: f32,
+    locale: Locale,
+    look: &theme::Look,
+    palette: &Palette,
+) {
+    if doc.containers <= 1 {
+        return;
     }
+    let folded: usize = ui
+        .data(|data| data.get_temp(id.with("folded")))
+        .unwrap_or(0);
+    let open = folded > 0;
+    let label = if open {
+        gettext(locale, "Expand all")
+    } else {
+        gettext(locale, "Collapse all")
+    };
+    let role = TextRole::FieldLabel;
+    let width = role.width(ui.ctx(), look.faces, &label);
+    let height = role.row_height(ui.ctx(), look.faces);
+    let rect = egui::Rect::from_min_size(
+        egui::pos2(right - width, y - height / 2.0),
+        vec2(width, height),
+    );
+    let response = ui.interact(rect, id.with("fold-all"), Sense::click());
+    response.widget_info(|| WidgetInfo::labeled(egui::WidgetType::Link, true, label.as_ref()));
+    let color = if response.hovered() {
+        palette.accent_hover
+    } else {
+        palette.accent
+    };
+    Text::one(look, role, &label, color)
+        .layout(ui.ctx())
+        .paint(ui.painter(), rect.min);
+    if response.clicked() {
+        toggle_fold_all(ui, id);
+    }
+}
+
+/// What Collapse all (or Expand all) does, for the `za` key.
+pub fn toggle_fold_all(ui: &Ui, id: Id) {
+    let folding: Folding = ui.data(|data| data.get_temp(id)).unwrap_or_default();
+    let folded: usize = ui
+        .data(|data| data.get_temp(id.with("folded")))
+        .unwrap_or(0);
+    let folding = Folding {
+        generation: folding.generation.wrapping_add(1),
+        all: Some(folded > 0),
+    };
+    ui.data_mut(|data| data.insert_temp(id, folding));
+}
+
+/// One line of the tree as it is built.
+struct Line {
+    text: Option<Text>,
 }
 
 /// Where a value sits: its key in an object, its accessible name as a path
@@ -225,7 +380,10 @@ struct Slot<'s> {
 struct View<'a> {
     locale: Locale,
     palette: &'a Palette,
-    font: FontId,
+    look: &'a theme::Look,
+    role: TextRole,
+    /// The colour of object keys.
+    keys: Color32,
     /// Set by Expand all / Collapse all.
     all: Option<bool>,
     /// The document is short enough to open fully.
@@ -241,10 +399,10 @@ impl View<'_> {
             return;
         }
         let Slot { key, name, comma } = slot;
-        let mut job = LayoutJob::default();
+        let mut job = self.line();
         if let Some(key) = key {
-            self.push(&mut job, key, self.palette.accent);
-            self.push(&mut job, ": ", self.palette.secondary);
+            self.push(&mut job, key, self.keys);
+            self.push(&mut job, ": ", self.palette.text);
         }
         let (open_bracket, close_bracket, count, noun) = match value {
             Json::Array(items) if !items.is_empty() => {
@@ -258,16 +416,16 @@ impl View<'_> {
             leaf => {
                 let (text, color) = match leaf {
                     Json::Null => ("null", self.palette.dim),
-                    Json::Bool(true) => ("true", self.palette.warning),
-                    Json::Bool(false) => ("false", self.palette.warning),
-                    Json::Number(number) => (&**number, self.palette.warning),
-                    Json::String(text) => (&**text, self.palette.text),
-                    Json::Array(_) => ("[]", self.palette.secondary),
-                    Json::Object(_) => ("{}", self.palette.secondary),
+                    Json::Bool(true) => ("true", self.palette.orange),
+                    Json::Bool(false) => ("false", self.palette.orange),
+                    Json::Number(number) => (&**number, self.palette.orange),
+                    Json::String(text) => (&**text, self.palette.success),
+                    Json::Array(_) => ("[]", self.palette.text),
+                    Json::Object(_) => ("{}", self.palette.text),
                 };
                 self.push(&mut job, text, color);
                 if comma {
-                    self.push(&mut job, ",", self.palette.secondary);
+                    self.push(&mut job, ",", self.palette.text);
                 }
                 self.row(ui, depth, None, job);
                 return;
@@ -276,13 +434,13 @@ impl View<'_> {
         let open = ui
             .data(|data| data.get_temp(id))
             .unwrap_or(self.all.unwrap_or(depth == 0 || self.open_all));
-        self.push(&mut job, open_bracket, self.palette.secondary);
+        self.push(&mut job, open_bracket, self.palette.text);
         if !open {
             self.folded += 1;
             self.push(&mut job, &format!(" {count} {noun} "), self.palette.dim);
-            self.push(&mut job, close_bracket, self.palette.secondary);
+            self.push(&mut job, close_bracket, self.palette.text);
             if comma {
-                self.push(&mut job, ",", self.palette.secondary);
+                self.push(&mut job, ",", self.palette.text);
             }
         }
         let verb = if open { "Collapse" } else { "Expand" };
@@ -318,10 +476,10 @@ impl View<'_> {
             _ => {}
         }
         if self.rows < MAX_ROWS {
-            let mut job = LayoutJob::default();
-            self.push(&mut job, close_bracket, self.palette.secondary);
+            let mut job = self.line();
+            self.push(&mut job, close_bracket, self.palette.text);
             if comma {
-                self.push(&mut job, ",", self.palette.secondary);
+                self.push(&mut job, ",", self.palette.text);
             }
             self.row(ui, depth, None, job);
         }
@@ -332,53 +490,73 @@ impl View<'_> {
         ngettext(self.locale, one, many, count).into_owned()
     }
 
-    fn push(&self, job: &mut LayoutJob, text: &str, color: Color32) {
-        job.append(text, 0.0, TextFormat::simple(self.font.clone(), color));
+    /// The next line's text, empty.
+    fn line(&self) -> Line {
+        Line {
+            text: Some(Text::new(self.look)),
+        }
     }
 
-    /// One line: indent, fold toggle (or its gutter), then `job`. Returns
-    /// whether the toggle was clicked.
-    fn row(
-        &mut self,
-        ui: &mut Ui,
-        depth: usize,
-        toggle: Option<(bool, &str)>,
-        job: LayoutJob,
-    ) -> bool {
+    /// Appends `text` in `color` to `line`.
+    fn push(&self, line: &mut Line, text: &str, color: Color32) {
+        if let Some(sofar) = line.text.take() {
+            line.text = Some(sofar.add(self.role, text, color));
+        }
+    }
+
+    /// One line: indent, then `job`; a fold toggle sits in the indent to
+    /// its left, drawn while the pointer is over the line. Returns whether
+    /// the toggle was clicked.
+    fn row(&mut self, ui: &mut Ui, depth: usize, toggle: Option<(bool, &str)>, job: Line) -> bool {
         self.rows += 1;
-        let height = ui.fonts_mut(|fonts| fonts.row_height(&self.font));
+        let height = self.role.row_height(ui.ctx(), self.look.faces);
         ui.with_layout(Layout::left_to_right(Align::Min), |ui| {
-            ui.add_space(depth as f32 * INDENT);
-            let clicked = match toggle {
-                Some((open, label)) => self.toggle(ui, open, label, height),
-                None => {
-                    ui.add_space(TOGGLE);
-                    false
+            ui.spacing_mut().item_spacing.x = 0.0;
+            // Two characters per level, as the design's `pre` indents.
+            let indent = depth as f32 * self.role.width(ui.ctx(), self.look.faces, "  ");
+            ui.add_space(indent);
+            let left = ui.cursor().left();
+            // Long strings (paths, hashes) break anywhere, as the design
+            // wraps them, not at the last space.
+            let mut text = job.text.unwrap_or_else(|| Text::new(self.look));
+            text.job_mut().wrap.max_width = ui.available_width().max(1.0);
+            text.job_mut().wrap.break_anywhere = true;
+            let laid = text.layout(ui.ctx());
+            let label = ui.add(Label::new(laid.galley).selectable(true));
+            match toggle {
+                Some((open, text)) => {
+                    let rect = egui::Rect::from_min_size(
+                        egui::pos2(left - TOGGLE, label.rect.top()),
+                        vec2(TOGGLE, height),
+                    );
+                    let near = ui.rect_contains_pointer(label.rect.union(rect));
+                    self.toggle(ui, rect, open, text, near)
                 }
-            };
-            ui.add(Label::new(job).selectable(true).wrap());
-            clicked
+                None => false,
+            }
         })
         .inner
     }
 
-    fn toggle(&self, ui: &mut Ui, open: bool, label: &str, height: f32) -> bool {
-        let (rect, response) = ui.allocate_exact_size(vec2(TOGGLE, height), Sense::click());
+    fn toggle(&self, ui: &mut Ui, rect: egui::Rect, open: bool, label: &str, shown: bool) -> bool {
+        let response = ui.interact(rect, ui.id().with(label), Sense::click());
         response.widget_info(|| WidgetInfo::labeled(egui::WidgetType::Button, true, label));
-        let icon = if open {
-            Icon::ChevronDown
-        } else {
-            Icon::ChevronRight
-        };
-        let tint = if response.hovered() {
-            self.palette.text
-        } else {
-            self.palette.secondary
-        };
-        icon.image(tint, 12.0).paint_at(
-            ui,
-            egui::Rect::from_center_size(rect.center(), vec2(12.0, 12.0)),
-        );
+        if shown || response.hovered() || response.has_focus() {
+            let icon = if open {
+                Icon::ChevronDown
+            } else {
+                Icon::ChevronRight
+            };
+            let tint = if response.hovered() {
+                self.palette.text
+            } else {
+                self.palette.dim
+            };
+            icon.image(tint, 10.0).paint_at(
+                ui,
+                egui::Rect::from_center_size(rect.center(), vec2(10.0, 10.0)),
+            );
+        }
         response.on_hover_text(label).clicked()
     }
 }
@@ -410,6 +588,24 @@ mod tests {
         // { "z", "a": [ five items ], "e" }
         assert_eq!(doc.lines, 11);
         assert_eq!(doc.containers, 2);
+    }
+
+    #[test]
+    fn a_stored_file_is_read_from_its_metadata() {
+        let doc = parse(
+            r#"{"id": "a/b.jpg", "storage": "store", "metadata": {"size": 6024, "width": 103, "height": 102, "filename": "gold.jpg", "mime_type": "image/jpeg"}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            attachment(&doc),
+            Some(Attachment {
+                filename: "gold.jpg".into(),
+                details: "image/jpeg · 103 × 102 · 5.9 KB · store".into(),
+                image: true,
+            })
+        );
+        assert_eq!(summary(&doc), (3, vec!["a/b.jpg".into(), "store".into()]));
+        assert_eq!(attachment(&parse(r#"{"plan": "pro"}"#).unwrap()), None);
     }
 
     #[test]
