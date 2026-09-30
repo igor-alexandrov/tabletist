@@ -34,8 +34,8 @@ fn note(ui: &mut egui::Ui, text: &str, color: egui::Color32, look: &Look) -> egu
         .label(ui)
 }
 
-/// "13 rows · 6 columns · public", as far as it is known.
-fn subtitle(object: &ObjectTab, look: &Look, locale: crate::i18n::Locale) -> String {
+/// The parts of "13 rows · 6 columns · public", as far as it is known.
+fn subtitle(object: &ObjectTab, look: &Look, locale: crate::i18n::Locale) -> Vec<String> {
     let mut parts = Vec::new();
     let page = object.page();
     let rows = object.count.value.or_else(|| {
@@ -65,7 +65,30 @@ fn subtitle(object: &ObjectTab, look: &Look, locale: crate::i18n::Locale) -> Str
     if !look.terminal {
         parts.push(object.object.schema.clone());
     }
-    parts.join(" · ")
+    parts
+}
+
+/// As many of `parts` as fit `room` (measured by `width`), joined with
+/// " · ": the summary gives way from its end, then goes altogether.
+fn fit_parts(parts: &[String], room: f32, width: impl Fn(&str) -> f32) -> Option<String> {
+    (1..=parts.len())
+        .rev()
+        .map(|kept| parts[..kept].join(" · "))
+        .find(|text| width(text) <= room)
+}
+
+/// Paints `text` from `x`, centred on `y`, and names it `name` for screen
+/// readers (the whole text, when the painted one is cut). Returns its width.
+fn paint_named(ui: &egui::Ui, x: f32, y: f32, text: Text, name: &str) -> f32 {
+    let laid = text.layout(ui.ctx());
+    let width = laid.paint_left(ui.painter(), x, y);
+    let size = laid.size();
+    widgets::announce(
+        ui,
+        Rect::from_min_size(pos2(x, y - size.y / 2.0), vec2(width, size.y)),
+        name,
+    );
+    width
 }
 
 /// The object's name and counts, the Data/Structure switch, and Add row
@@ -79,15 +102,16 @@ pub fn header(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: Obje
     };
     let name = object.object.name.clone();
     let view = object.view;
-    let subtitle = subtitle(object, &look, locale);
+    let parts = subtitle(object, &look, locale);
+    let summary = parts.join(" · ");
     let mut actions = Vec::new();
     // macOS: 14 above and 12 below the title and its line, 2 apart.
     // Terminal: 12 above and 10 below a line holding a 2 pt underline.
     let title_role = TextRole::pick(&look, TextRole::TableTitle, TextRole::OTableTitle);
     let sub_role = TextRole::pick(&look, TextRole::Secondary, TextRole::OBody);
     let (title_line, sub_line) = (line(ui, title_role, &look), line(ui, sub_role, &look));
-    let title = |color| Text::one(&look, title_role, &name, color);
-    let sub = |color| Text::one(&look, sub_role, &subtitle, color);
+    let title = |text: &str, color| Text::one(&look, title_role, text, color);
+    let sub = |text: &str, color| Text::one(&look, sub_role, text, color);
     let height = if look.terminal {
         12.0 + title_line.max(line(ui, TextRole::OBody, &look) + 6.0) + 10.0 + 1.0
     } else {
@@ -112,17 +136,35 @@ pub fn header(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: Obje
                 (ObjectView::Data, gettext(locale, "Data"), "d"),
                 (ObjectView::Structure, gettext(locale, "Structure"), "s"),
             ];
+            let width = |role: TextRole, text: &str| role.width(ui.ctx(), look.faces, text);
             if look.terminal {
                 let center = rect.top() + (rect.height() - 1.0 + 2.0) / 2.0;
-                let mut x = left;
-                x += widgets::paint_text(ui, x, center, title(palette.text)) + 16.0;
-                widgets::paint_text(ui, x, center, sub(palette.dim));
+                let role = TextRole::OBody;
+                let widths: Vec<f32> = views
+                    .iter()
+                    .map(|(_, label, key)| width(role, &format!("{key} {}", label.to_lowercase())))
+                    .collect();
+                // The views keep their place at the right, 16 clear of
+                // their 4 pt hit margin; the summary gives way, then the
+                // title is cut.
+                let room = right
+                    - (widths.iter().sum::<f32>() + 14.0 * (widths.len() - 1) as f32)
+                    - 4.0
+                    - 16.0
+                    - left;
+                let shown =
+                    grid::ellipsize(&name, room.max(0.0), false, |text| width(title_role, text));
+                let x =
+                    left + paint_named(ui, left, center, title(&shown, palette.text), &name) + 16.0;
+                if let Some(shown) =
+                    fit_parts(&parts, left + room - x, |text| width(sub_role, text))
+                {
+                    paint_named(ui, x, center, sub(&shown, palette.dim), &summary);
+                }
                 // `d data  s structure`, the active one underlined.
                 let mut x = right;
-                for (target, label, key) in views.iter().rev() {
+                for ((target, label, key), width) in views.iter().zip(widths).rev() {
                     let label = label.to_lowercase();
-                    let role = TextRole::OBody;
-                    let width = role.width(ui.ctx(), look.faces, &format!("{key} {label}"));
                     let hit = Rect::from_min_size(
                         pos2(x - width - 4.0, rect.top()),
                         vec2(width + 8.0, rect.height()),
@@ -174,20 +216,45 @@ pub fn header(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: Obje
             let title_y = rect.top() + 14.0 + title_line / 2.0;
             let sub_y = rect.top() + 14.0 + title_line + 2.0 + sub_line / 2.0;
             let center = rect.top() + 14.0 + (title_line + 2.0 + sub_line) / 2.0;
-            let title_width = widgets::paint_text(ui, left, title_y, title(palette.text));
-            let sub_width = widgets::paint_text(ui, left, sub_y, sub(palette.dim));
             // The Data/Structure switch 16 + 12 after the title: a 3 pt
             // track round 28 pt segments, 14 at their sides.
-            let mut x = left + title_width.max(sub_width) + 16.0 + 12.0;
-            let track = Rect::from_min_size(pos2(x, center - 17.0), vec2(0.0, 34.0));
             let widths: Vec<f32> = views
                 .iter()
-                .map(|(_, label, _)| {
-                    TextRole::UiBodyStrong.width(ui.ctx(), look.faces, label) + 28.0
-                })
+                .map(|(_, label, _)| width(TextRole::UiBodyStrong, label) + 28.0)
                 .collect();
-            let track =
-                Rect::from_min_size(track.min, vec2(widths.iter().sum::<f32>() + 6.0, 34.0));
+            let switch = widths.iter().sum::<f32>() + 6.0;
+            // Add row, disabled until editing arrives, keeps 12 clear of the
+            // switch. When the room runs out the summary gives way first,
+            // then Add row drops its text, then it goes, and only then is
+            // the title cut.
+            let label = gettext(locale, "Add row");
+            let reason = gettext(locale, "Editing arrives in a later version");
+            let add_row = |short: bool| {
+                let button = widgets::ButtonSpec::new(if short { "" } else { &label })
+                    .label(&label)
+                    .icon(Icon::Plus)
+                    .role(TextRole::UiBodyStrong)
+                    .disabled(&reason);
+                if short { button.gap(0.0) } else { button }
+            };
+            let stack = |button: Option<bool>| {
+                let button = button.map_or(0.0, |short| 12.0 + add_row(short).width(ui, &look));
+                right - left - 16.0 - 12.0 - switch - button
+            };
+            let title_width = width(title_role, &name);
+            let button = [Some(false), Some(true), None]
+                .into_iter()
+                .find(|button| stack(*button) >= title_width)
+                .flatten();
+            let room = stack(button).max(0.0);
+            let shown = grid::ellipsize(&name, room, false, |text| width(title_role, text));
+            let title_width = paint_named(ui, left, title_y, title(&shown, palette.text), &name);
+            let sub_width = fit_parts(&parts, room, |text| width(sub_role, text))
+                .map_or(0.0, |shown| {
+                    paint_named(ui, left, sub_y, sub(&shown, palette.dim), &summary)
+                });
+            let mut x = left + title_width.max(sub_width) + 16.0 + 12.0;
+            let track = Rect::from_min_size(pos2(x, center - 17.0), vec2(switch, 34.0));
             ui.painter()
                 .rect_filled(track, CornerRadius::same(look.radius), palette.surface);
             x += 3.0;
@@ -228,16 +295,13 @@ pub fn header(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: Obje
                     });
                 }
             }
-            // Add row: here, and disabled until editing arrives.
-            let label = gettext(locale, "Add row");
-            let reason = gettext(locale, "Editing arrives in a later version");
-            let button = widgets::ButtonSpec::new(&label)
-                .icon(Icon::Plus)
-                .role(TextRole::UiBodyStrong)
-                .disabled(&reason);
-            let width = button.width(ui, &look);
-            let place = Rect::from_min_size(pos2(right - width, center - 16.0), vec2(width, 32.0));
-            button.show_at(ui, place, &look, &palette);
+            if let Some(short) = button {
+                let button = add_row(short);
+                let width = button.width(ui, &look);
+                let place =
+                    Rect::from_min_size(pos2(right - width, center - 16.0), vec2(width, 32.0));
+                button.show_at(ui, place, &look, &palette);
+            }
         });
     app.actions.extend(actions);
 }
@@ -1118,6 +1182,96 @@ mod tests {
             has_more: false,
             ordered_by_key: true,
             elapsed: std::time::Duration::ZERO,
+        }
+    }
+
+    /// Bookshop's `book_images`: 13 rows of 6 columns.
+    fn book_images() -> RowPage {
+        let column = |name: &str, type_name: &str, kind| ColumnMeta {
+            name: name.into(),
+            type_name: type_name.into(),
+            kind,
+        };
+        RowPage {
+            columns: vec![
+                column("id", "int8", ValueKind::Numeric),
+                column("book_id", "int8", ValueKind::Numeric),
+                column("kind", "varchar", ValueKind::Text),
+                column("image_data", "jsonb", ValueKind::Json),
+                column("created_at", "timestamp", ValueKind::Temporal),
+                column("deleted_at", "timestamp", ValueKind::Temporal),
+            ],
+            rows: (0..13i64)
+                .map(|i| {
+                    vec![
+                        Value::Int(i + 2),
+                        Value::Int(1_048_576 + i * 7_919),
+                        Value::Text("cover".into()),
+                        Value::Text(r#"{"storage": "store"}"#.into()),
+                        Value::Text("2026-06-03 15:47:52.977704".into()),
+                        Value::Null,
+                    ]
+                })
+                .collect(),
+            has_more: false,
+            ordered_by_key: true,
+            elapsed: std::time::Duration::ZERO,
+        }
+    }
+
+    #[test]
+    fn the_header_gives_way_instead_of_overlapping_in_a_narrow_view() {
+        use crate::testing::{Harness, bounds};
+        use egui::accesskit::Role;
+        for look in Look::ALL {
+            // A 1000 pt window with the row panel open leaves the grid
+            // about 400 pt.
+            let mut harness = Harness::with_size(vec2(1000.0, 650.0));
+            harness.set_look(look);
+            let tab = harness.connect_fake();
+            harness.app.apply(Action::OpenObject {
+                tab,
+                object: tabletist_db::ObjectRef::new("public", "book_images"),
+                kind: tabletist_db::ObjectKind::Table,
+                pin: true,
+            });
+            harness.answer_rows(book_images());
+            let object_tab = harness.app.workspace(tab).unwrap().active_object.unwrap();
+            harness.app.apply(Action::SelectCell {
+                tab,
+                object_tab,
+                cell: crate::model::CellPos { row: 4, col: 0 },
+            });
+            let tree = harness.settle();
+            let summary = if look.terminal {
+                "13 rows · 6 cols"
+            } else {
+                "13 rows · 6 columns · public"
+            };
+            let mut parts = vec![("Data", bounds(&tree, "Data", Role::Button))];
+            parts.push(("Structure", bounds(&tree, "Structure", Role::Button)));
+            assert!(
+                parts.iter().all(|(_, rect)| rect.is_some()),
+                "the switch is missing in {}",
+                look.name
+            );
+            // The rest may give way, but what is drawn must not overlap.
+            parts.push(("the title", bounds(&tree, "book_images", Role::Label)));
+            parts.push(("the summary", bounds(&tree, summary, Role::Label)));
+            parts.push(("Add row", bounds(&tree, "Add row", Role::Button)));
+            let parts: Vec<(&str, Rect)> = parts
+                .into_iter()
+                .filter_map(|(name, rect)| Some((name, rect?)))
+                .collect();
+            for (i, (a, first)) in parts.iter().enumerate() {
+                for (b, second) in &parts[i + 1..] {
+                    assert!(
+                        !first.shrink(0.5).intersects(second.shrink(0.5)),
+                        "{a} at {first:?} overlaps {b} at {second:?} in {}",
+                        look.name
+                    );
+                }
+            }
         }
     }
 
