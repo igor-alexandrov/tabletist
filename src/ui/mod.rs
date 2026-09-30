@@ -84,6 +84,19 @@ fn notice(app: &mut App, ui: &mut egui::Ui) {
     }
 }
 
+/// Where the window's own buttons (the macOS traffic lights) centre, in egui
+/// points below the window's top: on the line of the bar that leads the
+/// window, so the buttons and that bar's contents share one line.
+pub fn window_buttons_line(app: &App, zoom: f32) -> f32 {
+    if app.tabs.len() > 1 {
+        conn_tabs::line(app, zoom)
+    } else if matches!(app.active_tab().content, ConnTabContent::Picker(_)) {
+        picker::header_line(&app.look)
+    } else {
+        workspace::bar_line(app, zoom)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::testing::Harness;
@@ -1987,6 +2000,57 @@ mod tests {
         assert!(
             (middle - 20.0).abs() < 1.0,
             "centred on the buttons' line: {tab:?}"
+        );
+    }
+
+    /// The middle of the node labelled (or valued) `label`.
+    fn middle_of(tree: &egui::accesskit::TreeUpdate, label: &str) -> f64 {
+        let bounds = tree
+            .nodes
+            .iter()
+            .find(|(_, node)| node.label().or_else(|| node.value()) == Some(label))
+            .and_then(|(_, node)| node.bounds())
+            .unwrap_or_else(|| panic!("no {label}"));
+        (bounds.y0 + bounds.y1) / 2.0
+    }
+
+    #[test]
+    fn the_mac_window_buttons_centre_on_the_line_of_the_bar_that_leads() {
+        let mut harness = Harness::new();
+        harness.set_look(crate::theme::Look::macos());
+        mac_title_bar(&mut harness);
+        let line = |harness: &Harness| f64::from(super::window_buttons_line(&harness.app, 1.0));
+
+        // The picker alone: its header, taller than the title bar.
+        let tree = harness.settle();
+        let header = middle_of(&tree, "New connection");
+        assert!(
+            (line(&harness) - header).abs() < 1.0,
+            "the picker's header at {header}, the buttons at {}",
+            line(&harness)
+        );
+
+        // One connection: its bar, under the environment stripe.
+        let first = harness.connect_fake();
+        let tree = harness.settle();
+        let bar = middle_of(&tree, "Fixture");
+        assert!(
+            (line(&harness) - bar).abs() < 1.0,
+            "the connection bar at {bar}, the buttons at {}",
+            line(&harness)
+        );
+        assert!(line(&harness) > 20.0, "below the title bar's own middle");
+
+        // Several: the tab bar.
+        harness.app.workspace_mut(first).unwrap().name = "Tab one".into();
+        harness.app.apply(crate::model::Action::NewConnTab);
+        let tree = harness.settle();
+        let tab = bounds_of(&tree, "Tab one");
+        let tabs = (tab.y0 + tab.y1) / 2.0;
+        assert!(
+            (line(&harness) - tabs).abs() < 1.0,
+            "the tabs at {tabs}, the buttons at {}",
+            line(&harness)
         );
     }
 

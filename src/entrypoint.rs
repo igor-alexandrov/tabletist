@@ -319,6 +319,11 @@ impl eframe::App for Window {
             }
         }
         self.app.frame_ui(ui);
+        #[cfg(target_os = "macos")]
+        if let Some(title_bar) = &self.title_bar {
+            let zoom = ui.ctx().zoom_factor();
+            title_bar.place_buttons(crate::ui::window_buttons_line(&self.app, zoom) * zoom);
+        }
     }
 }
 

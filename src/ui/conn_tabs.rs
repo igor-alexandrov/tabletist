@@ -22,19 +22,18 @@ pub fn tab_title(app: &App, tab: &ConnTab) -> String {
     }
 }
 
-pub fn show(app: &mut App, ui: &mut egui::Ui) {
-    let palette = app.palette;
-    let look = app.look;
-    // macOS: the tabs share the unified title bar with the window buttons,
-    // centred on the same line and starting after them. AppKit measures in
-    // window points, which egui's zoom scales away from its own.
-    let zoom = ui.ctx().zoom_factor();
-    let inset = app.titlebar.inset / zoom;
-    let height = HEIGHT.max(app.titlebar.height / zoom);
-    let vertical = ((height - (HEIGHT - 8.0)) / 2.0).round() as i8;
+/// The bar's height: at least the macOS title bar's, in window points,
+/// which egui's `zoom` scales away from its own.
+fn height(app: &App, zoom: f32) -> f32 {
+    HEIGHT.max(app.titlebar.height / zoom)
+}
+
+/// The padding that centres the tabs in the bar.
+fn margin(app: &App, zoom: f32) -> Margin {
+    let vertical = ((height(app, zoom) - (HEIGHT - 8.0)) / 2.0).round() as i8;
     // The underline style sits flush with the bar's bottom edge so its line
     // meets the content below.
-    let margin = if look.tabs == crate::theme::TabStyle::Underline {
+    if app.look.tabs == crate::theme::TabStyle::Underline {
         Margin {
             left: 6,
             right: 6,
@@ -43,7 +42,24 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         }
     } else {
         Margin::symmetric(6, vertical)
-    };
+    }
+}
+
+/// The line the tabs centre on, below the bar's top.
+pub fn line(app: &App, zoom: f32) -> f32 {
+    f32::from(margin(app, zoom).top) + (HEIGHT - 8.0) / 2.0
+}
+
+pub fn show(app: &mut App, ui: &mut egui::Ui) {
+    let palette = app.palette;
+    let look = app.look;
+    // macOS: the tabs share the unified title bar with the window buttons,
+    // centred on the same line and starting after them. AppKit measures in
+    // window points, which egui's zoom scales away from its own.
+    let zoom = ui.ctx().zoom_factor();
+    let inset = app.titlebar.inset / zoom;
+    let height = height(app, zoom);
+    let margin = margin(app, zoom);
     egui::Panel::top("conn-tabs")
         .exact_size(height)
         .resizable(false)

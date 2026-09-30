@@ -16,6 +16,11 @@ fn header_height(look: &Look) -> f32 {
     if look.terminal { 41.0 } else { 65.0 }
 }
 
+/// The line the header's contents centre on, below its top (over the rule).
+pub fn header_line(look: &Look) -> f32 {
+    (header_height(look) - 1.0) / 2.0
+}
+
 /// The terminal look's filter line under the header (rule included).
 const FILTER_LINE: f32 = 37.0;
 
@@ -176,7 +181,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     ui.painter()
         .rect_filled(header, CornerRadius::ZERO, header_fill);
     widgets::hline(ui, header.x_range(), header.bottom() - 0.5, palette.outline);
-    let y = header.top() + (header.height() - 1.0) / 2.0;
+    let y = header.top() + header_line(&look);
     let mut x = header.left() + side.max(inset + 12.0);
     let title = if look.terminal {
         gettext(locale, "connections").into_owned()
