@@ -1,6 +1,7 @@
 //! The connection dialog: new or edit, any driver, with an optional SSH tunnel.
 
 use egui::RichText;
+use tabletist_db::ssh_config::Proxy;
 use tabletist_db::{Driver, TlsMode};
 
 use crate::app::App;
@@ -8,6 +9,7 @@ use crate::connections::{ColorTag, Environment, PasswordMode};
 use crate::i18n::gettext;
 use crate::model::{Action, Dialog, SshAuthKind, TestState};
 use crate::theme;
+use crate::theme::Icon;
 
 const TLS_MODES: [(TlsMode, &str); 5] = [
     (TlsMode::Disable, "Off"),
@@ -457,6 +459,9 @@ fn ssh_section(
                 look,
                 palette,
             );
+            let hints = form.ssh_hints();
+            let from_config = gettext(locale, "from ~/.ssh/config");
+            let login = tabletist_db::ssh_config::login().unwrap_or_default();
             ui.add_enabled_ui(form.ssh, |ui| {
                 egui::Grid::new("ssh-form")
                     .num_columns(2)
@@ -464,23 +469,110 @@ fn ssh_section(
                     .show(ui, |ui| {
                         let label_ssh_host = ui.label(gettext(locale, "SSH host")).id;
                         ui.horizontal(|ui| {
+                            let listed = !form.ssh_hosts.is_empty();
+                            // The host takes what the ▾, "SSH port" and the
+                            // port field leave, so the port stays readable
+                            // however wide the labels are.
+                            let port_label = gettext(locale, "SSH port");
+                            let gap = ui.spacing().item_spacing.x;
+                            let label =
+                                crate::ui::widgets::galley(ui, &port_label, palette.text, look)
+                                    .size()
+                                    .x;
+                            let chevron = if listed { 24.0 + gap } else { 0.0 };
+                            let host_width =
+                                (ui.available_width() - chevron - label - 60.0 - 2.0 * gap)
+                                    .max(120.0);
                             ui.add(
                                 crate::ui::widgets::single(ui, &mut form.ssh_host, look)
-                                    .desired_width(250.0),
+                                    .desired_width(host_width),
                             )
                             .labelled_by(label_ssh_host);
-                            let label_ssh_port = ui.label(gettext(locale, "SSH port")).id;
+                            if listed {
+                                let name = gettext(locale, "Hosts from ~/.ssh/config");
+                                let button = crate::ui::widgets::icon_button(
+                                    ui,
+                                    Icon::ChevronDown,
+                                    &name,
+                                    look,
+                                    palette,
+                                );
+                                egui::Popup::menu(&button).show(|ui| {
+                                    for host in &form.ssh_hosts {
+                                        ui.horizontal(|ui| {
+                                            if crate::ui::widgets::button(ui, &host.alias, look)
+                                                .clicked()
+                                            {
+                                                actions
+                                                    .push(Action::PickSshHost(host.alias.clone()));
+                                            }
+                                            if let Some(name) = &host.config.host_name {
+                                                crate::ui::widgets::label(
+                                                    ui,
+                                                    crate::ui::widgets::secondary(look),
+                                                    name,
+                                                    palette.dim,
+                                                    look,
+                                                );
+                                            }
+                                        });
+                                    }
+                                });
+                            }
+                            let label_ssh_port = ui.label(port_label).id;
+                            let port_hint = hints.port.unwrap_or(22).to_string();
                             ui.add(
                                 crate::ui::widgets::single(ui, &mut form.ssh_port, look)
+                                    .hint_text(port_hint)
                                     .desired_width(60.0),
                             )
                             .labelled_by(label_ssh_port);
                         });
                         ui.end_row();
 
+                        // What the alias resolves to, or why the tunnel
+                        // cannot follow it.
+                        let proxy = match &hints.proxy {
+                            Some(Proxy::Jump(_)) => Some(gettext(
+                                locale,
+                                "Uses ProxyJump, which Tabletist does not support yet.",
+                            )),
+                            Some(Proxy::Command(_)) => Some(gettext(
+                                locale,
+                                "Uses ProxyCommand, which Tabletist does not support yet.",
+                            )),
+                            Some(Proxy::Off) | None => None,
+                        };
+                        if let Some(warning) = proxy {
+                            ui.label("");
+                            crate::ui::widgets::label(
+                                ui,
+                                crate::ui::widgets::secondary(look),
+                                &warning,
+                                palette.warning,
+                                look,
+                            );
+                            ui.end_row();
+                        } else if let Some(name) = &hints.host_name {
+                            ui.label("");
+                            crate::ui::widgets::label(
+                                ui,
+                                crate::ui::widgets::secondary(look),
+                                &format!("{name} {from_config}"),
+                                palette.dim,
+                                look,
+                            );
+                            ui.end_row();
+                        }
+
+                        let user_hint = match &hints.user {
+                            Some(user) => format!("{user} ({from_config})"),
+                            None => login.clone(),
+                        };
                         let label_ssh_user = ui.label(gettext(locale, "SSH user")).id;
                         ui.add(
                             crate::ui::widgets::single(ui, &mut form.ssh_user, look)
+                                .hint_text(user_hint)
                                 .desired_width(f32::INFINITY),
                         )
                         .labelled_by(label_ssh_user);
@@ -510,8 +602,14 @@ fn ssh_section(
                         if form.ssh_auth == SshAuthKind::KeyFile {
                             let label_key_file = ui.label(gettext(locale, "Key file")).id;
                             ui.horizontal(|ui| {
+                                let key_hint = hints
+                                    .key_file
+                                    .as_ref()
+                                    .map(|path| format!("{path} ({from_config})"))
+                                    .unwrap_or_default();
                                 ui.add(
                                     crate::ui::widgets::single(ui, &mut form.ssh_key_file, look)
+                                        .hint_text(key_hint)
                                         .desired_width(300.0),
                                 )
                                 .labelled_by(label_key_file);

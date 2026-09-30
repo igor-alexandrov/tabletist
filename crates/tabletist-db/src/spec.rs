@@ -65,14 +65,21 @@ impl TlsMode {
 #[serde(tag = "method", rename_all = "kebab-case")]
 pub enum SshAuth {
     Password,
-    KeyFile { path: PathBuf },
+    /// An empty path takes `~/.ssh/config`'s IdentityFile.
+    KeyFile {
+        path: PathBuf,
+    },
     Agent,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SshSpec {
+    /// A host name, or a Host alias from `~/.ssh/config`.
     pub host: String,
-    pub port: u16,
+    /// `None` takes the config's Port, else 22.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub port: Option<u16>,
+    /// Empty takes the config's User, else the login name.
     pub user: String,
     pub auth: SshAuth,
 }
@@ -278,7 +285,12 @@ impl ConnectSpec {
             text.push_str(&self.database);
         }
         if let Some(ssh) = &self.ssh {
-            text.push_str(&format!(" via {}@{}", ssh.user, ssh.host));
+            text.push_str(" via ");
+            if !ssh.user.is_empty() {
+                text.push_str(&ssh.user);
+                text.push('@');
+            }
+            text.push_str(&ssh.host);
         }
         text
     }
@@ -428,7 +440,7 @@ mod tests {
         let spec = ConnectSpec {
             ssh: Some(SshSpec {
                 host: "bastion".into(),
-                port: 22,
+                port: Some(22),
                 user: "ops".into(),
                 auth: SshAuth::KeyFile {
                     path: "/home/ops/.ssh/id_ed25519".into(),
@@ -449,10 +461,36 @@ mod tests {
         let (mut spec, _) = ConnectSpec::from_url("postgres://me@db/app").unwrap();
         spec.ssh = Some(SshSpec {
             host: "bastion".into(),
-            port: 22,
+            port: Some(22),
             user: "ops".into(),
             auth: SshAuth::Agent,
         });
         assert_eq!(spec.summary(), "me@db:5432/app via ops@bastion");
+    }
+
+    #[test]
+    fn an_ssh_port_left_to_the_config_is_left_out_of_the_file() {
+        let old: SshSpec = serde_json::from_str(
+            r#"{"host": "bastion", "port": 22, "user": "ops", "auth": {"method": "agent"}}"#,
+        )
+        .unwrap();
+        assert_eq!(old.port, Some(22));
+        let alias: SshSpec =
+            serde_json::from_str(r#"{"host": "bastion", "user": "", "auth": {"method": "agent"}}"#)
+                .unwrap();
+        assert_eq!(alias.port, None);
+        assert!(!serde_json::to_string(&alias).unwrap().contains("port"));
+    }
+
+    #[test]
+    fn the_summary_leaves_out_an_ssh_user_left_to_the_config() {
+        let (mut spec, _) = ConnectSpec::from_url("postgres://me@db/app").unwrap();
+        spec.ssh = Some(SshSpec {
+            host: "bastion".into(),
+            port: None,
+            user: String::new(),
+            auth: SshAuth::Agent,
+        });
+        assert_eq!(spec.summary(), "me@db:5432/app via bastion");
     }
 }

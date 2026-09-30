@@ -1,5 +1,6 @@
 //! Application state types and the actions that change them.
 
+use tabletist_db::ssh_config::{AgentSocket, ConfigHost, Proxy};
 use tabletist_db::{ConnectSpec, Driver, Filter, FilterOp, SshAuth, SshSpec, TlsMode};
 
 use crate::backend::{Event, RequestId, SessionId};
@@ -78,6 +79,8 @@ pub enum Action {
     PickSqliteFile,
     /// Open the native file dialog for the SSH key file.
     PickKeyFile,
+    /// Put this ~/.ssh/config Host alias in the SSH host field.
+    PickSshHost(String),
     /// Fill the connection dialog from its URL field.
     ApplyUrl,
     TestConnection,
@@ -405,6 +408,10 @@ pub struct ConnectionForm {
     pub has_saved_ssh_secret: bool,
     /// The SSH login method that secret belongs to.
     pub saved_ssh_auth: Option<SshAuthKind>,
+    /// The Host aliases in ~/.ssh/config, for the SSH host list.
+    pub ssh_hosts: Vec<ConfigHost>,
+    /// The request whose answer fills `ssh_hosts`.
+    pub ssh_hosts_request: Option<RequestId>,
     /// What a running Test connects to, fixed when it started.
     pub test_spec: Option<ConnectSpec>,
     /// The secrets a running Test uses, filled as saved ones load.
@@ -442,6 +449,17 @@ impl SshAuthKind {
     }
 }
 
+/// What `~/.ssh/config` gives the typed SSH host, for the dialog's hints.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct SshHints {
+    pub host_name: Option<String>,
+    pub port: Option<u16>,
+    pub user: Option<String>,
+    pub key_file: Option<String>,
+    /// A ProxyJump or ProxyCommand the tunnel cannot follow.
+    pub proxy: Option<Proxy>,
+}
+
 impl Default for ConnectionForm {
     fn default() -> Self {
         Self {
@@ -469,7 +487,7 @@ impl Default for ConnectionForm {
             pick_target: PickTarget::Sqlite,
             ssh: false,
             ssh_host: String::new(),
-            ssh_port: "22".into(),
+            ssh_port: String::new(),
             ssh_user: String::new(),
             ssh_auth: SshAuthKind::Password,
             ssh_key_file: String::new(),
@@ -477,6 +495,8 @@ impl Default for ConnectionForm {
             ssh_secret_mode: PasswordMode::Keyring,
             has_saved_ssh_secret: false,
             saved_ssh_auth: None,
+            ssh_hosts: Vec::new(),
+            ssh_hosts_request: None,
             test_spec: None,
             test_secrets: tabletist_db::Secrets::default(),
             test_waiting: 0,
@@ -485,6 +505,61 @@ impl Default for ConnectionForm {
 }
 
 impl ConnectionForm {
+    /// The config's Host whose alias is the typed SSH host, compared as
+    /// OpenSSH compares Host names (ignoring case).
+    pub fn ssh_config_host(&self) -> Option<&ConfigHost> {
+        let host = self.ssh_host.trim();
+        self.ssh_hosts
+            .iter()
+            .find(|known| known.alias.eq_ignore_ascii_case(host))
+    }
+
+    /// Puts `alias` in SSH host and clears the fields its config fills, so
+    /// the config's values show; presets the login method the config
+    /// implies (its agent, else its key file).
+    pub fn pick_ssh_host(&mut self, alias: &str) {
+        self.ssh_host = alias.to_owned();
+        self.ssh_port.clear();
+        self.ssh_user.clear();
+        self.ssh_key_file.clear();
+        let preset = self.ssh_config_host().and_then(|host| {
+            let config = &host.config;
+            if matches!(
+                config.identity_agent,
+                Some(AgentSocket::Path(_) | AgentSocket::Environment)
+            ) {
+                Some(SshAuthKind::Agent)
+            } else {
+                config
+                    .identity_file
+                    .is_some()
+                    .then_some(SshAuthKind::KeyFile)
+            }
+        });
+        if let Some(kind) = preset {
+            self.ssh_auth = kind;
+        }
+    }
+
+    /// The typed SSH host's values from ~/.ssh/config: empty for a host
+    /// the config does not spell out.
+    pub fn ssh_hints(&self) -> SshHints {
+        let Some(host) = self.ssh_config_host() else {
+            return SshHints::default();
+        };
+        let config = &host.config;
+        SshHints {
+            host_name: config.host_name.clone(),
+            port: config.port,
+            user: config.user.clone(),
+            key_file: config
+                .identity_file
+                .as_ref()
+                .map(|path| path.display().to_string()),
+            proxy: config.proxy.clone().filter(|proxy| *proxy != Proxy::Off),
+        }
+    }
+
     /// Whether the password crosses a network with nothing to stop someone
     /// on the way reading it: a remote host, no SSH tunnel, and TLS that is
     /// off or does not check the server's certificate (PostgreSQL's
@@ -543,7 +618,9 @@ impl ConnectionForm {
             ssh_port: spec
                 .ssh
                 .as_ref()
-                .map_or_else(|| "22".into(), |ssh| ssh.port.to_string()),
+                .and_then(|ssh| ssh.port)
+                .map(|port| port.to_string())
+                .unwrap_or_default(),
             ssh_user: spec
                 .ssh
                 .as_ref()
@@ -611,30 +688,21 @@ impl ConnectionForm {
                     if host.is_empty() {
                         return Err("Enter the SSH host.".into());
                     }
-                    let port: u16 = self
-                        .ssh_port
-                        .trim()
-                        .parse()
+                    // Empty port, user and key file are left to ~/.ssh/config.
+                    let port = self
+                        .typed_ssh_port()
                         .map_err(|_| "Enter the SSH port number.".to_owned())?;
-                    let user = self.ssh_user.trim();
-                    if user.is_empty() {
-                        return Err("Enter the SSH user.".into());
-                    }
                     let auth = match self.ssh_auth {
                         SshAuthKind::Password => SshAuth::Password,
                         SshAuthKind::Agent => SshAuth::Agent,
-                        SshAuthKind::KeyFile => {
-                            let path = self.ssh_key_file.trim();
-                            if path.is_empty() {
-                                return Err("Choose a key file for SSH.".into());
-                            }
-                            SshAuth::KeyFile { path: path.into() }
-                        }
+                        SshAuthKind::KeyFile => SshAuth::KeyFile {
+                            path: self.ssh_key_file.trim().into(),
+                        },
                     };
                     Some(SshSpec {
                         host: host.to_owned(),
                         port,
-                        user: user.to_owned(),
+                        user: self.ssh_user.trim().to_owned(),
                         auth,
                     })
                 } else {
@@ -666,6 +734,14 @@ impl ConnectionForm {
         })
     }
 
+    /// The SSH port as typed: `None` when empty, left to ~/.ssh/config.
+    fn typed_ssh_port(&self) -> Result<Option<u16>, std::num::ParseIntError> {
+        match self.ssh_port.trim() {
+            "" => Ok(None),
+            port => port.parse().map(Some),
+        }
+    }
+
     /// Whether the fields still name the SSH server and login the
     /// connection was saved with.
     fn same_ssh_server(&self) -> bool {
@@ -674,7 +750,7 @@ impl ConnectionForm {
             .and_then(|saved| saved.ssh.as_ref())
             .is_some_and(|saved| {
                 saved.host == self.ssh_host.trim()
-                    && self.ssh_port.trim().parse() == Ok(saved.port)
+                    && self.typed_ssh_port() == Ok(saved.port)
                     && saved.user == self.ssh_user.trim()
             })
     }
@@ -1643,7 +1719,7 @@ mod tests {
             saved.spec.ssh,
             Some(SshSpec {
                 host: "bastion".into(),
-                port: 22,
+                port: Some(22),
                 user: "ops".into(),
                 auth: SshAuth::KeyFile {
                     path: "/home/me/.ssh/id_ed25519".into()
@@ -1662,13 +1738,11 @@ mod tests {
     }
 
     #[test]
-    fn an_ssh_form_needs_host_user_port_and_key_file() {
+    fn an_ssh_form_needs_a_host_and_a_numeric_port() {
         type Change = fn(&mut ConnectionForm);
-        let changes: [(Change, &str); 4] = [
+        let changes: [(Change, &str); 2] = [
             (|f| f.ssh_host.clear(), "SSH host"),
-            (|f| f.ssh_user.clear(), "SSH user"),
             (|f| f.ssh_port = "twenty-two".into(), "SSH port"),
-            (|f| f.ssh_key_file.clear(), "key file"),
         ];
         for (change, message) in changes {
             let mut form = ssh_form();
@@ -1676,6 +1750,147 @@ mod tests {
             let error = form.to_spec().unwrap_err();
             assert!(error.contains(message), "{error}");
         }
+    }
+
+    #[test]
+    fn empty_ssh_port_user_and_key_file_are_left_to_the_config() {
+        let mut form = ssh_form();
+        form.ssh_port.clear();
+        form.ssh_user.clear();
+        form.ssh_key_file.clear();
+        let ssh = form.to_spec().unwrap().ssh.unwrap();
+        assert_eq!(ssh.port, None);
+        assert_eq!(ssh.user, "");
+        assert_eq!(
+            ssh.auth,
+            SshAuth::KeyFile {
+                path: std::path::PathBuf::new()
+            }
+        );
+        let saved = form.to_saved().unwrap();
+        assert_eq!(ConnectionForm::from_saved(&saved).ssh_port, "");
+    }
+
+    #[test]
+    fn a_saved_ssh_secret_fits_a_port_left_to_the_config() {
+        let mut form = ssh_form();
+        form.ssh_port.clear();
+        let mut saved = form.to_saved().unwrap();
+        saved.ssh_secret = PasswordMode::Keyring;
+        let mut back = ConnectionForm::from_saved(&saved);
+        assert!(back.ssh_secret_is_saved());
+        back.ssh_port = "2222".into();
+        assert!(back.ssh_secret_is_stale(), "another port, another server");
+    }
+
+    #[test]
+    fn a_new_form_leaves_the_ssh_port_to_the_config() {
+        assert_eq!(ConnectionForm::default().ssh_port, "");
+    }
+
+    use tabletist_db::ssh_config::{AgentSocket, ConfigHost, HostConfig, Proxy};
+
+    fn config_host(alias: &str, config: HostConfig) -> ConfigHost {
+        ConfigHost {
+            alias: alias.into(),
+            config,
+        }
+    }
+
+    fn with_hosts() -> ConnectionForm {
+        ConnectionForm {
+            ssh_hosts: vec![
+                config_host(
+                    "bastion",
+                    HostConfig {
+                        host_name: Some("10.0.0.5".into()),
+                        port: Some(2222),
+                        user: Some("ops".into()),
+                        identity_agent: Some(AgentSocket::Environment),
+                        ..HostConfig::default()
+                    },
+                ),
+                config_host(
+                    "replica",
+                    HostConfig {
+                        identity_file: Some("/home/me/.ssh/id_work".into()),
+                        ..HostConfig::default()
+                    },
+                ),
+                config_host(
+                    "gateway-only",
+                    HostConfig {
+                        proxy: Some(Proxy::Jump("bastion".into())),
+                        ..HostConfig::default()
+                    },
+                ),
+            ],
+            ..ssh_form()
+        }
+    }
+
+    #[test]
+    fn the_typed_ssh_host_finds_its_config_host_ignoring_case() {
+        let mut form = with_hosts();
+        form.ssh_host = " BASTION ".into();
+        assert_eq!(form.ssh_config_host().unwrap().alias, "bastion");
+        form.ssh_host = "db.example.com".into();
+        assert!(form.ssh_config_host().is_none());
+    }
+
+    #[test]
+    fn picking_a_host_clears_what_the_config_supplies_and_presets_the_login() {
+        let mut form = with_hosts();
+        form.ssh_auth = SshAuthKind::Password;
+        form.pick_ssh_host("bastion");
+        assert_eq!(form.ssh_host, "bastion");
+        assert_eq!(
+            (
+                form.ssh_port.as_str(),
+                form.ssh_user.as_str(),
+                form.ssh_key_file.as_str()
+            ),
+            ("", "", "")
+        );
+        assert_eq!(form.ssh_auth, SshAuthKind::Agent, "IdentityAgent");
+        form.pick_ssh_host("replica");
+        assert_eq!(form.ssh_auth, SshAuthKind::KeyFile, "IdentityFile");
+        form.ssh_auth = SshAuthKind::Password;
+        form.pick_ssh_host("gateway-only");
+        assert_eq!(form.ssh_auth, SshAuthKind::Password, "nothing to preset");
+    }
+
+    #[test]
+    fn an_agent_turned_off_does_not_preset_the_agent() {
+        let mut form = ConnectionForm {
+            ssh_hosts: vec![config_host(
+                "bastion",
+                HostConfig {
+                    identity_agent: Some(AgentSocket::Off),
+                    ..HostConfig::default()
+                },
+            )],
+            ssh_auth: SshAuthKind::Password,
+            ..ssh_form()
+        };
+        form.pick_ssh_host("bastion");
+        assert_eq!(form.ssh_auth, SshAuthKind::Password);
+    }
+
+    #[test]
+    fn hints_come_from_the_config_host_or_are_empty() {
+        let mut form = with_hosts();
+        form.ssh_host = "bastion".into();
+        let hints = form.ssh_hints();
+        assert_eq!(hints.host_name.as_deref(), Some("10.0.0.5"));
+        assert_eq!(hints.port, Some(2222));
+        assert_eq!(hints.user.as_deref(), Some("ops"));
+        assert_eq!(hints.key_file, None);
+        assert_eq!(hints.proxy, None);
+        form.ssh_host = "gateway-only".into();
+        assert_eq!(form.ssh_hints().proxy, Some(Proxy::Jump("bastion".into())));
+        form.ssh_host = "db.example.com".into();
+        assert_eq!(form.ssh_hints(), SshHints::default());
     }
 
     #[test]

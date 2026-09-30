@@ -189,6 +189,11 @@ pub enum Event {
         request: RequestId,
         path: Option<PathBuf>,
     },
+    /// The Host aliases in ~/.ssh/config, for the connection dialog.
+    SshHosts {
+        request: RequestId,
+        hosts: Vec<tabletist_db::ssh_config::ConfigHost>,
+    },
     SecretLoaded {
         request: RequestId,
         result: Result<Option<SecretString>, String>,
@@ -345,6 +350,18 @@ impl Backend {
         runtime.spawn(async move {
             let path = dialog.await.map(|file| file.path().to_path_buf());
             outbox.emit(Event::FilePicked { request, path });
+        });
+    }
+
+    /// Reads the Host aliases in ~/.ssh/config off the UI thread.
+    pub fn list_ssh_hosts(&mut self, request: RequestId) {
+        let Some(runtime) = &self.runtime else {
+            return;
+        };
+        let outbox = self.outbox.clone();
+        runtime.spawn_blocking(move || {
+            let hosts = tabletist_db::ssh_config::hosts();
+            outbox.emit(Event::SshHosts { request, hosts });
         });
     }
 
@@ -1543,5 +1560,15 @@ mod tests {
             backend.wait(WAIT),
             Some(Event::Databases { request: RequestId(2), result: Ok(databases), .. }) if databases.is_empty()
         ));
+    }
+
+    #[test]
+    fn listing_ssh_hosts_answers_the_request() {
+        let mut backend = Backend::start_with(Waker::default(), Keyring::memory());
+        backend.list_ssh_hosts(RequestId(9));
+        match backend.wait(Duration::from_secs(5)) {
+            Some(Event::SshHosts { request, .. }) => assert_eq!(request, RequestId(9)),
+            other => panic!("{other:?}"),
+        }
     }
 }

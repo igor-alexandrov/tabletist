@@ -852,12 +852,14 @@ impl App {
             Action::Backend(event) => self.apply_event(event),
             Action::NewConnection => {
                 self.dialog = Some(Dialog::Connection(Box::default()));
+                self.list_ssh_hosts();
             }
             Action::EditConnection(id) => {
                 if let Some(saved) = self.connections.get(&id) {
                     self.dialog = Some(Dialog::Connection(Box::new(ConnectionForm::from_saved(
                         saved,
                     ))));
+                    self.list_ssh_hosts();
                 }
             }
             Action::DuplicateConnection(id) => {
@@ -892,6 +894,11 @@ impl App {
                     form.pick_request = Some(request);
                     form.pick_target = PickTarget::KeyFile;
                     self.backend.pick_key_file(request);
+                }
+            }
+            Action::PickSshHost(alias) => {
+                if let Some(Dialog::Connection(form)) = &mut self.dialog {
+                    form.pick_ssh_host(&alias);
                 }
             }
             Action::ApplyUrl => {
@@ -1445,13 +1452,14 @@ impl App {
                 let message = error.to_string();
                 let unknown_key = match &error {
                     Error::Ssh {
-                        stage: SshStage::HostKeyUnknown { fingerprint },
+                        stage:
+                            SshStage::HostKeyUnknown {
+                                host,
+                                port,
+                                fingerprint,
+                            },
                         ..
-                    } => workspace
-                        .spec
-                        .ssh
-                        .as_ref()
-                        .map(|ssh| (ssh.host.clone(), ssh.port, fingerprint.clone())),
+                    } => Some((host.clone(), *port, fingerprint.clone())),
                     _ => None,
                 };
                 workspace.status = SessionStatus::Disconnected(error);
@@ -1489,28 +1497,34 @@ impl App {
                 if let Some(Dialog::Connection(form)) = &mut self.dialog
                     && form.test == TestState::Running(request)
                 {
-                    // The key belongs to the SSH host the test reached, not
-                    // whatever the fields say now.
-                    let tested = form
-                        .test_spec
-                        .as_ref()
-                        .and_then(|spec| spec.ssh.as_ref())
-                        .map(|ssh| (ssh.host.clone(), ssh.port));
-                    form.test = match (result, tested) {
-                        (Ok(()), _) => TestState::Passed,
-                        (
-                            Err(Error::Ssh {
-                                stage: SshStage::HostKeyUnknown { fingerprint },
-                                ..
-                            }),
-                            Some((host, port)),
-                        ) if self.host_keys_error.is_none() => TestState::Untrusted {
+                    // The key belongs to the SSH host the test reached, which
+                    // the error names (a Host alias's HostName), not whatever
+                    // the fields say now.
+                    form.test = match result {
+                        Ok(()) => TestState::Passed,
+                        Err(Error::Ssh {
+                            stage:
+                                SshStage::HostKeyUnknown {
+                                    host,
+                                    port,
+                                    fingerprint,
+                                },
+                            ..
+                        }) if self.host_keys_error.is_none() => TestState::Untrusted {
                             host,
                             port,
                             fingerprint,
                         },
-                        (Err(error), _) => TestState::Failed(error.to_string()),
+                        Err(error) => TestState::Failed(error.to_string()),
                     };
+                }
+            }
+            Event::SshHosts { request, hosts } => {
+                if let Some(Dialog::Connection(form)) = &mut self.dialog
+                    && form.ssh_hosts_request == Some(request)
+                {
+                    form.ssh_hosts_request = None;
+                    form.ssh_hosts = hosts;
                 }
             }
             Event::FilePicked { request, path } => {
@@ -1741,6 +1755,8 @@ impl App {
         if let Some(problem) = &self.host_keys_error {
             return Some(Error::Ssh {
                 stage: SshStage::HostKeyUnknown {
+                    host: host.to_owned(),
+                    port,
                     fingerprint: fingerprint.to_owned(),
                 },
                 message: format!(
@@ -1752,6 +1768,8 @@ impl App {
         match self.host_keys.fingerprint(host, port) {
             Some(known) if known != fingerprint => Some(Error::Ssh {
                 stage: SshStage::HostKeyMismatch {
+                    host: host.to_owned(),
+                    port,
                     fingerprint: fingerprint.to_owned(),
                 },
                 message: "the host key changed since you trusted it, which can mean someone \
@@ -1759,6 +1777,16 @@ impl App {
                     .into(),
             }),
             _ => None,
+        }
+    }
+
+    /// Asks the backend for ~/.ssh/config's Host aliases for the open
+    /// connection dialog.
+    fn list_ssh_hosts(&mut self) {
+        let request = RequestId(self.next_id());
+        if let Some(Dialog::Connection(form)) = &mut self.dialog {
+            form.ssh_hosts_request = Some(request);
+            self.backend.list_ssh_hosts(request);
         }
     }
 
@@ -4562,7 +4590,7 @@ mod tests {
             let (mut spec, _) = ConnectSpec::from_url("postgres://me@db/app").unwrap();
             spec.ssh = Some(tabletist_db::SshSpec {
                 host: "bastion".into(),
-                port: 22,
+                port: Some(22),
                 user: "ops".into(),
                 auth: tabletist_db::SshAuth::Agent,
             });
@@ -4602,6 +4630,8 @@ mod tests {
         fn unknown_key_with(fingerprint: &str) -> Error {
             Error::Ssh {
                 stage: SshStage::HostKeyUnknown {
+                    host: "bastion".into(),
+                    port: 22,
                     fingerprint: fingerprint.into(),
                 },
                 message: "bastion is not a trusted host yet".into(),
@@ -4719,6 +4749,8 @@ mod tests {
                 &mut app,
                 Error::Ssh {
                     stage: SshStage::HostKeyMismatch {
+                        host: "bastion".into(),
+                        port: 22,
                         fingerprint: "SHA256:new".into(),
                     },
                     message: "the host key changed".into(),
@@ -4731,6 +4763,70 @@ mod tests {
                 }
                 other => panic!("{other:?}"),
             }
+        }
+
+        /// A Host alias: the tunnel reached 10.0.0.5:2222 for "bastion".
+        fn unknown_key_at_the_resolved_host() -> Error {
+            Error::Ssh {
+                stage: SshStage::HostKeyUnknown {
+                    host: "10.0.0.5".into(),
+                    port: 2222,
+                    fingerprint: "SHA256:abc".into(),
+                },
+                message: "10.0.0.5 is not a trusted host yet".into(),
+            }
+        }
+
+        #[test]
+        fn connecting_trusts_the_host_and_port_the_tunnel_reached() {
+            let (mut app, _dir) = app();
+            let conn = ssh_saved(&mut app);
+            let tab = app.active_tab_id();
+            app.apply(Action::Connect { tab, conn });
+            fail_last_connect(&mut app, unknown_key_at_the_resolved_host());
+            match &app.dialog {
+                Some(Dialog::HostKey(prompt)) => {
+                    assert_eq!((prompt.host.as_str(), prompt.port), ("10.0.0.5", 2222))
+                }
+                other => panic!("{other:?}"),
+            }
+            app.apply(Action::TrustHostKey);
+            assert_eq!(
+                app.host_keys.fingerprint("10.0.0.5", 2222),
+                Some("SHA256:abc")
+            );
+            assert_eq!(app.host_keys.fingerprint("bastion", 22), None);
+        }
+
+        #[test]
+        fn testing_trusts_the_host_and_port_the_tunnel_reached() {
+            let (mut app, _dir) = app();
+            postgres_form(&mut app);
+            let form = form(&mut app);
+            form.ssh = true;
+            form.ssh_host = "bastion".into();
+            form.ssh_user = "ops".into();
+            form.ssh_auth = SshAuthKind::Agent;
+            app.apply(Action::TestConnection);
+            let Some(Command::Test { request, .. }) = app.backend.sent.last() else {
+                panic!("expected a Test");
+            };
+            let request = *request;
+            app.apply(Action::Backend(Event::Tested {
+                request,
+                result: Err(unknown_key_at_the_resolved_host()),
+            }));
+            match &super::form(&mut app).test {
+                TestState::Untrusted { host, port, .. } => {
+                    assert_eq!((host.as_str(), *port), ("10.0.0.5", 2222))
+                }
+                other => panic!("{other:?}"),
+            }
+            app.apply(Action::TrustTestHostKey);
+            assert_eq!(
+                app.host_keys.fingerprint("10.0.0.5", 2222),
+                Some("SHA256:abc")
+            );
         }
 
         #[test]
@@ -5042,6 +5138,56 @@ mod tests {
                 ),
                 other => panic!("{other:?}"),
             }
+        }
+
+        fn bastion_host() -> tabletist_db::ssh_config::ConfigHost {
+            tabletist_db::ssh_config::ConfigHost {
+                alias: "bastion".into(),
+                config: tabletist_db::ssh_config::HostConfig {
+                    identity_agent: Some(tabletist_db::ssh_config::AgentSocket::Environment),
+                    ..Default::default()
+                },
+            }
+        }
+
+        #[test]
+        fn opening_the_dialog_asks_for_the_config_hosts_and_takes_only_its_answer() {
+            let (mut app, _dir) = app();
+            app.apply(Action::NewConnection);
+            let request = form(&mut app).ssh_hosts_request.expect("asked");
+            app.apply(Action::Backend(Event::SshHosts {
+                request: RequestId(request.0 + 1000),
+                hosts: vec![bastion_host()],
+            }));
+            assert!(form(&mut app).ssh_hosts.is_empty(), "a stale answer");
+            app.apply(Action::Backend(Event::SshHosts {
+                request,
+                hosts: vec![bastion_host()],
+            }));
+            assert_eq!(form(&mut app).ssh_hosts, vec![bastion_host()]);
+            assert_eq!(form(&mut app).ssh_hosts_request, None);
+        }
+
+        #[test]
+        fn editing_asks_for_the_config_hosts_too() {
+            let (mut app, _dir) = app();
+            let id = ssh_saved(&mut app);
+            app.apply(Action::EditConnection(id));
+            assert!(form(&mut app).ssh_hosts_request.is_some());
+        }
+
+        #[test]
+        fn picking_a_config_host_fills_the_ssh_fields() {
+            let (mut app, _dir) = app();
+            postgres_form(&mut app);
+            let form = form(&mut app);
+            form.ssh_hosts = vec![bastion_host()];
+            form.ssh_user = "someone".into();
+            app.apply(Action::PickSshHost("bastion".into()));
+            let form = super::form(&mut app);
+            assert_eq!(form.ssh_host, "bastion");
+            assert_eq!(form.ssh_user, "");
+            assert_eq!(form.ssh_auth, SshAuthKind::Agent);
         }
 
         #[test]
