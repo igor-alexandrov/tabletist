@@ -1483,7 +1483,7 @@ mod tests {
         let (mut spec, _) = tabletist_db::ConnectSpec::from_url("postgres://me@db/app").unwrap();
         spec.ssh = Some(tabletist_db::SshSpec {
             host: "bastion".into(),
-            port: 22,
+            port: Some(22),
             user: "ops".into(),
             auth: tabletist_db::SshAuth::Agent,
         });

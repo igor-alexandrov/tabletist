@@ -2,9 +2,7 @@
 //! local port to the database through `direct-tcpip` channels.
 
 use std::collections::BTreeMap;
-use std::path::Path;
-#[cfg(test)]
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
@@ -14,7 +12,7 @@ use russh::keys::agent::client::{AgentClient, AgentStream};
 use russh::keys::{HashAlg, PrivateKey, PrivateKeyWithHashAlg, PublicKeyOrCertificate};
 use serde::{Deserialize, Serialize};
 
-use crate::ssh_config::AgentSocket;
+use crate::ssh_config::{AgentSocket, HostConfig, Proxy};
 use crate::{Error, Result, Secrets, SshAuth, SshSpec, SshStage};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -61,6 +59,66 @@ fn ssh_error(stage: SshStage, message: impl Into<String>) -> Error {
         stage,
         message: message.into(),
     }
+}
+
+/// Where a tunnel goes and as whom, once `~/.ssh/config` has had its say.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct Endpoint {
+    pub host: String,
+    pub port: u16,
+    pub user: String,
+    /// The key file, for the key file method.
+    pub key: Option<PathBuf>,
+}
+
+/// `ssh`'s host, port, user and key file as `ssh -p 2222 -l me bastion`
+/// takes them: a typed value wins, then the config's, then the default
+/// (port 22, the `login` name). The host is the config's HostName, else the
+/// alias itself.
+pub(crate) fn endpoint(
+    ssh: &SshSpec,
+    config: &HostConfig,
+    login: Option<&str>,
+) -> Result<Endpoint> {
+    let alias = ssh.host.trim();
+    if alias.is_empty() {
+        return Err(Error::InvalidSpec("enter the SSH host".into()));
+    }
+    let keyword = match &config.proxy {
+        Some(Proxy::Jump(_)) => Some("ProxyJump"),
+        Some(Proxy::Command(_)) => Some("ProxyCommand"),
+        Some(Proxy::Off) | None => None,
+    };
+    if let Some(keyword) = keyword {
+        return Err(ssh_error(
+            SshStage::Connect,
+            format!(
+                "~/.ssh/config reaches {alias} through {keyword}, which Tabletist does not \
+                 support yet"
+            ),
+        ));
+    }
+    let user = Some(ssh.user.trim())
+        .filter(|user| !user.is_empty())
+        .or(config.user.as_deref())
+        .or(login)
+        .ok_or_else(|| Error::InvalidSpec("enter the SSH user".into()))?;
+    let key = match &ssh.auth {
+        SshAuth::KeyFile { path } if path.as_os_str().is_empty() => Some(
+            config
+                .identity_file
+                .clone()
+                .ok_or_else(|| Error::InvalidSpec("choose a key file for SSH".into()))?,
+        ),
+        SshAuth::KeyFile { path } => Some(path.clone()),
+        SshAuth::Password | SshAuth::Agent => None,
+    };
+    Ok(Endpoint {
+        host: config.host_name.clone().unwrap_or_else(|| alias.to_owned()),
+        port: ssh.port.or(config.port).unwrap_or(22),
+        user: user.to_owned(),
+        key,
+    })
 }
 
 /// Accepts the server only when its key matches the trusted one; records
@@ -173,6 +231,7 @@ async fn default_agent() -> std::result::Result<Agent, String> {
 async fn authenticate(
     handle: &mut client::Handle<Client>,
     ssh: &SshSpec,
+    endpoint: &Endpoint,
     secrets: &Secrets,
 ) -> Result<()> {
     let auth_error = |error: russh::Error| ssh_error(SshStage::Auth, error.to_string());
@@ -188,7 +247,7 @@ async fn authenticate(
                 return Err(ssh_error(SshStage::Secret, "enter the SSH password"));
             };
             let result = handle
-                .authenticate_password(&ssh.user, password)
+                .authenticate_password(&endpoint.user, password)
                 .await
                 .map_err(auth_error)?;
             if !result.success() {
@@ -199,12 +258,13 @@ async fn authenticate(
             }
             true
         }
-        SshAuth::KeyFile { path } => {
+        SshAuth::KeyFile { .. } => {
+            let path = endpoint.key.as_deref().unwrap_or(Path::new(""));
             let passphrase = secrets.ssh_passphrase.as_deref().filter(|p| !p.is_empty());
             let key = load_key(path, passphrase)?;
             handle
                 .authenticate_publickey(
-                    &ssh.user,
+                    &endpoint.user,
                     PrivateKeyWithHashAlg::new(Arc::new(key), rsa_hash),
                 )
                 .await
@@ -212,7 +272,7 @@ async fn authenticate(
                 .success()
         }
         SshAuth::Agent => {
-            let mut agent = agent(&ssh.host).await.map_err(|error| {
+            let mut agent = agent(ssh.host.trim()).await.map_err(|error| {
                 ssh_error(
                     SshStage::Auth,
                     format!("could not reach the SSH agent: {error}"),
@@ -231,7 +291,7 @@ async fn authenticate(
                     .then_some(rsa_hash)
                     .flatten();
                 let result = handle
-                    .authenticate_publickey_with(&ssh.user, key, hash, &mut agent)
+                    .authenticate_publickey_with(&endpoint.user, key, hash, &mut agent)
                     .await
                     .map_err(|error| ssh_error(SshStage::Auth, error.to_string()))?;
                 if result.success() {
@@ -247,7 +307,7 @@ async fn authenticate(
     } else {
         Err(ssh_error(
             SshStage::Auth,
-            format!("the server did not accept any key for {}", ssh.user),
+            format!("the server did not accept any key for {}", endpoint.user),
         ))
     }
 }
@@ -275,13 +335,14 @@ impl Tunnel {
         secrets: &Secrets,
         host_keys: &HostKeys,
     ) -> Result<Self> {
-        if ssh.host.trim().is_empty() || ssh.user.trim().is_empty() {
-            return Err(Error::InvalidSpec("enter the SSH host and user".into()));
-        }
+        // `config` is taken below by russh's client config.
+        let host_config = crate::ssh_config::resolve(ssh.host.trim());
+        let login = crate::ssh_config::login();
+        let endpoint = endpoint(ssh, &host_config, login.as_deref())?;
         let seen = Arc::new(Mutex::new(None));
         let client = Client {
             known: host_keys
-                .fingerprint(&ssh.host, ssh.port)
+                .fingerprint(&endpoint.host, endpoint.port)
                 .map(str::to_owned),
             seen: Arc::clone(&seen),
         };
@@ -291,14 +352,17 @@ impl Tunnel {
             keepalive_interval: Some(Duration::from_secs(30)),
             ..Default::default()
         });
-        let address = (ssh.host.clone(), ssh.port);
+        let address = (endpoint.host.clone(), endpoint.port);
         let connected =
             tokio::time::timeout(CONNECT_TIMEOUT, client::connect(config, address, client))
                 .await
                 .map_err(|_| {
                     ssh_error(
                         SshStage::Connect,
-                        format!("no answer from {}:{} within 10 seconds", ssh.host, ssh.port),
+                        format!(
+                            "no answer from {}:{} within 10 seconds",
+                            endpoint.host, endpoint.port
+                        ),
                     )
                 })?;
         let mut handle = match connected {
@@ -309,36 +373,44 @@ impl Tunnel {
                     .unwrap_or_else(PoisonError::into_inner)
                     .clone()
                     .unwrap_or_default();
-                return Err(if host_keys.fingerprint(&ssh.host, ssh.port).is_some() {
-                    ssh_error(
-                        SshStage::HostKeyMismatch {
-                            host: ssh.host.clone(),
-                            port: ssh.port,
-                            fingerprint,
-                        },
-                        "the host key changed since you trusted it, which can mean someone \
+                return Err(
+                    if host_keys
+                        .fingerprint(&endpoint.host, endpoint.port)
+                        .is_some()
+                    {
+                        ssh_error(
+                            SshStage::HostKeyMismatch {
+                                host: endpoint.host.clone(),
+                                port: endpoint.port,
+                                fingerprint,
+                            },
+                            "the host key changed since you trusted it, which can mean someone \
                          is intercepting the connection; if the server's key really changed, \
                          remove its line from known_hosts.json",
-                    )
-                } else {
-                    ssh_error(
-                        SshStage::HostKeyUnknown {
-                            host: ssh.host.clone(),
-                            port: ssh.port,
-                            fingerprint,
-                        },
-                        format!("{} is not a trusted host yet", ssh.host),
-                    )
-                });
+                        )
+                    } else {
+                        ssh_error(
+                            SshStage::HostKeyUnknown {
+                                host: endpoint.host.clone(),
+                                port: endpoint.port,
+                                fingerprint,
+                            },
+                            format!("{} is not a trusted host yet", endpoint.host),
+                        )
+                    },
+                );
             }
             Err(error) => {
                 return Err(ssh_error(
                     SshStage::Connect,
-                    format!("could not reach {}:{}: {error}", ssh.host, ssh.port),
+                    format!(
+                        "could not reach {}:{}: {error}",
+                        endpoint.host, endpoint.port
+                    ),
                 ));
             }
         };
-        authenticate(&mut handle, ssh, secrets).await?;
+        authenticate(&mut handle, ssh, &endpoint, secrets).await?;
         let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
             .await
             .map_err(|error| ssh_error(SshStage::Forward, error.to_string()))?;
@@ -399,6 +471,7 @@ impl Tunnel {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ssh_config::{HostConfig, Proxy};
 
     fn key(name: &str) -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -468,5 +541,127 @@ mod tests {
         let mut agent = default_agent().await.unwrap();
         let identities = agent.request_identities().await.unwrap();
         assert!(!identities.is_empty());
+    }
+
+    fn alias(auth: SshAuth) -> SshSpec {
+        SshSpec {
+            host: "bastion".into(),
+            port: None,
+            user: String::new(),
+            auth,
+        }
+    }
+
+    fn bastion_config() -> HostConfig {
+        HostConfig {
+            host_name: Some("10.0.0.5".into()),
+            port: Some(2222),
+            user: Some("ops".into()),
+            identity_file: Some("/home/me/.ssh/id_work".into()),
+            ..HostConfig::default()
+        }
+    }
+
+    #[test]
+    fn a_host_alias_takes_its_host_port_user_and_key_from_the_config() {
+        let spec = alias(SshAuth::KeyFile {
+            path: PathBuf::new(),
+        });
+        assert_eq!(
+            endpoint(&spec, &bastion_config(), Some("me")).unwrap(),
+            Endpoint {
+                host: "10.0.0.5".into(),
+                port: 2222,
+                user: "ops".into(),
+                key: Some("/home/me/.ssh/id_work".into()),
+            }
+        );
+    }
+
+    #[test]
+    fn typed_values_win_over_the_config() {
+        let spec = SshSpec {
+            port: Some(2200),
+            user: "deploy".into(),
+            ..alias(SshAuth::KeyFile {
+                path: "/keys/id_deploy".into(),
+            })
+        };
+        assert_eq!(
+            endpoint(&spec, &bastion_config(), Some("me")).unwrap(),
+            Endpoint {
+                host: "10.0.0.5".into(),
+                port: 2200,
+                user: "deploy".into(),
+                key: Some("/keys/id_deploy".into()),
+            }
+        );
+    }
+
+    #[test]
+    fn without_a_config_ssh_defaults_apply() {
+        let spec = alias(SshAuth::Agent);
+        assert_eq!(
+            endpoint(&spec, &HostConfig::default(), Some("me")).unwrap(),
+            Endpoint {
+                host: "bastion".into(),
+                port: 22,
+                user: "me".into(),
+                key: None,
+            }
+        );
+    }
+
+    #[test]
+    fn a_proxy_the_tunnel_cannot_follow_is_refused_by_name() {
+        for (proxy, keyword) in [
+            (Proxy::Jump("gateway".into()), "ProxyJump"),
+            (Proxy::Command("nc gateway 22".into()), "ProxyCommand"),
+        ] {
+            let config = HostConfig {
+                proxy: Some(proxy),
+                ..bastion_config()
+            };
+            match endpoint(&alias(SshAuth::Agent), &config, Some("me")) {
+                Err(Error::Ssh {
+                    stage: SshStage::Connect,
+                    message,
+                }) => {
+                    assert!(message.contains(keyword), "{message}");
+                    assert!(message.contains("bastion"), "{message}");
+                }
+                other => panic!("{keyword}: {other:?}"),
+            }
+        }
+        let direct = HostConfig {
+            proxy: Some(Proxy::Off),
+            ..bastion_config()
+        };
+        assert!(endpoint(&alias(SshAuth::Agent), &direct, Some("me")).is_ok());
+    }
+
+    #[test]
+    fn a_missing_host_user_or_key_is_an_invalid_spec() {
+        let invalid = |result: Result<Endpoint>| match result {
+            Err(Error::InvalidSpec(message)) => message,
+            other => panic!("{other:?}"),
+        };
+        let empty = SshSpec {
+            host: "  ".into(),
+            ..alias(SshAuth::Agent)
+        };
+        assert!(invalid(endpoint(&empty, &HostConfig::default(), Some("me"))).contains("host"));
+        assert!(
+            invalid(endpoint(
+                &alias(SshAuth::Agent),
+                &HostConfig::default(),
+                None
+            ))
+            .contains("user")
+        );
+        let keyless = alias(SshAuth::KeyFile {
+            path: PathBuf::new(),
+        });
+        assert!(invalid(endpoint(&keyless, &HostConfig::default(), Some("me"))).contains("key"));
     }
 }

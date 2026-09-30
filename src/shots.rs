@@ -767,7 +767,7 @@ mod mock {
             if name == "Bookshop" && color != ColorTag::Green {
                 spec.ssh = Some(tabletist_db::SshSpec {
                     host: "bastion".into(),
-                    port: 22,
+                    port: Some(22),
                     user: "deploy".into(),
                     auth: tabletist_db::SshAuth::Agent,
                 });

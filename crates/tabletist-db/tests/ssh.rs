@@ -25,7 +25,7 @@ fn server() -> Option<(SshSpec, String)> {
     Some((
         SshSpec {
             host: host.into(),
-            port: port.trim_end_matches('/').parse().unwrap(),
+            port: Some(port.trim_end_matches('/').parse().unwrap()),
             user: user.into(),
             auth: SshAuth::Password,
         },
@@ -115,7 +115,11 @@ async fn a_changed_host_key_is_refused() {
         return;
     };
     let mut keys = HostKeys::default();
-    keys.trust(&ssh.host, ssh.port, "SHA256:not-the-servers-key");
+    keys.trust(
+        &ssh.host,
+        ssh.port.unwrap_or(22),
+        "SHA256:not-the-servers-key",
+    );
     match open(&ssh, &with_password(&password), &keys).await {
         Err(Error::Ssh {
             stage: SshStage::HostKeyMismatch { fingerprint, .. },

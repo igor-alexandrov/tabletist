@@ -469,7 +469,7 @@ impl Default for ConnectionForm {
             pick_target: PickTarget::Sqlite,
             ssh: false,
             ssh_host: String::new(),
-            ssh_port: "22".into(),
+            ssh_port: String::new(),
             ssh_user: String::new(),
             ssh_auth: SshAuthKind::Password,
             ssh_key_file: String::new(),
@@ -543,7 +543,9 @@ impl ConnectionForm {
             ssh_port: spec
                 .ssh
                 .as_ref()
-                .map_or_else(|| "22".into(), |ssh| ssh.port.to_string()),
+                .and_then(|ssh| ssh.port)
+                .map(|port| port.to_string())
+                .unwrap_or_default(),
             ssh_user: spec
                 .ssh
                 .as_ref()
@@ -611,30 +613,21 @@ impl ConnectionForm {
                     if host.is_empty() {
                         return Err("Enter the SSH host.".into());
                     }
-                    let port: u16 = self
-                        .ssh_port
-                        .trim()
-                        .parse()
+                    // Empty port, user and key file are left to ~/.ssh/config.
+                    let port = self
+                        .typed_ssh_port()
                         .map_err(|_| "Enter the SSH port number.".to_owned())?;
-                    let user = self.ssh_user.trim();
-                    if user.is_empty() {
-                        return Err("Enter the SSH user.".into());
-                    }
                     let auth = match self.ssh_auth {
                         SshAuthKind::Password => SshAuth::Password,
                         SshAuthKind::Agent => SshAuth::Agent,
-                        SshAuthKind::KeyFile => {
-                            let path = self.ssh_key_file.trim();
-                            if path.is_empty() {
-                                return Err("Choose a key file for SSH.".into());
-                            }
-                            SshAuth::KeyFile { path: path.into() }
-                        }
+                        SshAuthKind::KeyFile => SshAuth::KeyFile {
+                            path: self.ssh_key_file.trim().into(),
+                        },
                     };
                     Some(SshSpec {
                         host: host.to_owned(),
                         port,
-                        user: user.to_owned(),
+                        user: self.ssh_user.trim().to_owned(),
                         auth,
                     })
                 } else {
@@ -666,6 +659,14 @@ impl ConnectionForm {
         })
     }
 
+    /// The SSH port as typed: `None` when empty, left to ~/.ssh/config.
+    fn typed_ssh_port(&self) -> Result<Option<u16>, std::num::ParseIntError> {
+        match self.ssh_port.trim() {
+            "" => Ok(None),
+            port => port.parse().map(Some),
+        }
+    }
+
     /// Whether the fields still name the SSH server and login the
     /// connection was saved with.
     fn same_ssh_server(&self) -> bool {
@@ -674,7 +675,7 @@ impl ConnectionForm {
             .and_then(|saved| saved.ssh.as_ref())
             .is_some_and(|saved| {
                 saved.host == self.ssh_host.trim()
-                    && self.ssh_port.trim().parse() == Ok(saved.port)
+                    && self.typed_ssh_port() == Ok(saved.port)
                     && saved.user == self.ssh_user.trim()
             })
     }
@@ -1604,7 +1605,7 @@ mod tests {
             saved.spec.ssh,
             Some(SshSpec {
                 host: "bastion".into(),
-                port: 22,
+                port: Some(22),
                 user: "ops".into(),
                 auth: SshAuth::KeyFile {
                     path: "/home/me/.ssh/id_ed25519".into()
@@ -1623,13 +1624,11 @@ mod tests {
     }
 
     #[test]
-    fn an_ssh_form_needs_host_user_port_and_key_file() {
+    fn an_ssh_form_needs_a_host_and_a_numeric_port() {
         type Change = fn(&mut ConnectionForm);
-        let changes: [(Change, &str); 4] = [
+        let changes: [(Change, &str); 2] = [
             (|f| f.ssh_host.clear(), "SSH host"),
-            (|f| f.ssh_user.clear(), "SSH user"),
             (|f| f.ssh_port = "twenty-two".into(), "SSH port"),
-            (|f| f.ssh_key_file.clear(), "key file"),
         ];
         for (change, message) in changes {
             let mut form = ssh_form();
@@ -1637,6 +1636,42 @@ mod tests {
             let error = form.to_spec().unwrap_err();
             assert!(error.contains(message), "{error}");
         }
+    }
+
+    #[test]
+    fn empty_ssh_port_user_and_key_file_are_left_to_the_config() {
+        let mut form = ssh_form();
+        form.ssh_port.clear();
+        form.ssh_user.clear();
+        form.ssh_key_file.clear();
+        let ssh = form.to_spec().unwrap().ssh.unwrap();
+        assert_eq!(ssh.port, None);
+        assert_eq!(ssh.user, "");
+        assert_eq!(
+            ssh.auth,
+            SshAuth::KeyFile {
+                path: std::path::PathBuf::new()
+            }
+        );
+        let saved = form.to_saved().unwrap();
+        assert_eq!(ConnectionForm::from_saved(&saved).ssh_port, "");
+    }
+
+    #[test]
+    fn a_saved_ssh_secret_fits_a_port_left_to_the_config() {
+        let mut form = ssh_form();
+        form.ssh_port.clear();
+        let mut saved = form.to_saved().unwrap();
+        saved.ssh_secret = PasswordMode::Keyring;
+        let mut back = ConnectionForm::from_saved(&saved);
+        assert!(back.ssh_secret_is_saved());
+        back.ssh_port = "2222".into();
+        assert!(back.ssh_secret_is_stale(), "another port, another server");
+    }
+
+    #[test]
+    fn a_new_form_leaves_the_ssh_port_to_the_config() {
+        assert_eq!(ConnectionForm::default().ssh_port, "");
     }
 
     #[test]
