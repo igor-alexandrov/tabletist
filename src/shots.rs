@@ -118,6 +118,8 @@ fn structure() -> Structure {
         nullable,
         default: default.map(Into::into),
         comment: None,
+        // `kind` has a CHECK (kind IN ('cover', 'preview')).
+        allowed_values: (name == "kind").then(|| vec!["cover".into(), "preview".into()]),
     };
     Structure {
         columns: vec![
@@ -657,6 +659,7 @@ mod mock {
             nullable,
             default: None,
             comment: None,
+            allowed_values: None,
         };
         Structure {
             columns: vec![

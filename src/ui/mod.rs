@@ -1006,6 +1006,7 @@ mod tests {
                 nullable: false,
                 default: None,
                 comment: None,
+                allowed_values: None,
             }],
             primary_key: vec!["id".into()],
             indexes: vec![tabletist_db::IndexInfo {
