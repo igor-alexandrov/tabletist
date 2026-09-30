@@ -809,12 +809,14 @@ impl App {
             Action::Backend(event) => self.apply_event(event),
             Action::NewConnection => {
                 self.dialog = Some(Dialog::Connection(Box::default()));
+                self.list_ssh_hosts();
             }
             Action::EditConnection(id) => {
                 if let Some(saved) = self.connections.get(&id) {
                     self.dialog = Some(Dialog::Connection(Box::new(ConnectionForm::from_saved(
                         saved,
                     ))));
+                    self.list_ssh_hosts();
                 }
             }
             Action::DuplicateConnection(id) => {
@@ -849,6 +851,11 @@ impl App {
                     form.pick_request = Some(request);
                     form.pick_target = PickTarget::KeyFile;
                     self.backend.pick_key_file(request);
+                }
+            }
+            Action::PickSshHost(alias) => {
+                if let Some(Dialog::Connection(form)) = &mut self.dialog {
+                    form.pick_ssh_host(&alias);
                 }
             }
             Action::ApplyUrl => {
@@ -1469,6 +1476,14 @@ impl App {
                     };
                 }
             }
+            Event::SshHosts { request, hosts } => {
+                if let Some(Dialog::Connection(form)) = &mut self.dialog
+                    && form.ssh_hosts_request == Some(request)
+                {
+                    form.ssh_hosts_request = None;
+                    form.ssh_hosts = hosts;
+                }
+            }
             Event::FilePicked { request, path } => {
                 if let Some(Dialog::Connection(form)) = &mut self.dialog
                     && form.pick_request == Some(request)
@@ -1714,6 +1729,16 @@ impl App {
                     .into(),
             }),
             _ => None,
+        }
+    }
+
+    /// Asks the backend for ~/.ssh/config's Host aliases for the open
+    /// connection dialog.
+    fn list_ssh_hosts(&mut self) {
+        let request = RequestId(self.next_id());
+        if let Some(Dialog::Connection(form)) = &mut self.dialog {
+            form.ssh_hosts_request = Some(request);
+            self.backend.list_ssh_hosts(request);
         }
     }
 
@@ -4913,6 +4938,56 @@ mod tests {
                 ),
                 other => panic!("{other:?}"),
             }
+        }
+
+        fn bastion_host() -> tabletist_db::ssh_config::ConfigHost {
+            tabletist_db::ssh_config::ConfigHost {
+                alias: "bastion".into(),
+                config: tabletist_db::ssh_config::HostConfig {
+                    identity_agent: Some(tabletist_db::ssh_config::AgentSocket::Environment),
+                    ..Default::default()
+                },
+            }
+        }
+
+        #[test]
+        fn opening_the_dialog_asks_for_the_config_hosts_and_takes_only_its_answer() {
+            let (mut app, _dir) = app();
+            app.apply(Action::NewConnection);
+            let request = form(&mut app).ssh_hosts_request.expect("asked");
+            app.apply(Action::Backend(Event::SshHosts {
+                request: RequestId(request.0 + 1000),
+                hosts: vec![bastion_host()],
+            }));
+            assert!(form(&mut app).ssh_hosts.is_empty(), "a stale answer");
+            app.apply(Action::Backend(Event::SshHosts {
+                request,
+                hosts: vec![bastion_host()],
+            }));
+            assert_eq!(form(&mut app).ssh_hosts, vec![bastion_host()]);
+            assert_eq!(form(&mut app).ssh_hosts_request, None);
+        }
+
+        #[test]
+        fn editing_asks_for_the_config_hosts_too() {
+            let (mut app, _dir) = app();
+            let id = ssh_saved(&mut app);
+            app.apply(Action::EditConnection(id));
+            assert!(form(&mut app).ssh_hosts_request.is_some());
+        }
+
+        #[test]
+        fn picking_a_config_host_fills_the_ssh_fields() {
+            let (mut app, _dir) = app();
+            postgres_form(&mut app);
+            let form = form(&mut app);
+            form.ssh_hosts = vec![bastion_host()];
+            form.ssh_user = "someone".into();
+            app.apply(Action::PickSshHost("bastion".into()));
+            let form = super::form(&mut app);
+            assert_eq!(form.ssh_host, "bastion");
+            assert_eq!(form.ssh_user, "");
+            assert_eq!(form.ssh_auth, SshAuthKind::Agent);
         }
 
         #[test]

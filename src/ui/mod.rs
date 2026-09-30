@@ -1432,6 +1432,118 @@ mod tests {
         assert!(!harness.has("SSH password"));
     }
 
+    use tabletist_db::ssh_config::{AgentSocket, ConfigHost, HostConfig, Proxy};
+
+    fn config_host(alias: &str, config: HostConfig) -> ConfigHost {
+        ConfigHost {
+            alias: alias.into(),
+            config,
+        }
+    }
+
+    fn bastion() -> ConfigHost {
+        config_host(
+            "bastion",
+            HostConfig {
+                host_name: Some("10.0.0.5".into()),
+                port: Some(2222),
+                user: Some("ops".into()),
+                identity_agent: Some(AgentSocket::Environment),
+                ..HostConfig::default()
+            },
+        )
+    }
+
+    /// A new PostgreSQL connection with the SSH section open and these
+    /// hosts from ~/.ssh/config.
+    fn ssh_dialog(hosts: Vec<ConfigHost>) -> Harness {
+        let mut harness = Harness::new();
+        harness.press(Key::N, Modifiers::COMMAND);
+        harness.click("PostgreSQL");
+        harness.click("SSH tunnel");
+        harness.click("Connect through SSH");
+        ssh_form(&mut harness).ssh_hosts = hosts;
+        harness.settle();
+        harness
+    }
+
+    fn ssh_form(harness: &mut Harness) -> &mut crate::model::ConnectionForm {
+        match &mut harness.app.dialog {
+            Some(crate::model::Dialog::Connection(form)) => form,
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// The placeholder of the field the `label` label names.
+    fn placeholder(harness: &mut Harness, label: &str) -> Option<String> {
+        let tree = harness.settle();
+        let (label, _) = tree
+            .nodes
+            .iter()
+            .find(|(_, node)| node.value() == Some(label))
+            .unwrap_or_else(|| panic!("no {label:?} label"));
+        tree.nodes
+            .iter()
+            .find(|(_, node)| {
+                node.role() == egui::accesskit::Role::TextInput
+                    && node.labelled_by().contains(label)
+            })
+            .expect("a field")
+            .1
+            .placeholder()
+            .map(str::to_owned)
+    }
+
+    #[test]
+    fn the_config_hosts_button_shows_only_when_the_config_names_hosts() {
+        let mut harness = ssh_dialog(Vec::new());
+        assert!(!harness.has("Hosts from ~/.ssh/config"));
+        let mut harness = ssh_dialog(vec![bastion()]);
+        assert!(harness.has("Hosts from ~/.ssh/config"));
+    }
+
+    #[test]
+    fn choosing_a_config_host_fills_the_ssh_host() {
+        let replica = config_host("replica", HostConfig::default());
+        let mut harness = ssh_dialog(vec![bastion(), replica]);
+        harness.click("Hosts from ~/.ssh/config");
+        assert!(harness.has("replica"));
+        harness.click("bastion");
+        let form = ssh_form(&mut harness);
+        assert_eq!(form.ssh_host, "bastion");
+        assert_eq!(form.ssh_auth, crate::model::SshAuthKind::Agent);
+    }
+
+    #[test]
+    fn a_config_host_shows_its_values_as_hints() {
+        let mut harness = ssh_dialog(vec![bastion()]);
+        assert_eq!(placeholder(&mut harness, "SSH port").as_deref(), Some("22"));
+        ssh_form(&mut harness).ssh_host = "bastion".into();
+        assert_eq!(
+            placeholder(&mut harness, "SSH port").as_deref(),
+            Some("2222")
+        );
+        assert_eq!(
+            placeholder(&mut harness, "SSH user").as_deref(),
+            Some("ops (from ~/.ssh/config)")
+        );
+        assert!(harness.has("10.0.0.5 from ~/.ssh/config"));
+    }
+
+    #[test]
+    fn a_config_host_behind_a_proxy_warns() {
+        let jump = config_host(
+            "gateway-only",
+            HostConfig {
+                proxy: Some(Proxy::Jump("bastion".into())),
+                ..HostConfig::default()
+            },
+        );
+        let mut harness = ssh_dialog(vec![jump]);
+        ssh_form(&mut harness).ssh_host = "gateway-only".into();
+        assert!(harness.has("Uses ProxyJump, which Tabletist does not support yet."));
+    }
+
     #[test]
     fn only_verify_full_offers_the_system_certificates() {
         let ca_hint = |harness: &mut Harness, tls| {
