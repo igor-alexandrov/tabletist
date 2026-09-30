@@ -165,13 +165,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: Object
                 }
             };
             // Values the grid shows as tags keep their colour here.
-            let tag_of = |col: usize, value: &Value| {
-                let values = crate::ui::data_view::tag_hues(page, col)?;
-                match value {
-                    Value::Text(text) => values.iter().position(|known| known == text),
-                    _ => None,
-                }
-            };
+            let tags = crate::ui::value_tags::Tags::of_page(page, structure);
+            let tag_of = |col: usize, value: &Value| tags[col].style(value);
             // The row's name: its key, else its number.
             let key_column = structure
                 .and_then(|s| (s.primary_key.len() == 1).then(|| s.primary_key[0].clone()));
@@ -595,7 +590,7 @@ fn field(
     column: &tabletist_db::ColumnMeta,
     value: &Value,
     info: &FieldInfo,
-    tag: Option<usize>,
+    tag: Option<crate::ui::grid::Style>,
     skin: FieldSkin<'_>,
     actions: &mut Vec<Action>,
 ) {
@@ -763,12 +758,10 @@ fn field(
             )
         }
     });
-    // The terminal colours a tag's text here too; macOS keeps its chips
-    // to the grid.
-    let color = match tag {
-        Some(hue) if look.terminal => crate::ui::grid::tag_colors(hue, look, palette).0,
-        _ => palette.text,
-    };
+    // A tag's value in its text colour: the grid's chips stay in the grid.
+    let color = tag.map_or(palette.text, |style| {
+        crate::ui::value_tags::style_colors(style, look, palette).0
+    });
     let small = widgets::secondary(look);
     ui.horizontal_top(|ui| {
         // A colour (`#3a7bd5`) leads with a swatch of it, on the first line.

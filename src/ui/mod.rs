@@ -18,6 +18,7 @@ pub mod quick_open;
 pub mod row_panel;
 pub mod sidebar;
 pub mod structure;
+pub mod value_tags;
 pub mod widgets;
 pub mod workspace;
 

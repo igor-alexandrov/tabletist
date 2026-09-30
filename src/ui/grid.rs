@@ -56,8 +56,13 @@ pub struct Column<'a> {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Style {
     Plain,
-    /// A short value from a small set, tagged in one of the tag colours.
+    /// A value from a column's allowed list, in that palette slot (see
+    /// [`crate::ui::value_tags`]).
     Tag(usize),
+    /// A true boolean: a neutral tag.
+    True,
+    /// A false boolean: muted text.
+    False,
     /// A JSON document with this many keys: a `{ n }` chip, then the text.
     Json(usize),
     /// A colour (`#3a7bd5`): a swatch of it, then the text.
@@ -142,28 +147,6 @@ pub fn row_fill(
         Some(palette.panel)
     } else {
         None
-    }
-}
-
-/// The colours of tag `hue`: its text, and its fill (none in the terminal
-/// look, where the text alone is coloured).
-pub fn tag_colors(
-    hue: usize,
-    look: &crate::theme::Look,
-    palette: &Palette,
-) -> (egui::Color32, Option<egui::Color32>) {
-    let hues = [
-        palette.orange,
-        palette.info,
-        palette.success,
-        palette.magenta,
-        palette.danger,
-    ];
-    let color = hues[hue % hues.len()];
-    if look.terminal {
-        (color, None)
-    } else {
-        (color, Some(palette.window.lerp_to_gamma(color, 0.1)))
     }
 }
 
@@ -283,8 +266,8 @@ pub fn initial_widths<'a>(
                 .map(|row| {
                     let cell = cell(row, col);
                     let chip = match cell.style {
-                        Style::Plain => 0.0,
-                        Style::Tag(_) => 16.0,
+                        Style::Plain | Style::False => 0.0,
+                        Style::Tag(_) | Style::True => 16.0,
                         Style::Json(_) => 44.0,
                         Style::Color(_) => SWATCH + SWATCH_GAP,
                     };
@@ -735,38 +718,13 @@ fn draw_cell(
         return;
     }
     match content.style {
-        Style::Tag(hue) => {
-            let (color, fill) = tag_colors(hue, look, palette);
-            // macOS: a chip in Plex Mono 11.5, 2 above and below, 6 at the
-            // sides. Terminal: the text alone, in the tag's colour.
-            let tag_role = if look.terminal {
-                role
-            } else {
-                TextRole::ValueTag
-            };
-            let shown = ellipsize(&content.text, room - 12.0, false, |text| {
-                width(text, tag_role)
-            });
-            let text_width = width(&shown, tag_role);
-            if let Some(fill) = fill {
-                let height = tag_role.row_height(ui.ctx(), look.faces) + 4.0;
-                let chip = Rect::from_min_size(
-                    pos2(rect.left() + pad, center - height / 2.0),
-                    vec2(text_width + 12.0, height),
-                );
-                clip.rect_filled(chip, CornerRadius::same(4), fill);
-                paint(
-                    &clip,
-                    ui,
-                    tag_role,
-                    &shown,
-                    color,
-                    chip.left() + 6.0,
-                    center,
-                    false,
-                    look,
-                );
-            } else {
+        Style::Tag(_) | Style::True | Style::False => {
+            let (color, fill) = crate::ui::value_tags::style_colors(content.style, look, palette);
+            // macOS and Windows: a chip in the value-tag face, 2 above and
+            // below, 6 at the sides. Terminal (and false): the text alone,
+            // in the tag's colour.
+            let Some(fill) = fill else {
+                let shown = ellipsize(&content.text, room, false, |text| width(text, role));
                 paint(
                     &clip,
                     ui,
@@ -778,7 +736,30 @@ fn draw_cell(
                     false,
                     look,
                 );
-            }
+                return;
+            };
+            let tag_role = TextRole::ValueTag;
+            let shown = ellipsize(&content.text, room - 12.0, false, |text| {
+                width(text, tag_role)
+            });
+            let text_width = width(&shown, tag_role);
+            let height = tag_role.row_height(ui.ctx(), look.faces) + 4.0;
+            let chip = Rect::from_min_size(
+                pos2(rect.left() + pad, center - height / 2.0),
+                vec2(text_width + 12.0, height),
+            );
+            clip.rect_filled(chip, CornerRadius::same(4), fill);
+            paint(
+                &clip,
+                ui,
+                tag_role,
+                &shown,
+                color,
+                chip.left() + 6.0,
+                center,
+                false,
+                look,
+            );
         }
         Style::Json(count) => {
             let mut left = rect.left() + pad;
