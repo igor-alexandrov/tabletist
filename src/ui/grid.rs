@@ -60,6 +60,8 @@ pub enum Style {
     Tag(usize),
     /// A JSON document with this many keys: a `{ n }` chip, then the text.
     Json(usize),
+    /// A colour (`#3a7bd5`): a swatch of it, then the text.
+    Color(egui::Color32),
 }
 
 pub struct Cell<'a> {
@@ -165,6 +167,57 @@ pub fn tag_colors(
     }
 }
 
+/// A grid swatch's side, and the space after it.
+const SWATCH: f32 = 12.0;
+const SWATCH_GAP: f32 = 6.0;
+
+/// A square of `color`, `side` points wide, centred on `center`. A
+/// translucent colour sits on a checkerboard that shows through it; a
+/// hairline keeps a colour close to the window's visible.
+pub fn paint_swatch(
+    painter: &egui::Painter,
+    ui: &Ui,
+    center: egui::Pos2,
+    side: f32,
+    color: egui::Color32,
+    look: &Look,
+    palette: &Palette,
+) {
+    let rect = Rect::from_center_size(center, vec2(side, side));
+    let radius = look.radius.min(3);
+    let corner = CornerRadius::same(radius);
+    if !color.is_opaque() {
+        // Four squares, light and dark, each rounded at its outer corner.
+        let half = side / 2.0;
+        for (index, (dx, dy)) in [(0.0, 0.0), (half, 0.0), (0.0, half), (half, half)]
+            .into_iter()
+            .enumerate()
+        {
+            let square = Rect::from_min_size(rect.min + vec2(dx, dy), vec2(half, half));
+            let round = |at: usize| if index == at { radius } else { 0 };
+            let corner = CornerRadius {
+                nw: round(0),
+                ne: round(1),
+                sw: round(2),
+                se: round(3),
+            };
+            let shade = if index == 0 || index == 3 {
+                egui::Color32::WHITE
+            } else {
+                egui::Color32::from_gray(204)
+            };
+            painter.rect_filled(square, corner, shade);
+        }
+    }
+    painter.rect_filled(rect, corner, color);
+    painter.rect_stroke(
+        rect,
+        corner,
+        Stroke::new(crate::ui::widgets::hairline(ui), palette.border),
+        StrokeKind::Inside,
+    );
+}
+
 /// `text` shortened with "…" to fit `max` points as measured by `width`:
 /// text keeps its start; numbers (`keep_end`) keep their last digits, the
 /// ones that tell rows apart. Never cuts a character in half.
@@ -233,6 +286,7 @@ pub fn initial_widths<'a>(
                         Style::Plain => 0.0,
                         Style::Tag(_) => 16.0,
                         Style::Json(_) => 44.0,
+                        Style::Color(_) => SWATCH + SWATCH_GAP,
                     };
                     width(&cell.text) + chip
                 })
@@ -650,7 +704,7 @@ fn draw_header(
     );
 }
 
-/// One cell: its text, tag or JSON chip, cut to fit.
+/// One cell: its text, tag, JSON chip or colour swatch, cut to fit.
 fn draw_cell(
     ui: &Ui,
     painter: &egui::Painter,
@@ -781,6 +835,33 @@ fn draw_cell(
                 palette.secondary
             };
             paint(&clip, ui, role, &shown, color, left, center, false, look);
+        }
+        Style::Color(color) => {
+            let left = rect.left() + pad;
+            paint_swatch(
+                &clip,
+                ui,
+                pos2(left + SWATCH / 2.0, center),
+                SWATCH,
+                color,
+                look,
+                palette,
+            );
+            let left = left + SWATCH + SWATCH_GAP;
+            let shown = ellipsize(&content.text, rect.right() - pad - left, false, |text| {
+                width(text, role)
+            });
+            paint(
+                &clip,
+                ui,
+                role,
+                &shown,
+                palette.text,
+                left,
+                center,
+                false,
+                look,
+            );
         }
         Style::Plain => {
             let numeric = column.numeric;

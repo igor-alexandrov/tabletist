@@ -872,6 +872,30 @@ mod tests {
     }
 
     #[test]
+    fn a_colour_value_shows_a_swatch_in_the_grid_and_the_row_panel() {
+        let mut harness = Harness::new();
+        harness.connect_fake();
+        harness.click("users");
+        let mut page = crate::testing::page(3, false);
+        page.rows[0][1] = tabletist_db::Value::Text("#3a7bd5".into());
+        page.rows[1][1] = tabletist_db::Value::Text("#3a7bd".into());
+        page.rows[2][1] = tabletist_db::Value::Text("#e94f3780".into());
+        harness.answer_rows(page);
+        let opaque = egui::Color32::from_rgb(0x3a, 0x7b, 0xd5);
+        let translucent = egui::Color32::from_rgba_unmultiplied(0xe9, 0x4f, 0x37, 0x80);
+        let swatches = |harness: &Harness, color: egui::Color32| {
+            harness.filled.iter().filter(|fill| **fill == color).count()
+        };
+        harness.settle();
+        assert_eq!(swatches(&harness, opaque), 1, "the grid's cell");
+        assert!(harness.painted_color("#3a7bd5").is_some(), "and its text");
+        assert_eq!(swatches(&harness, translucent), 1, "alpha is a colour too");
+        harness.click("Row 1");
+        harness.settle();
+        assert_eq!(swatches(&harness, opaque), 2, "and the row panel's field");
+    }
+
+    #[test]
     fn a_huge_single_line_value_is_collapsed_in_the_row_panel() {
         let mut harness = Harness::new();
         harness.connect_fake();

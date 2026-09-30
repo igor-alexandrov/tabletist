@@ -55,6 +55,36 @@ fn one_line(text: &str) -> Cow<'_, str> {
     Cow::Owned(line)
 }
 
+/// The colour a `#rgb`, `#rgba`, `#rrggbb` or `#rrggbbaa` value names, as
+/// red, green, blue and alpha (opaque when the value has none).
+pub fn hex_color(text: &str) -> Option<[u8; 4]> {
+    let digits = text.strip_prefix('#')?;
+    if !matches!(digits.len(), 3 | 4 | 6 | 8)
+        || !digits.bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        return None;
+    }
+    // `#f80` is `#ff8800`: a short form's digits each stand for two.
+    let (len, scale) = if digits.len() <= 4 { (1, 17) } else { (2, 1) };
+    let channel = |index: usize| {
+        let at = index * len;
+        digits.get(at..at + len).map_or(Some(255), |hex| {
+            Some(u8::from_str_radix(hex, 16).ok()? * scale)
+        })
+    };
+    Some([channel(0)?, channel(1)?, channel(2)?, channel(3)?])
+}
+
+/// The colour a text value names, for a swatch beside it.
+pub fn color(value: &Value) -> Option<egui::Color32> {
+    match value {
+        Value::Text(text) => {
+            hex_color(text).map(|[r, g, b, a]| egui::Color32::from_rgba_unmultiplied(r, g, b, a))
+        }
+        _ => None,
+    }
+}
+
 /// A timestamp or time shown to the second: `2026-01-12 09:14:03.482915`
 /// becomes `2026-01-12 09:14:03`, keeping any zone after the fraction.
 pub fn to_the_second(text: &str) -> Cow<'_, str> {
@@ -321,6 +351,31 @@ mod tests {
         assert_eq!(to_the_second("09:14:03.5"), "09:14:03");
         assert_eq!(to_the_second("2026-01-12"), "2026-01-12");
         assert_eq!(to_the_second("3.14"), "3.14");
+    }
+
+    #[test]
+    fn hex_colours_are_recognised_in_every_length() {
+        use super::hex_color;
+        assert_eq!(hex_color("#3a7bd5"), Some([0x3a, 0x7b, 0xd5, 255]));
+        assert_eq!(hex_color("#3a7bd580"), Some([0x3a, 0x7b, 0xd5, 0x80]));
+        assert_eq!(hex_color("#FFF"), Some([255, 255, 255, 255]));
+        assert_eq!(hex_color("#f80"), Some([0xff, 0x88, 0x00, 255]));
+        assert_eq!(hex_color("#f808"), Some([0xff, 0x88, 0x00, 0x88]));
+        for not in [
+            "",
+            "#",
+            "3a7bd5",
+            "#3a",
+            "#3a7bd",
+            "#3a7bd5f",
+            "#3a7bd5ff0",
+            "#ggg",
+            " #fff",
+            "#fff ",
+            "#é12",
+        ] {
+            assert_eq!(hex_color(not), None, "{not:?}");
+        }
     }
 
     #[test]
