@@ -308,6 +308,11 @@ impl eframe::App for Window {
         self.drive_shot(ctx);
     }
 
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        // Connections and known hosts saved just before quitting still land.
+        self.app.backend.flush(std::time::Duration::from_secs(5));
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         #[cfg(target_os = "macos")]
         {

@@ -132,6 +132,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: Object
                 .selection
                 .and_then(|cell| object.page().map(|page| (cell, page)))
                 .and_then(|(cell, page)| page.rows.get(cell.row).map(|row| (cell, page, row)));
+            // Formatted by the app when the selection changed, never here.
+            let texts = object.selected_fields();
             let Some((cell, page, row)) = selected else {
                 ui.centered_and_justified(|ui| {
                     Text::one(
@@ -165,13 +167,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: Object
                 }
             };
             // Values the grid shows as tags keep their colour here.
-            let tag_of = |col: usize, value: &Value| {
-                let values = crate::ui::data_view::tag_hues(page, col)?;
-                match value {
-                    Value::Text(text) => values.iter().position(|known| known == text),
-                    _ => None,
-                }
-            };
+            let tags = crate::ui::value_tags::Tags::of_page(page, structure);
+            let tag_of = |col: usize, value: &Value| tags[col].style(value);
             // The row's name: its key, else its number.
             let key_column = structure
                 .and_then(|s| (s.primary_key.len() == 1).then(|| s.primary_key[0].clone()));
@@ -468,6 +465,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: Object
                                                     palette: &palette,
                                                     locale,
                                                     fold,
+                                                    texts,
                                                 },
                                                 &mut actions,
                                             );
@@ -509,6 +507,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: Object
                                             palette: &palette,
                                             locale,
                                             fold,
+                                            texts,
                                         },
                                         &mut actions,
                                     );
@@ -544,6 +543,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: Object
                                             palette: &palette,
                                             locale,
                                             fold,
+                                            texts,
                                         },
                                         &mut actions,
                                     );
@@ -581,6 +581,8 @@ struct FieldSkin<'a> {
     locale: crate::i18n::Locale,
     /// Fold or unfold documents this frame (`za`).
     fold: bool,
+    /// The selected row's text, formatted by the app.
+    texts: Option<&'a crate::model::RowFields>,
 }
 
 /// One field: its label (with a copy button, or a document's controls),
@@ -595,7 +597,7 @@ fn field(
     column: &tabletist_db::ColumnMeta,
     value: &Value,
     info: &FieldInfo,
-    tag: Option<usize>,
+    tag: Option<crate::ui::grid::Style>,
     skin: FieldSkin<'_>,
     actions: &mut Vec<Action>,
 ) {
@@ -604,6 +606,7 @@ fn field(
         palette,
         locale,
         fold,
+        texts,
     } = skin;
     let label_role = caption(look);
     let text = label(&column.name, &column.type_name, column.kind, info, look);
@@ -726,24 +729,16 @@ fn field(
         }
         return;
     }
-    let text = format::full_text(value);
+    let Some(formatted) = texts.and_then(|texts| texts.fields.get(col)) else {
+        return;
+    };
     let expanded_id = Id::new(("row-panel-expanded", tab, object_tab, row, col));
     let expanded: bool = ui.data(|data| data.get_temp(expanded_id)).unwrap_or(false);
-    let lines = text.lines().count();
-    let size = format::human_size(text.len());
-    let long = lines > format::COLLAPSE_LINES || text.len() > format::COLLAPSE_CHARS;
-    let shown: String = if long && !expanded {
-        text.lines()
-            .take(format::COLLAPSE_LINES)
-            .collect::<Vec<_>>()
-            .join("\n")
-            .chars()
-            .take(format::COLLAPSE_CHARS)
-            .collect()
-    } else {
-        text
+    let long = formatted.full.is_some();
+    let shown = match &formatted.full {
+        Some(full) if expanded => full,
+        _ => &formatted.short,
     };
-    let shown = format::for_display(&shown);
     // Values in the data face at 13; the terminal's timestamps at 12.
     let role = if matches!(column.kind, ValueKind::Json | ValueKind::Binary) {
         TextRole::pick(look, TextRole::MonoSecondary, TextRole::OSecondary)
@@ -763,12 +758,10 @@ fn field(
             )
         }
     });
-    // The terminal colours a tag's text here too; macOS keeps its chips
-    // to the grid.
-    let color = match tag {
-        Some(hue) if look.terminal => crate::ui::grid::tag_colors(hue, look, palette).0,
-        _ => palette.text,
-    };
+    // A tag's value in its text colour: the grid's chips stay in the grid.
+    let color = tag.map_or(palette.text, |style| {
+        crate::ui::value_tags::style_colors(style, look, palette).0
+    });
     let small = widgets::secondary(look);
     ui.horizontal_top(|ui| {
         // A colour (`#3a7bd5`) leads with a swatch of it, on the first line.
@@ -826,7 +819,7 @@ fn field(
         let label = if expanded {
             gettext(locale, "Show less").into_owned()
         } else {
-            format!("{} ({size})", gettext(locale, "Show all"))
+            format!("{} ({})", gettext(locale, "Show all"), formatted.size)
         };
         let link = Text::one(look, small, &label, palette.accent)
             .layout(ui.ctx())

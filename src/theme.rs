@@ -53,16 +53,24 @@ pub struct Palette {
     pub selection: Color32,
     /// Verified TLS, JSON strings, the dev environment.
     pub success: Color32,
-    /// Cool value tags.
+    /// The terminal's second value tag.
     pub info: Color32,
-    /// Warm value tags, JSON numbers.
+    /// The terminal's first value tag, JSON numbers.
     pub orange: Color32,
-    /// The local environment.
+    /// The local environment, the terminal's third value tag.
     pub magenta: Color32,
+    /// The terminal's fourth value tag.
+    pub blue: Color32,
+    /// The theme's bright red: a value tag only when it is a rose, apart
+    /// from the red that marks production.
+    pub rose: Color32,
+    /// The theme's bright green: a value tag only when it is an olive,
+    /// apart from the green that marks dev.
+    pub olive: Color32,
 }
 
 /// The colours Tabletist adds to fastframe's base ones.
-pub const EXTRA_COLORS: [&str; 7] = [
+pub const EXTRA_COLORS: [&str; 10] = [
     "faint",
     "border",
     "selection",
@@ -70,6 +78,9 @@ pub const EXTRA_COLORS: [&str; 7] = [
     "info",
     "orange",
     "magenta",
+    "blue",
+    "rose",
+    "olive",
 ];
 
 impl Palette {
@@ -101,6 +112,9 @@ impl Palette {
             info: Color32::from_rgb(0x7d, 0xcf, 0xff),
             orange: Color32::from_rgb(0xff, 0x9e, 0x64),
             magenta: Color32::from_rgb(0xbb, 0x9a, 0xf7),
+            blue: Color32::from_rgb(0x7a, 0xa2, 0xf7),
+            rose: Color32::from_rgb(0xff, 0x7e, 0xb6),
+            olive: Color32::from_rgb(0xb5, 0xbd, 0x68),
         }
     }
 
@@ -133,6 +147,9 @@ impl Palette {
             info: Color32::from_rgb(0x1e, 0x4f, 0x8a),
             orange: Color32::from_rgb(0x9a, 0x4a, 0x0b),
             magenta: Color32::from_rgb(0x5b, 0x3a, 0xa8),
+            blue: Color32::from_rgb(0x1e, 0x4f, 0x8a),
+            rose: Color32::from_rgb(0x8a, 0x2e, 0x5a),
+            olive: Color32::from_rgb(0x4c, 0x5a, 0x1e),
         }
     }
 
@@ -188,6 +205,9 @@ impl fastframe_theme::Palette for Palette {
             "info" => self.info = color,
             "orange" => self.orange = color,
             "magenta" => self.magenta = color,
+            "blue" => self.blue = color,
+            "rose" => self.rose = color,
+            "olive" => self.olive = color,
             _ => return false,
         }
         true
@@ -209,6 +229,18 @@ impl fastframe_theme::Palette for Palette {
         }
         if given.contains("accent") && !given.contains("selection") {
             self.selection = self.window.lerp_to_gamma(self.accent, 0.2);
+        }
+        // Value tags follow a file's own colours: its accent as the blue,
+        // and its red and green where it names no rose or olive (which
+        // then fall back to muted).
+        if given.contains("accent") && !given.contains("blue") {
+            self.blue = self.accent;
+        }
+        if given.contains("danger") && !given.contains("rose") {
+            self.rose = self.danger;
+        }
+        if given.contains("success") && !given.contains("olive") {
+            self.olive = self.success;
         }
     }
 }
@@ -865,7 +897,8 @@ mod tests {
                       lighter_background\t#292e42\nforeground\t#c0caf5\nmuted\t#565f89\n\
                       accent\t#7aa2f7\nselection\t#283457\nred\t#f7768e\n\
                       green\t#9ece6a\nyellow\t#e0af68\ncyan\t#7dcfff\n\
-                      orange\t#ff9e64\nmagenta\t#bb9af7\n";
+                      orange\t#ff9e64\nmagenta\t#bb9af7\nblue\t#7aa2f7\n\
+                      bright_red\t#f7768e\nbright_green\t#9ece6a\n";
         let rendered = fastframe_theme::omarchy::render_seed::<Palette>(
             include_str!("../contrib/omarchy/tabletist.json.tpl"),
             colors,
@@ -896,6 +929,23 @@ mod tests {
         let colors = env_colors(Environment::Dev, &dark);
         assert_eq!(colors.badge, dark.success);
         assert_eq!(colors.badge_text, dark.window);
+    }
+
+    #[test]
+    fn value_tags_take_a_themes_rose_and_olive_only_when_they_stand_apart() {
+        // Tokyo Night's bright red and green are its red and green.
+        let palette = tokyo_night();
+        assert_eq!(palette.blue, egui::Color32::from_rgb(0x7a, 0xa2, 0xf7));
+        let slots = crate::ui::value_tags::terminal_slots(&palette);
+        assert_eq!(slots[3], palette.blue);
+        assert_eq!(slots[6], palette.dim);
+        assert_eq!(slots[7], palette.dim);
+        // A file with its own colours but no rose or olive: muted too.
+        let file = r##"{"base": "dark", "colors": {"danger": "#ff0000", "success": "#00ff00"}}"##;
+        let palette: Palette = fastframe_theme::parse_palette(file).unwrap();
+        let slots = crate::ui::value_tags::terminal_slots(&palette);
+        assert_eq!(slots[6], palette.dim);
+        assert_eq!(slots[7], palette.dim);
     }
 
     #[test]

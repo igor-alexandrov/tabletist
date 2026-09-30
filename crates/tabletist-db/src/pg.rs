@@ -317,9 +317,19 @@ impl Conn {
         let oid = self.relation(object).await?;
         let columns = self
             .catalog(
+                // An enum's labels in their sort order; a text column's
+                // single-column CHECK constraints, by name.
                 "SELECT a.attname::text, format_type(a.atttypid, a.atttypmod), NOT a.attnotnull, \
-                        pg_get_expr(d.adbin, d.adrelid), col_description(a.attrelid, a.attnum) \
+                        pg_get_expr(d.adbin, d.adrelid), col_description(a.attrelid, a.attnum), \
+                        CASE WHEN t.typtype = 'e' THEN \
+                            ARRAY(SELECT e.enumlabel::text FROM pg_enum e \
+                                  WHERE e.enumtypid = t.oid ORDER BY e.enumsortorder) END, \
+                        CASE WHEN t.oid IN ('text'::regtype, 'varchar'::regtype) THEN \
+                            ARRAY(SELECT pg_get_expr(c.conbin, c.conrelid) FROM pg_constraint c \
+                                  WHERE c.conrelid = a.attrelid AND c.contype = 'c' \
+                                    AND c.conkey = ARRAY[a.attnum] ORDER BY c.conname) END \
                  FROM pg_attribute a \
+                 JOIN pg_type t ON t.oid = a.atttypid \
                  LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum \
                  WHERE a.attrelid = $1 AND a.attnum > 0 AND NOT a.attisdropped \
                  ORDER BY a.attnum",
@@ -328,12 +338,21 @@ impl Conn {
             .await?
             .iter()
             .map(|row| {
+                let name: String = column(row, 0)?;
+                let labels: Option<Vec<String>> = column(row, 5)?;
+                let checks: Option<Vec<String>> = column(row, 6)?;
+                let allowed_values = labels.or_else(|| {
+                    checks?
+                        .iter()
+                        .find_map(|check| crate::check::allowed_values(check, &name))
+                });
                 Ok(ColumnInfo {
-                    name: column(row, 0)?,
+                    name,
                     type_name: column(row, 1)?,
                     nullable: column(row, 2)?,
                     default: column(row, 3)?,
                     comment: column(row, 4)?,
+                    allowed_values,
                 })
             })
             .collect::<Result<_>>()?;

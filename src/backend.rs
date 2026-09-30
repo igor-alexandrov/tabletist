@@ -1,9 +1,9 @@
 //! The backend: a tokio runtime on its own thread. The UI sends commands and
 //! polls events each frame; the backend wakes the UI when an event is ready.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::{Arc, mpsc};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError, mpsc};
 
 use tabletist_db::{
     CancelHandle, ConnectSpec, Connection, Driver, Error, HostKeys, ObjectInfo, ObjectRef, RowPage,
@@ -11,6 +11,7 @@ use tabletist_db::{
 };
 use tokio::sync::mpsc as tokio_mpsc;
 
+use crate::connections::SavedConnections;
 use crate::secrets::{Keyring, SecretString};
 
 /// Wakes the UI from any thread. The default does nothing (tests).
@@ -62,8 +63,12 @@ pub enum Command {
     Close {
         session: SessionId,
     },
+    /// Stops `request`: cancelled if it is running, skipped if it is still
+    /// queued. One that already finished is left alone, so a late cancel
+    /// never stops the command after it.
     Cancel {
         session: SessionId,
+        request: RequestId,
     },
     ListSchemas {
         session: SessionId,
@@ -104,6 +109,32 @@ pub enum Command {
         session: SessionId,
         request: RequestId,
     },
+    /// Writes a state file atomically. Saves to one file are written in
+    /// order, and a burst of them writes only the newest.
+    Save {
+        path: PathBuf,
+        file: StateFile,
+    },
+    /// Signals `done` once every save sent before it is on disk.
+    Flush {
+        done: mpsc::Sender<()>,
+    },
+}
+
+/// The contents of a state file the backend saves.
+#[derive(Debug, Clone, PartialEq)]
+pub enum StateFile {
+    Connections(SavedConnections),
+    KnownHosts(HostKeys),
+}
+
+impl StateFile {
+    fn save(&self, path: &std::path::Path) -> std::io::Result<()> {
+        match self {
+            Self::Connections(connections) => connections.save(path),
+            Self::KnownHosts(keys) => crate::known_hosts::save(path, keys),
+        }
+    }
 }
 
 /// What the backend reports back.
@@ -175,6 +206,11 @@ pub enum Event {
         session: SessionId,
         request: RequestId,
         result: Result<Vec<String>, Error>,
+    },
+    /// A `Save` was written, or why it was not.
+    Saved {
+        path: PathBuf,
+        result: Result<(), String>,
     },
 }
 
@@ -329,6 +365,19 @@ impl Backend {
         });
     }
 
+    /// Waits up to `timeout` for the saves sent so far to reach the disk,
+    /// so quitting right after a change keeps it.
+    pub fn flush(&mut self, timeout: std::time::Duration) {
+        if self.commands.is_none() {
+            return;
+        }
+        let (done, flushed) = mpsc::channel();
+        self.send(Command::Flush { done });
+        if flushed.recv_timeout(timeout).is_err() {
+            log::error!("state files were still being saved at exit");
+        }
+    }
+
     #[cfg(test)]
     pub fn inject(&self, event: Event) {
         self.outbox.emit(event);
@@ -344,9 +393,27 @@ impl Backend {
 struct SessionHandle {
     queue: tokio_mpsc::UnboundedSender<Command>,
     cancel: CancelHandle,
+    running: Arc<Mutex<Running>>,
     /// Dropped on Close: the session stops before its next queued command
     /// (a receiver still yields buffered commands after its sender drops).
     _stop: tokio::sync::oneshot::Sender<()>,
+}
+
+/// What a session is doing, shared by the worker (which cancels) and the
+/// session task (which runs one command at a time).
+#[derive(Default)]
+struct Running {
+    /// The request running now.
+    request: Option<RequestId>,
+    /// Queued requests to skip when their turn comes.
+    skip: HashSet<RequestId>,
+    /// Cancels sent for the running request. The session waits for them
+    /// before it starts the next command, so none can land on that one.
+    cancels: Vec<tokio::task::JoinHandle<()>>,
+}
+
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 /// A connect attempt that finished, on its way to the worker. Failures come
@@ -357,10 +424,75 @@ struct Ready {
     outcome: Result<(Driver, bool, SessionHandle), Error>,
 }
 
+/// State files being written. A file is here while its writer runs, with
+/// the newest content that writer has not taken yet.
+#[derive(Clone, Default)]
+struct Saves {
+    pending: Arc<Mutex<HashMap<PathBuf, Option<StateFile>>>>,
+    /// Woken whenever a writer finishes.
+    idle: Arc<tokio::sync::Notify>,
+}
+
+impl Saves {
+    /// Queues `file` for `path`, starting a writer unless one runs.
+    fn save(&self, path: PathBuf, file: StateFile, outbox: &Outbox) {
+        use std::collections::hash_map::Entry;
+        match lock(&self.pending).entry(path.clone()) {
+            // The running writer picks it up after its current write.
+            Entry::Occupied(mut next) => *next.get_mut() = Some(file),
+            Entry::Vacant(slot) => {
+                slot.insert(Some(file));
+                let saves = self.clone();
+                let outbox = outbox.clone();
+                tokio::task::spawn_blocking(move || saves.write(&path, &outbox));
+            }
+        }
+    }
+
+    /// Writes the newest content for `path` until none is left.
+    fn write(&self, path: &std::path::Path, outbox: &Outbox) {
+        loop {
+            let file = {
+                let mut pending = lock(&self.pending);
+                match pending.get_mut(path).and_then(Option::take) {
+                    Some(file) => file,
+                    None => {
+                        pending.remove(path);
+                        break;
+                    }
+                }
+            };
+            let result = file.save(path).map_err(|error| error.to_string());
+            if let Err(error) = &result {
+                log::error!("could not save {}: {error}", path.display());
+            }
+            outbox.emit(Event::Saved {
+                path: path.to_path_buf(),
+                result,
+            });
+        }
+        self.idle.notify_waiters();
+    }
+
+    /// Resolves once no file is being written.
+    async fn flushed(self) {
+        loop {
+            // Registered before the check, so a writer finishing in between
+            // still wakes it.
+            let idle = self.idle.notified();
+            if lock(&self.pending).is_empty() {
+                return;
+            }
+            idle.await;
+        }
+    }
+}
+
 /// Runs on the backend runtime. Owns every session.
 struct Worker {
     outbox: Outbox,
     keyring: Keyring,
+    saves: Saves,
     sessions: HashMap<SessionId, SessionHandle>,
     /// Connect tasks hand finished sessions to the worker through this.
     ready: tokio_mpsc::UnboundedSender<Ready>,
@@ -375,6 +507,7 @@ impl Worker {
         let worker = Self {
             outbox,
             keyring,
+            saves: Saves::default(),
             sessions: HashMap::new(),
             ready,
             closed_early: Default::default(),
@@ -446,8 +579,14 @@ impl Worker {
                             let cancel = connection.cancel_handle();
                             let (queue, commands) = tokio_mpsc::unbounded_channel();
                             let (stop, stopped) = tokio::sync::oneshot::channel();
+                            let running = Arc::new(Mutex::new(Running::default()));
                             tokio::spawn(run_session(
-                                session, connection, commands, stopped, outbox,
+                                session,
+                                connection,
+                                commands,
+                                stopped,
+                                Arc::clone(&running),
+                                outbox,
                             ));
                             (
                                 driver,
@@ -455,6 +594,7 @@ impl Worker {
                                 SessionHandle {
                                     queue,
                                     cancel,
+                                    running,
                                     _stop: stop,
                                 },
                             )
@@ -495,12 +635,20 @@ impl Worker {
                     self.closed_early.insert(session);
                 }
             }
-            Command::Cancel { session } => {
+            Command::Cancel { session, request } => {
                 if let Some(handle) = self.sessions.get(&session) {
-                    let cancel = handle.cancel.clone();
-                    tokio::spawn(async move {
-                        let _ = cancel.cancel().await;
-                    });
+                    let mut running = lock(&handle.running);
+                    if running.request == Some(request) {
+                        let cancel = handle.cancel.clone();
+                        running.cancels.retain(|task| !task.is_finished());
+                        running.cancels.push(tokio::spawn(async move {
+                            let _ = cancel.cancel().await;
+                        }));
+                    } else {
+                        // Queued, or already answered: the session drops
+                        // the id once it passes it.
+                        running.skip.insert(request);
+                    }
                 }
             }
             Command::LoadSecret { request, account } => {
@@ -535,6 +683,14 @@ impl Worker {
                     outbox.emit(Event::SecretStored { request, result });
                 });
             }
+            Command::Save { path, file } => self.saves.save(path, file, &self.outbox),
+            Command::Flush { done } => {
+                let saves = self.saves.clone();
+                tokio::spawn(async move {
+                    saves.flushed().await;
+                    let _ = done.send(());
+                });
+            }
             query => {
                 let session = session_of(&query);
                 match self.sessions.get(&session) {
@@ -558,16 +714,38 @@ fn session_of(command: &Command) -> SessionId {
     match command {
         Command::Connect { session, .. }
         | Command::Close { session }
-        | Command::Cancel { session }
+        | Command::Cancel { session, .. }
         | Command::ListSchemas { session, .. }
         | Command::ListObjects { session, .. }
         | Command::Describe { session, .. }
         | Command::FetchRows { session, .. }
         | Command::CountRows { session, .. }
         | Command::ListDatabases { session, .. } => *session,
-        Command::Test { .. } | Command::LoadSecret { .. } | Command::StoreSecret { .. } => {
-            SessionId(0)
-        }
+        Command::Test { .. }
+        | Command::LoadSecret { .. }
+        | Command::StoreSecret { .. }
+        | Command::Save { .. }
+        | Command::Flush { .. } => SessionId(0),
+    }
+}
+
+/// The request a queued command answers.
+fn request_of(command: &Command) -> Option<RequestId> {
+    match command {
+        Command::ListSchemas { request, .. }
+        | Command::ListObjects { request, .. }
+        | Command::Describe { request, .. }
+        | Command::FetchRows { request, .. }
+        | Command::CountRows { request, .. }
+        | Command::ListDatabases { request, .. } => Some(*request),
+        Command::Connect { .. }
+        | Command::Test { .. }
+        | Command::Close { .. }
+        | Command::Cancel { .. }
+        | Command::LoadSecret { .. }
+        | Command::StoreSecret { .. }
+        | Command::Save { .. }
+        | Command::Flush { .. } => None,
     }
 }
 
@@ -620,7 +798,9 @@ fn fail(outbox: &Outbox, command: Command, error: Error) {
         | Command::Close { .. }
         | Command::Cancel { .. }
         | Command::LoadSecret { .. }
-        | Command::StoreSecret { .. } => return,
+        | Command::StoreSecret { .. }
+        | Command::Save { .. }
+        | Command::Flush { .. } => return,
     };
     outbox.emit(event);
 }
@@ -646,6 +826,7 @@ async fn run_session(
     connection: Connection,
     mut commands: tokio_mpsc::UnboundedReceiver<Command>,
     mut stop: tokio::sync::oneshot::Receiver<()>,
+    running: Arc<Mutex<Running>>,
     outbox: Outbox,
 ) {
     loop {
@@ -657,6 +838,30 @@ async fn run_session(
                 None => break,
             },
         };
+        // A cancel meant for the previous command may still be on its way:
+        // let it land first, so it cannot stop this one.
+        let cancels = std::mem::take(&mut lock(&running).cancels);
+        for cancel in cancels {
+            let _ = cancel.await;
+        }
+        let request = request_of(&command);
+        let skipped = {
+            let mut running = lock(&running);
+            let skipped = request.is_some_and(|request| running.skip.remove(&request));
+            // Requests run in the order they were made, so an id at or
+            // before this one will never come again.
+            if let Some(request) = request {
+                running.skip.retain(|id| id.0 > request.0);
+            }
+            if !skipped {
+                running.request = request;
+            }
+            skipped
+        };
+        if skipped {
+            fail(&outbox, command, Error::Cancelled);
+            continue;
+        }
         let lost = match command {
             Command::ListSchemas { session, request } => {
                 let result = connection.list_schemas().await;
@@ -740,8 +945,11 @@ async fn run_session(
             | Command::Close { .. }
             | Command::Cancel { .. }
             | Command::LoadSecret { .. }
-            | Command::StoreSecret { .. } => None,
+            | Command::StoreSecret { .. }
+            | Command::Save { .. }
+            | Command::Flush { .. } => None,
         };
+        lock(&running).request = None;
         if let Some(error) = lost {
             fail_queued(&mut commands, &outbox, &error);
             outbox.emit(Event::Disconnected { session, error });
@@ -920,7 +1128,10 @@ mod tests {
                 std::time::Instant::now() < deadline,
                 "cancel must stop the query"
             );
-            backend.send(Command::Cancel { session });
+            backend.send(Command::Cancel {
+                session,
+                request: RequestId(2),
+            });
             if let Some(event) = backend.wait(Duration::from_millis(200)) {
                 break event;
             }
@@ -945,6 +1156,189 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    fn connected(spec: ConnectSpec) -> (Backend, SessionId) {
+        let mut backend = Backend::start_with(Waker::default(), Keyring::memory());
+        let session = SessionId(1);
+        backend.send(Command::Connect {
+            session,
+            request: RequestId(1),
+            spec,
+            secrets: Secrets::default(),
+            host_keys: HostKeys::default(),
+        });
+        assert!(matches!(backend.wait(WAIT), Some(Event::Connected { .. })));
+        (backend, session)
+    }
+
+    /// Counts `big` against itself `rows` times over: slow enough to cancel.
+    fn slow_count(rows: u64) -> RowQuery {
+        let mut slow = RowQuery::new(ObjectRef::new("main", "big"), 10);
+        slow.raw_where = Some(format!(
+            "(SELECT count(*) FROM big a, big b WHERE b.id <= {rows}) > 0"
+        ));
+        slow
+    }
+
+    #[test]
+    fn a_cancelled_queued_request_never_runs() {
+        let (_dir, spec) = fixture();
+        let (mut backend, session) = connected(spec);
+        backend.send(Command::CountRows {
+            session,
+            request: RequestId(2),
+            query: slow_count(100_000),
+        });
+        backend.send(Command::ListSchemas {
+            session,
+            request: RequestId(3),
+        });
+        // Superseded while the count still runs.
+        backend.send(Command::Cancel {
+            session,
+            request: RequestId(3),
+        });
+        let deadline = std::time::Instant::now() + WAIT;
+        let mut events = Vec::new();
+        while events.len() < 2 {
+            assert!(std::time::Instant::now() < deadline, "both must answer");
+            backend.send(Command::Cancel {
+                session,
+                request: RequestId(2),
+            });
+            events.extend(backend.wait(Duration::from_millis(200)));
+        }
+        assert!(matches!(
+            events.as_slice(),
+            [
+                Event::Count {
+                    request: RequestId(2),
+                    result: Err(Error::Cancelled),
+                    ..
+                },
+                // Answered as cancelled, never listed.
+                Event::Schemas {
+                    request: RequestId(3),
+                    result: Err(Error::Cancelled),
+                    ..
+                },
+            ]
+        ));
+        backend.send(Command::ListSchemas {
+            session,
+            request: RequestId(4),
+        });
+        assert!(matches!(
+            backend.wait(WAIT),
+            Some(Event::Schemas {
+                request: RequestId(4),
+                result: Ok(_),
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn a_cancel_for_a_finished_request_leaves_the_next_one_alone() {
+        let (_dir, spec) = fixture();
+        let (mut backend, session) = connected(spec);
+        backend.send(Command::ListSchemas {
+            session,
+            request: RequestId(2),
+        });
+        assert!(matches!(
+            backend.wait(WAIT),
+            Some(Event::Schemas { result: Ok(_), .. })
+        ));
+        backend.send(Command::CountRows {
+            session,
+            request: RequestId(3),
+            query: slow_count(40),
+        });
+        // Late cancels for the finished listing arrive while the count runs;
+        // a cancel for the whole session would stop it.
+        let deadline = std::time::Instant::now() + WAIT;
+        let answer = loop {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the count must finish"
+            );
+            backend.send(Command::Cancel {
+                session,
+                request: RequestId(2),
+            });
+            if let Some(event) = backend.wait(Duration::from_millis(20)) {
+                break event;
+            }
+        };
+        assert!(
+            matches!(
+                answer,
+                Event::Count {
+                    request: RequestId(3),
+                    result: Ok(_),
+                    ..
+                }
+            ),
+            "{answer:?}"
+        );
+    }
+
+    fn named(name: &str) -> StateFile {
+        let mut connections = SavedConnections::default();
+        connections.upsert(crate::connections::SavedConnection {
+            id: crate::connections::ConnectionId::new(),
+            name: name.into(),
+            color: crate::connections::ColorTag::None,
+            environment: None,
+            password: crate::connections::PasswordMode::None,
+            ssh_secret: crate::connections::PasswordMode::None,
+            spec: ConnectSpec::sqlite("/tmp/a.db"),
+        });
+        StateFile::Connections(connections)
+    }
+
+    #[test]
+    fn a_burst_of_saves_leaves_the_newest_on_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config").join("connections.json");
+        let mut backend = Backend::start_with(Waker::default(), Keyring::memory());
+        for n in 0..50 {
+            backend.send(Command::Save {
+                path: path.clone(),
+                file: named(&n.to_string()),
+            });
+        }
+        backend.flush(WAIT);
+        let stored = SavedConnections::load(&path);
+        assert_eq!(stored.connections[0].name, "49");
+        let mut saved = 0;
+        while let Some(Event::Saved { result, .. }) = backend.wait(Duration::from_millis(100)) {
+            assert_eq!(result, Ok(()));
+            saved += 1;
+        }
+        assert!((1..=50).contains(&saved), "{saved}");
+    }
+
+    #[test]
+    fn a_failed_save_is_reported() {
+        let dir = tempfile::tempdir().unwrap();
+        let blocker = dir.path().join("config");
+        std::fs::write(&blocker, "a file, not a folder").unwrap();
+        let path = blocker.join("known_hosts.json");
+        let mut backend = Backend::start_with(Waker::default(), Keyring::memory());
+        backend.send(Command::Save {
+            path: path.clone(),
+            file: StateFile::KnownHosts(HostKeys::default()),
+        });
+        match backend.wait(WAIT) {
+            Some(Event::Saved { path: at, result }) => {
+                assert_eq!(at, path);
+                assert!(result.is_err());
+            }
+            other => panic!("{other:?}"),
+        }
     }
 
     #[test]

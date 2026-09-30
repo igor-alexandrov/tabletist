@@ -935,39 +935,6 @@ fn type_line(
     (line, key)
 }
 
-/// Text columns holding a handful of short values (a status, a kind) show
-/// them as tags: each distinct value's colour index, by name.
-pub(crate) fn tag_hues(page: &tabletist_db::RowPage, col: usize) -> Option<Vec<Box<str>>> {
-    if page.columns[col].kind != ValueKind::Text || page.rows.len() < 4 {
-        return None;
-    }
-    let mut distinct: Vec<Box<str>> = Vec::new();
-    for row in &page.rows {
-        match &row[col] {
-            tabletist_db::Value::Null => {}
-            tabletist_db::Value::Text(text) => {
-                if text.chars().count() > 16
-                    || text.contains(char::is_whitespace)
-                    || text.is_empty()
-                {
-                    return None;
-                }
-                if !distinct.contains(text) {
-                    distinct.push(text.clone());
-                    if distinct.len() > 6 {
-                        return None;
-                    }
-                }
-            }
-            _ => return None,
-        }
-    }
-    (distinct.len() >= 2 && distinct.len() < page.rows.len()).then(|| {
-        distinct.sort();
-        distinct
-    })
-}
-
 pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: ObjectTabId) {
     let locale = app.locale;
     let palette = app.palette;
@@ -1034,9 +1001,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: Object
                 })
                 .collect();
             let ctx = ui.ctx().clone();
-            let tags: Vec<Option<Vec<Box<str>>>> = (0..page.columns.len())
-                .map(|col| tag_hues(page, col))
-                .collect();
+            let tags = crate::ui::value_tags::Tags::of_page(page, structure);
             let output = grid::show(
                 ui,
                 // Full precision widens timestamps: the columns fit again.
@@ -1064,13 +1029,11 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: Object
                             style: Style::Color(color),
                         };
                     }
-                    if let (Some(values), tabletist_db::Value::Text(text)) = (&tags[col], value)
-                        && let Some(hue) = values.iter().position(|known| known == text)
-                    {
+                    if let Some(style) = tags[col].style(value) {
                         return Cell {
-                            text: text.as_ref().into(),
+                            text: format::cell_text(value),
                             null: false,
-                            style: Style::Tag(hue),
+                            style,
                         };
                     }
                     if let (ValueKind::Json, tabletist_db::Value::Text(text)) = (kind, value)
@@ -1175,23 +1138,6 @@ mod tests {
     use super::*;
     use tabletist_db::{ColumnMeta, RowPage, Value};
 
-    fn page(values: &[&str]) -> RowPage {
-        RowPage {
-            columns: vec![ColumnMeta {
-                name: "kind".into(),
-                type_name: "varchar".into(),
-                kind: ValueKind::Text,
-            }],
-            rows: values
-                .iter()
-                .map(|value| vec![Value::Text((*value).into())])
-                .collect(),
-            has_more: false,
-            ordered_by_key: true,
-            elapsed: std::time::Duration::ZERO,
-        }
-    }
-
     /// Bookshop's `book_images`: 13 rows of 6 columns.
     fn book_images() -> RowPage {
         let column = |name: &str, type_name: &str, kind| ColumnMeta {
@@ -1280,18 +1226,6 @@ mod tests {
                 }
             }
         }
-    }
-
-    #[test]
-    fn a_few_short_repeated_values_become_tags() {
-        let tags = tag_hues(&page(&["gold", "silver", "gold", "silver"]), 0);
-        assert_eq!(tags, Some(vec!["gold".into(), "silver".into()]));
-        assert_eq!(
-            tag_hues(&page(&["a", "b", "c", "d"]), 0),
-            None,
-            "all different"
-        );
-        assert_eq!(tag_hues(&page(&["a b", "a b", "c", "c"]), 0), None, "words");
     }
 
     #[test]

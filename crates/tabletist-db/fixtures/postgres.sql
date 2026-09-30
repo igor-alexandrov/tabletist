@@ -4,9 +4,9 @@
 DROP SCHEMA IF EXISTS billing CASCADE;
 DROP MATERIALIZED VIEW IF EXISTS public.user_counts;
 DROP VIEW IF EXISTS public.active_users;
-DROP TABLE IF EXISTS public.orders, public.users, public.events, public."weird ""name""", public.big CASCADE;
+DROP TABLE IF EXISTS public.orders, public.users, public.events, public."weird ""name""", public.big, public.tickets CASCADE;
 DROP SEQUENCE IF EXISTS public.tick;
-DROP TYPE IF EXISTS public.mood;
+DROP TYPE IF EXISTS public.mood, public.size;
 
 CREATE TYPE mood AS ENUM ('happy', 'sad');
 CREATE SEQUENCE tick;
@@ -46,6 +46,27 @@ INSERT INTO orders VALUES (1, 1, 19.99, 'first'), (2, 1, 5.00, NULL), (3, 3, 120
 
 CREATE TABLE events (kind text, payload text);
 INSERT INTO events VALUES ('login', 'ada'), ('logout', 'ada'), ('login', 'zoe');
+
+-- Value lists: an enum (its sort order differs from its creation order),
+-- CHECK lists in both syntaxes, a CHECK that is no list, free text that
+-- repeats, and a list too long to colour.
+CREATE TYPE size AS ENUM ('small', 'large');
+ALTER TYPE size ADD VALUE 'medium' BEFORE 'large';
+CREATE TABLE tickets (
+    id integer PRIMARY KEY,
+    size size,
+    status varchar(20) CHECK (status IN ('open', 'closed')),
+    channel text CHECK (channel = ANY (ARRAY['web', 'phone'])),
+    code text CHECK (char_length(code) = 3),
+    kind text,
+    grade text CHECK (grade IN ('a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i')),
+    done boolean
+);
+INSERT INTO tickets VALUES
+    (1, 'small', 'open', 'web', 'abc', 'bug', 'a', true),
+    (2, 'large', 'closed', 'phone', 'def', 'bug', 'b', false),
+    (3, NULL, NULL, NULL, NULL, 'task', NULL, NULL),
+    (4, 'small', 'open', 'web', 'ghi', 'task', 'i', true);
 
 CREATE TABLE "weird ""name""" ("col with space" text, "select" integer);
 INSERT INTO "weird ""name""" VALUES ('quoted', 1);

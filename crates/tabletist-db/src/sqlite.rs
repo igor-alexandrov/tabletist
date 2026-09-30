@@ -367,6 +367,7 @@ fn columns(connection: &rusqlite::Connection, object: &ObjectRef) -> Result<Vec<
                 nullable: row.get::<_, i64>(2)? == 0,
                 default: row.get(3)?,
                 comment: None,
+                allowed_values: None,
             })
         })
         .map_err(map_error)?
