@@ -8,7 +8,7 @@ use tabletist_db::{
     Driver, Error, FilterOp, HostKeys, ObjectKind, ObjectRef, Secrets, Sort, SortDir, SshStage,
 };
 
-use crate::backend::{Command, Event, RequestId};
+use crate::backend::{Command, Event, RequestId, StateFile};
 use crate::connections::{PasswordMode, SavedConnection};
 use crate::i18n::Locale;
 use crate::model::{Action, ConnTab, ConnTabContent, ConnTabId, PickerState};
@@ -1700,6 +1700,11 @@ impl App {
                 }
             }
             Event::SecretStored { request, result } => self.secret_stored(request, result),
+            Event::Saved { path, result } => {
+                if let Err(error) = result {
+                    self.notice = Some(format!("Could not save {}: {error}.", path.display()));
+                }
+            }
             Event::Databases {
                 session,
                 request,
@@ -1765,10 +1770,10 @@ impl App {
             return;
         }
         self.host_keys.trust(host, port, fingerprint);
-        if let Err(error) = crate::known_hosts::save(&self.dirs.known_hosts_file(), &self.host_keys)
-        {
-            log::error!("could not save known hosts: {error}");
-        }
+        self.backend.send(Command::Save {
+            path: self.dirs.known_hosts_file(),
+            file: StateFile::KnownHosts(self.host_keys.clone()),
+        });
     }
 
     /// Remembers that `tab`'s saved connection connected now.
@@ -1786,10 +1791,13 @@ impl App {
         self.save_connections();
     }
 
-    fn save_connections(&self) {
-        if let Err(error) = self.connections.save(&self.dirs.connections_file()) {
-            log::error!("could not save connections: {error}");
-        }
+    /// Saves the connections on the backend (writing syncs the disk, which
+    /// can stall a frame).
+    fn save_connections(&mut self) {
+        self.backend.send(Command::Save {
+            path: self.dirs.connections_file(),
+            file: StateFile::Connections(self.connections.clone()),
+        });
     }
 
     fn save_dialog(&mut self, connect: bool) {
@@ -2766,16 +2774,45 @@ mod tests {
         assert_eq!(app.connections.connections.len(), 1);
     }
 
+    /// The newest state file the app asked the backend to save at `path`.
+    fn saved(app: &App, path: &std::path::Path) -> Option<StateFile> {
+        app.backend
+            .sent
+            .iter()
+            .rev()
+            .find_map(|command| match command {
+                Command::Save { path: to, file } if to == path => Some(file.clone()),
+                _ => None,
+            })
+    }
+
     #[test]
-    fn saved_connections_are_written_to_disk() {
+    fn saved_connections_are_written_by_the_backend() {
         let (mut app, dir) = app();
         app.apply(Action::NewConnection);
         form(&mut app).name = "Disk".into();
         form(&mut app).sqlite_path = "/tmp/disk.db".into();
         app.apply(Action::SaveConnection { connect: false });
-        let stored =
-            crate::connections::SavedConnections::load(&AppDirs::at(dir.path()).connections_file());
-        assert_eq!(stored.connections[0].name, "Disk");
+        let path = AppDirs::at(dir.path()).connections_file();
+        assert!(!path.exists(), "the UI thread writes nothing");
+        match saved(&app, &path) {
+            Some(StateFile::Connections(stored)) => {
+                assert_eq!(stored.connections[0].name, "Disk")
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_failed_save_shows_a_notice() {
+        let (mut app, _dir) = app();
+        app.apply(Action::Backend(Event::Saved {
+            path: "/config/connections.json".into(),
+            result: Err("No space left on device".into()),
+        }));
+        let notice = app.notice.clone().expect("a notice");
+        assert!(notice.contains("connections.json"), "{notice}");
+        assert!(notice.contains("No space left"), "{notice}");
     }
 
     #[test]
@@ -3828,13 +3865,19 @@ mod tests {
         prompt(&mut app).save = true;
         app.apply(Action::SubmitPassword);
         app.apply(Action::DeleteConnection(conn));
-        let Some(Command::Connect {
-            session, request, ..
-        }) = app.backend.sent.last()
-        else {
-            panic!()
-        };
-        let (session, request) = (*session, *request);
+        // Deleting also sent a save; the connect is the one before it.
+        let (session, request) = app
+            .backend
+            .sent
+            .iter()
+            .rev()
+            .find_map(|command| match command {
+                Command::Connect {
+                    session, request, ..
+                } => Some((*session, *request)),
+                _ => None,
+            })
+            .expect("a connect");
         app.apply(Action::Backend(Event::Connected {
             session,
             request,
@@ -4634,9 +4677,12 @@ mod tests {
             app.apply(Action::TrustHostKey);
             assert!(app.dialog.is_none());
             assert_eq!(app.host_keys.fingerprint("bastion", 22), Some("SHA256:abc"));
-            let saved =
-                crate::known_hosts::load(&AppDirs::at(dir.path()).known_hosts_file()).unwrap();
-            assert_eq!(saved.fingerprint("bastion", 22), Some("SHA256:abc"));
+            match saved(&app, &AppDirs::at(dir.path()).known_hosts_file()) {
+                Some(StateFile::KnownHosts(keys)) => {
+                    assert_eq!(keys.fingerprint("bastion", 22), Some("SHA256:abc"))
+                }
+                other => panic!("{other:?}"),
+            }
             match app.backend.sent.last() {
                 Some(Command::Connect { host_keys, .. }) => {
                     assert_eq!(host_keys.fingerprint("bastion", 22), Some("SHA256:abc"))

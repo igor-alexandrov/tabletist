@@ -535,6 +535,9 @@ on Linux; platform equivalents elsewhere):
 - `config/themes/`: palette files.
 - `state/tabletist.log`, `state/panic.log`: log files (fastframe-log).
 
+Connections and known hosts are saved on the backend runtime, never the UI
+thread; a burst of saves to one file writes only the newest, and quitting
+waits briefly for pending saves.
 All JSON is written atomically (write `*.tmp`, then rename), versioned, and
 loaded with `#[serde(default)]` so older files keep working. An unreadable file
 falls back to defaults with a warning and is kept aside as `*.bad`.

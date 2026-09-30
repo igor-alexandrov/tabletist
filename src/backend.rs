@@ -11,6 +11,7 @@ use tabletist_db::{
 };
 use tokio::sync::mpsc as tokio_mpsc;
 
+use crate::connections::SavedConnections;
 use crate::secrets::{Keyring, SecretString};
 
 /// Wakes the UI from any thread. The default does nothing (tests).
@@ -108,6 +109,32 @@ pub enum Command {
         session: SessionId,
         request: RequestId,
     },
+    /// Writes a state file atomically. Saves to one file are written in
+    /// order, and a burst of them writes only the newest.
+    Save {
+        path: PathBuf,
+        file: StateFile,
+    },
+    /// Signals `done` once every save sent before it is on disk.
+    Flush {
+        done: mpsc::Sender<()>,
+    },
+}
+
+/// The contents of a state file the backend saves.
+#[derive(Debug, Clone, PartialEq)]
+pub enum StateFile {
+    Connections(SavedConnections),
+    KnownHosts(HostKeys),
+}
+
+impl StateFile {
+    fn save(&self, path: &std::path::Path) -> std::io::Result<()> {
+        match self {
+            Self::Connections(connections) => connections.save(path),
+            Self::KnownHosts(keys) => crate::known_hosts::save(path, keys),
+        }
+    }
 }
 
 /// What the backend reports back.
@@ -174,6 +201,11 @@ pub enum Event {
         session: SessionId,
         request: RequestId,
         result: Result<Vec<String>, Error>,
+    },
+    /// A `Save` was written, or why it was not.
+    Saved {
+        path: PathBuf,
+        result: Result<(), String>,
     },
 }
 
@@ -316,6 +348,19 @@ impl Backend {
         });
     }
 
+    /// Waits up to `timeout` for the saves sent so far to reach the disk,
+    /// so quitting right after a change keeps it.
+    pub fn flush(&mut self, timeout: std::time::Duration) {
+        if self.commands.is_none() {
+            return;
+        }
+        let (done, flushed) = mpsc::channel();
+        self.send(Command::Flush { done });
+        if flushed.recv_timeout(timeout).is_err() {
+            log::error!("state files were still being saved at exit");
+        }
+    }
+
     #[cfg(test)]
     pub fn inject(&self, event: Event) {
         self.outbox.emit(event);
@@ -362,10 +407,75 @@ struct Ready {
     outcome: Result<(Driver, bool, SessionHandle), Error>,
 }
 
+/// State files being written. A file is here while its writer runs, with
+/// the newest content that writer has not taken yet.
+#[derive(Clone, Default)]
+struct Saves {
+    pending: Arc<Mutex<HashMap<PathBuf, Option<StateFile>>>>,
+    /// Woken whenever a writer finishes.
+    idle: Arc<tokio::sync::Notify>,
+}
+
+impl Saves {
+    /// Queues `file` for `path`, starting a writer unless one runs.
+    fn save(&self, path: PathBuf, file: StateFile, outbox: &Outbox) {
+        use std::collections::hash_map::Entry;
+        match lock(&self.pending).entry(path.clone()) {
+            // The running writer picks it up after its current write.
+            Entry::Occupied(mut next) => *next.get_mut() = Some(file),
+            Entry::Vacant(slot) => {
+                slot.insert(Some(file));
+                let saves = self.clone();
+                let outbox = outbox.clone();
+                tokio::task::spawn_blocking(move || saves.write(&path, &outbox));
+            }
+        }
+    }
+
+    /// Writes the newest content for `path` until none is left.
+    fn write(&self, path: &std::path::Path, outbox: &Outbox) {
+        loop {
+            let file = {
+                let mut pending = lock(&self.pending);
+                match pending.get_mut(path).and_then(Option::take) {
+                    Some(file) => file,
+                    None => {
+                        pending.remove(path);
+                        break;
+                    }
+                }
+            };
+            let result = file.save(path).map_err(|error| error.to_string());
+            if let Err(error) = &result {
+                log::error!("could not save {}: {error}", path.display());
+            }
+            outbox.emit(Event::Saved {
+                path: path.to_path_buf(),
+                result,
+            });
+        }
+        self.idle.notify_waiters();
+    }
+
+    /// Resolves once no file is being written.
+    async fn flushed(self) {
+        loop {
+            // Registered before the check, so a writer finishing in between
+            // still wakes it.
+            let idle = self.idle.notified();
+            if lock(&self.pending).is_empty() {
+                return;
+            }
+            idle.await;
+        }
+    }
+}
+
 /// Runs on the backend runtime. Owns every session.
 struct Worker {
     outbox: Outbox,
     keyring: Keyring,
+    saves: Saves,
     sessions: HashMap<SessionId, SessionHandle>,
     /// Connect tasks hand finished sessions to the worker through this.
     ready: tokio_mpsc::UnboundedSender<Ready>,
@@ -380,6 +490,7 @@ impl Worker {
         let worker = Self {
             outbox,
             keyring,
+            saves: Saves::default(),
             sessions: HashMap::new(),
             ready,
             closed_early: Default::default(),
@@ -555,6 +666,14 @@ impl Worker {
                     outbox.emit(Event::SecretStored { request, result });
                 });
             }
+            Command::Save { path, file } => self.saves.save(path, file, &self.outbox),
+            Command::Flush { done } => {
+                let saves = self.saves.clone();
+                tokio::spawn(async move {
+                    saves.flushed().await;
+                    let _ = done.send(());
+                });
+            }
             query => {
                 let session = session_of(&query);
                 match self.sessions.get(&session) {
@@ -585,9 +704,11 @@ fn session_of(command: &Command) -> SessionId {
         | Command::FetchRows { session, .. }
         | Command::CountRows { session, .. }
         | Command::ListDatabases { session, .. } => *session,
-        Command::Test { .. } | Command::LoadSecret { .. } | Command::StoreSecret { .. } => {
-            SessionId(0)
-        }
+        Command::Test { .. }
+        | Command::LoadSecret { .. }
+        | Command::StoreSecret { .. }
+        | Command::Save { .. }
+        | Command::Flush { .. } => SessionId(0),
     }
 }
 
@@ -605,7 +726,9 @@ fn request_of(command: &Command) -> Option<RequestId> {
         | Command::Close { .. }
         | Command::Cancel { .. }
         | Command::LoadSecret { .. }
-        | Command::StoreSecret { .. } => None,
+        | Command::StoreSecret { .. }
+        | Command::Save { .. }
+        | Command::Flush { .. } => None,
     }
 }
 
@@ -658,7 +781,9 @@ fn fail(outbox: &Outbox, command: Command, error: Error) {
         | Command::Close { .. }
         | Command::Cancel { .. }
         | Command::LoadSecret { .. }
-        | Command::StoreSecret { .. } => return,
+        | Command::StoreSecret { .. }
+        | Command::Save { .. }
+        | Command::Flush { .. } => return,
     };
     outbox.emit(event);
 }
@@ -803,7 +928,9 @@ async fn run_session(
             | Command::Close { .. }
             | Command::Cancel { .. }
             | Command::LoadSecret { .. }
-            | Command::StoreSecret { .. } => None,
+            | Command::StoreSecret { .. }
+            | Command::Save { .. }
+            | Command::Flush { .. } => None,
         };
         lock(&running).request = None;
         if let Some(error) = lost {
@@ -1139,6 +1266,62 @@ mod tests {
             ),
             "{answer:?}"
         );
+    }
+
+    fn named(name: &str) -> StateFile {
+        let mut connections = SavedConnections::default();
+        connections.upsert(crate::connections::SavedConnection {
+            id: crate::connections::ConnectionId::new(),
+            name: name.into(),
+            color: crate::connections::ColorTag::None,
+            environment: None,
+            password: crate::connections::PasswordMode::None,
+            ssh_secret: crate::connections::PasswordMode::None,
+            spec: ConnectSpec::sqlite("/tmp/a.db"),
+        });
+        StateFile::Connections(connections)
+    }
+
+    #[test]
+    fn a_burst_of_saves_leaves_the_newest_on_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config").join("connections.json");
+        let mut backend = Backend::start_with(Waker::default(), Keyring::memory());
+        for n in 0..50 {
+            backend.send(Command::Save {
+                path: path.clone(),
+                file: named(&n.to_string()),
+            });
+        }
+        backend.flush(WAIT);
+        let stored = SavedConnections::load(&path);
+        assert_eq!(stored.connections[0].name, "49");
+        let mut saved = 0;
+        while let Some(Event::Saved { result, .. }) = backend.wait(Duration::from_millis(100)) {
+            assert_eq!(result, Ok(()));
+            saved += 1;
+        }
+        assert!((1..=50).contains(&saved), "{saved}");
+    }
+
+    #[test]
+    fn a_failed_save_is_reported() {
+        let dir = tempfile::tempdir().unwrap();
+        let blocker = dir.path().join("config");
+        std::fs::write(&blocker, "a file, not a folder").unwrap();
+        let path = blocker.join("known_hosts.json");
+        let mut backend = Backend::start_with(Waker::default(), Keyring::memory());
+        backend.send(Command::Save {
+            path: path.clone(),
+            file: StateFile::KnownHosts(HostKeys::default()),
+        });
+        match backend.wait(WAIT) {
+            Some(Event::Saved { path: at, result }) => {
+                assert_eq!(at, path);
+                assert!(result.is_err());
+            }
+            other => panic!("{other:?}"),
+        }
     }
 
     #[test]
