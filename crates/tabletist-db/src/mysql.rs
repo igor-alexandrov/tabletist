@@ -55,6 +55,15 @@ impl Conn {
                 "verify-ca is not available for MySQL yet; use verify-full or require".into(),
             ));
         }
+        // PostgreSQL treats `require` with a CA file as verify-ca, which
+        // MySQL cannot do (above): refuse rather than ignore the CA file.
+        if spec.tls == TlsMode::Require && spec.ca_file.is_some() {
+            return Err(Error::Tls(
+                "MySQL checks a CA file only with verify-full; choose verify-full, or remove \
+                 the CA file to encrypt without checking the certificate"
+                    .into(),
+            ));
+        }
         let builder = builder(spec, secrets, via);
         let with_tls: Opts = with_tls(builder.clone(), spec, via).into();
         let (mut conn, opts) =
@@ -509,8 +518,12 @@ pub(crate) fn with_tls(builder: OptsBuilder, spec: &ConnectSpec, via: Option<u16
 
 /// `mysql_async` TLS options for our mode (`None` means no TLS).
 pub(crate) fn ssl_opts(mode: TlsMode, ca_file: Option<&Path>) -> Option<SslOpts> {
+    // A CA file is the only root trusted, as for PostgreSQL; without one,
+    // mysql_async's bundled roots are used.
     let base = match ca_file {
-        Some(path) => SslOpts::default().with_root_certs(vec![path.to_path_buf().into()]),
+        Some(path) => SslOpts::default()
+            .with_root_certs(vec![path.to_path_buf().into()])
+            .with_disable_built_in_roots(true),
         None => SslOpts::default(),
     };
     match mode {
@@ -747,6 +760,28 @@ mod tests {
         assert_eq!(ca.root_certs().len(), 1);
         let full = ssl_opts(TlsMode::VerifyFull, None).unwrap();
         assert!(!full.accept_invalid_certs() && !full.skip_domain_validation());
+        assert!(!full.disable_built_in_roots());
+    }
+
+    #[test]
+    fn a_ca_file_is_the_only_trusted_root() {
+        let full = ssl_opts(TlsMode::VerifyFull, Some(std::path::Path::new("/ca.pem"))).unwrap();
+        assert_eq!(full.root_certs().len(), 1);
+        assert!(full.disable_built_in_roots());
+    }
+
+    #[tokio::test]
+    async fn require_with_a_ca_file_is_refused_not_ignored() {
+        let dir = tempfile::tempdir().unwrap();
+        let ca = dir.path().join("ca.pem");
+        std::fs::write(&ca, "").unwrap();
+        let (mut spec, secrets) =
+            ConnectSpec::from_url("mysql://me@127.0.0.1:1/app?ssl-mode=REQUIRED").unwrap();
+        spec.ca_file = Some(ca);
+        match Conn::connect(&spec, &secrets, None).await {
+            Err(Error::Tls(message)) => assert!(message.contains("verify-full"), "{message}"),
+            other => panic!("{:?}", other.map(|_| ())),
+        }
     }
 
     fn server(code: u16, state: &str) -> mysql_async::Error {

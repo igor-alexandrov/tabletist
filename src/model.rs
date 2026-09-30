@@ -485,14 +485,19 @@ impl Default for ConnectionForm {
 impl ConnectionForm {
     /// Whether the password crosses a network with nothing to stop someone
     /// on the way reading it: a remote host, no SSH tunnel, and TLS that is
-    /// off or does not check the server's certificate.
+    /// off or does not check the server's certificate (PostgreSQL's
+    /// `require` with a CA file does, like libpq).
     pub fn password_can_be_intercepted(&self) -> bool {
+        let checked_by_ca = self.driver == Driver::Postgres
+            && self.tls == TlsMode::Require
+            && !self.ca_file.trim().is_empty();
         self.driver != Driver::Sqlite
             && !self.ssh
             && matches!(
                 self.tls,
                 TlsMode::Disable | TlsMode::Prefer | TlsMode::Require
             )
+            && !checked_by_ca
             && !is_local_host(&self.host)
     }
 
@@ -1428,6 +1433,13 @@ mod tests {
         form.tls = TlsMode::VerifyFull;
         assert!(!form.password_can_be_intercepted());
         form.tls = TlsMode::Require;
+        form.ca_file = "/etc/ca.pem".into();
+        assert!(!form.password_can_be_intercepted(), "verify-ca, like libpq");
+        form.driver = Driver::MySql;
+        assert!(form.password_can_be_intercepted(), "MySQL refuses it");
+        form.driver = Driver::Postgres;
+        form.ca_file.clear();
+        assert!(form.password_can_be_intercepted());
         form.ssh = true;
         assert!(!form.password_can_be_intercepted());
         form.ssh = false;

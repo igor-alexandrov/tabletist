@@ -190,6 +190,15 @@ impl ConnectSpec {
         Ok((spec, secrets))
     }
 
+    /// The TLS mode as it is enforced: PostgreSQL treats `require` with a CA
+    /// file as `verify-ca`, like libpq (MySQL refuses that combination).
+    pub fn effective_tls(&self) -> TlsMode {
+        match (self.driver, self.tls, &self.ca_file) {
+            (Driver::Postgres, TlsMode::Require, Some(_)) => TlsMode::VerifyCa,
+            (_, tls, _) => tls,
+        }
+    }
+
     /// A one-line description without secrets: `user@host:port/db`, or the
     /// file name for SQLite.
     pub fn summary(&self) -> String {
@@ -288,6 +297,16 @@ mod tests {
                 "{url:?} should be rejected"
             );
         }
+    }
+
+    #[test]
+    fn postgres_require_with_a_ca_file_is_verify_ca() {
+        let (mut spec, _) = ConnectSpec::from_url("postgres://h/db?sslmode=require").unwrap();
+        assert_eq!(spec.effective_tls(), TlsMode::Require);
+        spec.ca_file = Some("/ca.pem".into());
+        assert_eq!(spec.effective_tls(), TlsMode::VerifyCa);
+        spec.driver = Driver::MySql;
+        assert_eq!(spec.effective_tls(), TlsMode::Require);
     }
 
     #[test]

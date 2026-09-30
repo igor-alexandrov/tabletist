@@ -1181,6 +1181,22 @@ mod tests {
     }
 
     #[test]
+    fn a_ca_file_used_by_require_stays_visible() {
+        let mut harness = Harness::new();
+        harness.press(Key::N, Modifiers::COMMAND);
+        harness.click("PostgreSQL");
+        let shows_ca = |harness: &mut Harness, tls| {
+            if let Some(crate::model::Dialog::Connection(form)) = &mut harness.app.dialog {
+                form.tls = tls;
+            }
+            harness.has("CA file")
+        };
+        assert!(!shows_ca(&mut harness, tabletist_db::TlsMode::Prefer));
+        assert!(shows_ca(&mut harness, tabletist_db::TlsMode::Require));
+        assert!(shows_ca(&mut harness, tabletist_db::TlsMode::VerifyFull));
+    }
+
+    #[test]
     fn the_password_prompt_connects_with_the_typed_password() {
         let mut harness = Harness::new();
         let (spec, _) = tabletist_db::ConnectSpec::from_url("postgres://me@db/app").unwrap();
