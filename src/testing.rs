@@ -224,10 +224,14 @@ fn collect_text(shape: &egui::Shape, into: &mut Vec<(String, egui::Color32)>) {
     }
 }
 
+/// The node named `label` with `role`. Plain labels carry their text as the
+/// value (see [`labels`]), so that counts as the name too.
 pub fn node(tree: &TreeUpdate, label: &str, role: Role) -> Option<NodeId> {
     tree.nodes
         .iter()
-        .find(|(_, node)| node.label() == Some(label) && node.role() == role)
+        .find(|(_, node)| {
+            node.label().or_else(|| node.value()) == Some(label) && node.role() == role
+        })
         .map(|(id, _)| *id)
 }
 
