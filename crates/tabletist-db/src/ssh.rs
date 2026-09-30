@@ -124,7 +124,7 @@ type Agent = AgentClient<Box<dyn AgentStream + Send + Unpin + 'static>>;
 /// The agent for `host`: the one `~/.ssh/config` names (`IdentityAgent`,
 /// as OpenSSH reads it), else the environment's.
 async fn agent(host: &str) -> std::result::Result<Agent, String> {
-    match crate::ssh_config::identity_agent(host) {
+    match crate::ssh_config::resolve(host).identity_agent {
         Some(AgentSocket::Off) => {
             Err("~/.ssh/config turns the agent off for this host (IdentityAgent none)".into())
         }

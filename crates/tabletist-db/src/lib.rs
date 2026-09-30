@@ -13,7 +13,7 @@ mod query;
 mod spec;
 mod sqlite;
 mod ssh;
-mod ssh_config;
+pub mod ssh_config;
 mod tls;
 mod value;
 
