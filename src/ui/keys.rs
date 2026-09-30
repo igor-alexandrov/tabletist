@@ -28,12 +28,21 @@ pub const SHORTCUTS: &[(&str, &str)] = &[
     ("Mod+R", "Refresh"),
     ("Mod+F", "Filter bar"),
     ("Mod+P", "Quick open"),
+    ("Mod+B", "Show or hide the sidebar"),
     ("Mod+Alt+Left / Right", "Previous / next page"),
     ("Mod+.", "Cancel running query"),
     ("Space, Mod+Shift+R", "Toggle row panel"),
     ("Mod+C, Mod+Shift+C", "Copy cell / copy row"),
+    (
+        "Arrows, Enter, Mod+E, Mod+D, Mod+Backspace",
+        "Pick, edit, duplicate or delete a connection",
+    ),
     ("Arrows, Home/End, Enter", "Move in the tree"),
     ("Arrows, Page Up/Down, Home/End", "Move in the grid"),
+    (
+        "j/k, h/l, [ ], i, Esc, /, y, s, d, gd, za, t, 1…9",
+        "Omarchy: vim keys (shown in the status line)",
+    ),
     ("?", "Shortcuts"),
 ];
 
@@ -121,6 +130,7 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
         };
         key(Modifiers::COMMAND, Key::F, filter_key);
         key(Modifiers::COMMAND, Key::P, Action::OpenQuickOpen);
+        key(Modifiers::COMMAND, Key::B, Action::ToggleSidebar(active));
         if tree_arrows {
             use crate::model::TreeKey;
             for (pressed, tree_key) in [
@@ -224,6 +234,9 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
             ctx.copy_text(text);
         }
     }
+    if !editing && app.dialog.is_none() {
+        letters(app, ctx, &mut actions);
+    }
     // `?` as typed text, so it works on every keyboard layout.
     if !editing
         && app.dialog.is_none()
@@ -237,6 +250,204 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
         actions.push(Action::ShowHelp);
     }
     app.actions.extend(actions);
+}
+
+/// The first key of a two-key command (`dd`, `gd`), kept between frames.
+fn pending_id() -> egui::Id {
+    egui::Id::new("pending-key")
+}
+
+/// Whether `text` was typed this frame (consumed): keys named by the
+/// character they type, so they work on every keyboard layout.
+fn typed(ctx: &egui::Context, text: &str) -> bool {
+    ctx.input_mut(|input| {
+        let before = input.events.len();
+        input
+            .events
+            .retain(|event| !matches!(event, egui::Event::Text(typed) if typed == text));
+        input.events.len() != before
+    })
+}
+
+/// Single letters: the picker's keys, and in the terminal look the
+/// workspace's vim keys. Only when no text field has the keyboard.
+fn letters(app: &mut App, ctx: &egui::Context, actions: &mut Vec<Action>) {
+    // A frame without keys keeps a waiting first key (`d` of `dd`).
+    let keys = ctx.input(|input| {
+        input
+            .events
+            .iter()
+            .any(|event| matches!(event, egui::Event::Key { pressed: true, .. }))
+    });
+    if !keys {
+        return;
+    }
+    let tab = app.active_tab_id();
+    let terminal = app.look.terminal;
+    let pending: Option<char> = ctx.data(|data| data.get_temp(pending_id())).flatten();
+    let mut next_pending = None;
+    let pressed = |key: Key| ctx.input_mut(|input| input.consume_key(Modifiers::NONE, key));
+    let command = |key: Key| ctx.input_mut(|input| input.consume_key(Modifiers::COMMAND, key));
+    if let crate::model::ConnTabContent::Picker(picker) = &app.active_tab().content {
+        let selected = picker.selected.clone();
+        if pressed(Key::ArrowDown) || (terminal && pressed(Key::J)) {
+            actions.push(Action::MovePickerSelection { tab, step: 1 });
+        }
+        if pressed(Key::ArrowUp) || (terminal && pressed(Key::K)) {
+            actions.push(Action::MovePickerSelection { tab, step: -1 });
+        }
+        if let Some(conn) = selected {
+            if ctx.memory(|memory| memory.focused().is_none()) && pressed(Key::Enter) {
+                actions.push(Action::Connect {
+                    tab,
+                    conn: conn.clone(),
+                });
+            }
+            if command(Key::E) || (terminal && pressed(Key::E)) {
+                actions.push(Action::EditConnection(conn.clone()));
+            }
+            if command(Key::D) {
+                actions.push(Action::DuplicateConnection(conn.clone()));
+            }
+            if ctx.input_mut(|input| input.consume_key(Modifiers::COMMAND, Key::Backspace)) {
+                actions.push(Action::DeleteConnection(conn.clone()));
+            }
+            if terminal && pressed(Key::Y) {
+                if pending == Some('y') {
+                    actions.push(Action::DuplicateConnection(conn.clone()));
+                } else {
+                    next_pending = Some('y');
+                }
+            }
+            if terminal && pressed(Key::D) {
+                if pending == Some('d') {
+                    actions.push(Action::DeleteConnection(conn));
+                } else {
+                    next_pending = Some('d');
+                }
+            }
+        }
+        if terminal && pressed(Key::N) {
+            actions.push(Action::NewConnection);
+        }
+        if terminal && typed(ctx, "/") {
+            actions.push(Action::FocusPickerSearch(tab));
+        }
+        ctx.data_mut(|data| data.insert_temp(pending_id(), next_pending));
+        return;
+    }
+    if !terminal {
+        return;
+    }
+    let Some(workspace) = app.workspace(tab) else {
+        return;
+    };
+    let tree = workspace.pane == crate::model::Pane::Tree;
+    let panel = workspace.row_panel;
+    let object_tabs: Vec<_> = workspace.objects.iter().map(|object| object.id).collect();
+    let active = workspace.active_object;
+    for (index, number) in NUMBERS.into_iter().enumerate() {
+        if pressed(number)
+            && let Some(object_tab) = object_tabs.get(index)
+        {
+            actions.push(Action::ActivateObjectTab {
+                tab,
+                object_tab: *object_tab,
+            });
+        }
+    }
+    if pressed(Key::T) {
+        actions.push(Action::ToggleFlatTree(tab));
+    }
+    if tree {
+        if pressed(Key::J) {
+            actions.push(Action::TreeKey {
+                tab,
+                key: crate::model::TreeKey::Down,
+            });
+        }
+        if pressed(Key::K) {
+            actions.push(Action::TreeKey {
+                tab,
+                key: crate::model::TreeKey::Up,
+            });
+        }
+    }
+    let Some(object_tab) = active else {
+        ctx.data_mut(|data| data.insert_temp(pending_id(), next_pending));
+        return;
+    };
+    let step = |rows: isize, cols: isize| Action::MoveSelection {
+        tab,
+        object_tab,
+        rows,
+        cols,
+    };
+    if !tree {
+        if pressed(Key::J) {
+            actions.push(step(1, 0));
+        }
+        if pressed(Key::K) {
+            actions.push(step(-1, 0));
+        }
+        if pressed(Key::H) {
+            actions.push(step(0, -1));
+        }
+        if pressed(Key::L) {
+            actions.push(step(0, 1));
+        }
+        if !panel && pressed(Key::Enter) {
+            actions.push(Action::ToggleRowPanel(tab));
+        }
+    }
+    if typed(ctx, "[") {
+        actions.push(step(-1, 0));
+    }
+    if typed(ctx, "]") {
+        actions.push(step(1, 0));
+    }
+    if pressed(Key::I) {
+        actions.push(Action::ToggleRowPanel(tab));
+    }
+    if panel && pressed(Key::Escape) {
+        actions.push(Action::ToggleRowPanel(tab));
+    }
+    if typed(ctx, "/") {
+        actions.push(Action::FocusWhere(tab));
+    }
+    if pressed(Key::S) {
+        actions.push(Action::SetView {
+            tab,
+            object_tab,
+            view: crate::model::ObjectView::Structure,
+        });
+    }
+    if pressed(Key::Y)
+        && let Some(text) = app.copy_text(false)
+    {
+        ctx.copy_text(text);
+    }
+    if pressed(Key::G) {
+        next_pending = Some('g');
+    }
+    if pressed(Key::Z) {
+        next_pending = Some('z');
+    }
+    if pressed(Key::A) && pending == Some('z') {
+        actions.push(Action::FoldDocuments { tab, object_tab });
+    }
+    if pressed(Key::D) {
+        if pending == Some('g') {
+            actions.push(Action::FollowSelectedKey { tab, object_tab });
+        } else {
+            actions.push(Action::SetView {
+                tab,
+                object_tab,
+                view: crate::model::ObjectView::Data,
+            });
+        }
+    }
+    ctx.data_mut(|data| data.insert_temp(pending_id(), next_pending));
 }
 
 #[cfg(test)]

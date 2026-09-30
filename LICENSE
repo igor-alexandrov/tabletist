@@ -19,3 +19,13 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+---
+
+Tabletist bundles these, each under its own licence:
+
+- IBM Plex Sans and IBM Plex Mono (assets/fonts/IBMPlex*.ttf),
+  SIL Open Font License 1.1, see assets/fonts/IBMPlex-OFL.txt.
+- JetBrains Mono (assets/fonts/JetBrainsMono-Variable.ttf),
+  SIL Open Font License 1.1, see assets/fonts/JetBrainsMono-OFL.txt.
+- Lucide icons (assets/icons/*.svg), ISC License, see assets/icons/LICENSE.txt.

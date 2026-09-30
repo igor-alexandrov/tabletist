@@ -55,6 +55,58 @@ fn one_line(text: &str) -> Cow<'_, str> {
     Cow::Owned(line)
 }
 
+/// A timestamp or time shown to the second: `2026-01-12 09:14:03.482915`
+/// becomes `2026-01-12 09:14:03`, keeping any zone after the fraction.
+pub fn to_the_second(text: &str) -> Cow<'_, str> {
+    // The fraction follows a time's `hh:mm:ss`.
+    let Some(dot) = text.find('.') else {
+        return Cow::Borrowed(text);
+    };
+    let before = &text[..dot];
+    let is_time = before.len() >= 8
+        && before.as_bytes()[before.len() - 3] == b':'
+        && before[before.len() - 2..]
+            .bytes()
+            .all(|b| b.is_ascii_digit());
+    if !is_time {
+        return Cow::Borrowed(text);
+    }
+    let rest = &text[dot + 1..];
+    let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
+    if digits == 0 {
+        return Cow::Borrowed(text);
+    }
+    Cow::Owned(format!("{before}{}", &rest[digits..]))
+}
+
+/// `text` cut in the middle with "…" to fit `max` points as measured by
+/// `width`, keeping both ends (a file's name and its extension).
+pub fn ellipsize_middle(text: &str, max: f32, width: impl Fn(&str) -> f32) -> String {
+    if width(text) <= max {
+        return text.to_owned();
+    }
+    let chars: Vec<char> = text.chars().collect();
+    let candidate = |kept: usize| -> String {
+        let tail = kept / 2;
+        let head = kept - tail;
+        chars[..head]
+            .iter()
+            .chain(std::iter::once(&'…'))
+            .chain(chars[chars.len() - tail..].iter())
+            .collect()
+    };
+    let (mut fits, mut too_many) = (0, chars.len());
+    while too_many - fits > 1 {
+        let middle = (fits + too_many) / 2;
+        if width(&candidate(middle)) <= max {
+            fits = middle;
+        } else {
+            too_many = middle;
+        }
+    }
+    candidate(fits)
+}
+
 /// The whole value as text, for the clipboard. Binary becomes `0x` hex.
 pub fn plain_text(value: &Value) -> String {
     match value {
@@ -255,6 +307,32 @@ pub fn for_display(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn timestamps_drop_their_fraction_and_keep_their_zone() {
+        use super::to_the_second;
+        assert_eq!(
+            to_the_second("2026-01-12 09:14:03.482915"),
+            "2026-01-12 09:14:03"
+        );
+        assert_eq!(
+            to_the_second("2026-01-12 09:14:03.4+02"),
+            "2026-01-12 09:14:03+02"
+        );
+        assert_eq!(to_the_second("09:14:03.5"), "09:14:03");
+        assert_eq!(to_the_second("2026-01-12"), "2026-01-12");
+        assert_eq!(to_the_second("3.14"), "3.14");
+    }
+
+    #[test]
+    fn the_middle_gives_way_first() {
+        let width = |text: &str| text.chars().count() as f32;
+        assert_eq!(super::ellipsize_middle("short", 10.0, width), "short");
+        assert_eq!(
+            super::ellipsize_middle("abcdefghij.jpg", 9.0, width),
+            "abcd….jpg"
+        );
+    }
+
     use super::*;
     use std::time::Duration;
     use tabletist_db::Value;

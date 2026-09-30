@@ -71,6 +71,47 @@ impl ColorTag {
     }
 }
 
+/// What a connection's colour says it is: the environment badge on the
+/// picker and the top bar, and the colour of its connection bar.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Environment {
+    Dev,
+    Staging,
+    Production,
+    Local,
+    Test,
+    None,
+}
+
+impl Environment {
+    /// The badge text: `short` is the terminal look's (PROD).
+    pub fn label(self, short: bool) -> &'static str {
+        match self {
+            Self::Dev => "dev",
+            Self::Staging => "staging",
+            Self::Production if short => "prod",
+            Self::Production => "production",
+            Self::Local => "local",
+            Self::Test => "test",
+            Self::None => "none",
+        }
+    }
+}
+
+impl ColorTag {
+    /// The environment the colour stands for (red for production).
+    pub fn environment(self) -> Environment {
+        match self {
+            Self::Green => Environment::Dev,
+            Self::Orange | Self::Yellow => Environment::Staging,
+            Self::Red => Environment::Production,
+            Self::Purple => Environment::Local,
+            Self::Blue => Environment::Test,
+            Self::Gray | Self::None => Environment::None,
+        }
+    }
+}
+
 /// Where a connection's password comes from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -103,6 +144,10 @@ pub struct SavedConnection {
 pub struct SavedConnections {
     pub version: u32,
     pub connections: Vec<SavedConnection>,
+    /// When each connection last connected, in seconds since the Unix
+    /// epoch, by id. Kept beside the connections so they stay as saved.
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub last_used: std::collections::BTreeMap<String, u64>,
 }
 
 impl Default for SavedConnections {
@@ -110,6 +155,7 @@ impl Default for SavedConnections {
         Self {
             version: 1,
             connections: Vec::new(),
+            last_used: std::collections::BTreeMap::new(),
         }
     }
 }
@@ -141,7 +187,18 @@ impl SavedConnections {
         }
     }
 
+    /// When `id` last connected, in seconds since the Unix epoch.
+    pub fn last_used(&self, id: &ConnectionId) -> Option<u64> {
+        self.last_used.get(&id.0).copied()
+    }
+
+    /// Notes that `id` connected at `now` (seconds since the Unix epoch).
+    pub fn mark_used(&mut self, id: &ConnectionId, now: u64) {
+        self.last_used.insert(id.0.clone(), now);
+    }
+
     pub fn remove(&mut self, id: &ConnectionId) -> Option<SavedConnection> {
+        self.last_used.remove(&id.0);
         let index = self
             .connections
             .iter()
@@ -177,10 +234,76 @@ impl SavedConnections {
     }
 }
 
+/// When something last happened, as the picker says it: `2 min ago`,
+/// `yesterday`, `Sep 12`, or `never`. `now` and `then` are seconds since the
+/// Unix epoch; days count in UTC.
+pub fn when(then: Option<u64>, now: u64) -> String {
+    let Some(then) = then else {
+        return "never".into();
+    };
+    let ago = now.saturating_sub(then);
+    let days = now / 86_400 - then / 86_400;
+    match ago {
+        0..60 => "just now".into(),
+        60..3_600 => format!("{} min ago", ago / 60),
+        _ if days == 0 => format!("{} h ago", ago / 3_600),
+        _ if days == 1 => "yesterday".into(),
+        _ => {
+            const MONTHS: [&str; 12] = [
+                "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+            ];
+            let (year, month, day) = civil(then / 86_400);
+            let (this_year, _, _) = civil(now / 86_400);
+            let date = format!("{} {day}", MONTHS[month as usize - 1]);
+            if year == this_year {
+                date
+            } else {
+                format!("{date}, {year}")
+            }
+        }
+    }
+}
+
+/// The calendar date of a day number since 1970-01-01 (Howard Hinnant's
+/// `civil_from_days`).
+fn civil(days: u64) -> (i64, u32, u32) {
+    let z = days as i64 + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    (year, month, day)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use tabletist_db::ConnectSpec;
+
+    #[test]
+    fn last_use_reads_as_the_picker_says_it() {
+        // 2026-09-29 12:00 UTC.
+        let now = 1_790_683_200;
+        assert_eq!(when(None, now), "never");
+        assert_eq!(when(Some(now - 120), now), "2 min ago");
+        assert_eq!(when(Some(now - 86_400), now), "yesterday");
+        // 2026-09-12.
+        assert_eq!(when(Some(now - 17 * 86_400), now), "Sep 12");
+        assert_eq!(when(Some(now - 400 * 86_400), now), "Aug 25, 2025");
+    }
+
+    #[test]
+    fn old_files_without_last_use_still_load() {
+        let text = r#"{"version": 1, "connections": []}"#;
+        let store: SavedConnections = serde_json::from_str(text).unwrap();
+        assert!(store.last_used.is_empty());
+        let saved = serde_json::to_string(&store).unwrap();
+        assert!(!saved.contains("last_used"), "{saved}");
+    }
 
     fn saved(name: &str, file: &str) -> SavedConnection {
         SavedConnection {

@@ -27,7 +27,10 @@ use crate::app::App;
 use crate::model::ConnTabContent;
 
 pub fn show(app: &mut App, ui: &mut egui::Ui) {
-    conn_tabs::show(app, ui);
+    // One connection needs no tab bar: its own bar leads the window.
+    if app.tabs.len() > 1 {
+        conn_tabs::show(app, ui);
+    }
     let fill = app.palette.window;
     egui::CentralPanel::default()
         .frame(Frame::new().fill(fill))
@@ -67,10 +70,14 @@ mod tests {
                 harness.answer_rows(crate::testing::page(3, false));
                 let tree = harness.settle();
                 for (label, role) in [
-                    ("New connection tab", egui::accesskit::Role::Button),
+                    ("Disconnect", egui::accesskit::Role::Button),
                     ("Refresh objects", egui::accesskit::Role::Button),
                     ("Row 1", egui::accesskit::Role::Button),
                 ] {
+                    // The terminal look refreshes by key, not a button.
+                    if look.terminal && label == "Refresh objects" {
+                        continue;
+                    }
                     assert!(
                         crate::testing::node(&tree, label, role).is_some(),
                         "{label} missing in {} at {size:?}",
@@ -80,7 +87,10 @@ mod tests {
                 assert!(
                     tree.nodes.iter().any(|(_, node)| {
                         node.role() == egui::accesskit::Role::TextInput
-                            && node.placeholder() == Some("Filter")
+                            && matches!(
+                                node.placeholder(),
+                                Some("Find any object…" | "filter objects")
+                            )
                     }),
                     "the sidebar filter is missing in {} at {size:?}",
                     look.name
@@ -127,29 +137,223 @@ mod tests {
     }
 
     #[test]
-    fn the_tab_bar_shows_a_new_tab_and_a_plus_button() {
+    fn one_connection_needs_no_tab_bar() {
         let mut harness = Harness::new();
+        assert!(!harness.has("New tab"));
+        assert!(!harness.has("New connection tab"));
+        harness.press(Key::T, Modifiers::COMMAND);
         assert!(harness.has("New tab"));
         assert!(harness.has("New connection tab"));
-        assert!(harness.has("Close New tab"));
     }
 
     #[test]
     fn the_plus_button_opens_a_tab() {
         let mut harness = Harness::new();
+        harness.app.apply(crate::model::Action::NewConnTab);
         harness.click("New connection tab");
-        assert_eq!(harness.app.tabs.len(), 2);
-        assert_eq!(harness.app.active, 1);
+        assert_eq!(harness.app.tabs.len(), 3);
+        assert_eq!(harness.app.active, 2);
     }
 
     #[test]
     fn the_close_button_closes_its_tab() {
-        // One tab, so the label "Close New tab" is unambiguous.
         let mut harness = Harness::new();
-        let closing = harness.app.tabs[0].id;
-        harness.click("Close New tab");
+        let closing = harness.app.active_tab_id();
+        let first = harness.connect_fake();
+        // Named apart from the saved connection the new tab's picker lists.
+        harness.app.workspace_mut(first).unwrap().name = "Tab one".into();
+        harness.app.apply(crate::model::Action::NewConnTab);
+        harness.click("Close Tab one");
         assert_eq!(harness.app.tabs.len(), 1);
         assert_ne!(harness.app.tabs[0].id, closing);
+    }
+
+    #[test]
+    fn opening_an_object_puts_it_first_in_recent() {
+        let mut harness = Harness::new();
+        let tab = harness.connect_fake();
+        harness.click("orders");
+        harness.click("users");
+        let recent: Vec<String> = harness
+            .app
+            .workspace(tab)
+            .unwrap()
+            .recent
+            .iter()
+            .map(|(object, _)| object.name.clone())
+            .collect();
+        assert_eq!(recent, ["users", "orders"]);
+        harness.set_look(crate::theme::Look::macos());
+        assert!(harness.has("Recent orders"), "macOS lists them");
+    }
+
+    #[test]
+    fn following_a_foreign_key_opens_the_target_filtered_to_the_row() {
+        let mut harness = Harness::new();
+        let tab = with_page(&mut harness);
+        harness.app.apply(crate::model::Action::FollowForeignKey {
+            tab,
+            object: tabletist_db::ObjectRef::new("main", "orders"),
+            column: "id".into(),
+            value: "3".into(),
+        });
+        let workspace = harness.app.workspace(tab).unwrap();
+        let object = workspace.active_object_tab().unwrap();
+        assert_eq!(object.object.name, "orders");
+        assert_eq!(object.query.filters.len(), 1);
+        assert_eq!(object.query.filters[0].column, "id");
+        assert_eq!(object.query.filters[0].value, "3");
+    }
+
+    #[test]
+    fn a_filter_chip_drops_its_filter_and_the_sort_chip_its_sort() {
+        let mut harness = Harness::new();
+        let tab = with_page(&mut harness);
+        let id = harness.app.workspace(tab).unwrap().active_object.unwrap();
+        let object = harness
+            .app
+            .workspace_mut(tab)
+            .unwrap()
+            .object_tab_mut(id)
+            .unwrap();
+        object.filter.rows = vec![crate::model::FilterRow {
+            column: "id".into(),
+            op: tabletist_db::FilterOp::Eq,
+            value: "5".into(),
+        }];
+        harness.app.apply(crate::model::Action::ApplyFilters {
+            tab,
+            object_tab: id,
+        });
+        harness.answer_rows(crate::testing::page(1, false));
+        harness.app.apply(crate::model::Action::SortBy {
+            tab,
+            object_tab: id,
+            column: "email".into(),
+        });
+        harness.answer_rows(crate::testing::page(1, false));
+        harness.click("Remove filter id = 5");
+        let object = harness
+            .app
+            .workspace(tab)
+            .unwrap()
+            .active_object_tab()
+            .unwrap();
+        assert!(object.query.filters.is_empty());
+        harness.answer_rows(crate::testing::page(5, false));
+        harness.click("Clear sort");
+        let object = harness
+            .app
+            .workspace(tab)
+            .unwrap()
+            .active_object_tab()
+            .unwrap();
+        assert!(object.query.sort.is_empty());
+    }
+
+    #[test]
+    fn the_grid_shows_timestamps_to_the_second_until_asked_for_more() {
+        let mut harness = Harness::new();
+        let tab = harness.connect_fake();
+        harness.click("users");
+        let mut page = crate::testing::page(1, false);
+        page.columns[1].kind = tabletist_db::ValueKind::Temporal;
+        page.rows[0][1] = tabletist_db::Value::Text("2026-01-12 09:14:03.482915".into());
+        harness.answer_rows(page);
+        harness.settle();
+        assert!(harness.painted_color("2026-01-12 09:14:03").is_some());
+        harness.click("Full precision");
+        assert!(harness.app.workspace(tab).unwrap().full_precision);
+        harness.settle();
+        assert!(
+            harness
+                .painted_color("2026-01-12 09:14:03.482915")
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn ctrl_b_hides_and_shows_the_sidebar() {
+        let (mut harness, _tab) = tree_harness();
+        assert!(harness.has("orders"));
+        harness.press(Key::B, Modifiers::COMMAND);
+        assert!(!harness.has("orders"));
+        harness.press(Key::B, Modifiers::COMMAND);
+        assert!(harness.has("orders"));
+    }
+
+    #[test]
+    fn the_terminal_look_moves_through_the_grid_with_vim_keys() {
+        let mut harness = Harness::new();
+        harness.set_look(crate::theme::Look::omarchy());
+        let tab = with_page(&mut harness);
+        focus_grid(&mut harness, tab);
+        harness.press(Key::J, Modifiers::NONE);
+        harness.press(Key::J, Modifiers::NONE);
+        harness.press(Key::L, Modifiers::NONE);
+        assert_eq!(
+            selection(&harness, tab),
+            Some(crate::model::CellPos { row: 1, col: 1 })
+        );
+        harness.press(Key::S, Modifiers::NONE);
+        let view = harness
+            .app
+            .workspace(tab)
+            .unwrap()
+            .active_object_tab()
+            .unwrap()
+            .view;
+        assert_eq!(view, crate::model::ObjectView::Structure);
+        harness.press(Key::D, Modifiers::NONE);
+        let view = harness
+            .app
+            .workspace(tab)
+            .unwrap()
+            .active_object_tab()
+            .unwrap()
+            .view;
+        assert_eq!(view, crate::model::ObjectView::Data);
+    }
+
+    #[test]
+    fn letters_do_nothing_outside_the_terminal_look() {
+        let mut harness = Harness::new();
+        let tab = with_page(&mut harness);
+        focus_grid(&mut harness, tab);
+        harness.press(Key::J, Modifiers::NONE);
+        assert_eq!(selection(&harness, tab), None);
+    }
+
+    #[test]
+    fn the_picker_moves_with_the_arrows_and_connects_with_enter() {
+        let mut harness = Harness::new();
+        add_saved(&mut harness, "Alpha");
+        add_saved(&mut harness, "Beta");
+        harness.press(Key::ArrowDown, Modifiers::NONE);
+        harness.press(Key::ArrowDown, Modifiers::NONE);
+        harness.press(Key::Enter, Modifiers::NONE);
+        let tab = harness.app.active_tab_id();
+        assert_eq!(harness.app.workspace(tab).unwrap().name, "Beta");
+    }
+
+    #[test]
+    fn the_terminal_picker_deletes_only_on_dd() {
+        let mut harness = Harness::new();
+        harness.set_look(crate::theme::Look::omarchy());
+        add_saved(&mut harness, "Alpha");
+        harness.press(Key::J, Modifiers::NONE);
+        harness.press(Key::D, Modifiers::NONE);
+        assert_eq!(harness.app.connections.connections.len(), 1, "one d waits");
+        harness.press(Key::D, Modifiers::NONE);
+        assert!(harness.app.connections.connections.is_empty());
+    }
+
+    #[test]
+    fn connecting_notes_when_the_connection_was_last_used() {
+        let mut harness = Harness::new();
+        let tab = harness.connect_fake();
+        let conn = harness.app.workspace(tab).unwrap().conn_id.clone();
+        assert!(harness.app.connections.last_used(&conn).is_some());
     }
 
     #[test]
@@ -202,7 +406,7 @@ mod tests {
             let mut harness = Harness::with_size(size);
             let tree = harness.settle();
             assert!(
-                crate::testing::node(&tree, "New connection tab", egui::accesskit::Role::Button)
+                crate::testing::node(&tree, "New connection", egui::accesskit::Role::Button)
                     .is_some()
             );
         }
@@ -277,15 +481,17 @@ mod tests {
                 .find(|(_, node)| node.role() == egui::accesskit::Role::TextInput)
                 .and_then(|(_, node)| node.bounds())
                 .expect("the search field");
+            // The header holds the search; the terminal look puts it on a
+            // line of its own under the header.
             assert!(
-                (field.x0 as f32 - card.left()).abs() < 1.0,
-                "{}: field starts at {}, cards at {}",
-                look.name,
-                field.x0,
-                card.left()
+                (field.x1 as f32) <= button.left() || field.y0 as f32 >= button.bottom(),
+                "{}: the field runs into New connection",
+                look.name
             );
+            // The terminal's rows span the window; macOS cards line up
+            // with the header's button.
             assert!(
-                (button.right() - card.right()).abs() < 1.0,
+                look.terminal || (button.right() - card.right()).abs() < 1.0,
                 "{}: button ends at {}, cards at {}",
                 look.name,
                 button.right(),
@@ -295,10 +501,12 @@ mod tests {
     }
 
     #[test]
-    fn picker_cards_name_the_driver_before_the_summary() {
+    fn picker_rows_name_the_driver_and_where_it_points() {
         let mut harness = Harness::new();
         add_saved(&mut harness, "Production");
-        assert!(harness.has("SQLite · Production.db"));
+        assert!(harness.has("SQLite"));
+        assert!(harness.has("Production.db"));
+        assert!(harness.has("Last used never"));
     }
 
     #[test]
@@ -393,7 +601,7 @@ mod tests {
     fn the_sidebar_lists_objects_and_a_click_opens_a_preview_tab() {
         let mut harness = Harness::new();
         harness.connect_fake();
-        assert!(harness.has("main"));
+        assert!(harness.has("Schema"));
         assert!(harness.has("active_users"));
         harness.click("users");
         assert_eq!(fetches(&harness), 1);
@@ -409,7 +617,7 @@ mod tests {
         harness.answer_rows(crate::testing::page(5, false));
         assert!(harness.has("email"));
         assert!(harness.has("Row 5"));
-        assert!(harness.has("1–5 of 5"));
+        assert!(harness.has("Rows 1–5 of 5"));
     }
 
     #[test]
@@ -516,24 +724,22 @@ mod tests {
     }
 
     #[test]
-    fn the_row_panel_shows_each_fields_type_in_brackets() {
+    fn the_row_panel_labels_each_field_with_its_type() {
         let mut harness = Harness::new();
         with_page(&mut harness);
         harness.click("Row 1");
-        for type_name in ["(INTEGER)", "(TEXT)", "(JSON)"] {
-            assert!(harness.has(type_name), "{type_name}");
+        for label in ["id · INTEGER", "email · TEXT", "meta · JSON"] {
+            assert!(harness.has(label), "{label}");
         }
     }
 
     #[test]
-    fn the_row_panel_starts_with_its_filter_not_a_title() {
-        // The object tab and the grid's selection already say which table
-        // and row these fields belong to.
+    fn the_row_panel_is_titled_by_its_row() {
         let mut harness = Harness::new();
         with_page(&mut harness);
         harness.click("Row 1");
         assert!(harness.has("Copy email"), "the panel shows the row");
-        assert!(!harness.has("users · Row 1"));
+        assert!(harness.has("Row 1"), "no key known yet, so its number");
     }
 
     #[test]
@@ -652,9 +858,10 @@ mod tests {
         let palette = harness.app.palette;
         assert_eq!(
             harness.painted_color(r#""plan": "pro","#),
-            Some(palette.accent)
+            Some(palette.accent_hover),
+            "keys in the strong accent"
         );
-        assert_eq!(harness.painted_color("3,"), Some(palette.warning));
+        assert_eq!(harness.painted_color("3,"), Some(palette.orange));
         harness.click("Collapse meta.seats");
         assert!(harness.has(r#""seats": [ 2 items ]"#));
         assert!(!harness.has("3,"));
@@ -742,12 +949,12 @@ mod tests {
                 .unwrap_or_else(|| panic!("{text} is shown"))
                 .x0
         };
-        // The footer's Data toggle sits 8 pt in from the same panel edge.
+        // The object's tab starts at the content's left edge.
         assert!(
-            left("Columns") > left("Data"),
-            "Columns at {}, Data at {}",
+            left("Columns") >= left("users tab") + 8.0,
+            "Columns at {}, the content at {}",
             left("Columns"),
-            left("Data")
+            left("users tab")
         );
     }
 
@@ -1110,7 +1317,7 @@ mod tests {
             let color = if warn {
                 palette.warning
             } else {
-                palette.secondary
+                palette.success
             };
             assert_eq!(
                 harness.painted_color(text),
@@ -1192,7 +1399,7 @@ mod tests {
                 result: Ok(1234),
             },
         ));
-        assert!(harness.has("1–3 of 1,234"));
+        assert!(harness.has("Rows 1–3 of 1,234"));
         assert!(!harness.has("Count"));
     }
 
@@ -1434,8 +1641,8 @@ mod tests {
             object_tab: id,
         });
         harness.answer_rows(crate::testing::page(3, true));
-        assert!(harness.has("1–3"));
-        assert!(!harness.has("1–3 of ~1.2M"));
+        assert!(harness.has("Rows 1–3"));
+        assert!(!harness.has("Rows 1–3 of ~1.2M"));
     }
 
     #[test]
@@ -1453,11 +1660,16 @@ mod tests {
                 })
                 .collect(),
         );
+        // One flat list: in groups, all would fold into `t_`.
+        harness.app.workspace_mut(tab).unwrap().tree.flat = true;
         harness.settle();
         assert!(harness.has("t_000"));
         harness.app.apply(crate::model::Action::SetTreeCursor {
             tab,
-            node: crate::model::TreeNode::Schema("main".into()),
+            node: crate::model::TreeNode::Object(
+                tabletist_db::ObjectRef::new("main", "t_000"),
+                tabletist_db::ObjectKind::Table,
+            ),
         });
         harness.press(Key::End, Modifiers::NONE);
         harness.settle();
@@ -1507,8 +1719,12 @@ mod tests {
     fn tabs_share_the_title_bar_with_the_mac_window_buttons() {
         let mut harness = Harness::new();
         mac_title_bar(&mut harness);
+        let first = harness.connect_fake();
+        // Named apart from the saved connection the new tab's picker lists.
+        harness.app.workspace_mut(first).unwrap().name = "Tab one".into();
+        harness.app.apply(crate::model::Action::NewConnTab);
         let tree = harness.settle();
-        let tab = bounds_of(&tree, "New tab");
+        let tab = bounds_of(&tree, "Tab one");
         assert!(tab.x0 >= 80.0, "tabs start after the buttons: {tab:?}");
         let middle = (tab.y0 + tab.y1) / 2.0;
         assert!(
@@ -1521,14 +1737,34 @@ mod tests {
     fn the_mac_title_bar_is_measured_in_window_points_not_zoomed_ones() {
         let mut harness = Harness::new();
         mac_title_bar(&mut harness);
+        let first = harness.connect_fake();
+        // Named apart from the saved connection the new tab's picker lists.
+        harness.app.workspace_mut(first).unwrap().name = "Tab one".into();
+        harness.app.apply(crate::model::Action::NewConnTab);
         harness.ctx.set_zoom_factor(2.0);
         let tree = harness.settle();
-        let tab = bounds_of(&tree, "New tab");
+        let tab = bounds_of(&tree, "Tab one");
         // 80 window points are 40 egui points at 2x zoom.
         assert!(
             (tab.x0 - 40.0).abs() < 1.0,
             "tabs start after the buttons: {tab:?}"
         );
+    }
+
+    #[test]
+    fn alone_the_connection_bar_starts_after_the_mac_window_buttons() {
+        let mut harness = Harness::new();
+        mac_title_bar(&mut harness);
+        harness.connect_fake();
+        let tree = harness.settle();
+        let name = tree
+            .nodes
+            .iter()
+            .find(|(_, node)| node.label().or_else(|| node.value()) == Some("Fixture"))
+            .and_then(|(_, node)| node.bounds())
+            .expect("the connection's name");
+        assert!(name.x0 >= 80.0, "after the buttons: {name:?}");
+        assert!(name.y1 < 40.0, "in the title bar: {name:?}");
     }
 
     #[test]

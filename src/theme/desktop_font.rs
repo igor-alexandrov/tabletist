@@ -95,13 +95,14 @@ pub fn load(path: &Path, index: u32) -> Option<egui::FontData> {
     Some(data)
 }
 
-/// The desktop's monospace font, or `None` (with one logged warning) when
-/// fontconfig is missing or names a file egui could not read.
-pub fn monospace() -> Option<egui::FontData> {
+/// The desktop's monospace font for a fontconfig `pattern` (`monospace`,
+/// `monospace:bold`), or `None` (with one logged warning) when fontconfig is
+/// missing or names a file egui could not read.
+pub fn monospace(pattern: &str) -> Option<egui::FontData> {
     #[cfg(target_os = "linux")]
     {
         let output = run_bounded(
-            Command::new("fc-match").args(["-f", "%{file}\n%{index}", "monospace"]),
+            Command::new("fc-match").args(["-f", "%{file}\n%{index}", pattern]),
             FC_MATCH_LIMIT,
         );
         let output = output?;
@@ -121,6 +122,7 @@ pub fn monospace() -> Option<egui::FontData> {
     }
     #[cfg(not(target_os = "linux"))]
     {
+        let _ = pattern;
         None
     }
 }

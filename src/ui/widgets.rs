@@ -119,7 +119,7 @@ pub fn virtual_rows(
 /// inset for the macOS pill. The sidebar's keyboard cursor follows it.
 pub fn selection_rect(rect: Rect, look: &Look) -> Rect {
     match look.selection {
-        Selection::Pill => rect.shrink2(vec2(6.0, 1.0)),
+        Selection::Pill => rect.shrink2(vec2(8.0, 0.0)),
         Selection::Tint | Selection::Bar => rect,
     }
 }
@@ -146,15 +146,16 @@ pub fn selection(
         }
         Selection::Pill => {
             let pill = selection_rect(rect, look);
+            let corner = CornerRadius::same(look.radius.saturating_sub(2));
             if selected {
-                painter.rect_filled(pill, corner, palette.accent.gamma_multiply(0.22));
+                painter.rect_filled(pill, corner, palette.selection);
             } else if hovered {
-                painter.rect_filled(pill, corner, palette.surface_hover);
+                painter.rect_filled(pill, corner, palette.surface);
             }
         }
         Selection::Bar => {
             if selected {
-                painter.rect_filled(rect, CornerRadius::ZERO, palette.text.gamma_multiply(0.18));
+                painter.rect_filled(rect, CornerRadius::ZERO, palette.selection);
                 let edge = Rect::from_min_size(rect.min, vec2(2.0, rect.height()));
                 painter.rect_filled(edge, CornerRadius::ZERO, palette.accent);
             } else if hovered {
@@ -164,10 +165,10 @@ pub fn selection(
     }
 }
 
-/// The text colour of a row: Omarchy marks the selected row in the accent.
+/// The text colour of a row: macOS marks the selected row in the strong accent.
 pub fn selection_text(selected: bool, look: &Look, palette: &Palette) -> Color32 {
-    if selected && look.selection == Selection::Bar {
-        palette.accent
+    if selected && look.selection == Selection::Pill {
+        palette.accent_hover
     } else {
         palette.text
     }
@@ -650,6 +651,619 @@ pub fn modal(id: egui::Id, look: &Look, palette: &Palette) -> egui::Modal {
     }
 }
 
+/// One physical pixel, in points: the width of hairlines, which the
+/// designs draw as a single device pixel at any scale.
+pub fn hairline(ui: &Ui) -> f32 {
+    1.0 / ui.pixels_per_point()
+}
+
+/// A horizontal hairline across `x` at `y`, snapped to the pixel grid.
+pub fn hline(ui: &Ui, x: egui::Rangef, y: f32, color: Color32) {
+    let width = hairline(ui);
+    let y = ui.painter().round_to_pixel_center(y);
+    ui.painter().hline(x, y, Stroke::new(width, color));
+}
+
+/// A vertical hairline across `y` at `x`, snapped to the pixel grid.
+pub fn vline(ui: &Ui, x: f32, y: egui::Rangef, color: Color32) {
+    let width = hairline(ui);
+    let x = ui.painter().round_to_pixel_center(x);
+    ui.painter().vline(x, y, Stroke::new(width, color));
+}
+
+/// Text in `font` and `color`, with `tracking` points between letters.
+pub fn styled(
+    text: &str,
+    font: egui::FontId,
+    color: Color32,
+    tracking: f32,
+) -> egui::text::LayoutJob {
+    let mut job = egui::text::LayoutJob::default();
+    job.append(
+        text,
+        0.0,
+        egui::TextFormat {
+            font_id: font,
+            color,
+            extra_letter_spacing: tracking,
+            ..Default::default()
+        },
+    );
+    job
+}
+
+/// Paints `job` with its left edge at `x`, centred on `y`. Returns its width.
+pub fn paint_job(ui: &Ui, x: f32, y: f32, job: egui::text::LayoutJob) -> f32 {
+    let galley = ui.painter().layout_job(job);
+    let width = galley.size().x;
+    let top = y - galley.size().y / 2.0;
+    ui.painter()
+        .galley(egui::pos2(x, top), galley, Color32::PLACEHOLDER);
+    width
+}
+
+/// Names painted text for screen readers (and the headless tests): a
+/// label node over `rect`.
+pub fn announce(ui: &Ui, rect: Rect, text: &str) {
+    let id = ui
+        .id()
+        .with(("announce", text, rect.min.x as i32, rect.min.y as i32));
+    ui.interact(rect, id, Sense::hover())
+        .widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, text));
+}
+
+/// [`paint_text`], announced as a label.
+pub fn paint_label(ui: &Ui, x: f32, y: f32, text: &str, font: egui::FontId, color: Color32) -> f32 {
+    let width = paint_text(ui, x, y, text, font, color);
+    announce(
+        ui,
+        Rect::from_min_size(egui::pos2(x, y - 8.0), vec2(width.max(1.0), 16.0)),
+        text,
+    );
+    width
+}
+
+/// Paints `text` left-aligned at `x`, centred on `y`. Returns its width.
+pub fn paint_text(ui: &Ui, x: f32, y: f32, text: &str, font: egui::FontId, color: Color32) -> f32 {
+    paint_job(ui, x, y, styled(text, font, color, 0.0))
+}
+
+/// Paints `text` right-aligned at `right`, centred on `y`. Returns its width.
+pub fn paint_text_right(
+    ui: &Ui,
+    right: f32,
+    y: f32,
+    text: &str,
+    font: egui::FontId,
+    color: Color32,
+) -> f32 {
+    let galley = ui.painter().layout_no_wrap(text.to_owned(), font, color);
+    let size = galley.size();
+    ui.painter().galley(
+        egui::pos2(right - size.x, y - size.y / 2.0),
+        galley,
+        Color32::PLACEHOLDER,
+    );
+    size.x
+}
+
+/// A section label: RECENT, PUBLIC. Small semibold capitals with a little
+/// tracking on macOS; lower case in the terminal look.
+pub fn section_label(text: &str, look: &Look, palette: &Palette) -> egui::text::LayoutJob {
+    if look.terminal {
+        styled(
+            &text.to_lowercase(),
+            crate::theme::regular(crate::theme::TEXT),
+            palette.text,
+            0.0,
+        )
+    } else {
+        let size = crate::theme::TEXT_CAPTION;
+        styled(
+            &text.to_uppercase(),
+            crate::theme::semibold(size),
+            palette.dim,
+            0.06 * size,
+        )
+    }
+}
+
+/// Keyboard hints: each key in the text colour, then what it does in the
+/// muted one. Disabled hints are struck through. Returns their width.
+pub fn key_hints(
+    ui: &Ui,
+    x: f32,
+    y: f32,
+    hints: &[(&str, &str, bool)],
+    gap: f32,
+    palette: &Palette,
+) -> f32 {
+    key_hints_in(ui, x, y, hints, gap, crate::theme::TEXT_SMALL, palette)
+}
+
+/// [`key_hints`] at `size` points.
+pub fn key_hints_in(
+    ui: &Ui,
+    x: f32,
+    y: f32,
+    hints: &[(&str, &str, bool)],
+    gap: f32,
+    size: f32,
+    palette: &Palette,
+) -> f32 {
+    let font = crate::theme::regular(size);
+    let mut left = x;
+    for (index, (key, label, enabled)) in hints.iter().enumerate() {
+        if index > 0 {
+            left += gap;
+        }
+        let start = left;
+        let (key_color, label_color) = if *enabled {
+            (palette.text, palette.dim)
+        } else {
+            (palette.faint, palette.faint)
+        };
+        if !key.is_empty() {
+            left += paint_text(ui, left, y, key, font.clone(), key_color);
+            if !label.is_empty() {
+                left += paint_text(ui, left, y, " ", font.clone(), label_color);
+            }
+        }
+        left += paint_text(ui, left, y, label, font.clone(), label_color);
+        if !enabled {
+            ui.painter().hline(
+                egui::Rangef::new(start, left),
+                y,
+                Stroke::new(hairline(ui).max(1.0), palette.faint),
+            );
+        }
+    }
+    left - x
+}
+
+/// The width `hints` take in [`key_hints`].
+pub fn key_hints_width(ui: &Ui, hints: &[(&str, &str, bool)], gap: f32) -> f32 {
+    let font = crate::theme::regular(crate::theme::TEXT_SMALL);
+    let measure = |text: &str| {
+        ui.painter()
+            .layout_no_wrap(text.to_owned(), font.clone(), Color32::WHITE)
+            .size()
+            .x
+    };
+    hints
+        .iter()
+        .map(|(key, label, _)| {
+            let space = if key.is_empty() || label.is_empty() {
+                String::new()
+            } else {
+                " ".into()
+            };
+            measure(&format!("{key}{space}{label}"))
+        })
+        .sum::<f32>()
+        + gap * hints.len().saturating_sub(1) as f32
+}
+
+/// A text field in a drawn box, with a magnifier (or, in the terminal look,
+/// an accent `/`) before the text: the sidebar and picker filters.
+pub fn filter_field(
+    ui: &mut Ui,
+    text: &mut String,
+    hint: &str,
+    size: egui::Vec2,
+    look: &Look,
+    palette: &Palette,
+) -> Response {
+    let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
+    let corner = CornerRadius::same(look.radius);
+    // The box goes under the text, so its place is kept before the field.
+    let backdrop = ui.painter().add(egui::Shape::Noop);
+    let lead = if look.terminal { 22.0 } else { 34.0 };
+    let font = crate::theme::regular(crate::theme::TEXT);
+    let line = ui.fonts_mut(|fonts| fonts.row_height(&font));
+    let top = ((size.y - line) / 2.0).max(0.0);
+    let inner = Rect::from_min_max(
+        egui::pos2(rect.left() + lead, rect.top()),
+        egui::pos2(rect.right() - 8.0, rect.bottom()),
+    );
+    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(inner));
+    let response = child.add(
+        egui::TextEdit::singleline(text)
+            .font(font.clone())
+            .frame(egui::Frame::NONE)
+            .margin(egui::Margin {
+                left: 0,
+                right: 0,
+                top: top.floor() as i8,
+                bottom: 0,
+            })
+            .desired_width(inner.width())
+            .hint_text(
+                egui::RichText::new(hint)
+                    .color(palette.dim)
+                    .font(font.clone()),
+            ),
+    );
+    let focused = response.has_focus();
+    let painter = ui.painter();
+    if !look.terminal {
+        painter.set(
+            backdrop,
+            egui::epaint::RectShape::filled(rect, corner, palette.window),
+        );
+    }
+    let border = if focused {
+        palette.accent
+    } else {
+        palette.border
+    };
+    painter.rect_stroke(
+        rect,
+        corner,
+        Stroke::new(
+            hairline(ui).max(if look.terminal { 1.0 } else { 0.0 }),
+            border,
+        ),
+        StrokeKind::Inside,
+    );
+    if look.terminal {
+        paint_text(
+            ui,
+            rect.left() + 9.0,
+            rect.center().y,
+            "/",
+            font,
+            palette.accent,
+        );
+    } else {
+        Icon::Search.image(palette.dim, 15.0).paint_at(
+            ui,
+            Rect::from_center_size(
+                egui::pos2(rect.left() + 17.5, rect.center().y),
+                vec2(15.0, 15.0),
+            ),
+        );
+    }
+    response
+}
+
+/// One segment of a [`segmented`] control.
+#[derive(Clone, Copy)]
+pub enum Segment<'a> {
+    Icon(Icon, &'a str),
+    Text(&'a str),
+}
+
+/// A segmented control; returns the index of a clicked segment. macOS: a
+/// sunken track with the chosen segment raised in white; the terminal
+/// look: a bordered row with the chosen segment in the selection colour.
+pub fn segmented(
+    ui: &mut Ui,
+    segments: &[Segment<'_>],
+    selected: usize,
+    segment: egui::Vec2,
+    look: &Look,
+    palette: &Palette,
+) -> Option<usize> {
+    let pad = if look.terminal { 0.0 } else { 2.0 };
+    let size = vec2(
+        segment.x * segments.len() as f32 + 2.0 * pad,
+        segment.y + 2.0 * pad,
+    );
+    let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
+    let painter = ui.painter().clone();
+    let corner = CornerRadius::same(look.radius.saturating_sub(2));
+    if look.terminal {
+        painter.rect_stroke(
+            rect,
+            CornerRadius::ZERO,
+            Stroke::new(1.0, palette.outline),
+            StrokeKind::Inside,
+        );
+    } else {
+        painter.rect_filled(rect, corner, palette.surface);
+    }
+    let mut clicked = None;
+    for (index, part) in segments.iter().enumerate() {
+        let cell = Rect::from_min_size(
+            egui::pos2(
+                rect.left() + pad + index as f32 * segment.x,
+                rect.top() + pad,
+            ),
+            segment,
+        );
+        let (name, icon, text) = match part {
+            Segment::Icon(icon, name) => (*name, Some(*icon), None),
+            Segment::Text(text) => (*text, None, Some(*text)),
+        };
+        let response = ui.interact(cell, ui.id().with(("segment", name)), Sense::click());
+        response.widget_info(|| {
+            WidgetInfo::selected(WidgetType::Button, true, index == selected, name)
+        });
+        if response.clicked() {
+            clicked = Some(index);
+        }
+        let active = index == selected;
+        if active {
+            if look.terminal {
+                painter.rect_filled(cell.shrink(1.0), CornerRadius::ZERO, palette.selection);
+            } else {
+                painter.add(
+                    egui::epaint::Shadow {
+                        offset: [0, 1],
+                        blur: 2,
+                        spread: 0,
+                        color: Color32::from_black_alpha(26),
+                    }
+                    .as_shape(cell, CornerRadius::same(look.radius.saturating_sub(3))),
+                );
+                painter.rect_filled(
+                    cell,
+                    CornerRadius::same(look.radius.saturating_sub(3)),
+                    palette.window,
+                );
+            }
+        } else if response.hovered() && look.terminal {
+            painter.rect_filled(
+                cell.shrink(1.0),
+                CornerRadius::ZERO,
+                palette.text.gamma_multiply(0.08),
+            );
+        }
+        let color = match (active, look.terminal) {
+            (true, true) => palette.accent,
+            (true, false) => palette.text,
+            _ => palette.dim,
+        };
+        if let Some(icon) = icon {
+            icon.image(color, 14.0)
+                .paint_at(ui, Rect::from_center_size(cell.center(), vec2(14.0, 14.0)));
+        }
+        if let Some(text) = text {
+            let font = crate::theme::regular(crate::theme::TEXT);
+            painter.text(
+                cell.center(),
+                egui::Align2::CENTER_CENTER,
+                text,
+                font,
+                color,
+            );
+        }
+        if !response.hovered() {
+            continue;
+        }
+        let _ = response.on_hover_text(name);
+    }
+    clicked
+}
+
+/// What a [`ButtonSpec`] does when clicked.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ButtonKind {
+    Secondary,
+    Primary,
+    /// Shown but not yet possible; the text says why.
+    Disabled,
+}
+
+/// A button in the designs' style: secondary (bordered), primary (ink on
+/// macOS, accent outline in the terminal look) or disabled with a reason,
+/// with an optional icon and shortcut.
+pub struct ButtonSpec<'a> {
+    text: &'a str,
+    /// The accessible name, when it says more than the text.
+    label: Option<&'a str>,
+    salt: Option<&'a str>,
+    icon: Option<Icon>,
+    shortcut: Option<&'a str>,
+    kind: ButtonKind,
+    reason: Option<&'a str>,
+}
+
+impl<'a> ButtonSpec<'a> {
+    pub fn new(text: &'a str) -> Self {
+        Self {
+            text,
+            label: None,
+            salt: None,
+            icon: None,
+            shortcut: None,
+            kind: ButtonKind::Secondary,
+            reason: None,
+        }
+    }
+
+    pub fn icon(mut self, icon: Icon) -> Self {
+        self.icon = Some(icon);
+        self
+    }
+
+    /// Tells apart buttons with the same name (one per list row).
+    pub fn salt(mut self, salt: &'a str) -> Self {
+        self.salt = Some(salt);
+        self
+    }
+
+    fn id(&self, ui: &Ui) -> egui::Id {
+        ui.id()
+            .with(("button", self.label.unwrap_or(self.text), self.salt))
+    }
+
+    /// The name screen readers announce ("Connect to Bookshop").
+    pub fn label(mut self, label: &'a str) -> Self {
+        self.label = Some(label);
+        self
+    }
+
+    /// The button in `rect`, working but not drawn: an action that shows
+    /// only under the pointer stays reachable by keyboard and screen reader.
+    pub fn hidden_at(self, ui: &mut Ui, rect: Rect) -> Response {
+        let name = self.label.unwrap_or(self.text);
+        let response = ui.interact(rect, self.id(ui), Sense::click());
+        response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, name));
+        if response.has_focus() {
+            ui.painter().rect_stroke(
+                rect,
+                CornerRadius::ZERO,
+                primary_focus_ring(&Palette::light()),
+                StrokeKind::Outside,
+            );
+        }
+        response
+    }
+
+    pub fn shortcut(mut self, shortcut: &'a str) -> Self {
+        self.shortcut = Some(shortcut);
+        self
+    }
+
+    pub fn primary(mut self) -> Self {
+        self.kind = ButtonKind::Primary;
+        self
+    }
+
+    /// Shown, but not clickable; `reason` is its tooltip.
+    pub fn disabled(mut self, reason: &'a str) -> Self {
+        self.kind = ButtonKind::Disabled;
+        self.reason = Some(reason);
+        self
+    }
+
+    fn font(&self) -> egui::FontId {
+        crate::theme::medium(crate::theme::TEXT)
+    }
+
+    fn shortcut_font() -> egui::FontId {
+        crate::theme::regular(crate::theme::TEXT_CAPTION)
+    }
+
+    /// The button's width.
+    pub fn width(&self, ui: &Ui) -> f32 {
+        let measure = |text: &str, font: egui::FontId| {
+            ui.painter()
+                .layout_no_wrap(text.to_owned(), font, Color32::WHITE)
+                .size()
+                .x
+        };
+        let mut width = 24.0 + measure(self.text, self.font());
+        if self.icon.is_some() {
+            width += 20.0;
+        }
+        if let Some(shortcut) = self.shortcut {
+            width += 10.0 + measure(shortcut, Self::shortcut_font());
+        }
+        width.ceil()
+    }
+
+    /// Allocates the button in the layout, `height` tall.
+    pub fn show(self, ui: &mut Ui, height: f32, look: &Look, palette: &Palette) -> Response {
+        let (rect, _) = ui.allocate_exact_size(vec2(self.width(ui), height), Sense::hover());
+        self.show_at(ui, rect, look, palette)
+    }
+
+    /// Draws the button in `rect`.
+    pub fn show_at(self, ui: &mut Ui, rect: Rect, look: &Look, palette: &Palette) -> Response {
+        let enabled = self.kind != ButtonKind::Disabled;
+        let sense = if enabled {
+            Sense::click()
+        } else {
+            Sense::hover()
+        };
+        let name = self.label.unwrap_or(self.text);
+        let response = ui.interact(rect, self.id(ui), sense);
+        response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, enabled, name));
+        let hovered = response.hovered() && enabled;
+        let pressed = response.is_pointer_button_down_on() && enabled;
+        let corner = CornerRadius::same(look.radius);
+        let hair = hairline(ui);
+        let (fill, border, text, shortcut) = match (self.kind, look.terminal) {
+            (ButtonKind::Primary, false) => {
+                let fill = if pressed {
+                    palette.text.lerp_to_gamma(palette.window, 0.25)
+                } else if hovered {
+                    palette.text.lerp_to_gamma(palette.window, 0.15)
+                } else {
+                    palette.text
+                };
+                (
+                    fill,
+                    None,
+                    palette.window,
+                    palette.window.gamma_multiply(0.72),
+                )
+            }
+            (ButtonKind::Primary, true) => (
+                palette
+                    .panel
+                    .lerp_to_gamma(palette.accent, if hovered { 0.24 } else { 0.15 }),
+                Some(Stroke::new(1.0, palette.accent)),
+                palette.accent,
+                palette.dim,
+            ),
+            (ButtonKind::Secondary, false) => (
+                if hovered {
+                    palette.panel
+                } else {
+                    palette.window
+                },
+                Some(Stroke::new(hair, palette.border)),
+                palette.text,
+                palette.dim,
+            ),
+            (ButtonKind::Secondary, true) => (
+                if hovered {
+                    palette.text.gamma_multiply(0.08)
+                } else {
+                    Color32::TRANSPARENT
+                },
+                Some(Stroke::new(1.0, palette.outline)),
+                palette.text,
+                palette.dim,
+            ),
+            (ButtonKind::Disabled, false) => {
+                (palette.surface_hover, None, palette.faint, palette.faint)
+            }
+            (ButtonKind::Disabled, true) => (
+                palette.panel.lerp_to_gamma(palette.text, 0.03),
+                None,
+                palette.faint,
+                palette.faint,
+            ),
+        };
+        let painter = ui.painter();
+        painter.rect_filled(rect, corner, fill);
+        if let Some(border) = border {
+            painter.rect_stroke(rect, corner, border, StrokeKind::Inside);
+        }
+        if response.has_focus() {
+            painter.rect_stroke(
+                rect.expand(1.0),
+                corner,
+                primary_focus_ring(palette),
+                StrokeKind::Outside,
+            );
+        }
+        let content = self.width(ui) - 24.0;
+        let mut x = rect.center().x - content / 2.0;
+        let y = rect.center().y;
+        if let Some(icon) = self.icon {
+            icon.image(text, 14.0).paint_at(
+                ui,
+                Rect::from_center_size(egui::pos2(x + 7.0, y), vec2(14.0, 14.0)),
+            );
+            x += 20.0;
+        }
+        x += paint_text(ui, x, y, self.text, self.font(), text);
+        if let Some(keys) = self.shortcut {
+            paint_text(ui, x + 10.0, y, keys, Self::shortcut_font(), shortcut);
+        }
+        match self.reason {
+            Some(reason) => response.on_hover_text(reason),
+            None => response,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -723,7 +1337,7 @@ mod tests {
         let row = Rect::from_min_size(pos2(0.0, 0.0), vec2(240.0, 26.0));
         assert_eq!(
             super::selection_rect(row, &Look::macos()),
-            row.shrink2(vec2(6.0, 1.0))
+            row.shrink2(vec2(8.0, 0.0))
         );
         assert_eq!(super::selection_rect(row, &Look::standard()), row);
         assert_eq!(super::selection_rect(row, &Look::omarchy()), row);
@@ -801,7 +1415,13 @@ mod tests {
                 let field = super::search_field(ui, &mut text, "Search", &look);
                 height = super::add_search(ui, field, &look).rect.height();
             });
-            assert_eq!(height, look.control_height, "search field, {}", look.name);
+            // Margins are whole points; Plex and JetBrains Mono lines are
+            // not, so a field lands within half a point of the height.
+            assert!(
+                (height - look.control_height).abs() <= 0.5,
+                "search field, {}: {height}",
+                look.name
+            );
         }
     }
 
@@ -845,7 +1465,13 @@ mod tests {
             harness.frame_with(|ui| {
                 height = ui.add(super::single(ui, &mut text, &look)).rect.height();
             });
-            assert_eq!(height, look.control_height, "single field, {}", look.name);
+            // Margins are whole points; Plex and JetBrains Mono lines are
+            // not, so a field lands within half a point of the height.
+            assert!(
+                (height - look.control_height).abs() <= 0.5,
+                "single field, {}: {height}",
+                look.name
+            );
             let mut mono = 0.0;
             harness.frame_with(|ui| {
                 let font = crate::theme::mono(crate::theme::TEXT_MONO);
@@ -854,7 +1480,11 @@ mod tests {
                     .rect
                     .height();
             });
-            assert_eq!(mono, look.control_height, "monospace field, {}", look.name);
+            assert!(
+                (mono - look.control_height).abs() <= 0.5,
+                "monospace field, {}: {mono}",
+                look.name
+            );
         }
     }
 

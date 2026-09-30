@@ -117,6 +117,13 @@ impl App {
         }
     }
 
+    pub fn picker_mut(&mut self, tab: ConnTabId) -> Option<&mut PickerState> {
+        match &mut self.tabs.iter_mut().find(|t| t.id == tab)?.content {
+            ConnTabContent::Picker(picker) => Some(picker),
+            ConnTabContent::Workspace(_) => None,
+        }
+    }
+
     pub fn workspace_mut(&mut self, tab: ConnTabId) -> Option<&mut Workspace> {
         match &mut self.tabs.iter_mut().find(|t| t.id == tab)?.content {
             ConnTabContent::Workspace(workspace) => Some(workspace),
@@ -225,14 +232,166 @@ impl App {
                     self.expand_schema(tab, &schema);
                 }
             }
-            Action::ToggleGroup { tab, schema, kind } => {
-                if let Some(workspace) = self.workspace_mut(tab) {
-                    let node = workspace.tree.nodes.entry(schema).or_default();
-                    if !node.collapsed.remove(&kind) {
-                        node.collapsed.insert(kind);
+            Action::SelectConnection { tab, conn } => {
+                if let Some(picker) = self.picker_mut(tab) {
+                    picker.selected = conn;
+                }
+            }
+            Action::MovePickerSelection { tab, step } => {
+                let search = self.picker_mut(tab).map(|picker| picker.search.clone());
+                let Some(search) = search else {
+                    return;
+                };
+                let order = crate::ui::picker::visible(self, &search);
+                if let Some(picker) = self.picker_mut(tab)
+                    && !order.is_empty()
+                {
+                    let at = picker
+                        .selected
+                        .as_ref()
+                        .and_then(|selected| order.iter().position(|id| id == selected));
+                    let next = match at {
+                        None if step < 0 => order.len() - 1,
+                        None => 0,
+                        Some(at) => {
+                            (at as isize + step).clamp(0, order.len() as isize - 1) as usize
+                        }
+                    };
+                    picker.selected = Some(order[next].clone());
+                }
+            }
+            Action::FoldConnectionGroup { tab, group } => {
+                if let Some(picker) = self.picker_mut(tab) {
+                    if let Some(index) = picker.folded.iter().position(|title| *title == group) {
+                        picker.folded.remove(index);
+                    } else {
+                        picker.folded.push(group);
                     }
                 }
             }
+            Action::ShowSchema { tab, schema } => {
+                if let Some(workspace) = self.workspace_mut(tab) {
+                    workspace.tree.schema = Some(schema.clone());
+                    workspace.tree.cursor = None;
+                }
+                self.expand_schema(tab, &schema);
+            }
+            Action::ToggleGroup {
+                tab,
+                schema,
+                prefix,
+            } => {
+                if let Some(workspace) = self.workspace_mut(tab) {
+                    let node = workspace.tree.nodes.entry(schema).or_default();
+                    if !node.open_groups.remove(&prefix) {
+                        node.open_groups.insert(prefix);
+                    }
+                }
+            }
+            Action::ToggleFlatTree(tab) => {
+                if let Some(workspace) = self.workspace_mut(tab) {
+                    workspace.tree.flat = !workspace.tree.flat;
+                }
+            }
+            Action::ToggleSidebar(tab) => {
+                if let Some(workspace) = self.workspace_mut(tab) {
+                    workspace.sidebar_hidden = !workspace.sidebar_hidden;
+                    if workspace.sidebar_hidden {
+                        workspace.pane = Pane::Grid;
+                    }
+                }
+            }
+            Action::ToggleFullPrecision(tab) => {
+                if let Some(workspace) = self.workspace_mut(tab) {
+                    workspace.full_precision = !workspace.full_precision;
+                }
+            }
+            Action::DropFilter {
+                tab,
+                object_tab,
+                index,
+            } => {
+                if let Some(object) = self.object_tab_mut(tab, object_tab) {
+                    let mut rows: Vec<FilterRow> = object
+                        .query
+                        .filters
+                        .iter()
+                        .map(|filter| FilterRow {
+                            column: filter.column.clone(),
+                            op: filter.op,
+                            value: filter.value.clone(),
+                        })
+                        .collect();
+                    let raw = object.query.raw_where.is_some();
+                    if index < rows.len() {
+                        rows.remove(index);
+                        object.filter.raw = raw;
+                    } else {
+                        object.filter.raw = false;
+                        object.filter.raw_text.clear();
+                    }
+                    object.filter.rows = rows;
+                    self.apply_filters(tab, object_tab);
+                }
+            }
+            Action::FocusPickerSearch(tab) => {
+                if let Some(picker) = self.picker_mut(tab) {
+                    picker.focus_search = true;
+                }
+            }
+            Action::FoldDocuments { tab, object_tab } => {
+                if let Some(workspace) = self.workspace_mut(tab) {
+                    workspace.fold_documents = Some(object_tab);
+                }
+            }
+            Action::FollowSelectedKey { tab, object_tab } => {
+                let target =
+                    self.workspace(tab).and_then(|workspace| {
+                        let object = workspace.object_tab(object_tab)?;
+                        let cell = object.selection?;
+                        let page = object.page()?;
+                        let column = &page.columns.get(cell.col)?.name;
+                        let foreign = object.structure.value.as_ref()?.foreign_keys.iter().find(
+                            |foreign| foreign.columns.len() == 1 && &foreign.columns[0] == column,
+                        )?;
+                        let value = page.rows.get(cell.row)?.get(cell.col)?;
+                        (!value.is_null()).then(|| {
+                            (
+                                ObjectRef::new(
+                                    foreign.ref_schema.clone(),
+                                    foreign.ref_table.clone(),
+                                ),
+                                foreign.ref_columns.first().cloned().unwrap_or_default(),
+                                crate::ui::format::plain_text(value),
+                            )
+                        })
+                    });
+                if let Some((object, column, value)) = target {
+                    self.follow_foreign_key(tab, object, column, value);
+                }
+            }
+            Action::FocusWhere(tab) => {
+                if let Some(workspace) = self.workspace_mut(tab) {
+                    workspace.focus_where = true;
+                }
+            }
+            Action::ClearSort { tab, object_tab } => {
+                if let Some(object) = self.object_tab_mut(tab, object_tab)
+                    && !object.query.sort.is_empty()
+                {
+                    object.query.sort.clear();
+                    object.query.offset = 0;
+                    object.selection = None;
+                    object.rows.value = None;
+                    self.fetch_rows(tab, object_tab);
+                }
+            }
+            Action::FollowForeignKey {
+                tab,
+                object,
+                column,
+                value,
+            } => self.follow_foreign_key(tab, object, column, value),
             Action::RefreshTree(tab) => self.refresh_tree(tab),
             Action::OpenObject {
                 tab,
@@ -842,6 +1001,11 @@ impl App {
             save_ssh: false,
             needs_ssh_prompt: None,
             pane: Pane::Tree,
+            recent: Vec::new(),
+            sidebar_hidden: false,
+            full_precision: false,
+            focus_where: false,
+            fold_documents: None,
         }));
         self.authenticate(tab);
     }
@@ -1096,6 +1260,7 @@ impl App {
                 match adopted {
                     Some(tab) => {
                         self.save_accepted_password(tab);
+                        self.mark_used(tab);
                         self.after_connect(tab);
                     }
                     // Nobody is waiting for this session any more.
@@ -1457,6 +1622,24 @@ impl App {
         }
     }
 
+    /// Remembers that `tab`'s saved connection connected now.
+    fn mark_used(&mut self, tab: ConnTabId) {
+        let Some(conn) = self
+            .workspace(tab)
+            .map(|workspace| workspace.conn_id.clone())
+        else {
+            return;
+        };
+        if self.connections.get(&conn).is_none() {
+            return;
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |elapsed| elapsed.as_secs());
+        self.connections.mark_used(&conn, now);
+        self.save_connections();
+    }
+
     fn save_connections(&self) {
         if let Err(error) = self.connections.save(&self.dirs.connections_file()) {
             log::error!("could not save connections: {error}");
@@ -1679,6 +1862,10 @@ impl App {
         let Some(workspace) = self.workspace_mut(tab) else {
             return;
         };
+        workspace.recent.retain(|(seen, _)| *seen != object);
+        workspace.recent.insert(0, (object.clone(), kind));
+        workspace.recent.truncate(crate::model::RECENT);
+        workspace.tree.reveal(&object);
         if let Some(existing) = workspace.objects.iter_mut().find(|o| o.object == object) {
             existing.pinned |= pin;
             workspace.active_object = Some(existing.id);
@@ -1699,7 +1886,42 @@ impl App {
             None => workspace.objects.push(opened),
         }
         workspace.active_object = Some(new_id);
+        // The keys and foreign keys label the grid and the row panel.
+        self.describe(tab, new_id);
         self.fetch_rows(tab, new_id);
+    }
+
+    /// Opens `object` filtered to the rows whose `column` is `value`: where
+    /// a foreign key points.
+    fn follow_foreign_key(
+        &mut self,
+        tab: ConnTabId,
+        object: ObjectRef,
+        column: String,
+        value: String,
+    ) {
+        let kind = self
+            .workspace(tab)
+            .and_then(|workspace| workspace.tree.object_info(&object))
+            .map_or(ObjectKind::Table, |info| info.kind);
+        self.open_object(tab, object, kind, true);
+        let Some(id) = self
+            .workspace(tab)
+            .and_then(|workspace| workspace.active_object)
+        else {
+            return;
+        };
+        if let Some(opened) = self.object_tab_mut(tab, id) {
+            opened.filter.rows = vec![crate::model::FilterRow {
+                column,
+                op: tabletist_db::FilterOp::Eq,
+                value,
+            }];
+        }
+        self.apply_filters(tab, id);
+        if let Some(workspace) = self.workspace_mut(tab) {
+            workspace.pane = Pane::Grid;
+        }
     }
 
     pub fn fetch_rows(&mut self, tab: ConnTabId, id: ObjectTabId) {
@@ -1790,14 +2012,10 @@ impl App {
     /// Folds or unfolds a schema or group row.
     fn toggle_tree_row(&mut self, tab: ConnTabId, node: &TreeNode) {
         match node {
-            TreeNode::Schema(schema) => self.apply(Action::ToggleSchema {
+            TreeNode::Group(schema, prefix) => self.apply(Action::ToggleGroup {
                 tab,
                 schema: schema.clone(),
-            }),
-            TreeNode::Group(schema, kind) => self.apply(Action::ToggleGroup {
-                tab,
-                schema: schema.clone(),
-                kind: *kind,
+                prefix: prefix.clone(),
             }),
             TreeNode::Object(..) | TreeNode::Empty(_) => {}
         }
@@ -2543,19 +2761,25 @@ mod tests {
     }
 
     #[test]
-    fn toggling_a_group_folds_it() {
+    fn toggling_a_group_unfolds_and_folds_it() {
         let mut harness = Harness::new();
         let tab = harness.connect_fake();
-        harness.app.apply(Action::ToggleGroup {
-            tab,
-            schema: "main".into(),
-            kind: ObjectKind::Table,
-        });
-        assert!(
+        let toggle = |harness: &mut Harness| {
+            harness.app.apply(Action::ToggleGroup {
+                tab,
+                schema: "main".into(),
+                prefix: "order".into(),
+            });
+        };
+        let open = |harness: &Harness| {
             harness.app.workspace(tab).unwrap().tree.nodes["main"]
-                .collapsed
-                .contains(&ObjectKind::Table)
-        );
+                .open_groups
+                .contains("order")
+        };
+        toggle(&mut harness);
+        assert!(open(&harness));
+        toggle(&mut harness);
+        assert!(!open(&harness));
     }
 
     #[test]
@@ -2994,17 +3218,30 @@ mod tests {
     }
 
     #[test]
-    fn switching_to_structure_describes_once() {
+    fn opening_describes_once_for_the_keys() {
         let mut harness = Harness::new();
         let tab = connect_tab(&mut harness);
         let id = open(&mut harness, tab, "users", true);
+        // The grid and the row panel name the keys, so opening describes.
+        let describes = |harness: &Harness| {
+            harness
+                .app
+                .backend
+                .sent
+                .iter()
+                .filter(|command| matches!(command, Command::Describe { object, .. } if *object == users()))
+                .count()
+        };
+        assert_eq!(describes(&harness), 1);
         harness.app.apply(Action::SetView {
             tab,
             object_tab: id,
             view: ObjectView::Structure,
         });
-        assert!(
-            matches!(last_sent(&harness.app), Command::Describe { object, .. } if *object == users())
+        assert_eq!(
+            describes(&harness),
+            1,
+            "the pending describe serves the view"
         );
         let sent = harness.app.backend.sent.len();
         harness.app.apply(Action::SetView {
@@ -4679,10 +4916,16 @@ mod tests {
 
         fn tree_tab(harness: &mut Harness) -> ConnTabId {
             let tab = harness.connect_fake();
-            // Two schemas, the first expanded with a Tables group of two objects.
+            // Two schemas; the first shown, with a folded group of two
+            // objects and one object on its own.
             harness.app.workspace_mut(tab).unwrap().tree.schemas.value =
                 Some(vec!["main".into(), "temp".into()]);
-            with_objects(harness, tab, "main", &["orders", "users"]);
+            with_objects(
+                harness,
+                tab,
+                "main",
+                &["order_items", "order_notes", "users"],
+            );
             harness
                 .app
                 .workspace_mut(tab)
@@ -4703,27 +4946,40 @@ mod tests {
             TreeNode::Object(ObjectRef::new("main", name), ObjectKind::Table)
         }
 
+        fn group_node() -> TreeNode {
+            TreeNode::Group("main".into(), "order".into())
+        }
+
+        fn group_open(harness: &Harness, tab: ConnTabId) -> bool {
+            harness.app.workspace(tab).unwrap().tree.nodes["main"]
+                .open_groups
+                .contains("order")
+        }
+
         #[test]
         fn arrows_walk_the_visible_tree_and_enter_opens() {
             let mut harness = Harness::new();
             let tab = tree_tab(&mut harness);
             let key = |harness: &mut Harness, key| harness.app.apply(Action::TreeKey { tab, key });
             key(&mut harness, TreeKey::Down);
-            assert_eq!(cursor(&harness, tab), Some(TreeNode::Schema("main".into())));
-            key(&mut harness, TreeKey::Down); // the Tables group
+            assert_eq!(cursor(&harness, tab), Some(group_node()));
             key(&mut harness, TreeKey::Down);
-            assert_eq!(cursor(&harness, tab), Some(object_node("orders")));
-            key(&mut harness, TreeKey::End);
-            assert_eq!(cursor(&harness, tab), Some(TreeNode::Schema("temp".into())));
+            assert_eq!(cursor(&harness, tab), Some(object_node("users")));
             key(&mut harness, TreeKey::Home);
+            assert_eq!(cursor(&harness, tab), Some(group_node()));
+            key(&mut harness, TreeKey::Enter); // unfold the group
+            assert!(group_open(&harness, tab));
             key(&mut harness, TreeKey::Down);
-            key(&mut harness, TreeKey::Down);
+            assert_eq!(cursor(&harness, tab), Some(object_node("order_items")));
+            key(&mut harness, TreeKey::End);
+            assert_eq!(cursor(&harness, tab), Some(object_node("users")));
+            key(&mut harness, TreeKey::Up);
             key(&mut harness, TreeKey::Enter);
             let workspace = harness.app.workspace(tab).unwrap();
             let object = workspace
                 .object_tab(workspace.active_object.unwrap())
                 .unwrap();
-            assert_eq!(object.object.name, "orders");
+            assert_eq!(object.object.name, "order_notes");
             assert!(object.pinned);
             assert_eq!(workspace.pane, Pane::Grid);
         }
@@ -4732,20 +4988,24 @@ mod tests {
         fn left_and_right_fold_and_climb() {
             let mut harness = Harness::new();
             let tab = tree_tab(&mut harness);
+            harness.app.apply(Action::ToggleGroup {
+                tab,
+                schema: "main".into(),
+                prefix: "order".into(),
+            });
             harness.app.apply(Action::SetTreeCursor {
                 tab,
-                node: object_node("users"),
+                node: object_node("order_notes"),
             });
             let key = |harness: &mut Harness, key| harness.app.apply(Action::TreeKey { tab, key });
             key(&mut harness, TreeKey::Left); // up to the group
-            assert!(matches!(cursor(&harness, tab), Some(TreeNode::Group(..))));
+            assert_eq!(cursor(&harness, tab), Some(group_node()));
             key(&mut harness, TreeKey::Left); // fold the group
-            key(&mut harness, TreeKey::Left); // up to the schema
-            assert_eq!(cursor(&harness, tab), Some(TreeNode::Schema("main".into())));
-            key(&mut harness, TreeKey::Left); // fold the schema
-            assert!(!harness.app.workspace(tab).unwrap().tree.nodes["main"].expanded);
+            assert!(!group_open(&harness, tab));
             key(&mut harness, TreeKey::Right); // unfold it
-            assert!(harness.app.workspace(tab).unwrap().tree.nodes["main"].expanded);
+            assert!(group_open(&harness, tab));
+            key(&mut harness, TreeKey::Right); // into it
+            assert_eq!(cursor(&harness, tab), Some(object_node("order_items")));
         }
 
         #[test]
@@ -4916,7 +5176,7 @@ mod tests {
                 tab,
                 key: TreeKey::End,
             });
-            assert_eq!(cursor(&harness, tab), Some(TreeNode::Schema("temp".into())));
+            assert_eq!(cursor(&harness, tab), Some(object_node("users")));
         }
 
         #[test]
