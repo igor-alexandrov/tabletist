@@ -1,0 +1,92 @@
+{
+  "version": 1,
+  "connections": [
+    {
+      "id": "red",
+      "name": "Bookshop production",
+      "color": "red",
+      "password": "keyring",
+      "spec": {"driver": "postgres", "host": "db.example.com", "port": 5432, "user": "app_readonly", "database": "bookshop_production"}
+    },
+    {
+      "id": "orange",
+      "name": "Bookshop staging",
+      "color": "orange",
+      "spec": {"driver": "postgres", "host": "db.staging.example.com", "port": 5432, "user": "app_readonly", "database": "bookshop_staging"}
+    },
+    {
+      "id": "yellow",
+      "name": "Bookshop preview",
+      "color": "yellow",
+      "spec": {"driver": "mysql", "host": "preview.example.com", "port": 3306, "user": "app", "database": "bookshop_preview"}
+    },
+    {
+      "id": "green",
+      "name": "Bookshop",
+      "color": "green",
+      "spec": {"driver": "postgres", "host": "localhost", "port": 5433, "user": "dev", "database": "bookshop_development"}
+    },
+    {
+      "id": "blue",
+      "name": "Bookshop review",
+      "color": "blue",
+      "spec": {"driver": "postgres", "host": "review.example.com", "port": 5432, "user": "dev", "database": "bookshop_review"}
+    },
+    {
+      "id": "purple",
+      "name": "Playground",
+      "color": "purple",
+      "spec": {"driver": "postgres", "host": "localhost", "port": 5432, "user": "postgres", "database": "playground"}
+    },
+    {
+      "id": "gray",
+      "name": "Bookshop archive",
+      "color": "gray",
+      "spec": {"driver": "sqlite", "sqlite_path": "/srv/bookshop-archive.db"}
+    },
+    {
+      "id": "none",
+      "name": "Scratch",
+      "color": "none",
+      "spec": {"driver": "sqlite", "sqlite_path": "/tmp/scratch.db"}
+    },
+    {
+      "id": "uncoloured",
+      "name": "Bookshop replica",
+      "spec": {"driver": "postgres", "host": "replica.example.com", "port": 5432, "user": "app_readonly", "database": "bookshop_production"}
+    },
+    {
+      "id": "chosen",
+      "name": "Bookshop reports",
+      "color": "purple",
+      "environment": "production",
+      "spec": {"driver": "postgres", "host": "reports.example.com", "port": 5432, "user": "app_readonly", "database": "bookshop_production"}
+    },
+    {
+      "id": "test-local",
+      "name": "Rails test",
+      "color": "blue",
+      "environment": "test",
+      "spec": {"driver": "postgres", "host": "127.0.0.1", "port": 5433, "user": "dev", "database": "bookshop_test"}
+    },
+    {
+      "id": "test-socket",
+      "name": "Rails test (socket)",
+      "environment": "test",
+      "spec": {"driver": "postgres", "host": "/var/run/postgresql", "port": 5432, "user": "dev", "database": "bookshop_test"}
+    },
+    {
+      "id": "test-remote",
+      "name": "Bookshop CI",
+      "environment": "test",
+      "spec": {"driver": "postgres", "host": "ci.example.com", "port": 5432, "user": "ci", "database": "bookshop_test"}
+    },
+    {
+      "id": "test-tunnel",
+      "name": "Bookshop CI (tunnel)",
+      "environment": "test",
+      "spec": {"driver": "postgres", "host": "localhost", "port": 5432, "user": "ci", "database": "bookshop_test", "ssh": {"host": "bastion.example.com", "port": 22, "user": "deploy", "auth": {"method": "agent"}}}
+    }
+  ],
+  "last_used": {"red": 1790683200}
+}

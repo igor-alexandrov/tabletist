@@ -5,7 +5,8 @@ use tabletist_db::ssh_config::Proxy;
 use tabletist_db::{Driver, TlsMode};
 
 use crate::app::App;
-use crate::connections::{ColorTag, Environment, PasswordMode};
+use crate::connections::PasswordMode;
+use crate::env::{Environment, Platform, env_colors};
 use crate::i18n::gettext;
 use crate::model::{Action, Dialog, SshAuthKind, TestState};
 use crate::theme;
@@ -24,6 +25,55 @@ fn tls_label(mode: TlsMode) -> &'static str {
         .iter()
         .find(|(m, _)| *m == mode)
         .map_or("", |(_, label)| label)
+}
+
+/// The height of the environment's stripe across the dialog's top (macOS
+/// and Windows), as on the connection bar.
+const STRIPE: f32 = 3.0;
+
+/// The environment as a segmented control. The chosen segment takes the
+/// environment's badge colours; choosing one fixes it, where until then it
+/// follows the host.
+fn environment_segments(
+    ui: &mut egui::Ui,
+    form: &mut crate::model::ConnectionForm,
+    look: &crate::theme::Look,
+    palette: &crate::theme::Palette,
+) {
+    let platform = Platform::of(look);
+    let current = form.environment();
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        for environment in Environment::ALL {
+            let text = environment.label(platform);
+            let response = if environment == current {
+                let colors = env_colors(environment, platform, palette);
+                let laid = crate::typography::Text::one(
+                    look,
+                    crate::ui::widgets::body(look),
+                    text,
+                    colors.badge_fg(),
+                )
+                .layout(ui.ctx());
+                // Not `selected`: egui would paint it in the selection
+                // colour instead. The state is announced by hand.
+                let response = ui.add(
+                    egui::Button::new(laid.galley)
+                        .fill(colors.badge_bg())
+                        .stroke(egui::Stroke::new(1.0, colors.bar_border())),
+                );
+                response.widget_info(|| {
+                    egui::WidgetInfo::selected(egui::WidgetType::Button, true, true, text)
+                });
+                response
+            } else {
+                crate::ui::widgets::toggle(ui, false, text, look, palette)
+            };
+            if response.clicked() {
+                form.environment = Some(environment);
+            }
+        }
+    });
 }
 
 /// Where the dialog's top edge settled once it opened (see [`Placement`]).
@@ -60,9 +110,11 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
     } else {
         gettext(locale, "New connection")
     };
-    // A modal: nothing behind it can be clicked while it is open.
+    // A modal: nothing behind it can be clicked while it is open. Its edge
+    // takes the environment's colour: a stripe on top, or the border.
+    let env = env_colors(form.environment(), Platform::of(&look), &palette);
     let id = egui::Id::new("connection-dialog");
-    let mut modal = crate::ui::widgets::modal(id, &look, &palette);
+    let mut modal = crate::ui::widgets::modal_edged(id, &look, &palette, env.base());
     if let Some(top) = placement.top {
         modal = modal.area(
             egui::Modal::default_area(id).anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, top)),
@@ -136,49 +188,33 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                         }
                         ui.end_row();
 
-                        // The environment is what the badges say (PROD);
-                        // choosing one gives the connection its colour,
-                        // which can then be changed on its own.
-                        let label_environment = ui.label(gettext(locale, "Environment")).id;
-                        let before = form.environment;
-                        let _ = crate::ui::widgets::popup_button(
-                            ui,
-                            egui::ComboBox::from_id_salt("environment")
-                                .selected_text(gettext(locale, form.environment.name())),
-                            &look,
-                            &palette,
-                            |ui| {
-                                for environment in Environment::ALL {
-                                    ui.selectable_value(
-                                        &mut form.environment,
-                                        environment,
-                                        gettext(locale, environment.name()),
-                                    );
-                                }
-                            },
-                        )
-                        .response
-                        .labelled_by(label_environment);
-                        if form.environment != before {
-                            form.color = form.environment.color();
-                        }
+                        // The environment decides the connection's colour
+                        // everywhere; it is not chosen on its own.
+                        ui.label(gettext(locale, "Environment"));
+                        environment_segments(ui, form, &look, &palette);
                         ui.end_row();
 
-                        let label_color = ui.label(gettext(locale, "Color")).id;
-                        let _ = crate::ui::widgets::popup_button(
-                            ui,
-                            egui::ComboBox::from_id_salt("color-tag")
-                                .selected_text(form.color.label()),
-                            &look,
-                            &palette,
-                            |ui| {
-                                for tag in ColorTag::ALL {
-                                    ui.selectable_value(&mut form.color, tag, tag.label());
-                                }
-                            },
-                        )
-                        .response
-                        .labelled_by(label_color);
+                        // Stored now; sessions are read-only whatever it
+                        // says until editing arrives.
+                        ui.label("");
+                        ui.vertical(|ui| {
+                            ui.add_enabled_ui(false, |ui| {
+                                crate::ui::widgets::checkbox(
+                                    ui,
+                                    &mut true,
+                                    &gettext(locale, "Read-only"),
+                                    &look,
+                                    &palette,
+                                );
+                            });
+                            crate::ui::widgets::label(
+                                ui,
+                                crate::ui::widgets::secondary(&look),
+                                &gettext(locale, "Every connection is read-only in 0.1.0"),
+                                palette.dim,
+                                &look,
+                            );
+                        });
                         ui.end_row();
 
                         if form.driver == Driver::Sqlite {
@@ -424,6 +460,17 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
             });
         });
     });
+    if !look.terminal {
+        let rect = modal.response.rect;
+        let stripe = egui::Rect::from_min_size(rect.min, egui::vec2(rect.width(), STRIPE));
+        ctx.layer_painter(modal.response.layer_id)
+            .with_clip_rect(stripe)
+            .rect_filled(
+                rect,
+                egui::CornerRadius::same(look.dialog_radius),
+                env.base(),
+            );
+    }
     // Centred while it opens; its top edge stays put from then on.
     if placement.top.is_none() {
         let frames = placement.frames.saturating_add(1);

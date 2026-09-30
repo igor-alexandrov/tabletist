@@ -12,7 +12,8 @@ use tabletist_db::{
     ObjectRef, RowPage, Structure, Value, ValueKind,
 };
 
-use crate::connections::{ColorTag, ConnectionId, PasswordMode, SavedConnection};
+use crate::connections::{ConnectionId, PasswordMode, SavedConnection};
+use crate::env::Environment;
 use crate::model::{Action, CellPos, ConnTabId};
 use crate::testing::Harness;
 
@@ -31,8 +32,8 @@ fn saved() -> SavedConnection {
     SavedConnection {
         id: ConnectionId::new(),
         name: "Bookshop".into(),
-        color: ColorTag::Green,
-        environment: None,
+        environment: Environment::Dev,
+        read_only: None,
         password: PasswordMode::None,
         ssh_secret: PasswordMode::None,
         spec,
@@ -175,7 +176,7 @@ fn workspace(harness: &mut Harness) -> ConnTabId {
     let saved = saved();
     let workspace = harness.app.workspace_mut(tab).unwrap();
     workspace.name = saved.name.clone();
-    workspace.color = saved.color;
+    workspace.environment = saved.environment;
     workspace.spec = saved.spec.clone();
     workspace.driver = Driver::Postgres;
     workspace.tree.schemas.value = Some(vec!["public".into()]);
@@ -692,7 +693,7 @@ mod mock {
         let saved = saved();
         let workspace = harness.app.workspace_mut(tab).unwrap();
         workspace.name = saved.name.clone();
-        workspace.color = saved.color;
+        workspace.environment = saved.environment;
         workspace.spec = saved.spec.clone();
         workspace.driver = Driver::Postgres;
         workspace.tree.schemas.value = Some(vec!["public".into()]);
@@ -734,27 +735,27 @@ mod mock {
         let entries = [
             (
                 "Bookshop",
-                ColorTag::Green,
+                Environment::Dev,
                 "postgres://dev@localhost:5433/bookshop_development",
             ),
             (
                 "Bookshop",
-                ColorTag::Orange,
+                Environment::Staging,
                 "postgres://app_readonly@db.staging.example.com:5432/bookshop_staging?sslmode=verify-full",
             ),
             (
                 "Bookshop",
-                ColorTag::Red,
+                Environment::Production,
                 "postgres://app_readonly@db.example.com:5432/bookshop_production?sslmode=verify-full",
             ),
             (
                 "Playground",
-                ColorTag::Purple,
+                Environment::Local,
                 "postgres://postgres@localhost:5432/playground",
             ),
             (
                 "Rails test",
-                ColorTag::None,
+                Environment::None,
                 "postgres://dev@localhost:5433/bookshop_test",
             ),
         ];
@@ -766,9 +767,9 @@ mod mock {
             Some(1_788_084_000),
             None,
         ];
-        for ((name, color, url), used) in entries.into_iter().zip(used) {
+        for ((name, environment, url), used) in entries.into_iter().zip(used) {
             let (mut spec, _) = ConnectSpec::from_url(url).unwrap();
-            if name == "Bookshop" && color != ColorTag::Green {
+            if name == "Bookshop" && environment != Environment::Dev {
                 spec.ssh = Some(tabletist_db::SshSpec {
                     host: "bastion".into(),
                     port: Some(22),
@@ -780,8 +781,8 @@ mod mock {
             harness.app.connections.upsert(SavedConnection {
                 id: id.clone(),
                 name: name.into(),
-                color,
-                environment: None,
+                environment,
+                read_only: None,
                 password: PasswordMode::None,
                 ssh_secret: PasswordMode::None,
                 spec,

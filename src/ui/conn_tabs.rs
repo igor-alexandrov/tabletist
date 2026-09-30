@@ -129,9 +129,12 @@ fn tab(app: &mut App, ui: &mut egui::Ui, index: usize) -> Rect {
     let status_color = match &app.tabs[index].content {
         ConnTabContent::Picker(_) => None,
         ConnTabContent::Workspace(workspace) => Some(match workspace.status {
-            crate::model::SessionStatus::Connected => {
-                workspace.color.color().unwrap_or(palette.accent)
-            }
+            crate::model::SessionStatus::Connected => crate::env::env_colors(
+                workspace.environment,
+                crate::env::Platform::of(&look),
+                &palette,
+            )
+            .base(),
             crate::model::SessionStatus::Connecting { .. } => palette.warning,
             crate::model::SessionStatus::Disconnected(_) => palette.danger,
             crate::model::SessionStatus::Cancelled => palette.dim,

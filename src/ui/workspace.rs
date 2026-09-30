@@ -7,7 +7,7 @@ use tabletist_db::TlsMode;
 use crate::app::App;
 use crate::i18n::gettext;
 use crate::model::{Action, ConnTabId, ObjectView, SessionStatus};
-use crate::theme::{self, Icon, Look, Palette};
+use crate::theme::{Icon, Look, Palette};
 use crate::typography::{Text, TextRole};
 use crate::ui::format::display_safe;
 use crate::ui::widgets;
@@ -146,7 +146,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
 /// What the connection bar says about one connection.
 struct BarInfo {
     name: String,
-    env: crate::connections::Environment,
+    env: crate::env::Environment,
     host: String,
     database: String,
     databases: Vec<String>,
@@ -203,23 +203,8 @@ fn top_bar(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
     let Some(info) = bar_info(app, tab) else {
         return;
     };
-    let env = theme::env_colors(info.env, &palette);
-    let base = if palette.dark {
-        palette.panel
-    } else {
-        egui::Color32::WHITE
-    };
-    let (tint, border) = if look.terminal {
-        (
-            theme::mix(base, env.color, 0.16),
-            theme::mix(base, env.color, 0.4),
-        )
-    } else {
-        (
-            theme::mix(base, env.color, 0.12),
-            theme::mix(base, env.color, 0.28),
-        )
-    };
+    let env = crate::env::env_colors(info.env, crate::env::Platform::of(&look), &palette);
+    let (tint, border) = (env.bar_bg(), env.bar_border());
     // macOS: with one connection the bar is the title bar, beside the
     // window buttons.
     let zoom = ui.ctx().zoom_factor();
@@ -264,7 +249,7 @@ fn top_bar(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
             } else {
                 let stripe = Rect::from_min_size(rect.min, vec2(rect.width(), STRIPE));
                 ui.painter()
-                    .rect_filled(stripe, CornerRadius::ZERO, env.color);
+                    .rect_filled(stripe, CornerRadius::ZERO, env.base());
                 let body = Rect::from_min_max(
                     pos2(rect.left() + inset, rect.top() + STRIPE),
                     pos2(rect.right(), rect.bottom() - 1.0),
@@ -293,7 +278,7 @@ fn mac_bar(
     tab: ConnTabId,
     rect: Rect,
     info: &BarInfo,
-    env: &theme::EnvColors,
+    env: &crate::env::EnvColors,
     look: &Look,
     palette: &Palette,
     actions: &mut Vec<Action>,
@@ -301,12 +286,7 @@ fn mac_bar(
 ) {
     let center = rect.center().y;
     // The bar's own rule, and white faces over its tint.
-    let base = if palette.dark {
-        palette.panel
-    } else {
-        egui::Color32::WHITE
-    };
-    let rim = theme::mix(base, env.color, 0.28);
+    let rim = env.bar_border();
     let face = |alpha: f32| {
         if palette.dark {
             palette.window.gamma_multiply(alpha)
@@ -489,14 +469,14 @@ fn terminal_bar(
     tab: ConnTabId,
     rect: Rect,
     info: &BarInfo,
-    env: &theme::EnvColors,
+    env: &crate::env::EnvColors,
     look: &Look,
     palette: &Palette,
     actions: &mut Vec<Action>,
     locale: crate::i18n::Locale,
 ) {
     let center = rect.center().y;
-    let connection_line = theme::mix(palette.panel, env.color, 0.4);
+    let connection_line = env.bar_border();
     // Twelve in and twelve apart, as the design's row.
     let mut x = rect.left() + 12.0;
     x += env_badge(ui, x, center, info.env, env, Badge::Tracked, look) + 12.0;
@@ -600,26 +580,38 @@ pub fn env_badge(
     ui: &egui::Ui,
     x: f32,
     y: f32,
-    env: crate::connections::Environment,
-    colors: &theme::EnvColors,
+    env: crate::env::Environment,
+    colors: &crate::env::EnvColors,
     style: Badge,
     look: &Look,
 ) -> f32 {
     // One point above and below the text, seven at its sides.
     let (text, role, corner) = match style {
-        Badge::Tracked => (env.label(true).to_uppercase(), TextRole::OEnvLabel, 3),
-        Badge::Plain => (env.label(true).to_uppercase(), TextRole::OBadge, 3),
-        Badge::Mac => (env.label(false).to_owned(), TextRole::EnvTag, 10),
+        Badge::Tracked => (
+            env.label(crate::env::Platform::Omarchy),
+            TextRole::OEnvLabel,
+            3,
+        ),
+        Badge::Plain => (
+            env.label(crate::env::Platform::Omarchy),
+            TextRole::OBadge,
+            3,
+        ),
+        Badge::Mac => (
+            env.label(crate::env::Platform::Native),
+            TextRole::EnvTag,
+            10,
+        ),
     };
     let pad = 7.0;
-    let laid = Text::one(look, role, &text, colors.badge_text).layout(ui.ctx());
+    let laid = Text::one(look, role, text, colors.badge_fg()).layout(ui.ctx());
     let height = laid.height() + 2.0;
     let rect = Rect::from_min_size(
         pos2(x, y - height / 2.0),
         vec2(laid.width() + 2.0 * pad, height),
     );
     ui.painter()
-        .rect_filled(rect, CornerRadius::same(corner), colors.badge);
+        .rect_filled(rect, CornerRadius::same(corner), colors.badge_bg());
     laid.paint(ui.painter(), pos2(x + pad, y - laid.height() / 2.0));
     rect.width()
 }

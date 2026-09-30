@@ -21,8 +21,10 @@ pub struct Harness {
     pub fullscreen: bool,
     /// Every piece of text the last frame painted, with its color.
     pub painted: Vec<(String, egui::Color32)>,
-    /// The fill of every rectangle the last frame painted.
-    pub filled: Vec<egui::Color32>,
+    /// Every rectangle and circle the last frame filled, and where.
+    pub fills: Vec<(egui::Rect, egui::Color32)>,
+    /// The colour of every line and outline the last frame drew.
+    pub strokes: Vec<egui::Color32>,
     #[cfg(feature = "shots")]
     renderer: Option<egui_kittest::wgpu::WgpuTestRenderer>,
     #[cfg(feature = "shots")]
@@ -72,10 +74,11 @@ impl Harness {
         }
         output.textures_delta.clear();
         self.painted.clear();
-        self.filled.clear();
+        self.fills.clear();
+        self.strokes.clear();
         for clipped in &output.shapes {
             collect_text(&clipped.shape, &mut self.painted);
-            collect_fills(&clipped.shape, &mut self.filled);
+            collect_paint(&clipped.shape, &mut self.fills, &mut self.strokes);
         }
         self.viewport_commands = output
             .viewport_output
@@ -155,6 +158,16 @@ impl Harness {
         self.frame(Vec::new())
     }
 
+    /// Runs frames until fades are over (a dialog opening), so painted
+    /// colours are the final ones. Each frame is 1/60 s; the longest
+    /// animation is 0.12 s.
+    pub fn finish_animations(&mut self) -> TreeUpdate {
+        for _ in 0..20 {
+            self.frame(Vec::new());
+        }
+        self.settle()
+    }
+
     /// Clicks the widget labelled `label` through AccessKit: a button if
     /// there is one, else any node with that label (selectable labels and
     /// toggles get other roles).
@@ -199,14 +212,6 @@ impl Harness {
     }
 }
 
-fn collect_fills(shape: &egui::Shape, into: &mut Vec<egui::Color32>) {
-    match shape {
-        egui::Shape::Vec(shapes) => shapes.iter().for_each(|shape| collect_fills(shape, into)),
-        egui::Shape::Rect(rect) => into.push(rect.fill),
-        _ => {}
-    }
-}
-
 fn collect_text(shape: &egui::Shape, into: &mut Vec<(String, egui::Color32)>) {
     match shape {
         egui::Shape::Vec(shapes) => shapes.iter().for_each(|shape| collect_text(shape, into)),
@@ -220,6 +225,41 @@ fn collect_text(shape: &egui::Shape, into: &mut Vec<(String, egui::Color32)>) {
             });
             into.push((text.galley.text().to_owned(), color));
         }
+        _ => {}
+    }
+}
+
+fn collect_paint(
+    shape: &egui::Shape,
+    fills: &mut Vec<(egui::Rect, egui::Color32)>,
+    strokes: &mut Vec<egui::Color32>,
+) {
+    let mut stroke = |stroke: egui::Stroke| {
+        if stroke.width > 0.0 && stroke.color.a() > 0 {
+            strokes.push(stroke.color);
+        }
+    };
+    match shape {
+        egui::Shape::Vec(shapes) => shapes
+            .iter()
+            .for_each(|shape| collect_paint(shape, fills, strokes)),
+        egui::Shape::Rect(rect) => {
+            if rect.fill.a() > 0 {
+                fills.push((rect.rect, rect.fill));
+            }
+            stroke(rect.stroke);
+        }
+        egui::Shape::Circle(circle) => {
+            if circle.fill.a() > 0 {
+                let size = egui::Vec2::splat(2.0 * circle.radius);
+                fills.push((
+                    egui::Rect::from_center_size(circle.center, size),
+                    circle.fill,
+                ));
+            }
+            stroke(circle.stroke);
+        }
+        egui::Shape::LineSegment { stroke: line, .. } => stroke(*line),
         _ => {}
     }
 }
@@ -266,7 +306,7 @@ pub fn key(key: egui::Key, modifiers: egui::Modifiers) -> egui::Event {
 }
 
 use crate::backend::{Command, Event};
-use crate::connections::{ColorTag, ConnectionId, SavedConnection};
+use crate::connections::{ConnectionId, SavedConnection};
 use crate::model::{Action, ConnTabId};
 use tabletist_db::{ConnectSpec, Driver, ObjectInfo, ObjectKind};
 
@@ -282,8 +322,8 @@ impl Harness {
         let saved = SavedConnection {
             id: ConnectionId::new(),
             name: "Fixture".into(),
-            color: ColorTag::Blue,
-            environment: None,
+            environment: crate::env::Environment::Dev,
+            read_only: None,
             password: crate::connections::PasswordMode::None,
             ssh_secret: crate::connections::PasswordMode::None,
             spec: ConnectSpec::sqlite("/tmp/fixture.db"),
@@ -447,7 +487,8 @@ impl Harness {
             viewport_commands: Vec::new(),
             fullscreen: false,
             painted: Vec::new(),
-            filled: Vec::new(),
+            fills: Vec::new(),
+            strokes: Vec::new(),
             #[cfg(feature = "shots")]
             renderer: None,
             #[cfg(feature = "shots")]

@@ -736,6 +736,12 @@ pub fn primary_button(ui: &mut Ui, text: &str, look: &Look, palette: &Palette) -
 /// A dialog: a soft shadow over a dimmed window, or Omarchy's accent border
 /// over a scrim.
 pub fn modal(id: egui::Id, look: &Look, palette: &Palette) -> egui::Modal {
+    modal_edged(id, look, palette, palette.accent)
+}
+
+/// [`modal`] whose accent border (Omarchy) takes `edge`: the connection
+/// dialog's environment colour.
+pub fn modal_edged(id: egui::Id, look: &Look, palette: &Palette, edge: Color32) -> egui::Modal {
     let frame = egui::Frame::new()
         .fill(palette.overlay)
         .corner_radius(CornerRadius::same(look.dialog_radius))
@@ -760,7 +766,7 @@ pub fn modal(id: egui::Id, look: &Look, palette: &Palette) -> egui::Modal {
         DialogStyle::AccentBorder => {
             let [r, g, b, _] = palette.window.to_array();
             egui::Modal::new(id)
-                .frame(frame.stroke(Stroke::new(2.0, palette.accent)))
+                .frame(frame.stroke(Stroke::new(2.0, edge)))
                 .backdrop_color(Color32::from_rgba_unmultiplied(r, g, b, 128))
         }
     }

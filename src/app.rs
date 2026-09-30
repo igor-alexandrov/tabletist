@@ -87,12 +87,14 @@ pub struct App {
     pub titlebar: TitleBar,
     /// The OS theme seen last frame, to notice light/dark switches.
     system_theme: Option<egui::Theme>,
+    /// The window title last sent, so it is sent only when it changes.
+    window_title: String,
     next_id: u64,
 }
 
 impl App {
     pub fn new(dirs: AppDirs, settings: Settings, backend: Backend) -> Self {
-        let connections = SavedConnections::load(&dirs.connections_file());
+        let (connections, upgraded) = SavedConnections::load_upgrading(&dirs.connections_file());
         let (host_keys, host_keys_error) = match crate::known_hosts::load(&dirs.known_hosts_file())
         {
             Ok(keys) => (keys, None),
@@ -121,11 +123,37 @@ impl App {
             host_keys_error,
             titlebar: TitleBar::default(),
             system_theme: None,
+            window_title: "Tabletist".into(),
             next_id: 1,
         };
         let tab = app.picker_tab();
         app.tabs.push(tab);
+        // An older file is written in this version once, off the UI thread.
+        if upgraded {
+            app.save_connections();
+        }
         app
+    }
+
+    /// The window's title: the active connection, its environment and its
+    /// database, which is how the window switcher, Mission Control and
+    /// Hyprland tell connection windows apart. Plain text: no colour.
+    pub fn window_title(&self) -> String {
+        let ConnTabContent::Workspace(workspace) = &self.tabs[self.active].content else {
+            return "Tabletist".into();
+        };
+        let env = workspace
+            .environment
+            .label(crate::env::Platform::of(&self.look));
+        let database = match &workspace.spec.sqlite_path {
+            Some(path) => crate::model::file_name(&path.display().to_string()),
+            None => workspace.spec.database.clone(),
+        };
+        if database.is_empty() {
+            format!("{} · {env}", workspace.name)
+        } else {
+            format!("{} · {env} — {database}", workspace.name)
+        }
     }
 
     pub fn workspace(&self, tab: ConnTabId) -> Option<&Workspace> {
@@ -1052,7 +1080,7 @@ impl App {
     fn open_workspace(&mut self, tab: ConnTabId, saved: SavedConnection, typed: Secrets) {
         let session = SessionId(self.next_id());
         let request = RequestId(self.next_id());
-        let environment = saved.environment();
+        let environment = saved.environment;
         let Some(entry) = self.tabs.iter_mut().find(|t| t.id == tab) else {
             return;
         };
@@ -1061,7 +1089,6 @@ impl App {
             conn_id: saved.id,
             environment,
             name: saved.name,
-            color: saved.color,
             driver: saved.spec.driver,
             encrypted: false,
             spec: saved.spec,
@@ -2393,6 +2420,12 @@ impl App {
         }
         crate::ui::show(self, ui);
         self.apply_actions();
+        let title = self.window_title();
+        if title != self.window_title {
+            ui.ctx()
+                .send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
+            self.window_title = title;
+        }
     }
 }
 
@@ -2477,6 +2510,41 @@ mod tests {
             Backend::recording(),
         );
         (app, dir)
+    }
+
+    #[test]
+    fn an_older_connections_file_is_saved_upgraded_by_the_backend() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = AppDirs::at(dir.path()).connections_file();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, include_str!("../tests/fixtures/connections-v1.json")).unwrap();
+        let app = App::new(
+            AppDirs::at(dir.path()),
+            Settings::default(),
+            Backend::recording(),
+        );
+        let saves = |app: &App| {
+            app.backend
+                .sent
+                .iter()
+                .filter(|command| matches!(command, Command::Save { path: to, .. } if *to == path))
+                .count()
+        };
+        assert_eq!(saves(&app), 1);
+        assert!(
+            std::fs::read_to_string(&path)
+                .unwrap()
+                .contains("\"color\""),
+            "the UI thread writes nothing"
+        );
+        // A current file is not saved again.
+        app.connections.save(&path).unwrap();
+        let app = App::new(
+            AppDirs::at(dir.path()),
+            Settings::default(),
+            Backend::recording(),
+        );
+        assert_eq!(saves(&app), 0);
     }
 
     fn ids(app: &App) -> Vec<u64> {
@@ -2571,15 +2639,15 @@ mod tests {
     }
 
     use crate::backend::{Command, Event, RequestId, SessionId};
-    use crate::connections::{ColorTag, ConnectionId, SavedConnection};
+    use crate::connections::{ConnectionId, SavedConnection};
     use tabletist_db::{ConnectSpec, Driver, Error};
 
     fn with_saved(app: &mut App) -> ConnectionId {
         let saved = SavedConnection {
             id: ConnectionId::new(),
             name: "Local".into(),
-            color: ColorTag::Green,
-            environment: None,
+            environment: crate::env::Environment::Dev,
+            read_only: None,
             password: crate::connections::PasswordMode::None,
             ssh_secret: crate::connections::PasswordMode::None,
             spec: ConnectSpec::sqlite("/tmp/local.db"),
@@ -2975,6 +3043,43 @@ mod tests {
 
     use crate::model::{TreeNode, TreeRow};
     use crate::testing::Harness;
+
+    #[test]
+    fn the_window_title_names_the_connection_its_environment_and_database() {
+        let mut harness = Harness::new();
+        harness.settle();
+        assert_eq!(harness.app.window_title(), "Tabletist");
+        let tab = harness.connect_fake();
+        let workspace = harness.app.workspace_mut(tab).unwrap();
+        workspace.name = "Bookshop".into();
+        workspace.environment = crate::env::Environment::Production;
+        let title = "Bookshop · production — fixture.db";
+        assert_eq!(harness.app.window_title(), title);
+        let sent = |harness: &mut Harness| {
+            harness.frame(Vec::new());
+            harness
+                .viewport_commands
+                .contains(&egui::ViewportCommand::Title(title.into()))
+        };
+        // Sent when it changes, not every frame.
+        assert!(sent(&mut harness));
+        assert!(!sent(&mut harness));
+        let workspace = harness.app.workspace_mut(tab).unwrap();
+        workspace.spec = tabletist_db::ConnectSpec::from_url(
+            "postgres://app@db.example.com:5432/bookshop_production",
+        )
+        .unwrap()
+        .0;
+        assert_eq!(
+            harness.app.window_title(),
+            "Bookshop · production — bookshop_production"
+        );
+        harness.set_look(crate::theme::Look::omarchy());
+        assert_eq!(
+            harness.app.window_title(),
+            "Bookshop · PROD — bookshop_production"
+        );
+    }
 
     #[test]
     fn connecting_loads_schemas_then_expands_the_default_schema() {
@@ -3656,8 +3761,8 @@ mod tests {
         let saved = SavedConnection {
             id: ConnectionId::new(),
             name: "Prod".into(),
-            color: ColorTag::Red,
-            environment: None,
+            environment: crate::env::Environment::Production,
+            read_only: None,
             password: mode,
             ssh_secret: crate::connections::PasswordMode::None,
             spec,
@@ -4490,8 +4595,8 @@ mod tests {
         let saved = SavedConnection {
             id: ConnectionId::new(),
             name: "Shop".into(),
-            color: ColorTag::None,
-            environment: None,
+            environment: crate::env::Environment::None,
+            read_only: None,
             password: PasswordMode::None,
             ssh_secret: crate::connections::PasswordMode::None,
             spec,
@@ -4597,8 +4702,8 @@ mod tests {
             let saved = SavedConnection {
                 id: ConnectionId::new(),
                 name: "Prod".into(),
-                color: ColorTag::Red,
-                environment: None,
+                environment: crate::env::Environment::Production,
+                read_only: None,
                 password: PasswordMode::None,
                 ssh_secret: PasswordMode::None,
                 spec,
