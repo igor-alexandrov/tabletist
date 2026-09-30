@@ -1,12 +1,16 @@
 //! macOS: the tabs share a unified title bar with the window buttons.
 //!
 //! The window gets an empty toolbar in the compact style, so AppKit makes
-//! the title bar tall enough for the tab bar and centres the window buttons
-//! in it (the look of Safari's compact tabs and Xcode). Every frame reads
-//! back the title bar's height and where the buttons end, so the layout
-//! follows the running system (the buttons grew in macOS 26) and
-//! fullscreen, where AppKit hides them. Nothing moves the buttons by hand,
-//! and nothing here is `unsafe`: the window comes from `NSApplication`.
+//! the title bar tall enough for the tab bar (the look of Safari's compact
+//! tabs and Xcode). Every frame reads back the title bar's height and where
+//! the buttons end, so the layout follows the running system (the buttons
+//! grew in macOS 26) and fullscreen, where AppKit hides them.
+//!
+//! AppKit centres the buttons in its own title bar, but the bar that leads
+//! the window (the connection bar, the picker's header) can be taller, so
+//! every frame also moves each button onto that bar's line. AppKit lays the
+//! buttons out again on resizes and focus changes, and each of those draws
+//! a frame that puts them back.
 
 use objc2::MainThreadMarker;
 use objc2::rc::Retained;
@@ -14,6 +18,7 @@ use objc2_app_kit::{
     NSApplication, NSTitlebarSeparatorStyle, NSToolbar, NSWindow, NSWindowButton,
     NSWindowTitleVisibility, NSWindowToolbarStyle,
 };
+use objc2_foundation::NSPoint;
 
 use crate::app::TitleBar;
 
@@ -57,5 +62,43 @@ impl UnifiedTitleBar {
             })
             .unwrap_or(78.0);
         TitleBar { height, inset }
+    }
+
+    /// Centres the window buttons `line` window points below the window's
+    /// top, as far as their title bar reaches (a button outside it would
+    /// take no clicks). Nothing moves in fullscreen, where AppKit shows the
+    /// buttons in a title bar of its own.
+    pub fn place_buttons(&self, line: f32) {
+        let window = &self.window;
+        if self.measure() == TitleBar::default() {
+            return;
+        }
+        // Window coordinates run up from the bottom edge.
+        let target = NSPoint::new(0.0, window.frame().size.height - f64::from(line));
+        for kind in [
+            NSWindowButton::CloseButton,
+            NSWindowButton::MiniaturizeButton,
+            NSWindowButton::ZoomButton,
+        ] {
+            let Some(button) = window.standardWindowButton(kind) else {
+                continue;
+            };
+            // SAFETY: the window is main-thread only, so this runs on the
+            // main thread, and the title bar view comes back retained.
+            let Some(bar) = (unsafe { button.superview() }) else {
+                continue;
+            };
+            let frame = button.frame();
+            let bounds = bar.bounds();
+            let center = bar.convertPoint_fromView(target, None).y;
+            let lowest = bounds.origin.y;
+            let highest = (lowest + bounds.size.height - frame.size.height).max(lowest);
+            let y = (center - frame.size.height / 2.0)
+                .round()
+                .clamp(lowest, highest);
+            if (y - frame.origin.y).abs() >= 0.5 {
+                button.setFrameOrigin(NSPoint::new(frame.origin.x, y));
+            }
+        }
     }
 }

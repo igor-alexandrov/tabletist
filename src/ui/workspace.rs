@@ -21,6 +21,28 @@ pub fn bar_height(look: &Look) -> f32 {
 /// The macOS bar's stripe in the environment colour.
 const STRIPE: f32 = 3.0;
 
+/// The bar's height in the window. Alone, the bar is the macOS title bar
+/// and at least as tall as the window has it (window points, which egui's
+/// `zoom` scales away from its own).
+fn top_bar_height(app: &App, zoom: f32) -> f32 {
+    if app.tabs.len() == 1 {
+        bar_height(&app.look).max(app.titlebar.height / zoom)
+    } else {
+        bar_height(&app.look)
+    }
+}
+
+/// The line the bar's contents centre on, below its top: under the macOS
+/// stripe and over the rule, or the middle of the terminal bar.
+pub fn bar_line(app: &App, zoom: f32) -> f32 {
+    let height = top_bar_height(app, zoom);
+    if app.look.terminal {
+        height / 2.0
+    } else {
+        (STRIPE + height - 1.0) / 2.0
+    }
+}
+
 pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
     let look = app.look;
     top_bar(app, ui, tab);
@@ -206,11 +228,7 @@ fn top_bar(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
     } else {
         0.0
     };
-    let height = if alone {
-        bar_height(&look).max(app.titlebar.height / zoom)
-    } else {
-        bar_height(&look)
-    };
+    let height = top_bar_height(app, zoom);
     let mut actions = Vec::new();
     egui::Panel::top(egui::Id::new(("workspace-top", tab.0)))
         .exact_size(height)
