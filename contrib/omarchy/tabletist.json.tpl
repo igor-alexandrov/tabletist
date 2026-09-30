@@ -21,6 +21,9 @@
     "success": "{{ green }}",
     "info": "{{ cyan }}",
     "orange": "{{ orange }}",
-    "magenta": "{{ magenta }}"
+    "magenta": "{{ magenta }}",
+    "blue": "{{ blue }}",
+    "rose": "{{ bright_red }}",
+    "olive": "{{ bright_green }}"
   }
 }
