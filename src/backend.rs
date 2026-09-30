@@ -1273,8 +1273,8 @@ mod tests {
         connections.upsert(crate::connections::SavedConnection {
             id: crate::connections::ConnectionId::new(),
             name: name.into(),
-            color: crate::connections::ColorTag::None,
-            environment: None,
+            environment: crate::env::Environment::None,
+            read_only: None,
             password: crate::connections::PasswordMode::None,
             ssh_secret: crate::connections::PasswordMode::None,
             spec: ConnectSpec::sqlite("/tmp/a.db"),

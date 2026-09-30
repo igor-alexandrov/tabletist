@@ -478,70 +478,6 @@ impl Look {
     }
 }
 
-/// How an environment draws: its colour (the bar's stripe and tint), and
-/// its badge's fill and text.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct EnvColors {
-    pub color: Color32,
-    pub badge: Color32,
-    pub badge_text: Color32,
-}
-
-/// An environment's colours: fixed on light palettes (the macOS design's),
-/// from the theme's own colours on dark ones, with a solid badge.
-pub fn env_colors(env: crate::connections::Environment, palette: &Palette) -> EnvColors {
-    use crate::connections::Environment;
-    let rgb = Color32::from_rgb;
-    if !palette.dark {
-        let (color, badge, badge_text) = match env {
-            Environment::Dev => (
-                rgb(0x2c, 0x7a, 0x4b),
-                rgb(0xe3, 0xf1, 0xe6),
-                rgb(0x1f, 0x6b, 0x35),
-            ),
-            Environment::Staging => (
-                rgb(0xd0, 0x8a, 0x12),
-                rgb(0xfb, 0xef, 0xd6),
-                rgb(0x8a, 0x5a, 0x00),
-            ),
-            Environment::Production => (
-                rgb(0xc2, 0x26, 0x1f),
-                rgb(0xfb, 0xe3, 0xe1),
-                rgb(0xa3, 0x23, 0x1b),
-            ),
-            Environment::Local => (
-                rgb(0x7c, 0x4d, 0xdb),
-                rgb(0xef, 0xea, 0xf9),
-                rgb(0x5b, 0x3a, 0xa8),
-            ),
-            Environment::Test => (palette.accent, palette.selection, palette.accent_hover),
-            Environment::None => (
-                rgb(0xb5, 0xb3, 0xad),
-                rgb(0xef, 0xee, 0xe9),
-                rgb(0x4d, 0x4c, 0x48),
-            ),
-        };
-        return EnvColors {
-            color,
-            badge,
-            badge_text,
-        };
-    }
-    let color = match env {
-        Environment::Dev => palette.success,
-        Environment::Staging => palette.warning,
-        Environment::Production => palette.danger,
-        Environment::Local => palette.magenta,
-        Environment::Test => palette.accent,
-        Environment::None => palette.dim,
-    };
-    EnvColors {
-        color,
-        badge: color,
-        badge_text: palette.window,
-    }
-}
-
 /// `amount` of `color` mixed into `base` (CSS color-mix).
 pub fn mix(base: Color32, color: Color32, amount: f32) -> Color32 {
     base.lerp_to_gamma(color, amount)
@@ -918,17 +854,6 @@ mod tests {
         assert!(contrast(readable.secondary, readable.window) >= 4.5);
         assert!(contrast(readable.dim, readable.window) >= 4.5);
         assert_eq!(readable.success, egui::Color32::from_rgb(0x9e, 0xce, 0x6a));
-    }
-
-    #[test]
-    fn environments_take_the_designs_colours_on_light_and_the_themes_on_dark() {
-        use crate::connections::Environment;
-        let light = env_colors(Environment::Production, &Palette::light());
-        assert_eq!(light.badge, egui::Color32::from_rgb(0xfb, 0xe3, 0xe1));
-        let dark = tokyo_night();
-        let colors = env_colors(Environment::Dev, &dark);
-        assert_eq!(colors.badge, dark.success);
-        assert_eq!(colors.badge_text, dark.window);
     }
 
     #[test]

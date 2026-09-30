@@ -661,8 +661,8 @@ fn mac_row(
     if index + 1 < rows {
         widgets::hline(ui, rect.x_range(), rect.bottom() - 0.5, palette.surface);
     }
-    let env = connection.environment();
-    let colors = theme::env_colors(env, palette);
+    let env = connection.environment;
+    let colors = crate::env::env_colors(env, crate::env::Platform::of(look), palette);
     let bar = Rect::from_min_size(rect.min, vec2(6.0, rect.height()));
     ui.painter().rect_filled(
         bar,
@@ -672,7 +672,7 @@ fn mac_row(
             ne: 0,
             se: 0,
         },
-        colors.color,
+        colors.base(),
     );
     // Two lines 3 apart, centred in the 64 pt row.
     let top = rect.top() + 22.7;
@@ -893,8 +893,8 @@ fn terminal_row(
     }
     // Columns: 22 for the cursor, 110 for the badge, the rest for the
     // name and its line, 96 for last use (14 in from the right).
-    let env = connection.environment();
-    let colors = theme::env_colors(env, palette);
+    let env = connection.environment;
+    let colors = crate::env::env_colors(env, crate::env::Platform::of(look), palette);
     super::workspace::env_badge(
         ui,
         rect.left() + 22.0,

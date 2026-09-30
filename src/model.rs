@@ -3,7 +3,7 @@
 use tabletist_db::{ConnectSpec, Driver, Filter, FilterOp, SshAuth, SshSpec, TlsMode};
 
 use crate::backend::{Event, RequestId, SessionId};
-use crate::connections::{ColorTag, ConnectionId, PasswordMode};
+use crate::connections::{ConnectionId, PasswordMode};
 
 /// Identifies a connection tab for its whole life, whatever its position.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -282,8 +282,7 @@ pub struct Workspace {
     /// Copied from the saved connection when the tab opened, so editing or
     /// deleting the saved entry never breaks an open tab.
     pub name: String,
-    pub color: ColorTag,
-    pub environment: crate::connections::Environment,
+    pub environment: crate::env::Environment,
     pub spec: ConnectSpec,
     pub driver: Driver,
     /// Whether the session runs over TLS, as negotiated. Set when the
@@ -360,8 +359,12 @@ pub struct ConnectionForm {
     /// `Some` when editing a saved connection, `None` for a new one.
     pub editing: Option<ConnectionId>,
     pub name: String,
-    pub color: ColorTag,
-    pub environment: crate::connections::Environment,
+    /// The environment the user chose; `None` until they do, while it
+    /// follows where the connection points (see
+    /// [`ConnectionForm::environment`]).
+    pub environment: Option<crate::env::Environment>,
+    /// Read-only as saved: `None` until the user sets it.
+    pub read_only: Option<bool>,
     /// Put the keyboard in Name on the next frame (a new connection).
     pub focus_name: bool,
     pub driver: Driver,
@@ -447,8 +450,8 @@ impl Default for ConnectionForm {
         Self {
             editing: None,
             name: String::new(),
-            color: ColorTag::None,
-            environment: crate::connections::Environment::None,
+            environment: None,
+            read_only: None,
             focus_name: true,
             driver: Driver::Sqlite,
             sqlite_path: String::new(),
@@ -503,13 +506,28 @@ impl ConnectionForm {
             && !is_local_host(&self.host)
     }
 
+    /// The environment the connection is saved with: the chosen one, else
+    /// `Local` while it points at this machine.
+    pub fn environment(&self) -> crate::env::Environment {
+        self.environment.unwrap_or_else(|| {
+            crate::env::Environment::for_target(self.driver, &self.host, self.ssh)
+        })
+    }
+
+    /// Whether the connection is saved read-only: as set, else the
+    /// environment's default.
+    pub fn read_only(&self) -> bool {
+        self.read_only
+            .unwrap_or(self.environment().read_only_by_default())
+    }
+
     pub fn from_saved(saved: &crate::connections::SavedConnection) -> Self {
         let spec = &saved.spec;
         Self {
             editing: Some(saved.id.clone()),
             name: saved.name.clone(),
-            color: saved.color,
-            environment: saved.environment(),
+            environment: Some(saved.environment),
+            read_only: saved.read_only,
             focus_name: false,
             driver: spec.driver,
             sqlite_path: spec
@@ -743,8 +761,8 @@ impl ConnectionForm {
         Ok(crate::connections::SavedConnection {
             id: self.editing.clone().unwrap_or_else(ConnectionId::new),
             name: name.to_owned(),
-            color: self.color,
-            environment: Some(self.environment),
+            environment: self.environment(),
+            read_only: self.read_only,
             password,
             ssh_secret,
             spec,

@@ -3,9 +3,10 @@
 
 use std::path::Path;
 
-use egui::Color32;
 use serde::{Deserialize, Serialize};
 use tabletist_db::ConnectSpec;
+
+use crate::env::Environment;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ConnectionId(pub String);
@@ -14,138 +15,6 @@ impl ConnectionId {
     #[allow(clippy::new_without_default)] // a new id is never a "default"
     pub fn new() -> Self {
         Self(uuid::Uuid::new_v4().to_string())
-    }
-}
-
-/// A colour to tell connections apart at a glance (red for production).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum ColorTag {
-    #[default]
-    None,
-    Red,
-    Orange,
-    Yellow,
-    Green,
-    Blue,
-    Purple,
-    Gray,
-}
-
-impl ColorTag {
-    pub const ALL: [ColorTag; 8] = [
-        Self::None,
-        Self::Red,
-        Self::Orange,
-        Self::Yellow,
-        Self::Green,
-        Self::Blue,
-        Self::Purple,
-        Self::Gray,
-    ];
-
-    pub fn color(self) -> Option<Color32> {
-        match self {
-            Self::None => None,
-            Self::Red => Some(Color32::from_rgb(0xe5, 0x48, 0x4d)),
-            Self::Orange => Some(Color32::from_rgb(0xf0, 0x8c, 0x2e)),
-            Self::Yellow => Some(Color32::from_rgb(0xe6, 0xc2, 0x29)),
-            Self::Green => Some(Color32::from_rgb(0x3f, 0xb9, 0x50)),
-            Self::Blue => Some(Color32::from_rgb(0x3b, 0x82, 0xf6)),
-            Self::Purple => Some(Color32::from_rgb(0x9b, 0x5d, 0xe5)),
-            Self::Gray => Some(Color32::from_rgb(0x8b, 0x93, 0x9e)),
-        }
-    }
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::None => "No color",
-            Self::Red => "Red",
-            Self::Orange => "Orange",
-            Self::Yellow => "Yellow",
-            Self::Green => "Green",
-            Self::Blue => "Blue",
-            Self::Purple => "Purple",
-            Self::Gray => "Gray",
-        }
-    }
-}
-
-/// What a connection is: the environment badge on the picker and the top
-/// bar, and the colour of its connection bar. Chosen on its own; older
-/// connections without one take it from their colour.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Environment {
-    Dev,
-    Staging,
-    Production,
-    Local,
-    Test,
-    None,
-}
-
-impl Environment {
-    /// In the order the dialog offers them.
-    pub const ALL: [Environment; 6] = [
-        Self::None,
-        Self::Local,
-        Self::Dev,
-        Self::Test,
-        Self::Staging,
-        Self::Production,
-    ];
-
-    /// The name the dialog lists it by.
-    pub fn name(self) -> &'static str {
-        match self {
-            Self::Dev => "Development",
-            Self::Staging => "Staging",
-            Self::Production => "Production",
-            Self::Local => "Local",
-            Self::Test => "Test",
-            Self::None => "None",
-        }
-    }
-
-    /// The colour a connection takes when it is given this environment.
-    pub fn color(self) -> ColorTag {
-        match self {
-            Self::Dev => ColorTag::Green,
-            Self::Staging => ColorTag::Orange,
-            Self::Production => ColorTag::Red,
-            Self::Local => ColorTag::Purple,
-            Self::Test => ColorTag::Blue,
-            Self::None => ColorTag::None,
-        }
-    }
-
-    /// The badge text: `short` is the terminal look's (PROD).
-    pub fn label(self, short: bool) -> &'static str {
-        match self {
-            Self::Dev => "dev",
-            Self::Staging => "staging",
-            Self::Production if short => "prod",
-            Self::Production => "production",
-            Self::Local => "local",
-            Self::Test => "test",
-            Self::None => "none",
-        }
-    }
-}
-
-impl ColorTag {
-    /// The environment the colour stood for before connections had one of
-    /// their own (red for production): what an older connection shows.
-    pub fn environment(self) -> Environment {
-        match self {
-            Self::Green => Environment::Dev,
-            Self::Orange | Self::Yellow => Environment::Staging,
-            Self::Red => Environment::Production,
-            Self::Purple => Environment::Local,
-            Self::Blue => Environment::Test,
-            Self::Gray | Self::None => Environment::None,
-        }
     }
 }
 
@@ -166,12 +35,12 @@ pub enum PasswordMode {
 pub struct SavedConnection {
     pub id: ConnectionId,
     pub name: String,
-    #[serde(default)]
-    pub color: ColorTag,
-    /// `None` in files written before connections had an environment: then
-    /// the colour says it (see [`SavedConnection::environment`]).
+    /// What the connection is. Its colour everywhere comes from this.
+    pub environment: Environment,
+    /// Read-only as the user set it; `None` until they do, so the
+    /// environment's default applies (see [`SavedConnection::read_only`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub environment: Option<Environment>,
+    pub read_only: Option<bool>,
     #[serde(default)]
     pub password: PasswordMode,
     /// How the SSH password or key passphrase is kept, when there is one.
@@ -181,15 +50,20 @@ pub struct SavedConnection {
 }
 
 impl SavedConnection {
-    /// The connection's environment: its own, or the one its colour stood
-    /// for.
-    pub fn environment(&self) -> Environment {
-        self.environment.unwrap_or(self.color.environment())
+    /// Whether the connection is read-only: the user's choice, else its
+    /// environment's default. A user who never chose follows the
+    /// environment when it changes.
+    pub fn read_only(&self) -> bool {
+        self.read_only
+            .unwrap_or(self.environment.read_only_by_default())
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
+/// The file's format. 2 dropped the colour a connection used to keep
+/// beside its environment, and the `test` environment.
+pub const VERSION: u32 = 2;
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct SavedConnections {
     pub version: u32,
     pub connections: Vec<SavedConnection>,
@@ -202,16 +76,199 @@ pub struct SavedConnections {
 impl Default for SavedConnections {
     fn default() -> Self {
         Self {
-            version: 1,
+            version: VERSION,
             connections: Vec::new(),
             last_used: std::collections::BTreeMap::new(),
         }
     }
 }
 
+/// The file as any version wrote it.
+#[derive(Debug, Deserialize)]
+#[serde(default)]
+struct StoredConnections {
+    /// Files from before the field existed are version 1.
+    #[serde(default = "first_version")]
+    version: u32,
+    connections: Vec<StoredConnection>,
+    last_used: std::collections::BTreeMap<String, u64>,
+}
+
+fn first_version() -> u32 {
+    1
+}
+
+impl Default for StoredConnections {
+    fn default() -> Self {
+        Self {
+            version: VERSION,
+            connections: Vec::new(),
+            last_used: std::collections::BTreeMap::new(),
+        }
+    }
+}
+
+/// A connection as any version wrote it.
+#[derive(Debug, Deserialize)]
+struct StoredConnection {
+    id: ConnectionId,
+    name: String,
+    /// Version 1's colour, read only to find the environment.
+    #[serde(default)]
+    color: Option<LegacyColor>,
+    #[serde(default)]
+    environment: Option<StoredEnvironment>,
+    #[serde(default)]
+    read_only: Option<bool>,
+    #[serde(default)]
+    password: PasswordMode,
+    #[serde(default)]
+    ssh_secret: PasswordMode,
+    spec: ConnectSpec,
+}
+
+/// The colours version 1 offered.
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum LegacyColor {
+    None,
+    Red,
+    Orange,
+    Yellow,
+    Green,
+    Blue,
+    Purple,
+    Gray,
+}
+
+impl LegacyColor {
+    fn name(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Red => "red",
+            Self::Orange => "orange",
+            Self::Yellow => "yellow",
+            Self::Green => "green",
+            Self::Blue => "blue",
+            Self::Purple => "purple",
+            Self::Gray => "gray",
+        }
+    }
+
+    /// The environment the colour stood for.
+    fn environment(self) -> Environment {
+        match self {
+            Self::Red => Environment::Production,
+            Self::Green | Self::Blue => Environment::Dev,
+            Self::Orange | Self::Yellow => Environment::Staging,
+            Self::Purple => Environment::Local,
+            Self::Gray | Self::None => Environment::None,
+        }
+    }
+}
+
+/// The environments any version wrote.
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum StoredEnvironment {
+    Local,
+    Dev,
+    Staging,
+    Production,
+    None,
+    /// Version 1's: local when the connection stays on this machine, else
+    /// dev.
+    Test,
+}
+
+impl StoredConnection {
+    /// The connection as this version keeps it, and what its environment
+    /// was worked out from when the file did not say it.
+    fn upgrade(self) -> (SavedConnection, Option<String>) {
+        let (environment, from) = match (self.environment, self.color) {
+            (Some(StoredEnvironment::Local), _) => (Environment::Local, None),
+            (Some(StoredEnvironment::Dev), _) => (Environment::Dev, None),
+            (Some(StoredEnvironment::Staging), _) => (Environment::Staging, None),
+            (Some(StoredEnvironment::Production), _) => (Environment::Production, None),
+            (Some(StoredEnvironment::None), _) => (Environment::None, None),
+            (Some(StoredEnvironment::Test), _) => {
+                let environment = match Environment::for_spec(&self.spec) {
+                    Environment::Local => Environment::Local,
+                    Environment::Dev
+                    | Environment::Staging
+                    | Environment::Production
+                    | Environment::None => Environment::Dev,
+                };
+                (environment, Some("environment test".to_owned()))
+            }
+            (None, color) => {
+                let color = color.unwrap_or(LegacyColor::None);
+                (
+                    color.environment(),
+                    Some(format!("colour {}", color.name())),
+                )
+            }
+        };
+        let note = from.map(|from| {
+            format!(
+                "connection {:?}: {from} is now environment {}",
+                self.name,
+                environment.label(crate::env::Platform::Native)
+            )
+        });
+        let saved = SavedConnection {
+            id: self.id,
+            name: self.name,
+            environment,
+            read_only: self.read_only,
+            password: self.password,
+            ssh_secret: self.ssh_secret,
+            spec: self.spec,
+        };
+        (saved, note)
+    }
+}
+
+impl StoredConnections {
+    /// The store as this version keeps it, and a line for each connection
+    /// whose environment was worked out.
+    fn upgrade(self) -> (SavedConnections, Vec<String>) {
+        let mut notes = Vec::new();
+        let connections = self
+            .connections
+            .into_iter()
+            .map(|stored| {
+                let (saved, note) = stored.upgrade();
+                notes.extend(note);
+                saved
+            })
+            .collect();
+        let store = SavedConnections {
+            version: VERSION,
+            connections,
+            last_used: self.last_used,
+        };
+        (store, notes)
+    }
+}
+
 impl SavedConnections {
+    /// Reads the store. An older file is upgraded in memory, each
+    /// connection whose environment is worked out logged.
     pub fn load(path: &Path) -> Self {
-        crate::util::load_json(path)
+        Self::load_upgrading(path).0
+    }
+
+    /// [`SavedConnections::load`], and whether the file was an older
+    /// version: the caller saves it (on the backend) so it is upgraded once.
+    pub fn load_upgrading(path: &Path) -> (Self, bool) {
+        let stored: StoredConnections = crate::util::load_json(path);
+        let old = stored.version < VERSION;
+        let (store, notes) = stored.upgrade();
+        for note in &notes {
+            log::info!("{note}");
+        }
+        (store, old)
     }
 
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
@@ -348,7 +405,8 @@ mod tests {
     #[test]
     fn old_files_without_last_use_still_load() {
         let text = r#"{"version": 1, "connections": []}"#;
-        let store: SavedConnections = serde_json::from_str(text).unwrap();
+        let stored: StoredConnections = serde_json::from_str(text).unwrap();
+        let (store, _) = stored.upgrade();
         assert!(store.last_used.is_empty());
         let saved = serde_json::to_string(&store).unwrap();
         assert!(!saved.contains("last_used"), "{saved}");
@@ -358,8 +416,8 @@ mod tests {
         SavedConnection {
             id: ConnectionId::new(),
             name: name.into(),
-            color: ColorTag::None,
-            environment: None,
+            environment: Environment::None,
+            read_only: None,
             password: PasswordMode::None,
             ssh_secret: PasswordMode::None,
             spec: ConnectSpec::sqlite(file),
@@ -372,14 +430,16 @@ mod tests {
         let path = dir.path().join("connections.json");
         let mut store = SavedConnections::default();
         store.upsert(SavedConnection {
-            color: ColorTag::Red,
+            environment: Environment::Production,
             ..saved("Prod", "/prod.db")
         });
         store.save(&path).unwrap();
         let loaded = SavedConnections::load(&path);
         assert_eq!(loaded.connections, store.connections);
         let text = std::fs::read_to_string(&path).unwrap();
-        assert!(text.contains("\"red\""));
+        assert!(text.contains("\"environment\": \"production\""), "{text}");
+        assert!(text.contains("\"version\": 2"), "{text}");
+        assert!(!text.contains("color"), "{text}");
     }
 
     #[test]
@@ -435,16 +495,10 @@ mod tests {
     }
 
     #[test]
-    fn every_tag_but_none_has_a_colour() {
-        for tag in ColorTag::ALL {
-            assert_eq!(tag.color().is_none(), tag == ColorTag::None, "{tag:?}");
-        }
-    }
-
-    #[test]
     fn password_modes_default_to_none_and_round_trip() {
         let old: SavedConnection = serde_json::from_str(
-            r#"{"id": "x", "name": "Old", "spec": {"driver": "sqlite", "sqlite_path": "/a.db"}}"#,
+            r#"{"id": "x", "name": "Old", "environment": "none",
+                "spec": {"driver": "sqlite", "sqlite_path": "/a.db"}}"#,
         )
         .unwrap();
         assert_eq!(old.password, PasswordMode::None);
@@ -456,41 +510,129 @@ mod tests {
         assert!(json.contains("\"ask\""), "{json}");
     }
 
-    #[test]
-    fn older_connections_take_their_environment_from_the_colour() {
-        let old: SavedConnection = serde_json::from_str(
-            r#"{"id": "x", "name": "Old", "color": "purple",
-                "spec": {"driver": "sqlite", "sqlite_path": "/a.db"}}"#,
-        )
-        .unwrap();
-        assert_eq!(old.environment, None);
-        assert_eq!(old.environment(), Environment::Local);
-        // Saved again unchanged, it stays as it was.
-        assert!(!serde_json::to_string(&old).unwrap().contains("environment"));
+    /// The version 1 fixture, upgraded as a store is loaded.
+    fn fixture() -> (SavedConnections, Vec<String>) {
+        let text = include_str!("../tests/fixtures/connections-v1.json");
+        serde_json::from_str::<StoredConnections>(text)
+            .unwrap()
+            .upgrade()
     }
 
     #[test]
-    fn a_chosen_environment_wins_over_the_colour() {
-        let production = SavedConnection {
-            color: ColorTag::Purple,
-            environment: Some(Environment::Production),
-            ..saved("Shop", "/shop.db")
+    fn version_1_colours_become_environments() {
+        let (store, _) = fixture();
+        let environment = |id: &str| {
+            store
+                .get(&ConnectionId(id.into()))
+                .unwrap_or_else(|| panic!("{id}"))
+                .environment
         };
-        assert_eq!(production.environment(), Environment::Production);
-        let json = serde_json::to_string(&production).unwrap();
-        assert!(json.contains("\"environment\":\"production\""), "{json}");
-        let back: SavedConnection = serde_json::from_str(&json).unwrap();
-        assert_eq!(back.environment(), Environment::Production);
+        for (id, expected) in [
+            ("red", Environment::Production),
+            ("orange", Environment::Staging),
+            ("yellow", Environment::Staging),
+            ("green", Environment::Dev),
+            ("blue", Environment::Dev),
+            ("purple", Environment::Local),
+            ("gray", Environment::None),
+            ("none", Environment::None),
+            ("uncoloured", Environment::None),
+            // A chosen environment wins over the colour.
+            ("chosen", Environment::Production),
+            // Test: local on this machine, else dev.
+            ("test-local", Environment::Local),
+            ("test-socket", Environment::Local),
+            ("test-remote", Environment::Dev),
+            ("test-tunnel", Environment::Dev),
+        ] {
+            assert_eq!(environment(id), expected, "{id}");
+        }
+        assert_eq!(store.version, VERSION);
+        assert_eq!(
+            store.last_used(&ConnectionId("red".into())),
+            Some(1_790_683_200)
+        );
     }
 
     #[test]
-    fn each_environment_has_its_own_colour() {
-        for environment in Environment::ALL {
-            assert_eq!(
-                environment.color().environment(),
-                environment,
-                "{environment:?}"
-            );
-        }
+    fn a_connection_that_became_production_is_read_only() {
+        let (store, _) = fixture();
+        let red = store.get(&ConnectionId("red".into())).unwrap();
+        assert_eq!(red.read_only, None, "the default, not a choice");
+        assert!(red.read_only());
+        assert!(
+            !store
+                .get(&ConnectionId("green".into()))
+                .unwrap()
+                .read_only()
+        );
+    }
+
+    #[test]
+    fn each_worked_out_environment_is_logged_once() {
+        let (_, notes) = fixture();
+        // Every connection but the one with a chosen environment.
+        assert_eq!(notes.len(), 13, "{notes:#?}");
+        assert!(
+            notes.contains(
+                &"connection \"Bookshop production\": colour red is now environment production"
+                    .to_owned()
+            ),
+            "{notes:#?}"
+        );
+        assert!(
+            notes.contains(
+                &"connection \"Bookshop CI\": environment test is now environment dev".to_owned()
+            ),
+            "{notes:#?}"
+        );
+    }
+
+    #[test]
+    fn an_upgraded_file_saved_again_has_nothing_left_to_work_out() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("connections.json");
+        std::fs::write(&path, include_str!("../tests/fixtures/connections-v1.json")).unwrap();
+        let (first, old) = SavedConnections::load_upgrading(&path);
+        assert!(old);
+        first.save(&path).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("\"version\": 2"), "{text}");
+        assert!(!text.contains("color"), "{text}");
+        assert!(!text.contains("\"test\""), "{text}");
+        let stored: StoredConnections = serde_json::from_str(&text).unwrap();
+        let (again, notes) = stored.upgrade();
+        assert!(notes.is_empty(), "{notes:#?}");
+        assert_eq!(again, first);
+        assert!(!SavedConnections::load_upgrading(&path).1);
+    }
+
+    #[test]
+    fn a_missing_file_needs_no_upgrade() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("connections.json");
+        let (store, old) = SavedConnections::load_upgrading(&path);
+        assert!(store.connections.is_empty());
+        assert!(!old);
+    }
+
+    #[test]
+    fn a_read_only_choice_is_kept_and_the_default_follows_the_environment() {
+        let mut connection = saved("Bookshop", "/bookshop.db");
+        assert!(!connection.read_only());
+        connection.environment = Environment::Production;
+        assert!(connection.read_only(), "untouched: the default applies");
+        connection.read_only = Some(false);
+        assert!(!connection.read_only(), "the user's choice wins");
+        connection.environment = Environment::Dev;
+        connection.environment = Environment::Production;
+        assert!(
+            !connection.read_only(),
+            "and survives changes of environment"
+        );
+        let json = serde_json::to_string(&connection).unwrap();
+        assert!(json.contains("\"read_only\":false"), "{json}");
+        let untouched = serde_json::to_string(&saved("Bookshop", "/bookshop.db")).unwrap();
+        assert!(!untouched.contains("read_only"), "{untouched}");
     }
 }

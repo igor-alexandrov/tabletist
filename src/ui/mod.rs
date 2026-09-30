@@ -487,8 +487,8 @@ mod tests {
         let saved = crate::connections::SavedConnection {
             id: crate::connections::ConnectionId::new(),
             name: name.into(),
-            color: crate::connections::ColorTag::Red,
-            environment: None,
+            environment: crate::env::Environment::Production,
+            read_only: None,
             password: crate::connections::PasswordMode::None,
             ssh_secret: crate::connections::PasswordMode::None,
             spec: tabletist_db::ConnectSpec::sqlite(format!("/tmp/{name}.db")),
@@ -499,19 +499,15 @@ mod tests {
     }
 
     #[test]
-    fn the_picker_names_a_connections_own_environment_not_its_colour() {
+    fn the_picker_names_a_connections_environment() {
         let mut harness = Harness::new();
         let id = add_saved(&mut harness, "Shop");
         let mut saved = harness.app.connections.get(&id).unwrap().clone();
-        saved.color = crate::connections::ColorTag::Purple;
-        saved.environment = Some(crate::connections::Environment::Production);
+        saved.environment = crate::env::Environment::Local;
         harness.app.connections.upsert(saved);
         harness.settle();
-        assert!(harness.painted_color("production").is_some());
-        assert!(
-            harness.painted_color("local").is_none(),
-            "purple no longer means local"
-        );
+        assert!(harness.painted_color("local").is_some());
+        assert!(harness.painted_color("production").is_none());
     }
 
     #[test]
@@ -620,8 +616,8 @@ mod tests {
             .upsert(crate::connections::SavedConnection {
                 id: crate::connections::ConnectionId::new(),
                 name: "Production".into(),
-                color: crate::connections::ColorTag::Red,
-                environment: None,
+                environment: crate::env::Environment::Production,
+                read_only: None,
                 password: crate::connections::PasswordMode::Ask,
                 ssh_secret: crate::connections::PasswordMode::None,
                 spec,
@@ -1176,7 +1172,7 @@ mod tests {
     }
 
     #[test]
-    fn choosing_an_environment_colours_the_connection() {
+    fn choosing_an_environment_sets_the_connections() {
         let mut harness = Harness::new();
         harness.press(Key::N, Modifiers::COMMAND);
         let tree = harness.settle();
@@ -1196,13 +1192,10 @@ mod tests {
                 data: None,
             },
         )]);
-        harness.click("Production");
+        harness.click("production");
         let form = form(&harness);
-        assert_eq!(
-            form.environment,
-            crate::connections::Environment::Production
-        );
-        assert_eq!(form.color, crate::connections::ColorTag::Red);
+        assert_eq!(form.environment(), crate::env::Environment::Production);
+        assert!(form.read_only(), "production is read-only by default");
     }
 
     #[test]
@@ -1313,8 +1306,8 @@ mod tests {
         let saved = crate::connections::SavedConnection {
             id: crate::connections::ConnectionId::new(),
             name: "Prod".into(),
-            color: crate::connections::ColorTag::Red,
-            environment: None,
+            environment: crate::env::Environment::Production,
+            read_only: None,
             password: crate::connections::PasswordMode::Ask,
             ssh_secret: crate::connections::PasswordMode::None,
             spec,
@@ -1345,8 +1338,8 @@ mod tests {
         let saved = crate::connections::SavedConnection {
             id: crate::connections::ConnectionId::new(),
             name: "Prod".into(),
-            color: crate::connections::ColorTag::None,
-            environment: None,
+            environment: crate::env::Environment::None,
+            read_only: None,
             password: crate::connections::PasswordMode::Ask,
             ssh_secret: crate::connections::PasswordMode::None,
             spec,
@@ -1518,8 +1511,8 @@ mod tests {
         let saved = crate::connections::SavedConnection {
             id: crate::connections::ConnectionId::new(),
             name: "Prod".into(),
-            color: crate::connections::ColorTag::Red,
-            environment: None,
+            environment: crate::env::Environment::Production,
+            read_only: None,
             password: crate::connections::PasswordMode::None,
             ssh_secret: crate::connections::PasswordMode::None,
             spec,
@@ -1543,8 +1536,8 @@ mod tests {
         let saved = crate::connections::SavedConnection {
             id: crate::connections::ConnectionId::new(),
             name: "Prod".into(),
-            color: crate::connections::ColorTag::Red,
-            environment: None,
+            environment: crate::env::Environment::Production,
+            read_only: None,
             password: crate::connections::PasswordMode::None,
             ssh_secret: crate::connections::PasswordMode::None,
             spec,

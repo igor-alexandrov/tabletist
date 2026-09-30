@@ -266,7 +266,7 @@ pub fn key(key: egui::Key, modifiers: egui::Modifiers) -> egui::Event {
 }
 
 use crate::backend::{Command, Event};
-use crate::connections::{ColorTag, ConnectionId, SavedConnection};
+use crate::connections::{ConnectionId, SavedConnection};
 use crate::model::{Action, ConnTabId};
 use tabletist_db::{ConnectSpec, Driver, ObjectInfo, ObjectKind};
 
@@ -282,8 +282,8 @@ impl Harness {
         let saved = SavedConnection {
             id: ConnectionId::new(),
             name: "Fixture".into(),
-            color: ColorTag::Blue,
-            environment: None,
+            environment: crate::env::Environment::Dev,
+            read_only: None,
             password: crate::connections::PasswordMode::None,
             ssh_secret: crate::connections::PasswordMode::None,
             spec: ConnectSpec::sqlite("/tmp/fixture.db"),

@@ -92,7 +92,7 @@ pub struct App {
 
 impl App {
     pub fn new(dirs: AppDirs, settings: Settings, backend: Backend) -> Self {
-        let connections = SavedConnections::load(&dirs.connections_file());
+        let (connections, upgraded) = SavedConnections::load_upgrading(&dirs.connections_file());
         let (host_keys, host_keys_error) = match crate::known_hosts::load(&dirs.known_hosts_file())
         {
             Ok(keys) => (keys, None),
@@ -125,6 +125,10 @@ impl App {
         };
         let tab = app.picker_tab();
         app.tabs.push(tab);
+        // An older file is written in this version once, off the UI thread.
+        if upgraded {
+            app.save_connections();
+        }
         app
     }
 
@@ -1045,7 +1049,7 @@ impl App {
     fn open_workspace(&mut self, tab: ConnTabId, saved: SavedConnection, typed: Secrets) {
         let session = SessionId(self.next_id());
         let request = RequestId(self.next_id());
-        let environment = saved.environment();
+        let environment = saved.environment;
         let Some(entry) = self.tabs.iter_mut().find(|t| t.id == tab) else {
             return;
         };
@@ -1054,7 +1058,6 @@ impl App {
             conn_id: saved.id,
             environment,
             name: saved.name,
-            color: saved.color,
             driver: saved.spec.driver,
             encrypted: false,
             spec: saved.spec,
@@ -2451,6 +2454,41 @@ mod tests {
         (app, dir)
     }
 
+    #[test]
+    fn an_older_connections_file_is_saved_upgraded_by_the_backend() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = AppDirs::at(dir.path()).connections_file();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, include_str!("../tests/fixtures/connections-v1.json")).unwrap();
+        let app = App::new(
+            AppDirs::at(dir.path()),
+            Settings::default(),
+            Backend::recording(),
+        );
+        let saves = |app: &App| {
+            app.backend
+                .sent
+                .iter()
+                .filter(|command| matches!(command, Command::Save { path: to, .. } if *to == path))
+                .count()
+        };
+        assert_eq!(saves(&app), 1);
+        assert!(
+            std::fs::read_to_string(&path)
+                .unwrap()
+                .contains("\"color\""),
+            "the UI thread writes nothing"
+        );
+        // A current file is not saved again.
+        app.connections.save(&path).unwrap();
+        let app = App::new(
+            AppDirs::at(dir.path()),
+            Settings::default(),
+            Backend::recording(),
+        );
+        assert_eq!(saves(&app), 0);
+    }
+
     fn ids(app: &App) -> Vec<u64> {
         app.tabs.iter().map(|tab| tab.id.0).collect()
     }
@@ -2543,15 +2581,15 @@ mod tests {
     }
 
     use crate::backend::{Command, Event, RequestId, SessionId};
-    use crate::connections::{ColorTag, ConnectionId, SavedConnection};
+    use crate::connections::{ConnectionId, SavedConnection};
     use tabletist_db::{ConnectSpec, Driver, Error};
 
     fn with_saved(app: &mut App) -> ConnectionId {
         let saved = SavedConnection {
             id: ConnectionId::new(),
             name: "Local".into(),
-            color: ColorTag::Green,
-            environment: None,
+            environment: crate::env::Environment::Dev,
+            read_only: None,
             password: crate::connections::PasswordMode::None,
             ssh_secret: crate::connections::PasswordMode::None,
             spec: ConnectSpec::sqlite("/tmp/local.db"),
@@ -3628,8 +3666,8 @@ mod tests {
         let saved = SavedConnection {
             id: ConnectionId::new(),
             name: "Prod".into(),
-            color: ColorTag::Red,
-            environment: None,
+            environment: crate::env::Environment::Production,
+            read_only: None,
             password: mode,
             ssh_secret: crate::connections::PasswordMode::None,
             spec,
@@ -4462,8 +4500,8 @@ mod tests {
         let saved = SavedConnection {
             id: ConnectionId::new(),
             name: "Shop".into(),
-            color: ColorTag::None,
-            environment: None,
+            environment: crate::env::Environment::None,
+            read_only: None,
             password: PasswordMode::None,
             ssh_secret: crate::connections::PasswordMode::None,
             spec,
@@ -4569,8 +4607,8 @@ mod tests {
             let saved = SavedConnection {
                 id: ConnectionId::new(),
                 name: "Prod".into(),
-                color: ColorTag::Red,
-                environment: None,
+                environment: crate::env::Environment::Production,
+                read_only: None,
                 password: PasswordMode::None,
                 ssh_secret: PasswordMode::None,
                 spec,

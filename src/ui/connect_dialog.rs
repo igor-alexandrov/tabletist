@@ -4,7 +4,8 @@ use egui::RichText;
 use tabletist_db::{Driver, TlsMode};
 
 use crate::app::App;
-use crate::connections::{ColorTag, Environment, PasswordMode};
+use crate::connections::PasswordMode;
+use crate::env::{Environment, Platform};
 use crate::i18n::gettext;
 use crate::model::{Action, Dialog, SshAuthKind, TestState};
 use crate::theme;
@@ -134,49 +135,33 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                         }
                         ui.end_row();
 
-                        // The environment is what the badges say (PROD);
-                        // choosing one gives the connection its colour,
-                        // which can then be changed on its own.
+                        // The environment decides the connection's colour
+                        // everywhere; it is not chosen on its own.
                         let label_environment = ui.label(gettext(locale, "Environment")).id;
-                        let before = form.environment;
+                        let platform = Platform::of(&look);
+                        let current = form.environment();
                         let _ = crate::ui::widgets::popup_button(
                             ui,
                             egui::ComboBox::from_id_salt("environment")
-                                .selected_text(gettext(locale, form.environment.name())),
+                                .selected_text(current.label(platform)),
                             &look,
                             &palette,
                             |ui| {
                                 for environment in Environment::ALL {
-                                    ui.selectable_value(
-                                        &mut form.environment,
-                                        environment,
-                                        gettext(locale, environment.name()),
-                                    );
+                                    if ui
+                                        .selectable_label(
+                                            current == environment,
+                                            environment.label(platform),
+                                        )
+                                        .clicked()
+                                    {
+                                        form.environment = Some(environment);
+                                    }
                                 }
                             },
                         )
                         .response
                         .labelled_by(label_environment);
-                        if form.environment != before {
-                            form.color = form.environment.color();
-                        }
-                        ui.end_row();
-
-                        let label_color = ui.label(gettext(locale, "Color")).id;
-                        let _ = crate::ui::widgets::popup_button(
-                            ui,
-                            egui::ComboBox::from_id_salt("color-tag")
-                                .selected_text(form.color.label()),
-                            &look,
-                            &palette,
-                            |ui| {
-                                for tag in ColorTag::ALL {
-                                    ui.selectable_value(&mut form.color, tag, tag.label());
-                                }
-                            },
-                        )
-                        .response
-                        .labelled_by(label_color);
                         ui.end_row();
 
                         if form.driver == Driver::Sqlite {
