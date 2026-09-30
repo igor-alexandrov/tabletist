@@ -470,10 +470,9 @@ mod tests {
             .into_iter()
             .map(|path| {
                 let name = path.strip_prefix(root).unwrap().display().to_string();
-                (
-                    name.replace('\\', "/"),
-                    std::fs::read_to_string(&path).unwrap(),
-                )
+                // Windows checks the sources out with CRLF line ends.
+                let text = std::fs::read_to_string(&path).unwrap();
+                (name.replace('\\', "/"), text.replace("\r\n", "\n"))
             })
             .collect()
     }
