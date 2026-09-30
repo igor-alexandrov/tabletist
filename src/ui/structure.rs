@@ -1,11 +1,26 @@
 //! The Structure view: columns, indexes and foreign keys as plain tables.
 
-use egui::RichText;
-
 use crate::app::App;
 use crate::i18n::gettext;
 use crate::model::{Action, ConnTabId, ObjectTabId};
-use crate::theme;
+use crate::theme::{self, Look, Palette};
+use crate::typography::TextRole;
+use crate::ui::widgets;
+
+/// One cell of a structure table: body text, or code.
+fn cell(ui: &mut egui::Ui, text: &str, code: bool, look: &Look, palette: &Palette) {
+    let role = if code {
+        widgets::code(look)
+    } else {
+        widgets::body(look)
+    };
+    widgets::label(ui, role, text, palette.text, look);
+}
+
+/// A table's column title, or a quiet note.
+fn quiet(ui: &mut egui::Ui, text: &str, look: &Look, palette: &Palette) {
+    widgets::label(ui, widgets::body(look), text, palette.secondary, look);
+}
 
 pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: ObjectTabId) {
     let locale = app.locale;
@@ -32,82 +47,72 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: Object
                 egui::Frame::new()
                     .inner_margin(egui::Margin::same(theme::PAD))
                     .show(ui, |ui| {
-                        heading(ui, &gettext(locale, "Columns"), &palette);
+                        heading(ui, &gettext(locale, "Columns"), &look, &palette);
                         egui::Grid::new(("structure-columns", object_tab.0))
                             .striped(true)
                             .spacing([16.0, 6.0])
                             .show(ui, |ui| {
                                 for title in ["Name", "Type", "Nullable", "Default", "Key"] {
-                                    ui.label(
-                                        RichText::new(gettext(locale, title))
-                                            .color(palette.secondary),
-                                    );
+                                    quiet(ui, &gettext(locale, title), &look, &palette);
                                 }
                                 ui.end_row();
                                 for column in &structure.columns {
-                                    ui.label(&column.name);
-                                    ui.label(
-                                        RichText::new(&column.type_name)
-                                            .font(theme::mono(theme::TEXT_MONO)),
-                                    );
-                                    ui.label(if column.nullable {
+                                    cell(ui, &column.name, false, &look, &palette);
+                                    cell(ui, &column.type_name, true, &look, &palette);
+                                    let nullable = if column.nullable {
                                         gettext(locale, "yes")
                                     } else {
                                         gettext(locale, "no")
-                                    });
-                                    ui.label(
-                                        RichText::new(column.default.as_deref().unwrap_or(""))
-                                            .font(theme::mono(theme::TEXT_MONO)),
-                                    );
-                                    ui.label(if structure.primary_key.contains(&column.name) {
+                                    };
+                                    cell(ui, &nullable, false, &look, &palette);
+                                    let default = column.default.as_deref().unwrap_or("");
+                                    cell(ui, default, true, &look, &palette);
+                                    let key = if structure.primary_key.contains(&column.name) {
                                         "PK"
                                     } else {
                                         ""
-                                    });
+                                    };
+                                    cell(ui, key, false, &look, &palette);
                                     ui.end_row();
                                 }
                             });
                         ui.add_space(16.0);
-                        heading(ui, &gettext(locale, "Indexes"), &palette);
+                        heading(ui, &gettext(locale, "Indexes"), &look, &palette);
                         if structure.indexes.is_empty() {
-                            ui.label(
-                                RichText::new(gettext(locale, "No indexes"))
-                                    .color(palette.secondary),
-                            );
+                            let text = gettext(locale, "No indexes");
+                            quiet(ui, &text, &look, &palette);
                         } else {
                             egui::Grid::new(("structure-indexes", object_tab.0))
                                 .striped(true)
                                 .spacing([16.0, 6.0])
                                 .show(ui, |ui| {
                                     for title in ["Name", "Columns", "Unique", "Method"] {
-                                        ui.label(
-                                            RichText::new(gettext(locale, title))
-                                                .color(palette.secondary),
-                                        );
+                                        quiet(ui, &gettext(locale, title), &look, &palette);
                                     }
                                     ui.end_row();
                                     for index in &structure.indexes {
-                                        ui.label(&index.name);
-                                        ui.label(index.columns.join(", "));
-                                        ui.label(if index.primary {
+                                        cell(ui, &index.name, false, &look, &palette);
+                                        let columns = index.columns.join(", ");
+                                        cell(ui, &columns, false, &look, &palette);
+                                        let unique = if index.primary {
                                             "PK"
                                         } else if index.unique {
                                             "yes"
                                         } else {
                                             ""
-                                        });
-                                        ui.label(index.method.as_deref().unwrap_or(""));
+                                        };
+                                        cell(ui, unique, false, &look, &palette);
+                                        let method = index.method.as_deref().unwrap_or("");
+                                        cell(ui, method, false, &look, &palette);
                                         ui.end_row();
                                     }
                                 });
                         }
                         ui.add_space(16.0);
-                        heading(ui, &gettext(locale, "Foreign keys"), &palette);
+                        heading(ui, &gettext(locale, "Foreign keys"), &look, &palette);
                         if structure.foreign_keys.is_empty() {
-                            ui.label(
-                                RichText::new(gettext(locale, "No foreign keys"))
-                                    .color(palette.secondary),
-                            );
+                            let text = gettext(locale, "No foreign keys");
+                            quiet(ui, &text, &look, &palette);
                         } else {
                             egui::Grid::new(("structure-fks", object_tab.0))
                                 .striped(true)
@@ -116,15 +121,14 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: Object
                                     for title in
                                         ["Name", "Columns", "References", "On update", "On delete"]
                                     {
-                                        ui.label(
-                                            RichText::new(gettext(locale, title))
-                                                .color(palette.secondary),
-                                        );
+                                        quiet(ui, &gettext(locale, title), &look, &palette);
                                     }
                                     ui.end_row();
                                     for key in &structure.foreign_keys {
-                                        ui.label(key.name.as_deref().unwrap_or("·"));
-                                        ui.label(key.columns.join(", "));
+                                        let name = key.name.as_deref().unwrap_or("·");
+                                        cell(ui, name, false, &look, &palette);
+                                        let columns = key.columns.join(", ");
+                                        cell(ui, &columns, false, &look, &palette);
                                         let target = if key.ref_columns.is_empty() {
                                             format!("{}.{}", key.ref_schema, key.ref_table)
                                         } else {
@@ -135,9 +139,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: Object
                                                 key.ref_columns.join(", ")
                                             )
                                         };
-                                        ui.label(target);
-                                        ui.label(&key.on_update);
-                                        ui.label(&key.on_delete);
+                                        cell(ui, &target, false, &look, &palette);
+                                        cell(ui, &key.on_update, false, &look, &palette);
+                                        cell(ui, &key.on_delete, false, &look, &palette);
                                         ui.end_row();
                                     }
                                 });
@@ -152,11 +156,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: Object
     app.actions.extend(actions);
 }
 
-fn heading(ui: &mut egui::Ui, text: &str, palette: &crate::theme::Palette) {
-    ui.label(
-        RichText::new(text)
-            .font(theme::semibold(theme::TEXT_TITLE))
-            .color(palette.text),
-    );
+fn heading(ui: &mut egui::Ui, text: &str, look: &Look, palette: &Palette) {
+    let role = TextRole::pick(look, TextRole::TableTitle, TextRole::OTableTitle);
+    widgets::label(ui, role, text, palette.text, look);
     ui.add_space(4.0);
 }

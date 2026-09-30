@@ -17,5 +17,6 @@ mod shots;
 #[cfg(test)]
 pub mod testing;
 pub mod theme;
+pub mod typography;
 pub mod ui;
 pub mod util;

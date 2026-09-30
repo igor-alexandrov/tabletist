@@ -1633,10 +1633,7 @@ impl App {
         if self.connections.get(&conn).is_none() {
             return;
         }
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |elapsed| elapsed.as_secs());
-        self.connections.mark_used(&conn, now);
+        self.connections.mark_used(&conn, crate::util::now_secs());
         self.save_connections();
     }
 

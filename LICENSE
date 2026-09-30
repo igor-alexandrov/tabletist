@@ -28,4 +28,7 @@ Tabletist bundles these, each under its own licence:
   SIL Open Font License 1.1, see assets/fonts/IBMPlex-OFL.txt.
 - JetBrains Mono (assets/fonts/JetBrainsMono-Variable.ttf),
   SIL Open Font License 1.1, see assets/fonts/JetBrainsMono-OFL.txt.
+- Noto Sans Symbols 2, subset to the keyboard symbols
+  (assets/fonts/NotoSansSymbols2-Keys.ttf), SIL Open Font License 1.1, see
+  assets/fonts/NotoSansSymbols2-OFL.txt.
 - Lucide icons (assets/icons/*.svg), ISC License, see assets/icons/LICENSE.txt.

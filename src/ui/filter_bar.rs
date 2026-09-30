@@ -7,7 +7,7 @@ use crate::app::App;
 use crate::i18n::gettext;
 use crate::model::{Action, ConnTabId, ObjectTabId};
 use crate::theme::Icon;
-use crate::ui::widgets::icon_button;
+use crate::ui::widgets::{self, icon_button};
 
 pub const FILTER_OPS: [FilterOp; 11] = [
     FilterOp::Eq,
@@ -88,13 +88,19 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: Object
             let combo = crate::ui::widgets::popup_button(
                 ui,
                 egui::ComboBox::from_id_salt(("filter-column", tab.0, object_tab.0, index))
-                    .selected_text(&row.column)
+                    .selected_text(widgets::galley(
+                        ui,
+                        &row.column,
+                        egui::Color32::PLACEHOLDER,
+                        &look,
+                    ))
                     .width(160.0),
                 &look,
                 &palette,
                 |ui| {
                     for column in &columns {
-                        ui.selectable_value(&mut row.column, column.clone(), column);
+                        let text = widgets::galley(ui, column, egui::Color32::PLACEHOLDER, &look);
+                        ui.selectable_value(&mut row.column, column.clone(), text);
                     }
                 },
             );
@@ -113,13 +119,20 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: Object
             let combo = crate::ui::widgets::popup_button(
                 ui,
                 egui::ComboBox::from_id_salt(("filter-op", tab.0, object_tab.0, index))
-                    .selected_text(gettext(locale, op_label(row.op)))
+                    .selected_text(widgets::galley(
+                        ui,
+                        &gettext(locale, op_label(row.op)),
+                        egui::Color32::PLACEHOLDER,
+                        &look,
+                    ))
                     .width(110.0),
                 &look,
                 &palette,
                 |ui| {
                     for op in FILTER_OPS {
-                        ui.selectable_value(&mut row.op, op, gettext(locale, op_label(op)));
+                        let label = gettext(locale, op_label(op));
+                        let text = widgets::galley(ui, &label, egui::Color32::PLACEHOLDER, &look);
+                        ui.selectable_value(&mut row.op, op, text);
                     }
                 },
             );
@@ -136,9 +149,10 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: Object
                 info
             });
             if !matches!(row.op, FilterOp::IsNull | FilterOp::IsNotNull) {
+                let hint = widgets::galley(ui, &gettext(locale, "Value"), palette.dim, &look);
                 let field = ui.add(
                     crate::ui::widgets::single(ui, &mut row.value, &look)
-                        .hint_text(gettext(locale, "Value"))
+                        .hint_text(hint)
                         .desired_width(220.0),
                 );
                 if focus && Some(index) == value_row {
@@ -167,7 +181,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: Object
     }
     // Wraps on a narrow window instead of pushing Apply off the edge.
     ui.horizontal_wrapped(|ui| {
-        let add = ui.button(gettext(locale, "+ Condition"));
+        let add = widgets::button(ui, &gettext(locale, "+ Condition"), &look);
         if focus && value_row.is_none() && !bar.raw {
             add.request_focus();
         }
@@ -182,15 +196,17 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: Object
             &palette,
         );
         if bar.raw {
+            let hint = crate::typography::Text::one(
+                &look,
+                widgets::code(&look),
+                "id > 10 AND name LIKE 'A%'",
+                palette.dim,
+            )
+            .layout(ui.ctx());
             let field = ui.add(
-                crate::ui::widgets::single_in(
-                    ui,
-                    &mut bar.raw_text,
-                    &look,
-                    crate::theme::mono(crate::theme::TEXT_MONO),
-                )
-                .hint_text("id > 10 AND name LIKE 'A%'")
-                .desired_width(320.0),
+                crate::ui::widgets::single_in(ui, &mut bar.raw_text, &look, widgets::code(&look))
+                    .hint_text(hint.galley)
+                    .desired_width(320.0),
             );
             if focus && value_row.is_none() {
                 field.request_focus();
@@ -204,7 +220,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: Object
         {
             apply = true;
         }
-        if ui.button(gettext(locale, "Clear")).clicked() {
+        if widgets::button(ui, &gettext(locale, "Clear"), &look).clicked() {
             actions.push(Action::ClearFilters { tab, object_tab });
         }
     });

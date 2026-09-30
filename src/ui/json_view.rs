@@ -3,12 +3,12 @@
 use std::sync::Arc;
 
 use egui::cache::{ComputerMut, FrameCache};
-use egui::text::LayoutJob;
-use egui::{Align, Color32, FontId, Id, Label, Layout, Sense, TextFormat, Ui, WidgetInfo, vec2};
+use egui::{Align, Color32, Id, Label, Layout, Sense, Ui, WidgetInfo, vec2};
 use serde::de::{MapAccess, SeqAccess, Visitor};
 
 use crate::i18n::{Locale, gettext, ngettext};
 use crate::theme::{self, Icon, Palette};
+use crate::typography::{Text, TextRole};
 
 /// JSON larger than this is shown as plain text, not parsed into a tree.
 pub const TREE_MAX: usize = 256 * 1024;
@@ -18,8 +18,6 @@ const OPEN_LINES: usize = 40;
 const MAX_ROWS: usize = 1_000;
 /// Characters of a string the tree shows; copying gives the whole value.
 const STRING_MAX: usize = 2_000;
-/// Indent per nesting level, in points (two characters).
-const INDENT: f32 = 13.5;
 /// The fold toggle's width, in the indent left of its line.
 const TOGGLE: f32 = 11.0;
 
@@ -265,7 +263,7 @@ pub fn show(
     look: &theme::Look,
 ) {
     let folding: Folding = ui.data(|data| data.get_temp(id)).unwrap_or_default();
-    let font = theme::mono(look.json_size);
+    let role = TextRole::pick(look, TextRole::Json, TextRole::OJson);
     let keys = if look.terminal {
         palette.accent
     } else {
@@ -274,7 +272,8 @@ pub fn show(
     let mut view = View {
         locale,
         palette,
-        font: font.clone(),
+        look,
+        role,
         keys,
         all: folding.all,
         open_all: doc.lines <= OPEN_LINES,
@@ -282,10 +281,8 @@ pub fn show(
         folded: 0,
     };
     ui.scope(|ui| {
-        // The design's line height: 1.5 on macOS, 1.65 in the terminal.
-        let line = ui.fonts_mut(|fonts| fonts.row_height(&font));
-        let leading = look.json_size * if look.terminal { 1.65 } else { 1.48 } - line;
-        ui.spacing_mut().item_spacing = vec2(2.0, leading.max(0.0));
+        // The role carries the design's line height.
+        ui.spacing_mut().item_spacing = vec2(2.0, 0.0);
         let slot = Slot {
             key: None,
             name,
@@ -294,20 +291,21 @@ pub fn show(
         view.node(ui, 0, slot, &doc.root, id.with(folding.generation));
     });
     if view.rows >= MAX_ROWS {
-        ui.label(
-            egui::RichText::new(format!(
-                "…\n{}",
-                gettext(locale, "(Copy gives the whole value.)")
-            ))
-            .font(view.font.clone())
-            .color(palette.dim),
-        );
+        Text::one(
+            look,
+            role,
+            &format!("…\n{}", gettext(locale, "(Copy gives the whole value.)")),
+            palette.dim,
+        )
+        .layout(ui.ctx())
+        .label(ui);
     }
     ui.data_mut(|data| data.insert_temp(id.with("folded"), view.folded));
 }
 
 /// Collapse all (or Expand all, once something is folded), right-aligned
 /// at `right` on the line centred at `y`. Nothing for a flat document.
+#[allow(clippy::too_many_arguments)] // the document, its place, and its look
 pub fn fold_all_link(
     ui: &mut Ui,
     id: Id,
@@ -315,6 +313,7 @@ pub fn fold_all_link(
     right: f32,
     y: f32,
     locale: Locale,
+    look: &theme::Look,
     palette: &Palette,
 ) {
     if doc.containers <= 1 {
@@ -329,13 +328,12 @@ pub fn fold_all_link(
     } else {
         gettext(locale, "Collapse all")
     };
-    let font = theme::regular(theme::TEXT);
-    let galley = ui
-        .painter()
-        .layout_no_wrap(label.to_string(), font, palette.accent);
+    let role = TextRole::FieldLabel;
+    let width = role.width(ui.ctx(), look.faces, &label);
+    let height = role.row_height(ui.ctx(), look.faces);
     let rect = egui::Rect::from_min_size(
-        egui::pos2(right - galley.size().x, y - galley.size().y / 2.0),
-        galley.size(),
+        egui::pos2(right - width, y - height / 2.0),
+        vec2(width, height),
     );
     let response = ui.interact(rect, id.with("fold-all"), Sense::click());
     response.widget_info(|| WidgetInfo::labeled(egui::WidgetType::Link, true, label.as_ref()));
@@ -344,7 +342,9 @@ pub fn fold_all_link(
     } else {
         palette.accent
     };
-    ui.painter().galley(rect.min, galley, color);
+    Text::one(look, role, &label, color)
+        .layout(ui.ctx())
+        .paint(ui.painter(), rect.min);
     if response.clicked() {
         toggle_fold_all(ui, id);
     }
@@ -363,6 +363,11 @@ pub fn toggle_fold_all(ui: &Ui, id: Id) {
     ui.data_mut(|data| data.insert_temp(id, folding));
 }
 
+/// One line of the tree as it is built.
+struct Line {
+    text: Option<Text>,
+}
+
 /// Where a value sits: its key in an object, its accessible name as a path
 /// (`meta.tags[0]`)
 /// and whether a comma follows it.
@@ -375,7 +380,8 @@ struct Slot<'s> {
 struct View<'a> {
     locale: Locale,
     palette: &'a Palette,
-    font: FontId,
+    look: &'a theme::Look,
+    role: TextRole,
     /// The colour of object keys.
     keys: Color32,
     /// Set by Expand all / Collapse all.
@@ -393,7 +399,7 @@ impl View<'_> {
             return;
         }
         let Slot { key, name, comma } = slot;
-        let mut job = LayoutJob::default();
+        let mut job = self.line();
         if let Some(key) = key {
             self.push(&mut job, key, self.keys);
             self.push(&mut job, ": ", self.palette.text);
@@ -470,7 +476,7 @@ impl View<'_> {
             _ => {}
         }
         if self.rows < MAX_ROWS {
-            let mut job = LayoutJob::default();
+            let mut job = self.line();
             self.push(&mut job, close_bracket, self.palette.text);
             if comma {
                 self.push(&mut job, ",", self.palette.text);
@@ -484,34 +490,39 @@ impl View<'_> {
         ngettext(self.locale, one, many, count).into_owned()
     }
 
-    fn push(&self, job: &mut LayoutJob, text: &str, color: Color32) {
-        job.append(text, 0.0, TextFormat::simple(self.font.clone(), color));
+    /// The next line's text, empty.
+    fn line(&self) -> Line {
+        Line {
+            text: Some(Text::new(self.look)),
+        }
+    }
+
+    /// Appends `text` in `color` to `line`.
+    fn push(&self, line: &mut Line, text: &str, color: Color32) {
+        if let Some(sofar) = line.text.take() {
+            line.text = Some(sofar.add(self.role, text, color));
+        }
     }
 
     /// One line: indent, then `job`; a fold toggle sits in the indent to
     /// its left, drawn while the pointer is over the line. Returns whether
     /// the toggle was clicked.
-    fn row(
-        &mut self,
-        ui: &mut Ui,
-        depth: usize,
-        toggle: Option<(bool, &str)>,
-        job: LayoutJob,
-    ) -> bool {
+    fn row(&mut self, ui: &mut Ui, depth: usize, toggle: Option<(bool, &str)>, job: Line) -> bool {
         self.rows += 1;
-        let height = ui.fonts_mut(|fonts| fonts.row_height(&self.font));
+        let height = self.role.row_height(ui.ctx(), self.look.faces);
         ui.with_layout(Layout::left_to_right(Align::Min), |ui| {
             ui.spacing_mut().item_spacing.x = 0.0;
-            let indent = depth as f32 * INDENT;
+            // Two characters per level, as the design's `pre` indents.
+            let indent = depth as f32 * self.role.width(ui.ctx(), self.look.faces, "  ");
             ui.add_space(indent);
             let left = ui.cursor().left();
             // Long strings (paths, hashes) break anywhere, as the design
             // wraps them, not at the last space.
-            let mut job = job;
-            job.wrap.max_width = ui.available_width().max(1.0);
-            job.wrap.break_anywhere = true;
-            let galley = ui.fonts_mut(|fonts| fonts.layout_job(job));
-            let label = ui.add(Label::new(galley).selectable(true));
+            let mut text = job.text.unwrap_or_else(|| Text::new(self.look));
+            text.job_mut().wrap.max_width = ui.available_width().max(1.0);
+            text.job_mut().wrap.break_anywhere = true;
+            let laid = text.layout(ui.ctx());
+            let label = ui.add(Label::new(laid.galley).selectable(true));
             match toggle {
                 Some((open, text)) => {
                     let rect = egui::Rect::from_min_size(

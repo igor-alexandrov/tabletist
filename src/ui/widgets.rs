@@ -6,22 +6,32 @@ use egui::{
 };
 
 use crate::theme::{DialogStyle, Icon, Look, Palette, Selection, TabStyle};
+use crate::typography::{Text, TextRole};
+
+/// The body role in `look`.
+pub fn body(look: &Look) -> TextRole {
+    TextRole::pick(look, TextRole::UiBody, TextRole::OBody)
+}
+
+/// The secondary role in `look`: counts, subtitles, status text.
+pub fn secondary(look: &Look) -> TextRole {
+    TextRole::pick(look, TextRole::Secondary, TextRole::OSecondary)
+}
 
 /// A single-line text field as tall as a button, so fields and buttons in
 /// one row line up.
 pub fn single<'a>(ui: &Ui, text: &'a mut String, look: &Look) -> egui::TextEdit<'a> {
-    let font = egui::TextStyle::Body.resolve(ui.style());
-    single_in(ui, text, look, font)
+    single_in(ui, text, look, body(look))
 }
 
-/// [`single`] drawn in `font`.
+/// [`single`] drawn in `role`.
 pub fn single_in<'a>(
     ui: &Ui,
     text: &'a mut String,
     look: &Look,
-    font: egui::FontId,
+    role: TextRole,
 ) -> egui::TextEdit<'a> {
-    padded(ui, text, look, font, [8, 8])
+    padded(ui, text, look, role.font_id(look.faces), [8, 8])
 }
 
 /// A field `look.control_height` tall with `left` and `right` points of
@@ -499,14 +509,48 @@ pub fn toggle(ui: &mut Ui, selected: bool, text: &str, look: &Look, palette: &Pa
     let hovered = state.as_ref().is_some_and(Response::hovered);
     let focused = state.as_ref().is_some_and(Response::has_focus);
     let Some(colors) = toggle_colors(selected, hovered, focused, look, palette) else {
-        return ui.add(egui::Button::selectable(selected, text));
+        let laid = Text::one(look, body(look), text, Color32::PLACEHOLDER).layout(ui.ctx());
+        return ui.add(egui::Button::selectable(selected, laid.galley));
     };
+    let laid = Text::one(look, body(look), text, colors.text).layout(ui.ctx());
     ui.add(
-        egui::Button::new(egui::RichText::new(text).color(colors.text))
+        egui::Button::new(laid.galley)
             .selected(selected)
             .fill(colors.fill)
             .stroke(colors.stroke),
     )
+}
+
+/// `text` in the body role as a galley for a widget egui draws (a combo
+/// box's value, a menu item, a field's hint).
+pub fn galley(ui: &Ui, text: &str, color: Color32, look: &Look) -> std::sync::Arc<egui::Galley> {
+    Text::one(look, body(look), text, color)
+        .layout(ui.ctx())
+        .galley
+}
+
+/// A label in the layout: `text` in `role`.
+pub fn label(ui: &mut Ui, role: TextRole, text: &str, color: Color32, look: &Look) -> Response {
+    Text::one(look, role, text, color)
+        .layout(ui.ctx())
+        .label(ui)
+}
+
+/// A dialog's title role: 17 semibold, the terminal's 14 bold.
+pub fn dialog_title(look: &Look) -> TextRole {
+    TextRole::pick(look, TextRole::DialogTitle, TextRole::OScreenTitle)
+}
+
+/// Monospace for code in dialogs and the structure view: raw SQL, types,
+/// fingerprints, keys.
+pub fn code(look: &Look) -> TextRole {
+    TextRole::pick(look, TextRole::MonoSecondary, TextRole::OSecondary)
+}
+
+/// egui's button with `text` in the body role.
+pub fn button(ui: &mut Ui, text: &str, look: &Look) -> Response {
+    let laid = Text::one(look, body(look), text, Color32::PLACEHOLDER).layout(ui.ctx());
+    ui.add(egui::Button::new(laid.galley))
 }
 
 /// A card: the picker's saved connections.
@@ -539,7 +583,7 @@ pub fn search_field<'t>(
     hint: &str,
     look: &Look,
 ) -> egui::TextEdit<'t> {
-    let font = egui::TextStyle::Body.resolve(ui.style());
+    let font = body(look).font_id(look.faces);
     let right = search_icon_inset(look);
     let left = right + SEARCH_ICON as i8 + 6;
     padded(ui, text, look, font, [left, right]).hint_text(hint)
@@ -618,7 +662,8 @@ pub fn checkbox(
                 state.bg_stroke = stroke;
             }
         }
-        ui.checkbox(checked, text)
+        let laid = Text::one(look, body(look), text, Color32::PLACEHOLDER).layout(ui.ctx());
+        ui.add(egui::Checkbox::new(checked, laid.galley))
     })
     .inner
 }
@@ -664,14 +709,12 @@ pub fn primary_button(ui: &mut Ui, text: &str, look: &Look, palette: &Palette) -
         .as_ref()
         .is_some_and(Response::is_pointer_button_down_on);
     let fill = primary_fill(hovered, focused, pressed, palette);
-    let mut button = egui::Button::new(
-        egui::RichText::new(text)
-            .font(crate::theme::medium(crate::theme::TEXT))
-            .color(palette.on_accent),
-    )
-    .fill(fill)
-    .corner_radius(CornerRadius::same(look.radius))
-    .min_size(vec2(0.0, look.control_height));
+    let role = TextRole::pick(look, TextRole::UiBodyStrong, TextRole::OGroup);
+    let laid = Text::one(look, role, text, palette.on_accent).layout(ui.ctx());
+    let mut button = egui::Button::new(laid.galley)
+        .fill(fill)
+        .corner_radius(CornerRadius::same(look.radius))
+        .min_size(vec2(0.0, look.control_height));
     if look.bordered_controls {
         // The fill edges itself, not the grey border of other controls.
         button = button.stroke(Stroke::new(1.0, fill));
@@ -743,35 +786,14 @@ pub fn vline(ui: &Ui, x: f32, y: egui::Rangef, color: Color32) {
     ui.painter().vline(x, y, Stroke::new(width, color));
 }
 
-/// Text in `font` and `color`, with `tracking` points between letters.
-pub fn styled(
-    text: &str,
-    font: egui::FontId,
-    color: Color32,
-    tracking: f32,
-) -> egui::text::LayoutJob {
-    let mut job = egui::text::LayoutJob::default();
-    job.append(
-        text,
-        0.0,
-        egui::TextFormat {
-            font_id: font,
-            color,
-            extra_letter_spacing: tracking,
-            ..Default::default()
-        },
-    );
-    job
+/// Paints `text` with its left edge at `x`, centred on `y`. Returns its width.
+pub fn paint_text(ui: &Ui, x: f32, y: f32, text: Text) -> f32 {
+    text.layout(ui.ctx()).paint_left(ui.painter(), x, y)
 }
 
-/// Paints `job` with its left edge at `x`, centred on `y`. Returns its width.
-pub fn paint_job(ui: &Ui, x: f32, y: f32, job: egui::text::LayoutJob) -> f32 {
-    let galley = ui.painter().layout_job(job);
-    let width = galley.size().x;
-    let top = y - galley.size().y / 2.0;
-    ui.painter()
-        .galley(egui::pos2(x, top), galley, Color32::PLACEHOLDER);
-    width
+/// Paints `text` right-aligned at `right`, centred on `y`. Returns its width.
+pub fn paint_text_right(ui: &Ui, right: f32, y: f32, text: Text) -> f32 {
+    text.layout(ui.ctx()).paint_right(ui.painter(), right, y)
 }
 
 /// Names painted text for screen readers (and the headless tests): a
@@ -785,104 +807,87 @@ pub fn announce(ui: &Ui, rect: Rect, text: &str) {
 }
 
 /// [`paint_text`], announced as a label.
-pub fn paint_label(ui: &Ui, x: f32, y: f32, text: &str, font: egui::FontId, color: Color32) -> f32 {
-    let width = paint_text(ui, x, y, text, font, color);
+pub fn paint_label(ui: &Ui, x: f32, y: f32, text: Text) -> f32 {
+    let laid = text.layout(ui.ctx());
+    let width = laid.paint_left(ui.painter(), x, y);
     announce(
         ui,
         Rect::from_min_size(egui::pos2(x, y - 8.0), vec2(width.max(1.0), 16.0)),
-        text,
+        laid.galley.text(),
     );
     width
 }
 
-/// Paints `text` left-aligned at `x`, centred on `y`. Returns its width.
-pub fn paint_text(ui: &Ui, x: f32, y: f32, text: &str, font: egui::FontId, color: Color32) -> f32 {
-    paint_job(ui, x, y, styled(text, font, color, 0.0))
-}
-
-/// Paints `text` right-aligned at `right`, centred on `y`. Returns its width.
-pub fn paint_text_right(
-    ui: &Ui,
-    right: f32,
-    y: f32,
-    text: &str,
-    font: egui::FontId,
-    color: Color32,
-) -> f32 {
-    let galley = ui.painter().layout_no_wrap(text.to_owned(), font, color);
-    let size = galley.size();
-    ui.painter().galley(
-        egui::pos2(right - size.x, y - size.y / 2.0),
-        galley,
-        Color32::PLACEHOLDER,
-    );
-    size.x
+/// The width of `text` laid out.
+pub fn measure(ui: &Ui, text: Text) -> f32 {
+    text.layout(ui.ctx()).width()
 }
 
 /// A section label: RECENT, PUBLIC. Small semibold capitals with a little
-/// tracking on macOS; lower case in the terminal look.
-pub fn section_label(text: &str, look: &Look, palette: &Palette) -> egui::text::LayoutJob {
+/// tracking on macOS; the terminal's lower-case caption.
+pub fn section_label(text: &str, look: &Look, palette: &Palette) -> Text {
     if look.terminal {
-        styled(
-            &text.to_lowercase(),
-            crate::theme::regular(crate::theme::TEXT),
-            palette.text,
-            0.0,
-        )
+        Text::one(look, TextRole::OCaption, &text.to_lowercase(), palette.text)
     } else {
-        let size = crate::theme::TEXT_CAPTION;
-        styled(
-            &text.to_uppercase(),
-            crate::theme::semibold(size),
-            palette.dim,
-            0.06 * size,
-        )
+        Text::one(look, TextRole::SectionLabel, text, palette.dim)
     }
 }
+
+/// One keyboard hint: its key, what it does, and whether it is possible.
+pub type Hint<'a> = (&'a str, &'a str, bool);
 
 /// Keyboard hints: each key in the text colour, then what it does in the
 /// muted one. Disabled hints are struck through. Returns their width.
 pub fn key_hints(
     ui: &Ui,
-    x: f32,
-    y: f32,
-    hints: &[(&str, &str, bool)],
+    (x, y): (f32, f32),
+    hints: &[Hint<'_>],
     gap: f32,
+    look: &Look,
     palette: &Palette,
 ) -> f32 {
-    key_hints_in(ui, x, y, hints, gap, crate::theme::TEXT_SMALL, palette)
+    key_hints_in(ui, (x, y), hints, gap, secondary(look), look, palette)
 }
 
-/// [`key_hints`] at `size` points.
+/// One hint as text: the key, a space, and what it does.
+fn hint_text(hint: &Hint<'_>, role: TextRole, look: &Look, palette: &Palette) -> Text {
+    let (key, label, enabled) = *hint;
+    let (key_color, label_color) = if enabled {
+        (palette.text, palette.dim)
+    } else {
+        (palette.faint, palette.faint)
+    };
+    let mut text = Text::new(look);
+    if !key.is_empty() {
+        text = text.add(role, key, key_color);
+        if !label.is_empty() {
+            text = text.space(role, " ");
+        }
+    }
+    if !label.is_empty() {
+        text = text.add(role, label, label_color);
+    }
+    text
+}
+
+/// [`key_hints`] in `role`.
 pub fn key_hints_in(
     ui: &Ui,
-    x: f32,
-    y: f32,
-    hints: &[(&str, &str, bool)],
+    (x, y): (f32, f32),
+    hints: &[Hint<'_>],
     gap: f32,
-    size: f32,
+    role: TextRole,
+    look: &Look,
     palette: &Palette,
 ) -> f32 {
-    let font = crate::theme::regular(size);
     let mut left = x;
-    for (index, (key, label, enabled)) in hints.iter().enumerate() {
+    for (index, hint) in hints.iter().enumerate() {
         if index > 0 {
             left += gap;
         }
         let start = left;
-        let (key_color, label_color) = if *enabled {
-            (palette.text, palette.dim)
-        } else {
-            (palette.faint, palette.faint)
-        };
-        if !key.is_empty() {
-            left += paint_text(ui, left, y, key, font.clone(), key_color);
-            if !label.is_empty() {
-                left += paint_text(ui, left, y, " ", font.clone(), label_color);
-            }
-        }
-        left += paint_text(ui, left, y, label, font.clone(), label_color);
-        if !enabled {
+        left += paint_text(ui, left, y, hint_text(hint, role, look, palette));
+        if !hint.2 {
             ui.painter().hline(
                 egui::Rangef::new(start, left),
                 y,
@@ -894,24 +899,16 @@ pub fn key_hints_in(
 }
 
 /// The width `hints` take in [`key_hints`].
-pub fn key_hints_width(ui: &Ui, hints: &[(&str, &str, bool)], gap: f32) -> f32 {
-    let font = crate::theme::regular(crate::theme::TEXT_SMALL);
-    let measure = |text: &str| {
-        ui.painter()
-            .layout_no_wrap(text.to_owned(), font.clone(), Color32::WHITE)
-            .size()
-            .x
-    };
+pub fn key_hints_width(
+    ui: &Ui,
+    hints: &[Hint<'_>],
+    gap: f32,
+    look: &Look,
+    palette: &Palette,
+) -> f32 {
     hints
         .iter()
-        .map(|(key, label, _)| {
-            let space = if key.is_empty() || label.is_empty() {
-                String::new()
-            } else {
-                " ".into()
-            };
-            measure(&format!("{key}{space}{label}"))
-        })
+        .map(|hint| measure(ui, hint_text(hint, secondary(look), look, palette)))
         .sum::<f32>()
         + gap * hints.len().saturating_sub(1) as f32
 }
@@ -931,38 +928,35 @@ pub fn filter_field(
     let corner = CornerRadius::same(if look.terminal { 3 } else { look.radius });
     // The box goes under the text, so its place is kept before the field.
     let backdrop = ui.painter().add(egui::Shape::Noop);
-    let font = crate::theme::regular(style.text_size);
-    let slash_font = crate::theme::semibold(crate::theme::TEXT);
-    // macOS: 10 in, a 14 pt magnifier, 8 to the text. Terminal: 8 in, a
-    // bold accent slash, 8 to the text.
-    let lead = if look.terminal {
-        8.0 + ui
-            .painter()
-            .layout_no_wrap("/".into(), slash_font.clone(), Color32::WHITE)
-            .size()
-            .x
-            + 8.0
-    } else {
-        32.0
+    let slash = Text::one(look, TextRole::OGroup, "/", palette.accent).layout(ui.ctx());
+    // As the design's fields: a 1 pt border outside the padding (boxed), 10
+    // in, a 14 pt magnifier and 8 (macOS), or 8 in, a bold accent slash and
+    // 8, 10 on a bare line (terminal); then the input's own 2 pt padding,
+    // which the design keeps.
+    let border = if style.boxed { 1.0 } else { 0.0 };
+    let (pad, mark, gap) = match (look.terminal, style.boxed) {
+        (true, true) => (8.0, slash.width(), 8.0),
+        (true, false) => (8.0, slash.width(), 10.0),
+        (false, _) => (10.0, 14.0, 8.0),
     };
+    let lead = border + pad + mark + gap + 2.0;
     // The text's line, centred in the box.
-    let line = ui.fonts_mut(|fonts| fonts.row_height(&font));
+    let line = style.role.row_height(ui.ctx(), look.faces);
     let inner = Rect::from_min_max(
         egui::pos2(rect.left() + lead, rect.center().y - line / 2.0),
         egui::pos2(rect.right() - 8.0, rect.center().y + line / 2.0),
     );
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(inner));
+    let mut layouter = crate::typography::layouter(look, style.role, palette.text);
+    let placeholder = Text::one(look, style.role, hint, palette.dim).layout(ui.ctx());
     let response = child.add(
         egui::TextEdit::singleline(text)
-            .font(font.clone())
+            .font(style.role.font_id(look.faces))
             .frame(egui::Frame::NONE)
             .margin(egui::Margin::ZERO)
             .desired_width(inner.width())
-            .hint_text(
-                egui::RichText::new(hint)
-                    .color(palette.dim)
-                    .font(font.clone()),
-            ),
+            .hint_text(placeholder.galley)
+            .layouter(&mut layouter),
     );
     let focused = response.has_focus();
     let painter = ui.painter();
@@ -984,19 +978,12 @@ pub fn filter_field(
         painter.rect_stroke(rect, corner, Stroke::new(width, border), StrokeKind::Inside);
     }
     if look.terminal {
-        paint_text(
-            ui,
-            rect.left() + 8.0,
-            rect.center().y,
-            "/",
-            slash_font,
-            palette.accent,
-        );
+        slash.paint_left(ui.painter(), rect.left() + border + pad, rect.center().y);
     } else {
         Icon::Search.image(palette.dim, 14.0).paint_at(
             ui,
             Rect::from_center_size(
-                egui::pos2(rect.left() + 17.0, rect.center().y),
+                egui::pos2(rect.left() + border + pad + 7.0, rect.center().y),
                 vec2(14.0, 14.0),
             ),
         );
@@ -1005,12 +992,12 @@ pub fn filter_field(
 }
 
 /// How a [`filter_field`] draws: its fill (none on its bar's colour), its
-/// box, and its text size.
+/// box, and its text's role.
 #[derive(Clone, Copy)]
 pub struct FieldStyle {
     pub fill: Option<Color32>,
     pub boxed: bool,
-    pub text_size: f32,
+    pub role: TextRole,
 }
 
 /// One segment of a [`segmented`] control.
@@ -1031,18 +1018,15 @@ pub fn segmented(
     look: &Look,
     palette: &Palette,
 ) -> Option<usize> {
-    let font = crate::theme::regular(crate::theme::TEXT_LABEL);
+    let role = TextRole::pick(look, TextRole::FieldLabel, TextRole::OCaption);
+    let label = |text: &str, color| Text::one(look, role, text, color);
     // Terminal text segments fit their words, 6 each side; macOS icons sit
     // in fixed cells.
     let widths: Vec<f32> = segments
         .iter()
         .map(|part| match part {
             Segment::Text(text) if look.terminal => {
-                ui.painter()
-                    .layout_no_wrap((*text).to_owned(), font.clone(), Color32::WHITE)
-                    .size()
-                    .x
-                    + 12.0
+                measure(ui, label(text, Color32::PLACEHOLDER)) + 12.0
             }
             _ => segment.x,
         })
@@ -1120,13 +1104,8 @@ pub fn segmented(
                 .paint_at(ui, Rect::from_center_size(cell.center(), vec2(13.0, 13.0)));
         }
         if let Some(text) = text {
-            painter.text(
-                cell.center(),
-                egui::Align2::CENTER_CENTER,
-                text,
-                font.clone(),
-                color,
-            );
+            let laid = label(text, color).layout(ui.ctx());
+            laid.paint(&painter, cell.center() - laid.size() / 2.0);
         }
         if response.hovered() {
             let _ = response.on_hover_text(name);
@@ -1161,11 +1140,10 @@ pub struct ButtonSpec<'a> {
     padding: f32,
     gap: f32,
     radius: Option<u8>,
-    /// Medium weight; primary buttons have it unless told otherwise.
-    medium: Option<bool>,
-    /// The terminal's bold.
-    bold: bool,
-    shortcut_size: f32,
+    /// The text's role; by default the body, medium for primary buttons
+    /// on macOS.
+    role: Option<TextRole>,
+    shortcut_role: Option<TextRole>,
     icon_size: f32,
 }
 
@@ -1182,9 +1160,8 @@ impl<'a> ButtonSpec<'a> {
             padding: 12.0,
             gap: 6.0,
             radius: None,
-            medium: None,
-            bold: false,
-            shortcut_size: crate::theme::TEXT_CAPTION,
+            role: None,
+            shortcut_role: None,
             icon_size: 14.0,
         }
     }
@@ -1195,9 +1172,9 @@ impl<'a> ButtonSpec<'a> {
         self
     }
 
-    /// The shortcut's text size (11 by default).
-    pub fn shortcut_size(mut self, size: f32) -> Self {
-        self.shortcut_size = size;
+    /// The shortcut's role ([`TextRole::Shortcut`] by default).
+    pub fn shortcut_role(mut self, role: TextRole) -> Self {
+        self.shortcut_role = Some(role);
         self
     }
 
@@ -1218,15 +1195,9 @@ impl<'a> ButtonSpec<'a> {
         self
     }
 
-    /// Draws the text in the medium weight (or not).
-    pub fn medium(mut self, medium: bool) -> Self {
-        self.medium = Some(medium);
-        self
-    }
-
-    /// Draws the text bold (the terminal's primary button).
-    pub fn bold(mut self) -> Self {
-        self.bold = true;
+    /// Draws the text in `role`.
+    pub fn role(mut self, role: TextRole) -> Self {
+        self.role = Some(role);
         self
     }
 
@@ -1286,42 +1257,47 @@ impl<'a> ButtonSpec<'a> {
         self
     }
 
-    fn font(&self) -> egui::FontId {
-        let medium = self.medium.unwrap_or(self.kind == ButtonKind::Primary);
-        if self.bold {
-            crate::theme::semibold(crate::theme::TEXT)
-        } else if medium {
-            crate::theme::medium(crate::theme::TEXT)
+    fn text_role(&self, look: &Look) -> TextRole {
+        self.role.unwrap_or(if self.kind == ButtonKind::Primary {
+            TextRole::pick(look, TextRole::UiBodyStrong, TextRole::OGroup)
         } else {
-            crate::theme::regular(crate::theme::TEXT)
-        }
+            body(look)
+        })
     }
 
-    fn shortcut_font(&self) -> egui::FontId {
-        crate::theme::regular(self.shortcut_size)
+    fn shortcut_text_role(&self, look: &Look) -> TextRole {
+        self.shortcut_role.unwrap_or(TextRole::pick(
+            look,
+            TextRole::Shortcut,
+            TextRole::OColumnType,
+        ))
+    }
+
+    fn label_text(&self, look: &Look, color: Color32) -> Text {
+        Text::one(look, self.text_role(look), self.text, color)
+    }
+
+    fn shortcut_text(&self, keys: &str, look: &Look, color: Color32) -> Text {
+        Text::one(look, self.shortcut_text_role(look), keys, color)
     }
 
     /// The button's width.
-    pub fn width(&self, ui: &Ui) -> f32 {
-        let measure = |text: &str, font: egui::FontId| {
-            ui.painter()
-                .layout_no_wrap(text.to_owned(), font, Color32::WHITE)
-                .size()
-                .x
-        };
-        let mut width = 2.0 * self.padding + measure(self.text, self.font());
+    pub fn width(&self, ui: &Ui, look: &Look) -> f32 {
+        let mut width =
+            2.0 * self.padding + measure(ui, self.label_text(look, Color32::PLACEHOLDER));
         if self.icon.is_some() {
             width += self.icon_size + self.gap;
         }
         if let Some(shortcut) = self.shortcut {
-            width += self.gap + measure(shortcut, self.shortcut_font());
+            width +=
+                self.gap + measure(ui, self.shortcut_text(shortcut, look, Color32::PLACEHOLDER));
         }
         width.ceil()
     }
 
     /// Allocates the button in the layout, `height` tall.
     pub fn show(self, ui: &mut Ui, height: f32, look: &Look, palette: &Palette) -> Response {
-        let (rect, _) = ui.allocate_exact_size(vec2(self.width(ui), height), Sense::hover());
+        let (rect, _) = ui.allocate_exact_size(vec2(self.width(ui, look), height), Sense::hover());
         self.show_at(ui, rect, look, palette)
     }
 
@@ -1411,7 +1387,7 @@ impl<'a> ButtonSpec<'a> {
                 StrokeKind::Outside,
             );
         }
-        let content = self.width(ui) - 2.0 * self.padding;
+        let content = self.width(ui, look) - 2.0 * self.padding;
         let mut x = rect.center().x - content / 2.0;
         let y = rect.center().y;
         if let Some(icon) = self.icon {
@@ -1422,9 +1398,14 @@ impl<'a> ButtonSpec<'a> {
             );
             x += size + self.gap;
         }
-        x += paint_text(ui, x, y, self.text, self.font(), text);
+        x += paint_text(ui, x, y, self.label_text(look, text));
         if let Some(keys) = self.shortcut {
-            paint_text(ui, x + self.gap, y, keys, self.shortcut_font(), shortcut);
+            paint_text(
+                ui,
+                x + self.gap,
+                y,
+                self.shortcut_text(keys, look, shortcut),
+            );
         }
         match self.reason {
             Some(reason) => response.on_hover_text(reason),
@@ -1491,6 +1472,7 @@ mod tests {
     fn the_primary_button_is_announced_by_its_text() {
         let mut harness = crate::testing::Harness::new();
         let look = crate::theme::Look::omarchy();
+        harness.set_look(look);
         let palette = crate::theme::Palette::dark();
         let tree = harness.frame_with(|ui| {
             super::primary_button(ui, "Save & Connect", &look, &palette);
@@ -1643,9 +1625,9 @@ mod tests {
             );
             let mut mono = 0.0;
             harness.frame_with(|ui| {
-                let font = crate::theme::mono(crate::theme::TEXT_MONO);
+                let role = crate::typography::TextRole::MonoSecondary;
                 mono = ui
-                    .add(super::single_in(ui, &mut text, &look, font))
+                    .add(super::single_in(ui, &mut text, &look, role))
                     .rect
                     .height();
             });

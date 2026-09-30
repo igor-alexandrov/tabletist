@@ -1,8 +1,8 @@
 //! The row panel: every field of the selected row, in full.
 
 use egui::{
-    CornerRadius, Frame, Id, Rect, RichText, Sense, Stroke, StrokeKind, TextEdit, WidgetInfo,
-    WidgetType, pos2, vec2,
+    CornerRadius, Frame, Id, Rect, Sense, Stroke, StrokeKind, TextEdit, WidgetInfo, WidgetType,
+    pos2, vec2,
 };
 use std::sync::Arc;
 
@@ -11,14 +11,21 @@ use tabletist_db::{Value, ValueKind};
 use crate::app::App;
 use crate::i18n::gettext;
 use crate::model::{Action, ConnTabId, ObjectTabId};
-use crate::theme::{self, Icon, Look, Palette};
+use crate::theme::{Icon, Look, Palette};
+use crate::typography::{Text, TextRole};
 use crate::ui::format;
 use crate::ui::json_view;
 use crate::ui::widgets;
 
-/// The panel's width when it opens: macOS 344, terminal 460.
+/// The panel's width when it opens: macOS 344 and its 1 pt rule, terminal
+/// 460 and its 2 pt accent edge (the design draws both outside the width).
 fn width(look: &Look) -> f32 {
-    if look.terminal { 460.0 } else { 344.0 }
+    if look.terminal { 462.0 } else { 345.0 }
+}
+
+/// The panel's edge: a 1 pt rule, the terminal's 2 pt accent.
+fn edge(look: &Look) -> f32 {
+    if look.terminal { 2.0 } else { 1.0 }
 }
 
 /// Space at the panel's sides: macOS 16, terminal 14.
@@ -26,9 +33,14 @@ fn side(look: &Look) -> f32 {
     if look.terminal { 14.0 } else { 16.0 }
 }
 
-/// The height of one line of `font`.
-fn line_of(ui: &egui::Ui, font: &egui::FontId) -> f32 {
-    ui.fonts_mut(|fonts| fonts.row_height(font))
+/// The height of one line in `role`.
+fn line_of(ui: &egui::Ui, role: TextRole, look: &Look) -> f32 {
+    role.row_height(ui.ctx(), look.faces)
+}
+
+/// Field labels and notes: 11.5 in both looks.
+fn caption(look: &Look) -> TextRole {
+    TextRole::pick(look, TextRole::FieldLabel, TextRole::OCaption)
 }
 
 /// What the row panel knows about a column besides its name and type.
@@ -88,19 +100,30 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: Object
         .default_size(width(&look))
         .size_range(260.0..=560.0)
         .show_separator_line(false)
-        .frame(Frame::new().fill(palette.window))
+        // The edge sits outside the content, as the design's border does.
+        .frame(
+            Frame::new()
+                .fill(palette.window)
+                .inner_margin(egui::Margin {
+                    left: edge(&look) as i8,
+                    ..Default::default()
+                }),
+        )
         .show(ui, |ui| {
             let full = ui.max_rect();
             // The terminal marks the inspector's edge in the accent, as
             // Omarchy marks a focused window.
             if look.terminal {
                 ui.painter().rect_filled(
-                    Rect::from_min_size(full.min, vec2(2.0, full.height())),
+                    Rect::from_min_size(
+                        full.min - vec2(edge(&look), 0.0),
+                        vec2(edge(&look), full.height()),
+                    ),
                     CornerRadius::ZERO,
                     palette.accent,
                 );
             } else {
-                widgets::vline(ui, full.left() + 0.5, full.y_range(), palette.outline);
+                widgets::vline(ui, full.left() - 0.5, full.y_range(), palette.outline);
             }
             let selected = object
                 .selection
@@ -108,10 +131,14 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: Object
                 .and_then(|(cell, page)| page.rows.get(cell.row).map(|row| (cell, page, row)));
             let Some((cell, page, row)) = selected else {
                 ui.centered_and_justified(|ui| {
-                    ui.label(
-                        RichText::new(gettext(locale, "Select a row to see its fields"))
-                            .color(palette.secondary),
-                    );
+                    Text::one(
+                        &look,
+                        widgets::body(&look),
+                        &gettext(locale, "Select a row to see its fields"),
+                        palette.secondary,
+                    )
+                    .layout(ui.ctx())
+                    .label(ui);
                 });
                 return;
             };
@@ -168,34 +195,35 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: Object
             let can_next = cell.row + 1 < rows;
             if look.terminal {
                 let y = header.top() + 20.0;
-                let font = theme::regular(theme::TEXT);
+                let role = TextRole::OBody;
                 let mut x = header.left() + side;
                 x += widgets::paint_text(
                     ui,
                     x,
                     y,
-                    &gettext(locale, "row"),
-                    theme::semibold(theme::TEXT),
-                    palette.text,
+                    Text::one(
+                        &look,
+                        TextRole::OGroup,
+                        &gettext(locale, "row"),
+                        palette.text,
+                    ),
                 ) + 10.0;
-                let (name, value) = match (&key_column, &key_value) {
-                    (Some(key), Some(value)) => (format!("{key} "), value.clone()),
-                    _ => (String::new(), number.to_string()),
-                };
-                x += widgets::paint_text(ui, x, y, &name, font.clone(), palette.dim);
-                widgets::paint_text(ui, x, y, &value, font, palette.warning);
+                let mut name = Text::new(&look);
+                if let (Some(key), Some(value)) = (&key_column, &key_value) {
+                    name = name.add(role, key, palette.dim).space(role, " ").add(
+                        role,
+                        value,
+                        palette.warning,
+                    );
+                } else {
+                    name = name.add(role, &number.to_string(), palette.warning);
+                }
+                widgets::paint_text(ui, x, y, name);
                 // esc ×: 8 in from the right, 24 tall, 8 at its sides, 6
                 // before the ×; the prev/next hint 10 before it.
-                let small = theme::regular(theme::TEXT_SMALL);
-                let esc_width = 8.0
-                    + ui.painter()
-                        .layout_no_wrap("esc".into(), small.clone(), palette.dim)
-                        .size()
-                        .x
-                    + 6.0
-                    + 10.0
-                    + 8.0
-                    + 2.0;
+                let small = TextRole::OSecondary;
+                let esc_width =
+                    8.0 + small.width(ui.ctx(), look.faces, "esc") + 6.0 + 10.0 + 8.0 + 2.0;
                 let esc = Rect::from_min_size(
                     pos2(header.right() - 8.0 - esc_width, y - 12.0),
                     vec2(esc_width, 24.0),
@@ -209,7 +237,12 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: Object
                     Stroke::new(1.0, palette.outline),
                     StrokeKind::Inside,
                 );
-                widgets::paint_text(ui, esc.left() + 9.0, y, "esc", small, palette.dim);
+                widgets::paint_text(
+                    ui,
+                    esc.left() + 9.0,
+                    y,
+                    Text::one(&look, small, "esc", palette.dim),
+                );
                 Icon::X.image(palette.dim, 10.0).paint_at(
                     ui,
                     Rect::from_center_size(pos2(esc.right() - 9.0 - 5.0, y), vec2(10.0, 10.0)),
@@ -218,8 +251,15 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: Object
                     actions.push(Action::ToggleRowPanel(tab));
                 }
                 let hint = [("[ ]", "prev/next", true)];
-                let width = widgets::key_hints_width(ui, &hint, 0.0);
-                widgets::key_hints(ui, esc.left() - 10.0 - width, y, &hint, 0.0, &palette);
+                let width = widgets::key_hints_width(ui, &hint, 0.0, &look, &palette);
+                widgets::key_hints(
+                    ui,
+                    (esc.left() - 10.0 - width, y),
+                    &hint,
+                    0.0,
+                    &look,
+                    &palette,
+                );
                 for (enabled, step, label) in
                     [(can_prev, -1, "Previous row"), (can_next, 1, "Next row")]
                 {
@@ -251,25 +291,21 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: Object
                     _ => format!("{} {number}", gettext(locale, "Row")),
                 };
                 // The title over the table's name, centred in the 52.
-                let title_font = theme::semibold(theme::TEXT);
-                let sub_font = theme::regular(theme::TEXT_LABEL);
-                let (title_line, sub_line) = (line_of(ui, &title_font), line_of(ui, &sub_font));
+                let (title_role, sub_role) = (TextRole::UiBodySemibold, TextRole::FieldLabel);
+                let (title_line, sub_line) =
+                    (line_of(ui, title_role, &look), line_of(ui, sub_role, &look));
                 let top = header.top() + (52.0 - title_line - sub_line) / 2.0;
                 widgets::paint_label(
                     ui,
                     header.left() + side,
                     top + title_line / 2.0,
-                    &title,
-                    title_font,
-                    palette.text,
+                    Text::one(&look, title_role, &title, palette.text),
                 );
                 widgets::paint_text(
                     ui,
                     header.left() + side,
                     top + title_line + sub_line / 2.0,
-                    &object.object.name,
-                    sub_font,
-                    palette.dim,
+                    Text::one(&look, sub_role, &object.object.name, palette.dim),
                 );
                 // Three 30 pt buttons, 4 apart, 8 in from the right.
                 let y = header.top() + 26.0;
@@ -326,7 +362,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: Object
             }
             // Footer: the editing controls, disabled until editing arrives.
             // Footer: its rule, the buttons (28 or 32), the note under them.
-            let note = line_of(ui, &theme::regular(theme::TEXT_LABEL));
+            let note = line_of(ui, caption(&look), &look);
             let footer_height = if look.terminal {
                 1.0 + 10.0 + 28.0 + 8.0 + note + 10.0
             } else {
@@ -566,7 +602,7 @@ fn field(
         locale,
         fold,
     } = skin;
-    let label_font = theme::regular(theme::TEXT_LABEL);
+    let label_role = caption(look);
     let text = label(&column.name, &column.type_name, column.kind, info, look);
     let doc = json_doc(ui, value, column.kind);
     let width = ui.available_width();
@@ -575,7 +611,7 @@ fn field(
     let label_height = if doc.is_some() && !look.terminal {
         26.0
     } else {
-        line_of(ui, &label_font)
+        line_of(ui, label_role, look)
     };
     let (line, response) = ui.allocate_exact_size(vec2(width, label_height), Sense::hover());
     let name_id = response.id;
@@ -583,18 +619,13 @@ fn field(
     // Cut at the column's edge, as the field's own width allows.
     let room = line.width() - 30.0;
     let shown = crate::ui::grid::ellipsize(&text, room, false, |text| {
-        ui.painter()
-            .layout_no_wrap(text.to_owned(), label_font.clone(), palette.dim)
-            .size()
-            .x
+        label_role.width(ui.ctx(), look.faces, text)
     });
     widgets::paint_text(
         ui,
         line.left(),
         line.center().y,
-        &shown,
-        label_font,
-        palette.dim,
+        Text::one(look, label_role, &shown, palette.dim),
     );
     let copy_label = format!("{} {}", gettext(locale, "Copy"), column.name);
     let hovered = ui.rect_contains_pointer(line.expand2(vec2(16.0, 30.0)));
@@ -606,28 +637,17 @@ fn field(
         );
         let mut child = ui.new_child(egui::UiBuilder::new().max_rect(copy));
         if look.terminal {
-            let hint = [("za", "fold", true), ("y", "copy", true)];
-            let text_width = widgets::key_hints_width(ui, &[("za", "fold", true)], 0.0)
-                + widgets::key_hints_width(ui, &[("y", "copy", true)], 0.0);
-            let _ = text_width;
-            let mut x = line.right();
-            for (key, what, _) in hint.iter().rev() {
-                let item = [(*key, *what, true)];
-                let width = widgets::key_hints_width(ui, &item, 0.0);
-                widgets::key_hints(ui, x - width, line.center().y, &item, 0.0, palette);
-                x -= width + 14.0;
-                if *key == "za" {
-                    break;
-                }
-                widgets::paint_text(
-                    ui,
-                    x + 3.0,
-                    line.center().y,
-                    "·",
-                    theme::regular(theme::TEXT_SMALL),
-                    palette.dim,
-                );
-            }
+            // "za fold · y copy", keys in the text colour, at the right.
+            let role = TextRole::OCaption;
+            let hints = Text::new(look)
+                .add(role, "za", palette.text)
+                .space(role, " ")
+                .add(role, "fold ·", palette.dim)
+                .space(role, " ")
+                .add(role, "y", palette.text)
+                .space(role, " ")
+                .add(role, "copy", palette.dim);
+            widgets::paint_text_right(ui, line.right(), line.center().y, hints);
             if copy_button(&mut child, &copy_label, false, look, palette).clicked() {
                 ui.ctx().copy_text(format::plain_text(value));
             }
@@ -638,7 +658,16 @@ fn field(
             let id = Id::new(("row-panel-json", tab, object_tab, row, col));
             // "Collapse all": a 24 pt button 6 at its sides, 4 before copy.
             let link_right = copy.left() - 4.0 - 6.0;
-            json_view::fold_all_link(ui, id, doc, link_right, line.center().y, locale, palette);
+            json_view::fold_all_link(
+                ui,
+                id,
+                doc,
+                link_right,
+                line.center().y,
+                locale,
+                look,
+                palette,
+            );
         }
     } else {
         let copy = Rect::from_min_size(
@@ -658,11 +687,14 @@ fn field(
         3.0
     });
     if value.is_null() {
-        ui.label(
-            RichText::new("NULL")
-                .font(theme::data(look))
-                .color(palette.faint),
-        );
+        Text::one(
+            look,
+            crate::ui::grid::data_role(look),
+            "NULL",
+            palette.faint,
+        )
+        .layout(ui.ctx())
+        .label(ui);
         return;
     }
     if let Some(doc) = doc {
@@ -679,7 +711,9 @@ fn field(
         } else {
             Frame::new()
                 .fill(palette.window)
-                .stroke(Stroke::new(widgets::hairline(ui), palette.surface_hover))
+                // The design's 1 pt border outside 12 and 10 of padding
+                // (egui counts the stroke into the margin).
+                .stroke(Stroke::new(1.0, palette.surface_hover))
                 .corner_radius(CornerRadius::same(look.radius))
                 .inner_margin(egui::Margin::symmetric(12, 10))
                 .show(ui, |ui| {
@@ -708,12 +742,12 @@ fn field(
     };
     let shown = format::for_display(&shown);
     // Values in the data face at 13; the terminal's timestamps at 12.
-    let font = if matches!(column.kind, ValueKind::Json | ValueKind::Binary) {
-        theme::mono(theme::TEXT_MONO)
+    let role = if matches!(column.kind, ValueKind::Json | ValueKind::Binary) {
+        TextRole::pick(look, TextRole::MonoSecondary, TextRole::OSecondary)
     } else if look.terminal && column.kind == ValueKind::Temporal {
-        theme::mono(theme::TEXT_SMALL)
+        TextRole::OSecondary
     } else {
-        theme::mono(theme::TEXT)
+        TextRole::pick(look, TextRole::InspectorValue, TextRole::OBody)
     };
     // The follow link sits at the value's right.
     let follow = info.target.as_ref().map(|target| {
@@ -732,40 +766,31 @@ fn field(
         Some(hue) if look.terminal => crate::ui::grid::tag_colors(hue, look, palette).0,
         _ => palette.text,
     };
+    let small = widgets::secondary(look);
     ui.horizontal_top(|ui| {
         let link = follow.as_ref().map_or(0.0, |(text, _)| {
-            ui.painter()
-                .layout_no_wrap(
-                    text.clone(),
-                    theme::regular(theme::TEXT_SMALL),
-                    palette.accent,
-                )
-                .size()
-                .x
-                + 12.0
+            small.width(ui.ctx(), look.faces, text) + 12.0
         });
         let room = (ui.available_width() - link).max(24.0);
         ui.allocate_ui(vec2(room, 0.0), |ui| {
+            let mut layouter = crate::typography::layouter(look, role, color);
             ui.add(
                 TextEdit::multiline(&mut shown.as_str())
-                    .font(font)
-                    .text_color(color)
+                    .font(role.font_id(look.faces))
                     // Flush with the field name above.
                     .frame(egui::Frame::NONE)
                     .margin(egui::Margin::ZERO)
                     .desired_width(room)
-                    .desired_rows(1),
+                    .desired_rows(1)
+                    .layouter(&mut layouter),
             )
             .labelled_by(name_id);
         });
         if let Some((text, target)) = follow {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
-                let font = theme::regular(theme::TEXT_SMALL);
-                let color = palette.accent;
-                let link = ui.add(
-                    egui::Label::new(RichText::new(&text).font(font).color(color))
-                        .sense(Sense::click()),
-                );
+                let link = Text::one(look, small, &text, palette.accent)
+                    .layout(ui.ctx())
+                    .label_sense(ui, Sense::click());
                 let name = format!("{} {}", gettext(locale, "Open"), target.name);
                 link.widget_info(|| WidgetInfo::labeled(WidgetType::Link, true, &name));
                 if link.clicked() {
@@ -785,7 +810,11 @@ fn field(
         } else {
             format!("{} ({size})", gettext(locale, "Show all"))
         };
-        if ui.link(label).clicked() {
+        let link = Text::one(look, small, &label, palette.accent)
+            .layout(ui.ctx())
+            .label_sense(ui, Sense::click());
+        link.widget_info(|| WidgetInfo::labeled(WidgetType::Link, true, &label));
+        if link.clicked() {
             ui.data_mut(|data| data.insert_temp(expanded_id, !expanded));
         }
     }
@@ -843,8 +872,8 @@ fn attachment_card(
     let width = ui.available_width();
     if look.terminal {
         // A bordered line: a 14 pt icon, the name, its size; 6 and 8 in.
-        let name_font = theme::regular(theme::TEXT);
-        let height = line_of(ui, &name_font) + 12.0 + 2.0;
+        let name_role = TextRole::OBody;
+        let height = line_of(ui, name_role, look) + 12.0 + 2.0;
         let (rect, _) = ui.allocate_exact_size(vec2(width, height), Sense::hover());
         ui.painter().rect_stroke(
             rect,
@@ -858,7 +887,13 @@ fn attachment_card(
             Rect::from_center_size(pos2(rect.left() + 9.0 + 7.0, y), vec2(14.0, 14.0)),
         );
         let x = rect.left() + 9.0 + 14.0 + 8.0;
-        let x = x + widgets::paint_text(ui, x, y, &file.filename, name_font, palette.text) + 8.0;
+        let x =
+            x + widgets::paint_text(
+                ui,
+                x,
+                y,
+                Text::one(look, name_role, &file.filename, palette.text),
+            ) + 8.0;
         let details: Vec<&str> = file
             .details
             .split(" · ")
@@ -868,9 +903,12 @@ fn attachment_card(
             ui,
             x,
             y,
-            &details.join(" · ").replace(" × ", "×"),
-            theme::regular(theme::TEXT_SMALL),
-            palette.dim,
+            Text::one(
+                look,
+                TextRole::OSecondary,
+                &details.join(" · ").replace(" × ", "×"),
+                palette.dim,
+            ),
         );
         return;
     }
@@ -894,25 +932,20 @@ fn attachment_card(
     icon.image(palette.faint, 18.0)
         .paint_at(ui, Rect::from_center_size(tile.center(), vec2(18.0, 18.0)));
     let x = tile.right() + 10.0;
-    let name_font = theme::medium(theme::TEXT);
-    let detail_font = theme::regular(theme::TEXT_LABEL);
-    let (name_line, detail_line) = (line_of(ui, &name_font), line_of(ui, &detail_font));
+    let (name_role, detail_role) = (TextRole::UiBodyStrong, TextRole::FieldLabel);
+    let (name_line, detail_line) = (line_of(ui, name_role, look), line_of(ui, detail_role, look));
     let top = rect.center().y - (name_line + 2.0 + detail_line) / 2.0;
     widgets::paint_text(
         ui,
         x,
         top + name_line / 2.0,
-        &file.filename,
-        name_font,
-        palette.text,
+        Text::one(look, name_role, &file.filename, palette.text),
     );
     widgets::paint_text(
         ui,
         x,
         top + name_line + 2.0 + detail_line / 2.0,
-        &file.details,
-        detail_font,
-        palette.dim,
+        Text::one(look, detail_role, &file.details, palette.dim),
     );
 }
 
@@ -943,13 +976,8 @@ fn editing_footer(
     let inner = rect.shrink2(vec2(side, 0.0));
     let gap = 6.0;
     let top = rect.top() + 1.0 + if look.terminal { 10.0 } else { 12.0 };
-    let font = theme::regular(theme::TEXT);
-    let measure = |text: &str| {
-        ui.painter()
-            .layout_no_wrap(text.to_owned(), font.clone(), palette.text)
-            .size()
-            .x
-    };
+    let role = widgets::body(look);
+    let measure = |text: &str| role.width(ui.ctx(), look.faces, text);
     let height = if look.terminal {
         // Three equal cells, dashed, at 55%: the keys in the text colour.
         let keys = [("e", "edit"), ("yy p", "duplicate"), ("dd", "delete")];
@@ -965,23 +993,16 @@ fn editing_footer(
             response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, false, &name));
             let _ = response.on_hover_text(reason.as_ref());
             dashed(ui, place, faded(palette.outline));
-            let total = measure(key) + measure(&format!(" {label}"));
+            let total = measure(&format!("{key} {label}"));
             let x = place.center().x - total / 2.0;
-            let x = x + widgets::paint_text(
-                ui,
-                x,
-                place.center().y,
-                key,
-                font.clone(),
-                faded(palette.text),
-            );
             widgets::paint_text(
                 ui,
                 x,
                 place.center().y,
-                &format!(" {label}"),
-                font.clone(),
-                faded(palette.dim),
+                Text::new(look)
+                    .add(role, key, faded(palette.text))
+                    .space(role, " ")
+                    .add(role, label, faded(palette.dim)),
             );
         }
         28.0
@@ -1011,26 +1032,34 @@ fn editing_footer(
         }
         32.0
     };
-    let note_font = theme::regular(theme::TEXT_LABEL);
-    let y = top + height + 8.0 + line_of(ui, &note_font) / 2.0;
+    let note_role = caption(look);
+    let y = top + height + 8.0 + line_of(ui, note_role, look) / 2.0;
     if look.terminal {
         widgets::paint_text(
             ui,
             inner.left(),
             y,
-            &gettext(
-                locale,
-                "read-only in 0.1.0 · editing arrives in a later version",
+            Text::one(
+                look,
+                note_role,
+                &gettext(
+                    locale,
+                    "read-only in 0.1.0 · editing arrives in a later version",
+                ),
+                palette.dim,
             ),
-            note_font,
-            palette.dim,
         );
     } else {
         Icon::Lock.image(palette.dim, 11.0).paint_at(
             ui,
             Rect::from_center_size(pos2(inner.left() + 5.5, y), vec2(11.0, 11.0)),
         );
-        widgets::paint_text(ui, inner.left() + 17.0, y, &reason, note_font, palette.dim);
+        widgets::paint_text(
+            ui,
+            inner.left() + 17.0,
+            y,
+            Text::one(look, note_role, &reason, palette.dim),
+        );
     }
 }
 

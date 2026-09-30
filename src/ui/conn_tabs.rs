@@ -1,14 +1,14 @@
 //! The connection tab bar across the top of the window.
 
 use egui::{
-    Align, Frame, Layout, Margin, Rect, RichText, Sense, UiBuilder, WidgetInfo, WidgetType, pos2,
-    vec2,
+    Align, Frame, Layout, Margin, Rect, Sense, UiBuilder, WidgetInfo, WidgetType, pos2, vec2,
 };
 
 use crate::app::App;
 use crate::i18n::gettext;
 use crate::model::{Action, ConnTab, ConnTabContent};
-use crate::theme::{self, Icon};
+use crate::theme::Icon;
+use crate::typography::Text;
 use crate::ui::widgets::icon_button;
 
 pub const HEIGHT: f32 = 36.0;
@@ -167,14 +167,13 @@ fn tab(app: &mut App, ui: &mut egui::Ui, index: usize) -> Rect {
     } else {
         palette.secondary
     };
-    label_ui.add(
-        egui::Label::new(
-            RichText::new(&title)
-                .font(theme::regular(theme::TEXT))
-                .color(color),
-        )
-        .truncate()
-        .selectable(false),
-    );
+    let role = crate::ui::widgets::body(&look);
+    let room = label_ui.available_width();
+    let shown = crate::ui::grid::ellipsize(&title, room, false, |text| {
+        role.width(ui.ctx(), look.faces, text)
+    });
+    Text::one(&look, role, &shown, color)
+        .layout(ui.ctx())
+        .label(&mut label_ui);
     rect
 }

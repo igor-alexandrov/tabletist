@@ -1,11 +1,10 @@
 //! Asks whether to trust an SSH host seen for the first time.
 
-use egui::RichText;
-
 use crate::app::App;
 use crate::i18n::gettext;
 use crate::model::{Action, Dialog};
-use crate::theme;
+use crate::typography::Text;
+use crate::ui::widgets;
 
 pub fn show(app: &mut App, ctx: &egui::Context) {
     let locale = app.locale;
@@ -18,34 +17,38 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
     let modal = crate::ui::widgets::modal(egui::Id::new("host-key-prompt"), &look, &palette);
     let modal = modal.show(ctx, |ui| {
         ui.set_width(420.0);
-        ui.label(
-            RichText::new(gettext(locale, "Trust this SSH host?"))
-                .font(theme::semibold(theme::TEXT_TITLE))
-                .color(palette.text),
+        widgets::label(
+            ui,
+            widgets::dialog_title(&look),
+            &gettext(locale, "Trust this SSH host?"),
+            palette.text,
+            &look,
         );
         ui.add_space(4.0);
-        ui.label(
-            RichText::new(format!(
-                "{}:{} {}",
-                prompt.host,
-                prompt.port,
-                gettext(
-                    locale,
-                    "has a key this computer has not seen before. \
-                     Compare its fingerprint with the server's before trusting it."
-                )
-            ))
-            .color(palette.secondary),
-        );
-        ui.add_space(6.0);
-        ui.add(
-            egui::Label::new(
-                RichText::new(&prompt.fingerprint)
-                    .font(theme::mono(theme::TEXT_MONO))
-                    .color(palette.text),
+        let message = format!(
+            "{}:{} {}",
+            prompt.host,
+            prompt.port,
+            gettext(
+                locale,
+                "has a key this computer has not seen before. \
+                 Compare its fingerprint with the server's before trusting it."
             )
-            .selectable(true),
         );
+        let width = ui.available_width();
+        Text::one(&look, widgets::body(&look), &message, palette.secondary)
+            .wrap(width)
+            .layout(ui.ctx())
+            .label(ui);
+        ui.add_space(6.0);
+        let fingerprint = Text::one(
+            &look,
+            widgets::code(&look),
+            &prompt.fingerprint,
+            palette.text,
+        )
+        .layout(ui.ctx());
+        ui.add(egui::Label::new(fingerprint.galley).selectable(true));
         ui.add_space(8.0);
         ui.horizontal(|ui| {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -59,7 +62,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                 {
                     actions.push(Action::TrustHostKey);
                 }
-                if ui.button(gettext(locale, "Cancel")).clicked() {
+                if widgets::button(ui, &gettext(locale, "Cancel"), &look).clicked() {
                     actions.push(Action::CancelHostKey);
                 }
             });

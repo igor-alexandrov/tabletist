@@ -5,7 +5,8 @@ use egui::{CornerRadius, Frame, Id, Rect, Sense, WidgetInfo, WidgetType, pos2, v
 use crate::app::App;
 use crate::i18n::gettext;
 use crate::model::{Action, ConnTabId};
-use crate::theme::{self, Icon, Look, Palette};
+use crate::theme::{Icon, Look, Palette};
+use crate::typography::{Text, TextRole};
 use crate::ui::widgets::{self, icon_button};
 
 /// The strip's height, per look.
@@ -103,7 +104,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                                     active: is_active,
                                 };
                                 let response = if look.terminal {
-                                    terminal_tab(ui, &one, bar, &palette)
+                                    terminal_tab(ui, &one, bar, &look, &palette)
                                 } else {
                                     mac_tab(ui, &one, bar, &look, &palette)
                                 };
@@ -216,15 +217,14 @@ fn mac_tab(
 ) -> egui::Response {
     // A preview tab (replaced by the next click) reads a step fainter; the
     // design has no italics.
-    let (font, color) = match (tab.active, tab.pinned) {
-        (true, true) => (theme::medium(theme::TEXT), palette.text),
-        (true, false) => (theme::medium(theme::TEXT), palette.secondary),
-        (false, true) => (theme::regular(theme::TEXT), palette.secondary),
-        (false, false) => (theme::regular(theme::TEXT), palette.dim),
+    let (role, color) = match (tab.active, tab.pinned) {
+        (true, true) => (TextRole::UiBodyStrong, palette.text),
+        (true, false) => (TextRole::UiBodyStrong, palette.secondary),
+        (false, true) => (TextRole::UiBody, palette.secondary),
+        (false, false) => (TextRole::UiBody, palette.dim),
     };
-    let job = widgets::styled(tab.name, font, color, 0.0);
-    let galley = ui.painter().layout_job(job);
-    let width = mac_width(galley.size().x, tab.active);
+    let label = Text::one(look, role, tab.name, color).layout(ui.ctx());
+    let width = mac_width(label.width(), tab.active);
     let (rect, response) = ui.allocate_exact_size(vec2(width, bar.height()), Sense::click());
     let painter = ui.painter();
     if tab.active {
@@ -251,33 +251,33 @@ fn mac_tab(
         pos2(rect.left() + 36.0, rect.top()),
         pos2(text_right, rect.bottom()),
     );
-    ui.painter().with_clip_rect(text_rect).galley(
-        pos2(text_rect.left(), center - galley.size().y / 2.0),
-        galley,
-        egui::Color32::PLACEHOLDER,
+    label.paint_left(
+        &ui.painter().with_clip_rect(text_rect),
+        text_rect.left(),
+        center,
     );
-    let _ = look;
     response
 }
 
 /// The terminal look: a number, then the name; the active tab bold with an
 /// accent line on top.
-fn terminal_tab(ui: &mut egui::Ui, tab: &Tab<'_>, bar: Rect, palette: &Palette) -> egui::Response {
+fn terminal_tab(
+    ui: &mut egui::Ui,
+    tab: &Tab<'_>,
+    bar: Rect,
+    look: &Look,
+    palette: &Palette,
+) -> egui::Response {
     // 12 in, the number, 8, the name, 12 out. Only the active tab's name
     // takes the text colour; a preview tab's reads fainter still.
-    let font = theme::regular(theme::TEXT);
+    let role = TextRole::OBody;
     let number = (tab.index + 1).to_string();
     let name_color = match (tab.active, tab.pinned) {
         (true, _) => palette.text,
         (false, true) => palette.dim,
         (false, false) => palette.faint,
     };
-    let measure = |text: &str| {
-        ui.painter()
-            .layout_no_wrap(text.to_owned(), font.clone(), egui::Color32::WHITE)
-            .size()
-            .x
-    };
+    let measure = |text: &str| role.width(ui.ctx(), look.faces, text);
     let (number_width, name_width) = (measure(&number), measure(tab.name));
     let width = 12.0 + number_width + 8.0 + name_width + 12.0;
     let (rect, response) = ui.allocate_exact_size(vec2(width, bar.height()), Sense::click());
@@ -295,17 +295,13 @@ fn terminal_tab(ui: &mut egui::Ui, tab: &Tab<'_>, bar: Rect, palette: &Palette) 
         ui,
         rect.left() + 12.0,
         y,
-        &number,
-        font.clone(),
-        palette.dim,
+        Text::one(look, role, &number, palette.dim),
     );
     widgets::paint_text(
         ui,
         rect.left() + 12.0 + number_width + 8.0,
         y,
-        tab.name,
-        font,
-        name_color,
+        Text::one(look, role, tab.name, name_color),
     );
     response
 }

@@ -1,18 +1,20 @@
 //! The sidebar: filter, recent objects, the schema picker, and the shown
 //! schema's objects in prefix groups or one flat list.
 
-use egui::{CornerRadius, Id, Rect, RichText, Sense, WidgetInfo, WidgetType, pos2, vec2};
+use egui::{CornerRadius, Id, Rect, Sense, WidgetInfo, WidgetType, pos2, vec2};
 use tabletist_db::{ObjectKind, ObjectRef};
 
 use crate::app::App;
 use crate::i18n::{Locale, gettext};
 use crate::model::{Action, ConnTabId, TreeNode, TreeRow};
-use crate::theme::{self, Icon, Look, Palette};
+use crate::theme::{Icon, Look, Palette};
+use crate::typography::{Text, TextRole};
 use crate::ui::widgets::{self, icon_button};
 
-/// The sidebar's width when it opens, per look.
+/// The sidebar's width when it opens, per look: the design's 264 and 248
+/// and the 1 pt rule it draws outside them.
 fn default_width(look: &Look) -> f32 {
-    if look.terminal { 264.0 } else { 248.0 }
+    if look.terminal { 265.0 } else { 249.0 }
 }
 
 /// Space around the filter field: macOS 12 (8 under), terminal 10 (6).
@@ -20,13 +22,18 @@ fn margin(look: &Look) -> f32 {
     if look.terminal { 10.0 } else { 12.0 }
 }
 
-/// The filter field's height.
+/// The filter field's height: the design's 30 and 34 and the 1 pt border it
+/// draws outside them (its boxes are content-box).
 fn field_height(look: &Look) -> f32 {
-    if look.terminal { 30.0 } else { 34.0 }
+    if look.terminal { 32.0 } else { 36.0 }
 }
 
 /// Recent rows (macOS only).
 const RECENT_ROW: f32 = 28.0;
+
+/// The Reload button's spinner, and a loading row's.
+const RELOAD_SPINNER: f32 = 14.0;
+const ROW_SPINNER: f32 = 12.0;
 
 /// The tree's inset from the sidebar's sides.
 fn tree_inset(look: &Look) -> f32 {
@@ -128,11 +135,15 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
         .resizable(true)
         .default_size(default_width(&look))
         .size_range(160.0..=400.0)
-        .frame(egui::Frame::new().fill(fill))
+        // The rule sits outside the content, as the design's border does.
+        .frame(egui::Frame::new().fill(fill).inner_margin(egui::Margin {
+            right: 1,
+            ..Default::default()
+        }))
         .show_separator_line(false)
         .show(ui, |ui| {
             let full = ui.max_rect();
-            widgets::vline(ui, full.right() - 0.5, full.y_range(), palette.outline);
+            widgets::vline(ui, full.right() + 0.5, full.y_range(), palette.outline);
             let pad = margin(&look);
             ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
             ui.add_space(pad);
@@ -148,7 +159,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                     let style = widgets::FieldStyle {
                         fill: Some(palette.window),
                         boxed: true,
-                        text_size: if look.terminal { 12.5 } else { theme::TEXT },
+                        role: TextRole::pick(&look, TextRole::UiBody, TextRole::OField),
                     };
                     widgets::filter_field(
                         ui,
@@ -192,49 +203,63 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                 ui.horizontal(|ui| {
                     ui.add_space(pad);
                     ui.spinner();
-                    ui.label(gettext(locale, "Loading…"));
+                    Text::one(
+                        &look,
+                        widgets::body(&look),
+                        &gettext(locale, "Loading…"),
+                        palette.text,
+                    )
+                    .layout(ui.ctx())
+                    .label(ui);
                 });
             }
             if nothing {
                 ui.add_space(12.0);
                 ui.vertical_centered(|ui| {
                     ui.spacing_mut().item_spacing.y = 4.0;
-                    ui.label(
-                        RichText::new(gettext(locale, "This database has no schemas you can see."))
-                            .color(palette.secondary),
+                    let note = |ui: &mut egui::Ui, role, text: &str| {
+                        Text::one(&look, role, text, palette.secondary)
+                            .layout(ui.ctx())
+                            .label(ui);
+                    };
+                    note(
+                        ui,
+                        widgets::body(&look),
+                        &gettext(locale, "This database has no schemas you can see."),
                     );
-                    ui.label(
-                        RichText::new(gettext(
+                    note(
+                        ui,
+                        widgets::secondary(&look),
+                        &gettext(
                             locale,
                             "The connected user may lack the privileges to list them.",
-                        ))
-                        .small()
-                        .color(palette.secondary),
+                        ),
                     );
                     if other_databases {
-                        ui.label(
-                            RichText::new(gettext(
-                                locale,
-                                "Or pick another database in the top bar.",
-                            ))
-                            .small()
-                            .color(palette.secondary),
+                        note(
+                            ui,
+                            widgets::secondary(&look),
+                            &gettext(locale, "Or pick another database in the top bar."),
                         );
                     }
                     ui.add_space(6.0);
-                    if ui.button(gettext(locale, "Refresh")).clicked() {
+                    if widgets::button(ui, &gettext(locale, "Refresh"), &look).clicked() {
                         actions.push(Action::RefreshTree(tab));
                     }
                 });
             }
             for error in [schemas_error, shown_error].into_iter().flatten() {
-                ui.horizontal_wrapped(|ui| {
+                ui.horizontal(|ui| {
                     ui.add_space(pad);
-                    ui.label(RichText::new(error).color(palette.danger));
+                    let width = ui.available_width() - pad;
+                    Text::one(&look, widgets::body(&look), &error, palette.danger)
+                        .wrap(width)
+                        .layout(ui.ctx())
+                        .label(ui);
                 });
                 ui.horizontal(|ui| {
                     ui.add_space(pad);
-                    if ui.button(gettext(locale, "Retry")).clicked() {
+                    if widgets::button(ui, &gettext(locale, "Retry"), &look).clicked() {
                         actions.push(Action::RefreshTree(tab));
                     }
                 });
@@ -283,7 +308,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                     });
             });
             if look.terminal {
-                terminal_footer(ui, full, &palette);
+                terminal_footer(ui, full, &look, &palette);
             }
         });
     if reveal_pending && let Some(workspace) = app.workspace_mut(tab) {
@@ -295,37 +320,35 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
 /// The terminal look's key hints under the tree.
 const HINTS: [(&str, &str); 3] = [("ctrl+b", "hide"), ("t", "tree"), ("enter", "open")];
 
-/// The terminal footer's text size and padding (8 above and below, 12 at
-/// the sides), and its height for two lines.
-const FOOTER_TEXT: f32 = theme::TEXT_LABEL;
+/// The terminal footer's padding (8 above and below, 12 at the sides), and
+/// its height for two lines.
 const FOOTER: f32 = 8.0 + 2.0 * 15.0 + 8.0 + 1.0;
 
 /// The sidebar's key hints, with a rule above: keys in the text colour,
 /// the rest muted, wrapping as words do.
-fn terminal_footer(ui: &mut egui::Ui, full: Rect, palette: &Palette) {
+fn terminal_footer(ui: &mut egui::Ui, full: Rect, look: &Look, palette: &Palette) {
     let top = full.bottom() - FOOTER;
     widgets::hline(ui, full.x_range(), top + 0.5, palette.outline);
-    let font = theme::regular(FOOTER_TEXT);
-    let mut job = egui::text::LayoutJob::default();
+    let role = TextRole::OCaption;
+    let mut text = Text::new(look);
     for (index, (key, label)) in HINTS.iter().enumerate() {
-        let muted = egui::TextFormat::simple(font.clone(), palette.dim);
         if index > 0 {
-            job.append(" · ", 0.0, muted.clone());
+            text = text.space(role, " ");
         }
-        job.append(
-            key,
-            0.0,
-            egui::TextFormat::simple(font.clone(), palette.text),
-        );
-        job.append(&format!(" {label}"), 0.0, muted);
+        // Each action carries the dot that separates it from the next.
+        let label = if index + 1 < HINTS.len() {
+            format!("{label} ·")
+        } else {
+            (*label).to_owned()
+        };
+        text = text
+            .add(role, key, palette.text)
+            .space(role, " ")
+            .add(role, &label, palette.dim);
     }
-    job.wrap.max_width = full.width() - 24.0;
-    let galley = ui.painter().layout_job(job);
-    ui.painter().galley(
-        pos2(full.left() + 12.0, top + 1.0 + 8.0),
-        galley,
-        egui::Color32::PLACEHOLDER,
-    );
+    text.wrap(full.width() - 24.0)
+        .layout(ui.ctx())
+        .paint(ui.painter(), pos2(full.left() + 12.0, top + 1.0 + 8.0));
 }
 
 /// The Recent section: the objects opened lately, newest first.
@@ -340,10 +363,10 @@ fn recent_section(
 ) {
     let width = ui.available_width();
     // The label: 4 above and below, 16 in.
-    let label_job = widgets::section_label("Recent", look, palette);
-    let label_height = ui.painter().layout_job(label_job.clone()).size().y + 8.0;
+    let label_text = widgets::section_label("Recent", look, palette).layout(ui.ctx());
+    let label_height = label_text.height() + 8.0;
     let (label, _) = ui.allocate_exact_size(vec2(width, label_height), Sense::hover());
-    widgets::paint_job(ui, label.left() + 16.0, label.center().y, label_job);
+    label_text.paint_left(ui.painter(), label.left() + 16.0, label.center().y);
     for (object, kind) in recent {
         let (row, response) = ui.allocate_exact_size(vec2(width, RECENT_ROW), Sense::click());
         let name = object.name.clone();
@@ -352,19 +375,21 @@ fn recent_section(
         });
         let selected = Some(object) == active;
         widgets::selection(ui, row, selected, response.hovered(), look, palette);
-        let (font, color) = if selected {
-            (theme::medium(theme::TEXT), palette.accent_hover)
+        let (role, color) = if selected {
+            (TextRole::UiBodyStrong, palette.accent_hover)
         } else {
-            (theme::regular(theme::TEXT), palette.text)
+            (TextRole::UiBody, palette.text)
         };
         let room = row.width() - 32.0;
         let shown = crate::ui::grid::ellipsize(&object.name, room, false, |text| {
-            ui.painter()
-                .layout_no_wrap(text.to_owned(), font.clone(), color)
-                .size()
-                .x
+            role.width(ui.ctx(), look.faces, text)
         });
-        widgets::paint_text(ui, row.left() + 16.0, row.center().y, &shown, font, color);
+        widgets::paint_text(
+            ui,
+            row.left() + 16.0,
+            row.center().y,
+            Text::one(look, role, &shown, color),
+        );
         if response.clicked() {
             actions.push(Action::OpenObject {
                 tab,
@@ -419,10 +444,8 @@ fn schema_header(
     let center = rect.center().y;
     // The schema: a menu of the others.
     if let Some(schema) = shown {
-        let galley = ui
-            .painter()
-            .layout_job(widgets::section_label(schema, look, palette));
-        let text_width = galley.size().x;
+        let label = widgets::section_label(schema, look, palette).layout(ui.ctx());
+        let text_width = label.width();
         let (glyph_width, gap) = if look.terminal {
             (8.0, 4.0)
         } else {
@@ -443,20 +466,11 @@ fn schema_header(
             ui.painter()
                 .rect_filled(hit, CornerRadius::same(6), palette.surface);
         }
-        ui.painter().galley(
-            pos2(left, center - galley.size().y / 2.0),
-            galley,
-            egui::Color32::PLACEHOLDER,
-        );
+        label.paint_left(ui.painter(), left, center);
         let glyph = pos2(left + text_width + gap + glyph_width / 2.0, center);
         if look.terminal {
-            ui.painter().text(
-                glyph,
-                egui::Align2::CENTER_CENTER,
-                "▾",
-                theme::regular(theme::TEXT_LABEL),
-                palette.dim,
-            );
+            let mark = Text::one(look, TextRole::OCaption, "▾", palette.dim).layout(ui.ctx());
+            mark.paint(ui.painter(), glyph - mark.size() / 2.0);
         } else {
             Icon::ChevronDown
                 .image(palette.secondary, 10.0)
@@ -465,8 +479,13 @@ fn schema_header(
         egui::Popup::menu(&response).show(|ui| {
             ui.set_min_width(160.0);
             for other in schemas {
+                let text = Text::one(look, widgets::body(look), other, egui::Color32::PLACEHOLDER)
+                    .layout(ui.ctx());
                 if ui
-                    .selectable_label(Some(other.as_str()) == shown, other)
+                    .add(egui::Button::selectable(
+                        Some(other.as_str()) == shown,
+                        text.galley,
+                    ))
                     .clicked()
                 {
                     actions.push(Action::ShowSchema {
@@ -484,7 +503,7 @@ fn schema_header(
         let refresh = Rect::from_min_size(pos2(right - 28.0, center - 14.0), vec2(28.0, 28.0));
         let mut child = ui.new_child(egui::UiBuilder::new().max_rect(refresh));
         if loading {
-            egui::Spinner::new().size(14.0).paint_at(
+            egui::Spinner::new().size(RELOAD_SPINNER).paint_at(
                 &child,
                 Rect::from_center_size(refresh.center(), vec2(14.0, 14.0)),
             );
@@ -519,17 +538,10 @@ fn schema_header(
         )
     };
     // The switch's size, measured as `segmented` lays it out.
-    let font = theme::regular(theme::TEXT_LABEL);
     let cells: f32 = if look.terminal {
         ["tree", "flat"]
             .iter()
-            .map(|text| {
-                ui.painter()
-                    .layout_no_wrap((*text).to_owned(), font.clone(), egui::Color32::WHITE)
-                    .size()
-                    .x
-                    + 12.0
-            })
+            .map(|text| TextRole::OCaption.width(ui.ctx(), look.faces, text) + 12.0)
             .sum()
     } else {
         2.0 * segment.x
@@ -581,14 +593,7 @@ fn label_x(rect: Rect, depth: u8, look: &Look, glyph: f32) -> f32 {
 /// The width of the fold mark: macOS's 12 pt chevron, the terminal's ▾.
 fn glyph_width(ui: &egui::Ui, look: &Look) -> f32 {
     if look.terminal {
-        ui.painter()
-            .layout_no_wrap(
-                "▾".into(),
-                theme::regular(theme::TEXT),
-                egui::Color32::WHITE,
-            )
-            .size()
-            .x
+        TextRole::OBody.width(ui.ctx(), look.faces, "▾")
     } else {
         12.0
     }
@@ -604,7 +609,7 @@ fn tree_row(
     actions: &mut Vec<Action>,
 ) {
     let Skin { look, palette } = skin;
-    let small = theme::regular(theme::TEXT_SMALL);
+    let small = widgets::secondary(look);
     // A quiet note, not a row: the text is never clickable, and a small
     // link after it reloads the tree in case objects appeared since. In a
     // narrow sidebar the note gives way ("…") so the link stays in view.
@@ -616,27 +621,24 @@ fn tree_row(
             ui.spacing_mut().item_spacing.x = 6.0;
             let left = label_x(ui.max_rect(), 0, look, glyph_width(ui, look));
             ui.add_space(left - ui.max_rect().left());
-            let refresh = RichText::new(gettext(locale, "Refresh"))
-                .font(small.clone())
-                .color(palette.accent);
-            let link_width = ui
-                .painter()
-                .layout_no_wrap(refresh.text().to_owned(), small.clone(), palette.accent)
-                .size()
-                .x;
+            let refresh = gettext(locale, "Refresh");
+            let link_width = small.width(ui.ctx(), look.faces, &refresh);
             let room = ui.available_width() - link_width - ui.spacing().item_spacing.x;
-            ui.scope(|ui| {
-                ui.set_max_width(room.max(0.0));
-                ui.add(
-                    egui::Label::new(
-                        RichText::new(gettext(locale, "No tables or views"))
-                            .font(small.clone())
-                            .color(palette.secondary),
-                    )
-                    .truncate(),
-                );
+            let note = gettext(locale, "No tables or views");
+            let shown = crate::ui::grid::ellipsize(&note, room.max(0.0), false, |text| {
+                small.width(ui.ctx(), look.faces, text)
             });
-            if ui.link(refresh).clicked() {
+            Text::one(look, small, &shown, palette.secondary)
+                .layout(ui.ctx())
+                .label(ui);
+            let link = Text::one(look, small, &refresh, palette.accent)
+                .layout(ui.ctx())
+                .label_sense(ui, Sense::click());
+            link.widget_info(|| WidgetInfo::labeled(WidgetType::Link, true, refresh.as_ref()));
+            if link.hovered() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+            }
+            if link.clicked() {
                 actions.push(Action::RefreshTree(tab));
             }
         });
@@ -676,12 +678,11 @@ fn tree_row(
     if let Some(expanded) = row.expanded {
         if look.terminal {
             let mark = if expanded { "▾" } else { "▸" };
-            ui.painter().text(
-                pos2(fold_x, center),
-                egui::Align2::LEFT_CENTER,
-                mark,
-                theme::regular(theme::TEXT),
-                palette.dim,
+            widgets::paint_text(
+                ui,
+                fold_x,
+                center,
+                Text::one(look, TextRole::OBody, mark, palette.dim),
             );
         } else {
             let icon = if expanded {
@@ -709,39 +710,31 @@ fn tree_row(
         ),
         TreeNode::Empty(_) => (None, palette.dim),
     };
-    let trailing_font = match (&row.node, look.terminal) {
-        (TreeNode::Group(..), true) => theme::regular(theme::TEXT_LABEL),
-        (TreeNode::Group(..), false) => theme::regular(theme::TEXT_CAPTION),
-        (_, true) => theme::regular(theme::TEXT_CAPTION),
-        (_, false) => theme::regular(10.5),
+    let trailing_role = match (&row.node, look.terminal) {
+        (TreeNode::Group(..), true) => TextRole::OCaption,
+        (TreeNode::Group(..), false) => TextRole::ColumnType,
+        (_, true) => TextRole::OColumnType,
+        (_, false) => TextRole::TagSmall,
     };
     let trailing_width = trailing.as_ref().map_or(0.0, |text| {
-        let width = ui
-            .painter()
-            .layout_no_wrap(text.clone(), trailing_font.clone(), trailing_color)
-            .size()
-            .x;
         widgets::paint_text_right(
             ui,
             right,
             center,
-            text,
-            trailing_font.clone(),
-            trailing_color,
-        );
-        width
+            Text::one(look, trailing_role, text, trailing_color),
+        )
     });
     // Groups: macOS Plex Mono 500 at 12, the terminal bold. Objects: 13,
     // the selected one medium in the strong accent (macOS) or in the text
     // colour among muted ones (terminal).
-    let (font, color) = match row.node {
-        TreeNode::Group(..) if look.terminal => (theme::semibold(theme::TEXT), palette.text),
-        TreeNode::Group(..) => (theme::mono_medium(theme::TEXT_SMALL), palette.text),
-        _ if selected && look.terminal => (theme::regular(theme::TEXT), palette.text),
-        _ if selected => (theme::medium(theme::TEXT), palette.accent_hover),
-        _ if look.terminal => (theme::regular(theme::TEXT), palette.secondary),
+    let (role, color) = match row.node {
+        TreeNode::Group(..) if look.terminal => (TextRole::OGroup, palette.text),
+        TreeNode::Group(..) => (TextRole::MonoGroup, palette.text),
+        _ if selected && look.terminal => (TextRole::OBody, palette.text),
+        _ if selected => (TextRole::UiBodyStrong, palette.accent_hover),
+        _ if look.terminal => (TextRole::OBody, palette.secondary),
         _ => (
-            theme::regular(theme::TEXT),
+            TextRole::UiBody,
             palette.text.lerp_to_gamma(palette.secondary, 0.37),
         ),
     };
@@ -754,25 +747,18 @@ fn tree_row(
     };
     let room = right - trailing_width - 8.0 - x - marker;
     let shown = crate::ui::grid::ellipsize(&row.label, room, false, |text| {
-        ui.painter()
-            .layout_no_wrap(text.to_owned(), font.clone(), color)
-            .size()
-            .x
+        role.width(ui.ctx(), look.faces, text)
     });
     if shown != row.label || row.label != full_name {
         response.clone().on_hover_text(&full_name);
     }
-    ui.painter().with_clip_rect(rect).text(
-        pos2(x, center),
-        egui::Align2::LEFT_CENTER,
-        shown,
-        font,
-        color,
-    );
+    Text::one(look, role, &shown, color)
+        .layout(ui.ctx())
+        .paint_left(&ui.painter().with_clip_rect(rect), x, center);
     if row.loading {
         let spinner =
             Rect::from_center_size(pos2(highlight.right() - 10.0, center), vec2(12.0, 12.0));
-        egui::Spinner::new().size(12.0).paint_at(ui, spinner);
+        egui::Spinner::new().size(ROW_SPINNER).paint_at(ui, spinner);
     }
     if let Some(error) = &row.error {
         response.clone().on_hover_text(error);

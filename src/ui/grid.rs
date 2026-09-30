@@ -5,13 +5,13 @@
 use std::borrow::Cow;
 
 use egui::{
-    Align2, CornerRadius, Id, Rect, Sense, Stroke, StrokeKind, Ui, WidgetInfo, WidgetType, pos2,
-    vec2,
+    CornerRadius, Id, Rect, Sense, Stroke, StrokeKind, Ui, WidgetInfo, WidgetType, pos2, vec2,
 };
 use tabletist_db::SortDir;
 
 use crate::model::CellPos;
-use crate::theme::{self, Icon, Palette};
+use crate::theme::{DataFont, Icon, Look, Palette};
+use crate::typography::{Text, TextRole};
 use crate::ui::widgets::virtual_rows;
 
 /// The header's height, per look.
@@ -23,6 +23,16 @@ pub fn header_height(look: &crate::theme::Look) -> f32 {
 const GUTTER: f32 = 22.0;
 const MIN_WIDTH: f32 = 48.0;
 const MAX_INITIAL_WIDTH: f32 = 331.0;
+/// A numeric key column's width, as the design's grids fix it: 64 on
+/// macOS, 56 in the terminal (0 elsewhere: sized to its content).
+fn key_width(look: &crate::theme::Look) -> f32 {
+    match (look.terminal, look.faces) {
+        (true, _) => 56.0,
+        (false, crate::theme::Faces::Plex) => 64.0,
+        _ => 0.0,
+    }
+}
+
 /// Space between a cell's edge and its text.
 fn cell_pad(look: &crate::theme::Look) -> f32 {
     if look.terminal { 8.0 } else { 12.0 }
@@ -64,12 +74,40 @@ pub struct GridOutput {
     pub sort_clicked: Option<usize>,
 }
 
-/// How wide `text` is in `font`, in points (laid out once, then cached).
-fn text_width(ui: &Ui, text: &str, font: &egui::FontId) -> f32 {
-    ui.painter()
-        .layout_no_wrap(text.to_owned(), font.clone(), egui::Color32::WHITE)
-        .size()
-        .x
+/// How wide `text` is in `role`, in points (laid out once, then cached).
+fn text_width(ui: &Ui, text: &str, role: TextRole, look: &Look) -> f32 {
+    role.width(ui.ctx(), look.faces, text)
+}
+
+/// The role data is drawn in: monospace on macOS and Omarchy, the body
+/// elsewhere. Row-panel values use it too.
+pub fn data_role(look: &Look) -> TextRole {
+    match look.data_font {
+        DataFont::Proportional => TextRole::UiBody,
+        DataFont::Monospace => TextRole::pick(look, TextRole::GridCell, TextRole::OBody),
+    }
+}
+
+/// Paints `text` in `role` at `x` (its left edge, or its right with
+/// `right`), centred on `y`.
+#[allow(clippy::too_many_arguments)] // the text, its place, and its look
+fn paint(
+    painter: &egui::Painter,
+    ui: &Ui,
+    role: TextRole,
+    text: &str,
+    color: egui::Color32,
+    x: f32,
+    y: f32,
+    right: bool,
+    look: &Look,
+) {
+    let laid = Text::one(look, role, text, color).layout(ui.ctx());
+    if right {
+        laid.paint_right(painter, x, y);
+    } else {
+        laid.paint_left(painter, x, y);
+    }
 }
 
 /// The column under `x`, measured from the first data column's left edge.
@@ -172,7 +210,7 @@ pub fn ellipsize<'t>(
 pub fn initial_widths<'a>(
     columns: &[Column<'_>],
     rows: usize,
-    pad: f32,
+    (pad, key_width): (f32, f32),
     width: &impl Fn(&str) -> f32,
     cell: &mut impl FnMut(usize, usize) -> Cell<'a>,
 ) -> Vec<f32> {
@@ -180,8 +218,14 @@ pub fn initial_widths<'a>(
         .iter()
         .enumerate()
         .map(|(col, column)| {
-            // Room for the key icon and the sort arrow beside the name.
-            let header = width(column.name).max(width(&column.type_line)) + 2.0 * pad + 16.0;
+            // Room for the key icon and the sort arrow beside the name; a
+            // numeric key takes the design's fixed width (its cells rarely
+            // need more).
+            let header = if column.key && column.numeric && key_width > 0.0 {
+                key_width
+            } else {
+                width(column.name).max(width(&column.type_line)) + 2.0 * pad + 16.0
+            };
             let widest = (0..rows.min(SAMPLE_ROWS))
                 .map(|row| {
                     let cell = cell(row, col);
@@ -225,9 +269,15 @@ pub fn show<'a>(
         .data(|data| data.get_temp::<Vec<f32>>(widths_id))
         .filter(|widths| widths.len() == columns.len())
         .unwrap_or_else(|| {
-            let font = theme::data(look);
-            let width = |text: &str| text_width(ui, text, &font);
-            let mut widths = initial_widths(columns, row_count, pad, &width, &mut cell);
+            let role = data_role(look);
+            let width = |text: &str| text_width(ui, text, role, look);
+            let mut widths = initial_widths(
+                columns,
+                row_count,
+                (pad, key_width(look)),
+                &width,
+                &mut cell,
+            );
             // When every column fits, a document column takes what is left,
             // as the design's `1fr`.
             let room = ui.available_width() - gutter;
@@ -303,12 +353,11 @@ pub fn show<'a>(
                 if selected_row {
                     if look.terminal {
                         // The cursor: a bold accent block in the gutter.
-                        painter.text(
-                            pos2(rect.left() + GUTTER / 2.0, rect.center().y),
-                            Align2::CENTER_CENTER,
-                            "▌",
-                            theme::semibold(theme::TEXT),
-                            palette.accent,
+                        let cursor =
+                            Text::one(look, TextRole::OGroup, "▌", palette.accent).layout(ui.ctx());
+                        cursor.paint(
+                            &painter,
+                            pos2(rect.left() + GUTTER / 2.0, rect.center().y) - cursor.size() / 2.0,
                         );
                     } else {
                         let bar = Rect::from_min_size(rect.min, vec2(3.0, rect.height()));
@@ -414,8 +463,8 @@ pub fn show<'a>(
         }
         if hidden > 0 {
             let text = format!("+{hidden}");
-            let font = theme::regular(theme::TEXT_LABEL);
-            let text_width = text_width(ui, &text, &font);
+            let role = TextRole::FieldLabel;
+            let text_width = text_width(ui, &text, role, look);
             // 8 in, the count, 4, a 10 pt chevron, 8; 28 tall, 8 from the
             // grid's top and right.
             let size = vec2(8.0 + text_width + 4.0 + 10.0 + 8.0, 28.0);
@@ -452,12 +501,16 @@ pub fn show<'a>(
                 palette.window,
             );
             painter.rect_filled(pill, CornerRadius::same(14), palette.text);
-            painter.text(
-                pos2(pill.left() + 8.0, pill.center().y),
-                Align2::LEFT_CENTER,
-                text,
-                font,
+            paint(
+                painter,
+                ui,
+                role,
+                &text,
                 palette.window,
+                pill.left() + 8.0,
+                pill.center().y,
+                false,
+                look,
             );
             Icon::ChevronRight.image(palette.window, 10.0).paint_at(
                 ui,
@@ -502,10 +555,12 @@ fn draw_header(
 ) {
     let clip = painter.with_clip_rect(rect.shrink2(vec2(pad / 2.0, 0.0)).intersect(ui.clip_rect()));
     // The name over its type line, the pair centred above the rule.
-    let name_font = theme::semibold(theme::TEXT);
-    let type_font = theme::regular(theme::TEXT_CAPTION);
-    let (name_line, type_line) =
-        ui.fonts_mut(|fonts| (fonts.row_height(&name_font), fonts.row_height(&type_font)));
+    let name_role = TextRole::pick(look, TextRole::UiBodySemibold, TextRole::OGroup);
+    let type_role = TextRole::pick(look, TextRole::ColumnType, TextRole::OColumnType);
+    let (name_line, type_line) = (
+        name_role.row_height(ui.ctx(), look.faces),
+        type_role.row_height(ui.ctx(), look.faces),
+    );
     let top = rect.top() + (rect.height() - 1.0 - name_line - type_line) / 2.0;
     let (name_y, type_y) = (top + name_line / 2.0, top + name_line + type_line / 2.0);
     // Sorted columns name themselves in the accent; the terminal marks the
@@ -527,8 +582,8 @@ fn draw_header(
         (Some(SortDir::Desc), true) => format!("{} ↓", column.name),
         _ => column.name.to_owned(),
     };
-    let name_width = text_width(ui, &arrow_text, &name_font);
-    let type_width = text_width(ui, &column.type_line, &type_font);
+    let name_width = text_width(ui, &arrow_text, name_role, look);
+    let type_width = text_width(ui, &column.type_line, type_role, look);
     // macOS: the key icon 4 before the name, the arrow 4 after it.
     let arrow = if column.sort.is_some() && !look.terminal {
         15.0
@@ -560,12 +615,16 @@ fn draw_header(
             Rect::from_center_size(pos2(at + 5.5, name_y), vec2(11.0, 11.0)),
         );
     }
-    clip.text(
-        pos2(name_x, name_y),
-        Align2::LEFT_CENTER,
+    paint(
+        &clip,
+        ui,
+        name_role,
         &arrow_text,
-        name_font,
         name_color,
+        name_x,
+        name_y,
+        false,
+        look,
     );
     if let Some(dir) = column.sort.filter(|_| !look.terminal) {
         let icon = if dir == SortDir::Asc {
@@ -578,12 +637,16 @@ fn draw_header(
             Rect::from_center_size(pos2(name_x + name_width + 9.5, name_y), vec2(11.0, 11.0)),
         );
     }
-    clip.text(
-        pos2(type_x, type_y),
-        Align2::LEFT_CENTER,
+    paint(
+        &clip,
+        ui,
+        type_role,
         &column.type_line,
-        type_font,
         palette.dim,
+        type_x,
+        type_y,
+        false,
+        look,
     );
 }
 
@@ -599,16 +662,21 @@ fn draw_cell(
 ) {
     let pad = cell_pad(look);
     let clip = painter.with_clip_rect(rect.shrink2(vec2(pad / 2.0, 0.0)).intersect(ui.clip_rect()));
-    let font = theme::data(look);
+    let role = data_role(look);
+    let width = |text: &str, role: TextRole| text_width(ui, text, role, look);
     let center = rect.center().y;
     let room = rect.width() - 2.0 * pad;
     if content.null {
-        clip.text(
-            pos2(rect.left() + pad, center),
-            Align2::LEFT_CENTER,
+        paint(
+            &clip,
+            ui,
+            role,
             "NULL",
-            font,
             palette.faint,
+            rect.left() + pad,
+            center,
+            false,
+            look,
         );
         return;
     }
@@ -617,36 +685,44 @@ fn draw_cell(
             let (color, fill) = tag_colors(hue, look, palette);
             // macOS: a chip in Plex Mono 11.5, 2 above and below, 6 at the
             // sides. Terminal: the text alone, in the tag's colour.
-            let tag_font = if look.terminal {
-                font.clone()
+            let tag_role = if look.terminal {
+                role
             } else {
-                theme::mono(theme::TEXT_LABEL)
+                TextRole::ValueTag
             };
             let shown = ellipsize(&content.text, room - 12.0, false, |text| {
-                text_width(ui, text, &tag_font)
+                width(text, tag_role)
             });
-            let width = text_width(ui, &shown, &tag_font);
+            let text_width = width(&shown, tag_role);
             if let Some(fill) = fill {
-                let height = ui.fonts_mut(|fonts| fonts.row_height(&tag_font)) + 4.0;
+                let height = tag_role.row_height(ui.ctx(), look.faces) + 4.0;
                 let chip = Rect::from_min_size(
                     pos2(rect.left() + pad, center - height / 2.0),
-                    vec2(width + 12.0, height),
+                    vec2(text_width + 12.0, height),
                 );
                 clip.rect_filled(chip, CornerRadius::same(4), fill);
-                clip.text(
-                    pos2(chip.left() + 6.0, center),
-                    Align2::LEFT_CENTER,
-                    shown,
-                    tag_font,
+                paint(
+                    &clip,
+                    ui,
+                    tag_role,
+                    &shown,
                     color,
+                    chip.left() + 6.0,
+                    center,
+                    false,
+                    look,
                 );
             } else {
-                clip.text(
-                    pos2(rect.left() + pad, center),
-                    Align2::LEFT_CENTER,
-                    shown,
-                    font,
+                paint(
+                    &clip,
+                    ui,
+                    role,
+                    &shown,
                     color,
+                    rect.left() + pad,
+                    center,
+                    false,
+                    look,
                 );
             }
         }
@@ -654,20 +730,24 @@ fn draw_cell(
             let mut left = rect.left() + pad;
             if look.terminal {
                 let mark = "{…}";
-                left += text_width(ui, "{…} ", &font);
-                clip.text(
-                    pos2(rect.left() + pad, center),
-                    Align2::LEFT_CENTER,
+                left += width("{…} ", role);
+                paint(
+                    &clip,
+                    ui,
+                    role,
                     mark,
-                    font.clone(),
                     palette.text,
+                    rect.left() + pad,
+                    center,
+                    false,
+                    look,
                 );
             } else {
                 // Plex Mono 11, 1 above and below, 5 at the sides.
-                let chip_font = theme::mono(theme::TEXT_CAPTION);
+                let chip_role = TextRole::JsonChip;
                 let label = format!("{{ {count} }}");
-                let width = text_width(ui, &label, &chip_font) + 10.0 + 2.0;
-                let height = ui.fonts_mut(|fonts| fonts.row_height(&chip_font)) + 2.0 + 2.0;
+                let width = width(&label, chip_role) + 10.0 + 2.0;
+                let height = chip_role.row_height(ui.ctx(), look.faces) + 2.0 + 2.0;
                 let chip =
                     Rect::from_min_size(pos2(left, center - height / 2.0), vec2(width, height));
                 clip.rect_stroke(
@@ -676,13 +756,8 @@ fn draw_cell(
                     Stroke::new(crate::ui::widgets::hairline(ui), palette.border),
                     StrokeKind::Inside,
                 );
-                clip.text(
-                    chip.center(),
-                    Align2::CENTER_CENTER,
-                    label,
-                    chip_font,
-                    palette.dim,
-                );
+                let laid = Text::one(look, chip_role, &label, palette.dim).layout(ui.ctx());
+                laid.paint(&clip, chip.center() - laid.size() / 2.0);
                 left = chip.right() + 8.0;
             }
             let room = rect.right() - pad - left;
@@ -691,13 +766,13 @@ fn draw_cell(
                 // what follows fills the rest from its start.
                 Some((first, rest)) => {
                     let first = crate::ui::format::ellipsize_middle(first, room * 0.7, |text| {
-                        text_width(ui, text, &font)
+                        width(text, role)
                     });
                     let joined = format!("{first} · {rest}");
-                    ellipsize(&joined, room, false, |text| text_width(ui, text, &font)).into_owned()
+                    ellipsize(&joined, room, false, |text| width(text, role)).into_owned()
                 }
                 None => crate::ui::format::ellipsize_middle(&content.text, room, |text| {
-                    text_width(ui, text, &font)
+                    width(text, role)
                 }),
             };
             let color = if look.terminal {
@@ -705,25 +780,23 @@ fn draw_cell(
             } else {
                 palette.secondary
             };
-            clip.text(pos2(left, center), Align2::LEFT_CENTER, shown, font, color);
+            paint(&clip, ui, role, &shown, color, left, center, false, look);
         }
         Style::Plain => {
             let numeric = column.numeric;
-            let (anchor, at) = if numeric {
-                (Align2::RIGHT_CENTER, pos2(rect.right() - pad, center))
+            let x = if numeric {
+                rect.right() - pad
             } else {
-                (Align2::LEFT_CENTER, pos2(rect.left() + pad, center))
+                rect.left() + pad
             };
-            let shown = ellipsize(&content.text, room, numeric, |text| {
-                text_width(ui, text, &font)
-            });
+            let shown = ellipsize(&content.text, room, numeric, |text| width(text, role));
             // A key's values read a step quieter than the data.
             let color = match (column.key, look.terminal) {
                 (true, true) => palette.dim,
                 (true, false) => palette.secondary,
                 _ => palette.text,
             };
-            clip.text(at, anchor, shown, font, color);
+            paint(&clip, ui, role, &shown, color, x, center, numeric, look);
         }
     }
 }
@@ -859,7 +932,7 @@ mod tests {
     #[test]
     fn initial_widths_fit_the_measured_text() {
         let columns = columns();
-        let widths = initial_widths(&columns, 3, 6.0, &width, &mut |_, col| Cell {
+        let widths = initial_widths(&columns, 3, (6.0, 0.0), &width, &mut |_, col| Cell {
             text: if col == 0 {
                 "1628910071209526786".into()
             } else {
@@ -875,7 +948,7 @@ mod tests {
     #[test]
     fn initial_widths_fit_content_within_limits() {
         let columns = columns();
-        let widths = initial_widths(&columns, 3, 6.0, &width, &mut |_, col| Cell {
+        let widths = initial_widths(&columns, 3, (6.0, 0.0), &width, &mut |_, col| Cell {
             text: if col == 0 {
                 "1".into()
             } else {

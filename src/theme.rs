@@ -1,31 +1,15 @@
-//! Palette, typography, icons, and the mapping onto egui's style.
+//! Palette, shape, icons, and the mapping onto egui's style. Fonts and text
+//! styles live in [`crate::typography`].
 
-pub mod desktop_font;
-pub mod faces;
+use egui::{Color32, CornerRadius, Stroke, Vec2};
 
-use egui::{Color32, CornerRadius, FontId, Stroke, Vec2};
+/// The edit connection dialog's title font (it keeps the pre-role helpers).
+pub use crate::typography::legacy::{TEXT_TITLE, semibold};
 
 /// A palette file from the themes directory.
 pub type CustomTheme = fastframe_theme::CustomTheme<Palette>;
 /// The palette files, the shared presets, and Omarchy's live palette.
 pub type Catalog = fastframe_theme::Catalog<Palette>;
-
-// The type scale, in points at 1x. Every text size in the interface comes
-// from here or from the look ([`Look::title`], [`Look::heading`]).
-/// Body text: tree, grid, tabs, fields, buttons.
-pub const TEXT: f32 = 13.0;
-/// Secondary text: counts, subtitles, the status bar, key hints.
-pub const TEXT_SMALL: f32 = 12.0;
-/// Field labels and captions.
-pub const TEXT_LABEL: f32 = 11.5;
-/// Section labels, type lines under column names, shortcut hints.
-pub const TEXT_CAPTION: f32 = 11.0;
-/// Dialog titles.
-pub const TEXT_TITLE: f32 = 17.0;
-/// The picker's heading.
-pub const TEXT_HEADING: f32 = 20.0;
-/// Raw SQL and hex.
-pub const TEXT_MONO: f32 = 12.0;
 
 // Spacing, on a 4 pt grid.
 /// Padding inside panels and bars.
@@ -286,8 +270,8 @@ pub enum DataFont {
     Monospace,
 }
 
-/// The typefaces a look draws with (see [`faces`]).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// The typefaces a look draws with (see [`crate::typography`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Faces {
     /// Inter, with egui's monospace.
     Inter,
@@ -343,14 +327,6 @@ pub struct Look {
     /// raised fill and a soft shadow, and show up and down chevrons.
     pub raised_popups: bool,
     pub data_font: DataFont,
-    /// Grid cells and row-panel values.
-    pub data_size: f32,
-    /// JSON in the row panel.
-    pub json_size: f32,
-    /// The open object's name over the grid.
-    pub title: f32,
-    /// Screen titles (Connections).
-    pub heading: f32,
     pub faces: Faces,
     pub primary: PrimaryStyle,
     /// A keyboard-first terminal interface (Omarchy): lower-case labels
@@ -380,10 +356,6 @@ impl Look {
             panel_separators: true,
             raised_popups: false,
             data_font: DataFont::Proportional,
-            data_size: TEXT,
-            json_size: TEXT_MONO,
-            title: 17.0,
-            heading: TEXT_HEADING,
             faces: Faces::Inter,
             primary: PrimaryStyle::Accent,
             terminal: false,
@@ -410,10 +382,6 @@ impl Look {
             panel_separators: true,
             raised_popups: true,
             data_font: DataFont::Monospace,
-            data_size: 12.5,
-            json_size: 11.5,
-            title: 17.0,
-            heading: TEXT_HEADING,
             faces: Faces::Plex,
             primary: PrimaryStyle::Ink,
             terminal: false,
@@ -440,10 +408,6 @@ impl Look {
             panel_separators: true,
             raised_popups: false,
             data_font: DataFont::Monospace,
-            data_size: TEXT,
-            json_size: TEXT_SMALL,
-            title: 15.0,
-            heading: 14.0,
             faces: Faces::Terminal,
             primary: PrimaryStyle::Outline,
             terminal: true,
@@ -579,31 +543,6 @@ pub fn enable_desktop_themes(catalog: &mut Catalog) {
     });
 }
 
-pub fn regular(size: f32) -> FontId {
-    fastframe_fonts::Weight::Regular.font_id(size)
-}
-
-pub fn medium(size: f32) -> FontId {
-    fastframe_fonts::Weight::Medium.font_id(size)
-}
-
-pub fn semibold(size: f32) -> FontId {
-    fastframe_fonts::Weight::SemiBold.font_id(size)
-}
-
-pub fn mono(size: f32) -> FontId {
-    FontId::monospace(size)
-}
-
-pub fn mono_medium(size: f32) -> FontId {
-    FontId::new(size, egui::FontFamily::Name(faces::MONO_MEDIUM.into()))
-}
-
-/// Bold monospace: 700 where the face has it, else medium (Plex Mono).
-pub fn mono_bold(size: f32) -> FontId {
-    FontId::new(size, egui::FontFamily::Name(faces::MONO_BOLD.into()))
-}
-
 /// How the desktop renders text, read once per process. Tests use the
 /// platform default so they never wait on D-Bus.
 fn text_rendering() -> fastframe_text::TextRendering {
@@ -625,19 +564,11 @@ pub fn install(ctx: &egui::Context, system_fallbacks: bool, look: &Look) {
         .system_fallbacks(system_fallbacks)
         .definitions();
     // Tests and screenshots (no system fallbacks) stay reproducible.
-    faces::configure(&mut fonts, look, system_fallbacks);
+    crate::typography::configure(&mut fonts, look, system_fallbacks);
     text_rendering().apply_to(&mut fonts);
     ctx.set_fonts(fonts);
     egui_extras::install_image_loaders(ctx);
     fastframe_icons::install::<Icon>(ctx);
-}
-
-/// The font data is drawn in: monospace on macOS and Omarchy, Inter elsewhere.
-pub fn data(look: &Look) -> FontId {
-    match look.data_font {
-        DataFont::Monospace => mono(look.data_size),
-        DataFont::Proportional => regular(look.data_size),
-    }
 }
 
 /// Applies the palette and look to egui's own widgets and text styles.
@@ -737,16 +668,7 @@ fn apply_to_style(style: &mut egui::Style, palette: &Palette, look: &Look) {
     visuals.text_cursor.stroke = Stroke::new(2.0, palette.accent);
     visuals.striped = false;
 
-    use egui::FontFamily::{Monospace, Proportional};
-    use egui::TextStyle;
-    style.text_styles = [
-        (TextStyle::Small, FontId::new(TEXT_SMALL, Proportional)),
-        (TextStyle::Body, FontId::new(TEXT, Proportional)),
-        (TextStyle::Button, FontId::new(TEXT, Proportional)),
-        (TextStyle::Heading, FontId::new(TEXT_HEADING, Proportional)),
-        (TextStyle::Monospace, FontId::new(TEXT_MONO, Monospace)),
-    ]
-    .into();
+    style.text_styles = crate::typography::text_styles(look.faces);
     style.spacing.item_spacing = Vec2::new(8.0, 6.0);
     style.spacing.button_padding = Vec2::new(10.0, 4.0);
     style.spacing.interact_size = Vec2::new(40.0, look.control_height);
@@ -809,12 +731,12 @@ mod tests {
 
     #[test]
     fn data_is_monospace_on_macos_and_omarchy() {
-        assert_eq!(data(&Look::omarchy()).family, egui::FontFamily::Monospace);
-        assert_eq!(data(&Look::macos()).family, egui::FontFamily::Monospace);
-        assert_eq!(
-            data(&Look::standard()).family,
-            egui::FontFamily::Proportional
-        );
+        use crate::typography::{Kind, TextRole};
+        use crate::ui::grid::data_role;
+        assert_eq!(data_role(&Look::omarchy()), TextRole::OBody);
+        assert_eq!(data_role(&Look::macos()), TextRole::GridCell);
+        assert_eq!(data_role(&Look::macos()).spec().kind, Kind::Mono);
+        assert_eq!(data_role(&Look::standard()).spec().kind, Kind::Sans);
     }
 
     fn nord() -> CustomTheme {

@@ -1,13 +1,14 @@
 //! A connection tab: the connection bar, the disconnected banner, the
 //! sidebar, the object tabs and the open object.
 
-use egui::{CornerRadius, Frame, Margin, Rect, RichText, Sense, Stroke, StrokeKind, pos2, vec2};
+use egui::{CornerRadius, Frame, Margin, Rect, Sense, Stroke, StrokeKind, pos2, vec2};
 use tabletist_db::TlsMode;
 
 use crate::app::App;
 use crate::i18n::gettext;
 use crate::model::{Action, ConnTabId, ObjectView, SessionStatus};
 use crate::theme::{self, Icon, Look, Palette};
+use crate::typography::{Text, TextRole};
 use crate::ui::widgets;
 
 /// The connection bar's height.
@@ -19,14 +20,6 @@ pub fn bar_height(look: &Look) -> f32 {
 
 /// The macOS bar's stripe in the environment colour.
 const STRIPE: f32 = 3.0;
-
-/// How wide `text` is in `font`.
-fn measure(ui: &egui::Ui, text: &str, font: &egui::FontId) -> f32 {
-    ui.painter()
-        .layout_no_wrap(text.to_owned(), font.clone(), egui::Color32::WHITE)
-        .size()
-        .x
-}
 
 pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
     let look = app.look;
@@ -113,13 +106,14 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                 }
                 None => {
                     ui.centered_and_justified(|ui| {
-                        ui.label(
-                            RichText::new(gettext(
-                                app.locale,
-                                "Select a table or view in the sidebar",
-                            ))
-                            .color(app.palette.secondary),
-                        );
+                        Text::one(
+                            &look,
+                            widgets::body(&look),
+                            &gettext(app.locale, "Select a table or view in the sidebar"),
+                            app.palette.secondary,
+                        )
+                        .layout(ui.ctx())
+                        .label(ui);
                     });
                 }
             }
@@ -237,7 +231,17 @@ fn top_bar(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
             }
             widgets::hline(ui, rect.x_range(), rect.bottom() - 0.5, border);
             if look.terminal {
-                terminal_bar(ui, tab, rect, &info, &env, &palette, &mut actions, locale);
+                terminal_bar(
+                    ui,
+                    tab,
+                    rect,
+                    &info,
+                    &env,
+                    &look,
+                    &palette,
+                    &mut actions,
+                    locale,
+                );
             } else {
                 let stripe = Rect::from_min_size(rect.min, vec2(rect.width(), STRIPE));
                 ui.painter()
@@ -294,17 +298,22 @@ fn mac_bar(
     let hair = Stroke::new(widgets::hairline(ui), rim);
     // The crumb: name, host, "/", database, and the pop-up's chevrons, 8
     // apart and 10 in from its edges.
-    let name_font = theme::semibold(theme::TEXT);
-    let host_font = theme::regular(theme::TEXT);
-    let db_font = theme::mono(theme::TEXT_SMALL);
+    let name = Text::one(look, TextRole::UiBodySemibold, &info.name, palette.text).layout(ui.ctx());
+    let host = Text::one(look, TextRole::UiBody, &info.host, palette.dim).layout(ui.ctx());
+    let slash = Text::one(
+        look,
+        TextRole::UiBody,
+        "/",
+        palette.border.lerp_to_gamma(palette.faint, 0.35),
+    )
+    .layout(ui.ctx());
+    let database =
+        Text::one(look, TextRole::MonoSecondary, &info.database, palette.text).layout(ui.ctx());
     let switchable = info.databases.len() > 1;
-    let mut parts = vec![
-        measure(ui, &info.name, &name_font),
-        measure(ui, &info.host, &host_font),
-    ];
+    let mut parts = vec![name.width(), host.width()];
     if !info.database.is_empty() {
-        parts.push(measure(ui, "/", &host_font));
-        parts.push(measure(ui, &info.database, &db_font));
+        parts.push(slash.width());
+        parts.push(database.width());
     }
     if switchable {
         parts.push(12.0);
@@ -326,18 +335,22 @@ fn mac_bar(
     ui.painter()
         .rect_stroke(crumb, corner, hair, StrokeKind::Inside);
     let mut x = crumb.left() + 10.0;
-    x += widgets::paint_label(ui, x, center, &info.name, name_font, palette.text) + 8.0;
-    x += widgets::paint_label(ui, x, center, &info.host, host_font.clone(), palette.dim) + 8.0;
+    let mut place = |laid: &crate::typography::Laid, announced: bool| {
+        laid.paint_left(ui.painter(), x, center);
+        if announced {
+            widgets::announce(
+                ui,
+                Rect::from_min_size(pos2(x, center - 8.0), vec2(laid.width().max(1.0), 16.0)),
+                laid.galley.text(),
+            );
+        }
+        x += laid.width() + 8.0;
+    };
+    place(&name, true);
+    place(&host, true);
     if !info.database.is_empty() {
-        x += widgets::paint_text(
-            ui,
-            x,
-            center,
-            "/",
-            host_font,
-            palette.border.lerp_to_gamma(palette.faint, 0.35),
-        ) + 8.0;
-        x += widgets::paint_label(ui, x, center, &info.database, db_font, palette.text) + 8.0;
+        place(&slash, false);
+        place(&database, true);
     }
     if switchable {
         Icon::ChevronsUpDown.image(palette.dim, 12.0).paint_at(
@@ -347,8 +360,18 @@ fn mac_bar(
         egui::Popup::menu(&response).show(|ui| {
             ui.set_min_width(crumb.width());
             for database in &info.databases {
+                let text = Text::one(
+                    look,
+                    TextRole::MonoSecondary,
+                    database,
+                    egui::Color32::PLACEHOLDER,
+                )
+                .layout(ui.ctx());
                 if ui
-                    .selectable_label(*database == info.database, database)
+                    .add(egui::Button::selectable(
+                        *database == info.database,
+                        text.galley,
+                    ))
                     .clicked()
                     && *database != info.database
                 {
@@ -363,11 +386,12 @@ fn mac_bar(
     // Pills after the crumb, 12 on: read-only, then TLS and SSH when remote.
     let mut left = crumb.right() + 12.0;
     let mut pill = |icon: Option<Icon>, text: &str, color: egui::Color32| {
-        let font = theme::regular(theme::TEXT_SMALL);
+        let label = Text::one(look, TextRole::Secondary, text, color);
         let icon_width = if icon.is_some() { 12.0 + 6.0 } else { 0.0 };
+        let label = label.layout(ui.ctx());
         let rect = Rect::from_min_size(
             pos2(left, center - 13.0),
-            vec2(20.0 + icon_width + measure(ui, text, &font), 26.0),
+            vec2(20.0 + icon_width + label.width(), 26.0),
         );
         let corner = CornerRadius::same(13);
         ui.painter().rect_filled(rect, corner, face(0.8));
@@ -381,7 +405,12 @@ fn mac_bar(
             );
             x += icon_width;
         }
-        widgets::paint_label(ui, x, center, text, font, color);
+        label.paint_left(ui.painter(), x, center);
+        widgets::announce(
+            ui,
+            Rect::from_min_size(pos2(x, center - 8.0), vec2(label.width(), 16.0)),
+            text,
+        );
         left = rect.right() + 12.0;
     };
     pill(
@@ -405,8 +434,8 @@ fn mac_bar(
     }
     // Disconnect, 12 in from the right: an icon and its label, 6 apart.
     let label = gettext(locale, "Disconnect");
-    let font = theme::regular(theme::TEXT);
-    let width = 10.0 + 14.0 + 6.0 + measure(ui, &label, &font) + 10.0;
+    let text = Text::one(look, TextRole::UiBody, &label, palette.secondary).layout(ui.ctx());
+    let width = 10.0 + 14.0 + 6.0 + text.width() + 10.0;
     let button = Rect::from_min_size(
         pos2(rect.right() - 12.0 - width, center - 16.0),
         vec2(width, 32.0),
@@ -421,14 +450,7 @@ fn mac_bar(
         ui,
         Rect::from_center_size(pos2(button.left() + 17.0, center), vec2(14.0, 14.0)),
     );
-    widgets::paint_text(
-        ui,
-        button.left() + 30.0,
-        center,
-        &label,
-        font,
-        palette.secondary,
-    );
+    text.paint_left(ui.painter(), button.left() + 30.0, center);
     if response.clicked() {
         actions.push(Action::Disconnect(tab));
     }
@@ -443,6 +465,7 @@ fn terminal_bar(
     rect: Rect,
     info: &BarInfo,
     env: &theme::EnvColors,
+    look: &Look,
     palette: &Palette,
     actions: &mut Vec<Action>,
     locale: crate::i18n::Locale,
@@ -451,14 +474,12 @@ fn terminal_bar(
     let connection_line = theme::mix(palette.panel, env.color, 0.4);
     // Twelve in and twelve apart, as the design's row.
     let mut x = rect.left() + 12.0;
-    x += env_badge(ui, x, center, info.env, env, true) + 12.0;
+    x += env_badge(ui, x, center, info.env, env, Badge::Tracked, look) + 12.0;
     x += widgets::paint_label(
         ui,
         x,
         center,
-        &info.name,
-        theme::semibold(theme::TEXT),
-        palette.text,
+        Text::one(look, TextRole::OGroup, &info.name, palette.text),
     ) + 12.0;
     let target = if info.database.is_empty() {
         info.host.clone()
@@ -469,16 +490,18 @@ fn terminal_bar(
         ui,
         x,
         center,
-        &target,
-        theme::regular(theme::TEXT),
-        palette.dim,
+        Text::one(look, TextRole::OBody, &target, palette.dim),
     ) + 12.0;
     let mut tag = |text: &str, color: egui::Color32| {
-        let font = theme::regular(theme::TEXT_LABEL);
-        let line = ui.fonts_mut(|fonts| fonts.row_height(&font));
+        let role = TextRole::OCaption;
+        let line = role.row_height(ui.ctx(), look.faces);
+        let label = Text::one(look, role, text, color);
         let rect = Rect::from_min_size(
             pos2(x, center - (line + 2.0) / 2.0),
-            vec2(measure(ui, text, &font) + 14.0 + 2.0, line + 2.0),
+            vec2(
+                widgets::measure(ui, label_copy(look, role, text)) + 14.0 + 2.0,
+                line + 2.0,
+            ),
         );
         ui.painter().rect_stroke(
             rect,
@@ -486,7 +509,7 @@ fn terminal_bar(
             Stroke::new(1.0, connection_line),
             StrokeKind::Inside,
         );
-        widgets::paint_label(ui, x + 8.0, center, text, font, color);
+        widgets::paint_label(ui, x + 8.0, center, label);
         x = rect.right() + 12.0;
     };
     tag(&gettext(locale, "read-only"), palette.text);
@@ -505,8 +528,7 @@ fn terminal_bar(
     }
     // The way out, a muted note that also answers a click.
     let note = "ctrl+shift+w disconnect";
-    let font = theme::regular(theme::TEXT_SMALL);
-    let width = measure(ui, note, &font);
+    let width = widgets::measure(ui, label_copy(look, TextRole::OSecondary, note));
     let left = rect.right() - 12.0 - width;
     let hit = Rect::from_min_size(
         pos2(left - 4.0, rect.top()),
@@ -520,97 +542,67 @@ fn terminal_bar(
     } else {
         palette.dim
     };
-    widgets::paint_text(ui, left, center, note, font, color);
+    widgets::paint_text(
+        ui,
+        left,
+        center,
+        Text::one(look, TextRole::OSecondary, note, color),
+    );
     if response.clicked() {
         actions.push(Action::Disconnect(tab));
     }
 }
 
-/// An environment badge at `x`, centred on `y`: a rounded tint on macOS, a
-/// solid upper-case tag in the terminal look. Returns its width.
+/// Text for measuring only: never painted, so never recorded.
+fn label_copy(look: &Look, role: TextRole, text: &str) -> Text {
+    Text::one(look, role, text, egui::Color32::PLACEHOLDER)
+}
+
+/// How an environment badge draws.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Badge {
+    /// macOS: a rounded tint, the label as it is.
+    Mac,
+    /// The terminal's solid upper-case tag, letter-spaced (the top bar).
+    Tracked,
+    /// The terminal's tag without letter spacing (the connections list).
+    Plain,
+}
+
+/// An environment badge at `x`, centred on `y`. Returns its width.
+#[allow(clippy::too_many_arguments)] // position, what, and how
 pub fn env_badge(
     ui: &egui::Ui,
     x: f32,
     y: f32,
     env: crate::connections::Environment,
     colors: &theme::EnvColors,
-    terminal: bool,
-) -> f32 {
-    if terminal {
-        return env_badge_in(ui, x, y, env, colors, theme::TEXT_LABEL);
-    }
-    env_badge_styled(ui, x, y, env, colors, None)
-}
-
-/// The terminal's badge without letter spacing, as the connections list
-/// draws it.
-pub fn env_badge_plain(
-    ui: &egui::Ui,
-    x: f32,
-    y: f32,
-    env: crate::connections::Environment,
-    colors: &theme::EnvColors,
-) -> f32 {
-    env_badge_styled(ui, x, y, env, colors, Some((theme::TEXT_LABEL, 0.0)))
-}
-
-/// The terminal's badge with its text at `size` points.
-pub fn env_badge_in(
-    ui: &egui::Ui,
-    x: f32,
-    y: f32,
-    env: crate::connections::Environment,
-    colors: &theme::EnvColors,
-    size: f32,
-) -> f32 {
-    env_badge_styled(ui, x, y, env, colors, Some((size, 0.04 * size)))
-}
-
-fn env_badge_styled(
-    ui: &egui::Ui,
-    x: f32,
-    y: f32,
-    env: crate::connections::Environment,
-    colors: &theme::EnvColors,
-    terminal: Option<(f32, f32)>,
+    style: Badge,
+    look: &Look,
 ) -> f32 {
     // One point above and below the text, seven at its sides.
-    let (text, font, tracking, corner) = if let Some((size, tracking)) = terminal {
-        (
-            env.label(true).to_uppercase(),
-            theme::semibold(size),
-            tracking,
-            3,
-        )
-    } else {
-        (
-            env.label(false).to_owned(),
-            theme::medium(theme::TEXT_CAPTION),
-            0.0,
-            10,
-        )
+    let (text, role, corner) = match style {
+        Badge::Tracked => (env.label(true).to_uppercase(), TextRole::OEnvLabel, 3),
+        Badge::Plain => (env.label(true).to_uppercase(), TextRole::OBadge, 3),
+        Badge::Mac => (env.label(false).to_owned(), TextRole::EnvTag, 10),
     };
     let pad = 7.0;
-    let job = widgets::styled(&text, font, colors.badge_text, tracking);
-    let galley = ui.painter().layout_job(job);
-    let height = galley.size().y + 2.0;
+    let laid = Text::one(look, role, &text, colors.badge_text).layout(ui.ctx());
+    let height = laid.height() + 2.0;
     let rect = Rect::from_min_size(
         pos2(x, y - height / 2.0),
-        vec2(galley.size().x + 2.0 * pad, height),
+        vec2(laid.width() + 2.0 * pad, height),
     );
     ui.painter()
         .rect_filled(rect, CornerRadius::same(corner), colors.badge);
-    ui.painter().galley(
-        pos2(x + pad, y - galley.size().y / 2.0),
-        galley,
-        egui::Color32::PLACEHOLDER,
-    );
+    laid.paint(ui.painter(), pos2(x + pad, y - laid.height() / 2.0));
     rect.width()
 }
 
 /// Omarchy's bottom line: the keys that work here, and the page's range.
 fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
     let palette = app.palette;
+    let look = app.look;
     let Some(workspace) = app.workspace(tab) else {
         return;
     };
@@ -651,13 +643,8 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                 ("y", "copy", true),
                 ("s", "structure", true),
             ];
-            let font = theme::regular(theme::TEXT_SMALL);
-            let measure = |text: &str| {
-                ui.painter()
-                    .layout_no_wrap(text.to_owned(), font.clone(), palette.text)
-                    .size()
-                    .x
-            };
+            let role = TextRole::OSecondary;
+            let measure = |text: &str| widgets::measure(ui, label_copy(&look, role, text));
             let tag = gettext(app.locale, "read-only");
             let tag_width = measure(&tag) + 12.0 + 2.0;
             let summary_width = measure(&summary);
@@ -671,19 +658,22 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
             let mut x = rect.left() + 12.0;
             let shown = (0..=hints.len())
                 .rev()
-                .find(|&count| x + widgets::key_hints_width(ui, &hints[..count], gap) <= limit)
+                .find(|&count| {
+                    x + widgets::key_hints_width(ui, &hints[..count], gap, &look, &palette) <= limit
+                })
                 .unwrap_or(0);
-            x += widgets::key_hints(ui, x, y, &hints[..shown], gap, &palette) + gap;
+            x += widgets::key_hints(ui, (x, y), &hints[..shown], gap, &look, &palette) + gap;
             let separator = measure("│");
             if shown == hints.len() && x + separator + gap + disabled_width <= limit {
-                x += widgets::paint_text(ui, x, y, "│", font.clone(), palette.outline) + gap;
+                x += widgets::paint_text(ui, x, y, Text::one(&look, role, "│", palette.outline))
+                    + gap;
                 // Editing's keys, struck through at half strength.
                 let faded = palette.panel.lerp_to_gamma(palette.dim, 0.5);
                 for (index, text) in disabled.iter().enumerate() {
                     if index > 0 {
                         x += 14.0;
                     }
-                    let width = widgets::paint_text(ui, x, y, text, font.clone(), faded);
+                    let width = widgets::paint_text(ui, x, y, Text::one(&look, role, text, faded));
                     ui.painter().hline(
                         egui::Rangef::new(x, x + width),
                         y + 0.5,
@@ -700,8 +690,13 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                 Stroke::new(1.0, palette.outline),
                 StrokeKind::Inside,
             );
-            widgets::paint_text(ui, x + 7.0, y, &tag, font.clone(), palette.dim);
-            widgets::paint_text_right(ui, rect.right() - 12.0, y, &summary, font, palette.dim);
+            widgets::paint_text(ui, x + 7.0, y, Text::one(&look, role, &tag, palette.dim));
+            widgets::paint_text_right(
+                ui,
+                rect.right() - 12.0,
+                y,
+                Text::one(&look, role, &summary, palette.dim),
+            );
         });
 }
 
@@ -730,7 +725,14 @@ fn banner(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
             ui.horizontal(|ui| {
                 ui.add_space(12.0);
                 ui.spinner();
-                ui.label(gettext(locale, "Connecting…"));
+                Text::one(
+                    &look,
+                    widgets::body(&look),
+                    &gettext(locale, "Connecting…"),
+                    palette.text,
+                )
+                .layout(ui.ctx())
+                .label(ui);
             });
             return;
         }
@@ -760,13 +762,13 @@ fn banner(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                 // The plain sentence, and under it the exact error when it
                 // says more (visible, so keyboards and screen readers get it).
                 ui.vertical(|ui| {
-                    ui.label(RichText::new(&described).color(palette.text));
+                    Text::one(&look, widgets::body(&look), &described, palette.text)
+                        .layout(ui.ctx())
+                        .label(ui);
                     if !raw.is_empty() && raw != described {
-                        ui.label(
-                            RichText::new(&raw)
-                                .size(crate::theme::TEXT_SMALL)
-                                .color(palette.secondary),
-                        );
+                        Text::one(&look, widgets::secondary(&look), &raw, palette.secondary)
+                            .layout(ui.ctx())
+                            .label(ui);
                     }
                 });
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -777,7 +779,8 @@ fn banner(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                         &palette,
                     )
                     .clicked();
-                    edit = ui.button(gettext(locale, "Edit connection")).clicked();
+                    edit =
+                        widgets::button(ui, &gettext(locale, "Edit connection"), &look).clicked();
                 });
             });
         });

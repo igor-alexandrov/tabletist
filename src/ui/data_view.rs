@@ -3,15 +3,16 @@
 //! and the status footer.
 
 use egui::{
-    Align2, CornerRadius, Frame, Id, Margin, Rect, RichText, Sense, Stroke, StrokeKind, WidgetInfo,
-    WidgetType, pos2, vec2,
+    CornerRadius, Frame, Id, Margin, Rect, Sense, Stroke, StrokeKind, WidgetInfo, WidgetType, pos2,
+    vec2,
 };
 use tabletist_db::{SortDir, ValueKind};
 
 use crate::app::App;
 use crate::i18n::gettext;
 use crate::model::{Action, ConnTabId, ObjectTab, ObjectTabId, ObjectView};
-use crate::theme::{self, Icon, Look, Palette};
+use crate::theme::{Icon, Look, Palette};
+use crate::typography::{Text, TextRole};
 use crate::ui::format;
 use crate::ui::grid::{self, Cell, Column, Style};
 use crate::ui::widgets;
@@ -21,9 +22,16 @@ fn side(look: &Look) -> f32 {
     if look.terminal { 16.0 } else { 20.0 }
 }
 
-/// The height of one line of `font`, as CSS's `line-height: normal`.
-fn line(ui: &egui::Ui, font: &egui::FontId) -> f32 {
-    ui.fonts_mut(|fonts| fonts.row_height(font))
+/// The height of one line in `role`, as CSS's `line-height: normal`.
+fn line(ui: &egui::Ui, role: TextRole, look: &Look) -> f32 {
+    role.row_height(ui.ctx(), look.faces)
+}
+
+/// A secondary-text label in the layout.
+fn note(ui: &mut egui::Ui, text: &str, color: egui::Color32, look: &Look) -> egui::Response {
+    Text::one(look, widgets::secondary(look), text, color)
+        .layout(ui.ctx())
+        .label(ui)
 }
 
 /// "13 rows · 6 columns · public", as far as it is known.
@@ -75,15 +83,13 @@ pub fn header(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: Obje
     let mut actions = Vec::new();
     // macOS: 14 above and 12 below the title and its line, 2 apart.
     // Terminal: 12 above and 10 below a line holding a 2 pt underline.
-    let title_font = theme::semibold(look.title);
-    let sub_font = theme::regular(if look.terminal {
-        theme::TEXT
-    } else {
-        theme::TEXT_SMALL
-    });
-    let (title_line, sub_line) = (line(ui, &title_font), line(ui, &sub_font));
+    let title_role = TextRole::pick(&look, TextRole::TableTitle, TextRole::OTableTitle);
+    let sub_role = TextRole::pick(&look, TextRole::Secondary, TextRole::OBody);
+    let (title_line, sub_line) = (line(ui, title_role, &look), line(ui, sub_role, &look));
+    let title = |color| Text::one(&look, title_role, &name, color);
+    let sub = |color| Text::one(&look, sub_role, &subtitle, color);
     let height = if look.terminal {
-        12.0 + title_line.max(line(ui, &theme::regular(theme::TEXT)) + 6.0) + 10.0 + 1.0
+        12.0 + title_line.max(line(ui, TextRole::OBody, &look) + 6.0) + 10.0 + 1.0
     } else {
         14.0 + title_line + 2.0 + sub_line + 12.0 + 1.0
     };
@@ -109,15 +115,14 @@ pub fn header(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: Obje
             if look.terminal {
                 let center = rect.top() + (rect.height() - 1.0 + 2.0) / 2.0;
                 let mut x = left;
-                x += widgets::paint_text(ui, x, center, &name, title_font.clone(), palette.text)
-                    + 16.0;
-                widgets::paint_text(ui, x, center, &subtitle, sub_font.clone(), palette.dim);
+                x += widgets::paint_text(ui, x, center, title(palette.text)) + 16.0;
+                widgets::paint_text(ui, x, center, sub(palette.dim));
                 // `d data  s structure`, the active one underlined.
                 let mut x = right;
                 for (target, label, key) in views.iter().rev() {
                     let label = label.to_lowercase();
-                    let font = theme::regular(theme::TEXT);
-                    let width = widgets::key_hints_width(ui, &[(key, &label, true)], 0.0);
+                    let role = TextRole::OBody;
+                    let width = role.width(ui.ctx(), look.faces, &format!("{key} {label}"));
                     let hit = Rect::from_min_size(
                         pos2(x - width - 4.0, rect.top()),
                         vec2(width + 8.0, rect.height()),
@@ -138,18 +143,17 @@ pub fn header(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: Obje
                         palette.dim
                     };
                     // The key stays muted; the word takes the state's colour.
-                    let key_width =
-                        widgets::paint_text(ui, x - width, center, key, font.clone(), palette.dim);
                     widgets::paint_text(
                         ui,
-                        x - width + key_width,
+                        x - width,
                         center,
-                        &format!(" {label}"),
-                        font.clone(),
-                        color,
+                        Text::new(&look)
+                            .add(role, key, palette.dim)
+                            .space(role, " ")
+                            .add(role, &label, color),
                     );
                     if selected {
-                        let y = center + line(ui, &font) / 2.0 + 2.0;
+                        let y = center + line(ui, role, &look) / 2.0 + 2.0;
                         ui.painter().rect_filled(
                             Rect::from_min_max(pos2(x - width, y), pos2(x, y + 2.0)),
                             CornerRadius::ZERO,
@@ -170,22 +174,16 @@ pub fn header(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: Obje
             let title_y = rect.top() + 14.0 + title_line / 2.0;
             let sub_y = rect.top() + 14.0 + title_line + 2.0 + sub_line / 2.0;
             let center = rect.top() + 14.0 + (title_line + 2.0 + sub_line) / 2.0;
-            let title_width =
-                widgets::paint_text(ui, left, title_y, &name, title_font, palette.text);
-            let sub_width = widgets::paint_text(ui, left, sub_y, &subtitle, sub_font, palette.dim);
+            let title_width = widgets::paint_text(ui, left, title_y, title(palette.text));
+            let sub_width = widgets::paint_text(ui, left, sub_y, sub(palette.dim));
             // The Data/Structure switch 16 + 12 after the title: a 3 pt
             // track round 28 pt segments, 14 at their sides.
             let mut x = left + title_width.max(sub_width) + 16.0 + 12.0;
             let track = Rect::from_min_size(pos2(x, center - 17.0), vec2(0.0, 34.0));
-            let font = theme::regular(theme::TEXT);
             let widths: Vec<f32> = views
                 .iter()
                 .map(|(_, label, _)| {
-                    ui.painter()
-                        .layout_no_wrap(label.to_string(), theme::medium(theme::TEXT), palette.text)
-                        .size()
-                        .x
-                        + 28.0
+                    TextRole::UiBodyStrong.width(ui.ctx(), look.faces, label) + 28.0
                 })
                 .collect();
             let track =
@@ -215,18 +213,13 @@ pub fn header(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: Obje
                     );
                     ui.painter().rect_filled(cell, corner, palette.window);
                 }
-                let (font, color) = if selected {
-                    (theme::medium(theme::TEXT), palette.text)
+                let (role, color) = if selected {
+                    (TextRole::UiBodyStrong, palette.text)
                 } else {
-                    (font.clone(), palette.secondary)
+                    (TextRole::UiBody, palette.secondary)
                 };
-                ui.painter().text(
-                    cell.center(),
-                    Align2::CENTER_CENTER,
-                    label.as_ref(),
-                    font,
-                    color,
-                );
+                let text = Text::one(&look, role, label, color).layout(ui.ctx());
+                text.paint(ui.painter(), cell.center() - text.size() / 2.0);
                 if response.clicked() && !selected {
                     actions.push(Action::SetView {
                         tab,
@@ -240,9 +233,9 @@ pub fn header(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: Obje
             let reason = gettext(locale, "Editing arrives in a later version");
             let button = widgets::ButtonSpec::new(&label)
                 .icon(Icon::Plus)
-                .medium(true)
+                .role(TextRole::UiBodyStrong)
                 .disabled(&reason);
-            let width = button.width(ui);
+            let width = button.width(ui, &look);
             let place = Rect::from_min_size(pos2(right - width, center - 16.0), vec2(width, 32.0));
             button.show_at(ui, place, &look, &palette);
         });
@@ -265,18 +258,13 @@ fn sort_chip(
 ) -> (Rect, bool) {
     let arrow = if dir == SortDir::Asc { "↑" } else { "↓" };
     let column = format!("{column} {arrow}");
-    let measure = |text: &str, font: &egui::FontId| {
-        ui.painter()
-            .layout_no_wrap(text.to_owned(), font.clone(), palette.text)
-            .size()
-            .x
-    };
+    let measure = |text: &str, role: TextRole| role.width(ui.ctx(), look.faces, text);
     if look.terminal {
         // One bordered line: "sort created_at ↑", 8 at its sides.
         let text = format!("{} {column}", gettext(locale, "sort"));
-        let font = theme::regular(theme::TEXT);
-        let height = line(ui, &font) + 2.0 + 2.0;
-        let width = measure(&text, &font) + 16.0 + 2.0;
+        let role = TextRole::OBody;
+        let height = line(ui, role, look) + 2.0 + 2.0;
+        let width = measure(&text, role) + 16.0 + 2.0;
         let x = right_align.map_or(left, |right| right - width);
         let chip = Rect::from_min_size(pos2(x, center - height / 2.0), vec2(width, height));
         ui.painter().rect_stroke(
@@ -285,22 +273,36 @@ fn sort_chip(
             Stroke::new(1.0, palette.outline),
             StrokeKind::Inside,
         );
-        widgets::paint_text(ui, chip.left() + 9.0, center, &text, font, palette.text);
+        widgets::paint_text(
+            ui,
+            chip.left() + 9.0,
+            center,
+            Text::one(look, role, &text, palette.text),
+        );
         return (chip, false);
     }
     // macOS: 10 in, "Sort", 6, the column in Plex Mono 12, 6, a 20 pt ×, 6.
     let word = gettext(locale, "Sort").into_owned();
-    let word_font = theme::regular(theme::TEXT);
-    let column_font = theme::mono(theme::TEXT_SMALL);
+    let (word_role, column_role) = (TextRole::UiBody, TextRole::MonoSecondary);
     let width =
-        10.0 + measure(&word, &word_font) + 6.0 + measure(&column, &column_font) + 6.0 + 20.0 + 6.0;
+        10.0 + measure(&word, word_role) + 6.0 + measure(&column, column_role) + 6.0 + 20.0 + 6.0;
     let x = right_align.map_or(left, |right| right - width);
     let chip = Rect::from_min_size(pos2(x, center - 14.0), vec2(width, 28.0));
     ui.painter()
         .rect_filled(chip, CornerRadius::same(6), palette.surface);
     let mut x = chip.left() + 10.0;
-    x += widgets::paint_text(ui, x, center, &word, word_font, palette.dim) + 6.0;
-    widgets::paint_text(ui, x, center, &column, column_font, palette.text);
+    x += widgets::paint_text(
+        ui,
+        x,
+        center,
+        Text::one(look, word_role, &word, palette.dim),
+    ) + 6.0;
+    widgets::paint_text(
+        ui,
+        x,
+        center,
+        Text::one(look, column_role, &column, palette.text),
+    );
     let hit = Rect::from_min_size(pos2(chip.right() - 26.0, center - 10.0), vec2(20.0, 20.0));
     let response = ui.interact(hit, ui.id().with("clear-sort"), Sense::click());
     let label = gettext(locale, "Clear sort");
@@ -403,16 +405,12 @@ pub fn toolbar(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: Obj
             }
             // Add filter: a dashed button that opens the filter editor.
             let label = gettext(locale, "Add filter");
-            let font = theme::regular(theme::TEXT);
-            let text_width = ui
-                .painter()
-                .layout_no_wrap(label.to_string(), font.clone(), palette.text)
-                .size()
-                .x;
-            // 10 in, a 13 pt funnel, 6, the words, 10.
+            let text_width = TextRole::UiBody.width(ui.ctx(), look.faces, &label);
+            // 28 tall; a 1 pt dashed border, 10 of padding, a 13 pt funnel,
+            // 6, the words (a browser's buttons are border-box).
             let button = Rect::from_min_size(
                 pos2(left, center - 14.0),
-                vec2(10.0 + 13.0 + 6.0 + text_width + 10.0, 28.0),
+                vec2(1.0 + 10.0 + 13.0 + 6.0 + text_width + 10.0 + 1.0, 28.0),
             );
             let response = ui.interact(button, ui.id().with("add-filter"), Sense::click());
             response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, &label));
@@ -428,27 +426,21 @@ pub fn toolbar(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: Obj
             );
             Icon::Funnel.image(palette.secondary, 13.0).paint_at(
                 ui,
-                Rect::from_center_size(pos2(button.left() + 16.5, center), vec2(13.0, 13.0)),
+                Rect::from_center_size(pos2(button.left() + 17.5, center), vec2(13.0, 13.0)),
             );
             widgets::paint_text(
                 ui,
-                button.left() + 29.0,
+                button.left() + 30.0,
                 center,
-                &label,
-                font.clone(),
-                palette.secondary,
+                Text::one(&look, TextRole::UiBody, &label, palette.secondary),
             );
             if response.clicked() {
                 actions.push(Action::ToggleFilterBar(tab));
             }
             let mut x = button.right() + 8.0;
             for (index, text) in filters.iter().enumerate() {
-                let mono = theme::mono(theme::TEXT_SMALL);
-                let width = ui
-                    .painter()
-                    .layout_no_wrap(text.clone(), mono.clone(), palette.text)
-                    .size()
-                    .x;
+                let mono = TextRole::MonoSecondary;
+                let width = mono.width(ui.ctx(), look.faces, text);
                 let chip = Rect::from_min_size(pos2(x, center - 14.0), vec2(width + 42.0, 28.0));
                 ui.painter()
                     .rect_filled(chip, CornerRadius::same(6), palette.surface);
@@ -456,7 +448,12 @@ pub fn toolbar(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: Obj
                     ui,
                     Rect::from_center_size(pos2(chip.left() + 13.0, center), vec2(11.0, 11.0)),
                 );
-                widgets::paint_text(ui, chip.left() + 23.0, center, text, mono, palette.text);
+                widgets::paint_text(
+                    ui,
+                    chip.left() + 23.0,
+                    center,
+                    Text::one(&look, mono, text, palette.text),
+                );
                 let hit =
                     Rect::from_center_size(pos2(chip.right() - 12.0, center), vec2(18.0, 18.0));
                 let remove = ui.interact(hit, ui.id().with(("drop-filter", index)), Sense::click());
@@ -482,7 +479,7 @@ pub fn toolbar(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: Obj
                 }
             }
             if temporal {
-                let small = theme::regular(theme::TEXT_SMALL);
+                let small = TextRole::Secondary;
                 let (said, link) = if full_precision {
                     (
                         gettext(locale, "Timestamps shown in full"),
@@ -494,11 +491,7 @@ pub fn toolbar(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: Obj
                         gettext(locale, "Full precision"),
                     )
                 };
-                let link_width = ui
-                    .painter()
-                    .layout_no_wrap(link.to_string(), small.clone(), palette.accent)
-                    .size()
-                    .x;
+                let link_width = small.width(ui.ctx(), look.faces, &link);
                 let hit = Rect::from_min_size(
                     pos2(right - link_width, center - 9.0),
                     vec2(link_width, 18.0),
@@ -510,14 +503,19 @@ pub fn toolbar(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: Obj
                 } else {
                     palette.accent
                 };
-                widgets::paint_text(ui, hit.left(), center, &link, small.clone(), color);
-                widgets::paint_text_right(
+                widgets::paint_text(
                     ui,
                     hit.left(),
                     center,
-                    &format!("{said} · "),
-                    small,
-                    palette.dim,
+                    Text::one(&look, small, &link, color),
+                );
+                // "… second · ", the space before the link kept out of the text.
+                let space = small.width(ui.ctx(), look.faces, " ");
+                widgets::paint_text_right(
+                    ui,
+                    hit.left() - space,
+                    center,
+                    Text::one(&look, small, &format!("{said} ·"), palette.dim),
                 );
                 if response.clicked() {
                     actions.push(Action::ToggleFullPrecision(tab));
@@ -538,6 +536,7 @@ fn where_line(
 ) {
     let palette = app.palette;
     let locale = app.locale;
+    let look = app.look;
     let focus = app
         .workspace_mut(tab)
         .is_some_and(|workspace| std::mem::take(&mut workspace.focus_where));
@@ -548,33 +547,46 @@ fn where_line(
         return;
     };
     let center = rect.center().y;
-    let font = theme::regular(theme::TEXT);
+    let role = TextRole::OBody;
     let mut x = rect.left();
     x += widgets::paint_text(
         ui,
         x,
         center,
-        "/",
-        theme::semibold(theme::TEXT),
-        palette.accent,
-    ) + 10.0;
-    x += widgets::paint_text(ui, x, center, "where", font.clone(), palette.dim) + 8.0;
-    let line = ui.fonts_mut(|fonts| fonts.row_height(&font));
+        Text::one(
+            &look,
+            TextRole::OGroup,
+            "/",
+            palette.accent,
+        ),
+    ) + 10.0
+        // The design's input keeps its 2 pt padding.
+        + 2.0;
+    // "where", then the clause a space on, as one line of text reads.
+    x += widgets::paint_text(ui, x, center, Text::one(&look, role, "where", palette.dim))
+        + role.width(ui.ctx(), look.faces, " ");
+    let line = role.row_height(ui.ctx(), look.faces);
     let field = Rect::from_min_max(
         pos2(x, center - line / 2.0),
         pos2(rect.right(), center + line / 2.0),
     );
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(field));
+    let mut layouter = crate::typography::layouter(&look, role, palette.secondary);
+    let placeholder = Text::one(
+        &look,
+        role,
+        &gettext(locale, "a condition, then Enter"),
+        palette.faint,
+    )
+    .layout(ui.ctx());
     let response = child.add(
         egui::TextEdit::singleline(&mut object.filter.raw_text)
-            .font(font)
-            .text_color(palette.secondary)
+            .font(role.font_id(look.faces))
             .frame(egui::Frame::NONE)
             .margin(Margin::ZERO)
             .desired_width(field.width())
-            .hint_text(
-                RichText::new(gettext(locale, "a condition, then Enter")).color(palette.faint),
-            ),
+            .hint_text(placeholder.galley)
+            .layouter(&mut layouter),
     );
     response.widget_info(|| WidgetInfo::labeled(WidgetType::TextEdit, true, "WHERE"));
     if focus {
@@ -651,7 +663,11 @@ pub fn footer(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: Obje
         object.rows.is_loading() || object.structure.is_loading() || object.count.is_loading();
     let counting = object.count.is_loading();
     let count_error = object.count.error.as_ref().map(ToString::to_string);
-    let can_count = object.count.value.is_none() && !counting && object.page().is_some();
+    // Counting helps only when the page is not the whole result.
+    let partial = object
+        .page()
+        .is_some_and(|page| page.has_more || object.query.offset > 0);
+    let can_count = object.count.value.is_none() && !counting && partial;
     let page = object.page();
     let filtered = !object.query.filters.is_empty() || object.query.raw_where.is_some();
     let range = page.and_then(|page| {
@@ -700,7 +716,7 @@ pub fn footer(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: Obje
                             }
                             .into_owned()
                         });
-                    ui.label(RichText::new(range).size(theme::TEXT_SMALL).color(status));
+                    note(ui, &range, status, &look);
                     ui.spacing_mut().item_spacing.x = 2.0;
                     for (enabled, icon, label, action) in [
                         (
@@ -726,22 +742,23 @@ pub fn footer(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: Obje
                     ui.spacing_mut().item_spacing.x = 16.0;
                     ui.add_space(14.0);
                     if filtered {
-                        ui.label(
-                            RichText::new(gettext(locale, "Filtered"))
-                                .size(theme::TEXT_SMALL)
-                                .color(palette.accent),
-                        )
-                        .on_hover_text(gettext(locale, "Cmd/Ctrl+F edits the filter"));
+                        note(ui, &gettext(locale, "Filtered"), palette.accent, &look)
+                            .on_hover_text(gettext(locale, "Cmd/Ctrl+F edits the filter"));
                     }
                     if counting {
-                        ui.label(
-                            RichText::new(gettext(locale, "Counting…"))
-                                .size(theme::TEXT_SMALL)
-                                .color(palette.secondary),
-                        );
+                        note(ui, &gettext(locale, "Counting…"), palette.secondary, &look);
                     } else if can_count {
-                        let link = ui
-                            .link(RichText::new(gettext(locale, "Count")).size(theme::TEXT_SMALL));
+                        let link = Text::one(
+                            &look,
+                            widgets::secondary(&look),
+                            &gettext(locale, "Count"),
+                            palette.accent,
+                        )
+                        .layout(ui.ctx())
+                        .label_sense(ui, Sense::click());
+                        link.widget_info(|| {
+                            WidgetInfo::labeled(WidgetType::Link, true, gettext(locale, "Count"))
+                        });
                         let link = match &count_error {
                             Some(error) => link.on_hover_text(error),
                             None => link.on_hover_text(gettext(locale, "Count the rows exactly")),
@@ -751,15 +768,11 @@ pub fn footer(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: Obje
                         }
                     }
                     if unordered {
-                        ui.label(
-                            RichText::new(gettext(locale, "Unordered"))
-                                .size(theme::TEXT_SMALL)
-                                .color(palette.secondary),
-                        )
-                        .on_hover_text(gettext(
-                            locale,
-                            "This object has no primary key, so rows may move between pages.",
-                        ));
+                        note(ui, &gettext(locale, "Unordered"), palette.secondary, &look)
+                            .on_hover_text(gettext(
+                                locale,
+                                "This object has no primary key, so rows may move between pages.",
+                            ));
                     }
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -778,10 +791,11 @@ pub fn footer(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: Obje
                         }
                         ui.spinner();
                     } else if let Some(timing) = &timing {
-                        ui.label(
-                            RichText::new(format!("{} {timing}", gettext(locale, "Query")))
-                                .size(theme::TEXT_SMALL)
-                                .color(status),
+                        note(
+                            ui,
+                            &format!("{} {timing}", gettext(locale, "Query")),
+                            status,
+                            &look,
                         );
                     }
                     let state = if selected {
@@ -793,7 +807,7 @@ pub fn footer(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: Obje
                     } else {
                         gettext(locale, "read-only").into_owned()
                     };
-                    ui.label(RichText::new(state).size(theme::TEXT_SMALL).color(status));
+                    note(ui, &state, status, &look);
                 });
             });
         });
@@ -921,10 +935,13 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: Object
                 } else {
                     gettext(locale, "No rows")
                 };
-                ui.label(RichText::new(text).color(palette.secondary));
+                Text::one(&look, widgets::body(&look), &text, palette.secondary)
+                    .layout(ui.ctx())
+                    .label(ui);
                 if filtered {
                     ui.add_space(8.0);
-                    if ui.button(gettext(locale, "Clear filter")).clicked() {
+                    let label = gettext(locale, "Clear filter");
+                    if widgets::button(ui, &label, &look).clicked() {
                         actions.push(Action::ClearFilters { tab, object_tab });
                     }
                 }
@@ -1054,21 +1071,29 @@ pub fn error_box(
         .inner_margin(Margin::same(12))
         .corner_radius(egui::CornerRadius::same(look.tab_radius))
         .show(ui, |ui| {
-            ui.label(RichText::new(error.to_string()).color(palette.text));
+            let width = ui.available_width();
+            let line = |ui: &mut egui::Ui, text: &str, color| {
+                Text::one(look, widgets::body(look), text, color)
+                    .wrap(width)
+                    .layout(ui.ctx())
+                    .label(ui);
+            };
+            line(ui, &error.to_string(), palette.text);
             if let tabletist_db::Error::Query {
                 code, detail, hint, ..
             } = error
             {
                 for (label, text) in [("Code", code), ("Detail", detail), ("Hint", hint)] {
                     if let Some(text) = text {
-                        ui.label(
-                            RichText::new(format!("{}: {text}", gettext(locale, label)))
-                                .color(palette.secondary),
+                        line(
+                            ui,
+                            &format!("{}: {text}", gettext(locale, label)),
+                            palette.secondary,
                         );
                     }
                 }
             }
-            if ui.button(gettext(locale, "Retry")).clicked() {
+            if widgets::button(ui, &gettext(locale, "Retry"), look).clicked() {
                 retry();
             }
         });

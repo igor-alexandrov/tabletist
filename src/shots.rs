@@ -341,25 +341,112 @@ fn sidebar_width_over_time() {
     harness.shot(&out("workspace-after-300-frames.png"));
 }
 
-/// Scenes at the design mockups' size: 1.5 pixels per point, so each PNG
-/// lines up pixel for pixel with its mockup.
+/// The design screens at the mockups' scales, so each PNG lines up pixel
+/// for pixel with its mockup: `target/shots/mock-<screen>.png`.
 mod mock {
     use super::*;
+    use crate::theme::{Look, Palette};
 
-    /// The macOS mockups: 2000 x 1250 pixels.
-    const MAC: egui::Vec2 = egui::vec2(1440.0, 900.0);
-    /// The macOS exports: 2000 pixels for the 1440 pt artboard.
-    const MAC_SCALE: f32 = 2000.0 / 1440.0;
-    /// The Omarchy workspace artboard's window: 1920 x 1080 less the 10 pt
-    /// wallpaper margin and the 2 pt tiling border.
-    const OMARCHY: egui::Vec2 = egui::vec2(1896.0, 1056.0);
-    const OMARCHY_SCALE: f32 = 2000.0 / 1920.0;
-    /// The Omarchy connections artboard's window: 960 x 1040 less the same.
-    const OMARCHY_PICKER: egui::Vec2 = egui::vec2(936.0, 1016.0);
-    const OMARCHY_PICKER_SCALE: f32 = 1846.0 / 960.0;
+    /// The moment the scenes happen: 2026-09-29 12:00 UTC, so "last used"
+    /// reads as the mockups do (2 min ago, yesterday, Sep 12, Aug 30).
+    pub const NOW: u64 = 1_790_683_200;
+
+    /// A mockup's screen, in the Bookshop scene.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum Screen {
+        MacWorkspace,
+        OmarchyWorkspace,
+        MacPicker,
+        OmarchyPicker,
+    }
+
+    impl Screen {
+        pub const ALL: [Screen; 4] = [
+            Self::MacWorkspace,
+            Self::OmarchyWorkspace,
+            Self::MacPicker,
+            Self::OmarchyPicker,
+        ];
+
+        /// The screen's name (screenshot files).
+        pub fn name(self) -> &'static str {
+            match self {
+                Self::MacWorkspace => "macos-workspace",
+                Self::OmarchyWorkspace => "omarchy-workspace",
+                Self::MacPicker => "macos-connections",
+                Self::OmarchyPicker => "omarchy-connections",
+            }
+        }
+
+        pub fn look(self) -> Look {
+            match self {
+                Self::MacWorkspace | Self::MacPicker => Look::macos(),
+                Self::OmarchyWorkspace | Self::OmarchyPicker => Look::omarchy(),
+            }
+        }
+
+        /// The window in points. The Omarchy artboards hold the window inside
+        /// a 10 pt wallpaper margin and Hyprland's 2 pt border.
+        pub fn size(self) -> egui::Vec2 {
+            match self {
+                Self::MacWorkspace | Self::MacPicker => egui::vec2(1440.0, 900.0),
+                Self::OmarchyWorkspace => egui::vec2(1896.0, 1056.0),
+                Self::OmarchyPicker => egui::vec2(936.0, 1016.0),
+            }
+        }
+
+        /// The mockups' export scale (pixels per point), for screenshots that
+        /// line up with them.
+        pub fn design_scale(self) -> f32 {
+            match self {
+                Self::MacWorkspace | Self::MacPicker => 2000.0 / 1440.0,
+                Self::OmarchyWorkspace => 2000.0 / 1920.0,
+                Self::OmarchyPicker => 1846.0 / 960.0,
+            }
+        }
+
+        /// The palette the screen is drawn in: macOS light, Omarchy in Tokyo
+        /// Night, as the mockups.
+        pub fn palette(self) -> Palette {
+            match self {
+                Self::MacWorkspace | Self::MacPicker => Palette::light(),
+                Self::OmarchyWorkspace | Self::OmarchyPicker => tokyo_night(),
+            }
+        }
+
+        /// Puts the scene on `harness`.
+        pub fn stage(self, harness: &mut Harness) {
+            crate::util::pin_now(Some(NOW));
+            match self {
+                Self::MacWorkspace => {
+                    workspace(harness);
+                }
+                Self::OmarchyWorkspace => {
+                    let tab = workspace(harness);
+                    let object_tab = harness.app.workspace(tab).unwrap().active_object.unwrap();
+                    let object = harness
+                        .app
+                        .workspace_mut(tab)
+                        .unwrap()
+                        .object_tab_mut(object_tab)
+                        .unwrap();
+                    object.filter.raw = true;
+                    object.filter.raw_text = "kind = 'front'".into();
+                    harness.app.apply(Action::ApplyFilters { tab, object_tab });
+                    harness.answer_rows(covers());
+                    harness.app.apply(Action::SelectCell {
+                        tab,
+                        object_tab,
+                        cell: CellPos { row: 0, col: 0 },
+                    });
+                }
+                Self::MacPicker | Self::OmarchyPicker => pickers(harness),
+            }
+        }
+    }
 
     /// Tokyo Night through the Omarchy template, as the mockups draw it.
-    pub fn tokyo_night() -> crate::theme::Palette {
+    pub fn tokyo_night() -> Palette {
         let colors = "mode\tdark\nbackground\t#1a1b26\ndark_background\t#16161e\n\
                       lighter_background\t#292e42\nforeground\t#c0caf5\nmuted\t#565f89\n\
                       accent\t#7aa2f7\nselection\t#283457\nred\t#f7768e\ngreen\t#9ece6a\n\
@@ -372,23 +459,6 @@ mod mock {
         fastframe_theme::parse_palette::<crate::theme::Palette>(&rendered)
             .unwrap()
             .with_readable_labels()
-    }
-
-    fn harness(size: egui::Vec2, look: crate::theme::Look) -> Harness {
-        let scale = if size == OMARCHY_PICKER {
-            OMARCHY_PICKER_SCALE
-        } else if size == OMARCHY {
-            OMARCHY_SCALE
-        } else {
-            MAC_SCALE
-        };
-        let light = look == crate::theme::Look::macos();
-        let mut harness = Harness::for_shots(size, scale, light, look);
-        if !light {
-            harness.app.palette = tokyo_night();
-            crate::theme::apply(&harness.ctx, &harness.app.palette, &look);
-        }
-        harness
     }
 
     /// Twenty-one `book_` objects (three views), then the other groups.
@@ -654,42 +724,6 @@ mod mock {
         tab
     }
 
-    #[test]
-    #[ignore = "renders with wgpu; run with --features shots -- --ignored"]
-    fn mock() {
-        use crate::theme::Look;
-        let mut mac = harness(MAC, Look::macos());
-        workspace(&mut mac);
-        mac.shot(&out("mock-workspace-macos.png"));
-
-        let mut omarchy = harness(OMARCHY, Look::omarchy());
-        let tab = workspace(&mut omarchy);
-        let object_tab = omarchy.app.workspace(tab).unwrap().active_object.unwrap();
-        let object = omarchy
-            .app
-            .workspace_mut(tab)
-            .unwrap()
-            .object_tab_mut(object_tab)
-            .unwrap();
-        object.filter.raw = true;
-        object.filter.raw_text = "kind = 'front'".into();
-        omarchy.app.apply(Action::ApplyFilters { tab, object_tab });
-        omarchy.answer_rows(covers());
-        omarchy.app.apply(Action::SelectCell {
-            tab,
-            object_tab,
-            cell: CellPos { row: 0, col: 0 },
-        });
-        omarchy.shot(&out("mock-workspace-omarchy.png"));
-
-        let mut mac = harness(MAC, Look::macos());
-        pickers(&mut mac);
-        mac.shot(&out("mock-picker-macos.png"));
-        let mut omarchy = harness(OMARCHY_PICKER, Look::omarchy());
-        pickers(&mut omarchy);
-        omarchy.shot(&out("mock-picker-omarchy.png"));
-    }
-
     /// Five saved connections, as the picker mockups list them.
     fn pickers(harness: &mut Harness) {
         let entries = [
@@ -719,16 +753,12 @@ mod mock {
                 "postgres://dev@localhost:5433/bookshop_test",
             ),
         ];
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
-        let today = now - now % 86_400 + 43_200;
+        // 2 min ago, yesterday, Sep 12 and Aug 30 (10:00 UTC), never.
         let used = [
-            Some(now - 120),
-            Some(today - 86_400),
-            Some(today - 17 * 86_400),
-            Some(today - 30 * 86_400),
+            Some(NOW - 120),
+            Some(NOW - 86_400),
+            Some(1_789_207_200),
+            Some(1_788_084_000),
             None,
         ];
         for ((name, color, url), used) in entries.into_iter().zip(used) {
@@ -761,5 +791,19 @@ mod mock {
         harness
             .app
             .apply(Action::SelectConnection { tab, conn: first });
+    }
+
+    #[test]
+    #[ignore = "renders with wgpu; run with --features shots -- --ignored"]
+    fn mock() {
+        for screen in Screen::ALL {
+            let look = screen.look();
+            let palette = screen.palette();
+            let mut harness = Harness::for_shots(screen.size(), screen.design_scale(), true, look);
+            harness.app.palette = palette;
+            crate::theme::apply(&harness.ctx, &palette, &look);
+            screen.stage(&mut harness);
+            harness.shot(&out(&format!("mock-{}.png", screen.name())));
+        }
     }
 }

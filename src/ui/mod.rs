@@ -1404,6 +1404,22 @@ mod tests {
     }
 
     #[test]
+    fn a_page_holding_every_row_offers_no_count() {
+        let mut harness = Harness::new();
+        harness.set_look(crate::theme::Look::macos());
+        let tab = harness.connect_fake();
+        harness.app.apply(crate::model::Action::OpenObject {
+            tab,
+            object: tabletist_db::ObjectRef::new("main", "users"),
+            kind: tabletist_db::ObjectKind::Table,
+            pin: true,
+        });
+        harness.answer_rows(crate::testing::page(3, false));
+        assert!(harness.has("Rows 1–3 of 3"));
+        assert!(!harness.has("Count"), "the total is already known");
+    }
+
+    #[test]
     fn command_f_opens_the_filter_bar_and_enter_applies_it() {
         let mut harness = Harness::new();
         let tab = harness.connect_fake();
