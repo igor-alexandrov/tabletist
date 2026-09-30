@@ -12,6 +12,7 @@ use tabletist_db::SortDir;
 use crate::model::CellPos;
 use crate::theme::{DataFont, Icon, Look, Palette};
 use crate::typography::{Text, TextRole};
+use crate::ui::format::display_safe;
 use crate::ui::widgets::virtual_rows;
 
 /// The header's height, per look.
@@ -260,7 +261,9 @@ pub fn initial_widths<'a>(
             let header = if column.key && column.numeric && key_width > 0.0 {
                 key_width
             } else {
-                width(column.name).max(width(&column.type_line)) + 2.0 * pad + 16.0
+                width(&display_safe(column.name)).max(width(&display_safe(&column.type_line)))
+                    + 2.0 * pad
+                    + 16.0
             };
             let widest = (0..rows.min(SAMPLE_ROWS))
                 .map(|row| {
@@ -450,7 +453,9 @@ pub fn show<'a>(
             for (col, column) in columns.iter().enumerate() {
                 let rect = Rect::from_min_size(pos2(x, top), vec2(widths[col], header_height));
                 let response = ui.interact(rect, id.with(("header", col)), Sense::click());
-                response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, column.name));
+                // Column names come from the server: nothing hidden in them.
+                let name = display_safe(column.name);
+                response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, &*name));
                 if response.clicked() {
                     output.sort_clicked = Some(col);
                 }
@@ -613,14 +618,17 @@ fn draw_header(
     } else {
         palette.text
     };
+    // Column names and types come from the server: nothing hidden in them.
+    let name = display_safe(column.name);
+    let type_text = display_safe(&column.type_line);
     // The terminal writes the sort's arrow after the name.
     let arrow_text = match (column.sort, look.terminal) {
-        (Some(SortDir::Asc), true) => format!("{} ↑", column.name),
-        (Some(SortDir::Desc), true) => format!("{} ↓", column.name),
-        _ => column.name.to_owned(),
+        (Some(SortDir::Asc), true) => format!("{name} ↑"),
+        (Some(SortDir::Desc), true) => format!("{name} ↓"),
+        _ => name.into_owned(),
     };
     let name_width = text_width(ui, &arrow_text, name_role, look);
-    let type_width = text_width(ui, &column.type_line, type_role, look);
+    let type_width = text_width(ui, &type_text, type_role, look);
     // macOS: the key icon 4 before the name, the arrow 4 after it.
     let arrow = if column.sort.is_some() && !look.terminal {
         15.0
@@ -678,7 +686,7 @@ fn draw_header(
         &clip,
         ui,
         type_role,
-        &column.type_line,
+        &type_text,
         palette.dim,
         type_x,
         type_y,

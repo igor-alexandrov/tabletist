@@ -5,6 +5,7 @@ use crate::i18n::gettext;
 use crate::model::{Action, ConnTabId, ObjectTabId};
 use crate::theme::{self, Look, Palette};
 use crate::typography::TextRole;
+use crate::ui::format::{display_safe, for_display};
 use crate::ui::widgets;
 
 /// One cell of a structure table: body text, or code.
@@ -15,6 +16,15 @@ fn cell(ui: &mut egui::Ui, text: &str, code: bool, look: &Look, palette: &Palett
         widgets::body(look)
     };
     widgets::label(ui, role, text, palette.text, look);
+}
+
+/// Column names as a list, each as `display_safe` shows it.
+fn names(columns: &[String]) -> String {
+    columns
+        .iter()
+        .map(|column| display_safe(column))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// A table's column title, or a quiet note.
@@ -57,16 +67,18 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: Object
                                 }
                                 ui.end_row();
                                 for column in &structure.columns {
-                                    cell(ui, &column.name, false, &look, &palette);
-                                    cell(ui, &column.type_name, true, &look, &palette);
+                                    cell(ui, &display_safe(&column.name), false, &look, &palette);
+                                    let type_name = display_safe(&column.type_name);
+                                    cell(ui, &type_name, true, &look, &palette);
                                     let nullable = if column.nullable {
                                         gettext(locale, "yes")
                                     } else {
                                         gettext(locale, "no")
                                     };
                                     cell(ui, &nullable, false, &look, &palette);
-                                    let default = column.default.as_deref().unwrap_or("");
-                                    cell(ui, default, true, &look, &palette);
+                                    let default =
+                                        for_display(column.default.as_deref().unwrap_or(""));
+                                    cell(ui, &default, true, &look, &palette);
                                     let key = if structure.primary_key.contains(&column.name) {
                                         "PK"
                                     } else {
@@ -91,8 +103,14 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: Object
                                     }
                                     ui.end_row();
                                     for index in &structure.indexes {
-                                        cell(ui, &index.name, false, &look, &palette);
-                                        let columns = index.columns.join(", ");
+                                        cell(
+                                            ui,
+                                            &display_safe(&index.name),
+                                            false,
+                                            &look,
+                                            &palette,
+                                        );
+                                        let columns = names(&index.columns);
                                         cell(ui, &columns, false, &look, &palette);
                                         let unique = if index.primary {
                                             "PK"
@@ -102,8 +120,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: Object
                                             ""
                                         };
                                         cell(ui, unique, false, &look, &palette);
-                                        let method = index.method.as_deref().unwrap_or("");
-                                        cell(ui, method, false, &look, &palette);
+                                        let method =
+                                            display_safe(index.method.as_deref().unwrap_or(""));
+                                        cell(ui, &method, false, &look, &palette);
                                         ui.end_row();
                                     }
                                 });
@@ -125,23 +144,35 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: Object
                                     }
                                     ui.end_row();
                                     for key in &structure.foreign_keys {
-                                        let name = key.name.as_deref().unwrap_or("·");
-                                        cell(ui, name, false, &look, &palette);
-                                        let columns = key.columns.join(", ");
+                                        let name = display_safe(key.name.as_deref().unwrap_or("·"));
+                                        cell(ui, &name, false, &look, &palette);
+                                        let columns = names(&key.columns);
                                         cell(ui, &columns, false, &look, &palette);
+                                        let table = format!(
+                                            "{}.{}",
+                                            display_safe(&key.ref_schema),
+                                            display_safe(&key.ref_table)
+                                        );
                                         let target = if key.ref_columns.is_empty() {
-                                            format!("{}.{}", key.ref_schema, key.ref_table)
+                                            table
                                         } else {
-                                            format!(
-                                                "{}.{} ({})",
-                                                key.ref_schema,
-                                                key.ref_table,
-                                                key.ref_columns.join(", ")
-                                            )
+                                            format!("{table} ({})", names(&key.ref_columns))
                                         };
                                         cell(ui, &target, false, &look, &palette);
-                                        cell(ui, &key.on_update, false, &look, &palette);
-                                        cell(ui, &key.on_delete, false, &look, &palette);
+                                        cell(
+                                            ui,
+                                            &display_safe(&key.on_update),
+                                            false,
+                                            &look,
+                                            &palette,
+                                        );
+                                        cell(
+                                            ui,
+                                            &display_safe(&key.on_delete),
+                                            false,
+                                            &look,
+                                            &palette,
+                                        );
                                         ui.end_row();
                                     }
                                 });

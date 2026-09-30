@@ -2844,4 +2844,102 @@ mod tests {
             "database \"nosuchdb\" does not exist"
         );
     }
+
+    /// Server names and values with a right-to-left override or a zero
+    /// width space: every view writes them out, and copying keeps them.
+    #[test]
+    fn hidden_characters_are_shown_and_copied_as_they_are() {
+        let spoof = "users_\u{202E}atad";
+        let (mut harness, tab) = tree_harness();
+        let workspace = harness.app.workspace_mut(tab).unwrap();
+        // Flat, so `users_…` is not folded into a `users` group.
+        workspace.tree.flat = true;
+        let table = |name: &str| tabletist_db::ObjectInfo {
+            name: name.into(),
+            kind: tabletist_db::ObjectKind::Table,
+            estimated_rows: None,
+        };
+        let main = workspace.tree.nodes.get_mut("main").unwrap();
+        main.objects.value = Some(vec![table(spoof), table("users"), table("users\u{200B}")]);
+
+        let labels = crate::testing::labels(&harness.settle());
+        assert!(labels.iter().any(|label| label == "users_<U+202E>atad"));
+        assert!(labels.iter().any(|label| label == "users<U+200B>"));
+        harness.click("users_<U+202E>atad");
+        let mut page = crate::testing::page(1, false);
+        page.columns[1].name = "e\u{202E}liam".into();
+        page.rows[0][1] = tabletist_db::Value::Text("Total: \u{202E}00.0001".into());
+        harness.answer_rows(page);
+        let workspace = harness.app.workspace_mut(tab).unwrap();
+        workspace.row_panel = true;
+        let object_tab = workspace.active_object.unwrap();
+        harness.app.apply(crate::model::Action::SelectCell {
+            tab,
+            object_tab,
+            cell: crate::model::CellPos { row: 0, col: 1 },
+        });
+        let labels = crate::testing::labels(&harness.settle());
+        // The object tab, the grid header, the row panel's copy button.
+        assert!(labels.iter().any(|label| label == "users_<U+202E>atad tab"));
+        assert!(labels.iter().any(|label| label == "e<U+202E>liam"));
+        assert!(labels.iter().any(|label| label == "Copy e<U+202E>liam"));
+        let painted: Vec<&str> = harness
+            .painted
+            .iter()
+            .map(|(text, _)| text.as_str())
+            .collect();
+        assert!(painted.contains(&"Total: <U+202E>00.0001"), "{painted:?}");
+        assert!(painted.contains(&"users_<U+202E>atad"), "{painted:?}");
+        assert!(
+            !painted
+                .iter()
+                .any(|text| text.contains(['\u{202E}', '\u{200B}'])),
+            "{painted:?}"
+        );
+        harness.copy(false);
+        assert_eq!(harness.copied.as_deref(), Some("Total: \u{202E}00.0001"));
+    }
+
+    /// Two schemas with a `users` table: the tab and the row panel name the
+    /// schema, and a name only one schema has stays short.
+    #[test]
+    fn a_name_two_schemas_share_is_shown_with_its_schema() {
+        let (mut harness, tab) = tree_harness();
+        harness.click("orders");
+        harness.answer_rows(crate::testing::page(1, false));
+        assert!(harness.has("orders tab"));
+        let orders = harness.app.workspace(tab).unwrap().active_object.unwrap();
+        harness.app.apply(crate::model::Action::PinObjectTab {
+            tab,
+            object_tab: orders,
+        });
+        let workspace = harness.app.workspace_mut(tab).unwrap();
+        workspace.tree.schemas.value = Some(vec!["main".into(), "audit".into()]);
+        let audit = workspace.tree.nodes.entry("audit".into()).or_default();
+        audit.objects.value = Some(vec![tabletist_db::ObjectInfo {
+            name: "users".into(),
+            kind: tabletist_db::ObjectKind::Table,
+            estimated_rows: None,
+        }]);
+        harness.click("users");
+        harness.answer_rows(crate::testing::page(1, false));
+        let workspace = harness.app.workspace_mut(tab).unwrap();
+        workspace.row_panel = true;
+        let object_tab = workspace.active_object.unwrap();
+        harness.app.apply(crate::model::Action::SelectCell {
+            tab,
+            object_tab,
+            cell: crate::model::CellPos { row: 0, col: 0 },
+        });
+        harness.settle();
+        assert!(harness.has("main.users tab"));
+        assert!(harness.has("orders tab"));
+        // The tab and the row panel's subtitle.
+        let named = harness
+            .painted
+            .iter()
+            .filter(|(text, _)| text == "main.users")
+            .count();
+        assert_eq!(named, 2, "{:?}", harness.painted);
+    }
 }

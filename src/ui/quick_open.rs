@@ -70,7 +70,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                 .max_height(360.0)
                 .show(ui, |ui| {
                     for (index, (object, _)) in matches.iter().enumerate() {
-                        let label = format!("{}.{}", object.schema, object.name);
+                        let label = crate::ui::format::object_title(object, true);
                         let selected = index == open.selected;
                         let (rect, response) = ui.allocate_exact_size(
                             egui::vec2(ui.available_width(), look.tree_row),

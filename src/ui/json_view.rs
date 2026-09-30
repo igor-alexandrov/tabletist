@@ -65,12 +65,18 @@ fn measure(value: &Json) -> (usize, usize) {
     })
 }
 
-/// `text` as a JSON string literal, cut at STRING_MAX characters.
+/// `text` as a JSON string literal, cut at STRING_MAX characters, with
+/// hidden characters written out (serde_json escapes only C0 controls, and
+/// would leave a U+202E to turn the text after it around).
 fn literal(text: &str) -> Box<str> {
     let quoted = serde_json::to_string(text).unwrap_or_else(|_| format!("{text:?}"));
-    match quoted.char_indices().nth(STRING_MAX) {
-        Some((cut, _)) => format!("{}…\"", &quoted[..cut]).into(),
-        None => quoted.into(),
+    let cut = match quoted.char_indices().nth(STRING_MAX) {
+        Some((cut, _)) => format!("{}…\"", &quoted[..cut]),
+        None => quoted,
+    };
+    match crate::ui::format::escape_hidden(&cut) {
+        std::borrow::Cow::Borrowed(_) => cut.into(),
+        std::borrow::Cow::Owned(escaped) => escaped.into(),
     }
 }
 
@@ -564,6 +570,20 @@ impl View<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hidden_characters_in_keys_and_strings_are_written_out() {
+        let doc = parse("{\"a\u{202E}b\":\"Total: \u{202E}00.0001\u{200B}\"}").unwrap();
+        assert_eq!(
+            doc.root,
+            Json::Object(vec![(
+                "\"a<U+202E>b\"".into(),
+                Json::String("\"Total: <U+202E>00.0001<U+200B>\"".into())
+            )])
+        );
+        // The grid's summary of the document shows them written out too.
+        assert_eq!(summary(&doc).1, vec!["Total: <U+202E>00.0001<U+200B>"]);
+    }
 
     #[test]
     fn keys_keep_their_order_and_strings_stay_json_literals() {

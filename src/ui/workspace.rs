@@ -9,6 +9,7 @@ use crate::i18n::gettext;
 use crate::model::{Action, ConnTabId, ObjectView, SessionStatus};
 use crate::theme::{self, Icon, Look, Palette};
 use crate::typography::{Text, TextRole};
+use crate::ui::format::display_safe;
 use crate::ui::widgets;
 
 /// The connection bar's height.
@@ -325,8 +326,13 @@ fn mac_bar(
         palette.border.lerp_to_gamma(palette.faint, 0.35),
     )
     .layout(ui.ctx());
-    let database =
-        Text::one(look, TextRole::MonoSecondary, &info.database, palette.text).layout(ui.ctx());
+    let database = Text::one(
+        look,
+        TextRole::MonoSecondary,
+        &display_safe(&info.database),
+        palette.text,
+    )
+    .layout(ui.ctx());
     let switchable = info.databases.len() > 1;
     let mut parts = vec![name.width(), host.width()];
     if !info.database.is_empty() {
@@ -345,7 +351,7 @@ fn mac_bar(
             switchable,
             gettext(locale, "Database"),
         );
-        info_.current_text_value = Some(info.database.clone());
+        info_.current_text_value = Some(display_safe(&info.database).into_owned());
         info_
     });
     let corner = CornerRadius::same(look.radius);
@@ -378,10 +384,11 @@ fn mac_bar(
         egui::Popup::menu(&response).show(|ui| {
             ui.set_min_width(crumb.width());
             for database in &info.databases {
+                // Database names come from the server: nothing hidden.
                 let text = Text::one(
                     look,
                     TextRole::MonoSecondary,
-                    database,
+                    &display_safe(database),
                     egui::Color32::PLACEHOLDER,
                 )
                 .layout(ui.ctx());
@@ -502,7 +509,7 @@ fn terminal_bar(
     let target = if info.database.is_empty() {
         info.host.clone()
     } else {
-        format!("{}/{}", info.host, info.database)
+        format!("{}/{}", info.host, display_safe(&info.database))
     };
     x += widgets::paint_label(
         ui,

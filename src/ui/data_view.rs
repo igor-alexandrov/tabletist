@@ -63,7 +63,7 @@ fn subtitle(object: &ObjectTab, look: &Look, locale: crate::i18n::Locale) -> Vec
         parts.push(format!("{count} {}", gettext(locale, noun)));
     }
     if !look.terminal {
-        parts.push(object.object.schema.clone());
+        parts.push(format::display_safe(&object.object.schema).into_owned());
     }
     parts
 }
@@ -100,7 +100,7 @@ pub fn header(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: Obje
     let Some(object) = app.workspace(tab).and_then(|w| w.object_tab(object_tab)) else {
         return;
     };
-    let name = object.object.name.clone();
+    let name = format::display_safe(&object.object.name).into_owned();
     let view = object.view;
     let parts = subtitle(object, &look, locale);
     let summary = parts.join(" · ");
@@ -1047,7 +1047,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: Object
                             strings.into_iter().next().unwrap_or_default()
                         };
                         return Cell {
-                            text: shown.into(),
+                            text: format::one_line(&shown).into_owned().into(),
                             null: false,
                             style: Style::Json(count),
                         };
