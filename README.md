@@ -9,11 +9,13 @@ Linux (Omarchy and Hyprland first), macOS and Windows.
 - Saved connections grouped in a picker, each tagged with its environment
   (dev, staging, production) and when it was last used.
   Open more than one and they share a tab bar.
-- Direct connections, TLS in every libpq mode, and SSH tunnels (password,
-  key file or agent) with host keys trusted on first use. The agent is the
-  one `~/.ssh/config` names for the host (`IdentityAgent`, as for 1Password),
-  else `SSH_AUTH_SOCK`.
-- Passwords live in the system keyring, or are asked for every time.
+- Direct connections, TLS (libpq's `sslmode` values, with `allow` read as
+  `prefer`; `verify-ca` needs a CA file, and MySQL has no `verify-ca` yet),
+  and SSH tunnels (password, key file or agent) with host keys trusted on
+  first use. The agent is the one `~/.ssh/config` names for the host
+  (`IdentityAgent`, as for 1Password), else `SSH_AUTH_SOCK`.
+- Passwords live in the system keyring, or are asked for once per
+  connection tab (reconnecting in that tab reuses them).
 - A sidebar of recent objects and one schema's tables and views, folded into
   prefix groups (`book_`) or listed flat; each table opens with a data grid
   (keys, foreign keys, value tags, JSON at a glance), a row panel showing

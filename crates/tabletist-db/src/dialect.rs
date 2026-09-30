@@ -29,9 +29,63 @@ pub fn escape_like(text: &str) -> String {
     escaped
 }
 
-/// A SQL string literal with `'` doubled (standard-conforming strings).
+/// A PostgreSQL escape-string literal (`E'...'`) with `\` and `'` doubled.
+/// It reads the same whatever `standard_conforming_strings` is, so a pooler
+/// that hands out a session with the setting off cannot turn a backslash in
+/// the value into an escape that ends the literal early.
 pub fn quote_literal(text: &str) -> String {
-    format!("'{}'", text.replace('\'', "''"))
+    format!("E'{}'", text.replace('\\', "\\\\").replace('\'', "''"))
+}
+
+/// Whether SQLite reads `text` as ending inside a `/* ... */` comment.
+/// SQLite accepts an unterminated block comment and ignores everything
+/// after it, which in a raw WHERE would swallow the builder's ORDER BY,
+/// LIMIT and OFFSET. Quoted strings and names, and `--` comments, are
+/// skipped the way SQLite's tokenizer skips them.
+pub fn sqlite_ends_in_block_comment(text: &str) -> bool {
+    let mut chars = text.chars().peekable();
+    while let Some(character) = chars.next() {
+        match character {
+            '\'' | '"' | '`' => loop {
+                match chars.next() {
+                    // Unterminated: SQLite rejects it anyway.
+                    None => return false,
+                    Some(next) if next == character => {
+                        // A doubled quote stays inside.
+                        if chars.peek() != Some(&character) {
+                            break;
+                        }
+                        chars.next();
+                    }
+                    Some(_) => {}
+                }
+            },
+            '[' => {
+                if !chars.by_ref().any(|next| next == ']') {
+                    return false;
+                }
+            }
+            '-' if chars.peek() == Some(&'-') => {
+                if !chars.by_ref().any(|next| next == '\n') {
+                    return false;
+                }
+            }
+            '/' if chars.peek() == Some(&'*') => {
+                chars.next();
+                let mut previous = None;
+                let closed = chars.by_ref().any(|next| {
+                    let closes = previous == Some('*') && next == '/';
+                    previous = Some(next);
+                    closes
+                });
+                if !closed {
+                    return true;
+                }
+            }
+            _ => {}
+        }
+    }
+    false
 }
 
 impl Dialect {
@@ -79,8 +133,8 @@ impl Dialect {
 
     /// A filter value in SQL. PostgreSQL rows are read through the
     /// simple-query protocol, which has no parameters, so its values become
-    /// quoted literals; sessions set `standard_conforming_strings = on`, so
-    /// `'` is the only character that needs escaping. The others bind.
+    /// escape-string literals that do not depend on the session's
+    /// `standard_conforming_strings`. The others bind.
     fn bind(self, params: &mut Vec<Value>, value: String) -> String {
         match self {
             Self::Postgres => quote_literal(&value),
@@ -150,7 +204,10 @@ impl Dialect {
             && !raw.is_empty()
         {
             // On its own lines, so a trailing `--` comment in the raw text
-            // cannot reach the builder's LIMIT.
+            // cannot reach the builder's LIMIT. An unterminated `/*` still
+            // could: PostgreSQL and MySQL reject one, SQLite does not, so the
+            // SQLite adapter refuses such text first
+            // (`sqlite_ends_in_block_comment`).
             conditions.push(format!("(\n{raw}\n)"));
         }
         if conditions.is_empty() {
@@ -283,7 +340,7 @@ mod tests {
         let pg = Dialect::Postgres.select_rows(&q, &[]);
         assert_eq!(
             pg.text,
-            r#"SELECT * FROM "public"."users" WHERE "age" >= '18' AND "name" <> 'bob' LIMIT 301 OFFSET 0"#
+            r#"SELECT * FROM "public"."users" WHERE "age" >= E'18' AND "name" <> E'bob' LIMIT 301 OFFSET 0"#
         );
         assert!(pg.params.is_empty());
         let my = Dialect::MySql.select_rows(&q, &[]);
@@ -328,7 +385,7 @@ mod tests {
         }];
         let sql = Dialect::Postgres.select_rows(&q, &[]);
         assert!(
-            sql.text.contains(r#""id" IN ('1', '2', '3')"#),
+            sql.text.contains(r#""id" IN (E'1', E'2', E'3')"#),
             "{}",
             sql.text
         );
@@ -355,7 +412,7 @@ mod tests {
         }];
         let pg = Dialect::Postgres.select_rows(&q, &[]);
         assert!(
-            pg.text.contains(r#"CAST("id" AS TEXT) ILIKE '%5\%%'"#),
+            pg.text.contains(r#"CAST("id" AS TEXT) ILIKE E'%5\\%%'"#),
             "{}",
             pg.text
         );
@@ -374,7 +431,7 @@ mod tests {
             Dialect::Postgres
                 .select_rows(&q, &[])
                 .text
-                .contains(r"ILIKE '5\%%'")
+                .contains(r"ILIKE E'5\\%%'")
         );
     }
 
@@ -390,7 +447,7 @@ mod tests {
         let sql = Dialect::Postgres.select_rows(&q, &[]);
         assert!(
             sql.text
-                .contains("WHERE \"a\" = '1' AND (\nb = 2 OR c = 3\n)"),
+                .contains("WHERE \"a\" = E'1' AND (\nb = 2 OR c = 3\n)"),
             "{}",
             sql.text
         );
@@ -425,10 +482,35 @@ mod tests {
     }
 
     #[test]
+    fn sqlite_block_comments_are_found_outside_quotes_only() {
+        for open in ["1=1) /*", "a = 1 /* note", "/*", "x = '*/' /*", "a /*/"] {
+            assert!(sqlite_ends_in_block_comment(open), "{open}");
+        }
+        for closed in [
+            "1 = 1",
+            "a = 1 /* note */",
+            "name = '/*'",
+            "\"/*\" = 1",
+            "[/*] = 1",
+            "`/*` = 1",
+            "a = 1 -- /*\n",
+            "a = 1 -- /*",
+            "name = 'it''s /*'",
+            "name = 'unterminated /*",
+            "/**/",
+        ] {
+            assert!(!sqlite_ends_in_block_comment(closed), "{closed}");
+        }
+    }
+
+    #[test]
     fn postgres_values_become_quoted_literals() {
-        assert_eq!(quote_literal("O'Brien"), "'O''Brien'");
-        assert_eq!(quote_literal(r"C:\temp"), r"'C:\temp'");
-        assert_eq!(quote_literal(""), "''");
+        assert_eq!(quote_literal("O'Brien"), "E'O''Brien'");
+        assert_eq!(quote_literal(r"C:\temp"), r"E'C:\\temp'");
+        assert_eq!(quote_literal(""), "E''");
+        // A backslash cannot escape the closing quote, whatever
+        // standard_conforming_strings is.
+        assert_eq!(quote_literal(r"x\' OR 1=1 --"), r"E'x\\'' OR 1=1 --'");
         let mut q = query();
         q.filters = vec![Filter {
             column: "name".into(),
@@ -437,7 +519,7 @@ mod tests {
         }];
         let pg = Dialect::Postgres.select_rows(&q, &[]);
         assert!(
-            pg.text.contains(r#""name" = 'x'' OR ''1''=''1'"#),
+            pg.text.contains(r#""name" = E'x'' OR ''1''=''1'"#),
             "{}",
             pg.text
         );

@@ -184,13 +184,92 @@ async fn a_raw_where_cannot_modify_data() {
 async fn a_raw_where_cannot_drop_the_page_limit() {
     let (connection, _dir) = fixture().await;
     let mut query = RowQuery::new(ObjectRef::new("main", "big"), 10);
-    // An unterminated comment would swallow the builder's LIMIT and OFFSET.
-    for raw in ["1=1) /*", "1=1) --"] {
+    // An unterminated comment would swallow the builder's ORDER BY, LIMIT
+    // and OFFSET, so the second page would repeat the first.
+    for raw in [
+        "1=1) /*",
+        "1=1) --",
+        "1=1 /* note",
+        "1=1) /* ",
+        "label <> '*/' /*",
+    ] {
         query.raw_where = Some(raw.into());
-        if let Ok(page) = connection.fetch_rows(&query).await {
-            assert!(page.rows.len() <= 10, "{raw}: {} rows", page.rows.len());
+        for offset in [0, 10] {
+            query.offset = offset;
+            if let Ok(page) = connection.fetch_rows(&query).await {
+                let first = offset as i64 + 1;
+                assert_eq!(
+                    ids(&page),
+                    (first..first + 10).collect::<Vec<_>>(),
+                    "{raw} at offset {offset}"
+                );
+            }
         }
     }
+    query.offset = 10;
+    query.raw_where = Some("1=1) /*".into());
+    assert!(matches!(
+        connection.fetch_rows(&query).await,
+        Err(Error::Query { .. })
+    ));
+    assert!(connection.count_rows(&query).await.is_err());
+    // A closed comment and comment markers in strings are fine.
+    query.raw_where = Some("label <> '/*' /* note */".into());
+    assert_eq!(ids(&connection.fetch_rows(&query).await.unwrap())[0], 11);
+}
+
+#[tokio::test]
+async fn a_filter_on_a_missing_column_fails_instead_of_matching_everything() {
+    let (connection, _dir) = fixture().await;
+    // Legacy SQLite read "renamed" as the string 'renamed' when no column
+    // has that name, so `"renamed" <> 'x'` matched every row.
+    let mut query = users(50);
+    query.filters = vec![Filter {
+        column: "renamed".into(),
+        op: FilterOp::Ne,
+        value: "x".into(),
+    }];
+    assert!(matches!(
+        connection.fetch_rows(&query).await,
+        Err(Error::Query { .. })
+    ));
+    assert!(matches!(
+        connection.count_rows(&query).await,
+        Err(Error::Query { .. })
+    ));
+    let mut query = users(50);
+    query.raw_where = Some(r#"name = "Ada Lovelace""#.into());
+    assert!(connection.fetch_rows(&query).await.is_err());
+}
+
+#[tokio::test]
+async fn the_schema_is_untrusted() {
+    let (connection, _dir) = fixture().await;
+    let mut query = users(50);
+    query.raw_where = Some("(SELECT trusted_schema FROM pragma_trusted_schema) = 0".into());
+    assert_eq!(connection.fetch_rows(&query).await.unwrap().rows.len(), 5);
+}
+
+#[tokio::test]
+async fn object_listings_are_capped() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("many.db");
+    {
+        let mut setup = rusqlite::Connection::open(&path).unwrap();
+        let transaction = setup.transaction().unwrap();
+        for index in 0..tabletist_db::MAX_LISTED + 5 {
+            transaction
+                .execute_batch(&format!("CREATE TABLE t{index:05} (id INTEGER);"))
+                .unwrap();
+        }
+        transaction.commit().unwrap();
+    }
+    let connection = Connection::connect(&ConnectSpec::sqlite(&path), &Secrets::default())
+        .await
+        .unwrap();
+    let objects = connection.list_objects("main").await.unwrap();
+    assert_eq!(objects.len(), tabletist_db::MAX_LISTED as usize);
+    assert_eq!(objects[0].name, "t00000");
 }
 
 #[tokio::test]

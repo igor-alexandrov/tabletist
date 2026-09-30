@@ -410,6 +410,22 @@ async fn quotes_and_backslashes_in_filter_values_are_just_text() {
         .await
         .unwrap();
     assert!(rows.rows.is_empty());
+    // Values are E'' literals, so the result does not hang on the session's
+    // standard_conforming_strings.
+    for (op, value, expected) in [
+        (FilterOp::In, r"Bob, O'Brien C:\temp", vec![2, 5]),
+        (FilterOp::In, r"x\', 1) OR (1=1", vec![]),
+        (FilterOp::Contains, r"'brien c:\t", vec![5]),
+        (FilterOp::Contains, r"\", vec![5]),
+        (FilterOp::StartsWith, r"O'Brien C:\", vec![5]),
+        (FilterOp::Contains, r"x\' OR 1=1 --", vec![]),
+    ] {
+        let rows = connection
+            .fetch_rows(&filtered("name", op, value))
+            .await
+            .unwrap_or_else(|error| panic!("{op:?} {value}: {error}"));
+        assert_eq!(ids(&rows), expected, "{op:?} {value}");
+    }
 }
 
 #[tokio::test]

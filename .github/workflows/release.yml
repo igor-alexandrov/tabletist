@@ -176,6 +176,9 @@ jobs:
           APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
         run: |
           keychain="$RUNNER_TEMP/signing.keychain-db"
           password="$(openssl rand -hex 16)"
@@ -183,18 +186,31 @@ jobs:
           security create-keychain -p "$password" "$keychain"
           security set-keychain-settings -lut 21600 "$keychain"
           security unlock-keychain -p "$password" "$keychain"
+          # Only codesign may use the key, not every app (-A).
           security import "$RUNNER_TEMP/certificate.p12" -P "$APPLE_CERTIFICATE_PASSWORD" \
-            -A -t cert -f pkcs12 -k "$keychain"
+            -T /usr/bin/codesign -t cert -f pkcs12 -k "$keychain"
+          rm -f "$RUNNER_TEMP/certificate.p12"
           security set-key-partition-list -S apple-tool:,apple: -k "$password" "$keychain"
-          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          # Prepend to the search list, one quoted path per existing keychain.
+          set -- "$keychain"
+          while IFS= read -r existing; do
+            existing="${existing#"${existing%%[![:space:]]*}"}"
+            existing="${existing#\"}"
+            set -- "$@" "${existing%\"}"
+          done < <(security list-keychains -d user)
+          security list-keychains -d user -s "$@"
           echo "CODESIGN_IDENTITY=$APPLE_SIGNING_IDENTITY" >> "$GITHUB_ENV"
-      # bundle.sh signs with CODESIGN_IDENTITY from the keychain step; dmg.sh
-      # also notarizes with the notary secrets.
+          # Notary credentials go into the same throwaway keychain, so the
+          # long notarytool submit in dmg.sh has no password on its command line.
+          if [ -n "$APPLE_ID" ] && [ -n "$APPLE_TEAM_ID" ] && [ -n "$APPLE_APP_PASSWORD" ]; then
+            xcrun notarytool store-credentials tabletist-notary --apple-id "$APPLE_ID" \
+              --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD" --keychain "$keychain"
+            echo "NOTARY_PROFILE=tabletist-notary" >> "$GITHUB_ENV"
+            echo "NOTARY_KEYCHAIN=$keychain" >> "$GITHUB_ENV"
+          fi
+      # bundle.sh signs with CODESIGN_IDENTITY and dmg.sh notarizes with
+      # NOTARY_PROFILE, both from the keychain step; no secrets here.
       - name: App and DMG
-        env:
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
         run: |
           mkdir -p dist
           bash packaging/macos/bundle.sh universal/tabletist dist/Tabletist.app "${TAG#v}"
@@ -204,6 +220,14 @@ jobs:
           name: macos-universal
           path: dist/*.dmg
           if-no-files-found: error
+      # Even when a step above failed: the runner may be reused.
+      - name: Remove the signing keychain
+        if: always()
+        run: |
+          rm -f "$RUNNER_TEMP/certificate.p12"
+          if [ -e "$RUNNER_TEMP/signing.keychain-db" ]; then
+            security delete-keychain "$RUNNER_TEMP/signing.keychain-db"
+          fi
 
   publish:
     name: GitHub release
@@ -242,26 +266,31 @@ jobs:
     runs-on: ubuntu-latest
     container: archlinux:base-devel
     env:
-      AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}
+      # Only whether the key is set; the key itself is in the one step that
+      # uses it.
+      HAS_AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY != '' }}
       # Ed25519 SHA256:RFzBCUItH9LZS0cKB5UE6ceAYhBD5C8GeOBip8Z11+4, as published
       # on https://aur.archlinux.org/.
       AUR_HOST_KEY: aur.archlinux.org ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEuBKrPzbawxA/k2g6NcyV5jmqwJ2s+zpgZGZ7tpLIcN
     steps:
       - name: Skipped without AUR_SSH_KEY
-        if: env.AUR_SSH_KEY == ''
+        if: env.HAS_AUR_SSH_KEY != 'true'
         run: echo "::notice::AUR_SSH_KEY is not set; the AUR packages were not updated."
       - name: Tools
-        if: env.AUR_SSH_KEY != ''
+        if: env.HAS_AUR_SSH_KEY == 'true'
         run: pacman -Syu --noconfirm --needed git openssh
       - uses: actions/checkout@v4
-        if: env.AUR_SSH_KEY != ''
+        if: env.HAS_AUR_SSH_KEY == 'true'
       - name: Update tabletist-bin and tabletist
-        if: env.AUR_SSH_KEY != ''
+        if: env.HAS_AUR_SSH_KEY == 'true'
+        env:
+          AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}
         run: |
           version="${TAG#v}"
           useradd -m builder
           install -d -m 700 -o builder -g builder /home/builder/.ssh
-          printf '%s\n' "$AUR_SSH_KEY" > /home/builder/.ssh/aur
+          # The key is never readable by anyone else, not even briefly.
+          (umask 077 && printf '%s\n' "$AUR_SSH_KEY" > /home/builder/.ssh/aur)
           printf '%s\n' "$AUR_HOST_KEY" > /home/builder/.ssh/known_hosts
           printf 'Host aur.archlinux.org\n  IdentityFile ~/.ssh/aur\n  User aur\n  StrictHostKeyChecking yes\n' > /home/builder/.ssh/config
           chown -R builder:builder /home/builder/.ssh
@@ -271,21 +300,24 @@ jobs:
             --output /tmp/checksums.txt
           cp -r packaging/arch /tmp/arch && chown -R builder:builder /tmp/arch
           for package in tabletist-bin tabletist; do
-            sudo -u builder bash -euo pipefail -c "
+            # The package and version are arguments, never spliced into the script.
+            sudo -u builder bash -euo pipefail -c '
+              package="$1"
+              version="$2"
               cd /tmp
-              git clone ssh://aur@aur.archlinux.org/${package}.git aur-${package}
-              cd aur-${package}
-              git config user.name 'Igor Alexandrov'
-              git config user.email 'igor.alexandrov@gmail.com'
-              /tmp/arch/render.sh /tmp/arch/${package}/PKGBUILD.in ${version} /tmp/checksums.txt > PKGBUILD
+              git clone "ssh://aur@aur.archlinux.org/${package}.git" "aur-${package}"
+              cd "aur-${package}"
+              git config user.name "Igor Alexandrov"
+              git config user.email "igor.alexandrov@gmail.com"
+              /tmp/arch/render.sh "/tmp/arch/${package}/PKGBUILD.in" "$version" /tmp/checksums.txt > PKGBUILD
               makepkg --printsrcinfo > .SRCINFO
               git add PKGBUILD .SRCINFO
               # A re-run for the same tag has nothing to commit.
               if git diff --cached --quiet; then
-                echo '::notice::${package} is already at ${version}.'
+                echo "::notice::${package} is already at ${version}."
               else
-                git commit -m 'Update to ${version}'
+                git commit -m "Update to ${version}"
                 git push origin HEAD:master
               fi
-            "
+            ' bash "$package" "$version"
           done

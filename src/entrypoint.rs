@@ -81,13 +81,14 @@ fn report_startup_error(error: &anyhow::Error) {
 pub fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     // Demo runs use a throwaway profile: nothing touches the user's files.
+    // It lives until the window closes and is removed when `main` returns.
     let demo_root = if cli.demo {
-        Some(tempfile_root()?)
+        Some(demo_profile()?)
     } else {
         None
     };
     let dirs = match &demo_root {
-        Some(root) => AppDirs::at(root),
+        Some(root) => AppDirs::at(root.path()),
         None => AppDirs::discover(),
     };
     let mut logging = fastframe_log::Logging::new("tabletist", env!("CARGO_PKG_VERSION")).filter(
@@ -115,9 +116,10 @@ pub fn main() -> anyhow::Result<()> {
         native_options(cli.demo_size, !demo),
         Box::new(move |cc| {
             let repaint = cc.egui_ctx.clone();
-            let backend = crate::backend::Backend::start(crate::backend::Waker::new(move || {
-                repaint.request_repaint()
-            }));
+            let backend = crate::backend::Backend::start_with(
+                crate::backend::Waker::new(move || repaint.request_repaint()),
+                keyring_for(demo),
+            );
             let mut app = App::new(dirs, settings, backend);
             app.attach(&cc.egui_ctx, !demo);
             if demo {
@@ -135,11 +137,26 @@ pub fn main() -> anyhow::Result<()> {
     .map_err(|error| anyhow::anyhow!("could not open the window: {error}"))
 }
 
-/// A fresh directory under the system temp dir for a demo profile.
-fn tempfile_root() -> anyhow::Result<PathBuf> {
-    let root = std::env::temp_dir().join(format!("tabletist-demo-{}", std::process::id()));
-    std::fs::create_dir_all(&root)?;
-    Ok(root)
+/// The keyring for saved passwords. Demo runs keep secrets in memory, so a
+/// throwaway profile never reads or writes the user's OS keyring.
+fn keyring_for(demo: bool) -> crate::secrets::Keyring {
+    if demo {
+        crate::secrets::Keyring::memory()
+    } else {
+        crate::secrets::Keyring::native()
+    }
+}
+
+/// A fresh directory under the system temp dir for a demo profile. The name
+/// is random and the directory is created exclusively (0700 on Unix), so a
+/// directory someone else prepared in a shared temp dir is never reused. It
+/// is removed when dropped.
+fn demo_profile() -> anyhow::Result<tempfile::TempDir> {
+    let mut builder = tempfile::Builder::new();
+    builder.prefix("tabletist-demo-");
+    #[cfg(unix)]
+    builder.permissions(std::os::unix::fs::PermissionsExt::from_mode(0o700));
+    Ok(builder.tempdir()?)
 }
 
 /// Fills a demo profile: the shared SQLite fixture as a saved "Demo"
@@ -310,6 +327,31 @@ mod tests {
     use super::*;
 
     #[test]
+    fn demo_mode_never_uses_the_os_keyring() {
+        assert!(!keyring_for(true).is_native());
+        assert!(keyring_for(false).is_native());
+    }
+
+    #[test]
+    fn each_demo_profile_is_fresh_private_and_removed_afterwards() {
+        let first = demo_profile().unwrap();
+        let second = demo_profile().unwrap();
+        assert_ne!(first.path(), second.path());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(first.path())
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o700);
+        }
+        let path = first.path().to_path_buf();
+        drop(first);
+        assert!(!path.exists());
+    }
+
+    #[test]
     fn sizes_parse_as_width_by_height() {
         assert_eq!(parse_size("1280x800"), Ok([1280.0, 800.0]));
         assert!(parse_size("1280").is_err());
@@ -377,7 +419,10 @@ mod tests {
             egui::vec2(1280.0, 800.0),
             egui::vec2(2560.0, 1440.0),
         ] {
-            let backend = crate::backend::Backend::start(crate::backend::Waker::default());
+            let backend = crate::backend::Backend::start_with(
+                crate::backend::Waker::default(),
+                keyring_for(true),
+            );
             let mut harness = Harness::with_backend(size, backend);
             demo_setup(&mut harness.app);
             let loaded = harness.run_until(std::time::Duration::from_secs(20), |app| {

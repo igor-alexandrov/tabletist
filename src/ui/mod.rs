@@ -31,6 +31,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     if app.tabs.len() > 1 {
         conn_tabs::show(app, ui);
     }
+    notice(app, ui);
     let fill = app.palette.window;
     egui::CentralPanel::default()
         .frame(Frame::new().fill(fill))
@@ -47,6 +48,40 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     host_key_prompt::show(app, &ui.ctx().clone());
     quick_open::show(app, &ui.ctx().clone());
     help::show(app, &ui.ctx().clone());
+}
+
+/// A problem worth the user's attention that belongs to no one tab (a
+/// keyring write that failed), until dismissed.
+fn notice(app: &mut App, ui: &mut egui::Ui) {
+    let Some(message) = app.notice.clone() else {
+        return;
+    };
+    let palette = app.palette;
+    let look = app.look;
+    let mut dismiss = false;
+    egui::Panel::top(egui::Id::new("notice"))
+        .resizable(false)
+        .show_separator_line(false)
+        .frame(
+            Frame::new()
+                .fill(palette.warning.gamma_multiply(0.15))
+                .inner_margin(egui::Margin::symmetric(12, 8)),
+        )
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                crate::typography::Text::one(&look, widgets::body(&look), &message, palette.text)
+                    .layout(ui.ctx())
+                    .label(ui);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    dismiss =
+                        widgets::button(ui, &crate::i18n::gettext(app.locale, "Dismiss"), &look)
+                            .clicked();
+                });
+            });
+        });
+    if dismiss {
+        app.actions.push(crate::model::Action::DismissNotice);
+    }
 }
 
 #[cfg(test)]
@@ -1178,6 +1213,32 @@ mod tests {
             assert!(harness.has(label), "{label}");
         }
         assert!(!harness.has("File"));
+    }
+
+    #[test]
+    fn a_notice_shows_until_dismissed() {
+        let mut harness = Harness::new();
+        harness.app.notice = Some("Could not save the password in the keyring.".into());
+        assert!(harness.has("Could not save the password in the keyring."));
+        harness.click("Dismiss");
+        assert!(harness.app.notice.is_none());
+        assert!(!harness.has("Could not save the password in the keyring."));
+    }
+
+    #[test]
+    fn a_ca_file_used_by_require_stays_visible() {
+        let mut harness = Harness::new();
+        harness.press(Key::N, Modifiers::COMMAND);
+        harness.click("PostgreSQL");
+        let shows_ca = |harness: &mut Harness, tls| {
+            if let Some(crate::model::Dialog::Connection(form)) = &mut harness.app.dialog {
+                form.tls = tls;
+            }
+            harness.has("CA file")
+        };
+        assert!(!shows_ca(&mut harness, tabletist_db::TlsMode::Prefer));
+        assert!(shows_ca(&mut harness, tabletist_db::TlsMode::Require));
+        assert!(shows_ca(&mut harness, tabletist_db::TlsMode::VerifyFull));
     }
 
     #[test]

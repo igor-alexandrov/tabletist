@@ -11,9 +11,9 @@ use mysql_async::prelude::Queryable;
 use mysql_async::{DriverError, IoError, Opts, OptsBuilder, Params, SslOpts, TxOpts};
 
 use crate::{
-    ColumnInfo, ColumnMeta, ConnectSpec, Dialect, Error, ForeignKeyInfo, IndexInfo, ObjectInfo,
-    ObjectKind, ObjectRef, Result, RowPage, RowQuery, Secrets, Structure, TlsMode, Value,
-    ValueKind,
+    ColumnInfo, ColumnMeta, ConnectSpec, Dialect, Error, ForeignKeyInfo, IndexInfo, MAX_LISTED,
+    ObjectInfo, ObjectKind, ObjectRef, Result, RowPage, RowQuery, Secrets, Structure, TlsMode,
+    Value, ValueKind,
 };
 
 /// MySQL's `binary` character set: bytes, not text.
@@ -53,6 +53,15 @@ impl Conn {
         if spec.tls == TlsMode::VerifyCa {
             return Err(Error::Tls(
                 "verify-ca is not available for MySQL yet; use verify-full or require".into(),
+            ));
+        }
+        // PostgreSQL treats `require` with a CA file as verify-ca, which
+        // MySQL cannot do (above): refuse rather than ignore the CA file.
+        if spec.tls == TlsMode::Require && spec.ca_file.is_some() {
+            return Err(Error::Tls(
+                "MySQL checks a CA file only with verify-full; choose verify-full, or remove \
+                 the CA file to encrypt without checking the certificate"
+                    .into(),
             ));
         }
         let builder = builder(spec, secrets, via);
@@ -106,12 +115,16 @@ impl Conn {
         T: mysql_async::prelude::FromRow + Send + 'static,
     {
         let mut conn = self.conn.lock().await;
-        conn.exec(sql, params).await.map_err(query_error)
+        let rows: Vec<mysql_async::Row> = conn.exec(sql, params).await.map_err(query_error)?;
+        rows.into_iter().map(from_row).collect()
     }
 
     pub async fn list_schemas(&self) -> Result<Vec<String>> {
         self.catalog(
-            "SELECT schema_name FROM information_schema.schemata ORDER BY schema_name",
+            &format!(
+                "SELECT schema_name FROM information_schema.schemata \
+                 ORDER BY schema_name LIMIT {MAX_LISTED}"
+            ),
             Params::Empty,
         )
         .await
@@ -120,8 +133,10 @@ impl Conn {
     pub async fn list_objects(&self, schema: &str) -> Result<Vec<ObjectInfo>> {
         let rows: Vec<(String, String, Option<u64>)> = self
             .catalog(
-                "SELECT table_name, table_type, table_rows FROM information_schema.tables \
-                 WHERE table_schema = ? ORDER BY table_name",
+                &format!(
+                    "SELECT table_name, table_type, table_rows FROM information_schema.tables \
+                     WHERE table_schema = ? ORDER BY table_name LIMIT {MAX_LISTED}"
+                ),
                 (schema,),
             )
             .await?;
@@ -276,12 +291,23 @@ impl Conn {
             .await
             .map_err(query_error)?;
         let outcome = transaction
-            .exec_first(sql.text.as_str(), params(&sql.params))
+            .exec_first::<mysql_async::Row, _, _>(sql.text.as_str(), params(&sql.params))
             .await
             .map_err(query_error);
-        let count: Option<u64> = finish(transaction, outcome).await?;
-        count.ok_or_else(|| Error::query("the count returned no number"))
+        let row = finish(transaction, outcome).await?;
+        row.map(from_row::<u64>)
+            .transpose()?
+            .ok_or_else(|| Error::query("the count returned no number"))
     }
+}
+
+/// A row as `T`. A server (or proxy) that answers with other types or a
+/// NULL is a query error, not a panic: release builds abort on panic. The
+/// row itself stays out of the message.
+fn from_row<T: mysql_async::prelude::FromRow>(row: mysql_async::Row) -> Result<T> {
+    mysql_async::from_row_opt(row).map_err(|_| {
+        Error::query("unexpected data from the server: a row did not have the expected types")
+    })
 }
 
 /// Up to `limit + 1` rows of a page, so the caller can tell there are more.
@@ -509,8 +535,12 @@ pub(crate) fn with_tls(builder: OptsBuilder, spec: &ConnectSpec, via: Option<u16
 
 /// `mysql_async` TLS options for our mode (`None` means no TLS).
 pub(crate) fn ssl_opts(mode: TlsMode, ca_file: Option<&Path>) -> Option<SslOpts> {
+    // A CA file is the only root trusted, as for PostgreSQL; without one,
+    // mysql_async's bundled roots are used.
     let base = match ca_file {
-        Some(path) => SslOpts::default().with_root_certs(vec![path.to_path_buf().into()]),
+        Some(path) => SslOpts::default()
+            .with_root_certs(vec![path.to_path_buf().into()])
+            .with_disable_built_in_roots(true),
         None => SslOpts::default(),
     };
     match mode {
@@ -747,6 +777,28 @@ mod tests {
         assert_eq!(ca.root_certs().len(), 1);
         let full = ssl_opts(TlsMode::VerifyFull, None).unwrap();
         assert!(!full.accept_invalid_certs() && !full.skip_domain_validation());
+        assert!(!full.disable_built_in_roots());
+    }
+
+    #[test]
+    fn a_ca_file_is_the_only_trusted_root() {
+        let full = ssl_opts(TlsMode::VerifyFull, Some(std::path::Path::new("/ca.pem"))).unwrap();
+        assert_eq!(full.root_certs().len(), 1);
+        assert!(full.disable_built_in_roots());
+    }
+
+    #[tokio::test]
+    async fn require_with_a_ca_file_is_refused_not_ignored() {
+        let dir = tempfile::tempdir().unwrap();
+        let ca = dir.path().join("ca.pem");
+        std::fs::write(&ca, "").unwrap();
+        let (mut spec, secrets) =
+            ConnectSpec::from_url("mysql://me@127.0.0.1:1/app?ssl-mode=REQUIRED").unwrap();
+        spec.ca_file = Some(ca);
+        match Conn::connect(&spec, &secrets, None).await {
+            Err(Error::Tls(message)) => assert!(message.contains("verify-full"), "{message}"),
+            other => panic!("{:?}", other.map(|_| ())),
+        }
     }
 
     fn server(code: u16, state: &str) -> mysql_async::Error {

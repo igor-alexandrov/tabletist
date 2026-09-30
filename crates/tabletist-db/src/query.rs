@@ -83,7 +83,9 @@ pub struct RowQuery {
     pub object: ObjectRef,
     /// Combined with AND.
     pub filters: Vec<Filter>,
-    /// Appended as `AND (<raw>)`. Safe because sessions are read-only.
+    /// Appended as `AND (<raw>)`, on lines of its own so a trailing `--`
+    /// comment ends there. Sessions are read-only, so it cannot write; on
+    /// SQLite, text ending inside a `/*` comment is refused.
     pub raw_where: Option<String>,
     pub sort: Vec<Sort>,
     pub offset: u64,

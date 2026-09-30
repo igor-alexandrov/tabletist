@@ -153,7 +153,7 @@ fn bar_info(app: &App, tab: ConnTabId) -> Option<BarInfo> {
     let tls = remote.then(|| {
         let encrypted =
             matches!(workspace.status, SessionStatus::Connected).then_some(workspace.encrypted);
-        let (text, warn) = tls_status(spec.tls, encrypted);
+        let (text, warn) = tls_status(spec.effective_tls(), encrypted);
         (text, if warn { Tone::Warn } else { Tone::Good })
     });
     Some(BarInfo {

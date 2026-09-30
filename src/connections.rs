@@ -1,5 +1,5 @@
 //! Saved connections, stored as `connections.json`. Specs only: passwords
-//! live in the OS keyring (batch 4), never in this file.
+//! live in the OS keyring, never in this file.
 
 use std::path::Path;
 

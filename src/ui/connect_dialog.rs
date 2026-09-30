@@ -218,7 +218,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                             ui.end_row();
 
                             let label_password = ui.label(gettext(locale, "Password")).id;
-                            let hint = if form.has_saved_password {
+                            let hint = if form.password_is_saved() {
                                 gettext(locale, "Saved in keyring")
                             } else {
                                 gettext(locale, "")
@@ -292,14 +292,19 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                             .labelled_by(label_tls);
                             ui.end_row();
 
-                            if matches!(form.tls, TlsMode::VerifyCa | TlsMode::VerifyFull) {
+                            // `require` uses a CA file too (as verify-ca, like
+                            // libpq), so it stays visible there.
+                            if matches!(
+                                form.tls,
+                                TlsMode::Require | TlsMode::VerifyCa | TlsMode::VerifyFull
+                            ) {
                                 let label_ca_file = ui.label(gettext(locale, "CA file")).id;
                                 // verify-ca refuses the system roots: they
                                 // vouch for any public certificate.
-                                let hint = if form.tls == TlsMode::VerifyCa {
-                                    gettext(locale, "Required")
-                                } else {
-                                    gettext(locale, "System certificates")
+                                let hint = match form.tls {
+                                    TlsMode::Require => gettext(locale, "None (not checked)"),
+                                    TlsMode::VerifyCa => gettext(locale, "Required"),
+                                    _ => gettext(locale, "System certificates"),
                                 };
                                 ui.add(
                                     crate::ui::widgets::single(ui, &mut form.ca_file, &look)

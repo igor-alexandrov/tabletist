@@ -22,10 +22,9 @@ use crate::secrets::{SecretString, password_account, ssh_account};
 use crate::settings::Settings;
 use crate::theme::{self, Catalog, Palette};
 
-/// What a keyring read was for.
-#[derive(Debug, Clone, Copy)]
 /// What a keyring read is for; each names the exact request it serves, so
 /// a late answer for an earlier attempt is dropped.
+#[derive(Debug, Clone, Copy)]
 enum SecretPurpose {
     /// A secret for `tab`'s connect attempt `request`.
     Connect {
@@ -35,6 +34,18 @@ enum SecretPurpose {
     },
     /// A secret for the dialog's Test `test`.
     Test { test: RequestId, kind: SecretKind },
+}
+
+/// A keyring write or delete in flight.
+#[derive(Debug)]
+struct PendingStore {
+    conn: crate::connections::ConnectionId,
+    /// The SSH secret rather than the database password.
+    ssh: bool,
+    /// A write rather than a delete.
+    saving: bool,
+    /// Switch the connection to keyring mode once the write lands.
+    adopt: bool,
 }
 
 /// The native title bar the tab bar shares: its height, and how far the
@@ -62,6 +73,11 @@ pub struct App {
     pub dialog: Option<Dialog>,
     /// Keyring reads in flight, and what each is for.
     pending_secrets: HashMap<RequestId, SecretPurpose>,
+    /// Keyring writes and deletes in flight.
+    pending_stores: HashMap<RequestId, PendingStore>,
+    /// A problem to show above the window's content until dismissed (a
+    /// keyring write that failed).
+    pub notice: Option<String>,
     /// SSH host keys the user trusts, from known_hosts.json.
     pub host_keys: HostKeys,
     /// Why known_hosts.json could not be read; no new host is trusted then.
@@ -99,6 +115,8 @@ impl App {
             connections,
             dialog: None,
             pending_secrets: HashMap::new(),
+            pending_stores: HashMap::new(),
+            notice: None,
             host_keys,
             host_keys_error,
             titlebar: TitleBar::default(),
@@ -808,24 +826,15 @@ impl App {
                 if let Some(removed) = self.connections.remove(&id) {
                     self.save_connections();
                     if removed.password == PasswordMode::Keyring {
-                        let request = RequestId(self.next_id());
-                        self.backend.send(Command::StoreSecret {
-                            request,
-                            account: password_account(&id),
-                            secret: None,
-                        });
+                        self.store_secret(&id, false, None, false);
                     }
                     if removed.ssh_secret == PasswordMode::Keyring {
-                        let request = RequestId(self.next_id());
-                        self.backend.send(Command::StoreSecret {
-                            request,
-                            account: ssh_account(&id),
-                            secret: None,
-                        });
+                        self.store_secret(&id, true, None, false);
                     }
                 }
             }
             Action::CloseDialog => self.dialog = None,
+            Action::DismissNotice => self.notice = None,
             Action::PickSqliteFile => {
                 let request = RequestId(self.next_id());
                 if let Some(Dialog::Connection(form)) = &mut self.dialog {
@@ -895,17 +904,19 @@ impl App {
                 let mut secrets = Secrets::default();
                 let mut loads = Vec::new();
                 let ssh_kind = SecretKind::for_ssh(&spec);
-                for (kind, typed, saved, account) in [
+                for (kind, typed, saved, stale, account) in [
                     (
                         Some(SecretKind::Database),
                         &form.password,
-                        form.has_saved_password,
+                        form.password_is_saved(),
+                        form.password_is_stale(),
                         password_account as fn(&crate::connections::ConnectionId) -> String,
                     ),
                     (
                         ssh_kind,
                         &form.ssh_secret,
                         form.ssh_secret_is_saved(),
+                        form.ssh_secret_is_stale(),
                         ssh_account,
                     ),
                 ] {
@@ -916,8 +927,18 @@ impl App {
                         *kind.slot(&mut secrets) = Some(typed.clone());
                     } else if saved && let Some(id) = &form.editing {
                         loads.push((kind, account(id)));
+                    } else if stale {
+                        // The saved secret was for another server: never
+                        // send it anywhere else.
+                        form.test = TestState::Failed(if kind.is_ssh() {
+                            "The SSH server changed; type its secret to test.".into()
+                        } else {
+                            "The server changed; type its password to test.".into()
+                        });
+                        return;
                     }
                 }
+                form.test_spec = Some(spec.clone());
                 form.test_secrets = secrets.clone();
                 form.test_waiting = loads.len() as u8;
                 if loads.is_empty() {
@@ -970,9 +991,15 @@ impl App {
         }
     }
 
-    /// Opens `saved` in `tab`. `typed` is a password typed in the dialog.
     /// Opens `saved` in `tab`; `typed` holds secrets typed in the dialog.
     fn connect_tab(&mut self, tab: ConnTabId, saved: SavedConnection, typed: Secrets) {
+        self.open_workspace(tab, saved, typed);
+        self.authenticate(tab);
+    }
+
+    /// Puts a connecting workspace for `saved` in `tab`, without starting to
+    /// authenticate.
+    fn open_workspace(&mut self, tab: ConnTabId, saved: SavedConnection, typed: Secrets) {
         let session = SessionId(self.next_id());
         let request = RequestId(self.next_id());
         let environment = saved.environment();
@@ -1009,7 +1036,6 @@ impl App {
             focus_where: false,
             fold_documents: None,
         }));
-        self.authenticate(tab);
     }
 
     /// Fills the tab's secrets one at a time (the database password, then
@@ -1172,23 +1198,9 @@ impl App {
         let Some(password) = workspace.secrets.password.clone() else {
             return;
         };
-        workspace.password_mode = PasswordMode::Keyring;
         let conn = workspace.conn_id.clone();
-        let request = RequestId(self.next_id());
-        self.backend.send(Command::StoreSecret {
-            request,
-            account: password_account(&conn),
-            secret: Some(SecretString(password)),
-        });
-        if let Some(saved) = self
-            .connections
-            .connections
-            .iter_mut()
-            .find(|c| c.id == conn)
-        {
-            saved.password = PasswordMode::Keyring;
-            self.save_connections();
-        }
+        // Keyring mode is recorded once the keyring has it (SecretStored).
+        self.store_secret(&conn, false, Some(SecretString(password)), true);
     }
 
     /// The SSH half of `save_accepted_password`.
@@ -1207,22 +1219,103 @@ impl App {
         let Some(secret) = kind.slot(&mut secrets).clone() else {
             return;
         };
-        workspace.ssh_mode = PasswordMode::Keyring;
         let conn = workspace.conn_id.clone();
+        self.store_secret(&conn, true, Some(SecretString(secret)), true);
+    }
+
+    /// Writes (`Some`) or deletes (`None`) a connection's database password
+    /// or SSH secret in the keyring. With `adopt`, the connection switches
+    /// to keyring mode once the write succeeds. Nothing is written for a
+    /// connection that no longer exists.
+    fn store_secret(
+        &mut self,
+        conn: &crate::connections::ConnectionId,
+        ssh: bool,
+        secret: Option<SecretString>,
+        adopt: bool,
+    ) {
+        if secret.is_some() && self.connections.get(conn).is_none() {
+            return;
+        }
         let request = RequestId(self.next_id());
+        self.pending_stores.insert(
+            request,
+            PendingStore {
+                conn: conn.clone(),
+                ssh,
+                saving: secret.is_some(),
+                adopt,
+            },
+        );
         self.backend.send(Command::StoreSecret {
             request,
-            account: ssh_account(&conn),
-            secret: Some(SecretString(secret)),
+            account: if ssh {
+                ssh_account(conn)
+            } else {
+                password_account(conn)
+            },
+            secret,
         });
-        if let Some(saved) = self
-            .connections
-            .connections
-            .iter_mut()
-            .find(|c| c.id == conn)
-        {
-            saved.ssh_secret = PasswordMode::Keyring;
-            self.save_connections();
+    }
+
+    /// A keyring write or delete finished.
+    fn secret_stored(&mut self, request: RequestId, result: Result<(), String>) {
+        let Some(store) = self.pending_stores.remove(&request) else {
+            return;
+        };
+        fn mode(saved: &mut SavedConnection, ssh: bool) -> &mut PasswordMode {
+            if ssh {
+                &mut saved.ssh_secret
+            } else {
+                &mut saved.password
+            }
+        }
+        match result {
+            Ok(()) if store.adopt => {
+                let Some(saved) = self
+                    .connections
+                    .connections
+                    .iter_mut()
+                    .find(|c| c.id == store.conn)
+                else {
+                    return;
+                };
+                *mode(saved, store.ssh) = PasswordMode::Keyring;
+                self.save_connections();
+                for tab in &mut self.tabs {
+                    if let ConnTabContent::Workspace(workspace) = &mut tab.content
+                        && workspace.conn_id == store.conn
+                    {
+                        if store.ssh {
+                            workspace.ssh_mode = PasswordMode::Keyring;
+                        } else {
+                            workspace.password_mode = PasswordMode::Keyring;
+                        }
+                    }
+                }
+            }
+            Ok(()) => {}
+            Err(error) => {
+                let what = if store.ssh { "SSH secret" } else { "password" };
+                self.notice = Some(if store.saving {
+                    format!("Could not save the {what} in the keyring: {error}.")
+                } else {
+                    format!("Could not remove the {what} from the keyring: {error}.")
+                });
+                // What the keyring holds is unknown now (maybe an older
+                // secret, maybe one for a server the connection no longer
+                // points at): ask next time instead of reading it.
+                if let Some(saved) = self
+                    .connections
+                    .connections
+                    .iter_mut()
+                    .find(|c| c.id == store.conn)
+                    && *mode(saved, store.ssh) == PasswordMode::Keyring
+                {
+                    *mode(saved, store.ssh) = PasswordMode::Ask;
+                    self.save_connections();
+                }
+            }
         }
     }
 
@@ -1353,17 +1446,27 @@ impl App {
                 if let Some(Dialog::Connection(form)) = &mut self.dialog
                     && form.test == TestState::Running(request)
                 {
-                    form.test = match result {
-                        Ok(()) => TestState::Passed,
-                        Err(Error::Ssh {
-                            stage: SshStage::HostKeyUnknown { fingerprint },
-                            ..
-                        }) if self.host_keys_error.is_none() => TestState::Untrusted {
-                            host: form.ssh_host.trim().to_owned(),
-                            port: form.ssh_port.trim().parse().unwrap_or(22),
+                    // The key belongs to the SSH host the test reached, not
+                    // whatever the fields say now.
+                    let tested = form
+                        .test_spec
+                        .as_ref()
+                        .and_then(|spec| spec.ssh.as_ref())
+                        .map(|ssh| (ssh.host.clone(), ssh.port));
+                    form.test = match (result, tested) {
+                        (Ok(()), _) => TestState::Passed,
+                        (
+                            Err(Error::Ssh {
+                                stage: SshStage::HostKeyUnknown { fingerprint },
+                                ..
+                            }),
+                            Some((host, port)),
+                        ) if self.host_keys_error.is_none() => TestState::Untrusted {
+                            host,
+                            port,
                             fingerprint,
                         },
-                        Err(error) => TestState::Failed(error.to_string()),
+                        (Err(error), _) => TestState::Failed(error.to_string()),
                     };
                 }
             }
@@ -1527,16 +1630,17 @@ impl App {
                             Ok(Some(secret)) => {
                                 *kind.slot(&mut form.test_secrets) = Some(secret.0);
                                 form.test_waiting = form.test_waiting.saturating_sub(1);
-                                if form.test_waiting == 0 {
-                                    match form.to_spec() {
-                                        Ok(spec) => self.backend.send(Command::Test {
-                                            request: test,
-                                            spec,
-                                            secrets: form.test_secrets.clone(),
-                                            host_keys: self.host_keys.clone(),
-                                        }),
-                                        Err(message) => form.test = TestState::Failed(message),
-                                    }
+                                // The spec the Test started with: fields
+                                // edited meanwhile never get the secret.
+                                if form.test_waiting == 0
+                                    && let Some(spec) = form.test_spec.clone()
+                                {
+                                    self.backend.send(Command::Test {
+                                        request: test,
+                                        spec,
+                                        secrets: form.test_secrets.clone(),
+                                        host_keys: self.host_keys.clone(),
+                                    });
                                 }
                             }
                             Ok(None) => {
@@ -1552,7 +1656,7 @@ impl App {
                     None => {}
                 }
             }
-            Event::SecretStored { .. } => {}
+            Event::SecretStored { request, result } => self.secret_stored(request, result),
             Event::Databases {
                 session,
                 request,
@@ -1666,46 +1770,28 @@ impl App {
         };
         let typed = (!form.password.is_empty()).then(|| form.password.clone());
         let typed_ssh = (!form.ssh_secret.is_empty()).then(|| form.ssh_secret.clone());
+        // A secret saved for a server the connection no longer points at is
+        // deleted, so connecting asks for the new one instead of sending it.
+        let stale = form.password_is_stale();
+        let stale_ssh = form.ssh_secret_is_stale();
         let previous = self.connections.get(&saved.id).map(|c| c.password);
         let previous_ssh = self.connections.get(&saved.id).map(|c| c.ssh_secret);
         self.dialog = None;
         self.connections.upsert(saved.clone());
         self.save_connections();
-        let account = password_account(&saved.id);
         if saved.password == PasswordMode::Keyring {
-            if let Some(password) = &typed {
-                let request = RequestId(self.next_id());
-                self.backend.send(Command::StoreSecret {
-                    request,
-                    account,
-                    secret: Some(SecretString(password.clone())),
-                });
+            if typed.is_some() || stale {
+                self.store_secret(&saved.id, false, typed.clone().map(SecretString), false);
             }
         } else if previous == Some(PasswordMode::Keyring) {
-            let request = RequestId(self.next_id());
-            self.backend.send(Command::StoreSecret {
-                request,
-                account,
-                secret: None,
-            });
+            self.store_secret(&saved.id, false, None, false);
         }
-        let account = ssh_account(&saved.id);
         if saved.ssh_secret == PasswordMode::Keyring {
-            if let Some(secret) = &typed_ssh {
-                let request = RequestId(self.next_id());
-                self.backend.send(Command::StoreSecret {
-                    request,
-                    account,
-                    secret: Some(SecretString(secret.clone())),
-                });
+            if typed_ssh.is_some() || stale_ssh {
+                self.store_secret(&saved.id, true, typed_ssh.clone().map(SecretString), false);
             }
         } else if previous_ssh == Some(PasswordMode::Keyring) {
-            let request = RequestId(self.next_id());
-            self.backend.send(Command::StoreSecret {
-                request,
-                account,
-                secret: None,
-            });
+            self.store_secret(&saved.id, true, None, false);
         }
         if connect {
             if !matches!(self.active_tab().content, ConnTabContent::Picker(_)) {
@@ -1713,13 +1799,26 @@ impl App {
             }
             let tab = self.active_tab_id();
             let mut secrets = Secrets {
-                password: typed,
+                password: typed.clone(),
                 ..Secrets::default()
             };
-            if let (Some(kind), Some(secret)) = (SecretKind::for_ssh(&saved.spec), typed_ssh) {
-                *kind.slot(&mut secrets) = Some(secret);
+            if let (Some(kind), Some(secret)) = (SecretKind::for_ssh(&saved.spec), &typed_ssh) {
+                *kind.slot(&mut secrets) = Some(secret.clone());
             }
-            self.connect_tab(tab, saved, secrets);
+            self.open_workspace(tab, saved, secrets);
+            // Ask for a secret whose saved copy was for the old server,
+            // rather than trusting the keyring to have dropped it.
+            if let Some(workspace) = self.workspace_mut(tab) {
+                if stale && typed.is_none() {
+                    workspace.needs_prompt =
+                        Some("The server changed. Enter the password for it.".into());
+                }
+                if stale_ssh && typed_ssh.is_none() {
+                    workspace.needs_ssh_prompt =
+                        Some("The SSH server changed. Enter the secret for it.".into());
+                }
+            }
+            self.authenticate(tab);
         }
     }
 
@@ -2185,13 +2284,21 @@ impl App {
 
 /// Fills the form from its URL field.
 fn apply_url(form: &mut ConnectionForm) {
-    let (spec, secrets) = match tabletist_db::ConnectSpec::from_url(&form.url) {
+    let tabletist_db::ParsedUrl {
+        spec,
+        secrets,
+        names_tls,
+        names_ca_file,
+        without_password,
+    } = match tabletist_db::ParsedUrl::parse(&form.url) {
         Ok(parsed) => parsed,
         Err(error) => {
             form.message = Some(error.to_string());
             return;
         }
     };
+    // The password moves to the masked field; the URL field is not masked.
+    form.url = without_password;
     match spec.driver {
         Driver::Sqlite => {
             let path = spec
@@ -2215,11 +2322,17 @@ fn apply_url(form: &mut ConnectionForm) {
             form.port = spec.port.to_string();
             form.user = spec.user;
             form.database = spec.database;
-            form.tls = spec.tls;
-            form.ca_file = spec
-                .ca_file
-                .map(|path| path.display().to_string())
-                .unwrap_or_default();
+            // A URL that does not name the TLS settings keeps the form's,
+            // rather than quietly dropping to `prefer`.
+            if names_tls {
+                form.tls = spec.tls;
+            }
+            if names_ca_file {
+                form.ca_file = spec
+                    .ca_file
+                    .map(|path| path.display().to_string())
+                    .unwrap_or_default();
+            }
             if let Some(password) = secrets.password {
                 form.password = password;
             }
@@ -3475,9 +3588,122 @@ mod tests {
             c,
             Command::StoreSecret { secret: Some(SecretString(p)), .. } if p == "typed"
         )));
+        // Keyring mode only once the keyring has it.
+        assert_eq!(
+            app.connections.get(&conn).unwrap().password,
+            PasswordMode::Ask
+        );
+        answer_last_store(&mut app, Ok(()));
         assert_eq!(
             app.connections.get(&conn).unwrap().password,
             PasswordMode::Keyring
+        );
+        assert_eq!(
+            app.workspace(tab).unwrap().password_mode,
+            PasswordMode::Keyring
+        );
+        assert!(app.notice.is_none());
+    }
+
+    fn answer_last_store(app: &mut App, result: Result<(), String>) {
+        let request = app
+            .backend
+            .sent
+            .iter()
+            .rev()
+            .find_map(|c| match c {
+                Command::StoreSecret { request, .. } => Some(*request),
+                _ => None,
+            })
+            .expect("a StoreSecret");
+        app.apply(Action::Backend(Event::SecretStored { request, result }));
+    }
+
+    fn connect_saving_prompted_password(app: &mut App, conn: &ConnectionId) -> ConnTabId {
+        let tab = app.active_tab_id();
+        app.apply(Action::Connect {
+            tab,
+            conn: conn.clone(),
+        });
+        prompt(app).password = "typed".into();
+        prompt(app).save = true;
+        app.apply(Action::SubmitPassword);
+        let Some(Command::Connect {
+            session, request, ..
+        }) = app.backend.sent.last()
+        else {
+            panic!()
+        };
+        let (session, request) = (*session, *request);
+        app.apply(Action::Backend(Event::Connected {
+            session,
+            request,
+            driver: Driver::Postgres,
+            encrypted: false,
+        }));
+        tab
+    }
+
+    #[test]
+    fn a_failed_keyring_write_is_shown_and_keeps_asking() {
+        let (mut app, _dir) = app();
+        let conn = postgres_saved(&mut app, PasswordMode::Ask);
+        let tab = connect_saving_prompted_password(&mut app, &conn);
+        answer_last_store(&mut app, Err("the keyring is locked".into()));
+        assert_eq!(
+            app.connections.get(&conn).unwrap().password,
+            PasswordMode::Ask
+        );
+        assert_eq!(app.workspace(tab).unwrap().password_mode, PasswordMode::Ask);
+        let notice = app.notice.clone().expect("a notice");
+        assert!(notice.contains("the keyring is locked"), "{notice}");
+        app.apply(Action::DismissNotice);
+        assert!(app.notice.is_none());
+    }
+
+    #[test]
+    fn a_connection_deleted_meanwhile_gets_no_keyring_entry() {
+        let (mut app, _dir) = app();
+        let conn = postgres_saved(&mut app, PasswordMode::Ask);
+        let tab = app.active_tab_id();
+        app.apply(Action::Connect {
+            tab,
+            conn: conn.clone(),
+        });
+        prompt(&mut app).password = "typed".into();
+        prompt(&mut app).save = true;
+        app.apply(Action::SubmitPassword);
+        app.apply(Action::DeleteConnection(conn));
+        let Some(Command::Connect {
+            session, request, ..
+        }) = app.backend.sent.last()
+        else {
+            panic!()
+        };
+        let (session, request) = (*session, *request);
+        app.apply(Action::Backend(Event::Connected {
+            session,
+            request,
+            driver: Driver::Postgres,
+            encrypted: false,
+        }));
+        assert!(sent_secrets(&app).is_empty());
+        assert!(app.connections.connections.is_empty());
+    }
+
+    #[test]
+    fn a_failed_write_from_the_dialog_stops_reading_the_old_entry() {
+        let (mut app, _dir) = app();
+        let conn = postgres_saved(&mut app, PasswordMode::Keyring);
+        app.apply(Action::EditConnection(conn.clone()));
+        form(&mut app).password = "new".into();
+        app.apply(Action::SaveConnection { connect: false });
+        answer_last_store(&mut app, Err("the keyring is not available".into()));
+        assert!(app.notice.is_some());
+        // The keyring may still hold the old password: ask instead.
+        assert_eq!(
+            app.connections.get(&conn).unwrap().password,
+            PasswordMode::Ask
         );
     }
 
@@ -3775,6 +4001,32 @@ mod tests {
     }
 
     #[test]
+    fn a_pasted_url_keeps_unnamed_tls_settings_and_hides_its_password() {
+        let (mut app, _dir) = app();
+        postgres_form(&mut app);
+        form(&mut app).tls = tabletist_db::TlsMode::VerifyFull;
+        form(&mut app).ca_file = "/etc/ca.pem".into();
+        form(&mut app).url = "postgres://me:secret@other.example.com/app".into();
+        app.apply(Action::ApplyUrl);
+        let filled = form(&mut app);
+        assert_eq!(filled.host, "other.example.com");
+        assert_eq!(filled.tls, tabletist_db::TlsMode::VerifyFull);
+        assert_eq!(filled.ca_file, "/etc/ca.pem");
+        assert_eq!(filled.password, "secret");
+        assert_eq!(filled.url, "postgres://me@other.example.com/app");
+
+        // A URL that names them wins; one that names them twice is refused.
+        form(&mut app).url = "postgres://me@h/app?sslmode=require".into();
+        app.apply(Action::ApplyUrl);
+        assert_eq!(form(&mut app).tls, tabletist_db::TlsMode::Require);
+        form(&mut app).url = "postgres://me@h2/app?sslmode=verify-full&sslmode=disable".into();
+        app.apply(Action::ApplyUrl);
+        assert!(form(&mut app).message.is_some());
+        assert_eq!(form(&mut app).host, "h");
+        assert_eq!(form(&mut app).tls, tabletist_db::TlsMode::Require);
+    }
+
+    #[test]
     fn testing_an_unchanged_keyring_connection_loads_its_password() {
         let (mut app, _dir) = app();
         let conn = postgres_saved(&mut app, PasswordMode::Keyring);
@@ -3799,6 +4051,92 @@ mod tests {
         // The test runs under the id the dialog waits on.
         assert_eq!(form(&mut app).test, TestState::Running(sent_request));
         assert_eq!(password.as_deref(), Some("pw"));
+    }
+
+    #[test]
+    fn a_saved_password_never_goes_to_a_changed_host() {
+        let (mut app, _dir) = app();
+        let conn = postgres_saved(&mut app, PasswordMode::Keyring);
+        app.apply(Action::EditConnection(conn.clone()));
+        assert!(form(&mut app).password_is_saved());
+        form(&mut app).host = "elsewhere.example.com".into();
+        assert!(!form(&mut app).password_is_saved());
+
+        app.apply(Action::TestConnection);
+        assert!(sent_secrets(&app).is_empty(), "Test must not load it");
+        assert!(matches!(form(&mut app).test, TestState::Failed(_)));
+        assert!(
+            !app.backend
+                .sent
+                .iter()
+                .any(|c| matches!(c, Command::Test { .. }))
+        );
+
+        app.apply(Action::SaveConnection { connect: true });
+        assert_eq!(
+            app.connections.get(&conn).unwrap().password,
+            PasswordMode::Keyring,
+            "the user's choice to keep a password stays"
+        );
+        assert!(
+            matches!(
+                sent_secrets(&app).as_slice(),
+                [Command::StoreSecret { secret: None, account, .. }]
+                    if *account == password_account(&conn)
+            ),
+            "the old password is deleted and never loaded"
+        );
+        assert!(matches!(app.dialog, Some(Dialog::Password(_))));
+        assert!(
+            !app.backend
+                .sent
+                .iter()
+                .any(|c| matches!(c, Command::Connect { .. }))
+        );
+    }
+
+    #[test]
+    fn a_saved_password_follows_only_its_driver_port_and_user() {
+        let (mut app, _dir) = app();
+        let conn = postgres_saved(&mut app, PasswordMode::Keyring);
+        app.apply(Action::EditConnection(conn));
+        for change in [
+            (|form: &mut ConnectionForm| form.port = "6543".into()) as fn(&mut ConnectionForm),
+            |form| form.user = "admin".into(),
+            |form| form.driver = Driver::MySql,
+        ] {
+            let form = form(&mut app);
+            let (driver, port, user) = (form.driver, form.port.clone(), form.user.clone());
+            change(form);
+            assert!(form.password_is_stale());
+            (form.driver, form.port, form.user) = (driver, port, user);
+            assert!(form.password_is_saved());
+        }
+        // Whitespace and other fields do not matter.
+        form(&mut app).host = " db.example.com ".into();
+        form(&mut app).database = "other".into();
+        assert!(form(&mut app).password_is_saved());
+    }
+
+    #[test]
+    fn a_host_edited_while_a_test_loads_its_password_is_not_used() {
+        let (mut app, _dir) = app();
+        let conn = postgres_saved(&mut app, PasswordMode::Keyring);
+        app.apply(Action::EditConnection(conn));
+        app.apply(Action::TestConnection);
+        let Some(Command::LoadSecret { request, .. }) = app.backend.sent.last() else {
+            panic!()
+        };
+        let request = *request;
+        form(&mut app).host = "elsewhere.example.com".into();
+        app.apply(Action::Backend(Event::SecretLoaded {
+            request,
+            result: Ok(Some(SecretString("pw".into()))),
+        }));
+        match app.backend.sent.last() {
+            Some(Command::Test { spec, .. }) => assert_eq!(spec.host, "db.example.com"),
+            other => panic!("{other:?}"),
+        }
     }
 
     fn connected_postgres(app: &mut App) -> ConnTabId {
@@ -4074,6 +4412,52 @@ mod tests {
         }
 
         #[test]
+        fn a_saved_ssh_secret_never_goes_to_a_changed_ssh_host() {
+            let (mut app, _dir) = app();
+            let conn = ssh_saved(&mut app);
+            let mut saved = app.connections.get(&conn).unwrap().clone();
+            if let Some(ssh) = &mut saved.spec.ssh {
+                ssh.auth = tabletist_db::SshAuth::Password;
+            }
+            saved.ssh_secret = PasswordMode::Keyring;
+            app.connections.upsert(saved);
+            app.apply(Action::EditConnection(conn.clone()));
+            assert!(form(&mut app).ssh_secret_is_saved());
+            for change in [
+                (|form: &mut ConnectionForm| form.ssh_host = "other".into())
+                    as fn(&mut ConnectionForm),
+                |form| form.ssh_port = "2222".into(),
+                |form| form.ssh_user = "root".into(),
+            ] {
+                let form = form(&mut app);
+                let (host, port, user) = (
+                    form.ssh_host.clone(),
+                    form.ssh_port.clone(),
+                    form.ssh_user.clone(),
+                );
+                change(form);
+                assert!(!form.ssh_secret_is_saved());
+                assert!(form.ssh_secret_is_stale());
+                (form.ssh_host, form.ssh_port, form.ssh_user) = (host, port, user);
+            }
+            form(&mut app).ssh_host = "other".into();
+            app.apply(Action::TestConnection);
+            assert!(sent_secrets(&app).is_empty(), "Test must not load it");
+            assert!(matches!(form(&mut app).test, TestState::Failed(_)));
+
+            app.apply(Action::SaveConnection { connect: true });
+            assert!(matches!(
+                sent_secrets(&app).as_slice(),
+                [Command::StoreSecret { secret: None, account, .. }]
+                    if *account == ssh_account(&conn)
+            ));
+            match &app.dialog {
+                Some(Dialog::Password(prompt)) => assert_eq!(prompt.kind, SecretKind::SshPassword),
+                other => panic!("{other:?}"),
+            }
+        }
+
+        #[test]
         fn an_unknown_host_key_asks_and_trusting_saves_it_and_reconnects() {
             let (mut app, dir) = app();
             let conn = ssh_saved(&mut app);
@@ -4178,6 +4562,38 @@ mod tests {
                 Some(Command::Test { .. })
             ));
             assert!(matches!(super::form(&mut app).test, TestState::Running(_)));
+        }
+
+        #[test]
+        fn trust_from_a_test_names_the_host_tested_not_the_one_typed_since() {
+            let (mut app, _dir) = app();
+            postgres_form(&mut app);
+            let form = form(&mut app);
+            form.ssh = true;
+            form.ssh_host = "bastion".into();
+            form.ssh_user = "ops".into();
+            form.ssh_auth = SshAuthKind::Agent;
+            app.apply(Action::TestConnection);
+            let Some(Command::Test { request, .. }) = app.backend.sent.last() else {
+                panic!("expected a Test");
+            };
+            let request = *request;
+            // Edited while the test runs.
+            super::form(&mut app).ssh_host = "other".into();
+            super::form(&mut app).ssh_port = "2222".into();
+            app.apply(Action::Backend(Event::Tested {
+                request,
+                result: Err(unknown_key()),
+            }));
+            match &super::form(&mut app).test {
+                TestState::Untrusted { host, port, .. } => {
+                    assert_eq!((host.as_str(), *port), ("bastion", 22))
+                }
+                other => panic!("{other:?}"),
+            }
+            app.apply(Action::TrustTestHostKey);
+            assert_eq!(app.host_keys.fingerprint("bastion", 22), Some("SHA256:abc"));
+            assert_eq!(app.host_keys.fingerprint("other", 2222), None);
         }
 
         fn ssh_password_saved(app: &mut App, mode: PasswordMode) -> ConnectionId {
@@ -4322,6 +4738,7 @@ mod tests {
             assert!(app.backend.sent.iter().any(|c| matches!(c,
                 Command::StoreSecret { account, secret: Some(_), .. }
                     if account == &crate::secrets::ssh_account(&conn))));
+            answer_last_store(&mut app, Ok(()));
             assert_eq!(
                 app.connections.get(&conn).unwrap().ssh_secret,
                 PasswordMode::Keyring

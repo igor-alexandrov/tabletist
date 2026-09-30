@@ -21,12 +21,12 @@ use std::fmt;
 use std::sync::Arc;
 
 pub use catalog::{
-    ColumnInfo, ForeignKeyInfo, IndexInfo, ObjectInfo, ObjectKind, ObjectRef, Structure,
+    ColumnInfo, ForeignKeyInfo, IndexInfo, MAX_LISTED, ObjectInfo, ObjectKind, ObjectRef, Structure,
 };
 pub use dialect::{Dialect, Sql, escape_like, quote_literal};
 pub use error::{Error, Result, SshStage};
 pub use query::{Filter, FilterOp, RowPage, RowQuery, Sort, SortDir};
-pub use spec::{ConnectSpec, Driver, Secrets, SshAuth, SshSpec, TlsMode};
+pub use spec::{ConnectSpec, Driver, ParsedUrl, Secrets, SshAuth, SshSpec, TlsMode};
 pub use ssh::HostKeys;
 pub use value::{ColumnMeta, Value, ValueKind, value_from_pg_text};
 
@@ -136,6 +136,7 @@ impl Connection {
         }
     }
 
+    /// At most `MAX_LISTED` schemas.
     pub async fn list_schemas(&self) -> Result<Vec<String>> {
         match &self.inner {
             Inner::Sqlite(conn) => conn.list_schemas().await,
@@ -144,6 +145,7 @@ impl Connection {
         }
     }
 
+    /// At most `MAX_LISTED` tables and views, by name.
     pub async fn list_objects(&self, schema: &str) -> Result<Vec<ObjectInfo>> {
         match &self.inner {
             Inner::Sqlite(conn) => conn.list_objects(schema).await,
@@ -160,6 +162,10 @@ impl Connection {
         }
     }
 
+    /// One page of up to `query.limit` rows (plus one to learn whether there
+    /// are more). Each cell comes back whole, however large, and PostgreSQL's
+    /// simple-query protocol buffers the whole page before the first row is
+    /// read; the page size (at most 10,000 in the app) is the only bound.
     pub async fn fetch_rows(&self, query: &RowQuery) -> Result<RowPage> {
         match &self.inner {
             Inner::Sqlite(conn) => conn.fetch_rows(query).await,

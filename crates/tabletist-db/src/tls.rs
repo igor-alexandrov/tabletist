@@ -1,6 +1,7 @@
 //! TLS for database connections on rustls, with libpq's `sslmode` meanings:
-//! `prefer` and `require` encrypt without checking the certificate,
-//! `verify-ca` checks the chain, `verify-full` checks the chain and the host.
+//! `prefer` and `require` encrypt without checking the certificate (unless
+//! `require` has a CA file, which makes it `verify-ca`), `verify-ca` checks
+//! the chain, `verify-full` checks the chain and the host.
 //! `verify-ca` needs a CA file: any publicly trusted certificate chains to
 //! the system roots, so without the host check those prove nothing (libpq
 //! likewise turns `sslrootcert=system` into `verify-full`).
@@ -29,8 +30,13 @@ fn tls_error(error: impl std::fmt::Display) -> Error {
 const VERIFY_CA_NEEDS_A_CA_FILE: &str = "Verify certificate needs a CA file; use Verify certificate and host to use the system certificates";
 
 /// The rustls configuration for `mode`. `Disable` still gets one (the
-/// connector needs it) but it is never used.
+/// connector needs it) but it is never used. Like libpq, `require` with a CA
+/// file checks the chain against it (`verify-ca`).
 pub(crate) fn client_config(mode: TlsMode, ca_file: Option<&Path>) -> Result<rustls::ClientConfig> {
+    let mode = match (mode, ca_file) {
+        (TlsMode::Require, Some(_)) => TlsMode::VerifyCa,
+        _ => mode,
+    };
     let provider = provider();
     let builder = rustls::ClientConfig::builder_with_provider(Arc::clone(&provider))
         .with_safe_default_protocol_versions()
@@ -262,6 +268,11 @@ mod tests {
         std::fs::write(&empty, "no certificates here").unwrap();
         assert!(matches!(
             client_config(TlsMode::VerifyCa, Some(&empty)),
+            Err(Error::Tls(_))
+        ));
+        // `require` with a CA file uses it, like libpq, so a bad one fails.
+        assert!(matches!(
+            client_config(TlsMode::Require, Some(&empty)),
             Err(Error::Tls(_))
         ));
     }

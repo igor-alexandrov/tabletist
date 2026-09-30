@@ -5,11 +5,12 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
+use rusqlite::config::DbConfig;
 use rusqlite::{ErrorCode, OpenFlags};
 
 use crate::{
-    ColumnInfo, ColumnMeta, Dialect, Error, ForeignKeyInfo, IndexInfo, ObjectInfo, ObjectKind,
-    ObjectRef, Result, RowPage, RowQuery, Structure, Value, ValueKind,
+    ColumnInfo, ColumnMeta, Dialect, Error, ForeignKeyInfo, IndexInfo, MAX_LISTED, ObjectInfo,
+    ObjectKind, ObjectRef, Result, RowPage, RowQuery, Structure, Value, ValueKind,
 };
 
 /// An open SQLite database.
@@ -96,6 +97,21 @@ fn from_sqlite(value: rusqlite::types::ValueRef<'_>) -> Value {
     }
 }
 
+/// Refuses a raw WHERE that ends inside a `/*` comment, which SQLite would
+/// accept and which would hide the page's ORDER BY, LIMIT and OFFSET.
+fn check_raw_where(query: &RowQuery) -> Result<()> {
+    if query
+        .raw_where
+        .as_deref()
+        .is_some_and(crate::dialect::sqlite_ends_in_block_comment)
+    {
+        return Err(Error::query(
+            "The WHERE text ends inside a /* comment. Close it with */.",
+        ));
+    }
+    Ok(())
+}
+
 impl Conn {
     /// Opens `path` read-only. Never creates a file.
     pub async fn open(path: &Path) -> Result<Self> {
@@ -104,16 +120,28 @@ impl Conn {
             if !path.is_file() {
                 return Err(Error::Connect(format!("{} does not exist", path.display())));
             }
-            let flags = OpenFlags::SQLITE_OPEN_READ_ONLY
-                | OpenFlags::SQLITE_OPEN_NO_MUTEX
-                | OpenFlags::SQLITE_OPEN_URI;
+            // No SQLITE_OPEN_URI: the path is a file name, never a URI whose
+            // parameters could change how it opens.
+            let flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX;
             let connection =
                 rusqlite::Connection::open_with_flags(&path, flags).map_err(map_error)?;
             connection
                 .busy_timeout(std::time::Duration::from_secs(5))
                 .map_err(map_error)?;
+            // A double-quoted name that matches no column is an error, not a
+            // string literal: a filter on a renamed column must fail rather
+            // than compare against its own name and match every row.
+            // Defensive mode and an untrusted schema keep a crafted file's
+            // views and triggers from reaching risky functions.
+            for (option, on) in [
+                (DbConfig::SQLITE_DBCONFIG_DQS_DML, false),
+                (DbConfig::SQLITE_DBCONFIG_DQS_DDL, false),
+                (DbConfig::SQLITE_DBCONFIG_DEFENSIVE, true),
+            ] {
+                connection.set_db_config(option, on).map_err(map_error)?;
+            }
             connection
-                .execute_batch("PRAGMA query_only = ON;")
+                .execute_batch("PRAGMA query_only = ON; PRAGMA trusted_schema = OFF;")
                 .map_err(map_error)?;
             // A file that is not a database only fails on its first read.
             connection
@@ -163,7 +191,10 @@ impl Conn {
     pub async fn list_schemas(&self) -> Result<Vec<String>> {
         self.run(|connection| {
             let mut statement = connection
-                .prepare("SELECT name FROM pragma_database_list WHERE name <> 'temp' ORDER BY seq")
+                .prepare(&format!(
+                    "SELECT name FROM pragma_database_list WHERE name <> 'temp' \
+                     ORDER BY seq LIMIT {MAX_LISTED}"
+                ))
                 .map_err(map_error)?;
             let names = statement
                 .query_map([], |row| row.get::<_, String>(0))
@@ -179,7 +210,7 @@ impl Conn {
         let sql = format!(
             "SELECT name, type FROM {}.sqlite_master \
              WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\' \
-             ORDER BY name",
+             ORDER BY name LIMIT {MAX_LISTED}",
             crate::Dialect::Sqlite.quote_ident(schema)
         );
         self.run(move |connection| {
@@ -234,6 +265,7 @@ impl Conn {
     }
 
     pub async fn fetch_rows(&self, query: &RowQuery) -> Result<RowPage> {
+        check_raw_where(query)?;
         let query = query.clone();
         let limit = query.limit as usize;
         // One blocking job for the key lookup and the select, so a cancel
@@ -304,6 +336,7 @@ impl Conn {
     }
 
     pub async fn count_rows(&self, query: &RowQuery) -> Result<u64> {
+        check_raw_where(query)?;
         let sql = Dialect::Sqlite.count_rows(query);
         self.run(move |connection| {
             let count: i64 = connection

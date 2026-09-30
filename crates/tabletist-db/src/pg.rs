@@ -12,9 +12,9 @@ use tokio_postgres::tls::{MakeTlsConnect, TlsConnect};
 use tokio_postgres::{SimpleQueryMessage, Socket};
 
 use crate::{
-    ColumnInfo, ColumnMeta, ConnectSpec, Dialect, Error, ForeignKeyInfo, IndexInfo, ObjectInfo,
-    ObjectKind, ObjectRef, Result, RowPage, RowQuery, Secrets, Structure, Value, ValueKind,
-    value_from_pg_text,
+    ColumnInfo, ColumnMeta, ConnectSpec, Dialect, Error, ForeignKeyInfo, IndexInfo, MAX_LISTED,
+    ObjectInfo, ObjectKind, ObjectRef, Result, RowPage, RowQuery, Secrets, Structure, Value,
+    ValueKind, value_from_pg_text,
 };
 use tokio_postgres::error::SqlState;
 use tokio_postgres_rustls::MakeRustlsConnect;
@@ -164,6 +164,20 @@ pub(crate) fn query_error(error: tokio_postgres::Error) -> Error {
     Error::ConnectionLost(describe(&error))
 }
 
+/// A value from a catalog row as `T`. A server (or proxy) that answers
+/// with another type or a NULL is a query error, not a panic: release
+/// builds abort on panic.
+fn column<'a, T: tokio_postgres::types::FromSql<'a>>(
+    row: &'a tokio_postgres::Row,
+    index: usize,
+) -> Result<T> {
+    row.try_get(index).map_err(unexpected)
+}
+
+fn unexpected(error: tokio_postgres::Error) -> Error {
+    Error::query(format!("unexpected data from the server: {error}"))
+}
+
 impl Conn {
     /// Connects to the spec's server, or through a tunnel's local port `via`.
     pub async fn connect(spec: &ConnectSpec, secrets: &Secrets, via: Option<u16>) -> Result<Self> {
@@ -224,36 +238,39 @@ impl Conn {
                 &[],
             )
             .await?;
-        Ok(rows.iter().map(|row| row.get(0)).collect())
+        rows.iter().map(|row| column(row, 0)).collect()
     }
 
     pub async fn list_schemas(&self) -> Result<Vec<String>> {
         let rows = self
             .catalog(
-                "SELECT nspname::text FROM pg_namespace ORDER BY nspname",
+                &format!(
+                    "SELECT nspname::text FROM pg_namespace ORDER BY nspname LIMIT {MAX_LISTED}"
+                ),
                 &[],
             )
             .await?;
-        Ok(rows.iter().map(|row| row.get(0)).collect())
+        rows.iter().map(|row| column(row, 0)).collect()
     }
 
     pub async fn list_objects(&self, schema: &str) -> Result<Vec<ObjectInfo>> {
         let rows = self
             .catalog(
-                "SELECT c.relname::text, c.relkind::text, c.reltuples::float8 \
-                 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace \
-                 WHERE n.nspname = $1 AND c.relkind IN ('r', 'p', 'f', 'v', 'm') \
-                 ORDER BY c.relname",
+                &format!(
+                    "SELECT c.relname::text, c.relkind::text, c.reltuples::float8 \
+                     FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace \
+                     WHERE n.nspname = $1 AND c.relkind IN ('r', 'p', 'f', 'v', 'm') \
+                     ORDER BY c.relname LIMIT {MAX_LISTED}"
+                ),
                 &[&schema],
             )
             .await?;
-        Ok(rows
-            .iter()
+        rows.iter()
             .map(|row| {
-                let kind: String = row.get(1);
-                let tuples: f64 = row.get(2);
-                ObjectInfo {
-                    name: row.get(0),
+                let kind: String = column(row, 1)?;
+                let tuples: f64 = column(row, 2)?;
+                Ok(ObjectInfo {
+                    name: column(row, 0)?,
                     kind: match kind.as_str() {
                         "v" => ObjectKind::View,
                         "m" => ObjectKind::MaterializedView,
@@ -261,9 +278,9 @@ impl Conn {
                     },
                     // -1 means never analyzed (PostgreSQL 14+).
                     estimated_rows: (tuples >= 0.0).then_some(tuples as u64),
-                }
+                })
             })
-            .collect())
+            .collect()
     }
 
     async fn relation(&self, object: &ObjectRef) -> Result<u32> {
@@ -275,8 +292,8 @@ impl Conn {
             )
             .await?;
         rows.first()
-            .map(|row| row.get(0))
-            .ok_or_else(|| Error::query(format!("no such table or view: {}", object.name)))
+            .map(|row| column(row, 0))
+            .ok_or_else(|| Error::query(format!("no such table or view: {}", object.name)))?
     }
 
     pub async fn primary_key(&self, object: &ObjectRef) -> Result<Vec<String>> {
@@ -293,7 +310,7 @@ impl Conn {
                 &[&object.schema, &object.name],
             )
             .await?;
-        Ok(rows.iter().map(|row| row.get(0)).collect())
+        rows.iter().map(|row| column(row, 0)).collect()
     }
 
     pub async fn describe(&self, object: &ObjectRef) -> Result<Structure> {
@@ -310,14 +327,16 @@ impl Conn {
             )
             .await?
             .iter()
-            .map(|row| ColumnInfo {
-                name: row.get(0),
-                type_name: row.get(1),
-                nullable: row.get(2),
-                default: row.get(3),
-                comment: row.get(4),
+            .map(|row| {
+                Ok(ColumnInfo {
+                    name: column(row, 0)?,
+                    type_name: column(row, 1)?,
+                    nullable: column(row, 2)?,
+                    default: column(row, 3)?,
+                    comment: column(row, 4)?,
+                })
             })
-            .collect();
+            .collect::<Result<_>>()?;
         let indexes = self
             .catalog(
                 "SELECT ic.relname::text, i.indisunique, i.indisprimary, am.amname::text, \
@@ -331,14 +350,16 @@ impl Conn {
             )
             .await?
             .iter()
-            .map(|row| IndexInfo {
-                name: row.get(0),
-                unique: row.get(1),
-                primary: row.get(2),
-                method: Some(row.get(3)),
-                columns: row.get(4),
+            .map(|row| {
+                Ok(IndexInfo {
+                    name: column(row, 0)?,
+                    unique: column(row, 1)?,
+                    primary: column(row, 2)?,
+                    method: Some(column(row, 3)?),
+                    columns: column(row, 4)?,
+                })
             })
-            .collect();
+            .collect::<Result<_>>()?;
         let foreign_keys = self
             .catalog(
                 "SELECT con.conname::text, \
@@ -359,19 +380,19 @@ impl Conn {
             .await?
             .iter()
             .map(|row| {
-                let on_update: String = row.get(5);
-                let on_delete: String = row.get(6);
-                ForeignKeyInfo {
-                    name: Some(row.get(0)),
-                    columns: row.get(1),
-                    ref_schema: row.get(2),
-                    ref_table: row.get(3),
-                    ref_columns: row.get(4),
+                let on_update: String = column(row, 5)?;
+                let on_delete: String = column(row, 6)?;
+                Ok(ForeignKeyInfo {
+                    name: Some(column(row, 0)?),
+                    columns: column(row, 1)?,
+                    ref_schema: column(row, 2)?,
+                    ref_table: column(row, 3)?,
+                    ref_columns: column(row, 4)?,
                     on_update: action(&on_update).into(),
                     on_delete: action(&on_delete).into(),
-                }
+                })
             })
-            .collect();
+            .collect::<Result<_>>()?;
         Ok(Structure {
             columns,
             primary_key: self.primary_key(object).await?,
@@ -420,11 +441,13 @@ impl Conn {
                     columns
                         .iter()
                         .enumerate()
-                        .map(|(index, column)| match row.get(index) {
-                            None => Value::Null,
-                            Some(text) => value_from_pg_text(&column.type_name, text),
+                        .map(|(index, column)| {
+                            Ok(match row.try_get(index).map_err(unexpected)? {
+                                None => Value::Null,
+                                Some(text) => value_from_pg_text(&column.type_name, text),
+                            })
                         })
-                        .collect(),
+                        .collect::<Result<_>>()?,
                 );
             }
         }
@@ -458,7 +481,11 @@ impl Conn {
         messages
             .iter()
             .find_map(|message| match message {
-                SimpleQueryMessage::Row(row) => row.get(0).and_then(|count| count.parse().ok()),
+                SimpleQueryMessage::Row(row) => row
+                    .try_get(0)
+                    .ok()
+                    .flatten()
+                    .and_then(|count| count.parse().ok()),
                 _ => None,
             })
             .ok_or_else(|| Error::query("the count returned no number"))

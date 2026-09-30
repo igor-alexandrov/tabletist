@@ -126,29 +126,41 @@ fn decode(text: &str) -> String {
     percent_decode_str(text).decode_utf8_lossy().into_owned()
 }
 
-impl ConnectSpec {
-    pub fn sqlite(path: impl Into<PathBuf>) -> Self {
-        Self {
-            driver: Driver::Sqlite,
-            host: String::new(),
-            port: 0,
-            sqlite_path: Some(path.into()),
-            ..Self::default()
-        }
-    }
+/// A connection URL, split into the spec, its secrets, and which TLS
+/// settings it named (a URL without them should not change a form's).
+#[derive(Debug, Clone)]
+pub struct ParsedUrl {
+    /// Missing TLS settings take their defaults here.
+    pub spec: ConnectSpec,
+    pub secrets: Secrets,
+    /// Whether the URL named a TLS mode (`sslmode`, `ssl-mode`, `ssl_mode`).
+    pub names_tls: bool,
+    /// Whether the URL named a CA file (`sslrootcert`, `ssl-ca`).
+    pub names_ca_file: bool,
+    /// The URL without its password, safe to leave on screen.
+    pub without_password: String,
+}
 
+impl ParsedUrl {
     /// Parses `postgres://`, `postgresql://`, `mysql://`, `mariadb://` and
-    /// `sqlite:` URLs. The password, if any, comes back in `Secrets`.
-    pub fn from_url(url: &str) -> Result<(Self, Secrets)> {
+    /// `sqlite:` URLs. A TLS setting named twice (under any of its
+    /// spellings) is an error rather than the last one silently winning.
+    pub fn parse(url: &str) -> Result<Self> {
         let url = url.trim();
         if let Some(rest) = url.strip_prefix("sqlite:") {
             let path = rest.strip_prefix("//").unwrap_or(rest);
             if path.is_empty() {
                 return Err(Error::InvalidSpec("the SQLite URL names no file".into()));
             }
-            return Ok((Self::sqlite(decode(path)), Secrets::default()));
+            return Ok(Self {
+                spec: ConnectSpec::sqlite(decode(path)),
+                secrets: Secrets::default(),
+                names_tls: false,
+                names_ca_file: false,
+                without_password: url.to_owned(),
+            });
         }
-        let parsed = url::Url::parse(url)
+        let mut parsed = url::Url::parse(url)
             .map_err(|error| Error::InvalidSpec(format!("not a connection URL: {error}")))?;
         let driver = match parsed.scheme() {
             "postgres" | "postgresql" => Driver::Postgres,
@@ -165,29 +177,83 @@ impl ConnectSpec {
             .trim_start_matches('[')
             .trim_end_matches(']')
             .to_owned();
-        let mut spec = Self {
+        let mut spec = ConnectSpec {
             driver,
             host,
             port: parsed.port().unwrap_or(driver.default_port()),
             user: decode(parsed.username()),
             database: decode(parsed.path().trim_start_matches('/')),
-            ..Self::default()
+            ..ConnectSpec::default()
         };
+        let (mut names_tls, mut names_ca_file) = (false, false);
         for (key, value) in parsed.query_pairs() {
-            match key.as_ref() {
+            let named = match key.as_ref() {
                 "sslmode" | "ssl-mode" | "ssl_mode" => {
                     spec.tls = TlsMode::parse(&value)
                         .ok_or_else(|| Error::InvalidSpec(format!("unknown TLS mode {value:?}")))?;
+                    &mut names_tls
                 }
-                "sslrootcert" | "ssl-ca" => spec.ca_file = Some(PathBuf::from(value.as_ref())),
-                _ => log::debug!("ignoring URL parameter {key}"),
+                "sslrootcert" | "ssl-ca" => {
+                    spec.ca_file = Some(PathBuf::from(value.as_ref()));
+                    &mut names_ca_file
+                }
+                _ => {
+                    log::debug!("ignoring URL parameter {key}");
+                    continue;
+                }
+            };
+            if std::mem::replace(named, true) {
+                return Err(Error::InvalidSpec(format!(
+                    "the URL sets {key} more than once"
+                )));
             }
         }
         let secrets = Secrets {
             password: parsed.password().map(decode),
             ..Secrets::default()
         };
-        Ok((spec, secrets))
+        let without_password = if secrets.password.is_some() {
+            // Cannot fail: the URL has a host, since it has a password.
+            let _ = parsed.set_password(None);
+            parsed.to_string()
+        } else {
+            url.to_owned()
+        };
+        Ok(Self {
+            spec,
+            secrets,
+            names_tls,
+            names_ca_file,
+            without_password,
+        })
+    }
+}
+
+impl ConnectSpec {
+    pub fn sqlite(path: impl Into<PathBuf>) -> Self {
+        Self {
+            driver: Driver::Sqlite,
+            host: String::new(),
+            port: 0,
+            sqlite_path: Some(path.into()),
+            ..Self::default()
+        }
+    }
+
+    /// Parses `postgres://`, `postgresql://`, `mysql://`, `mariadb://` and
+    /// `sqlite:` URLs. The password, if any, comes back in `Secrets`.
+    pub fn from_url(url: &str) -> Result<(Self, Secrets)> {
+        let parsed = ParsedUrl::parse(url)?;
+        Ok((parsed.spec, parsed.secrets))
+    }
+
+    /// The TLS mode as it is enforced: PostgreSQL treats `require` with a CA
+    /// file as `verify-ca`, like libpq (MySQL refuses that combination).
+    pub fn effective_tls(&self) -> TlsMode {
+        match (self.driver, self.tls, &self.ca_file) {
+            (Driver::Postgres, TlsMode::Require, Some(_)) => TlsMode::VerifyCa,
+            (_, tls, _) => tls,
+        }
     }
 
     /// A one-line description without secrets: `user@host:port/db`, or the
@@ -288,6 +354,51 @@ mod tests {
                 "{url:?} should be rejected"
             );
         }
+    }
+
+    #[test]
+    fn postgres_require_with_a_ca_file_is_verify_ca() {
+        let (mut spec, _) = ConnectSpec::from_url("postgres://h/db?sslmode=require").unwrap();
+        assert_eq!(spec.effective_tls(), TlsMode::Require);
+        spec.ca_file = Some("/ca.pem".into());
+        assert_eq!(spec.effective_tls(), TlsMode::VerifyCa);
+        spec.driver = Driver::MySql;
+        assert_eq!(spec.effective_tls(), TlsMode::Require);
+    }
+
+    #[test]
+    fn a_tls_setting_named_twice_is_refused() {
+        for url in [
+            "postgres://h/db?sslmode=verify-full&sslmode=disable",
+            "mysql://h/db?ssl-mode=VERIFY_IDENTITY&ssl_mode=DISABLED",
+            "postgres://h/db?sslrootcert=/a.pem&ssl-ca=/b.pem",
+        ] {
+            assert!(
+                matches!(ParsedUrl::parse(url), Err(Error::InvalidSpec(_))),
+                "{url:?} should be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn parsed_urls_say_which_tls_settings_they_name() {
+        let parsed = ParsedUrl::parse("postgres://me@h/db").unwrap();
+        assert!(!parsed.names_tls && !parsed.names_ca_file);
+        let parsed =
+            ParsedUrl::parse("postgres://me@h/db?sslmode=require&sslrootcert=/ca.pem").unwrap();
+        assert!(parsed.names_tls && parsed.names_ca_file);
+    }
+
+    #[test]
+    fn the_url_left_on_screen_has_no_password() {
+        let parsed = ParsedUrl::parse("postgres://me:s%40cret@db.example.com:6543/app").unwrap();
+        assert_eq!(parsed.secrets.password.as_deref(), Some("s@cret"));
+        assert_eq!(
+            parsed.without_password,
+            "postgres://me@db.example.com:6543/app"
+        );
+        let parsed = ParsedUrl::parse(" mysql://me@h/db ").unwrap();
+        assert_eq!(parsed.without_password, "mysql://me@h/db");
     }
 
     #[test]
