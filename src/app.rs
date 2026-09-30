@@ -22,10 +22,9 @@ use crate::secrets::{SecretString, password_account, ssh_account};
 use crate::settings::Settings;
 use crate::theme::{self, Catalog, Palette};
 
-/// What a keyring read was for.
-#[derive(Debug, Clone, Copy)]
 /// What a keyring read is for; each names the exact request it serves, so
 /// a late answer for an earlier attempt is dropped.
+#[derive(Debug, Clone, Copy)]
 enum SecretPurpose {
     /// A secret for `tab`'s connect attempt `request`.
     Connect {
@@ -992,7 +991,6 @@ impl App {
         }
     }
 
-    /// Opens `saved` in `tab`. `typed` is a password typed in the dialog.
     /// Opens `saved` in `tab`; `typed` holds secrets typed in the dialog.
     fn connect_tab(&mut self, tab: ConnTabId, saved: SavedConnection, typed: Secrets) {
         self.open_workspace(tab, saved, typed);
