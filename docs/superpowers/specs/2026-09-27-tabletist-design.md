@@ -181,7 +181,11 @@ Rules:
 - One session per connection tab: the driver connection plus an optional SSH
   tunnel. Each session runs its commands in order on its own task (queries on
   one connection cannot run concurrently); a separate `CancelHandle` works
-  while a query runs.
+  while a query runs. A cancel names its request: it stops that request if
+  it is running and skips it if it is still queued, and the session lets a
+  cancel land before it starts the next command. A load that replaces a
+  pending one (refresh, sort, paging, filters) and closing an object tab
+  cancel what nothing waits for any more.
 - The UI is idle when nothing happens: repaints only on input, on backend
   events, or on a scheduled spinner tick while something is loading.
 

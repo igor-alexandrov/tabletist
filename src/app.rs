@@ -440,7 +440,8 @@ impl App {
                 if let Some(workspace) = self.workspace_mut(tab)
                     && let Some(index) = workspace.objects.iter().position(|o| o.id == object_tab)
                 {
-                    workspace.objects.remove(index);
+                    let closed = workspace.objects.remove(index);
+                    let session = workspace.session;
                     if workspace.active_object == Some(object_tab) {
                         workspace.active_object = workspace
                             .objects
@@ -448,6 +449,9 @@ impl App {
                             .or_else(|| workspace.objects.last())
                             .map(|o| o.id);
                     }
+                    // Nothing will show what it was loading (a count can
+                    // hold the connection for minutes).
+                    self.cancel(session, closed.pending());
                 }
             }
             Action::PinObjectTab { tab, object_tab } => {
@@ -591,9 +595,7 @@ impl App {
                     });
                 match active {
                     Some((id, described)) => {
-                        if let Some(object) = self.object_tab_mut(tab, id) {
-                            object.reset_count();
-                        }
+                        self.reset_count(tab, id);
                         self.fetch_rows(tab, id);
                         if described {
                             self.describe(tab, id);
@@ -603,9 +605,19 @@ impl App {
                 }
             }
             Action::CancelQuery(tab) => {
+                // What the tab shows a spinner for: the active object's
+                // loads, or the tree's when no object is open.
                 if let Some(workspace) = self.workspace(tab) {
                     let session = workspace.session;
-                    self.backend.send(Command::Cancel { session });
+                    let pending: Vec<RequestId> = match workspace.active_object_tab() {
+                        Some(object) => object.pending().collect(),
+                        None => std::iter::once(workspace.tree.schemas.pending)
+                            .chain(workspace.tree.nodes.values().map(|n| n.objects.pending))
+                            .chain(std::iter::once(workspace.databases.pending))
+                            .flatten()
+                            .collect(),
+                    };
+                    self.cancel(session, pending);
                 }
             }
             Action::CountRows { tab, object_tab } => self.count_rows(tab, object_tab),
@@ -1846,7 +1858,8 @@ impl App {
         // lost connection failed is worth another try.
         for object in &mut workspace.objects {
             if object.count.is_loading() || lost(&object.count) {
-                object.reset_count();
+                // The old session is closed, so its count never runs.
+                let _ = object.reset_count();
             }
         }
         let stale: Vec<(ObjectTabId, bool, bool)> = workspace
@@ -1979,11 +1992,18 @@ impl App {
         } else {
             workspace.objects.iter().position(|o| !o.pinned)
         };
-        match preview {
-            Some(index) => workspace.objects[index] = opened,
-            None => workspace.objects.push(opened),
-        }
+        let session = workspace.session;
+        let replaced = match preview {
+            Some(index) => Some(std::mem::replace(&mut workspace.objects[index], opened)),
+            None => {
+                workspace.objects.push(opened);
+                None
+            }
+        };
         workspace.active_object = Some(new_id);
+        if let Some(replaced) = replaced {
+            self.cancel(session, replaced.pending());
+        }
         // The keys and foreign keys label the grid and the row panel.
         self.describe(tab, new_id);
         self.fetch_rows(tab, new_id);
@@ -2022,6 +2042,27 @@ impl App {
         }
     }
 
+    /// Stops requests nothing waits for any more: a running one is
+    /// cancelled, a queued one never runs.
+    fn cancel(&mut self, session: SessionId, requests: impl IntoIterator<Item = RequestId>) {
+        for request in requests {
+            self.backend.send(Command::Cancel { session, request });
+        }
+    }
+
+    /// Forgets the object tab's exact count and stops it if still running.
+    fn reset_count(&mut self, tab: ConnTabId, id: ObjectTabId) {
+        let Some(workspace) = self.workspace_mut(tab) else {
+            return;
+        };
+        let session = workspace.session;
+        let running = workspace
+            .object_tab_mut(id)
+            .and_then(ObjectTab::reset_count);
+        self.cancel(session, running);
+    }
+
+    /// Loads the object tab's rows, replacing any load still pending.
     pub fn fetch_rows(&mut self, tab: ConnTabId, id: ObjectTabId) {
         let request = RequestId(self.next_id());
         let Some(workspace) = self.workspace_mut(tab) else {
@@ -2031,8 +2072,10 @@ impl App {
         let Some(object) = workspace.object_tab_mut(id) else {
             return;
         };
+        let superseded = object.rows.pending;
         object.rows.start(request);
         let query = object.query.clone();
+        self.cancel(session, superseded);
         self.backend.send(Command::FetchRows {
             session,
             request,
@@ -2168,7 +2211,7 @@ impl App {
         object.query.offset = 0;
         object.pinned = true;
         object.selection = None;
-        object.reset_count();
+        self.reset_count(tab, id);
         self.fetch_rows(tab, id);
     }
 
@@ -2181,8 +2224,10 @@ impl App {
         let Some(object) = workspace.object_tab_mut(id) else {
             return;
         };
+        let superseded = object.count.pending;
         object.count.start(request);
         let query = object.query.clone();
+        self.cancel(session, superseded);
         self.backend.send(Command::CountRows {
             session,
             request,
@@ -2199,8 +2244,10 @@ impl App {
         let Some(object) = workspace.object_tab_mut(id) else {
             return;
         };
+        let superseded = object.structure.pending;
         object.structure.start(request);
         let target = object.object.clone();
+        self.cancel(session, superseded);
         self.backend.send(Command::Describe {
             session,
             request,
@@ -3375,15 +3422,91 @@ mod tests {
     }
 
     #[test]
-    fn cancel_sends_cancel_for_the_session_and_refresh_refetches() {
+    fn cancel_names_the_request_it_stops_and_refresh_refetches() {
         let mut harness = Harness::new();
         let tab = connect_tab(&mut harness);
-        open(&mut harness, tab, "users", true);
+        let id = open(&mut harness, tab, "users", true);
+        let rows = object(&harness, tab, id).rows.pending.unwrap();
+        let structure = object(&harness, tab, id).structure.pending.unwrap();
+        let sent = harness.app.backend.sent.len();
         harness.app.apply(Action::CancelQuery(tab));
         let session = harness.app.workspace(tab).unwrap().session;
-        assert!(matches!(last_sent(&harness.app), Command::Cancel { session: s } if *s == session));
+        assert!(
+            harness.app.backend.sent[sent..].iter().all(
+                |command| matches!(command, Command::Cancel { session: s, .. } if *s == session)
+            )
+        );
+        assert_eq!(cancels_since(&harness, sent), vec![rows, structure]);
         harness.app.apply(Action::Refresh(tab));
         assert!(matches!(last_sent(&harness.app), Command::FetchRows { .. }));
+    }
+
+    /// The Cancel commands sent since `from`, by request.
+    fn cancels_since(harness: &Harness, from: usize) -> Vec<RequestId> {
+        harness.app.backend.sent[from..]
+            .iter()
+            .filter_map(|command| match command {
+                Command::Cancel { request, .. } => Some(*request),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_new_load_stops_the_one_it_replaces() {
+        let mut harness = Harness::new();
+        let tab = connect_tab(&mut harness);
+        let id = open(&mut harness, tab, "users", true);
+        let first = object(&harness, tab, id).rows.pending.unwrap();
+        let sent = harness.app.backend.sent.len();
+        // A held Mod+R repeats: each refresh replaces the last.
+        harness.app.apply(Action::Refresh(tab));
+        let second = object(&harness, tab, id).rows.pending.unwrap();
+        harness.app.apply(Action::Refresh(tab));
+        assert_eq!(cancels_since(&harness, sent), vec![first, second]);
+        // The cancel goes out before the load that replaces it.
+        let tail = &harness.app.backend.sent[harness.app.backend.sent.len() - 2..];
+        assert!(matches!(
+            tail,
+            [Command::Cancel { request, .. }, Command::FetchRows { .. }] if *request == second
+        ));
+    }
+
+    #[test]
+    fn closing_an_object_tab_stops_its_count() {
+        let mut harness = Harness::new();
+        let tab = connect_tab(&mut harness);
+        let id = open(&mut harness, tab, "users", true);
+        harness.answer_rows(crate::testing::page(3, true));
+        harness.app.apply(Action::CountRows {
+            tab,
+            object_tab: id,
+        });
+        let counting = object(&harness, tab, id).count.pending.unwrap();
+        let sent = harness.app.backend.sent.len();
+        harness.app.apply(Action::CloseObjectTab {
+            tab,
+            object_tab: id,
+        });
+        // With the describe that opening it started.
+        assert!(cancels_since(&harness, sent).contains(&counting));
+    }
+
+    #[test]
+    fn a_new_filter_stops_the_count_of_the_old_one() {
+        let mut harness = Harness::new();
+        let tab = connect_tab(&mut harness);
+        let id = open(&mut harness, tab, "users", true);
+        harness.answer_rows(crate::testing::page(3, true));
+        harness.app.apply(Action::CountRows {
+            tab,
+            object_tab: id,
+        });
+        let counting = object(&harness, tab, id).count.pending.unwrap();
+        let sent = harness.app.backend.sent.len();
+        harness.app.apply(Action::Refresh(tab));
+        assert!(cancels_since(&harness, sent).contains(&counting));
+        assert!(!object(&harness, tab, id).count.is_loading());
     }
 
     #[test]

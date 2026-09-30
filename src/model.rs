@@ -1315,9 +1315,21 @@ impl ObjectTab {
     }
 
     /// Forgets the exact count: the rows it counted changed (filters,
-    /// refresh), and a count still running for them is ignored.
-    pub fn reset_count(&mut self) {
-        self.count = Fetch::default();
+    /// refresh). Returns the count still running for them, to cancel.
+    #[must_use]
+    pub fn reset_count(&mut self) -> Option<RequestId> {
+        std::mem::take(&mut self.count).pending
+    }
+
+    /// Every request this tab still waits for.
+    pub fn pending(&self) -> impl Iterator<Item = RequestId> {
+        [
+            self.rows.pending,
+            self.structure.pending,
+            self.count.pending,
+        ]
+        .into_iter()
+        .flatten()
     }
 
     pub fn page(&self) -> Option<&RowPage> {

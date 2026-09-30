@@ -1,9 +1,9 @@
 //! The backend: a tokio runtime on its own thread. The UI sends commands and
 //! polls events each frame; the backend wakes the UI when an event is ready.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::{Arc, mpsc};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError, mpsc};
 
 use tabletist_db::{
     CancelHandle, ConnectSpec, Connection, Driver, Error, HostKeys, ObjectInfo, ObjectRef, RowPage,
@@ -62,8 +62,12 @@ pub enum Command {
     Close {
         session: SessionId,
     },
+    /// Stops `request`: cancelled if it is running, skipped if it is still
+    /// queued. One that already finished is left alone, so a late cancel
+    /// never stops the command after it.
     Cancel {
         session: SessionId,
+        request: RequestId,
     },
     ListSchemas {
         session: SessionId,
@@ -327,9 +331,27 @@ impl Backend {
 struct SessionHandle {
     queue: tokio_mpsc::UnboundedSender<Command>,
     cancel: CancelHandle,
+    running: Arc<Mutex<Running>>,
     /// Dropped on Close: the session stops before its next queued command
     /// (a receiver still yields buffered commands after its sender drops).
     _stop: tokio::sync::oneshot::Sender<()>,
+}
+
+/// What a session is doing, shared by the worker (which cancels) and the
+/// session task (which runs one command at a time).
+#[derive(Default)]
+struct Running {
+    /// The request running now.
+    request: Option<RequestId>,
+    /// Queued requests to skip when their turn comes.
+    skip: HashSet<RequestId>,
+    /// Cancels sent for the running request. The session waits for them
+    /// before it starts the next command, so none can land on that one.
+    cancels: Vec<tokio::task::JoinHandle<()>>,
+}
+
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 /// A connect attempt that finished, on its way to the worker. Failures come
@@ -429,8 +451,14 @@ impl Worker {
                             let cancel = connection.cancel_handle();
                             let (queue, commands) = tokio_mpsc::unbounded_channel();
                             let (stop, stopped) = tokio::sync::oneshot::channel();
+                            let running = Arc::new(Mutex::new(Running::default()));
                             tokio::spawn(run_session(
-                                session, connection, commands, stopped, outbox,
+                                session,
+                                connection,
+                                commands,
+                                stopped,
+                                Arc::clone(&running),
+                                outbox,
                             ));
                             (
                                 driver,
@@ -438,6 +466,7 @@ impl Worker {
                                 SessionHandle {
                                     queue,
                                     cancel,
+                                    running,
                                     _stop: stop,
                                 },
                             )
@@ -478,12 +507,20 @@ impl Worker {
                     self.closed_early.insert(session);
                 }
             }
-            Command::Cancel { session } => {
+            Command::Cancel { session, request } => {
                 if let Some(handle) = self.sessions.get(&session) {
-                    let cancel = handle.cancel.clone();
-                    tokio::spawn(async move {
-                        let _ = cancel.cancel().await;
-                    });
+                    let mut running = lock(&handle.running);
+                    if running.request == Some(request) {
+                        let cancel = handle.cancel.clone();
+                        running.cancels.retain(|task| !task.is_finished());
+                        running.cancels.push(tokio::spawn(async move {
+                            let _ = cancel.cancel().await;
+                        }));
+                    } else {
+                        // Queued, or already answered: the session drops
+                        // the id once it passes it.
+                        running.skip.insert(request);
+                    }
                 }
             }
             Command::LoadSecret { request, account } => {
@@ -541,7 +578,7 @@ fn session_of(command: &Command) -> SessionId {
     match command {
         Command::Connect { session, .. }
         | Command::Close { session }
-        | Command::Cancel { session }
+        | Command::Cancel { session, .. }
         | Command::ListSchemas { session, .. }
         | Command::ListObjects { session, .. }
         | Command::Describe { session, .. }
@@ -551,6 +588,24 @@ fn session_of(command: &Command) -> SessionId {
         Command::Test { .. } | Command::LoadSecret { .. } | Command::StoreSecret { .. } => {
             SessionId(0)
         }
+    }
+}
+
+/// The request a queued command answers.
+fn request_of(command: &Command) -> Option<RequestId> {
+    match command {
+        Command::ListSchemas { request, .. }
+        | Command::ListObjects { request, .. }
+        | Command::Describe { request, .. }
+        | Command::FetchRows { request, .. }
+        | Command::CountRows { request, .. }
+        | Command::ListDatabases { request, .. } => Some(*request),
+        Command::Connect { .. }
+        | Command::Test { .. }
+        | Command::Close { .. }
+        | Command::Cancel { .. }
+        | Command::LoadSecret { .. }
+        | Command::StoreSecret { .. } => None,
     }
 }
 
@@ -629,6 +684,7 @@ async fn run_session(
     connection: Connection,
     mut commands: tokio_mpsc::UnboundedReceiver<Command>,
     mut stop: tokio::sync::oneshot::Receiver<()>,
+    running: Arc<Mutex<Running>>,
     outbox: Outbox,
 ) {
     loop {
@@ -640,6 +696,30 @@ async fn run_session(
                 None => break,
             },
         };
+        // A cancel meant for the previous command may still be on its way:
+        // let it land first, so it cannot stop this one.
+        let cancels = std::mem::take(&mut lock(&running).cancels);
+        for cancel in cancels {
+            let _ = cancel.await;
+        }
+        let request = request_of(&command);
+        let skipped = {
+            let mut running = lock(&running);
+            let skipped = request.is_some_and(|request| running.skip.remove(&request));
+            // Requests run in the order they were made, so an id at or
+            // before this one will never come again.
+            if let Some(request) = request {
+                running.skip.retain(|id| id.0 > request.0);
+            }
+            if !skipped {
+                running.request = request;
+            }
+            skipped
+        };
+        if skipped {
+            fail(&outbox, command, Error::Cancelled);
+            continue;
+        }
         let lost = match command {
             Command::ListSchemas { session, request } => {
                 let result = connection.list_schemas().await;
@@ -725,6 +805,7 @@ async fn run_session(
             | Command::LoadSecret { .. }
             | Command::StoreSecret { .. } => None,
         };
+        lock(&running).request = None;
         if let Some(error) = lost {
             fail_queued(&mut commands, &outbox, &error);
             outbox.emit(Event::Disconnected { session, error });
@@ -903,7 +984,10 @@ mod tests {
                 std::time::Instant::now() < deadline,
                 "cancel must stop the query"
             );
-            backend.send(Command::Cancel { session });
+            backend.send(Command::Cancel {
+                session,
+                request: RequestId(2),
+            });
             if let Some(event) = backend.wait(Duration::from_millis(200)) {
                 break event;
             }
@@ -928,6 +1012,133 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    fn connected(spec: ConnectSpec) -> (Backend, SessionId) {
+        let mut backend = Backend::start_with(Waker::default(), Keyring::memory());
+        let session = SessionId(1);
+        backend.send(Command::Connect {
+            session,
+            request: RequestId(1),
+            spec,
+            secrets: Secrets::default(),
+            host_keys: HostKeys::default(),
+        });
+        assert!(matches!(backend.wait(WAIT), Some(Event::Connected { .. })));
+        (backend, session)
+    }
+
+    /// Counts `big` against itself `rows` times over: slow enough to cancel.
+    fn slow_count(rows: u64) -> RowQuery {
+        let mut slow = RowQuery::new(ObjectRef::new("main", "big"), 10);
+        slow.raw_where = Some(format!(
+            "(SELECT count(*) FROM big a, big b WHERE b.id <= {rows}) > 0"
+        ));
+        slow
+    }
+
+    #[test]
+    fn a_cancelled_queued_request_never_runs() {
+        let (_dir, spec) = fixture();
+        let (mut backend, session) = connected(spec);
+        backend.send(Command::CountRows {
+            session,
+            request: RequestId(2),
+            query: slow_count(100_000),
+        });
+        backend.send(Command::ListSchemas {
+            session,
+            request: RequestId(3),
+        });
+        // Superseded while the count still runs.
+        backend.send(Command::Cancel {
+            session,
+            request: RequestId(3),
+        });
+        let deadline = std::time::Instant::now() + WAIT;
+        let mut events = Vec::new();
+        while events.len() < 2 {
+            assert!(std::time::Instant::now() < deadline, "both must answer");
+            backend.send(Command::Cancel {
+                session,
+                request: RequestId(2),
+            });
+            events.extend(backend.wait(Duration::from_millis(200)));
+        }
+        assert!(matches!(
+            events.as_slice(),
+            [
+                Event::Count {
+                    request: RequestId(2),
+                    result: Err(Error::Cancelled),
+                    ..
+                },
+                // Answered as cancelled, never listed.
+                Event::Schemas {
+                    request: RequestId(3),
+                    result: Err(Error::Cancelled),
+                    ..
+                },
+            ]
+        ));
+        backend.send(Command::ListSchemas {
+            session,
+            request: RequestId(4),
+        });
+        assert!(matches!(
+            backend.wait(WAIT),
+            Some(Event::Schemas {
+                request: RequestId(4),
+                result: Ok(_),
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn a_cancel_for_a_finished_request_leaves_the_next_one_alone() {
+        let (_dir, spec) = fixture();
+        let (mut backend, session) = connected(spec);
+        backend.send(Command::ListSchemas {
+            session,
+            request: RequestId(2),
+        });
+        assert!(matches!(
+            backend.wait(WAIT),
+            Some(Event::Schemas { result: Ok(_), .. })
+        ));
+        backend.send(Command::CountRows {
+            session,
+            request: RequestId(3),
+            query: slow_count(40),
+        });
+        // Late cancels for the finished listing arrive while the count runs;
+        // a cancel for the whole session would stop it.
+        let deadline = std::time::Instant::now() + WAIT;
+        let answer = loop {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the count must finish"
+            );
+            backend.send(Command::Cancel {
+                session,
+                request: RequestId(2),
+            });
+            if let Some(event) = backend.wait(Duration::from_millis(20)) {
+                break event;
+            }
+        };
+        assert!(
+            matches!(
+                answer,
+                Event::Count {
+                    request: RequestId(3),
+                    result: Ok(_),
+                    ..
+                }
+            ),
+            "{answer:?}"
+        );
     }
 
     #[test]
