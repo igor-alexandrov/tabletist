@@ -7,10 +7,12 @@ Linux (Omarchy and Hyprland first), macOS and Windows.
 ## What it does
 
 - Saved connections grouped in a picker, each tagged with its environment
-  (dev, staging, production, from its colour) and when it was last used.
+  (dev, staging, production) and when it was last used.
   Open more than one and they share a tab bar.
 - Direct connections, TLS in every libpq mode, and SSH tunnels (password,
-  key file or agent) with host keys trusted on first use.
+  key file or agent) with host keys trusted on first use. The agent is the
+  one `~/.ssh/config` names for the host (`IdentityAgent`, as for 1Password),
+  else `SSH_AUTH_SOCK`.
 - Passwords live in the system keyring, or are asked for every time.
 - A sidebar of recent objects and one schema's tables and views, folded into
   prefix groups (`book_`) or listed flat; each table opens with a data grid

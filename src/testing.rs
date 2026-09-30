@@ -267,6 +267,7 @@ impl Harness {
             id: ConnectionId::new(),
             name: "Fixture".into(),
             color: ColorTag::Blue,
+            environment: None,
             password: crate::connections::PasswordMode::None,
             ssh_secret: crate::connections::PasswordMode::None,
             spec: ConnectSpec::sqlite("/tmp/fixture.db"),

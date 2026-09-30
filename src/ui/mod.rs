@@ -439,6 +439,7 @@ mod tests {
             id: crate::connections::ConnectionId::new(),
             name: name.into(),
             color: crate::connections::ColorTag::Red,
+            environment: None,
             password: crate::connections::PasswordMode::None,
             ssh_secret: crate::connections::PasswordMode::None,
             spec: tabletist_db::ConnectSpec::sqlite(format!("/tmp/{name}.db")),
@@ -446,6 +447,22 @@ mod tests {
         let id = saved.id.clone();
         harness.app.connections.upsert(saved);
         id
+    }
+
+    #[test]
+    fn the_picker_names_a_connections_own_environment_not_its_colour() {
+        let mut harness = Harness::new();
+        let id = add_saved(&mut harness, "Shop");
+        let mut saved = harness.app.connections.get(&id).unwrap().clone();
+        saved.color = crate::connections::ColorTag::Purple;
+        saved.environment = Some(crate::connections::Environment::Production);
+        harness.app.connections.upsert(saved);
+        harness.settle();
+        assert!(harness.painted_color("production").is_some());
+        assert!(
+            harness.painted_color("local").is_none(),
+            "purple no longer means local"
+        );
     }
 
     #[test]
@@ -555,6 +572,7 @@ mod tests {
                 id: crate::connections::ConnectionId::new(),
                 name: "Production".into(),
                 color: crate::connections::ColorTag::Red,
+                environment: None,
                 password: crate::connections::PasswordMode::Ask,
                 ssh_secret: crate::connections::PasswordMode::None,
                 spec,
@@ -1008,6 +1026,102 @@ mod tests {
         assert!(harness.app.dialog.is_none());
     }
 
+    /// The open connection dialog's form.
+    fn form(harness: &Harness) -> &crate::model::ConnectionForm {
+        match &harness.app.dialog {
+            Some(crate::model::Dialog::Connection(form)) => form,
+            _ => panic!("the connection dialog is open"),
+        }
+    }
+
+    #[test]
+    fn a_new_connection_starts_in_name_and_escape_closes_it_while_typing() {
+        let mut harness = Harness::new();
+        harness.press(Key::N, Modifiers::COMMAND);
+        harness.frame(vec![egui::Event::Text("Staging".into())]);
+        harness.settle();
+        assert_eq!(form(&harness).name, "Staging", "typing goes to Name");
+        harness.press(Key::Escape, Modifiers::NONE);
+        assert!(
+            harness.app.dialog.is_none(),
+            "one Escape closes it, as Cancel"
+        );
+    }
+
+    #[test]
+    fn the_connection_dialog_keeps_its_place_as_it_grows() {
+        let mut harness = Harness::with_size(egui::vec2(1280.0, 900.0));
+        harness.press(Key::N, Modifiers::COMMAND);
+        let name = |harness: &mut Harness| {
+            let tree = harness.settle();
+            tree.nodes
+                .iter()
+                .find(|(_, node)| node.label().or_else(|| node.value()) == Some("Name"))
+                .and_then(|(_, node)| node.bounds())
+                .expect("the Name label")
+                .y0
+        };
+        let before = name(&mut harness);
+        // SQLite's short form grows by PostgreSQL's fields and the TLS
+        // warning a remote host brings.
+        harness.click("PostgreSQL");
+        if let Some(crate::model::Dialog::Connection(form)) = &mut harness.app.dialog {
+            form.host = "db.example.com".into();
+        }
+        assert_eq!(
+            name(&mut harness),
+            before,
+            "the fields stay under the pointer"
+        );
+    }
+
+    #[test]
+    fn choosing_an_environment_colours_the_connection() {
+        let mut harness = Harness::new();
+        harness.press(Key::N, Modifiers::COMMAND);
+        let tree = harness.settle();
+        let combo = crate::testing::node(&tree, "Environment", egui::accesskit::Role::ComboBox)
+            .or_else(|| {
+                tree.nodes
+                    .iter()
+                    .find(|(_, node)| node.role() == egui::accesskit::Role::ComboBox)
+                    .map(|(id, _)| *id)
+            })
+            .expect("the environment list");
+        harness.frame(vec![egui::Event::AccessKitActionRequest(
+            egui::accesskit::ActionRequest {
+                target_tree: egui::accesskit::TreeId::ROOT,
+                target_node: combo,
+                action: egui::accesskit::Action::Click,
+                data: None,
+            },
+        )]);
+        harness.click("Production");
+        let form = form(&harness);
+        assert_eq!(
+            form.environment,
+            crate::connections::Environment::Production
+        );
+        assert_eq!(form.color, crate::connections::ColorTag::Red);
+    }
+
+    #[test]
+    fn paste_url_suggests_the_chosen_drivers_url() {
+        let mut harness = Harness::new();
+        harness.press(Key::N, Modifiers::COMMAND);
+        let placeholders = |harness: &mut Harness| -> Vec<String> {
+            harness
+                .settle()
+                .nodes
+                .iter()
+                .filter_map(|(_, node)| node.placeholder().map(str::to_owned))
+                .collect()
+        };
+        assert!(placeholders(&mut harness).contains(&"sqlite:///path/to/file.db".to_owned()));
+        harness.click("PostgreSQL");
+        assert!(placeholders(&mut harness).contains(&"postgres://user@host/db".to_owned()));
+    }
+
     #[test]
     fn show_all_on_a_huge_single_line_value_stays_responsive() {
         let mut harness = Harness::new();
@@ -1074,6 +1188,7 @@ mod tests {
             id: crate::connections::ConnectionId::new(),
             name: "Prod".into(),
             color: crate::connections::ColorTag::Red,
+            environment: None,
             password: crate::connections::PasswordMode::Ask,
             ssh_secret: crate::connections::PasswordMode::None,
             spec,
@@ -1105,6 +1220,7 @@ mod tests {
             id: crate::connections::ConnectionId::new(),
             name: "Prod".into(),
             color: crate::connections::ColorTag::None,
+            environment: None,
             password: crate::connections::PasswordMode::Ask,
             ssh_secret: crate::connections::PasswordMode::None,
             spec,
@@ -1277,6 +1393,7 @@ mod tests {
             id: crate::connections::ConnectionId::new(),
             name: "Prod".into(),
             color: crate::connections::ColorTag::Red,
+            environment: None,
             password: crate::connections::PasswordMode::None,
             ssh_secret: crate::connections::PasswordMode::None,
             spec,
@@ -1301,6 +1418,7 @@ mod tests {
             id: crate::connections::ConnectionId::new(),
             name: "Prod".into(),
             color: crate::connections::ColorTag::Red,
+            environment: None,
             password: crate::connections::PasswordMode::None,
             ssh_secret: crate::connections::PasswordMode::None,
             spec,

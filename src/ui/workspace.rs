@@ -158,7 +158,7 @@ fn bar_info(app: &App, tab: ConnTabId) -> Option<BarInfo> {
     });
     Some(BarInfo {
         name: workspace.name.clone(),
-        env: workspace.color.environment(),
+        env: workspace.environment,
         host,
         database: if sqlite {
             String::new()

@@ -71,9 +71,11 @@ impl ColorTag {
     }
 }
 
-/// What a connection's colour says it is: the environment badge on the
-/// picker and the top bar, and the colour of its connection bar.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// What a connection is: the environment badge on the picker and the top
+/// bar, and the colour of its connection bar. Chosen on its own; older
+/// connections without one take it from their colour.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Environment {
     Dev,
     Staging,
@@ -84,6 +86,40 @@ pub enum Environment {
 }
 
 impl Environment {
+    /// In the order the dialog offers them.
+    pub const ALL: [Environment; 6] = [
+        Self::None,
+        Self::Local,
+        Self::Dev,
+        Self::Test,
+        Self::Staging,
+        Self::Production,
+    ];
+
+    /// The name the dialog lists it by.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Dev => "Development",
+            Self::Staging => "Staging",
+            Self::Production => "Production",
+            Self::Local => "Local",
+            Self::Test => "Test",
+            Self::None => "None",
+        }
+    }
+
+    /// The colour a connection takes when it is given this environment.
+    pub fn color(self) -> ColorTag {
+        match self {
+            Self::Dev => ColorTag::Green,
+            Self::Staging => ColorTag::Orange,
+            Self::Production => ColorTag::Red,
+            Self::Local => ColorTag::Purple,
+            Self::Test => ColorTag::Blue,
+            Self::None => ColorTag::None,
+        }
+    }
+
     /// The badge text: `short` is the terminal look's (PROD).
     pub fn label(self, short: bool) -> &'static str {
         match self {
@@ -99,7 +135,8 @@ impl Environment {
 }
 
 impl ColorTag {
-    /// The environment the colour stands for (red for production).
+    /// The environment the colour stood for before connections had one of
+    /// their own (red for production): what an older connection shows.
     pub fn environment(self) -> Environment {
         match self {
             Self::Green => Environment::Dev,
@@ -131,12 +168,24 @@ pub struct SavedConnection {
     pub name: String,
     #[serde(default)]
     pub color: ColorTag,
+    /// `None` in files written before connections had an environment: then
+    /// the colour says it (see [`SavedConnection::environment`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment: Option<Environment>,
     #[serde(default)]
     pub password: PasswordMode,
     /// How the SSH password or key passphrase is kept, when there is one.
     #[serde(default)]
     pub ssh_secret: PasswordMode,
     pub spec: ConnectSpec,
+}
+
+impl SavedConnection {
+    /// The connection's environment: its own, or the one its colour stood
+    /// for.
+    pub fn environment(&self) -> Environment {
+        self.environment.unwrap_or(self.color.environment())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -310,6 +359,7 @@ mod tests {
             id: ConnectionId::new(),
             name: name.into(),
             color: ColorTag::None,
+            environment: None,
             password: PasswordMode::None,
             ssh_secret: PasswordMode::None,
             spec: ConnectSpec::sqlite(file),
@@ -404,5 +454,43 @@ mod tests {
         })
         .unwrap();
         assert!(json.contains("\"ask\""), "{json}");
+    }
+
+    #[test]
+    fn older_connections_take_their_environment_from_the_colour() {
+        let old: SavedConnection = serde_json::from_str(
+            r#"{"id": "x", "name": "Old", "color": "purple",
+                "spec": {"driver": "sqlite", "sqlite_path": "/a.db"}}"#,
+        )
+        .unwrap();
+        assert_eq!(old.environment, None);
+        assert_eq!(old.environment(), Environment::Local);
+        // Saved again unchanged, it stays as it was.
+        assert!(!serde_json::to_string(&old).unwrap().contains("environment"));
+    }
+
+    #[test]
+    fn a_chosen_environment_wins_over_the_colour() {
+        let production = SavedConnection {
+            color: ColorTag::Purple,
+            environment: Some(Environment::Production),
+            ..saved("Shop", "/shop.db")
+        };
+        assert_eq!(production.environment(), Environment::Production);
+        let json = serde_json::to_string(&production).unwrap();
+        assert!(json.contains("\"environment\":\"production\""), "{json}");
+        let back: SavedConnection = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.environment(), Environment::Production);
+    }
+
+    #[test]
+    fn each_environment_has_its_own_colour() {
+        for environment in Environment::ALL {
+            assert_eq!(
+                environment.color().environment(),
+                environment,
+                "{environment:?}"
+            );
+        }
     }
 }

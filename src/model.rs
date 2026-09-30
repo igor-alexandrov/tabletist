@@ -281,6 +281,7 @@ pub struct Workspace {
     /// deleting the saved entry never breaks an open tab.
     pub name: String,
     pub color: ColorTag,
+    pub environment: crate::connections::Environment,
     pub spec: ConnectSpec,
     pub driver: Driver,
     /// Whether the session runs over TLS, as negotiated. Set when the
@@ -358,6 +359,9 @@ pub struct ConnectionForm {
     pub editing: Option<ConnectionId>,
     pub name: String,
     pub color: ColorTag,
+    pub environment: crate::connections::Environment,
+    /// Put the keyboard in Name on the next frame (a new connection).
+    pub focus_name: bool,
     pub driver: Driver,
     pub sqlite_path: String,
     pub host: String,
@@ -437,6 +441,8 @@ impl Default for ConnectionForm {
             editing: None,
             name: String::new(),
             color: ColorTag::None,
+            environment: crate::connections::Environment::None,
+            focus_name: true,
             driver: Driver::Sqlite,
             sqlite_path: String::new(),
             host: "localhost".into(),
@@ -489,6 +495,8 @@ impl ConnectionForm {
             editing: Some(saved.id.clone()),
             name: saved.name.clone(),
             color: saved.color,
+            environment: saved.environment(),
+            focus_name: false,
             driver: spec.driver,
             sqlite_path: spec
                 .sqlite_path
@@ -673,6 +681,7 @@ impl ConnectionForm {
             id: self.editing.clone().unwrap_or_else(ConnectionId::new),
             name: name.to_owned(),
             color: self.color,
+            environment: Some(self.environment),
             password,
             ssh_secret,
             spec,

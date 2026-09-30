@@ -160,6 +160,7 @@ pub fn demo_setup(app: &mut App) {
         id: crate::connections::ConnectionId::new(),
         name: "Demo".into(),
         color: crate::connections::ColorTag::Blue,
+        environment: None,
         password: crate::connections::PasswordMode::None,
         ssh_secret: crate::connections::PasswordMode::None,
         spec: tabletist_db::ConnectSpec::sqlite(&path),
