@@ -489,9 +489,9 @@ mod tests {
                 look.name
             );
             // The terminal's rows span the window; macOS cards line up
-            // with the header's button.
+            // with the header's button, their rows inside a 1 pt border.
             assert!(
-                look.terminal || (button.right() - card.right()).abs() < 1.0,
+                look.terminal || (button.right() - 1.0 - card.right()).abs() < 1.0,
                 "{}: button ends at {}, cards at {}",
                 look.name,
                 button.right(),

@@ -8,25 +8,39 @@ use crate::app::App;
 use crate::i18n::{Locale, gettext};
 use crate::model::{Action, ConnTabId, TreeNode, TreeRow};
 use crate::theme::{self, Icon, Look, Palette};
-use crate::ui::widgets::{self, icon_button, virtual_rows};
+use crate::ui::widgets::{self, icon_button};
 
 /// The sidebar's width when it opens, per look.
 fn default_width(look: &Look) -> f32 {
-    if look.terminal { 191.0 } else { 230.0 }
+    if look.terminal { 264.0 } else { 248.0 }
 }
 
-/// Space around the filter field and the section headers.
+/// Space around the filter field: macOS 12 (8 under), terminal 10 (6).
 fn margin(look: &Look) -> f32 {
-    if look.terminal { 7.0 } else { 12.0 }
+    if look.terminal { 10.0 } else { 12.0 }
 }
 
 /// The filter field's height.
 fn field_height(look: &Look) -> f32 {
-    if look.terminal { 22.0 } else { 32.0 }
+    if look.terminal { 30.0 } else { 34.0 }
 }
 
 /// Recent rows (macOS only).
-const RECENT_ROW: f32 = 26.0;
+const RECENT_ROW: f32 = 28.0;
+
+/// The tree's inset from the sidebar's sides.
+fn tree_inset(look: &Look) -> f32 {
+    if look.terminal { 4.0 } else { 8.0 }
+}
+
+/// A tree row's height: groups stand taller than their objects.
+fn row_height(row: &TreeRow, look: &Look) -> f32 {
+    match (&row.node, look.terminal) {
+        (TreeNode::Group(..), true) => 26.0,
+        (TreeNode::Group(..), false) => 28.0,
+        _ => look.tree_row,
+    }
+}
 
 /// The name kind of an object as the tree tags it, if not a table.
 fn kind_tag(locale: Locale, kind: ObjectKind) -> Option<String> {
@@ -131,17 +145,24 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                         gettext(locale, "Find any object…")
                     };
                     let size = vec2(full.width() - 2.0 * pad, field_height(&look));
+                    let style = widgets::FieldStyle {
+                        fill: Some(palette.window),
+                        boxed: true,
+                        text_size: if look.terminal { 12.5 } else { theme::TEXT },
+                    };
                     widgets::filter_field(
                         ui,
                         &mut workspace.tree.filter,
                         &hint,
                         size,
+                        style,
                         &look,
                         &palette,
                     )
                     .widget_info(|| WidgetInfo::labeled(WidgetType::TextEdit, true, "Filter"));
                 }
             });
+            ui.add_space(if look.terminal { 6.0 } else { 8.0 });
             if !recent.is_empty() {
                 recent_section(
                     ui,
@@ -226,11 +247,13 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                     .show(ui, |ui| {
                         ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
                         let top = ui.cursor().top();
+                        let heights: Vec<f32> =
+                            rows.iter().map(|row| row_height(row, &look)).collect();
                         if let Some(index) = reveal {
-                            let y = top + index as f32 * look.tree_row;
+                            let y = top + heights[..index].iter().sum::<f32>();
                             let row = Rect::from_min_size(
                                 pos2(ui.cursor().left(), y),
-                                vec2(1.0, look.tree_row),
+                                vec2(1.0, heights[index]),
                             );
                             // Jump, not animate: the next key may come at once.
                             ui.scroll_to_rect_animation(
@@ -239,7 +262,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                                 egui::style::ScrollAnimation::none(),
                             );
                         }
-                        virtual_rows(ui, rows.len(), look.tree_row, |ui, index| {
+                        widgets::virtual_rows_varying(ui, &heights, |ui, index| {
                             tree_row(
                                 ui,
                                 &rows[index],
@@ -269,29 +292,40 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
     app.actions.extend(actions);
 }
 
-/// The terminal look's key hints under the tree, a line at a time.
-const HINTS: [&[(&str, &str)]; 2] = [&[("ctrl+b", "hide"), ("t", "tree")], &[("enter", "open")]];
+/// The terminal look's key hints under the tree.
+const HINTS: [(&str, &str); 3] = [("ctrl+b", "hide"), ("t", "tree"), ("enter", "open")];
 
-/// The height of the terminal look's hint footer.
-const FOOTER: f32 = 40.0;
+/// The terminal footer's text size and padding (8 above and below, 12 at
+/// the sides), and its height for two lines.
+const FOOTER_TEXT: f32 = theme::TEXT_LABEL;
+const FOOTER: f32 = 8.0 + 2.0 * 15.0 + 8.0 + 1.0;
 
-/// The sidebar's key hints, with a rule above.
+/// The sidebar's key hints, with a rule above: keys in the text colour,
+/// the rest muted, wrapping as words do.
 fn terminal_footer(ui: &mut egui::Ui, full: Rect, palette: &Palette) {
     let top = full.bottom() - FOOTER;
-    widgets::hline(ui, full.x_range(), top, palette.outline);
-    let font = theme::regular(theme::TEXT_SMALL);
-    for (line, hints) in HINTS.iter().enumerate() {
-        let y = top + 13.0 + 15.0 * line as f32;
-        let mut left = full.left() + 9.0;
-        for (index, (key, label)) in hints.iter().enumerate() {
-            if index > 0 {
-                left += widgets::paint_text(ui, left, y, " · ", font.clone(), palette.dim);
-            }
-            left += widgets::paint_text(ui, left, y, key, font.clone(), palette.text);
-            left +=
-                widgets::paint_text(ui, left, y, &format!(" {label}"), font.clone(), palette.dim);
+    widgets::hline(ui, full.x_range(), top + 0.5, palette.outline);
+    let font = theme::regular(FOOTER_TEXT);
+    let mut job = egui::text::LayoutJob::default();
+    for (index, (key, label)) in HINTS.iter().enumerate() {
+        let muted = egui::TextFormat::simple(font.clone(), palette.dim);
+        if index > 0 {
+            job.append(" · ", 0.0, muted.clone());
         }
+        job.append(
+            key,
+            0.0,
+            egui::TextFormat::simple(font.clone(), palette.text),
+        );
+        job.append(&format!(" {label}"), 0.0, muted);
     }
+    job.wrap.max_width = full.width() - 24.0;
+    let galley = ui.painter().layout_job(job);
+    ui.painter().galley(
+        pos2(full.left() + 12.0, top + 1.0 + 8.0),
+        galley,
+        egui::Color32::PLACEHOLDER,
+    );
 }
 
 /// The Recent section: the objects opened lately, newest first.
@@ -305,35 +339,32 @@ fn recent_section(
     actions: &mut Vec<Action>,
 ) {
     let width = ui.available_width();
-    ui.add_space(8.0);
-    let (label, _) = ui.allocate_exact_size(vec2(width, 20.0), Sense::hover());
-    widgets::paint_job(
-        ui,
-        label.left() + 15.0,
-        label.center().y,
-        widgets::section_label("Recent", look, palette),
-    );
+    // The label: 4 above and below, 16 in.
+    let label_job = widgets::section_label("Recent", look, palette);
+    let label_height = ui.painter().layout_job(label_job.clone()).size().y + 8.0;
+    let (label, _) = ui.allocate_exact_size(vec2(width, label_height), Sense::hover());
+    widgets::paint_job(ui, label.left() + 16.0, label.center().y, label_job);
     for (object, kind) in recent {
-        let (rect, response) = ui.allocate_exact_size(vec2(width, RECENT_ROW), Sense::click());
+        let (row, response) = ui.allocate_exact_size(vec2(width, RECENT_ROW), Sense::click());
         let name = object.name.clone();
         response.widget_info(|| {
             WidgetInfo::labeled(WidgetType::Button, true, format!("Recent {name}"))
         });
         let selected = Some(object) == active;
-        widgets::selection(ui, rect, selected, response.hovered(), look, palette);
+        widgets::selection(ui, row, selected, response.hovered(), look, palette);
         let (font, color) = if selected {
             (theme::medium(theme::TEXT), palette.accent_hover)
         } else {
             (theme::regular(theme::TEXT), palette.text)
         };
-        let room = rect.width() - 30.0;
+        let room = row.width() - 32.0;
         let shown = crate::ui::grid::ellipsize(&object.name, room, false, |text| {
             ui.painter()
                 .layout_no_wrap(text.to_owned(), font.clone(), color)
                 .size()
                 .x
         });
-        widgets::paint_text(ui, rect.left() + 15.0, rect.center().y, &shown, font, color);
+        widgets::paint_text(ui, row.left() + 16.0, row.center().y, &shown, font, color);
         if response.clicked() {
             actions.push(Action::OpenObject {
                 tab,
@@ -343,9 +374,7 @@ fn recent_section(
             });
         }
     }
-    ui.add_space(7.0);
-    let y = ui.cursor().top();
-    widgets::hline(ui, ui.max_rect().x_range(), y, palette.surface_hover);
+    ui.add_space(8.0);
 }
 
 /// What the schema header draws with.
@@ -374,23 +403,34 @@ fn schema_header(
         palette,
     } = skin;
     let width = ui.available_width();
-    let height = if look.terminal { 26.0 } else { 38.0 };
-    if look.terminal {
-        ui.add_space(4.0);
+    // macOS: a rule, then 8 above and 4 below a 28 pt row, 16 in and 8 from
+    // the right. Terminal: 4 above and below a 22 pt row, 12 in and 8.
+    let (above, row, below, left_pad) = if look.terminal {
+        (4.0, 22.0, 4.0, 12.0)
     } else {
-        ui.add_space(3.0);
+        (8.0, 28.0, 4.0, 16.0)
+    };
+    let (band, _) = ui.allocate_exact_size(vec2(width, above + row + below), Sense::hover());
+    if !look.terminal {
+        widgets::hline(ui, band.x_range(), band.top() + 0.5, palette.surface_hover);
     }
-    let (rect, _) = ui.allocate_exact_size(vec2(width, height), Sense::hover());
-    let pad = margin(look);
-    let left = rect.left() + if look.terminal { pad } else { 15.0 };
+    let rect = Rect::from_min_size(pos2(band.left(), band.top() + above), vec2(width, row));
+    let left = rect.left() + left_pad;
+    let center = rect.center().y;
     // The schema: a menu of the others.
     if let Some(schema) = shown {
-        let label = widgets::section_label(schema, look, palette);
-        let galley = ui.painter().layout_job(label);
-        let chevron = 12.0;
+        let galley = ui
+            .painter()
+            .layout_job(widgets::section_label(schema, look, palette));
+        let text_width = galley.size().x;
+        let (glyph_width, gap) = if look.terminal {
+            (8.0, 4.0)
+        } else {
+            (10.0, 4.0)
+        };
         let hit = Rect::from_min_size(
-            pos2(left - 4.0, rect.center().y - 10.0),
-            vec2(galley.size().x + chevron + 12.0, 20.0),
+            pos2(left - 6.0, center - 13.0),
+            vec2(6.0 + text_width + gap + glyph_width + 6.0, 26.0),
         );
         let response = ui.interact(hit, ui.id().with("schema-menu"), Sense::click());
         response.widget_info(|| {
@@ -399,33 +439,28 @@ fn schema_header(
             info.current_text_value = Some(schema.to_owned());
             info
         });
-        if response.hovered() {
-            ui.painter().rect_filled(
-                hit,
-                CornerRadius::same(look.radius.saturating_sub(2)),
-                palette.surface,
-            );
+        if response.hovered() && !look.terminal {
+            ui.painter()
+                .rect_filled(hit, CornerRadius::same(6), palette.surface);
         }
-        let text_width = galley.size().x;
         ui.painter().galley(
-            pos2(left, rect.center().y - galley.size().y / 2.0),
+            pos2(left, center - galley.size().y / 2.0),
             galley,
             egui::Color32::PLACEHOLDER,
         );
-        let icon_center = pos2(left + text_width + 3.0 + chevron / 2.0, rect.center().y);
+        let glyph = pos2(left + text_width + gap + glyph_width / 2.0, center);
         if look.terminal {
             ui.painter().text(
-                icon_center,
+                glyph,
                 egui::Align2::CENTER_CENTER,
                 "▾",
-                theme::regular(theme::TEXT_SMALL),
+                theme::regular(theme::TEXT_LABEL),
                 palette.dim,
             );
         } else {
-            Icon::ChevronDown.image(palette.dim, chevron).paint_at(
-                ui,
-                Rect::from_center_size(icon_center, vec2(chevron, chevron)),
-            );
+            Icon::ChevronDown
+                .image(palette.secondary, 10.0)
+                .paint_at(ui, Rect::from_center_size(glyph, vec2(10.0, 10.0)));
         }
         egui::Popup::menu(&response).show(|ui| {
             ui.set_min_width(160.0);
@@ -442,10 +477,11 @@ fn schema_header(
             }
         });
     }
-    // Right to left: Refresh (macOS), then the tree/flat switch.
-    let mut right = rect.right() - pad;
+    // Right to left, 8 in: Reload (macOS, 28 square), 2 apart, then the
+    // tree/flat switch.
+    let mut right = rect.right() - 8.0;
     if !look.terminal {
-        let refresh = Rect::from_center_size(pos2(right - 10.0, rect.center().y), vec2(24.0, 24.0));
+        let refresh = Rect::from_min_size(pos2(right - 28.0, center - 14.0), vec2(28.0, 28.0));
         let mut child = ui.new_child(egui::UiBuilder::new().max_rect(refresh));
         if loading {
             egui::Spinner::new().size(14.0).paint_at(
@@ -463,7 +499,7 @@ fn schema_header(
         {
             actions.push(Action::RefreshTree(tab));
         }
-        right = refresh.left() - 8.0;
+        right = refresh.left() - 2.0;
     }
     let (segments, segment) = if look.terminal {
         (
@@ -471,7 +507,7 @@ fn schema_header(
                 widgets::Segment::Text("tree"),
                 widgets::Segment::Text("flat"),
             ],
-            vec2(36.0, 20.0),
+            vec2(0.0, 20.0),
         )
     } else {
         (
@@ -479,15 +515,28 @@ fn schema_header(
                 widgets::Segment::Icon(Icon::ListTree, "Tree"),
                 widgets::Segment::Icon(Icon::List, "Flat"),
             ],
-            vec2(24.0, 20.0),
+            vec2(26.0, 22.0),
         )
     };
-    let pad_x = if look.terminal { 0.0 } else { 4.0 };
-    let total = vec2(segment.x * 2.0 + pad_x, segment.y + pad_x);
-    let place = Rect::from_min_size(
-        pos2(right - total.x, rect.center().y - total.y / 2.0),
-        total,
-    );
+    // The switch's size, measured as `segmented` lays it out.
+    let font = theme::regular(theme::TEXT_LABEL);
+    let cells: f32 = if look.terminal {
+        ["tree", "flat"]
+            .iter()
+            .map(|text| {
+                ui.painter()
+                    .layout_no_wrap((*text).to_owned(), font.clone(), egui::Color32::WHITE)
+                    .size()
+                    .x
+                    + 12.0
+            })
+            .sum()
+    } else {
+        2.0 * segment.x
+    };
+    let pad = if look.terminal { 1.0 } else { 2.0 };
+    let total = vec2(cells + 2.0 * pad, segment.y + 2.0 * pad);
+    let place = Rect::from_min_size(pos2(right - total.x, center - total.y / 2.0), total);
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(place));
     if let Some(index) = widgets::segmented(
         &mut child,
@@ -499,9 +548,6 @@ fn schema_header(
     ) && (index == 1) != flat
     {
         actions.push(Action::ToggleFlatTree(tab));
-    }
-    if !look.terminal {
-        ui.add_space(4.0);
     }
 }
 
@@ -519,11 +565,33 @@ struct Skin<'a> {
     palette: &'a Palette,
 }
 
-/// Where a tree row draws its label: groups and top-level objects after
-/// the chevron, grouped objects in the same column.
-fn label_x(rect: Rect, depth: u8, look: &Look) -> f32 {
-    let base = if look.terminal { 17.8 } else { 31.3 };
-    rect.left() + base + if depth > 0 && look.terminal { 1.5 } else { 0.0 }
+/// Where a tree row draws its label. macOS: the chevron 8 into the row
+/// (itself 8 in), then 6 to the name; grouped objects 26 into theirs.
+/// Terminal: 4 and 8 in, the glyph, 6; objects 24 into theirs.
+fn label_x(rect: Rect, depth: u8, look: &Look, glyph: f32) -> f32 {
+    let inset = tree_inset(look);
+    let (pad, nested) = if look.terminal {
+        (8.0, 24.0)
+    } else {
+        (8.0, 26.0)
+    };
+    rect.left() + inset + if depth > 0 { nested } else { pad + glyph + 6.0 }
+}
+
+/// The width of the fold mark: macOS's 12 pt chevron, the terminal's ▾.
+fn glyph_width(ui: &egui::Ui, look: &Look) -> f32 {
+    if look.terminal {
+        ui.painter()
+            .layout_no_wrap(
+                "▾".into(),
+                theme::regular(theme::TEXT),
+                egui::Color32::WHITE,
+            )
+            .size()
+            .x
+    } else {
+        12.0
+    }
 }
 
 fn tree_row(
@@ -546,7 +614,7 @@ fn tree_row(
         ui.allocate_ui_with_layout(size, layout, |ui| {
             ui.set_min_size(size);
             ui.spacing_mut().item_spacing.x = 6.0;
-            let left = label_x(ui.max_rect(), 0, look);
+            let left = label_x(ui.max_rect(), 0, look, glyph_width(ui, look));
             ui.add_space(left - ui.max_rect().left());
             let refresh = RichText::new(gettext(locale, "Refresh"))
                 .font(small.clone())
@@ -574,20 +642,20 @@ fn tree_row(
         });
         return;
     }
-    let (rect, response) =
-        ui.allocate_exact_size(vec2(ui.available_width(), look.tree_row), Sense::click());
+    let (rect, response) = ui.allocate_exact_size(
+        vec2(ui.available_width(), row_height(row, look)),
+        Sense::click(),
+    );
     let full_name = match &row.node {
         TreeNode::Object(object, _) => object.name.clone(),
         _ => row.label.clone(),
     };
     response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, &full_name));
     let selected = matches!(&row.node, TreeNode::Object(object, _) if Some(object) == marks.active);
-    // The terminal bar leaves room at the right for the scroll bar.
+    // Rows sit in the tree's inset: the macOS pill fills it, the terminal
+    // bar spans it.
     let band = if look.terminal {
-        Rect::from_min_max(
-            pos2(rect.left() + 3.0, rect.top()),
-            pos2(rect.right() - 11.0, rect.bottom()),
-        )
+        rect.shrink2(vec2(tree_inset(look), 0.0))
     } else {
         rect
     };
@@ -602,15 +670,17 @@ fn tree_row(
         );
     }
     let center = rect.center().y;
-    let x = label_x(rect, row.depth, look);
+    let glyph = glyph_width(ui, look);
+    let x = label_x(rect, row.depth, look, glyph);
+    let fold_x = rect.left() + tree_inset(look) + 8.0;
     if let Some(expanded) = row.expanded {
         if look.terminal {
-            let glyph = if expanded { "▾" } else { "▸" };
+            let mark = if expanded { "▾" } else { "▸" };
             ui.painter().text(
-                pos2(rect.left() + 10.0, center),
-                egui::Align2::CENTER_CENTER,
-                glyph,
-                small.clone(),
+                pos2(fold_x, center),
+                egui::Align2::LEFT_CENTER,
+                mark,
+                theme::regular(theme::TEXT),
                 palette.dim,
             );
         } else {
@@ -621,25 +691,29 @@ fn tree_row(
             };
             icon.image(palette.dim, 12.0).paint_at(
                 ui,
-                Rect::from_center_size(pos2(rect.left() + 21.0, center), vec2(12.0, 12.0)),
+                Rect::from_center_size(pos2(fold_x + 6.0, center), vec2(12.0, 12.0)),
             );
         }
     }
-    let right = if look.terminal {
-        rect.left() + 174.4_f32.min(rect.width() - 14.0)
-    } else {
-        rect.right() - 16.0
-    };
+    let right = rect.right() - tree_inset(look) - 8.0;
     // What sits at the right: a group's count or an object's kind.
     let (trailing, trailing_color) = match &row.node {
         TreeNode::Group(..) => (row.count.map(|count| count.to_string()), palette.dim),
-        TreeNode::Object(_, kind) => (kind_tag(locale, *kind), palette.faint),
+        TreeNode::Object(_, kind) => (
+            kind_tag(locale, *kind),
+            if look.terminal {
+                palette.dim
+            } else {
+                palette.faint
+            },
+        ),
         TreeNode::Empty(_) => (None, palette.dim),
     };
-    let trailing_font = if look.terminal {
-        theme::regular(theme::TEXT_LABEL)
-    } else {
-        theme::regular(theme::TEXT_SMALL)
+    let trailing_font = match (&row.node, look.terminal) {
+        (TreeNode::Group(..), true) => theme::regular(theme::TEXT_LABEL),
+        (TreeNode::Group(..), false) => theme::regular(theme::TEXT_CAPTION),
+        (_, true) => theme::regular(theme::TEXT_CAPTION),
+        (_, false) => theme::regular(10.5),
     };
     let trailing_width = trailing.as_ref().map_or(0.0, |text| {
         let width = ui
@@ -657,19 +731,18 @@ fn tree_row(
         );
         width
     });
+    // Groups: macOS Plex Mono 500 at 12, the terminal bold. Objects: 13,
+    // the selected one medium in the strong accent (macOS) or in the text
+    // colour among muted ones (terminal).
     let (font, color) = match row.node {
-        TreeNode::Group(..) => (theme::mono_bold(theme::TEXT), palette.text),
-        _ if selected => (
-            theme::medium(theme::TEXT),
-            widgets::selection_text(true, look, palette),
-        ),
+        TreeNode::Group(..) if look.terminal => (theme::semibold(theme::TEXT), palette.text),
+        TreeNode::Group(..) => (theme::mono_medium(theme::TEXT_SMALL), palette.text),
+        _ if selected && look.terminal => (theme::regular(theme::TEXT), palette.text),
+        _ if selected => (theme::medium(theme::TEXT), palette.accent_hover),
+        _ if look.terminal => (theme::regular(theme::TEXT), palette.secondary),
         _ => (
             theme::regular(theme::TEXT),
-            if look.terminal {
-                palette.secondary
-            } else {
-                palette.text
-            },
+            palette.text.lerp_to_gamma(palette.secondary, 0.37),
         ),
     };
     // Long names end in "…" and show in full on hover.

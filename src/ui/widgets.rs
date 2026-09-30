@@ -82,6 +82,41 @@ pub fn icon_button(
     response.on_hover_text(label)
 }
 
+/// [`icon_button`] at `size`, its icon `icon_size` points.
+pub fn icon_button_sized(
+    ui: &mut Ui,
+    icon: Icon,
+    label: &str,
+    size: egui::Vec2,
+    icon_size: f32,
+    look: &Look,
+    palette: &Palette,
+) -> Response {
+    let (rect, response) = ui.allocate_exact_size(size, Sense::click());
+    response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, ui.is_enabled(), label));
+    if ui.is_rect_visible(rect) {
+        if response.hovered() {
+            ui.painter().rect_filled(
+                rect,
+                CornerRadius::same(look.radius.saturating_sub(2)),
+                palette.surface_hover,
+            );
+        }
+        let tint = if !ui.is_enabled() {
+            palette.faint
+        } else if response.hovered() {
+            palette.text
+        } else {
+            palette.secondary
+        };
+        icon.image(tint, icon_size).paint_at(
+            ui,
+            Rect::from_center_size(rect.center(), vec2(icon_size, icon_size)),
+        );
+    }
+    response.on_hover_text(label)
+}
+
 /// Lays out only the rows that intersect the visible area of the enclosing
 /// scroll view. Every row must be exactly `row_height` tall. One extra row on
 /// each side stays built so Tab can move focus into it.
@@ -111,6 +146,43 @@ pub fn virtual_rows(
     }
     if last < count {
         ui.allocate_space(vec2(width, (count - last) as f32 * row_height));
+    }
+    ui.spacing_mut().item_spacing = previous_spacing;
+}
+
+/// [`virtual_rows`] for rows of different heights: `heights[i]` is row
+/// `i`'s. Only the rows in view are built, plus one on each side.
+pub fn virtual_rows_varying(ui: &mut Ui, heights: &[f32], mut row: impl FnMut(&mut Ui, usize)) {
+    if heights.is_empty() {
+        return;
+    }
+    let previous_spacing = ui.spacing().item_spacing;
+    ui.spacing_mut().item_spacing.y = 0.0;
+    let clip = ui.clip_rect();
+    let start_y = ui.cursor().top();
+    let width = ui.available_width();
+    let mut tops = Vec::with_capacity(heights.len() + 1);
+    let mut y = 0.0;
+    for height in heights {
+        tops.push(y);
+        y += height;
+    }
+    tops.push(y);
+    let visible_top = clip.top() - start_y;
+    let visible_bottom = clip.bottom() - start_y;
+    let first = tops
+        .partition_point(|top| *top <= visible_top)
+        .saturating_sub(2);
+    let last = (tops.partition_point(|top| *top < visible_bottom) + 1).min(heights.len());
+    let first = first.min(last);
+    if first > 0 {
+        ui.allocate_space(vec2(width, tops[first]));
+    }
+    for index in first..last {
+        row(ui, index);
+    }
+    if last < heights.len() {
+        ui.allocate_space(vec2(width, tops[heights.len()] - tops[last]));
     }
     ui.spacing_mut().item_spacing = previous_spacing;
 }
@@ -851,32 +923,40 @@ pub fn filter_field(
     text: &mut String,
     hint: &str,
     size: egui::Vec2,
+    style: FieldStyle,
     look: &Look,
     palette: &Palette,
 ) -> Response {
     let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
-    let corner = CornerRadius::same(look.radius);
+    let corner = CornerRadius::same(if look.terminal { 3 } else { look.radius });
     // The box goes under the text, so its place is kept before the field.
     let backdrop = ui.painter().add(egui::Shape::Noop);
-    let lead = if look.terminal { 22.0 } else { 34.0 };
-    let font = crate::theme::regular(crate::theme::TEXT);
+    let font = crate::theme::regular(style.text_size);
+    let slash_font = crate::theme::semibold(crate::theme::TEXT);
+    // macOS: 10 in, a 14 pt magnifier, 8 to the text. Terminal: 8 in, a
+    // bold accent slash, 8 to the text.
+    let lead = if look.terminal {
+        8.0 + ui
+            .painter()
+            .layout_no_wrap("/".into(), slash_font.clone(), Color32::WHITE)
+            .size()
+            .x
+            + 8.0
+    } else {
+        32.0
+    };
+    // The text's line, centred in the box.
     let line = ui.fonts_mut(|fonts| fonts.row_height(&font));
-    let top = ((size.y - line) / 2.0).max(0.0);
     let inner = Rect::from_min_max(
-        egui::pos2(rect.left() + lead, rect.top()),
-        egui::pos2(rect.right() - 8.0, rect.bottom()),
+        egui::pos2(rect.left() + lead, rect.center().y - line / 2.0),
+        egui::pos2(rect.right() - 8.0, rect.center().y + line / 2.0),
     );
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(inner));
     let response = child.add(
         egui::TextEdit::singleline(text)
             .font(font.clone())
             .frame(egui::Frame::NONE)
-            .margin(egui::Margin {
-                left: 0,
-                right: 0,
-                top: top.floor() as i8,
-                bottom: 0,
-            })
+            .margin(egui::Margin::ZERO)
             .desired_width(inner.width())
             .hint_text(
                 egui::RichText::new(hint)
@@ -886,45 +966,51 @@ pub fn filter_field(
     );
     let focused = response.has_focus();
     let painter = ui.painter();
-    if !look.terminal {
+    if let Some(fill) = style.fill {
         painter.set(
             backdrop,
-            egui::epaint::RectShape::filled(rect, corner, palette.window),
+            egui::epaint::RectShape::filled(rect, corner, fill),
         );
     }
-    let border = if focused {
-        palette.accent
-    } else {
-        palette.border
-    };
-    painter.rect_stroke(
-        rect,
-        corner,
-        Stroke::new(
-            hairline(ui).max(if look.terminal { 1.0 } else { 0.0 }),
-            border,
-        ),
-        StrokeKind::Inside,
-    );
+    if style.boxed {
+        let border = if focused {
+            palette.accent
+        } else if look.terminal {
+            palette.outline
+        } else {
+            palette.border
+        };
+        let width = if look.terminal { 1.0 } else { hairline(ui) };
+        painter.rect_stroke(rect, corner, Stroke::new(width, border), StrokeKind::Inside);
+    }
     if look.terminal {
         paint_text(
             ui,
-            rect.left() + 9.0,
+            rect.left() + 8.0,
             rect.center().y,
             "/",
-            font,
+            slash_font,
             palette.accent,
         );
     } else {
-        Icon::Search.image(palette.dim, 15.0).paint_at(
+        Icon::Search.image(palette.dim, 14.0).paint_at(
             ui,
             Rect::from_center_size(
-                egui::pos2(rect.left() + 17.5, rect.center().y),
-                vec2(15.0, 15.0),
+                egui::pos2(rect.left() + 17.0, rect.center().y),
+                vec2(14.0, 14.0),
             ),
         );
     }
     response
+}
+
+/// How a [`filter_field`] draws: its fill (none on its bar's colour), its
+/// box, and its text size.
+#[derive(Clone, Copy)]
+pub struct FieldStyle {
+    pub fill: Option<Color32>,
+    pub boxed: bool,
+    pub text_size: f32,
 }
 
 /// One segment of a [`segmented`] control.
@@ -945,33 +1031,51 @@ pub fn segmented(
     look: &Look,
     palette: &Palette,
 ) -> Option<usize> {
-    let pad = if look.terminal { 0.0 } else { 2.0 };
+    let font = crate::theme::regular(crate::theme::TEXT_LABEL);
+    // Terminal text segments fit their words, 6 each side; macOS icons sit
+    // in fixed cells.
+    let widths: Vec<f32> = segments
+        .iter()
+        .map(|part| match part {
+            Segment::Text(text) if look.terminal => {
+                ui.painter()
+                    .layout_no_wrap((*text).to_owned(), font.clone(), Color32::WHITE)
+                    .size()
+                    .x
+                    + 12.0
+            }
+            _ => segment.x,
+        })
+        .collect();
+    let pad = if look.terminal { 1.0 } else { 2.0 };
     let size = vec2(
-        segment.x * segments.len() as f32 + 2.0 * pad,
+        widths.iter().sum::<f32>() + 2.0 * pad,
         segment.y + 2.0 * pad,
     );
     let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
     let painter = ui.painter().clone();
-    let corner = CornerRadius::same(look.radius.saturating_sub(2));
     if look.terminal {
         painter.rect_stroke(
             rect,
-            CornerRadius::ZERO,
+            CornerRadius::same(3),
             Stroke::new(1.0, palette.outline),
             StrokeKind::Inside,
         );
     } else {
-        painter.rect_filled(rect, corner, palette.surface);
+        painter.rect_filled(
+            rect,
+            CornerRadius::same(look.radius.saturating_sub(2)),
+            palette.surface,
+        );
     }
     let mut clicked = None;
+    let mut left = rect.left() + pad;
     for (index, part) in segments.iter().enumerate() {
         let cell = Rect::from_min_size(
-            egui::pos2(
-                rect.left() + pad + index as f32 * segment.x,
-                rect.top() + pad,
-            ),
-            segment,
+            egui::pos2(left, rect.top() + pad),
+            vec2(widths[index], segment.y),
         );
+        left += widths[index];
         let (name, icon, text) = match part {
             Segment::Icon(icon, name) => (*name, Some(*icon), None),
             Segment::Text(text) => (*text, None, Some(*text)),
@@ -984,31 +1088,27 @@ pub fn segmented(
             clicked = Some(index);
         }
         let active = index == selected;
+        if look.terminal && index > 0 {
+            vline(ui, cell.left(), cell.y_range(), palette.outline);
+        }
         if active {
             if look.terminal {
-                painter.rect_filled(cell.shrink(1.0), CornerRadius::ZERO, palette.selection);
+                painter.rect_filled(cell, CornerRadius::ZERO, palette.selection);
             } else {
+                let corner = CornerRadius::same(look.radius.saturating_sub(4));
                 painter.add(
                     egui::epaint::Shadow {
                         offset: [0, 1],
                         blur: 2,
                         spread: 0,
-                        color: Color32::from_black_alpha(26),
+                        color: Color32::from_black_alpha(31),
                     }
-                    .as_shape(cell, CornerRadius::same(look.radius.saturating_sub(3))),
+                    .as_shape(cell, corner),
                 );
-                painter.rect_filled(
-                    cell,
-                    CornerRadius::same(look.radius.saturating_sub(3)),
-                    palette.window,
-                );
+                painter.rect_filled(cell, corner, palette.window);
             }
         } else if response.hovered() && look.terminal {
-            painter.rect_filled(
-                cell.shrink(1.0),
-                CornerRadius::ZERO,
-                palette.text.gamma_multiply(0.08),
-            );
+            painter.rect_filled(cell, CornerRadius::ZERO, palette.text.gamma_multiply(0.08));
         }
         let color = match (active, look.terminal) {
             (true, true) => palette.accent,
@@ -1016,23 +1116,21 @@ pub fn segmented(
             _ => palette.dim,
         };
         if let Some(icon) = icon {
-            icon.image(color, 14.0)
-                .paint_at(ui, Rect::from_center_size(cell.center(), vec2(14.0, 14.0)));
+            icon.image(color, 13.0)
+                .paint_at(ui, Rect::from_center_size(cell.center(), vec2(13.0, 13.0)));
         }
         if let Some(text) = text {
-            let font = crate::theme::regular(crate::theme::TEXT);
             painter.text(
                 cell.center(),
                 egui::Align2::CENTER_CENTER,
                 text,
-                font,
+                font.clone(),
                 color,
             );
         }
-        if !response.hovered() {
-            continue;
+        if response.hovered() {
+            let _ = response.on_hover_text(name);
         }
-        let _ = response.on_hover_text(name);
     }
     clicked
 }
@@ -1058,6 +1156,17 @@ pub struct ButtonSpec<'a> {
     shortcut: Option<&'a str>,
     kind: ButtonKind,
     reason: Option<&'a str>,
+    /// Space at each side, between the icon and the text, and before the
+    /// shortcut.
+    padding: f32,
+    gap: f32,
+    radius: Option<u8>,
+    /// Medium weight; primary buttons have it unless told otherwise.
+    medium: Option<bool>,
+    /// The terminal's bold.
+    bold: bool,
+    shortcut_size: f32,
+    icon_size: f32,
 }
 
 impl<'a> ButtonSpec<'a> {
@@ -1070,7 +1179,55 @@ impl<'a> ButtonSpec<'a> {
             shortcut: None,
             kind: ButtonKind::Secondary,
             reason: None,
+            padding: 12.0,
+            gap: 6.0,
+            radius: None,
+            medium: None,
+            bold: false,
+            shortcut_size: crate::theme::TEXT_CAPTION,
+            icon_size: 14.0,
         }
+    }
+
+    /// The icon's size (14 by default).
+    pub fn icon_size(mut self, size: f32) -> Self {
+        self.icon_size = size;
+        self
+    }
+
+    /// The shortcut's text size (11 by default).
+    pub fn shortcut_size(mut self, size: f32) -> Self {
+        self.shortcut_size = size;
+        self
+    }
+
+    /// Space at each side of the contents.
+    pub fn padding(mut self, padding: f32) -> Self {
+        self.padding = padding;
+        self
+    }
+
+    /// Space between the icon, the text and the shortcut.
+    pub fn gap(mut self, gap: f32) -> Self {
+        self.gap = gap;
+        self
+    }
+
+    pub fn radius(mut self, radius: u8) -> Self {
+        self.radius = Some(radius);
+        self
+    }
+
+    /// Draws the text in the medium weight (or not).
+    pub fn medium(mut self, medium: bool) -> Self {
+        self.medium = Some(medium);
+        self
+    }
+
+    /// Draws the text bold (the terminal's primary button).
+    pub fn bold(mut self) -> Self {
+        self.bold = true;
+        self
     }
 
     pub fn icon(mut self, icon: Icon) -> Self {
@@ -1130,11 +1287,18 @@ impl<'a> ButtonSpec<'a> {
     }
 
     fn font(&self) -> egui::FontId {
-        crate::theme::medium(crate::theme::TEXT)
+        let medium = self.medium.unwrap_or(self.kind == ButtonKind::Primary);
+        if self.bold {
+            crate::theme::semibold(crate::theme::TEXT)
+        } else if medium {
+            crate::theme::medium(crate::theme::TEXT)
+        } else {
+            crate::theme::regular(crate::theme::TEXT)
+        }
     }
 
-    fn shortcut_font() -> egui::FontId {
-        crate::theme::regular(crate::theme::TEXT_CAPTION)
+    fn shortcut_font(&self) -> egui::FontId {
+        crate::theme::regular(self.shortcut_size)
     }
 
     /// The button's width.
@@ -1145,12 +1309,12 @@ impl<'a> ButtonSpec<'a> {
                 .size()
                 .x
         };
-        let mut width = 24.0 + measure(self.text, self.font());
+        let mut width = 2.0 * self.padding + measure(self.text, self.font());
         if self.icon.is_some() {
-            width += 20.0;
+            width += self.icon_size + self.gap;
         }
         if let Some(shortcut) = self.shortcut {
-            width += 10.0 + measure(shortcut, Self::shortcut_font());
+            width += self.gap + measure(shortcut, self.shortcut_font());
         }
         width.ceil()
     }
@@ -1174,7 +1338,11 @@ impl<'a> ButtonSpec<'a> {
         response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, enabled, name));
         let hovered = response.hovered() && enabled;
         let pressed = response.is_pointer_button_down_on() && enabled;
-        let corner = CornerRadius::same(look.radius);
+        let corner =
+            CornerRadius::same(
+                self.radius
+                    .unwrap_or(if look.terminal { 3 } else { look.radius }),
+            );
         let hair = hairline(ui);
         let (fill, border, text, shortcut) = match (self.kind, look.terminal) {
             (ButtonKind::Primary, false) => {
@@ -1243,19 +1411,20 @@ impl<'a> ButtonSpec<'a> {
                 StrokeKind::Outside,
             );
         }
-        let content = self.width(ui) - 24.0;
+        let content = self.width(ui) - 2.0 * self.padding;
         let mut x = rect.center().x - content / 2.0;
         let y = rect.center().y;
         if let Some(icon) = self.icon {
-            icon.image(text, 14.0).paint_at(
+            let size = self.icon_size;
+            icon.image(text, size).paint_at(
                 ui,
-                Rect::from_center_size(egui::pos2(x + 7.0, y), vec2(14.0, 14.0)),
+                Rect::from_center_size(egui::pos2(x + size / 2.0, y), vec2(size, size)),
             );
-            x += 20.0;
+            x += size + self.gap;
         }
         x += paint_text(ui, x, y, self.text, self.font(), text);
         if let Some(keys) = self.shortcut {
-            paint_text(ui, x + 10.0, y, keys, Self::shortcut_font(), shortcut);
+            paint_text(ui, x + self.gap, y, keys, self.shortcut_font(), shortcut);
         }
         match self.reason {
             Some(reason) => response.on_hover_text(reason),

@@ -1,9 +1,7 @@
 //! The body of a picker tab: the saved connections, grouped, with search,
 //! New connection, and each connection's actions.
 
-use egui::{
-    Align2, CornerRadius, Rect, Sense, Stroke, StrokeKind, WidgetInfo, WidgetType, pos2, vec2,
-};
+use egui::{CornerRadius, Rect, Sense, Stroke, StrokeKind, WidgetInfo, WidgetType, pos2, vec2};
 
 use crate::app::App;
 use crate::connections::{ConnectionId, SavedConnection};
@@ -12,26 +10,40 @@ use crate::model::{Action, ConnTabContent};
 use crate::theme::{self, Icon, Look, Palette};
 use crate::ui::widgets::{self, ButtonSpec};
 
-/// The header's height, per look.
+/// The header's height, per look (its rule below included).
 fn header_height(look: &Look) -> f32 {
-    if look.terminal { 38.0 } else { 60.0 }
+    if look.terminal { 41.0 } else { 65.0 }
 }
 
-/// The terminal picker's text: a size up from the workspace's, as the
-/// design sets a screen of its own.
-const TERMINAL_TEXT: f32 = 14.0;
+/// The terminal look's filter line under the header (rule included).
+const FILTER_LINE: f32 = 37.0;
 
-/// The terminal look's filter line under the header.
-const FILTER_LINE: f32 = 36.0;
-
-/// A connection row's height, per look.
+/// A connection row's height: macOS 64 and its rule, terminal 52.
 fn row_height(look: &Look) -> f32 {
-    if look.terminal { 50.0 } else { 60.0 }
+    if look.terminal { 52.0 } else { 65.0 }
 }
 
-/// The footer's height, per look.
+/// The footer's height, per look (its rule above included).
 fn footer_height(look: &Look) -> f32 {
-    if look.terminal { 30.0 } else { 33.0 }
+    if look.terminal { 31.0 } else { 37.0 }
+}
+
+/// Space at the sides: macOS 24, terminal 14 (the footer 12).
+fn side(look: &Look) -> f32 {
+    if look.terminal { 14.0 } else { 24.0 }
+}
+
+/// How far below its galley's top a text's baseline sits.
+fn baseline(ui: &egui::Ui, text: &str, font: &egui::FontId) -> (f32, f32) {
+    let galley = ui
+        .painter()
+        .layout_no_wrap(text.to_owned(), font.clone(), egui::Color32::WHITE);
+    let base = galley
+        .rows
+        .first()
+        .and_then(|row| row.glyphs.first())
+        .map_or(galley.size().y * 0.8, |glyph| glyph.pos.y);
+    (base, galley.size().x)
 }
 
 /// Connections under one heading: those sharing a name, then the local
@@ -151,6 +163,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         palette.panel.lerp_to_gamma(palette.surface, 0.64)
     };
     ui.painter().rect_filled(full, CornerRadius::ZERO, backdrop);
+    let side = side(&look);
 
     // Header.
     let header = Rect::from_min_size(full.min, vec2(full.width(), header_height(&look)));
@@ -166,31 +179,30 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     ui.painter()
         .rect_filled(header, CornerRadius::ZERO, header_fill);
     widgets::hline(ui, header.x_range(), header.bottom() - 0.5, palette.outline);
-    let side: f32 = if look.terminal { 13.5 } else { 22.7 };
-    let y = header.center().y;
+    let y = header.top() + (header.height() - 1.0) / 2.0;
     let mut x = header.left() + side.max(inset + 12.0);
     let title = if look.terminal {
         gettext(locale, "connections").into_owned()
     } else {
         gettext(locale, "Connections").into_owned()
     };
-    let title_font = theme::semibold(if look.terminal { 16.5 } else { look.heading });
-    x += widgets::paint_text(ui, x, y, &title, title_font, palette.text) + 10.0;
-    let count_font = if look.terminal {
-        theme::regular(TERMINAL_TEXT)
+    // The title and its count share a baseline, 10 apart (12 in the
+    // terminal, where they sit centred).
+    let title_font = theme::semibold(look.heading);
+    let count_font = theme::regular(theme::TEXT);
+    let (title_base, title_width) = baseline(ui, &title, &title_font);
+    let (count_base, _) = baseline(ui, "0", &count_font);
+    let title_height = ui.fonts_mut(|fonts| fonts.row_height(&title_font));
+    widgets::paint_text(ui, x, y, &title, title_font, palette.text);
+    x += title_width + if look.terminal { 12.0 } else { 10.0 };
+    let count_height = ui.fonts_mut(|fonts| fonts.row_height(&count_font));
+    let count_y = if look.terminal {
+        y
     } else {
-        theme::regular(theme::TEXT_SMALL)
+        y - title_height / 2.0 + title_base - count_base + count_height / 2.0
     };
-    x += widgets::paint_text(
-        ui,
-        x,
-        y + if look.terminal { 0.0 } else { 2.0 },
-        &total.to_string(),
-        count_font,
-        palette.dim,
-    );
-    // The buttons at the right: New connection, then Paste URL (terminal
-    // hint only names the key when it works).
+    x += widgets::paint_text(ui, x, count_y, &total.to_string(), count_font, palette.dim);
+    // New connection, at the right.
     let right = header.right() - side;
     let new_label = if look.terminal {
         "+ new".to_owned()
@@ -198,16 +210,23 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         gettext(locale, "New connection").into_owned()
     };
     let command_n = format!("{}N", look.command_key());
-    let shortcut = if look.terminal {
-        "n"
+    let new = if look.terminal {
+        ButtonSpec::new(&new_label)
+            .primary()
+            .bold()
+            .shortcut("n")
+            .shortcut_size(theme::TEXT)
+            .padding(10.0)
+            .gap(8.0)
     } else {
-        command_n.as_str()
+        ButtonSpec::new(&new_label)
+            .primary()
+            .icon(Icon::Plus)
+            .shortcut(&command_n)
+            .padding(14.0)
+            .gap(8.0)
     };
-    let mut new = ButtonSpec::new(&new_label).primary().shortcut(shortcut);
-    if !look.terminal {
-        new = new.icon(Icon::Plus);
-    }
-    let height = if look.terminal { 22.0 } else { 31.0 };
+    let height = if look.terminal { 26.0 } else { 34.0 };
     let width = new.width(ui);
     let place = Rect::from_min_size(pos2(right - width, y - height / 2.0), vec2(width, height));
     let button = new
@@ -218,69 +237,54 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     }
     // Search.
     if let ConnTabContent::Picker(picker) = &mut app.tabs[index].content {
-        if look.terminal {
-            // The terminal filters on its own line under the header: an
-            // accent slash, then the text.
+        let focus = std::mem::take(&mut picker.focus_search);
+        let (field, style, hint) = if look.terminal {
+            // The terminal filters on its own line under the header.
             let line = Rect::from_min_size(
                 pos2(full.left(), header.bottom()),
                 vec2(full.width(), FILTER_LINE),
             );
             widgets::hline(ui, line.x_range(), line.bottom() - 0.5, palette.outline);
-            let font = theme::regular(TERMINAL_TEXT);
-            widgets::paint_text(
-                ui,
-                line.left() + side,
-                line.center().y,
-                "/",
-                font.clone(),
-                palette.accent,
-            );
-            let row = ui.fonts_mut(|fonts| fonts.row_height(&font));
-            let field = Rect::from_min_max(
-                pos2(line.left() + side + 18.0, line.center().y - row / 2.0),
-                pos2(line.right() - side, line.center().y + row / 2.0),
-            );
-            let focus = std::mem::take(&mut picker.focus_search);
-            let mut child = ui.new_child(egui::UiBuilder::new().max_rect(field));
-            let response = child.add(
-                egui::TextEdit::singleline(&mut picker.search)
-                    .font(font.clone())
-                    .frame(egui::Frame::NONE)
-                    .margin(egui::Margin::ZERO)
-                    .desired_width(field.width())
-                    .hint_text(
-                        egui::RichText::new(gettext(locale, "filter connections"))
-                            .color(palette.dim)
-                            .font(font),
-                    ),
-            );
-            response.widget_info(|| {
-                WidgetInfo::labeled(WidgetType::TextEdit, true, "Search connections")
-            });
-            if focus {
-                response.request_focus();
-            }
-        } else {
-            let field = Rect::from_min_size(pos2(full.left() + 178.7, y - 16.5), vec2(316.0, 33.0));
-            let field = if field.left() < x + 16.0 {
-                field.translate(vec2(x + 16.0 - field.left(), 0.0))
-            } else {
-                field
-            };
-            let field = Rect::from_min_max(
-                field.min,
-                pos2(field.right().min(place.left() - 16.0), field.bottom()),
-            );
-            let mut child = ui.new_child(egui::UiBuilder::new().max_rect(field));
-            widgets::filter_field(
-                &mut child,
-                &mut picker.search,
-                &gettext(locale, "Find connection…"),
-                field.size(),
-                &look,
-                &palette,
+            (
+                Rect::from_min_max(
+                    pos2(line.left() + side - 8.0, line.top()),
+                    pos2(line.right() - side, line.bottom() - 1.0),
+                ),
+                widgets::FieldStyle {
+                    fill: None,
+                    boxed: false,
+                    text_size: theme::TEXT,
+                },
+                gettext(locale, "filter connections"),
             )
+        } else {
+            // 320 wide, 24 past the count (and the header's 12 gap).
+            let left = x + 12.0 + 24.0;
+            let right = (left + 320.0).min(place.left() - 16.0);
+            (
+                Rect::from_min_max(pos2(left, y - 17.0), pos2(right.max(left), y + 17.0)),
+                widgets::FieldStyle {
+                    fill: Some(palette.panel.lerp_to_gamma(palette.surface, 0.36)),
+                    boxed: true,
+                    text_size: theme::TEXT,
+                },
+                gettext(locale, "Find connection…"),
+            )
+        };
+        let mut child = ui.new_child(egui::UiBuilder::new().max_rect(field));
+        let response = widgets::filter_field(
+            &mut child,
+            &mut picker.search,
+            &hint,
+            field.size(),
+            style,
+            &look,
+            &palette,
+        );
+        response
             .widget_info(|| WidgetInfo::labeled(WidgetType::TextEdit, true, "Search connections"));
+        if focus {
+            response.request_focus();
         }
     }
     let (search, selected, folded) = match &app.tabs[index].content {
@@ -300,7 +304,10 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     ui.painter()
         .rect_filled(footer, CornerRadius::ZERO, palette.panel);
     widgets::hline(ui, footer.x_range(), footer.top() + 0.5, palette.outline);
+    let footer_y = footer.top() + 1.0 + (footer.height() - 1.0) / 2.0;
+    let footer_side = if look.terminal { 12.0 } else { side };
     let command = look.command_key();
+    let small = theme::regular(theme::TEXT_SMALL);
     if look.terminal {
         let hints = [
             ("j/k", "move", true),
@@ -311,44 +318,27 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             ("dd", "delete", true),
             ("/", "filter", true),
         ];
-        widgets::key_hints_in(
+        widgets::key_hints(
             ui,
-            footer.left() + side,
-            footer.center().y,
+            footer.left() + footer_side,
+            footer_y,
             &hints,
-            22.0,
-            TERMINAL_TEXT,
+            16.0,
             &palette,
         );
     } else {
-        let edit = format!("{command}E");
-        let duplicate = format!("{command}D");
-        let delete = format!("{command}⌫");
         let hints = [
-            ("↩", "connect", true),
-            (edit.as_str(), "edit", true),
-            (duplicate.as_str(), "duplicate", true),
-            (delete.as_str(), "delete", true),
+            "↩ connect".to_owned(),
+            format!("{command}E edit"),
+            format!("{command}D duplicate"),
+            format!("{command}⌫ delete"),
         ];
-        let mut x = footer.left() + side;
-        let font = theme::regular(theme::TEXT_SMALL);
-        for (key, what, _) in hints {
-            x += widgets::paint_text(ui, x, footer.center().y, key, font.clone(), palette.dim);
-            x += widgets::paint_text(
-                ui,
-                x,
-                footer.center().y,
-                &format!(" {}", gettext(locale, what)),
-                font.clone(),
-                palette.dim,
-            ) + 16.0;
+        let status = palette.secondary.lerp_to_gamma(palette.dim, 0.5);
+        let mut x = footer.left() + footer_side;
+        for hint in hints {
+            x += widgets::paint_text(ui, x, footer_y, &hint, small.clone(), status) + 18.0;
         }
     }
-    let secrets_font = theme::regular(if look.terminal {
-        TERMINAL_TEXT
-    } else {
-        theme::TEXT_SMALL
-    });
     let secrets = if look.terminal {
         "secrets: keyring".to_owned()
     } else if look.faces == theme::Faces::Plex {
@@ -358,11 +348,15 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     };
     widgets::paint_text_right(
         ui,
-        footer.right() - side,
-        footer.center().y,
+        footer.right() - footer_side,
+        footer_y,
         &secrets,
-        secrets_font,
-        palette.dim,
+        small,
+        if look.terminal {
+            palette.dim
+        } else {
+            palette.secondary.lerp_to_gamma(palette.dim, 0.5)
+        },
     );
 
     // The list.
@@ -392,8 +386,12 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             .auto_shrink([false, false])
             .show(&mut list, |ui| {
                 ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
-                ui.add_space(if look.terminal { 9.0 } else { 0.0 });
-                for group in groups(&found) {
+                // macOS: 20 above the groups and between them. Terminal: 8.
+                ui.add_space(if look.terminal { 8.0 } else { 20.0 });
+                for (number, group) in groups(&found).into_iter().enumerate() {
+                    if number > 0 && !look.terminal {
+                        ui.add_space(20.0);
+                    }
                     let open = !folded.contains(&group.title);
                     group_header(ui, &group, open, side, &look, &palette, &mut actions, tab);
                     if !open {
@@ -420,17 +418,22 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                         }
                     } else {
                         let rows = group.connections.len() as f32;
+                        // A card with a 1 pt border round its rows.
                         let card = Rect::from_min_size(
                             pos2(ui.max_rect().left() + side, ui.cursor().top()),
-                            vec2(ui.max_rect().width() - 2.0 * side, rows * row_height(&look)),
+                            vec2(
+                                ui.max_rect().width() - 2.0 * side,
+                                rows * row_height(&look) + 2.0,
+                            ),
                         );
-                        let corner = CornerRadius::same(look.radius);
+                        let corner = CornerRadius::same(10);
                         ui.painter().rect_filled(card, corner, palette.window);
-                        let backdrop_shape = ui.painter().add(egui::Shape::Noop);
+                        let border_shape = ui.painter().add(egui::Shape::Noop);
+                        ui.add_space(1.0);
                         for (index, connection) in group.connections.iter().enumerate() {
                             mac_row(
                                 ui,
-                                card,
+                                card.shrink(1.0),
                                 index,
                                 connection,
                                 &app.connections,
@@ -440,18 +443,19 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                                 &mut actions,
                             );
                         }
+                        ui.add_space(1.0);
                         ui.painter().set(
-                            backdrop_shape,
+                            border_shape,
                             egui::epaint::RectShape::stroke(
                                 card,
                                 corner,
                                 Stroke::new(widgets::hairline(ui), palette.outline),
-                                StrokeKind::Outside,
+                                StrokeKind::Inside,
                             ),
                         );
                     }
                 }
-                ui.add_space(12.0);
+                ui.add_space(20.0);
             });
     }
     app.actions.extend(actions);
@@ -469,38 +473,38 @@ fn group_header(
     actions: &mut Vec<Action>,
     tab: crate::model::ConnTabId,
 ) {
-    let height = if look.terminal { 34.0 } else { 42.0 };
+    // macOS: the heading's line and 8 below it. Terminal: 4 above a 30 pt
+    // row.
+    let height = if look.terminal { 34.0 } else { 16.0 + 8.0 };
     let (rect, response) =
         ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::click());
     response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, &group.title));
-    let y = rect.center().y + if look.terminal { 0.0 } else { 3.0 };
-    let x = rect.left() + side;
     if look.terminal {
+        let y = rect.top() + 4.0 + 15.0;
+        let x = rect.left() + side;
         let glyph = if open { "▾" } else { "▸" };
-        ui.painter().text(
-            pos2(x + 3.0, y),
-            Align2::CENTER_CENTER,
-            glyph,
-            theme::regular(theme::TEXT_SMALL),
-            palette.dim,
-        );
-        let width = widgets::paint_text(
+        let mut left = x;
+        left +=
+            widgets::paint_text(ui, left, y, glyph, theme::regular(theme::TEXT), palette.dim) + 6.0;
+        left += widgets::paint_text(
             ui,
-            x + 13.0,
+            left,
             y,
             &group.title,
-            theme::semibold(TERMINAL_TEXT),
+            theme::semibold(theme::TEXT),
             palette.text,
-        );
+        ) + 6.0;
         widgets::paint_text(
             ui,
-            x + 13.0 + width + 6.0,
+            left,
             y,
             &group.connections.len().to_string(),
-            theme::regular(TERMINAL_TEXT),
+            theme::regular(theme::TEXT),
             palette.dim,
         );
     } else {
+        let y = rect.top() + 8.0;
+        let x = rect.left() + side + 4.0;
         let icon = if open {
             Icon::ChevronDown
         } else {
@@ -508,20 +512,22 @@ fn group_header(
         };
         icon.image(palette.dim, 12.0).paint_at(
             ui,
-            Rect::from_center_size(pos2(x + 8.0, y), vec2(12.0, 12.0)),
+            Rect::from_center_size(pos2(x + 6.0, y), vec2(12.0, 12.0)),
         );
-        let width = widgets::paint_job(
-            ui,
-            x + 22.0,
-            y,
-            widgets::section_label(&group.title, look, palette),
+        let size = theme::TEXT_SMALL;
+        let job = widgets::styled(
+            &group.title.to_uppercase(),
+            theme::semibold(size),
+            palette.secondary,
+            0.06 * size,
         );
+        let width = widgets::paint_job(ui, x + 20.0, y, job);
         widgets::paint_text(
             ui,
-            x + 22.0 + width + 9.0,
+            x + 20.0 + width + 8.0,
             y,
             &group.connections.len().to_string(),
-            theme::regular(theme::TEXT_SMALL),
+            theme::regular(size),
             palette.dim,
         );
     }
@@ -636,11 +642,13 @@ fn mac_row(
     let response = row_response(ui, rect, connection, tab, actions);
     let is_selected = selected == Some(&connection.id);
     let rows = (card.height() / height).round() as usize;
+    // The card's inner corners: its 10 less its border.
+    let round = |on: bool| if on { 9 } else { 0 };
     let corner = CornerRadius {
-        nw: if index == 0 { look.radius } else { 0 },
-        sw: if index + 1 == rows { look.radius } else { 0 },
-        ne: if index == 0 { look.radius } else { 0 },
-        se: if index + 1 == rows { look.radius } else { 0 },
+        nw: round(index == 0),
+        ne: round(index == 0),
+        sw: round(index + 1 == rows),
+        se: round(index + 1 == rows),
     };
     if is_selected {
         ui.painter().rect_filled(
@@ -651,12 +659,13 @@ fn mac_row(
     } else if response.hovered() {
         ui.painter().rect_filled(rect, corner, palette.panel);
     }
-    if index > 0 {
-        widgets::hline(ui, rect.x_range(), rect.top(), palette.surface_hover);
+    // Each row's rule under it, the grid's lightest line.
+    if index + 1 < rows {
+        widgets::hline(ui, rect.x_range(), rect.bottom() - 0.5, palette.surface);
     }
     let env = connection.color.environment();
     let colors = theme::env_colors(env, palette);
-    let bar = Rect::from_min_size(rect.min, vec2(4.0, rect.height()));
+    let bar = Rect::from_min_size(rect.min, vec2(6.0, rect.height()));
     ui.painter().rect_filled(
         bar,
         CornerRadius {
@@ -667,18 +676,26 @@ fn mac_row(
         },
         colors.color,
     );
-    let top = rect.top() + 20.7;
-    let bottom = rect.top() + 38.7;
-    let x = rect.left() + 20.6;
+    // Two lines 3 apart, centred in the 64 pt row.
+    let top = rect.top() + 22.7;
+    let bottom = rect.top() + 42.0;
+    // The columns: a 6 pt bar, 300 for the name, the host taking the rest,
+    // 150 for TLS and SSH, 190 for last use, 110 of room, 250 of actions.
+    let fixed = 6.0 + 300.0 + 150.0 + 190.0 + 110.0 + 250.0;
+    let host_width = (rect.width() - fixed).max(120.0);
+    let name_x = rect.left() + 6.0 + 16.0;
+    let host_x = rect.left() + 306.0 + 12.0;
+    let security_x = rect.left() + 306.0 + host_width + 12.0;
+    let used_x = rect.left() + 306.0 + host_width + 150.0 + 12.0;
     let name_width = widgets::paint_text(
         ui,
-        x,
+        name_x,
         top,
         &connection.name,
         theme::semibold(theme::TEXT),
         palette.text,
     );
-    super::workspace::env_badge(ui, x + name_width + 8.0, top, env, &colors, false);
+    super::workspace::env_badge(ui, name_x + name_width + 8.0, top, env, &colors, false);
     let user = &connection.spec.user;
     let second = if user.is_empty() {
         connection.spec.driver.label().to_owned()
@@ -687,39 +704,36 @@ fn mac_row(
     };
     widgets::paint_label(
         ui,
-        x,
+        name_x,
         bottom,
         &second,
         theme::regular(theme::TEXT_SMALL),
         palette.dim,
     );
-    let width = card.width();
-    let host_x = card.left() + width * 0.2287;
     let (host, database) = target(connection);
-    widgets::paint_label(
-        ui,
-        host_x,
-        top,
-        &host,
-        theme::mono(theme::TEXT),
-        palette.text,
-    );
+    let host_font = theme::mono(12.5);
+    let shown = crate::ui::grid::ellipsize(&host, host_width - 24.0, false, |text| {
+        ui.painter()
+            .layout_no_wrap(text.to_owned(), host_font.clone(), palette.text)
+            .size()
+            .x
+    });
+    widgets::paint_label(ui, host_x, top, &shown, host_font, palette.text);
     if !database.is_empty() {
         widgets::paint_label(
             ui,
             host_x,
             bottom,
             &database,
-            theme::mono(theme::TEXT),
+            theme::mono(theme::TEXT_SMALL),
             palette.dim,
         );
     }
-    let security_x = card.left() + width * 0.505;
     let (tls, verified) = tls_label(connection);
     let tls_color = match verified {
         Some(true) => palette.success,
         Some(false) => palette.warning,
-        None => palette.secondary,
+        None => palette.dim,
     };
     Icon::Lock.image(tls_color, 11.0).paint_at(
         ui,
@@ -727,7 +741,7 @@ fn mac_row(
     );
     widgets::paint_label(
         ui,
-        security_x + 15.0,
+        security_x + 16.0,
         top,
         &tls,
         theme::regular(theme::TEXT_SMALL),
@@ -739,9 +753,8 @@ fn mac_row(
         bottom,
         &ssh_label(connection),
         theme::regular(theme::TEXT_SMALL),
-        palette.secondary,
+        palette.dim,
     );
-    let used_x = card.left() + width * 0.6128;
     let when = crate::connections::when(store.last_used(&connection.id), now);
     widgets::paint_label(
         ui,
@@ -749,7 +762,7 @@ fn mac_row(
         rect.center().y,
         &format!("{} {when}", gettext(locale, "Last used")),
         theme::regular(theme::TEXT_SMALL),
-        palette.secondary,
+        palette.dim,
     );
     // Edit, more, and Connect: on the selected row and under the pointer.
     // Connect is always there for keyboards and screen readers.
@@ -757,14 +770,17 @@ fn mac_row(
     let y = rect.center().y;
     let connect_label = format!("{} {}", gettext(locale, "Connect to"), connection.name);
     let connect_text = gettext(locale, "Connect");
+    // 16 in from the right, 6 apart, 30 tall.
     let connect = ButtonSpec::new(&connect_text)
         .primary()
         .label(&connect_label)
-        .salt(&connection.id.0);
+        .salt(&connection.id.0)
+        .padding(14.0)
+        .radius(7);
     let width = connect.width(ui);
     let place = Rect::from_min_size(
-        pos2(rect.right() - 23.0 - width, y - 14.5),
-        vec2(width, 29.0),
+        pos2(rect.right() - 16.0 - width, y - 15.0),
+        vec2(width, 30.0),
     );
     let response = if shown {
         connect.show_at(ui, place, look, palette)
@@ -778,16 +794,17 @@ fn mac_row(
         });
     }
     let more_place =
-        Rect::from_min_size(pos2(place.left() - 8.0 - 27.0, y - 14.5), vec2(27.0, 29.0));
+        Rect::from_min_size(pos2(place.left() - 6.0 - 30.0, y - 15.0), vec2(30.0, 30.0));
     let edit_label = format!("{} {}", gettext(locale, "Edit"), connection.name);
     let edit_text = gettext(locale, "Edit");
     let edit = ButtonSpec::new(&edit_text)
         .label(&edit_label)
-        .salt(&connection.id.0);
+        .salt(&connection.id.0)
+        .radius(7);
     let edit_width = edit.width(ui);
     let edit_place = Rect::from_min_size(
-        pos2(more_place.left() - 8.0 - edit_width, y - 14.5),
-        vec2(edit_width, 29.0),
+        pos2(more_place.left() - 6.0 - edit_width, y - 15.0),
+        vec2(edit_width, 30.0),
     );
     let response = if shown {
         edit.show_at(ui, edit_place, look, palette)
@@ -802,9 +819,13 @@ fn mac_row(
         gettext(locale, "More actions for"),
         connection.name
     );
-    let more = ButtonSpec::new("⋯")
+    let more = ButtonSpec::new("")
+        .icon(Icon::Ellipsis)
+        .gap(0.0)
+        .padding(8.0)
         .label(&more_label)
-        .salt(&connection.id.0);
+        .salt(&connection.id.0)
+        .radius(7);
     let response = if shown {
         more.show_at(ui, more_place, look, palette)
     } else {
@@ -849,30 +870,37 @@ fn terminal_row(
         ui.allocate_exact_size(vec2(ui.available_width(), row_height(look)), Sense::hover());
     let response = row_response(ui, rect, connection, tab, actions);
     let is_selected = selected == Some(&connection.id);
+    let center = rect.center().y;
     if is_selected {
         ui.painter()
             .rect_filled(rect, CornerRadius::ZERO, palette.selection);
-        let marker =
-            Rect::from_center_size(pos2(rect.left() + 9.0, rect.center().y), vec2(3.0, 14.0));
-        ui.painter()
-            .rect_filled(marker, CornerRadius::ZERO, palette.accent);
+        // The cursor: an accent block centred in the 22 pt first column.
+        ui.painter().text(
+            pos2(rect.left() + 11.0, center),
+            egui::Align2::CENTER_CENTER,
+            "▌",
+            theme::semibold(theme::TEXT),
+            palette.accent,
+        );
     } else if response.hovered() {
         ui.painter()
             .rect_filled(rect, CornerRadius::ZERO, palette.text.gamma_multiply(0.05));
     }
+    // Columns: 22 for the cursor, 110 for the badge, the rest for the
+    // name and its line, 96 for last use (14 in from the right).
     let env = connection.color.environment();
     let colors = theme::env_colors(env, palette);
-    let x = rect.left() + side + 7.0;
-    super::workspace::env_badge_in(ui, x, rect.center().y, env, &colors, 13.0);
-    let text_x = rect.left() + side + 112.5;
-    let top = rect.center().y - 9.5;
-    let bottom = rect.center().y + 9.5;
+    super::workspace::env_badge_plain(ui, rect.left() + 22.0, center, env, &colors);
+    let text_x = rect.left() + 22.0 + 110.0;
+    // A 13 pt name and a 12 pt line, 3 apart, centred.
+    let top = center - 9.8;
+    let bottom = center + 9.8;
     widgets::paint_text(
         ui,
         text_x,
         top,
         &connection.name,
-        theme::semibold(TERMINAL_TEXT),
+        theme::semibold(theme::TEXT),
         palette.text,
     );
     let spec = &connection.spec;
@@ -880,7 +908,7 @@ fn terminal_row(
     if let Some(at) = line.find(" via ") {
         line.truncate(at);
     }
-    let small = theme::regular(TERMINAL_TEXT);
+    let small = theme::regular(theme::TEXT_SMALL);
     let mut x =
         text_x + widgets::paint_label(ui, text_x, bottom, &line, small.clone(), palette.dim);
     let (tls, verified) = tls_label(connection);
@@ -903,14 +931,7 @@ fn terminal_row(
     x += widgets::paint_text(ui, x, bottom, " · ", small.clone(), palette.dim);
     widgets::paint_text(ui, x, bottom, &ssh, small.clone(), palette.dim);
     let when = crate::connections::when(store.last_used(&connection.id), now).to_lowercase();
-    widgets::paint_text_right(
-        ui,
-        rect.right() - side,
-        rect.center().y,
-        &when,
-        small,
-        palette.dim,
-    );
+    widgets::paint_text_right(ui, rect.right() - side, center, &when, small, palette.dim);
     // Connect, for screen readers and the tests; the keys do it here.
     let connect = format!("{} {}", gettext(locale, "Connect to"), connection.name);
     let hit = Rect::from_min_size(pos2(rect.right() - side - 1.0, rect.top()), vec2(1.0, 1.0));

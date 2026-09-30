@@ -40,20 +40,6 @@ const MEDIUM: &str = "inter-medium";
 const SEMIBOLD: &str = "inter-semibold";
 const BOLD: &str = "inter-bold";
 
-/// egui draws IBM Plex larger than browsers do at the same size; these
-/// bring it back to the design's measure.
-#[cfg(any(target_os = "macos", test, feature = "shots"))]
-const PLEX_SANS_SCALE: f32 = 0.887;
-#[cfg(any(target_os = "macos", test, feature = "shots"))]
-const PLEX_MONO_SCALE: f32 = 0.92;
-
-/// `data` drawn at `scale` of its size.
-#[cfg(any(target_os = "macos", test, feature = "shots"))]
-fn scaled(mut data: FontData, scale: f32) -> Arc<FontData> {
-    data.tweak.scale = scale;
-    Arc::new(data)
-}
-
 /// A variable face at `weight`.
 #[cfg(any(target_os = "linux", test, feature = "shots"))]
 fn weighted(bytes: &'static [u8], weight: f32) -> Arc<FontData> {
@@ -107,9 +93,7 @@ fn plex(fonts: &mut FontDefinitions) {
     ] {
         let mut data = FontData::from_static(PLEX_SANS);
         data.tweak.coords = VariationCoords::new([(b"wght", weight)]);
-        fonts
-            .font_data
-            .insert(name.to_owned(), scaled(data, PLEX_SANS_SCALE));
+        fonts.font_data.insert(name.to_owned(), Arc::new(data));
     }
     lead(fonts, FontFamily::Proportional, "plex-sans");
     lead(fonts, FontFamily::Name(MEDIUM.into()), "plex-sans-medium");
@@ -122,12 +106,12 @@ fn plex(fonts: &mut FontDefinitions) {
     lead(fonts, FontFamily::Name(BOLD.into()), "plex-sans-semibold");
     fonts.font_data.insert(
         "plex-mono".into(),
-        scaled(FontData::from_static(PLEX_MONO), PLEX_MONO_SCALE),
+        Arc::new(FontData::from_static(PLEX_MONO)),
     );
     lead(fonts, FontFamily::Monospace, "plex-mono");
     fonts.font_data.insert(
         "plex-mono-medium".into(),
-        scaled(FontData::from_static(PLEX_MONO_MEDIUM), PLEX_MONO_SCALE),
+        Arc::new(FontData::from_static(PLEX_MONO_MEDIUM)),
     );
     let fallbacks = tail(fonts, &FontFamily::Monospace);
     for family in [MONO_MEDIUM, MONO_BOLD] {
@@ -165,11 +149,6 @@ fn bundled_terminal_faces() -> Option<[Arc<FontData>; 3]> {
     None
 }
 
-/// The terminal face's scale: egui draws a monospace face larger than a
-/// terminal or browser does at the same size, and the design sets it a
-/// little tighter still.
-const TERMINAL_SCALE: f32 = 0.82;
-
 /// Omarchy: one monospace face for the interface and the data alike.
 fn terminal(fonts: &mut FontDefinitions, desktop: bool) {
     let faces = desktop
@@ -184,9 +163,7 @@ fn terminal(fonts: &mut FontDefinitions, desktop: bool) {
         ("terminal-medium", medium),
         ("terminal-bold", bold),
     ] {
-        let mut data = Arc::unwrap_or_clone(data);
-        data.tweak.scale = TERMINAL_SCALE;
-        fonts.font_data.insert(name.to_owned(), Arc::new(data));
+        fonts.font_data.insert(name.to_owned(), data);
     }
     lead(fonts, FontFamily::Monospace, "terminal");
     lead(fonts, FontFamily::Proportional, "terminal");

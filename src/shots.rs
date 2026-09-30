@@ -347,11 +347,16 @@ mod mock {
     use super::*;
 
     /// The macOS mockups: 2000 x 1250 pixels.
-    const MAC: egui::Vec2 = egui::vec2(2000.0 / 1.5, 1250.0 / 1.5);
-    /// The Omarchy workspace mockup's window, inside the tiling border.
-    const OMARCHY: egui::Vec2 = egui::vec2(1974.0 / 1.5, 1098.0 / 1.5);
-    /// The Omarchy picker mockup's window, drawn at 2x.
-    const OMARCHY_PICKER: egui::Vec2 = egui::vec2(1798.0 / 2.0, 1952.0 / 2.0);
+    const MAC: egui::Vec2 = egui::vec2(1440.0, 900.0);
+    /// The macOS exports: 2000 pixels for the 1440 pt artboard.
+    const MAC_SCALE: f32 = 2000.0 / 1440.0;
+    /// The Omarchy workspace artboard's window: 1920 x 1080 less the 10 pt
+    /// wallpaper margin and the 2 pt tiling border.
+    const OMARCHY: egui::Vec2 = egui::vec2(1896.0, 1056.0);
+    const OMARCHY_SCALE: f32 = 2000.0 / 1920.0;
+    /// The Omarchy connections artboard's window: 960 x 1040 less the same.
+    const OMARCHY_PICKER: egui::Vec2 = egui::vec2(936.0, 1016.0);
+    const OMARCHY_PICKER_SCALE: f32 = 1846.0 / 960.0;
 
     /// Tokyo Night through the Omarchy template, as the mockups draw it.
     pub fn tokyo_night() -> crate::theme::Palette {
@@ -370,7 +375,13 @@ mod mock {
     }
 
     fn harness(size: egui::Vec2, look: crate::theme::Look) -> Harness {
-        let scale = if size == OMARCHY_PICKER { 2.0 } else { 1.5 };
+        let scale = if size == OMARCHY_PICKER {
+            OMARCHY_PICKER_SCALE
+        } else if size == OMARCHY {
+            OMARCHY_SCALE
+        } else {
+            MAC_SCALE
+        };
         let light = look == crate::theme::Look::macos();
         let mut harness = Harness::for_shots(size, scale, light, look);
         if !light {

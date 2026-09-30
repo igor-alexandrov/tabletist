@@ -10,13 +10,24 @@ use crate::ui::widgets::{self, icon_button};
 
 /// The strip's height, per look.
 pub fn height(look: &Look) -> f32 {
-    if look.terminal { 23.0 } else { 34.0 }
+    // 36 (macOS) or 32 (terminal), and the rule under the strip.
+    if look.terminal { 33.0 } else { 37.0 }
 }
 
-/// A macOS tab's width for a title `text` points wide.
-fn mac_width(text: f32) -> f32 {
-    (text + 97.0).clamp(138.0, 240.0)
+/// A macOS tab's width for a title `text` points wide: 14 in, a 14 pt
+/// icon, 8, the title; the active tab adds 8, its 22 pt close button and 6
+/// (at least 180), the others 14 (at least 150).
+fn mac_width(text: f32, active: bool) -> f32 {
+    let base = 14.0 + 14.0 + 8.0 + text;
+    if active {
+        (base + 8.0 + 22.0 + 6.0).max(180.0)
+    } else {
+        (base + 14.0).max(150.0)
+    }
 }
+
+/// The terminal's toggle cells at each end of the strip.
+const TOGGLE_CELL: f32 = 40.0;
 
 pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
     let locale = app.locale;
@@ -47,16 +58,23 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
         .show_separator_line(false)
         .frame(Frame::new().fill(fill))
         .show(ui, |ui| {
-            let bar = ui.max_rect();
-            widgets::hline(ui, bar.x_range(), bar.bottom() - 0.5, palette.outline);
+            let full = ui.max_rect();
+            let rule = if look.terminal {
+                palette.outline
+            } else {
+                palette.border
+            };
+            widgets::hline(ui, full.x_range(), full.bottom() - 0.5, rule);
+            // The tabs stand on the rule, above it.
+            let bar = Rect::from_min_max(full.min, pos2(full.right(), full.bottom() - 1.0));
             ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
             ui.horizontal(|ui| {
                 if look.terminal {
                     let (cell, _) =
-                        ui.allocate_exact_size(vec2(27.0, bar.height()), Sense::hover());
+                        ui.allocate_exact_size(vec2(TOGGLE_CELL, bar.height()), Sense::hover());
                     let mut child = ui.new_child(
                         egui::UiBuilder::new()
-                            .max_rect(Rect::from_center_size(cell.center(), vec2(24.0, 22.0))),
+                            .max_rect(Rect::from_center_size(cell.center(), vec2(24.0, 24.0))),
                     );
                     if icon_button(
                         &mut child,
@@ -124,10 +142,10 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                                 {
                                     let close_rect = Rect::from_center_size(
                                         pos2(
-                                            response.rect.right() - 15.0,
+                                            response.rect.right() - 17.0,
                                             response.rect.center().y,
                                         ),
-                                        vec2(20.0, 20.0),
+                                        vec2(22.0, 22.0),
                                     );
                                     let mut close_ui =
                                         ui.new_child(egui::UiBuilder::new().max_rect(close_rect));
@@ -145,14 +163,13 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                     });
             });
             if look.terminal {
-                let cell = Rect::from_min_max(pos2(bar.right() - 27.0, bar.top()), bar.max);
+                let cell = Rect::from_min_max(pos2(bar.right() - TOGGLE_CELL, bar.top()), bar.max);
                 ui.painter()
                     .rect_filled(cell, CornerRadius::ZERO, palette.panel);
                 widgets::vline(ui, cell.left() + 0.5, bar.y_range(), palette.outline);
-                widgets::hline(ui, cell.x_range(), bar.bottom() - 0.5, palette.outline);
                 let mut child = ui.new_child(
                     egui::UiBuilder::new()
-                        .max_rect(Rect::from_center_size(cell.center(), vec2(24.0, 22.0))),
+                        .max_rect(Rect::from_center_size(cell.center(), vec2(24.0, 24.0))),
                 );
                 let tint = if row_panel {
                     palette.accent
@@ -207,32 +224,32 @@ fn mac_tab(
     };
     let job = widgets::styled(tab.name, font, color, 0.0);
     let galley = ui.painter().layout_job(job);
-    let width = mac_width(galley.size().x);
+    let width = mac_width(galley.size().x, tab.active);
     let (rect, response) = ui.allocate_exact_size(vec2(width, bar.height()), Sense::click());
     let painter = ui.painter();
     if tab.active {
-        painter.rect_filled(rect, CornerRadius::ZERO, palette.window);
+        // White down to the content, over the strip's rule.
+        let face = Rect::from_min_max(rect.min, pos2(rect.right(), rect.bottom() + 1.0));
+        painter.rect_filled(face, CornerRadius::ZERO, palette.window);
         let line = Rect::from_min_size(rect.min, vec2(rect.width(), 2.0));
         painter.rect_filled(line, CornerRadius::ZERO, palette.accent);
     } else if response.hovered() {
         painter.rect_filled(rect, CornerRadius::ZERO, palette.surface);
     }
-    if !tab.active {
-        widgets::vline(ui, rect.right() - 0.5, rect.y_range(), palette.border);
-    }
-    let center = rect.center().y + if tab.active { 1.0 } else { 0.0 };
-    let icon_color = if tab.active {
-        palette.secondary
-    } else {
-        palette.dim
-    };
-    Icon::Table.image(icon_color, 15.0).paint_at(
+    widgets::vline(ui, rect.right() - 0.5, rect.y_range(), palette.border);
+    let center = rect.center().y;
+    Icon::Table.image(palette.secondary, 14.0).paint_at(
         ui,
-        Rect::from_center_size(pos2(rect.left() + 21.5, center), vec2(15.0, 15.0)),
+        Rect::from_center_size(pos2(rect.left() + 21.0, center), vec2(14.0, 14.0)),
     );
+    let text_right = if tab.active {
+        rect.right() - 6.0 - 22.0 - 8.0
+    } else {
+        rect.right() - 14.0
+    };
     let text_rect = Rect::from_min_max(
-        pos2(rect.left() + 33.0, rect.top()),
-        pos2(rect.right() - 30.0, rect.bottom()),
+        pos2(rect.left() + 36.0, rect.top()),
+        pos2(text_right, rect.bottom()),
     );
     ui.painter().with_clip_rect(text_rect).galley(
         pos2(text_rect.left(), center - galley.size().y / 2.0),
@@ -246,31 +263,23 @@ fn mac_tab(
 /// The terminal look: a number, then the name; the active tab bold with an
 /// accent line on top.
 fn terminal_tab(ui: &mut egui::Ui, tab: &Tab<'_>, bar: Rect, palette: &Palette) -> egui::Response {
-    let number = format!("{} ", tab.index + 1);
-    let font = if tab.active {
-        theme::semibold(theme::TEXT)
-    } else {
-        theme::regular(theme::TEXT)
+    // 12 in, the number, 8, the name, 12 out. Only the active tab's name
+    // takes the text colour; a preview tab's reads fainter still.
+    let font = theme::regular(theme::TEXT);
+    let number = (tab.index + 1).to_string();
+    let name_color = match (tab.active, tab.pinned) {
+        (true, _) => palette.text,
+        (false, true) => palette.dim,
+        (false, false) => palette.faint,
     };
-    let name_color = if tab.active {
-        palette.text
-    } else if tab.pinned {
-        palette.dim
-    } else {
-        palette.faint
+    let measure = |text: &str| {
+        ui.painter()
+            .layout_no_wrap(text.to_owned(), font.clone(), egui::Color32::WHITE)
+            .size()
+            .x
     };
-    let mut job = widgets::styled(&number, theme::regular(theme::TEXT), palette.dim, 0.0);
-    job.append(
-        tab.name,
-        0.0,
-        egui::TextFormat {
-            font_id: font,
-            color: name_color,
-            ..Default::default()
-        },
-    );
-    let galley = ui.painter().layout_job(job);
-    let width = galley.size().x + 22.0;
+    let (number_width, name_width) = (measure(&number), measure(tab.name));
+    let width = 12.0 + number_width + 8.0 + name_width + 12.0;
     let (rect, response) = ui.allocate_exact_size(vec2(width, bar.height()), Sense::click());
     let painter = ui.painter();
     if tab.active {
@@ -281,13 +290,22 @@ fn terminal_tab(ui: &mut egui::Ui, tab: &Tab<'_>, bar: Rect, palette: &Palette) 
         painter.rect_filled(rect, CornerRadius::ZERO, palette.text.gamma_multiply(0.06));
     }
     widgets::vline(ui, rect.right() - 0.5, rect.y_range(), palette.outline);
-    ui.painter().galley(
-        pos2(
-            rect.left() + 11.0,
-            rect.center().y + 1.0 - galley.size().y / 2.0,
-        ),
-        galley,
-        egui::Color32::PLACEHOLDER,
+    let y = rect.center().y;
+    widgets::paint_text(
+        ui,
+        rect.left() + 12.0,
+        y,
+        &number,
+        font.clone(),
+        palette.dim,
+    );
+    widgets::paint_text(
+        ui,
+        rect.left() + 12.0 + number_width + 8.0,
+        y,
+        tab.name,
+        font,
+        name_color,
     );
     response
 }

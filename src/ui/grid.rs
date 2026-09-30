@@ -16,10 +16,11 @@ use crate::ui::widgets::virtual_rows;
 
 /// The header's height, per look.
 pub fn header_height(look: &crate::theme::Look) -> f32 {
-    if look.terminal { 32.0 } else { 41.0 }
+    // 44 (macOS) or 40 (terminal), and the rule under the header.
+    if look.terminal { 41.0 } else { 45.0 }
 }
-/// The terminal look's gutter, where the selected row's marker sits.
-const GUTTER: f32 = 16.0;
+/// The terminal look's gutter, where the selected row's cursor sits.
+const GUTTER: f32 = 22.0;
 const MIN_WIDTH: f32 = 48.0;
 const MAX_INITIAL_WIDTH: f32 = 331.0;
 /// Space between a cell's edge and its text.
@@ -37,6 +38,8 @@ pub struct Column<'a> {
     pub sort: Option<SortDir>,
     /// Part of the primary key.
     pub key: bool,
+    /// Takes the room left over when every column fits (a document).
+    pub flexible: bool,
 }
 
 /// How a cell draws its text.
@@ -118,11 +121,6 @@ pub fn tag_colors(
     ];
     let color = hues[hue % hues.len()];
     if look.terminal {
-        let color = if hue.is_multiple_of(hues.len()) {
-            palette.warning
-        } else {
-            color
-        };
         (color, None)
     } else {
         (color, Some(palette.window.lerp_to_gamma(color, 0.1)))
@@ -229,7 +227,17 @@ pub fn show<'a>(
         .unwrap_or_else(|| {
             let font = theme::data(look);
             let width = |text: &str| text_width(ui, text, &font);
-            initial_widths(columns, row_count, pad, &width, &mut cell)
+            let mut widths = initial_widths(columns, row_count, pad, &width, &mut cell);
+            // When every column fits, a document column takes what is left,
+            // as the design's `1fr`.
+            let room = ui.available_width() - gutter;
+            let used: f32 = widths.iter().sum();
+            if used < room
+                && let Some(flexible) = columns.iter().position(|column| column.flexible)
+            {
+                widths[flexible] += (room - used).floor();
+            }
+            widths
         });
     let last: Option<CellPos> = ui
         .data(|data| data.get_temp::<Option<CellPos>>(last_id))
@@ -293,15 +301,19 @@ pub fn show<'a>(
                     painter.hline(rect.x_range(), y, Stroke::new(hairline, palette.surface));
                 }
                 if selected_row {
-                    let bar = if look.terminal {
-                        Rect::from_center_size(
-                            pos2(rect.left() + 6.0, rect.center().y),
-                            vec2(3.0, row_height * 0.55),
-                        )
+                    if look.terminal {
+                        // The cursor: a bold accent block in the gutter.
+                        painter.text(
+                            pos2(rect.left() + GUTTER / 2.0, rect.center().y),
+                            Align2::CENTER_CENTER,
+                            "▌",
+                            theme::semibold(theme::TEXT),
+                            palette.accent,
+                        );
                     } else {
-                        Rect::from_min_size(rect.min, vec2(3.0, rect.height()))
-                    };
-                    painter.rect_filled(bar, CornerRadius::ZERO, palette.accent);
+                        let bar = Rect::from_min_size(rect.min, vec2(3.0, rect.height()));
+                        painter.rect_filled(bar, CornerRadius::ZERO, palette.accent);
+                    }
                 }
                 let mut x = rect.left() + gutter;
                 for (col, width) in widths.iter().enumerate() {
@@ -340,7 +352,12 @@ pub fn show<'a>(
             let top = ui.clip_rect().top().max(origin.y);
             let header = Rect::from_min_size(pos2(origin.x, top), vec2(full, header_height));
             let painter = ui.painter().clone();
-            painter.rect_filled(header, CornerRadius::ZERO, palette.panel);
+            let header_fill = if look.terminal {
+                palette.window
+            } else {
+                palette.panel
+            };
+            painter.rect_filled(header, CornerRadius::ZERO, header_fill);
             let y = painter.round_to_pixel_center(header.bottom() - hairline / 2.0);
             painter.hline(header.x_range(), y, Stroke::new(hairline, palette.outline));
             let mut x = origin.x + gutter;
@@ -397,13 +414,15 @@ pub fn show<'a>(
         }
         if hidden > 0 {
             let text = format!("+{hidden}");
-            let font = theme::medium(theme::TEXT_SMALL);
+            let font = theme::regular(theme::TEXT_LABEL);
             let text_width = text_width(ui, &text, &font);
-            let size = vec2(text_width + 30.0, 25.0);
+            // 8 in, the count, 4, a 10 pt chevron, 8; 28 tall, 8 from the
+            // grid's top and right.
+            let size = vec2(8.0 + text_width + 4.0 + 10.0 + 8.0, 28.0);
             let pill = Rect::from_min_size(
                 pos2(
-                    visible.right() - 6.0 - size.x,
-                    scroll.inner_rect.top() + (header_height - size.y) / 2.0,
+                    visible.right() - 8.0 - size.x,
+                    scroll.inner_rect.top() + 8.0,
                 ),
                 size,
             );
@@ -412,19 +431,39 @@ pub fn show<'a>(
                 WidgetInfo::labeled(WidgetType::Button, true, format!("{hidden} more columns"))
             });
             let painter = ui.painter();
-            painter.rect_filled(pill, CornerRadius::same(13), palette.text);
+            // The fade the pill sits on: 56 wide, clear to the window.
+            let fade = Rect::from_min_max(
+                pos2(visible.right() - 56.0, scroll.inner_rect.top()),
+                pos2(visible.right(), scroll.inner_rect.bottom()),
+            );
+            let mut mesh = egui::Mesh::default();
+            let clear = palette.window.gamma_multiply(0.0);
+            let solid_x = fade.left() + fade.width() * 0.4;
+            mesh.colored_vertex(fade.left_top(), clear);
+            mesh.colored_vertex(pos2(solid_x, fade.top()), palette.window);
+            mesh.colored_vertex(pos2(solid_x, fade.bottom()), palette.window);
+            mesh.colored_vertex(fade.left_bottom(), clear);
+            mesh.add_triangle(0, 1, 2);
+            mesh.add_triangle(0, 2, 3);
+            painter.add(mesh);
+            painter.rect_filled(
+                Rect::from_min_max(pos2(solid_x, fade.top()), fade.max),
+                CornerRadius::ZERO,
+                palette.window,
+            );
+            painter.rect_filled(pill, CornerRadius::same(14), palette.text);
             painter.text(
-                pos2(pill.left() + 11.0, pill.center().y),
+                pos2(pill.left() + 8.0, pill.center().y),
                 Align2::LEFT_CENTER,
                 text,
                 font,
                 palette.window,
             );
-            Icon::ChevronRight.image(palette.window, 11.0).paint_at(
+            Icon::ChevronRight.image(palette.window, 10.0).paint_at(
                 ui,
                 Rect::from_center_size(
-                    pos2(pill.right() - 11.0, pill.center().y),
-                    vec2(11.0, 11.0),
+                    pos2(pill.right() - 8.0 - 5.0, pill.center().y),
+                    vec2(10.0, 10.0),
                 ),
             );
             if response.clicked()
@@ -462,13 +501,15 @@ fn draw_header(
     palette: &Palette,
 ) {
     let clip = painter.with_clip_rect(rect.shrink2(vec2(pad / 2.0, 0.0)).intersect(ui.clip_rect()));
-    let (name_y, type_y) = if look.terminal {
-        (rect.top() + 10.5, rect.top() + 23.0)
-    } else {
-        (rect.top() + 14.5, rect.top() + 28.5)
-    };
-    // Sorted columns, and in the terminal the key, name themselves in the
-    // accent.
+    // The name over its type line, the pair centred above the rule.
+    let name_font = theme::semibold(theme::TEXT);
+    let type_font = theme::regular(theme::TEXT_CAPTION);
+    let (name_line, type_line) =
+        ui.fonts_mut(|fonts| (fonts.row_height(&name_font), fonts.row_height(&type_font)));
+    let top = rect.top() + (rect.height() - 1.0 - name_line - type_line) / 2.0;
+    let (name_y, type_y) = (top + name_line / 2.0, top + name_line + type_line / 2.0);
+    // Sorted columns name themselves in the accent; the terminal marks the
+    // key in yellow.
     let name_color = if column.sort.is_some() {
         if look.terminal {
             palette.accent
@@ -476,15 +517,24 @@ fn draw_header(
             palette.accent_hover
         }
     } else if column.key && look.terminal {
-        palette.accent
+        palette.warning
     } else {
         palette.text
     };
-    let name_font = theme::semibold(theme::TEXT);
-    let type_font = theme::regular(theme::TEXT_CAPTION);
-    let name_width = text_width(ui, column.name, &name_font);
+    // The terminal writes the sort's arrow after the name.
+    let arrow_text = match (column.sort, look.terminal) {
+        (Some(SortDir::Asc), true) => format!("{} ↑", column.name),
+        (Some(SortDir::Desc), true) => format!("{} ↓", column.name),
+        _ => column.name.to_owned(),
+    };
+    let name_width = text_width(ui, &arrow_text, &name_font);
     let type_width = text_width(ui, &column.type_line, &type_font);
-    let arrow = if column.sort.is_some() { 14.0 } else { 0.0 };
+    // macOS: the key icon 4 before the name, the arrow 4 after it.
+    let arrow = if column.sort.is_some() && !look.terminal {
+        15.0
+    } else {
+        0.0
+    };
     let key = if column.key && !look.terminal {
         15.0
     } else {
@@ -513,11 +563,11 @@ fn draw_header(
     clip.text(
         pos2(name_x, name_y),
         Align2::LEFT_CENTER,
-        column.name,
+        &arrow_text,
         name_font,
         name_color,
     );
-    if let Some(dir) = column.sort {
+    if let Some(dir) = column.sort.filter(|_| !look.terminal) {
         let icon = if dir == SortDir::Asc {
             Icon::ArrowUp
         } else {
@@ -525,7 +575,7 @@ fn draw_header(
         };
         icon.image(name_color, 11.0).paint_at(
             ui,
-            Rect::from_center_size(pos2(name_x + name_width + 8.5, name_y), vec2(11.0, 11.0)),
+            Rect::from_center_size(pos2(name_x + name_width + 9.5, name_y), vec2(11.0, 11.0)),
         );
     }
     clip.text(
@@ -565,21 +615,29 @@ fn draw_cell(
     match content.style {
         Style::Tag(hue) => {
             let (color, fill) = tag_colors(hue, look, palette);
+            // macOS: a chip in Plex Mono 11.5, 2 above and below, 6 at the
+            // sides. Terminal: the text alone, in the tag's colour.
+            let tag_font = if look.terminal {
+                font.clone()
+            } else {
+                theme::mono(theme::TEXT_LABEL)
+            };
             let shown = ellipsize(&content.text, room - 12.0, false, |text| {
-                text_width(ui, text, &font)
+                text_width(ui, text, &tag_font)
             });
-            let width = text_width(ui, &shown, &font);
+            let width = text_width(ui, &shown, &tag_font);
             if let Some(fill) = fill {
+                let height = ui.fonts_mut(|fonts| fonts.row_height(&tag_font)) + 4.0;
                 let chip = Rect::from_min_size(
-                    pos2(rect.left() + pad, center - 10.0),
-                    vec2(width + 12.0, 20.0),
+                    pos2(rect.left() + pad, center - height / 2.0),
+                    vec2(width + 12.0, height),
                 );
                 clip.rect_filled(chip, CornerRadius::same(4), fill);
                 clip.text(
                     pos2(chip.left() + 6.0, center),
                     Align2::LEFT_CENTER,
                     shown,
-                    font,
+                    tag_font,
                     color,
                 );
             } else {
@@ -596,7 +654,7 @@ fn draw_cell(
             let mut left = rect.left() + pad;
             if look.terminal {
                 let mark = "{…}";
-                left += text_width(ui, mark, &font) + 8.0;
+                left += text_width(ui, "{…} ", &font);
                 clip.text(
                     pos2(rect.left() + pad, center),
                     Align2::LEFT_CENTER,
@@ -605,10 +663,13 @@ fn draw_cell(
                     palette.text,
                 );
             } else {
-                let chip_font = theme::mono(theme::TEXT_LABEL);
+                // Plex Mono 11, 1 above and below, 5 at the sides.
+                let chip_font = theme::mono(theme::TEXT_CAPTION);
                 let label = format!("{{ {count} }}");
-                let width = text_width(ui, &label, &chip_font) + 12.0;
-                let chip = Rect::from_min_size(pos2(left, center - 10.0), vec2(width, 20.0));
+                let width = text_width(ui, &label, &chip_font) + 10.0 + 2.0;
+                let height = ui.fonts_mut(|fonts| fonts.row_height(&chip_font)) + 2.0 + 2.0;
+                let chip =
+                    Rect::from_min_size(pos2(left, center - height / 2.0), vec2(width, height));
                 clip.rect_stroke(
                     chip,
                     CornerRadius::same(4),
@@ -639,13 +700,12 @@ fn draw_cell(
                     text_width(ui, text, &font)
                 }),
             };
-            clip.text(
-                pos2(left, center),
-                Align2::LEFT_CENTER,
-                shown,
-                font,
-                palette.secondary,
-            );
+            let color = if look.terminal {
+                palette.dim
+            } else {
+                palette.secondary
+            };
+            clip.text(pos2(left, center), Align2::LEFT_CENTER, shown, font, color);
         }
         Style::Plain => {
             let numeric = column.numeric;
@@ -657,7 +717,13 @@ fn draw_cell(
             let shown = ellipsize(&content.text, room, numeric, |text| {
                 text_width(ui, text, &font)
             });
-            clip.text(at, anchor, shown, font, palette.text);
+            // A key's values read a step quieter than the data.
+            let color = match (column.key, look.terminal) {
+                (true, true) => palette.dim,
+                (true, false) => palette.secondary,
+                _ => palette.text,
+            };
+            clip.text(at, anchor, shown, font, color);
         }
     }
 }
@@ -698,6 +764,7 @@ mod tests {
                 numeric: true,
                 sort: None,
                 key: true,
+                flexible: false,
             },
             Column {
                 name: "email",
@@ -705,6 +772,7 @@ mod tests {
                 numeric: false,
                 sort: Some(SortDir::Asc),
                 key: false,
+                flexible: false,
             },
         ]
     }

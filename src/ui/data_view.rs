@@ -18,7 +18,12 @@ use crate::ui::widgets;
 
 /// Left and right padding of the header, toolbar and footer.
 fn side(look: &Look) -> f32 {
-    if look.terminal { 11.0 } else { 18.0 }
+    if look.terminal { 16.0 } else { 20.0 }
+}
+
+/// The height of one line of `font`, as CSS's `line-height: normal`.
+fn line(ui: &egui::Ui, font: &egui::FontId) -> f32 {
+    ui.fonts_mut(|fonts| fonts.row_height(font))
 }
 
 /// "13 rows · 6 columns · public", as far as it is known.
@@ -68,7 +73,20 @@ pub fn header(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: Obje
     let view = object.view;
     let subtitle = subtitle(object, &look, locale);
     let mut actions = Vec::new();
-    let height = if look.terminal { 32.0 } else { 62.0 };
+    // macOS: 14 above and 12 below the title and its line, 2 apart.
+    // Terminal: 12 above and 10 below a line holding a 2 pt underline.
+    let title_font = theme::semibold(look.title);
+    let sub_font = theme::regular(if look.terminal {
+        theme::TEXT
+    } else {
+        theme::TEXT_SMALL
+    });
+    let (title_line, sub_line) = (line(ui, &title_font), line(ui, &sub_font));
+    let height = if look.terminal {
+        12.0 + title_line.max(line(ui, &theme::regular(theme::TEXT)) + 6.0) + 10.0 + 1.0
+    } else {
+        14.0 + title_line + 2.0 + sub_line + 12.0 + 1.0
+    };
     egui::Panel::top(Id::new(("object-header", tab.0, object_tab.0)))
         .exact_size(height)
         .resizable(false)
@@ -89,24 +107,11 @@ pub fn header(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: Obje
                 (ObjectView::Structure, gettext(locale, "Structure"), "s"),
             ];
             if look.terminal {
-                let center = rect.center().y;
+                let center = rect.top() + (rect.height() - 1.0 + 2.0) / 2.0;
                 let mut x = left;
-                x += widgets::paint_text(
-                    ui,
-                    x,
-                    center,
-                    &name,
-                    theme::semibold(look.title),
-                    palette.text,
-                ) + 12.0;
-                widgets::paint_text(
-                    ui,
-                    x,
-                    center,
-                    &subtitle,
-                    theme::regular(theme::TEXT_SMALL),
-                    palette.dim,
-                );
+                x += widgets::paint_text(ui, x, center, &name, title_font.clone(), palette.text)
+                    + 16.0;
+                widgets::paint_text(ui, x, center, &subtitle, sub_font.clone(), palette.dim);
                 // `d data  s structure`, the active one underlined.
                 let mut x = right;
                 for (target, label, key) in views.iter().rev() {
@@ -132,18 +137,19 @@ pub fn header(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: Obje
                     } else {
                         palette.dim
                     };
+                    // The key stays muted; the word takes the state's colour.
                     let key_width =
-                        widgets::paint_text(ui, x - width, center, key, font.clone(), color);
+                        widgets::paint_text(ui, x - width, center, key, font.clone(), palette.dim);
                     widgets::paint_text(
                         ui,
                         x - width + key_width,
                         center,
                         &format!(" {label}"),
-                        font,
+                        font.clone(),
                         color,
                     );
                     if selected {
-                        let y = center + 10.0;
+                        let y = center + line(ui, &font) / 2.0 + 2.0;
                         ui.painter().rect_filled(
                             Rect::from_min_max(pos2(x - width, y), pos2(x, y + 2.0)),
                             CornerRadius::ZERO,
@@ -157,25 +163,20 @@ pub fn header(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: Obje
                             view: *target,
                         });
                     }
-                    x -= width + 16.0;
+                    x -= width + 14.0;
                 }
                 return;
             }
-            let title_font = theme::semibold(look.title);
-            let sub_font = theme::regular(theme::TEXT_SMALL);
+            let title_y = rect.top() + 14.0 + title_line / 2.0;
+            let sub_y = rect.top() + 14.0 + title_line + 2.0 + sub_line / 2.0;
+            let center = rect.top() + 14.0 + (title_line + 2.0 + sub_line) / 2.0;
             let title_width =
-                widgets::paint_text(ui, left, rect.top() + 24.0, &name, title_font, palette.text);
-            let sub_width = widgets::paint_text(
-                ui,
-                left,
-                rect.top() + 43.0,
-                &subtitle,
-                sub_font,
-                palette.dim,
-            );
-            // The Data/Structure switch after the title.
-            let mut x = left + title_width.max(sub_width) + 26.0;
-            let track = Rect::from_min_size(pos2(x, rect.center().y - 15.5), vec2(0.0, 31.0));
+                widgets::paint_text(ui, left, title_y, &name, title_font, palette.text);
+            let sub_width = widgets::paint_text(ui, left, sub_y, &subtitle, sub_font, palette.dim);
+            // The Data/Structure switch 16 + 12 after the title: a 3 pt
+            // track round 28 pt segments, 14 at their sides.
+            let mut x = left + title_width.max(sub_width) + 16.0 + 12.0;
+            let track = Rect::from_min_size(pos2(x, center - 17.0), vec2(0.0, 34.0));
             let font = theme::regular(theme::TEXT);
             let widths: Vec<f32> = views
                 .iter()
@@ -184,16 +185,16 @@ pub fn header(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: Obje
                         .layout_no_wrap(label.to_string(), theme::medium(theme::TEXT), palette.text)
                         .size()
                         .x
-                        + 32.0
+                        + 28.0
                 })
                 .collect();
             let track =
-                Rect::from_min_size(track.min, vec2(widths.iter().sum::<f32>() + 6.0, 31.0));
+                Rect::from_min_size(track.min, vec2(widths.iter().sum::<f32>() + 6.0, 34.0));
             ui.painter()
                 .rect_filled(track, CornerRadius::same(look.radius), palette.surface);
             x += 3.0;
             for ((target, label, _), width) in views.iter().zip(widths) {
-                let cell = Rect::from_min_size(pos2(x, track.top() + 3.0), vec2(width, 25.0));
+                let cell = Rect::from_min_size(pos2(x, track.top() + 3.0), vec2(width, 28.0));
                 x += width;
                 let response =
                     ui.interact(cell, ui.id().with(("view", label.as_ref())), Sense::click());
@@ -206,9 +207,9 @@ pub fn header(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: Obje
                     ui.painter().add(
                         egui::epaint::Shadow {
                             offset: [0, 1],
-                            blur: 3,
+                            blur: 2,
                             spread: 0,
-                            color: egui::Color32::from_black_alpha(28),
+                            color: egui::Color32::from_black_alpha(20),
                         }
                         .as_shape(cell, corner),
                     );
@@ -239,12 +240,10 @@ pub fn header(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: Obje
             let reason = gettext(locale, "Editing arrives in a later version");
             let button = widgets::ButtonSpec::new(&label)
                 .icon(Icon::Plus)
+                .medium(true)
                 .disabled(&reason);
             let width = button.width(ui);
-            let place = Rect::from_min_size(
-                pos2(right - width, rect.center().y - 14.0),
-                vec2(width, 28.0),
-            );
+            let place = Rect::from_min_size(pos2(right - width, center - 16.0), vec2(width, 32.0));
             button.show_at(ui, place, &look, &palette);
         });
     app.actions.extend(actions);
@@ -264,78 +263,56 @@ fn sort_chip(
     palette: &Palette,
     locale: crate::i18n::Locale,
 ) -> (Rect, bool) {
-    let arrow = if dir == SortDir::Asc {
-        Icon::ArrowUp
-    } else {
-        Icon::ArrowDown
-    };
-    let word = if look.terminal {
-        gettext(locale, "sort").into_owned()
-    } else {
-        gettext(locale, "Sort").into_owned()
-    };
-    let word_font = theme::regular(theme::TEXT);
-    let column_font = theme::mono(theme::TEXT);
+    let arrow = if dir == SortDir::Asc { "↑" } else { "↓" };
+    let column = format!("{column} {arrow}");
     let measure = |text: &str, font: &egui::FontId| {
         ui.painter()
             .layout_no_wrap(text.to_owned(), font.clone(), palette.text)
             .size()
             .x
     };
-    let close = if look.terminal { 0.0 } else { 22.0 };
-    let width = 10.0
-        + measure(&word, &word_font)
-        + 7.0
-        + measure(column, &column_font)
-        + 6.0
-        + 11.0
-        + 10.0
-        + close;
-    let height = if look.terminal { 20.0 } else { 25.0 };
-    let x = right_align.map_or(left, |right| right - width);
-    let chip = Rect::from_min_size(pos2(x, center - height / 2.0), vec2(width, height));
     if look.terminal {
+        // One bordered line: "sort created_at ↑", 8 at its sides.
+        let text = format!("{} {column}", gettext(locale, "sort"));
+        let font = theme::regular(theme::TEXT);
+        let height = line(ui, &font) + 2.0 + 2.0;
+        let width = measure(&text, &font) + 16.0 + 2.0;
+        let x = right_align.map_or(left, |right| right - width);
+        let chip = Rect::from_min_size(pos2(x, center - height / 2.0), vec2(width, height));
         ui.painter().rect_stroke(
             chip,
-            CornerRadius::ZERO,
+            CornerRadius::same(3),
             Stroke::new(1.0, palette.outline),
             StrokeKind::Inside,
         );
-    } else {
-        ui.painter().rect_filled(
-            chip,
-            CornerRadius::same(look.radius.saturating_sub(2)),
-            palette.surface,
-        );
+        widgets::paint_text(ui, chip.left() + 9.0, center, &text, font, palette.text);
+        return (chip, false);
     }
+    // macOS: 10 in, "Sort", 6, the column in Plex Mono 12, 6, a 20 pt ×, 6.
+    let word = gettext(locale, "Sort").into_owned();
+    let word_font = theme::regular(theme::TEXT);
+    let column_font = theme::mono(theme::TEXT_SMALL);
+    let width =
+        10.0 + measure(&word, &word_font) + 6.0 + measure(&column, &column_font) + 6.0 + 20.0 + 6.0;
+    let x = right_align.map_or(left, |right| right - width);
+    let chip = Rect::from_min_size(pos2(x, center - 14.0), vec2(width, 28.0));
+    ui.painter()
+        .rect_filled(chip, CornerRadius::same(6), palette.surface);
     let mut x = chip.left() + 10.0;
-    let word_color = if look.terminal {
-        palette.text
-    } else {
-        palette.dim
-    };
-    x += widgets::paint_text(ui, x, center, &word, word_font, word_color) + 7.0;
-    x += widgets::paint_text(ui, x, center, column, column_font, palette.text) + 6.0;
-    arrow.image(palette.text, 11.0).paint_at(
-        ui,
-        Rect::from_center_size(pos2(x + 5.5, center), vec2(11.0, 11.0)),
-    );
-    let mut cleared = false;
-    if !look.terminal {
-        let hit = Rect::from_center_size(pos2(chip.right() - 14.0, center), vec2(18.0, 18.0));
-        let response = ui.interact(hit, ui.id().with("clear-sort"), Sense::click());
-        let label = gettext(locale, "Clear sort");
-        response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, &label));
-        if response.hovered() {
-            ui.painter()
-                .rect_filled(hit, CornerRadius::same(4), palette.surface_hover);
-        }
-        Icon::X
-            .image(palette.dim, 11.0)
-            .paint_at(ui, Rect::from_center_size(hit.center(), vec2(11.0, 11.0)));
-        cleared = response.clicked();
+    x += widgets::paint_text(ui, x, center, &word, word_font, palette.dim) + 6.0;
+    widgets::paint_text(ui, x, center, &column, column_font, palette.text);
+    let hit = Rect::from_min_size(pos2(chip.right() - 26.0, center - 10.0), vec2(20.0, 20.0));
+    let response = ui.interact(hit, ui.id().with("clear-sort"), Sense::click());
+    let label = gettext(locale, "Clear sort");
+    response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, &label));
+    if response.hovered() {
+        ui.painter()
+            .rect_filled(hit, CornerRadius::same(4), palette.surface_hover);
     }
-    (chip, cleared)
+    Icon::X
+        .image(palette.secondary, 10.0)
+        .paint_at(ui, Rect::from_center_size(hit.center(), vec2(10.0, 10.0)));
+    (chip, response.clicked())
 }
 
 /// Above the grid: Add filter and the filters in use (macOS), or the
@@ -379,16 +356,22 @@ pub fn toolbar(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: Obj
             .any(|column| column.kind == ValueKind::Temporal)
     });
     let mut actions = Vec::new();
-    let height = if look.terminal { 28.0 } else { 42.0 };
+    // 44 (macOS) or 34 (terminal, on the dark tone), and a rule.
+    let height = if look.terminal { 35.0 } else { 45.0 };
+    let fill = if look.terminal {
+        palette.panel
+    } else {
+        palette.window
+    };
     egui::Panel::top(Id::new(("object-toolbar", tab.0, object_tab.0)))
         .exact_size(height)
         .resizable(false)
         .show_separator_line(false)
-        .frame(Frame::new().fill(palette.window))
+        .frame(Frame::new().fill(fill))
         .show(ui, |ui| {
             let rect = ui.max_rect();
             widgets::hline(ui, rect.x_range(), rect.bottom() - 0.5, palette.outline);
-            let center = rect.center().y;
+            let center = rect.top() + (rect.height() - 1.0) / 2.0;
             let left = rect.left() + side(&look);
             let right = rect.right() - side(&look);
             if look.terminal {
@@ -426,8 +409,11 @@ pub fn toolbar(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: Obj
                 .layout_no_wrap(label.to_string(), font.clone(), palette.text)
                 .size()
                 .x;
-            let button =
-                Rect::from_min_size(pos2(left, center - 12.5), vec2(text_width + 40.0, 25.0));
+            // 10 in, a 13 pt funnel, 6, the words, 10.
+            let button = Rect::from_min_size(
+                pos2(left, center - 14.0),
+                vec2(10.0 + 13.0 + 6.0 + text_width + 10.0, 28.0),
+            );
             let response = ui.interact(button, ui.id().with("add-filter"), Sense::click());
             response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, &label));
             if response.hovered() {
@@ -442,28 +428,28 @@ pub fn toolbar(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: Obj
             );
             Icon::Funnel.image(palette.secondary, 13.0).paint_at(
                 ui,
-                Rect::from_center_size(pos2(button.left() + 17.0, center), vec2(13.0, 13.0)),
+                Rect::from_center_size(pos2(button.left() + 16.5, center), vec2(13.0, 13.0)),
             );
             widgets::paint_text(
                 ui,
-                button.left() + 30.0,
+                button.left() + 29.0,
                 center,
                 &label,
                 font.clone(),
-                palette.text,
+                palette.secondary,
             );
             if response.clicked() {
                 actions.push(Action::ToggleFilterBar(tab));
             }
-            let mut x = button.right() + 11.0;
+            let mut x = button.right() + 8.0;
             for (index, text) in filters.iter().enumerate() {
-                let mono = theme::mono(theme::TEXT);
+                let mono = theme::mono(theme::TEXT_SMALL);
                 let width = ui
                     .painter()
                     .layout_no_wrap(text.clone(), mono.clone(), palette.text)
                     .size()
                     .x;
-                let chip = Rect::from_min_size(pos2(x, center - 12.5), vec2(width + 42.0, 25.0));
+                let chip = Rect::from_min_size(pos2(x, center - 14.0), vec2(width + 42.0, 28.0));
                 ui.painter()
                     .rect_filled(chip, CornerRadius::same(6), palette.surface);
                 Icon::Funnel.image(palette.dim, 11.0).paint_at(
@@ -564,7 +550,14 @@ fn where_line(
     let center = rect.center().y;
     let font = theme::regular(theme::TEXT);
     let mut x = rect.left();
-    x += widgets::paint_text(ui, x, center, "/", font.clone(), palette.accent) + 10.0;
+    x += widgets::paint_text(
+        ui,
+        x,
+        center,
+        "/",
+        theme::semibold(theme::TEXT),
+        palette.accent,
+    ) + 10.0;
     x += widgets::paint_text(ui, x, center, "where", font.clone(), palette.dim) + 8.0;
     let line = ui.fonts_mut(|fonts| fonts.row_height(&font));
     let field = Rect::from_min_max(
@@ -678,7 +671,7 @@ pub fn footer(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: Obje
     let selected = object.selection.is_some();
     let mut actions = Vec::new();
     egui::Panel::bottom(Id::new(("object-footer", tab.0, object_tab.0)))
-        .exact_size(30.0)
+        .exact_size(33.0)
         .resizable(false)
         .show_separator_line(false)
         .frame(
@@ -689,9 +682,12 @@ pub fn footer(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: Obje
         .show(ui, |ui| {
             let full = ui.max_rect().expand2(vec2(side(&look), 0.0));
             widgets::hline(ui, full.x_range(), full.top() + 0.5, palette.outline);
-            let status = palette.secondary;
+            // The status bar's grey sits between the secondary and muted
+            // tones; notes that explain something stay secondary.
+            let status = palette.secondary.lerp_to_gamma(palette.dim, 0.5);
+            ui.add_space(1.0);
             ui.horizontal_centered(|ui| {
-                ui.spacing_mut().item_spacing.x = 8.0;
+                ui.spacing_mut().item_spacing.x = 16.0;
                 if view == ObjectView::Data {
                     let range = range
                         .clone()
@@ -705,8 +701,7 @@ pub fn footer(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: Obje
                             .into_owned()
                         });
                     ui.label(RichText::new(range).size(theme::TEXT_SMALL).color(status));
-                    ui.add_space(10.0);
-                    ui.spacing_mut().item_spacing.x = 0.0;
+                    ui.spacing_mut().item_spacing.x = 2.0;
                     for (enabled, icon, label, action) in [
                         (
                             can_prev,
@@ -728,8 +723,8 @@ pub fn footer(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: Obje
                             }
                         });
                     }
-                    ui.spacing_mut().item_spacing.x = 8.0;
-                    ui.add_space(6.0);
+                    ui.spacing_mut().item_spacing.x = 16.0;
+                    ui.add_space(14.0);
                     if filtered {
                         ui.label(
                             RichText::new(gettext(locale, "Filtered"))
@@ -742,7 +737,7 @@ pub fn footer(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: Obje
                         ui.label(
                             RichText::new(gettext(locale, "Counting…"))
                                 .size(theme::TEXT_SMALL)
-                                .color(status),
+                                .color(palette.secondary),
                         );
                     } else if can_count {
                         let link = ui
@@ -759,7 +754,7 @@ pub fn footer(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: Obje
                         ui.label(
                             RichText::new(gettext(locale, "Unordered"))
                                 .size(theme::TEXT_SMALL)
-                                .color(status),
+                                .color(palette.secondary),
                         )
                         .on_hover_text(gettext(
                             locale,
@@ -768,7 +763,7 @@ pub fn footer(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: Obje
                     }
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.spacing_mut().item_spacing.x = 22.0;
+                    ui.spacing_mut().item_spacing.x = 16.0;
                     if loading {
                         if widgets::icon_button(
                             ui,
@@ -813,19 +808,21 @@ fn pager(
     enabled: bool,
     palette: &Palette,
 ) -> egui::Response {
-    let (rect, response) = ui.allocate_exact_size(vec2(22.0, 22.0), Sense::click());
+    let (rect, response) = ui.allocate_exact_size(vec2(24.0, 24.0), Sense::click());
     response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, enabled, label));
     if response.hovered() && enabled {
         ui.painter()
             .rect_filled(rect, CornerRadius::same(5), palette.surface);
     }
+    // Disabled: the status grey at 35%.
+    let status = palette.secondary.lerp_to_gamma(palette.dim, 0.5);
     let tint = if enabled {
-        palette.secondary
+        status
     } else {
-        palette.faint.lerp_to_gamma(palette.panel, 0.4)
+        palette.panel.lerp_to_gamma(status, 0.35)
     };
-    icon.image(tint, 13.0)
-        .paint_at(ui, Rect::from_center_size(rect.center(), vec2(13.0, 13.0)));
+    icon.image(tint, 12.0)
+        .paint_at(ui, Rect::from_center_size(rect.center(), vec2(12.0, 12.0)));
     response.on_hover_text(label)
 }
 
@@ -951,6 +948,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: Object
                         numeric: column.kind == ValueKind::Numeric,
                         sort: object.sort_of(&column.name),
                         key,
+                        flexible: column.kind == ValueKind::Json,
                     }
                 })
                 .collect();
