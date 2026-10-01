@@ -526,85 +526,89 @@ pub fn statement_at(statements: &[Statement], cursor: usize) -> Option<&Statemen
 /// read-only guard checks executable comments separately.
 pub fn words(dialect: Dialect, text: &str) -> Vec<String> {
     tokenize(dialect, text)
-        .into_iter()
-        .filter_map(|token| {
-            let word = &text[token.range];
-            match token.kind {
-                TokenKind::Keyword | TokenKind::Identifier => Some(word.to_ascii_uppercase()),
-                // Strip the quotes, not a byte count: an unterminated name can
-                // end inside a multi-byte character.
-                TokenKind::QuotedIdentifier => Some(
-                    word.trim_start_matches(['"', '`', '['])
-                        .trim_end_matches(['"', '`', ']'])
-                        .to_ascii_uppercase(),
-                ),
-                _ => None,
-            }
-        })
+        .iter()
+        .filter_map(|token| word_of(text, token))
         .collect()
+}
+
+/// The word a token spells, if it is a keyword or a name.
+fn word_of(text: &str, token: &Token) -> Option<String> {
+    let word = &text[token.range.clone()];
+    match token.kind {
+        TokenKind::Keyword | TokenKind::Identifier => Some(word.to_ascii_uppercase()),
+        // Strip the quotes, not a byte count: an unterminated name can
+        // end inside a multi-byte character.
+        TokenKind::QuotedIdentifier => Some(
+            word.trim_start_matches(['"', '`', '['])
+                .trim_end_matches(['"', '`', ']'])
+                .to_ascii_uppercase(),
+        ),
+        _ => None,
+    }
 }
 
 /// Why `statement` must not run in Tabletist's read-only transaction: the
 /// statement kind it is, for the message. `None` when it may run. Matched
 /// on tokens, so `SELECT 'COMMIT'` and a column named `end_date` pass.
 pub fn refusal(dialect: Dialect, statement: &str) -> Option<String> {
+    let tokens = tokenize(dialect, statement);
     if dialect == Dialect::MySql
-        && tokenize(dialect, statement)
+        && tokens
             .iter()
             .any(|token| token.kind == TokenKind::ExecutableComment)
     {
         return Some("a /*! */ comment".into());
     }
-    let words = words(dialect, statement);
+    // A U&"..." name can spell any name in escapes, set_config included.
+    if dialect == Dialect::Postgres && unicode_name(statement, &tokens) {
+        return Some("a U& name".into());
+    }
+    let mut words: Vec<String> = tokens
+        .iter()
+        .filter_map(|token| word_of(statement, token))
+        .collect();
+    // MariaDB's CREATE OR REPLACE USER / ROLE: match them as CREATE USER.
+    if dialect == Dialect::MySql
+        && words.len() > 2
+        && words[0] == "CREATE"
+        && words[1] == "OR"
+        && words[2] == "REPLACE"
+    {
+        words.drain(1..3);
+    }
     let word = |index: usize| words.get(index).map(String::as_str).unwrap_or_default();
-    let named = |pairs: &[(&str, &str)]| {
-        pairs
-            .iter()
-            .find(|(first, second)| word(0) == *first && word(1) == *second)
-            .map(|(first, second)| format!("{first} {second}"))
-    };
-    // Settings that leave read-only, or that change how later statements
-    // are lexed (the tokenizer assumes the connect-time values).
-    let session_name = |name: &str| {
-        name.ends_with("READ_ONLY")
-            || name == "AUTOCOMMIT"
-            || name == "SQL_MODE"
-            || name == "STANDARD_CONFORMING_STRINGS"
-            || name == "CLIENT_ENCODING"
-            || name.starts_with("CHARACTER_SET")
-    };
+    let guarded_name = || words.iter().skip(1).find(|name| is_guarded_setting(name));
+    let postgres_or_mysql = dialect != Dialect::Sqlite;
     match word(0) {
         first @ ("BEGIN" | "START" | "COMMIT" | "END" | "ROLLBACK" | "ABORT" | "SAVEPOINT"
         | "RELEASE") => return Some(first.to_owned()),
-        "PREPARE" if word(1) == "TRANSACTION" => return Some("PREPARE TRANSACTION".into()),
-        "SET"
-            if words
-                .iter()
-                .any(|w| w == "TRANSACTION" || w == "CHARACTERISTICS") =>
-        {
-            return Some("SET TRANSACTION".into());
+        // The SQL they run is a string the guard cannot read, and prepared
+        // statements outlive the rollback.
+        "PREPARE" if dialect == Dialect::Postgres && word(1) == "TRANSACTION" => {
+            return Some("PREPARE TRANSACTION".into());
         }
-        "SET"
-            if matches!(word(1), "NAMES" | "CHARSET")
-                || (word(1) == "CHARACTER" && word(2) == "SET") =>
-        {
-            return Some("SET NAMES".into());
+        first @ ("PREPARE" | "EXECUTE" | "DEALLOCATE") if postgres_or_mysql => {
+            return Some(first.to_owned());
         }
-        "SET" if words.iter().skip(1).any(|w| session_name(w)) => {
-            return Some(format!(
-                "SET {}",
-                words.iter().skip(1).find(|w| session_name(w))?
-            ));
+        "SET" => {
+            if let Some(refused) = set_refusal(dialect, statement, &tokens, &words) {
+                return Some(refused);
+            }
         }
-        "RESET" if word(1) == "ALL" || words.iter().skip(1).any(|w| session_name(w)) => {
-            return Some("RESET".into());
+        "RESET" if dialect == Dialect::MySql => {
+            return Some(match word(1) {
+                "" => "RESET".to_owned(),
+                second => format!("RESET {second}"),
+            });
+        }
+        "RESET" if word(1) == "ALL" => return Some("RESET ALL".into()),
+        "RESET" => {
+            if let Some(name) = guarded_name() {
+                return Some(format!("RESET {name}"));
+            }
         }
         "DISCARD" if word(1) == "ALL" => return Some("DISCARD ALL".into()),
         "COPY" if dialect == Dialect::Postgres => return Some("COPY".into()),
-        // A U&"..." name can spell a guarded setting in escapes.
-        "SET" | "RESET" if dialect == Dialect::Postgres && unicode_name(statement) => {
-            return Some(format!("{} with a U& name", word(0)));
-        }
         _ => {}
     }
     // set_config() changes the same settings as SET, from any statement.
@@ -616,11 +620,24 @@ pub fn refusal(dialect: Dialect, statement: &str) -> Option<String> {
     }
     if matches!(
         word(0),
-        "XA" | "LOCK" | "UNLOCK" | "CALL" | "GRANT" | "REVOKE" | "FLUSH" | "INSTALL" | "UNINSTALL"
+        "XA" | "LOCK"
+            | "UNLOCK"
+            | "CALL"
+            | "GRANT"
+            | "REVOKE"
+            | "FLUSH"
+            | "INSTALL"
+            | "UNINSTALL"
+            | "PURGE"
+            | "CHANGE"
+            | "STOP"
+            | "SHUTDOWN"
+            | "RESTART"
+            | "CLONE"
     ) {
         return Some(word(0).to_owned());
     }
-    if let Some(found) = named(&[
+    if let Some((first, second)) = [
         ("CREATE", "USER"),
         ("ALTER", "USER"),
         ("DROP", "USER"),
@@ -629,17 +646,105 @@ pub fn refusal(dialect: Dialect, statement: &str) -> Option<String> {
         ("DROP", "ROLE"),
         ("SET", "PASSWORD"),
         ("SET", "DEFAULT"),
-    ]) {
-        return Some(found);
+    ]
+    .into_iter()
+    .find(|(first, second)| word(0) == *first && word(1) == *second)
+    {
+        return Some(format!("{first} {second}"));
     }
-    into_file(dialect, statement).map(|file| format!("INTO {file}"))
+    into_file(statement, &tokens).map(|file| format!("INTO {file}"))
+}
+
+/// Settings that leave read-only, or that change how later statements are
+/// lexed (the tokenizer assumes the connect-time values).
+fn is_guarded_setting(name: &str) -> bool {
+    name.ends_with("READ_ONLY")
+        || name == "AUTOCOMMIT"
+        || name == "SQL_MODE"
+        || name == "STANDARD_CONFORMING_STRINGS"
+        || name == "CLIENT_ENCODING"
+        || name.starts_with("CHARACTER_SET")
+}
+
+/// The refusal for a `SET` statement, if any. Everything here errs toward
+/// refusing: a guarded word anywhere in the statement counts.
+fn set_refusal(
+    dialect: Dialect,
+    statement: &str,
+    tokens: &[Token],
+    words: &[String],
+) -> Option<String> {
+    let has = |wanted: &str| words.iter().skip(1).any(|word| word == wanted);
+    if has("CHARACTERISTICS") {
+        return Some("SET SESSION CHARACTERISTICS".into());
+    }
+    if has("TRANSACTION") {
+        return Some("SET TRANSACTION".into());
+    }
+    // Each assignment on its own: `SET @a = 1, NAMES gbk` sets a charset.
+    for assignment in assignments(statement, tokens) {
+        let mut rest = assignment.iter().map(String::as_str).peekable();
+        while rest
+            .next_if(|word| {
+                matches!(
+                    *word,
+                    "GLOBAL" | "SESSION" | "LOCAL" | "PERSIST" | "PERSIST_ONLY"
+                )
+            })
+            .is_some()
+        {}
+        match (rest.next(), rest.next()) {
+            (Some("NAMES"), _) => return Some("SET NAMES".into()),
+            (Some("CHARSET"), _) => return Some("SET CHARSET".into()),
+            (Some("CHARACTER"), Some("SET")) => return Some("SET CHARACTER SET".into()),
+            _ => {}
+        }
+    }
+    if let Some(name) = words.iter().skip(1).find(|name| is_guarded_setting(name)) {
+        return Some(format!("SET {name}"));
+    }
+    // Server state that is neither rolled back nor reset by the cleanup.
+    if dialect == Dialect::MySql
+        && let Some(scope) = words
+            .iter()
+            .skip(1)
+            .find(|word| matches!(word.as_str(), "GLOBAL" | "PERSIST" | "PERSIST_ONLY"))
+    {
+        return Some(format!("SET {scope}"));
+    }
+    None
+}
+
+/// The words of each top-level assignment of a `SET` (split on commas
+/// outside parentheses), without the leading `SET`.
+fn assignments(statement: &str, tokens: &[Token]) -> Vec<Vec<String>> {
+    let mut found = vec![Vec::new()];
+    let mut depth = 0_usize;
+    for token in tokens {
+        match (token.kind, &statement[token.range.clone()]) {
+            (TokenKind::Punctuation, "(") => depth += 1,
+            (TokenKind::Punctuation, ")") => depth = depth.saturating_sub(1),
+            (TokenKind::Punctuation, ",") if depth == 0 => found.push(Vec::new()),
+            _ => {
+                if let (Some(word), Some(current)) = (word_of(statement, token), found.last_mut()) {
+                    current.push(word);
+                }
+            }
+        }
+    }
+    if let Some(first) = found.first_mut()
+        && first.first().is_some_and(|word| word == "SET")
+    {
+        first.remove(0);
+    }
+    found
 }
 
 /// `OUTFILE` or `DUMPFILE` when the statement has `INTO` straight before it,
 /// as the next unquoted word with only whitespace and comments between.
-fn into_file(dialect: Dialect, statement: &str) -> Option<&'static str> {
+fn into_file(statement: &str, tokens: &[Token]) -> Option<&'static str> {
     let mut previous_into = false;
-    for token in tokenize(dialect, statement) {
+    for token in tokens {
         let text = &statement[token.range.clone()];
         match token.kind {
             TokenKind::Whitespace | TokenKind::Comment => {}
@@ -660,12 +765,12 @@ fn into_file(dialect: Dialect, statement: &str) -> Option<&'static str> {
 
 /// Whether a PostgreSQL statement names something with `U&"..."`. The
 /// tokenizer sees the identifier `U`, the operator `&`, then a quoted name.
-fn unicode_name(statement: &str) -> bool {
-    let tokens: Vec<Token> = tokenize(Dialect::Postgres, statement)
-        .into_iter()
+fn unicode_name(statement: &str, tokens: &[Token]) -> bool {
+    let code: Vec<&Token> = tokens
+        .iter()
         .filter(|token| token.kind != TokenKind::Whitespace)
         .collect();
-    tokens.windows(3).any(|three| {
+    code.windows(3).any(|three| {
         statement[three[0].range.clone()].eq_ignore_ascii_case("U")
             && &statement[three[1].range.clone()] == "&"
             && three[2].kind == TokenKind::QuotedIdentifier
@@ -1168,7 +1273,6 @@ mod tests {
 
     #[test]
     fn transaction_and_session_statements_are_refused() {
-        let refused = |dialect, text: &str| refusal(dialect, text);
         for text in [
             "BEGIN",
             "start transaction",
@@ -1194,7 +1298,7 @@ mod tests {
             "COPY users TO STDOUT",
             "/* hi */ commit",
         ] {
-            assert!(refused(Dialect::Postgres, text).is_some(), "{text}");
+            assert!(refusal(Dialect::Postgres, text).is_some(), "{text}");
         }
         for text in [
             "SET SESSION TRANSACTION READ WRITE",
@@ -1230,9 +1334,9 @@ mod tests {
             "SET character_set_client = gbk",
             "RESET sql_mode",
         ] {
-            assert!(refused(Dialect::MySql, text).is_some(), "{text}");
+            assert!(refusal(Dialect::MySql, text).is_some(), "{text}");
         }
-        assert!(refused(Dialect::Sqlite, "BEGIN IMMEDIATE").is_some());
+        assert!(refusal(Dialect::Sqlite, "BEGIN IMMEDIATE").is_some());
     }
 
     #[test]
@@ -1338,6 +1442,134 @@ mod tests {
             ] {
                 let _ = refusal(dialect, text);
             }
+        }
+    }
+
+    #[test]
+    fn every_assignment_of_a_set_is_checked() {
+        for (dialect, text) in [
+            (Dialect::MySql, "SET @a = 1, NAMES gbk"),
+            (
+                Dialect::MySql,
+                "SET time_zone = '+00:00', CHARACTER SET gbk",
+            ),
+            (Dialect::MySql, "SET @a = 1, CHARSET gbk"),
+            (Dialect::Postgres, "SET SESSION NAMES 'SJIS'"),
+            (Dialect::Postgres, "SET LOCAL NAMES 'SJIS'"),
+            (Dialect::MySql, "SET @a = (1, 2), GLOBAL NAMES gbk"),
+        ] {
+            assert!(refusal(dialect, text).is_some(), "{text}");
+        }
+        assert_eq!(
+            refusal(Dialect::MySql, "SET @a = 1, CHARSET gbk").as_deref(),
+            Some("SET CHARSET")
+        );
+        assert_eq!(
+            refusal(Dialect::MySql, "SET CHARACTER SET gbk").as_deref(),
+            Some("SET CHARACTER SET")
+        );
+        assert_eq!(
+            refusal(Dialect::MySql, "SET NAMES gbk").as_deref(),
+            Some("SET NAMES")
+        );
+        // Commas inside parentheses do not start an assignment.
+        assert_eq!(refusal(Dialect::MySql, "SET @a = f(1, 2), @b = 3"), None);
+    }
+
+    #[test]
+    fn a_u_and_name_is_refused_in_any_postgres_statement() {
+        for text in [
+            r#"SELECT U&"set\005fconfig"('x', 'y', false)"#,
+            r#"SELECT u&"a" FROM t"#,
+            r#"SET U&"x" = 1"#,
+            r#"RESET U&"x""#,
+        ] {
+            assert_eq!(
+                refusal(Dialect::Postgres, text).as_deref(),
+                Some("a U& name"),
+                "{text}"
+            );
+        }
+        assert_eq!(
+            refusal(Dialect::Postgres, r"SELECT U&'d\0061t\+000061'"),
+            None
+        );
+        assert_eq!(refusal(Dialect::Postgres, "SELECT a & b FROM t"), None);
+    }
+
+    #[test]
+    fn create_or_replace_user_and_role_are_refused() {
+        for text in ["CREATE OR REPLACE USER x", "CREATE OR REPLACE ROLE r"] {
+            assert!(refusal(Dialect::MySql, text).is_some(), "{text}");
+        }
+        assert_eq!(
+            refusal(Dialect::MySql, "create or replace user x").as_deref(),
+            Some("CREATE USER")
+        );
+        assert_eq!(
+            refusal(Dialect::MySql, "CREATE OR REPLACE VIEW v AS SELECT 1"),
+            None
+        );
+    }
+
+    #[test]
+    fn prepared_sql_and_server_state_are_refused() {
+        for (dialect, text) in [
+            (Dialect::Postgres, "PREPARE s AS SELECT 1"),
+            (Dialect::Postgres, "EXECUTE s"),
+            (Dialect::Postgres, "DEALLOCATE ALL"),
+            (Dialect::MySql, "PREPARE s FROM 'SELECT 1'"),
+            (Dialect::MySql, "EXECUTE s"),
+            (Dialect::MySql, "EXECUTE IMMEDIATE 'SELECT 1'"),
+            (Dialect::MySql, "DEALLOCATE PREPARE s"),
+            (Dialect::MySql, "SET PERSIST max_connections = 1"),
+            (Dialect::MySql, "SET PERSIST_ONLY max_connections = 1"),
+            (Dialect::MySql, "SET GLOBAL general_log_file = 'x'"),
+            (Dialect::MySql, "SET @@global.x = 1"),
+            (Dialect::MySql, "SET @@persist.x = 1"),
+            (Dialect::MySql, "RESET MASTER"),
+            (Dialect::MySql, "RESET PERSIST"),
+            (Dialect::MySql, "RESET REPLICA"),
+            (Dialect::MySql, "PURGE BINARY LOGS TO 'x'"),
+            (
+                Dialect::MySql,
+                "CHANGE REPLICATION SOURCE TO SOURCE_HOST='x'",
+            ),
+            (Dialect::MySql, "CHANGE MASTER TO MASTER_HOST='x'"),
+            (Dialect::MySql, "STOP REPLICA"),
+            (Dialect::MySql, "SHUTDOWN"),
+            (Dialect::MySql, "RESTART"),
+            (Dialect::MySql, "CLONE LOCAL DATA DIRECTORY = '/tmp/x'"),
+        ] {
+            assert!(refusal(dialect, text).is_some(), "{text}");
+        }
+        // KILL stays allowed: an accepted side effect.
+        assert_eq!(refusal(Dialect::MySql, "KILL QUERY 4"), None);
+        // PostgreSQL's own PREPARE TRANSACTION keeps its name.
+        assert_eq!(
+            refusal(Dialect::Postgres, "PREPARE TRANSACTION 'x'").as_deref(),
+            Some("PREPARE TRANSACTION")
+        );
+        // MySQL's SET GLOBAL is MySQL's; PostgreSQL has no such scope.
+        assert_eq!(refusal(Dialect::Postgres, "SET search_path = global"), None);
+    }
+
+    #[test]
+    fn refusal_messages_name_what_was_refused() {
+        for (dialect, text, what) in [
+            (
+                Dialect::Postgres,
+                "SET SESSION CHARACTERISTICS AS TRANSACTION READ WRITE",
+                "SET SESSION CHARACTERISTICS",
+            ),
+            (Dialect::MySql, "RESET sql_mode", "RESET SQL_MODE"),
+            (Dialect::Postgres, "RESET sql_mode", "RESET SQL_MODE"),
+            (Dialect::Postgres, "RESET ALL", "RESET ALL"),
+            (Dialect::Postgres, "PREPARE s AS SELECT 1", "PREPARE"),
+            (Dialect::MySql, "SET GLOBAL x = 1", "SET GLOBAL"),
+            (Dialect::MySql, "RESET MASTER", "RESET MASTER"),
+        ] {
+            assert_eq!(refusal(dialect, text).as_deref(), Some(what), "{text}");
         }
     }
 }
