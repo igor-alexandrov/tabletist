@@ -1,4 +1,16 @@
-# Tabletist
+<p align="center">
+  <img src="assets/icon/tabletist.svg" width="128" height="128" alt="Tabletist icon">
+</p>
+
+<h1 align="center">Tabletist</h1>
+
+<p align="center">
+  <a href="https://github.com/igor-alexandrov/tabletist/actions/workflows/ci.yml"><img src="https://github.com/igor-alexandrov/tabletist/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="License: MIT"></a>
+  <a href="rust-toolchain.toml"><img src="https://img.shields.io/badge/dynamic/toml?url=https%3A%2F%2Fraw.githubusercontent.com%2Figor-alexandrov%2Ftabletist%2Fmain%2FCargo.toml&query=%24.workspace.package.rust-version&label=rust&logo=rust&color=orange" alt="Rust version"></a>
+  <img src="https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-lightgrey" alt="Platforms: Linux, macOS, Windows">
+  <img src="https://img.shields.io/badge/databases-PostgreSQL%20%7C%20MySQL%20%7C%20SQLite-336791" alt="Databases: PostgreSQL, MySQL, SQLite">
+</p>
 
 A fast, native database client for **PostgreSQL**, **MySQL** and
 **SQLite**. Written in Rust with egui; runs on
