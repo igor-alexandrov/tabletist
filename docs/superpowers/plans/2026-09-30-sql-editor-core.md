@@ -1919,7 +1919,10 @@ Then add to `impl Conn` (replacing the placeholders):
         let client = self.client.lock().await;
         let mut outcome = ScriptOutcome::default();
         match client.batch_execute("BEGIN READ ONLY").await.map_err(query_error) {
-            Err(Error::Cancelled) => return Ok(outcome),
+            Err(Error::Cancelled) => {
+                outcome.stopped = true;
+                return Ok(outcome);
+            }
             Err(error) => return Err(error),
             Ok(()) => {}
         }
@@ -1929,6 +1932,7 @@ Then add to `impl Conn` (replacing the placeholders):
             Ok(()) => {
                 for text in texts {
                     if stop.is_stopped() {
+                        outcome.stopped = true;
                         outcome.results.push(StatementResult {
                             elapsed: Duration::ZERO,
                             outcome: StatementOutcome::Cancelled,
@@ -1956,8 +1960,14 @@ Then add to `impl Conn` (replacing the placeholders):
                     }
                 }
             }
-            Err(Error::Cancelled) => {}
+            Err(Error::Cancelled) => outcome.stopped = true,
             Err(error) => return Err(error),
+        }
+        if matches!(
+            outcome.results.last().map(|result| &result.outcome),
+            Some(StatementOutcome::Cancelled)
+        ) {
+            outcome.stopped = true;
         }
         // After an error or a cancel the transaction is aborted: it cannot
         // write, SHOW would fail, and ROLLBACK ends it.
@@ -2384,6 +2394,7 @@ Add to `impl Conn` (replacing the placeholders):
             Ok(()) => {
                 for text in texts {
                     if stop.is_stopped() {
+                        outcome.stopped = true;
                         outcome.results.push(StatementResult {
                             elapsed: Duration::ZERO,
                             outcome: StatementOutcome::Cancelled,
@@ -2405,12 +2416,18 @@ Add to `impl Conn` (replacing the placeholders):
                     }
                 }
             }
-            Err(Error::Cancelled) => {}
+            Err(Error::Cancelled) => outcome.stopped = true,
             Err(error) if error.is_connection_lost() => return Err(error),
             Err(error) => {
                 end_script(&mut conn).await?;
                 return Err(error);
             }
+        }
+        if matches!(
+            outcome.results.last().map(|result| &result.outcome),
+            Some(StatementOutcome::Cancelled)
+        ) {
+            outcome.stopped = true;
         }
         end_script(&mut conn).await?;
         Ok(outcome)
