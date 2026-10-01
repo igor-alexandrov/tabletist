@@ -5617,6 +5617,7 @@ version = "0.1.0"
 dependencies = [
  "log",
  "mysql_async",
+ "mysql_common",
  "percent-encoding",
  "rusqlite",
  "russh",
