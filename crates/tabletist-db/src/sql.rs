@@ -824,8 +824,6 @@ fn unicode_name(statement: &str, tokens: &[Token]) -> bool {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used)]
-
     use super::*;
 
     fn kinds(dialect: Dialect, text: &str) -> Vec<(TokenKind, &str)> {
