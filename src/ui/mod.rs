@@ -1,6 +1,7 @@
 //! The interface. Views read `App` and push `Action`s; they never change
 //! state directly.
 
+pub mod about;
 pub mod conn_tabs;
 pub mod connect_dialog;
 pub mod data_view;
@@ -51,6 +52,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     host_key_prompt::show(app, &ui.ctx().clone());
     quick_open::show(app, &ui.ctx().clone());
     help::show(app, &ui.ctx().clone());
+    about::show(app, &ui.ctx().clone());
 }
 
 /// A problem worth the user's attention that belongs to no one tab (a
@@ -2034,6 +2036,25 @@ mod tests {
         assert!(harness.has("Quick open"));
         harness.press(Key::Escape, Modifiers::NONE);
         assert!(harness.app.dialog.is_none());
+    }
+
+    #[test]
+    fn the_shortcuts_keep_close_on_screen_in_the_smallest_window() {
+        let size = egui::vec2(720.0, 480.0);
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
+        for look in crate::theme::Look::ALL {
+            let mut harness = Harness::with_size(size);
+            harness.set_look(look);
+            harness.frame(vec![egui::Event::Text("?".into())]);
+            let tree = harness.settle();
+            let close = crate::testing::bounds(&tree, "Close", egui::accesskit::Role::Button)
+                .expect("the Close button");
+            assert!(
+                screen.contains_rect(close),
+                "{}: Close at {close:?}",
+                look.name
+            );
+        }
     }
 
     #[test]
