@@ -409,8 +409,9 @@ has SQL tabs; kept on the workspace as a `Fetch<String>`.
   waits for the one before it, then 500 ms, 1 s, 2 s and so on up to 5 s
   (on MySQL every cancel is a new connection). The timeout and closing the
   session stop a script the same way, and whichever stops it first is the
-  only one that keeps cancelling. Any other command still takes a single
-  cancel.
+  only one that keeps cancelling. Pressing Cancel again while those cancels
+  are being sent sends one more at once, so the user never waits out the
+  pause. Any other command still takes a single cancel.
 - The timeout does not drop the running future (that would leave the server
   running the query). When it elapses, the backend stops the script as a
   Cancel does, records `CancelReason::Timeout` when it was the first to stop
