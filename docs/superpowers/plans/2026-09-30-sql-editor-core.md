@@ -1787,6 +1787,8 @@ async fn bypasses_cannot_write() {
         "SELECT set_config('default_transaction_read_only', 'off', false); INSERT INTO probe VALUES (1)",
         "INSERT INTO probe VALUES (1)",
         "COPY probe FROM STDIN",
+        "PREPARE s AS INSERT INTO probe VALUES (1); EXECUTE s",
+        "DO $$ BEGIN INSERT INTO probe VALUES (1); END $$",
     ] {
         let _ = run(&connection, attempt, 10).await;
         let count: i64 = admin
@@ -2238,6 +2240,10 @@ async fn bypasses_cannot_write() {
         "CREATE USER sneaky",
         "GRANT ALL ON *.* TO tabletist",
         "SELECT 1 INTO OUTFILE '/tmp/tabletist-probe'",
+        "PREPARE s FROM 'INSERT INTO probe VALUES (1)'; EXECUTE s",
+        "EXECUTE IMMEDIATE 'INSERT INTO probe VALUES (1)'",
+        "SET @a = 1, NAMES gbk",
+        "SET GLOBAL read_only = 0",
     ] {
         let _ = run(&connection, attempt, 10).await;
         let count: Option<i64> = admin.query_first("SELECT count(*) FROM probe").await.unwrap();
