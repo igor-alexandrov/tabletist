@@ -930,6 +930,14 @@ impl App {
                     self.backend.pick_key_file(request);
                 }
             }
+            Action::PickCaFile => {
+                let request = RequestId(self.next_id());
+                if let Some(Dialog::Connection(form)) = &mut self.dialog {
+                    form.pick_request = Some(request);
+                    form.pick_target = PickTarget::CaFile;
+                    self.backend.pick_ca_file(request);
+                }
+            }
             Action::PickSshHost(alias) => {
                 if let Some(Dialog::Connection(form)) = &mut self.dialog {
                     form.pick_ssh_host(&alias);
@@ -1575,6 +1583,9 @@ impl App {
                     match (path, form.pick_target) {
                         (Some(path), PickTarget::KeyFile) => {
                             form.ssh_key_file = path.display().to_string();
+                        }
+                        (Some(path), PickTarget::CaFile) => {
+                            form.ca_file = path.display().to_string();
                         }
                         (Some(path), PickTarget::Sqlite) => {
                             form.sqlite_path = path.display().to_string();
@@ -3110,6 +3121,21 @@ mod tests {
         }));
         assert_eq!(form(&mut app).sqlite_path, "/data/shop.sqlite");
         assert_eq!(form(&mut app).name, "shop.sqlite");
+    }
+
+    #[test]
+    fn a_picked_ca_certificate_fills_its_field() {
+        let (mut app, _dir) = app();
+        app.apply(Action::NewConnection);
+        app.apply(Action::PickCaFile);
+        let request = form(&mut app).pick_request.expect("a pick is in flight");
+        assert_eq!(form(&mut app).pick_target, PickTarget::CaFile);
+        app.apply(Action::Backend(Event::FilePicked {
+            request,
+            path: Some("/etc/ssl/ca.pem".into()),
+        }));
+        assert_eq!(form(&mut app).ca_file, "/etc/ssl/ca.pem");
+        assert_eq!(form(&mut app).sqlite_path, "", "only the CA file changes");
     }
 
     #[test]

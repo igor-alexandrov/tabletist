@@ -353,6 +353,23 @@ impl Backend {
         });
     }
 
+    /// Asks for the CA certificate a server's certificate is checked against.
+    pub fn pick_ca_file(&mut self, request: RequestId) {
+        let Some(runtime) = &self.runtime else {
+            return;
+        };
+        let dialog = rfd::AsyncFileDialog::new()
+            .set_title("Choose a CA certificate")
+            .add_filter("Certificates", &["pem", "crt", "cer"])
+            .add_filter("All files", &["*"])
+            .pick_file();
+        let outbox = self.outbox.clone();
+        runtime.spawn(async move {
+            let path = dialog.await.map(|file| file.path().to_path_buf());
+            outbox.emit(Event::FilePicked { request, path });
+        });
+    }
+
     /// Reads the Host aliases in ~/.ssh/config off the UI thread.
     pub fn list_ssh_hosts(&mut self, request: RequestId) {
         let Some(runtime) = &self.runtime else {

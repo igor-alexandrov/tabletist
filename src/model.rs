@@ -79,6 +79,8 @@ pub enum Action {
     PickSqliteFile,
     /// Open the native file dialog for the SSH key file.
     PickKeyFile,
+    /// Open the native file dialog for the CA certificate.
+    PickCaFile,
     /// Put this ~/.ssh/config Host alias in the SSH host field.
     PickSshHost(String),
     /// Fill the connection dialog from its URL field.
@@ -438,6 +440,7 @@ pub enum PickTarget {
     #[default]
     Sqlite,
     KeyFile,
+    CaFile,
 }
 
 /// How the SSH tunnel logs in, as the dialog offers it.
