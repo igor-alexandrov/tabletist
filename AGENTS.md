@@ -9,7 +9,8 @@ MySQL, SQLite) on egui/eframe and fastframe. The design lives in
 
 - `src/ui/` draws views and pushes `Action`s onto `app.actions`. `App::apply`
   in `src/app.rs` applies them after drawing. Do not mutate application state
-  from inside a view, apart from text a field is editing.
+  from inside a view, apart from text a field is editing and the cursor
+  position that field reports.
 - Database, network, and disk work runs on the backend runtime
   (`src/backend.rs`), never on the UI thread.
 - `crates/tabletist-db` has no UI dependencies.
