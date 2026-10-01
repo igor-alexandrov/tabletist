@@ -3139,6 +3139,30 @@ mod tests {
     }
 
     #[test]
+    fn a_pick_overtaken_by_another_fills_nothing() {
+        let (mut app, _dir) = app();
+        app.apply(Action::NewConnection);
+        app.apply(Action::PickKeyFile);
+        let first = form(&mut app).pick_request.expect("a pick is in flight");
+        app.apply(Action::PickCaFile);
+        let second = form(&mut app).pick_request.expect("a second pick");
+        assert_ne!(first, second);
+        app.apply(Action::Backend(Event::FilePicked {
+            request: first,
+            path: Some("/home/me/.ssh/id_ed25519".into()),
+        }));
+        assert_eq!(form(&mut app).ssh_key_file, "");
+        assert_eq!(form(&mut app).ca_file, "");
+        assert_eq!(form(&mut app).pick_request, Some(second));
+        app.apply(Action::Backend(Event::FilePicked {
+            request: second,
+            path: Some("/etc/ssl/ca.pem".into()),
+        }));
+        assert_eq!(form(&mut app).ca_file, "/etc/ssl/ca.pem");
+        assert_eq!(form(&mut app).ssh_key_file, "");
+    }
+
+    #[test]
     fn deleting_a_connection_leaves_open_tabs_alone() {
         let (mut app, dir) = app();
         let (tab, _, _) = connect(&mut app);
