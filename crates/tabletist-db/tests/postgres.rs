@@ -802,7 +802,11 @@ async fn runs_on_the_server(admin: &tokio_postgres::Client, marker: &str) {
 }
 
 /// Stops and cancels a script once its statement holding `marker` runs.
-async fn cancelled_while_running(text: &'static str, marker: &str) -> Option<ScriptOutcome> {
+async fn cancelled_while_running(
+    text: &'static str,
+    limit: u32,
+    marker: &str,
+) -> Option<ScriptOutcome> {
     let connection = std::sync::Arc::new(connect().await?);
     let admin = admin().await;
     let cancel = connection.cancel_handle();
@@ -810,7 +814,7 @@ async fn cancelled_while_running(text: &'static str, marker: &str) -> Option<Scr
     let running = {
         let connection = std::sync::Arc::clone(&connection);
         let stop = stop.clone();
-        tokio::spawn(async move { connection.run_script(&script(text), 10, &stop).await })
+        tokio::spawn(async move { connection.run_script(&script(text), limit, &stop).await })
     };
     runs_on_the_server(&admin, marker).await;
     stop.stop();
@@ -840,6 +844,7 @@ async fn cancelled_while_running(text: &'static str, marker: &str) -> Option<Scr
 async fn a_cancel_stops_a_statement_that_streams_its_rows() {
     let Some(outcome) = cancelled_while_running(
         "SELECT 1; EXPLAIN ANALYZE SELECT /* tabletist streams */ pg_sleep(30)",
+        10,
         "/* tabletist streams */",
     )
     .await
@@ -858,6 +863,7 @@ async fn a_cancel_stops_a_statement_that_streams_its_rows() {
 async fn a_cancel_stops_a_statement_without_rows() {
     let Some(outcome) = cancelled_while_running(
         "SELECT 1; DO $$ BEGIN /* tabletist blocks */ PERFORM pg_sleep(30); END $$",
+        10,
         "/* tabletist blocks */",
     )
     .await
@@ -979,46 +985,23 @@ async fn a_script_keeps_no_advisory_lock() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_cancelled_script_keeps_earlier_results_and_the_session() {
-    let Some(connection) = connect().await else {
+    // A row query sleeps in its FETCH, which does not hold the script's
+    // text. A limit no other test uses makes the FETCH this test's own.
+    let Some(outcome) = cancelled_while_running(
+        "SELECT 1; SELECT pg_sleep(30)",
+        7,
+        "FETCH 8 FROM tabletist_sql",
+    )
+    .await
+    else {
         return;
     };
-    let connection = std::sync::Arc::new(connection);
-    let cancel = connection.cancel_handle();
-    let stop = StopFlag::new();
-    let running = {
-        let connection = std::sync::Arc::clone(&connection);
-        let stop = stop.clone();
-        tokio::spawn(async move {
-            connection
-                .run_script(&script("SELECT 1; SELECT pg_sleep(30)"), 10, &stop)
-                .await
-        })
-    };
-    tokio::time::sleep(Duration::from_millis(500)).await;
-    stop.stop();
-    let deadline = std::time::Instant::now() + Duration::from_secs(15);
-    // As the backend does: repeat the cancel until the cleanup begins.
-    while !stop.is_finishing() && !running.is_finished() {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "cancel must stop the script"
-        );
-        cancel.cancel().await.unwrap();
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    let outcome = within(running).await.unwrap().unwrap();
+    assert_eq!(outcome.results.len(), 2);
     assert!(matches!(
         outcome.results[0].outcome,
         StatementOutcome::Rows { .. }
     ));
-    assert!(matches!(
-        outcome.results[1].outcome,
-        StatementOutcome::Cancelled
-    ));
-    assert!(outcome.stopped);
-    // The cleanup began, so the backend stops repeating its cancel.
-    assert!(stop.is_finishing());
-    run(&connection, "SELECT 1", 1).await.unwrap();
+    assert_eq!(outcome.results[1].outcome, StatementOutcome::Cancelled);
 }
 
 #[tokio::test]

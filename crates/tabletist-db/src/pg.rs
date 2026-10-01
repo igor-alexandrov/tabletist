@@ -594,20 +594,22 @@ enum Tx {
     /// the server before it trusts this.
     Open,
     /// Inside it, but it failed (an error or a cancel): it cannot write,
-    /// and `ROLLBACK` ends it.
+    /// and `ROLLBACK` ends it. A failed `PREPARE TRANSACTION` is the one
+    /// failure that leaves the block; the server has then rolled it back
+    /// itself and nothing runs after it, so `ROLLBACK` finds nothing to do.
     Aborted,
     /// Not where the script started: outside the transaction, or in one
     /// that is no longer read-only.
     Left,
 }
 
-/// Starts the script's transaction: `BEGIN READ ONLY`, then the snapshot.
-/// PostgreSQL refuses to make a transaction read-write once it has a
-/// snapshot, whatever a statement tries. `Aborted` when a cancel landed on
-/// these queries; an `Err` that is not a lost session means the
-/// transaction could not start.
+/// Starts the script's transaction: `BEGIN READ ONLY`, the snapshot, and
+/// the guard's savepoint (see `in_transaction`). PostgreSQL refuses to make
+/// a transaction read-write once it has a snapshot, whatever a statement
+/// tries. `Aborted` when a cancel landed on these queries; an `Err` that is
+/// not a lost session means the transaction could not start.
 async fn open(client: &tokio_postgres::Client) -> Result<Tx> {
-    for step in ["BEGIN READ ONLY", "SELECT 1"] {
+    for step in ["BEGIN READ ONLY", "SELECT 1", "SAVEPOINT tabletist_guard"] {
         match client.batch_execute(step).await.map_err(query_error) {
             Ok(()) => {}
             Err(Error::Cancelled) => return Ok(Tx::Aborted),
@@ -637,18 +639,19 @@ async fn statements(
             Ok(Tx::Open) => None,
             Ok(Tx::Left) => return Ok(Tx::Left),
             // Not after a statement that succeeded; said rather than a
-            // run that ends without a word.
+            // run that ends without a word. Whose failed transaction it
+            // is, the close asks.
             Ok(Tx::Aborted) => Some((
                 StatementOutcome::Error {
                     error: Error::query("the transaction failed before this statement ran"),
                     position: None,
                 },
-                Tx::Aborted,
+                Tx::Open,
             )),
             // A stop between statements, or a cancel that landed on the
-            // check: this statement is the cancelled one. After a cancel
-            // the transaction is aborted if the session is still inside
-            // it, which only the server knows: the close asks.
+            // check: this statement is the cancelled one. A cancel fails
+            // the transaction block the session is in, if it is in one;
+            // whether that is still the script's, the close asks.
             Err(Error::Cancelled) => {
                 outcome.stopped = true;
                 Some((StatementOutcome::Cancelled, Tx::Open))
@@ -682,8 +685,9 @@ async fn statements(
 
 /// Ends the script's transaction, whatever state it is in: confirms an
 /// open one is the script's own and still read-only, rolls back, and
-/// releases the session's advisory locks. `LeftReadOnly` or a failed step
-/// closes the session (both count as a lost connection).
+/// releases the session's advisory locks. `LeftReadOnly`, a failed check
+/// or a failed rollback closes the session (they count as a lost
+/// connection).
 async fn close(client: &tokio_postgres::Client, tx: Tx) -> Result<()> {
     let tx = match tx {
         Tx::Open => confirm(client).await,
@@ -695,7 +699,22 @@ async fn close(client: &tokio_postgres::Client, tx: Tx) -> Result<()> {
     match (tx, rolled_back) {
         (Ok(Tx::Left), _) => Err(Error::LeftReadOnly),
         (Err(error), _) | (_, Err(error)) => Err(cleanup_failed(&error)),
-        (Ok(_), Ok(())) => retry_cancelled!(unlock(client)).map_err(|error| cleanup_failed(&error)),
+        (Ok(_), Ok(())) => unlocked(retry_cancelled!(unlock(client))),
+    }
+}
+
+/// What a failed release of the advisory locks means for a run whose
+/// transaction did end: nothing, unless the session is lost. The outcome
+/// stands and the session stays; a lock the script took may stay with it.
+fn unlocked(released: Result<()>) -> Result<()> {
+    match released {
+        Err(error) if error.is_connection_lost() => Err(error),
+        // Cancelled twice: given up quietly.
+        Ok(()) | Err(Error::Cancelled) => Ok(()),
+        Err(error) => {
+            log::warn!("could not release the advisory locks after a script: {error}");
+            Ok(())
+        }
     }
 }
 
@@ -703,36 +722,66 @@ async fn close(client: &tokio_postgres::Client, tx: Tx) -> Result<()> {
 /// the last statement: a statement in last position may have ended it, and
 /// what a `COMMIT` kept (a setting) must not reach later browsing.
 async fn confirm(client: &tokio_postgres::Client) -> Result<Tx> {
-    // A cancel that lands on the check aborts the transaction if the
-    // session is inside one; asked again, the server then says which.
-    match retry_cancelled!(in_transaction(client))? {
-        Tx::Open => {}
-        other => return Ok(other),
+    match in_transaction(client).await {
+        Ok(Tx::Open) => {}
+        Ok(Tx::Left) => return Ok(Tx::Left),
+        // A failed block, or a cancel on the check, which fails the block
+        // if there is one: the check cannot say whose it is.
+        Ok(Tx::Aborted) | Err(Error::Cancelled) => return retry_cancelled!(own_failed(client)),
+        Err(error) => return Err(error),
     }
     match still_read_only(client).await {
         Ok(true) => Ok(Tx::Open),
         Ok(false) => Ok(Tx::Left),
-        // The session is inside the transaction (the check above), and
-        // the cancel aborted it: it cannot write.
+        // The session is inside the script's transaction (the check
+        // above), and the cancel aborted it: it cannot write.
         Err(Error::Cancelled) => Ok(Tx::Aborted),
         Err(error) => Err(error),
+    }
+}
+
+/// Whether a failed transaction block is the script's own (`Aborted`) or
+/// not (`Left`). A failed block answers every query with 25P02, the
+/// script's own and a chained one alike, except `ROLLBACK TO SAVEPOINT`,
+/// which works when the block has the savepoint: only the script's does.
+///
+/// A cancel that lands inside the guard's swap, after its `RELEASE` and
+/// before its `SAVEPOINT`, leaves the script's own transaction without the
+/// savepoint. That reads as `Left` and closes the session: a safe failure
+/// in a narrow window.
+async fn own_failed(client: &tokio_postgres::Client) -> Result<Tx> {
+    match client
+        .batch_execute("ROLLBACK TO SAVEPOINT tabletist_guard")
+        .await
+        .map_err(query_error)
+    {
+        Ok(()) => Ok(Tx::Aborted),
+        Err(error) if error == Error::Cancelled || error.is_connection_lost() => Err(error),
+        Err(_) => Ok(Tx::Left),
     }
 }
 
 /// Where the session stands, asked before every statement and once after
 /// the last. A statement the refusal missed could end the transaction
 /// (`COMMIT`, `ROLLBACK`); the next one would then run on its own, where
-/// the snapshot no longer keeps it read-only. `SAVEPOINT` works only inside
-/// a transaction block: outside one it fails (25P01) before anything runs
-/// there, and in a failed one it fails differently (25P02). The savepoint
-/// is released at once, so a long script does not nest one per statement
-/// and no statement runs inside a subtransaction. The script cannot name
-/// it: the refusal stops `SAVEPOINT`, `RELEASE` and `ROLLBACK`.
+/// the snapshot no longer keeps it read-only. So `open` sets a savepoint,
+/// and this swaps it for a new one. `RELEASE` fails:
+///
+/// - outside a transaction block (25P01), before anything runs there;
+/// - in another transaction, which does not have the savepoint (3B001):
+///   `COMMIT AND CHAIN` starts one that is a block and read-only, but has
+///   no snapshot yet and could be made read-write;
+/// - in the script's own transaction once it failed (25P02).
+///
+/// Exactly one savepoint is alive at a time, however long the script. Every
+/// statement runs inside its subtransaction, which PostgreSQL also refuses
+/// to make read-write. The script cannot name the savepoint: the refusal
+/// stops `SAVEPOINT`, `RELEASE` and `ROLLBACK`.
 ///
 /// `Err` is a cancel that landed on the check, or a lost session.
 async fn in_transaction(client: &tokio_postgres::Client) -> Result<Tx> {
     let Err(error) = client
-        .batch_execute("SAVEPOINT tabletist_guard; RELEASE tabletist_guard")
+        .batch_execute("RELEASE tabletist_guard; SAVEPOINT tabletist_guard")
         .await
     else {
         return Ok(Tx::Open);
@@ -742,8 +791,8 @@ async fn in_transaction(client: &tokio_postgres::Client) -> Result<Tx> {
     }
     match query_error(error) {
         error if error == Error::Cancelled || error.is_connection_lost() => Err(error),
-        // Outside a transaction block. Any other answer is not where the
-        // script started either.
+        // Outside the script's transaction. Any other answer is not where
+        // the script started either.
         _ => Ok(Tx::Left),
     }
 }
@@ -1023,6 +1072,15 @@ mod tests {
         assert_eq!(fetch_count(usize::MAX), i32::MAX as usize);
     }
 
+    #[test]
+    fn a_failed_lock_release_keeps_the_outcome_and_the_session() {
+        assert_eq!(unlocked(Ok(())), Ok(()));
+        assert_eq!(unlocked(Err(Error::query("permission denied"))), Ok(()));
+        assert_eq!(unlocked(Err(Error::Cancelled)), Ok(()));
+        let lost = Error::ConnectionLost("reset".into());
+        assert_eq!(unlocked(Err(lost.clone())), Err(lost));
+    }
+
     /// The test server's URL, or `None` (test skipped). See
     /// `tests/postgres.rs`.
     fn test_url() -> Option<String> {
@@ -1113,6 +1171,21 @@ mod tests {
             // COMMIT keeps the settings made before it for later browsing.
             &["SET search_path = pg_catalog", "COMMIT"][..],
             &["COMMIT"][..],
+            // A chained transaction is a block again, and read-only, but
+            // it has no snapshot yet: it could be made read-write.
+            &[
+                "COMMIT AND CHAIN",
+                "SET TRANSACTION READ WRITE",
+                "INSERT INTO probe VALUES (1)",
+                "COMMIT",
+            ][..],
+            &[
+                "SET search_path = pg_catalog",
+                "COMMIT AND CHAIN",
+                "SELECT 1",
+            ][..],
+            &["COMMIT AND CHAIN"][..],
+            &["ROLLBACK AND CHAIN", "SELECT 1"][..],
         ] {
             // A session of its own, dropped with the loop's turn: whatever
             // a failing guard let through cannot reach another test.
@@ -1133,9 +1206,9 @@ mod tests {
     }
 
     /// The refusal keeps these from the driver. Past it, the server still
-    /// refuses the write: the snapshot keeps the transaction read-only (no
-    /// statement runs inside a subtransaction that could say otherwise),
-    /// and what a statement set is rolled back.
+    /// refuses the write: the transaction has its snapshot and every
+    /// statement runs under the guard's savepoint, either of which keeps it
+    /// read-only, and what a statement set is rolled back.
     #[tokio::test]
     async fn statements_past_the_refusal_cannot_write() {
         let Some(url) = test_url() else {
@@ -1145,7 +1218,7 @@ mod tests {
         const INSERT: &str = "INSERT INTO probe VALUES (1)";
         // The script, and the SQLSTATE its last result fails with.
         for (script, code) in [
-            // The transaction cannot be made read-write after its snapshot.
+            // The transaction cannot be made read-write any more.
             (&["SET TRANSACTION READ WRITE", INSERT][..], "25001"),
             (&["SET transaction_read_only = off", INSERT][..], "25001"),
             (
@@ -1237,7 +1310,8 @@ mod tests {
 
     /// A stop between statements of a script that stayed in its transaction
     /// closes cleanly, and so does a transaction that failed behind the
-    /// run's back (a cancel that landed on a check).
+    /// run's back (a cancel that landed on a check). A transaction that is
+    /// not the script's fails the run, failed or not.
     #[tokio::test]
     async fn the_close_asks_the_server_where_an_open_transaction_stands() {
         let Some(url) = test_url() else {
@@ -1256,6 +1330,21 @@ mod tests {
             assert!(client.batch_execute("SELECT 1 / 0").await.is_err());
             assert_eq!(in_transaction(&client).await, Ok(Tx::Aborted));
             assert_eq!(close(&client, Tx::Open).await, Ok(()));
+            assert_eq!(in_transaction(&client).await, Ok(Tx::Left));
+
+            // Another transaction is not the script's, block or not.
+            assert_eq!(open(&client).await, Ok(Tx::Open));
+            client.batch_execute("COMMIT AND CHAIN").await.unwrap();
+            assert_eq!(close(&client, Tx::Open).await, Err(Error::LeftReadOnly));
+            assert_eq!(in_transaction(&client).await, Ok(Tx::Left));
+
+            // Nor is it once it failed (a cancel that landed on a check):
+            // a failed block does not say whose it is, its savepoint does.
+            assert_eq!(open(&client).await, Ok(Tx::Open));
+            client.batch_execute("COMMIT AND CHAIN").await.unwrap();
+            assert!(client.batch_execute("SELECT 1 / 0").await.is_err());
+            assert_eq!(in_transaction(&client).await, Ok(Tx::Aborted));
+            assert_eq!(close(&client, Tx::Open).await, Err(Error::LeftReadOnly));
             assert_eq!(in_transaction(&client).await, Ok(Tx::Left));
         }
         // The session was not closed, and it works.
