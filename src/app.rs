@@ -1848,6 +1848,14 @@ impl App {
         });
     }
 
+    /// Writes the settings (the SQL editor's menus change them).
+    pub fn save_settings(&mut self) {
+        self.backend.send(Command::Save {
+            path: self.dirs.settings_file(),
+            file: StateFile::Settings(self.settings.clone()),
+        });
+    }
+
     fn save_dialog(&mut self, connect: bool) {
         let Some(Dialog::Connection(form)) = &mut self.dialog else {
             return;
@@ -2911,6 +2919,17 @@ mod tests {
             }
             other => panic!("{other:?}"),
         }
+    }
+
+    #[test]
+    fn saving_settings_sends_them_to_the_backend() {
+        let mut harness = Harness::new();
+        harness.app.settings.sql_limit = 100;
+        harness.app.save_settings();
+        assert!(matches!(
+            crate::testing::last_sent(&harness.app),
+            Command::Save { file: StateFile::Settings(settings), .. } if settings.sql_limit == 100
+        ));
     }
 
     #[test]

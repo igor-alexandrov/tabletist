@@ -18,6 +18,10 @@ pub struct Settings {
     /// A palette file name in the themes directory. `None` follows the
     /// desktop: Omarchy when present, else the OS light/dark setting.
     pub custom_theme: Option<String>,
+    /// Rows a SQL editor statement keeps (the Limit menu).
+    pub sql_limit: u32,
+    /// Seconds before a SQL editor run is cancelled; `None` waits forever.
+    pub sql_timeout_secs: Option<u32>,
 }
 
 impl Settings {
@@ -25,12 +29,24 @@ impl Settings {
     pub const DEFAULT_PAGE_SIZE: u32 = 300;
     pub const MIN_PAGE_SIZE: u32 = 10;
     pub const MAX_PAGE_SIZE: u32 = 10_000;
+    /// The row limits the SQL editor's Limit menu offers.
+    pub const SQL_LIMITS: [u32; 3] = [100, 1_000, 10_000];
+    /// The timeouts (seconds) the SQL editor's Timeout menu offers; `None`
+    /// is no timeout.
+    pub const SQL_TIMEOUTS: [Option<u32>; 5] = [Some(10), Some(30), Some(60), Some(300), None];
+
+    /// The SQL editor's timeout as a duration; `None` waits forever.
+    pub fn sql_timeout(&self) -> Option<std::time::Duration> {
+        self.sql_timeout_secs
+            .map(|secs| std::time::Duration::from_secs(u64::from(secs)))
+    }
 
     pub fn load(path: &Path) -> Self {
         let mut settings: Settings = crate::util::load_json(path);
         settings.page_size = settings
             .page_size
             .clamp(Self::MIN_PAGE_SIZE, Self::MAX_PAGE_SIZE);
+        settings.sql_limit = settings.sql_limit.clamp(1, Self::MAX_PAGE_SIZE);
         settings.version = Self::CURRENT_VERSION;
         settings
     }
@@ -47,6 +63,8 @@ impl Default for Settings {
             page_size: Self::DEFAULT_PAGE_SIZE,
             show_system_schemas: false,
             custom_theme: None,
+            sql_limit: 1_000,
+            sql_timeout_secs: Some(30),
         }
     }
 }
@@ -62,6 +80,12 @@ mod tests {
         assert_eq!(settings.page_size, 300);
         assert!(!settings.show_system_schemas);
         assert_eq!(settings.custom_theme, None);
+        assert_eq!(settings.sql_limit, 1_000);
+        assert_eq!(settings.sql_timeout_secs, Some(30));
+        assert_eq!(
+            settings.sql_timeout(),
+            Some(std::time::Duration::from_secs(30))
+        );
     }
 
     #[test]
@@ -72,6 +96,8 @@ mod tests {
             page_size: 500,
             show_system_schemas: true,
             custom_theme: Some("Nord.json".into()),
+            sql_limit: 100,
+            sql_timeout_secs: None,
             ..Settings::default()
         };
         settings.save(&path).unwrap();
@@ -86,6 +112,44 @@ mod tests {
         let settings = Settings::load(&path);
         assert_eq!(settings.page_size, 100);
         assert_eq!(settings.custom_theme, None);
+    }
+
+    #[test]
+    fn older_files_get_the_sql_defaults() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        std::fs::write(&path, br#"{"page_size": 100}"#).unwrap();
+        let settings = Settings::load(&path);
+        assert_eq!(settings.sql_limit, 1_000);
+        assert_eq!(settings.sql_timeout_secs, Some(30));
+    }
+
+    #[test]
+    fn the_sql_limit_is_clamped() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        std::fs::write(&path, br#"{"sql_limit": 0, "sql_timeout_secs": null}"#).unwrap();
+        let settings = Settings::load(&path);
+        assert_eq!(settings.sql_limit, 1);
+        assert_eq!(settings.sql_timeout_secs, None);
+    }
+
+    #[test]
+    fn no_timeout_is_written_as_null_and_the_old_keys_stay() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let settings = Settings {
+            sql_timeout_secs: None,
+            ..Settings::default()
+        };
+        settings.save(&path).unwrap();
+        let json: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert!(json["sql_timeout_secs"].is_null());
+        assert_eq!(json["sql_limit"], 1_000);
+        assert_eq!(json["page_size"], 300);
+        assert_eq!(json["show_system_schemas"], false);
+        assert!(json["custom_theme"].is_null());
     }
 
     #[test]
