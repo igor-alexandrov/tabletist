@@ -8,7 +8,7 @@ use tabletist_db::{
     Driver, Error, FilterOp, HostKeys, ObjectKind, ObjectRef, Secrets, Sort, SortDir, SshStage,
 };
 
-use crate::backend::{Command, Event, RequestId, StateFile};
+use crate::backend::{CancelReason, Command, Event, RequestId, StateFile};
 use crate::connections::{PasswordMode, SavedConnection};
 use crate::i18n::Locale;
 use crate::model::{Action, ConnTab, ConnTabContent, ConnTabId, PickerState};
@@ -603,8 +603,7 @@ impl App {
                 if let Some(object) = self.object_tab_mut(tab, id) {
                     object.selection = Some(cell);
                     object.pinned = true;
-                }
-                if let Some(sql) = self.sql_tab_mut(tab, id) {
+                } else if let Some(sql) = self.sql_tab_mut(tab, id) {
                     // The result may have been replaced since the frame
                     // that drew the cell.
                     let (height, width) = sql.dims();
@@ -631,8 +630,7 @@ impl App {
                             col: step(cell.col, cols, width),
                         },
                     });
-                }
-                if let Some(object) = self.object_tab_mut(tab, id) {
+                } else if let Some(object) = self.object_tab_mut(tab, id) {
                     let (height, width) = object
                         .page()
                         .map(|page| (page.rows.len(), page.columns.len()))
@@ -713,16 +711,20 @@ impl App {
                 if let Some(sql) = self.sql_tab_mut(tab, sql_tab) {
                     sql.limit = limit;
                 }
-                self.settings.sql_limit = limit;
-                self.save_settings();
+                if self.settings.sql_limit != limit {
+                    self.settings.sql_limit = limit;
+                    self.save_settings();
+                }
             }
             Action::SetSqlTimeout { tab, sql_tab, secs } => {
-                self.settings.sql_timeout_secs = Settings::valid_sql_timeout(secs);
-                let timeout = self.settings.sql_timeout();
+                let secs = Settings::valid_sql_timeout(secs);
                 if let Some(sql) = self.sql_tab_mut(tab, sql_tab) {
-                    sql.timeout = timeout;
+                    sql.timeout = Settings::timeout_of(secs);
                 }
-                self.save_settings();
+                if self.settings.sql_timeout_secs != secs {
+                    self.settings.sql_timeout_secs = secs;
+                    self.save_settings();
+                }
             }
             Action::SetResultPane { tab, sql_tab, pane } => {
                 if let Some(sql) = self.sql_tab_mut(tab, sql_tab) {
@@ -1836,15 +1838,10 @@ impl App {
                 else {
                     return;
                 };
-                let failed = match &result {
-                    Err(_) => true,
-                    Ok(outcome) => outcome.results.iter().any(|result| {
-                        matches!(result.outcome, tabletist_db::StatementOutcome::Error { .. })
-                    }),
-                };
+                let messages = opens_messages(&result, cancel);
                 if sql.finish_run(request, result, cancel) {
                     sql.selection = None;
-                    sql.pane = if failed {
+                    sql.pane = if messages {
                         ResultPane::Messages
                     } else {
                         ResultPane::Results
@@ -2676,6 +2673,29 @@ fn apply_url(form: &mut ConnectionForm) {
     }
 }
 
+/// Whether a finished SQL run opens Messages rather than Results. It does
+/// when the run failed, as a whole or in a statement; when its timeout
+/// stopped it (nobody asked for that, so the reason must show); and when
+/// it was cancelled without a statement returning rows, which leaves
+/// Results nothing to show. A run the user stopped after rows came back
+/// stays on Results.
+fn opens_messages(
+    result: &Result<tabletist_db::ScriptOutcome, Error>,
+    cancel: Option<CancelReason>,
+) -> bool {
+    use tabletist_db::StatementOutcome;
+    let Ok(outcome) = result else {
+        return true;
+    };
+    let any = |wanted: fn(&StatementOutcome) -> bool| {
+        outcome.results.iter().any(|result| wanted(&result.outcome))
+    };
+    any(|outcome| matches!(outcome, StatementOutcome::Error { .. }))
+        || matches!(cancel, Some(CancelReason::Timeout(_)))
+        || (outcome.was_cancelled()
+            && !any(|outcome| matches!(outcome, StatementOutcome::Rows { .. })))
+}
+
 /// Moves `index` by `delta` within `0..len` (len > 0), saturating.
 fn step(index: usize, delta: isize, len: usize) -> usize {
     let moved = (index as i128 + delta as i128).clamp(0, len as i128 - 1);
@@ -3373,9 +3393,8 @@ mod tests {
         );
     }
 
-    use crate::backend::CancelReason;
     use crate::model::{CellPos, ObjectView, TabId};
-    use crate::testing::{last_sent, page, rows_outcome};
+    use crate::testing::{error_outcome, last_sent, page, rows_outcome, script_outcome};
     use std::time::Duration;
     use tabletist_db::{ObjectRef, SortDir};
 
@@ -3632,7 +3651,12 @@ mod tests {
         let running = start_run(&mut harness, tab, query);
         let workspace = harness.app.workspace_mut(tab).unwrap();
         workspace.server_version.value = Some("SQLite 3.46.0".into());
+        workspace.sql_tab_mut(query).unwrap().text = "SELECT 1".into();
         let old = workspace.session;
+        harness.app.apply(Action::Backend(Event::Disconnected {
+            session: old,
+            error: Error::ConnectionLost("gone".into()),
+        }));
         let sent = harness.app.backend.sent.len();
         harness.app.apply(Action::Reconnect(tab));
         let workspace = harness.app.workspace(tab).unwrap();
@@ -3641,6 +3665,7 @@ mod tests {
             !sql.is_running() && sql.in_flight.is_none(),
             "nothing answers for the closed session"
         );
+        assert_eq!(sql.text, "SELECT 1", "the editor keeps what was typed");
         assert!(workspace.server_version.needs_load());
         assert!(
             version_requests(&harness, sent).is_empty(),
@@ -3653,6 +3678,19 @@ mod tests {
             result: Ok(Default::default()),
             cancel: None,
         }));
+        // So is anything else the old session says, even about the run
+        // the new session has in flight.
+        let rerun = start_run(&mut harness, tab, query);
+        harness.app.apply(Action::Backend(Event::SqlRan {
+            session: old,
+            request: rerun,
+            result: Ok(Default::default()),
+            cancel: None,
+        }));
+        let workspace = harness.app.workspace(tab).unwrap();
+        let sql = workspace.sql_tab(query).unwrap();
+        assert_eq!(sql.run.pending, Some(rerun), "still running");
+        assert!(sql.run.value.is_none());
         let session = answer_connect(&mut harness);
         let asked = version_requests(&harness, sent);
         assert_eq!(asked.len(), 1);
@@ -3822,29 +3860,6 @@ mod tests {
             sql_tab: id,
             all,
         });
-    }
-
-    /// What a script did: one outcome per statement that started.
-    fn script_outcome(
-        outcomes: Vec<tabletist_db::StatementOutcome>,
-    ) -> tabletist_db::ScriptOutcome {
-        tabletist_db::ScriptOutcome {
-            results: outcomes
-                .into_iter()
-                .map(|outcome| tabletist_db::StatementResult {
-                    elapsed: Duration::from_millis(14),
-                    outcome,
-                })
-                .collect(),
-            stopped: false,
-        }
-    }
-
-    fn sql_error(message: &str) -> tabletist_db::StatementOutcome {
-        tabletist_db::StatementOutcome::Error {
-            error: Error::query(message),
-            position: None,
-        }
     }
 
     fn runs_since(harness: &Harness, from: usize) -> usize {
@@ -4066,15 +4081,19 @@ mod tests {
         let editor = sql(&harness, tab, id);
         assert!(!editor.is_running());
         assert_eq!(editor.dims(), (2, 3));
-        // An answer from another session never lands either.
-        let answered = editor.run.loaded.unwrap();
+        // Nor does an answer from another session, even one naming the
+        // run in flight.
+        run(&mut harness, tab, id, false);
+        let third = sql(&harness, tab, id).run.pending.unwrap();
         harness.app.apply(Action::Backend(Event::SqlRan {
             session: SessionId(u64::MAX),
-            request: answered,
+            request: third,
             result: Ok(script_outcome(vec![rows_outcome(9)])),
             cancel: None,
         }));
-        assert_eq!(sql(&harness, tab, id).dims(), (2, 3));
+        let editor = sql(&harness, tab, id);
+        assert_eq!(editor.run.pending, Some(third), "still running");
+        assert_eq!(editor.dims(), (2, 3));
     }
 
     #[test]
@@ -4093,7 +4112,7 @@ mod tests {
         harness.answer_sql(
             Ok(script_outcome(vec![
                 rows_outcome(5),
-                sql_error("no such column: x"),
+                error_outcome("no such column: x", None),
             ])),
             None,
         );
@@ -4174,7 +4193,66 @@ mod tests {
         assert_eq!(finished.cancel, Some(CancelReason::User));
         assert_eq!(finished.statements.len(), 1);
         assert!(editor.shown().is_none());
-        assert_eq!(editor.pane, ResultPane::Results, "Messages has nothing");
+        assert_eq!(
+            editor.pane,
+            ResultPane::Messages,
+            "Results has nothing to show, Messages says it was cancelled"
+        );
+    }
+
+    #[test]
+    fn a_run_that_was_only_cancelled_opens_messages() {
+        let mut harness = Harness::new();
+        let (tab, id) = new_sql(&mut harness);
+        type_sql(&mut harness, tab, id, "SET x = 1; SELECT slow()", 0);
+        // With or without a reason (a statement_timeout the script set
+        // itself cancels without one).
+        for cancel in [Some(CancelReason::User), None] {
+            run(&mut harness, tab, id, true);
+            harness.answer_sql(
+                Ok(script_outcome(vec![
+                    tabletist_db::StatementOutcome::Done { affected: None },
+                    tabletist_db::StatementOutcome::Cancelled,
+                ])),
+                cancel,
+            );
+            let editor = sql(&harness, tab, id);
+            assert!(editor.shown().is_none());
+            assert_eq!(editor.pane, ResultPane::Messages, "{cancel:?}");
+            // A run that works brings Results back.
+            run(&mut harness, tab, id, true);
+            harness.answer_sql(Ok(script_outcome(vec![rows_outcome(1)])), None);
+            assert_eq!(sql(&harness, tab, id).pane, ResultPane::Results);
+        }
+    }
+
+    #[test]
+    fn a_user_cancel_after_rows_stays_on_results() {
+        let mut harness = Harness::new();
+        let (tab, id) = new_sql(&mut harness);
+        type_sql(&mut harness, tab, id, "SELECT 1; SELECT slow()", 0);
+        run(&mut harness, tab, id, true);
+        harness
+            .app
+            .workspace_mut(tab)
+            .unwrap()
+            .sql_tab_mut(id)
+            .unwrap()
+            .pane = ResultPane::Messages;
+        harness.answer_sql(
+            Ok(script_outcome(vec![
+                rows_outcome(4),
+                tabletist_db::StatementOutcome::Cancelled,
+            ])),
+            Some(CancelReason::User),
+        );
+        let editor = sql(&harness, tab, id);
+        assert_eq!(editor.dims(), (4, 3));
+        assert_eq!(
+            editor.pane,
+            ResultPane::Results,
+            "the user stopped it and has rows to read"
+        );
     }
 
     #[test]
@@ -4195,6 +4273,11 @@ mod tests {
         assert_eq!(editor.run.value.as_ref().unwrap().cancel, Some(timeout));
         assert_eq!(editor.dims(), (4, 3));
         assert_eq!(editor.error_mark(), None);
+        assert_eq!(
+            editor.pane,
+            ResultPane::Messages,
+            "nobody asked for the run to stop, so say why it did"
+        );
     }
 
     #[test]
@@ -4312,6 +4395,66 @@ mod tests {
         );
         assert_eq!(sql(&harness, tab, id).timeout, None);
         assert_eq!(harness.app.settings.sql_timeout_secs, Some(60));
+    }
+
+    fn saves_since(harness: &Harness, from: usize) -> usize {
+        harness.app.backend.sent[from..]
+            .iter()
+            .filter(|command| matches!(command, Command::Save { .. }))
+            .count()
+    }
+
+    #[test]
+    fn picking_the_limit_or_timeout_already_set_saves_nothing() {
+        let mut harness = Harness::new();
+        let (tab, first) = new_sql(&mut harness);
+        harness.app.apply(Action::NewSqlTab(tab));
+        let second = harness.app.workspace(tab).unwrap().active_tab.unwrap();
+        let sent = harness.app.backend.sent.len();
+        // The second editor's menus change the settings...
+        harness.app.apply(Action::SetSqlLimit {
+            tab,
+            sql_tab: second,
+            limit: 100,
+        });
+        harness.app.apply(Action::SetSqlTimeout {
+            tab,
+            sql_tab: second,
+            secs: Some(60),
+        });
+        assert_eq!(saves_since(&harness, sent), 2);
+        // ...so the same picks in the first only change that editor.
+        let sent = harness.app.backend.sent.len();
+        harness.app.apply(Action::SetSqlLimit {
+            tab,
+            sql_tab: first,
+            limit: 100,
+        });
+        harness.app.apply(Action::SetSqlTimeout {
+            tab,
+            sql_tab: first,
+            secs: Some(60),
+        });
+        assert_eq!(harness.app.backend.sent.len(), sent, "nothing to save");
+        assert_eq!(sql(&harness, tab, first).limit, 100);
+        assert_eq!(
+            sql(&harness, tab, first).timeout,
+            Some(Duration::from_secs(60))
+        );
+        assert_eq!(harness.app.settings.sql_limit, 100);
+        assert_eq!(harness.app.settings.sql_timeout_secs, Some(60));
+        // A timeout of no seconds is no timeout, which is a change once.
+        harness.app.apply(Action::SetSqlTimeout {
+            tab,
+            sql_tab: first,
+            secs: Some(0),
+        });
+        harness.app.apply(Action::SetSqlTimeout {
+            tab,
+            sql_tab: first,
+            secs: None,
+        });
+        assert_eq!(saves_since(&harness, sent), 1);
     }
 
     #[test]

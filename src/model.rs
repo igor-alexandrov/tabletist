@@ -1596,6 +1596,41 @@ pub struct SqlRun {
     pub outcome: tabletist_db::ScriptOutcome,
     /// Who stopped the run, if someone did.
     pub cancel: Option<crate::backend::CancelReason>,
+    /// Where the first statement that failed sits in the editor: its line,
+    /// and the column when the database gave a position. Worked out once,
+    /// when the run finishes, since views ask every frame.
+    pub error_mark: Option<(usize, Option<usize>)>,
+}
+
+impl SqlRun {
+    fn new(
+        statements: Vec<tabletist_db::sql::Statement>,
+        outcome: tabletist_db::ScriptOutcome,
+        cancel: Option<crate::backend::CancelReason>,
+    ) -> Self {
+        // One result per statement that started, in order.
+        let error_mark = statements
+            .iter()
+            .zip(&outcome.results)
+            .find_map(|(statement, result)| {
+                let tabletist_db::StatementOutcome::Error { position, .. } = &result.outcome else {
+                    return None;
+                };
+                Some(match position {
+                    Some(position) => {
+                        let (line, column) = statement.line_col(*position);
+                        (line, Some(column))
+                    }
+                    None => (statement.first_line, None),
+                })
+            });
+        Self {
+            statements,
+            outcome,
+            cancel,
+            error_mark,
+        }
+    }
 }
 
 /// A SQL editor run the backend has not answered yet.
@@ -1700,11 +1735,7 @@ impl SqlTab {
             .unwrap_or_default();
         self.run.finish(
             request,
-            result.map(|outcome| SqlRun {
-                statements,
-                outcome,
-                cancel,
-            }),
+            result.map(|outcome| SqlRun::new(statements, outcome, cancel)),
         )
     }
 
@@ -1777,28 +1808,11 @@ impl SqlTab {
             return None;
         }
         match &self.run.error {
-            Some(Error::Refused { line, .. }) => return Some((*line, None)),
+            Some(Error::Refused { line, .. }) => Some((*line, None)),
             // Nothing ran, so the result still held is an older run's.
-            Some(_) => return None,
-            None => {}
+            Some(_) => None,
+            None => self.run.value.as_ref()?.error_mark,
         }
-        let run = self.run.value.as_ref()?;
-        // One result per statement that started, in order.
-        run.statements
-            .iter()
-            .zip(&run.outcome.results)
-            .find_map(|(statement, result)| {
-                let tabletist_db::StatementOutcome::Error { position, .. } = &result.outcome else {
-                    return None;
-                };
-                Some(match position {
-                    Some(position) => {
-                        let (line, column) = statement.line_col(*position);
-                        (line, Some(column))
-                    }
-                    None => (statement.first_line, None),
-                })
-            })
     }
 }
 
@@ -2163,31 +2177,7 @@ mod tests {
         assert!(sql.run.value.is_some());
     }
 
-    /// Runs `text` in `sql` and answers with one outcome per statement
-    /// that started.
-    fn ran(sql: &mut SqlTab, text: &str, outcomes: Vec<tabletist_db::StatementOutcome>) {
-        sql.text = text.into();
-        let request = RequestId(sql.run.loaded.map_or(9, |last| last.0 + 1));
-        let _ = sql.start_run(request, script(text));
-        let outcome = tabletist_db::ScriptOutcome {
-            results: outcomes
-                .into_iter()
-                .map(|outcome| tabletist_db::StatementResult {
-                    elapsed: Duration::from_millis(14),
-                    outcome,
-                })
-                .collect(),
-            stopped: false,
-        };
-        assert!(sql.finish_run(request, Ok(outcome), None));
-    }
-
-    fn failed(message: &str, position: Option<usize>) -> tabletist_db::StatementOutcome {
-        tabletist_db::StatementOutcome::Error {
-            error: Error::query(message),
-            position,
-        }
-    }
+    use crate::testing::{error_outcome, rows_outcome, run_script};
 
     #[test]
     fn a_sql_tab_reports_its_cursor_line_and_column() {
@@ -2210,11 +2200,10 @@ mod tests {
 
     #[test]
     fn results_show_the_last_statement_that_returned_rows() {
-        use crate::testing::rows_outcome;
         let mut sql = editor();
         assert!(sql.shown().is_none() && sql.shown_rows().is_none());
         assert_eq!(sql.dims(), (0, 0));
-        ran(
+        run_script(
             &mut sql,
             "SELECT 1; SELECT 2; SET x = 1",
             vec![
@@ -2231,7 +2220,7 @@ mod tests {
         assert_eq!(sql.dims(), (2, 3));
         assert_eq!(sql.error_mark(), None);
         // A run without a result set shows none.
-        ran(
+        run_script(
             &mut sql,
             "SET x = 1",
             vec![tabletist_db::StatementOutcome::Done { affected: None }],
@@ -2243,15 +2232,17 @@ mod tests {
     #[test]
     fn a_failed_statement_is_marked_on_the_line_of_its_sql() {
         let mut sql = editor();
-        ran(
+        run_script(
             &mut sql,
             "SELECT 1;\n-- the typo\nSELECT x",
-            vec![
-                crate::testing::rows_outcome(1),
-                failed("no such column: x", None),
-            ],
+            vec![rows_outcome(1), error_outcome("no such column: x", None)],
         );
         assert_eq!(sql.error_mark(), Some((3, None)));
+        assert_eq!(
+            sql.run.value.as_ref().unwrap().error_mark,
+            Some((3, None)),
+            "kept with the run, not worked out again for every frame"
+        );
         assert_eq!(sql.shown().map(|(index, _)| index), Some(0));
     }
 
@@ -2261,22 +2252,22 @@ mod tests {
         // On the statement's first line the column counts from the line's
         // start, not the statement's.
         let mut sql = editor();
-        ran(
+        run_script(
             &mut sql,
             text,
             vec![
-                crate::testing::rows_outcome(1),
-                failed("column \"a\" does not exist", Some(8)),
+                rows_outcome(1),
+                error_outcome("column \"a\" does not exist", Some(8)),
             ],
         );
         assert_eq!(sql.error_mark(), Some((2, Some(10))));
         // "nope" is the 13th character of the second statement.
-        ran(
+        run_script(
             &mut sql,
             text,
             vec![
-                crate::testing::rows_outcome(1),
-                failed("column \"nope\" does not exist", Some(13)),
+                rows_outcome(1),
+                error_outcome("column \"nope\" does not exist", Some(13)),
             ],
         );
         assert_eq!(sql.error_mark(), Some((3, Some(3))));
@@ -2285,10 +2276,10 @@ mod tests {
     #[test]
     fn a_refusal_is_marked_and_an_older_runs_error_is_not() {
         let mut sql = editor();
-        ran(
+        run_script(
             &mut sql,
             "SELECT x",
-            vec![failed("no such column: x", None)],
+            vec![error_outcome("no such column: x", None)],
         );
         assert_eq!(sql.error_mark(), Some((1, None)));
         // The run in flight has not failed anywhere yet.

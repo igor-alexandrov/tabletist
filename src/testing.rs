@@ -506,6 +506,46 @@ pub fn rows_outcome(rows: usize) -> tabletist_db::StatementOutcome {
     }
 }
 
+/// A SQL editor statement that failed with `message`, at the 1-based
+/// character `position` of its text when the database gives one.
+pub fn error_outcome(message: &str, position: Option<usize>) -> tabletist_db::StatementOutcome {
+    tabletist_db::StatementOutcome::Error {
+        error: tabletist_db::Error::query(message),
+        position,
+    }
+}
+
+/// What a script did: one outcome per statement that started, each taking
+/// 14 ms, and nobody stopping it.
+pub fn script_outcome(
+    outcomes: Vec<tabletist_db::StatementOutcome>,
+) -> tabletist_db::ScriptOutcome {
+    tabletist_db::ScriptOutcome {
+        results: outcomes
+            .into_iter()
+            .map(|outcome| tabletist_db::StatementResult {
+                elapsed: std::time::Duration::from_millis(14),
+                outcome,
+            })
+            .collect(),
+        stopped: false,
+    }
+}
+
+/// Types `text` into `sql`, runs all of it (split as SQLite does) and
+/// finishes the run with `outcomes`, without an app.
+pub fn run_script(
+    sql: &mut crate::model::SqlTab,
+    text: &str,
+    outcomes: Vec<tabletist_db::StatementOutcome>,
+) {
+    sql.text = text.into();
+    let request = RequestId(sql.run.loaded.map_or(9, |last| last.0 + 1));
+    let statements = tabletist_db::sql::statements(Driver::Sqlite.dialect(), text);
+    let _ = sql.start_run(request, statements);
+    assert!(sql.finish_run(request, Ok(script_outcome(outcomes)), None));
+}
+
 impl Harness {
     /// Answers the newest `RunSql`, as the backend does when the script
     /// ends: with what it did (or why it failed as a whole) and who stopped

@@ -39,8 +39,12 @@ impl Settings {
 
     /// The SQL editor's timeout as a duration; `None` waits forever.
     pub fn sql_timeout(&self) -> Option<std::time::Duration> {
-        self.sql_timeout_secs
-            .map(|secs| std::time::Duration::from_secs(u64::from(secs)))
+        Self::timeout_of(self.sql_timeout_secs)
+    }
+
+    /// A timeout in seconds as a duration.
+    pub fn timeout_of(secs: Option<u32>) -> Option<std::time::Duration> {
+        secs.map(|secs| std::time::Duration::from_secs(u64::from(secs)))
     }
 
     /// A row limit the SQL editor can run with.
