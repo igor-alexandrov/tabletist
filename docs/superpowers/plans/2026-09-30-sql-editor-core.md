@@ -3843,6 +3843,20 @@ and in `SelectCell`: `if let Some(sql) = self.sql_tab_mut(tab, object_tab) { sql
 
 `Refresh(tab)`: return early when `self.workspace(tab).and_then(Workspace::active_sql_tab).is_some()`.
 
+`App::active_object()` must return `Some` only when the active tab is an object tab (it feeds object-only keys: paging, filter, row panel, copy):
+
+```rust
+    /// The connection tab and object tab the keyboard acts on; `None` when
+    /// the active tab is a SQL editor.
+    pub fn active_object(&self) -> Option<(ConnTabId, TabId)> {
+        let tab = self.active_tab_id();
+        let workspace = self.workspace(tab)?;
+        Some((tab, workspace.active_object_tab()?.id))
+    }
+```
+
+Add `assert!(harness.app.active_object().is_none());` to `sql_tabs_are_numbered_per_connection_and_ask_for_the_version`.
+
 - [ ] **Step 5: Run the tests**
 
 Run: `~/.cargo/bin/cargo test --locked --lib`
