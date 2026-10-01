@@ -221,7 +221,7 @@ fn timeout_text(secs: Option<u32>, short: bool, look: &Look, locale: Locale) -> 
 
 /// The keys that run the statement at the cursor and the whole script, as
 /// the look spells shortcuts.
-fn run_keys(look: &Look) -> (String, String) {
+pub(super) fn run_keys(look: &Look) -> (String, String) {
     let command = look.command_key();
     if look.terminal {
         ("ctrl+enter".to_owned(), "ctrl+shift+enter".to_owned())
@@ -767,11 +767,8 @@ fn menu(
 /// whole ran nothing, and the result still held is an older run's.
 fn ran(sql: &SqlTab) -> bool {
     !sql.is_running()
-        && sql.run.error.is_none()
         && sql
-            .run
-            .value
-            .as_ref()
+            .last_run()
             .is_some_and(|run| !run.outcome.results.is_empty())
 }
 

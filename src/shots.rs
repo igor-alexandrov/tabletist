@@ -350,6 +350,73 @@ fn shots() {
         let failed = crate::testing::error_outcome(message, Some(63));
         harness.answer_sql(Ok(crate::testing::script_outcome(vec![failed])), None);
     });
+    // The results' other states: nothing run yet, a run on its way, every
+    // statement in Messages, a refusal, a cancel and a cut result.
+    both("sql-idle", |harness| {
+        let tab = workspace(harness);
+        harness.app.apply(Action::NewSqlTab(tab));
+    });
+    both("sql-running", |harness| {
+        let tab = sql_editor(harness);
+        run_sql(harness, tab, true);
+    });
+    both("sql-messages", |harness| {
+        let tab = sql_editor(harness);
+        run_sql(harness, tab, true);
+        let failed = tabletist_db::StatementOutcome::Error {
+            error: tabletist_db::Error::Query {
+                code: Some("42703".into()),
+                message: "column \"kindd\" does not exist".into(),
+                detail: None,
+                hint: Some("Perhaps you meant to reference the column \"kind\".".into()),
+            },
+            position: Some(31),
+        };
+        harness.answer_sql(Ok(crate::testing::script_outcome(vec![failed])), None);
+    });
+    both("sql-refused", |harness| {
+        let tab = sql_editor(harness);
+        run_sql(harness, tab, true);
+        let refused = tabletist_db::Error::Refused {
+            line: 6,
+            what: "COMMIT".into(),
+        };
+        harness.answer_sql(Err(refused), None);
+        let sql_tab = harness.app.workspace(tab).unwrap().active_tab.unwrap();
+        harness.app.apply(Action::SetResultPane {
+            tab,
+            sql_tab,
+            pane: crate::model::ResultPane::Results,
+        });
+    });
+    both("sql-cancelled", |harness| {
+        let tab = sql_editor(harness);
+        run_sql(harness, tab, true);
+        let mut outcome = crate::testing::script_outcome(vec![
+            tabletist_db::StatementOutcome::Done { affected: None },
+            tabletist_db::StatementOutcome::Cancelled,
+        ]);
+        outcome.stopped = true;
+        let timeout = crate::backend::CancelReason::Timeout(Duration::from_secs(30));
+        harness.answer_sql(Ok(outcome), Some(timeout));
+    });
+    both("sql-truncated", |harness| {
+        let tab = sql_editor(harness);
+        run_sql(harness, tab, false);
+        let page = page();
+        let cut = tabletist_db::StatementOutcome::Rows {
+            columns: page.columns,
+            rows: page.rows,
+            truncated: true,
+        };
+        harness.answer_sql(Ok(crate::testing::script_outcome(vec![cut])), None);
+    });
+}
+
+/// Runs the active SQL editor's statement, or `all` of its script.
+fn run_sql(harness: &mut Harness, tab: ConnTabId, all: bool) {
+    let sql_tab = harness.app.workspace(tab).unwrap().active_tab.unwrap();
+    harness.app.apply(Action::RunSql { tab, sql_tab, all });
 }
 
 /// A SQL editor beside the open tables, its script run and answered.

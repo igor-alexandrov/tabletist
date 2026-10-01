@@ -79,7 +79,7 @@ fn fit_parts(parts: &[String], room: f32, width: impl Fn(&str) -> f32) -> Option
 
 /// Paints `text` from `x`, centred on `y`, and names it `name` for screen
 /// readers (the whole text, when the painted one is cut). Returns its width.
-fn paint_named(ui: &egui::Ui, x: f32, y: f32, text: Text, name: &str) -> f32 {
+pub fn paint_named(ui: &egui::Ui, x: f32, y: f32, text: Text, name: &str) -> f32 {
     let laid = text.layout(ui.ctx());
     let width = laid.paint_left(ui.painter(), x, y);
     let size = laid.size();
@@ -904,8 +904,10 @@ fn pager(
     response.on_hover_text(label)
 }
 
-/// What the grid's header says under a column's name.
-fn type_line(
+/// What the grid's header says under a column's name, and whether the
+/// column is part of the primary key. A SQL editor's result has no
+/// `structure`: its columns say their types alone.
+pub fn type_line(
     name: &str,
     type_name: &str,
     kind: ValueKind,
@@ -1013,59 +1015,14 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
                 &palette,
                 &look,
                 |row, col| {
-                    let value = &page.rows[row][col];
-                    let kind = page.columns[col].kind;
-                    if value.is_null() {
-                        return Cell {
-                            text: "NULL".into(),
-                            null: true,
-                            style: Style::Plain,
-                        };
-                    }
-                    if let Some(color) = format::color(value) {
-                        return Cell {
-                            text: format::cell_text(value),
-                            null: false,
-                            style: Style::Color(color),
-                        };
-                    }
-                    if let Some(style) = tags[col].style(value) {
-                        return Cell {
-                            text: format::cell_text(value),
-                            null: false,
-                            style,
-                        };
-                    }
-                    if let (ValueKind::Json, tabletist_db::Value::Text(text)) = (kind, value)
-                        && text.len() <= 16 * 1024
-                        && let Some(doc) = crate::ui::json_view::parsed_in(&ctx, text)
-                    {
-                        let (count, strings) = crate::ui::json_view::summary(&doc);
-                        let shown = if look.terminal {
-                            strings.join(" · ")
-                        } else {
-                            strings.into_iter().next().unwrap_or_default()
-                        };
-                        return Cell {
-                            text: format::one_line(&shown).into_owned().into(),
-                            null: false,
-                            style: Style::Json(count),
-                        };
-                    }
-                    let text = format::cell_text(value);
-                    let text = if kind == ValueKind::Temporal && !full_precision {
-                        match format::to_the_second(&text) {
-                            std::borrow::Cow::Borrowed(_) => text,
-                            std::borrow::Cow::Owned(short) => short.into(),
-                        }
-                    } else {
-                        text
-                    };
-                    Cell {
-                        text,
-                        null: false,
-                        style: Style::Plain,
-                    }
+                    cell(
+                        &ctx,
+                        &page.rows[row][col],
+                        page.columns[col].kind,
+                        &tags[col],
+                        &look,
+                        full_precision,
+                    )
                 },
             );
             if let Some(cell) = output.clicked {
@@ -1089,6 +1046,86 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
         });
     }
     app.actions.extend(actions);
+}
+
+/// A cell of a result grid, a table's or a SQL editor's: a value from its
+/// column's closed set (`tags`) as its tag, and anything else as
+/// [`plain_cell`] reads it. NULL is never a tag, and a colour is a colour
+/// before it is one: the order is NULL, colour, tag, then the rest.
+pub fn cell<'a>(
+    ctx: &egui::Context,
+    value: &'a tabletist_db::Value,
+    kind: ValueKind,
+    tags: &crate::ui::value_tags::Tags<'_>,
+    look: &Look,
+    full_precision: bool,
+) -> Cell<'a> {
+    if let Some(style) = tags.style(value)
+        && format::color(value).is_none()
+    {
+        return Cell {
+            text: format::cell_text(value),
+            null: false,
+            style,
+        };
+    }
+    plain_cell(ctx, value, kind, look, full_precision)
+}
+
+/// A cell's text and style when it is no tag: NULL, a colour's swatch, a
+/// document at a glance, a timestamp to the second unless `full_precision`,
+/// and anything else as it reads.
+pub fn plain_cell<'a>(
+    ctx: &egui::Context,
+    value: &'a tabletist_db::Value,
+    kind: ValueKind,
+    look: &Look,
+    full_precision: bool,
+) -> Cell<'a> {
+    if value.is_null() {
+        return Cell {
+            text: "NULL".into(),
+            null: true,
+            style: Style::Plain,
+        };
+    }
+    if let Some(color) = format::color(value) {
+        return Cell {
+            text: format::cell_text(value),
+            null: false,
+            style: Style::Color(color),
+        };
+    }
+    if let (ValueKind::Json, tabletist_db::Value::Text(text)) = (kind, value)
+        && text.len() <= 16 * 1024
+        && let Some(doc) = crate::ui::json_view::parsed_in(ctx, text)
+    {
+        let (count, strings) = crate::ui::json_view::summary(&doc);
+        let shown = if look.terminal {
+            strings.join(" · ")
+        } else {
+            strings.into_iter().next().unwrap_or_default()
+        };
+        return Cell {
+            text: format::one_line(&shown).into_owned().into(),
+            null: false,
+            style: Style::Json(count),
+        };
+    }
+    let text = format::cell_text(value);
+    let text = if kind == ValueKind::Temporal && !full_precision {
+        match format::to_the_second(&text) {
+            std::borrow::Cow::Borrowed(_) => text,
+            std::borrow::Cow::Owned(short) => short.into(),
+        }
+    } else {
+        text
+    };
+    Cell {
+        text,
+        null: false,
+        style: Style::Plain,
+    }
 }
 
 /// An error with its code, detail and hint, and a Retry button.
@@ -1226,6 +1263,101 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn a_plain_cell_reads_as_its_value_does_in_any_grid() {
+        let ctx = egui::Context::default();
+        let mac = Look::macos();
+        let cell = |value: &Value, kind, look: &Look, full| {
+            let cell = plain_cell(&ctx, value, kind, look, full);
+            (cell.text.into_owned(), cell.null, cell.style)
+        };
+        assert_eq!(
+            cell(&Value::Null, ValueKind::Text, &mac, false),
+            ("NULL".into(), true, Style::Plain)
+        );
+        // A colour wins over what else its column could be.
+        let blue = Style::Color(egui::Color32::from_rgb(0x3a, 0x7b, 0xd5));
+        assert_eq!(
+            cell(&Value::Text("#3a7bd5".into()), ValueKind::Json, &mac, false),
+            ("#3a7bd5".into(), false, blue)
+        );
+        // A document at a glance: its keys counted, its strings shown (the
+        // first on macOS, all of them in the terminal).
+        let document = Value::Text(r#"{"storage": "store", "kind": "cover"}"#.into());
+        assert_eq!(
+            cell(&document, ValueKind::Json, &mac, false),
+            ("store".into(), false, Style::Json(2))
+        );
+        assert_eq!(
+            cell(&document, ValueKind::Json, &Look::omarchy(), false),
+            ("store · cover".into(), false, Style::Json(2))
+        );
+        // The same text in a column that is no document is plain text.
+        let (text, _, style) = cell(&document, ValueKind::Text, &mac, false);
+        assert_eq!(
+            (text.as_str(), style),
+            (r#"{"storage": "store", "kind": "cover"}"#, Style::Plain)
+        );
+        // A timestamp to the second, until asked for all of it.
+        let at = Value::Text("2026-06-03 15:47:52.977704".into());
+        assert_eq!(
+            cell(&at, ValueKind::Temporal, &mac, false).0,
+            "2026-06-03 15:47:52"
+        );
+        assert_eq!(
+            cell(&at, ValueKind::Temporal, &mac, true).0,
+            "2026-06-03 15:47:52.977704"
+        );
+        assert_eq!(
+            cell(&Value::Int(42), ValueKind::Numeric, &mac, false),
+            ("42".into(), false, Style::Plain)
+        );
+    }
+
+    #[test]
+    fn a_tag_comes_after_null_and_a_colour_and_before_the_rest() {
+        use crate::ui::value_tags::Tags;
+        let ctx = egui::Context::default();
+        let look = Look::macos();
+        let allowed = ["#fff".to_owned(), "cover".to_owned(), "{}".to_owned()];
+        let tags = Tags::Values(&allowed);
+        let style = |value: &Value, kind, tags: &Tags<'_>| {
+            let cell = cell(&ctx, value, kind, tags, &look, false);
+            (cell.null, cell.style)
+        };
+        let text = |text: &str| Value::Text(text.into());
+        assert_eq!(
+            style(&Value::Null, ValueKind::Text, &tags),
+            (true, Style::Plain)
+        );
+        // An allowed value that is a colour draws as the colour.
+        let white = Style::Color(egui::Color32::WHITE);
+        assert_eq!(style(&text("#fff"), ValueKind::Text, &tags), (false, white));
+        assert_eq!(
+            style(&text("cover"), ValueKind::Text, &tags),
+            (false, Style::Tag(1))
+        );
+        // One that is a document draws as the tag, not the document.
+        assert_eq!(
+            style(&text("{}"), ValueKind::Json, &tags),
+            (false, Style::Tag(2))
+        );
+        // A value the list does not name, and a column with no list, are
+        // plain; a boolean is a tag with no list at all.
+        assert_eq!(
+            style(&text("preview"), ValueKind::Text, &tags),
+            (false, Style::Plain)
+        );
+        assert_eq!(
+            style(&text("cover"), ValueKind::Text, &Tags::None),
+            (false, Style::Plain)
+        );
+        assert_eq!(
+            style(&Value::Bool(true), ValueKind::Bool, &Tags::Bool),
+            (false, Style::True)
+        );
     }
 
     #[test]

@@ -1716,6 +1716,10 @@ pub struct SqlTab {
     /// The text the last run that finished started with. Its error mark
     /// names a line of that text, so it holds only while the text is that.
     ran_text: Option<TextPrint>,
+    /// Whether the last run that finished failed as a whole. `run.value` is
+    /// then an older run's, and stays so while the next run is in flight
+    /// (which clears `run.error`).
+    failed: bool,
 }
 
 // Hand-written so the SQL text never reaches logs or panic messages (a
@@ -1757,6 +1761,7 @@ impl SqlTab {
             selection: None,
             focus_editor: true,
             ran_text: None,
+            failed: false,
         }
     }
 
@@ -1800,6 +1805,7 @@ impl SqlTab {
         }
         let in_flight = self.in_flight.take();
         self.ran_text = in_flight.as_ref().map(|run| run.text);
+        self.failed = result.is_err();
         let statements = in_flight.map(|run| run.statements).unwrap_or_default();
         self.run.finish(
             request,
@@ -1823,8 +1829,16 @@ impl SqlTab {
         self.in_flight.as_ref().map(|run| run.started.elapsed())
     }
 
-    /// What the Results pane shows: the last statement of the last finished
-    /// run that returned rows, with its index in the run.
+    /// The last run that finished, unless it failed as a whole: the result
+    /// still held is then an older run's, which says nothing of the last
+    /// one. What the results show is this run's, never `run.value`'s.
+    pub fn last_run(&self) -> Option<&SqlRun> {
+        self.run.value.as_ref().filter(|_| !self.failed)
+    }
+
+    /// The last statement that returned rows in the last run that gave a
+    /// result, with its index in the run. After a run that failed as a
+    /// whole that is an older run's: see [`Self::last_run`].
     pub fn shown(&self) -> Option<(usize, &tabletist_db::StatementResult)> {
         let run = self.run.value.as_ref()?;
         run.outcome
@@ -2361,6 +2375,36 @@ mod tests {
             ],
         );
         assert_eq!(sql.error_mark(), Some((3, Some(3))));
+    }
+
+    #[test]
+    fn a_run_that_failed_as_a_whole_is_not_the_last_run_nor_is_the_one_before_it() {
+        let mut sql = editor();
+        assert!(sql.last_run().is_none());
+        run_script(&mut sql, "SELECT 1", vec![rows_outcome(5)]);
+        assert_eq!(sql.last_run(), sql.run.value.as_ref());
+        // The run in flight leaves the last one in place.
+        let _ = sql.start_run(RequestId(20), script("COMMIT"));
+        assert!(sql.last_run().is_some());
+        let refused = Error::Refused {
+            line: 1,
+            what: "COMMIT".into(),
+        };
+        assert!(sql.finish_run(RequestId(20), Err(refused), None));
+        assert!(sql.run.value.is_some(), "the older result is still held");
+        assert!(sql.last_run().is_none());
+        // Starting the next run clears the error, not what it meant; nor
+        // does a run nothing will answer bring the older result back.
+        let _ = sql.start_run(RequestId(21), script("SELECT 2"));
+        assert!(sql.run.error.is_none() && sql.last_run().is_none());
+        // An answer for a run that was replaced changes nothing.
+        assert!(!sql.finish_run(RequestId(20), Ok(Default::default()), None));
+        assert!(sql.last_run().is_none());
+        sql.abandon_run();
+        assert!(sql.last_run().is_none());
+        run_script(&mut sql, "SELECT 2", vec![rows_outcome(2)]);
+        assert_eq!(sql.last_run().map(|run| run.statements.len()), Some(1));
+        assert_eq!(sql.dims(), (2, 3));
     }
 
     #[test]

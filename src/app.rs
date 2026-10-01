@@ -2648,6 +2648,7 @@ impl App {
         // After the frame drew them for the last time.
         for (tab, id) in self.closed_editors.drain(..) {
             crate::ui::sql_text::forget(ui.ctx(), tab, id);
+            crate::ui::sql_results::forget(ui.ctx(), tab, id);
         }
     }
 }

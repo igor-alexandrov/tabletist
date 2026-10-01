@@ -286,6 +286,41 @@ pub fn initial_widths<'a>(
         .collect()
 }
 
+/// What a grid keeps in egui's memory under ids only it can tell, kept
+/// under the grid's own id so [`forget`] finds all of it.
+#[derive(Clone, Copy)]
+struct Kept {
+    /// How many columns the widths kept are for.
+    columns: usize,
+    scroll: Id,
+}
+
+/// Drops what egui's memory keeps for the grid `id`: its columns' widths,
+/// the selection it last revealed and where it was scrolled to. For a grid
+/// that will not be drawn again (a SQL editor's result, once the next run
+/// has its own grid).
+pub fn forget(ctx: &egui::Context, id: Id) {
+    ctx.data_mut(|data| {
+        if let Some(Kept { columns, scroll }) = data.get_temp(id) {
+            data.remove::<Vec<f32>>(id.with(("widths", columns)));
+            data.remove::<egui::scroll_area::State>(scroll);
+        }
+        data.remove::<Option<CellPos>>(id.with("last-selection"));
+        data.remove::<Kept>(id);
+    });
+}
+
+/// Whether egui's memory keeps anything for the grid `id`.
+#[cfg(test)]
+pub fn remembered(ctx: &egui::Context, id: Id) -> bool {
+    ctx.data(|data| {
+        data.get_temp::<Kept>(id).is_some()
+            || data
+                .get_temp::<Option<CellPos>>(id.with("last-selection"))
+                .is_some()
+    })
+}
+
 #[allow(clippy::too_many_arguments)] // one call site per view; a struct adds nothing
 pub fn show<'a>(
     ui: &mut Ui,
@@ -580,6 +615,13 @@ pub fn show<'a>(
     ui.data_mut(|data| {
         data.insert_temp(widths_id, widths);
         data.insert_temp(last_id, selection);
+        data.insert_temp(
+            id,
+            Kept {
+                columns: columns.len(),
+                scroll: scroll.id,
+            },
+        );
     });
     output
 }
@@ -1045,6 +1087,30 @@ mod tests {
             .filter(|(_, node)| node.label().is_some_and(|label| label.starts_with("Row ")))
             .count();
         assert!(rows > 5 && rows < 40, "{rows} rows built");
+    }
+
+    #[test]
+    fn a_forgotten_grid_leaves_nothing_in_eguis_memory() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx, false, &crate::theme::Look::standard());
+        ctx.enable_accesskit();
+        let id = egui::Id::new("grid");
+        frame(&ctx, 10, vec![]);
+        frame(&ctx, 10, vec![]);
+        let kept: Kept = ctx.data(|data| data.get_temp(id)).expect("kept");
+        let widths = id.with(("widths", kept.columns));
+        let has_widths = || ctx.data(|data| data.get_temp::<Vec<f32>>(widths).is_some());
+        let scrolled = || egui::scroll_area::State::load(&ctx, kept.scroll).is_some();
+        assert_eq!(kept.columns, columns().len());
+        assert!(remembered(&ctx, id) && has_widths() && scrolled());
+        forget(&ctx, id);
+        assert!(!remembered(&ctx, id) && !has_widths() && !scrolled());
+        // Forgetting a grid never drawn, or one already forgotten, is fine.
+        forget(&ctx, id);
+        forget(&ctx, egui::Id::new("another grid"));
+        // Drawn again, it fits its columns anew.
+        frame(&ctx, 10, vec![]);
+        assert!(remembered(&ctx, id) && has_widths());
     }
 
     #[test]
