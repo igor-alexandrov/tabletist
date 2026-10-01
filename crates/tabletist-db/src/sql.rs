@@ -544,6 +544,134 @@ pub fn words(dialect: Dialect, text: &str) -> Vec<String> {
         .collect()
 }
 
+/// Why `statement` must not run in Tabletist's read-only transaction: the
+/// statement kind it is, for the message. `None` when it may run. Matched
+/// on tokens, so `SELECT 'COMMIT'` and a column named `end_date` pass.
+pub fn refusal(dialect: Dialect, statement: &str) -> Option<String> {
+    if dialect == Dialect::MySql
+        && tokenize(dialect, statement)
+            .iter()
+            .any(|token| token.kind == TokenKind::ExecutableComment)
+    {
+        return Some("a /*! */ comment".into());
+    }
+    let words = words(dialect, statement);
+    let word = |index: usize| words.get(index).map(String::as_str).unwrap_or_default();
+    let named = |pairs: &[(&str, &str)]| {
+        pairs
+            .iter()
+            .find(|(first, second)| word(0) == *first && word(1) == *second)
+            .map(|(first, second)| format!("{first} {second}"))
+    };
+    // Settings that leave read-only, or that change how later statements
+    // are lexed (the tokenizer assumes the connect-time values).
+    let session_name = |name: &str| {
+        name.ends_with("READ_ONLY")
+            || name == "AUTOCOMMIT"
+            || name == "SQL_MODE"
+            || name == "STANDARD_CONFORMING_STRINGS"
+            || name == "CLIENT_ENCODING"
+            || name.starts_with("CHARACTER_SET")
+    };
+    match word(0) {
+        first @ ("BEGIN" | "START" | "COMMIT" | "END" | "ROLLBACK" | "ABORT" | "SAVEPOINT"
+        | "RELEASE") => return Some(first.to_owned()),
+        "PREPARE" if word(1) == "TRANSACTION" => return Some("PREPARE TRANSACTION".into()),
+        "SET"
+            if words
+                .iter()
+                .any(|w| w == "TRANSACTION" || w == "CHARACTERISTICS") =>
+        {
+            return Some("SET TRANSACTION".into());
+        }
+        "SET"
+            if matches!(word(1), "NAMES" | "CHARSET")
+                || (word(1) == "CHARACTER" && word(2) == "SET") =>
+        {
+            return Some("SET NAMES".into());
+        }
+        "SET" if words.iter().skip(1).any(|w| session_name(w)) => {
+            return Some(format!(
+                "SET {}",
+                words.iter().skip(1).find(|w| session_name(w))?
+            ));
+        }
+        "RESET" if word(1) == "ALL" || words.iter().skip(1).any(|w| session_name(w)) => {
+            return Some("RESET".into());
+        }
+        "DISCARD" if word(1) == "ALL" => return Some("DISCARD ALL".into()),
+        "COPY" if dialect == Dialect::Postgres => return Some("COPY".into()),
+        // A U&"..." name can spell a guarded setting in escapes.
+        "SET" | "RESET" if dialect == Dialect::Postgres && unicode_name(statement) => {
+            return Some(format!("{} with a U& name", word(0)));
+        }
+        _ => {}
+    }
+    // set_config() changes the same settings as SET, from any statement.
+    if dialect == Dialect::Postgres && words.iter().any(|word| word == "SET_CONFIG") {
+        return Some("set_config".into());
+    }
+    if dialect != Dialect::MySql {
+        return None;
+    }
+    if matches!(
+        word(0),
+        "XA" | "LOCK" | "UNLOCK" | "CALL" | "GRANT" | "REVOKE" | "FLUSH" | "INSTALL" | "UNINSTALL"
+    ) {
+        return Some(word(0).to_owned());
+    }
+    if let Some(found) = named(&[
+        ("CREATE", "USER"),
+        ("ALTER", "USER"),
+        ("DROP", "USER"),
+        ("RENAME", "USER"),
+        ("CREATE", "ROLE"),
+        ("DROP", "ROLE"),
+        ("SET", "PASSWORD"),
+        ("SET", "DEFAULT"),
+    ]) {
+        return Some(found);
+    }
+    into_file(dialect, statement).map(|file| format!("INTO {file}"))
+}
+
+/// `OUTFILE` or `DUMPFILE` when the statement has `INTO` straight before it,
+/// as the next unquoted word with only whitespace and comments between.
+fn into_file(dialect: Dialect, statement: &str) -> Option<&'static str> {
+    let mut previous_into = false;
+    for token in tokenize(dialect, statement) {
+        let text = &statement[token.range.clone()];
+        match token.kind {
+            TokenKind::Whitespace | TokenKind::Comment => {}
+            TokenKind::Keyword | TokenKind::Identifier => {
+                if previous_into && text.eq_ignore_ascii_case("OUTFILE") {
+                    return Some("OUTFILE");
+                }
+                if previous_into && text.eq_ignore_ascii_case("DUMPFILE") {
+                    return Some("DUMPFILE");
+                }
+                previous_into = text.eq_ignore_ascii_case("INTO");
+            }
+            _ => previous_into = false,
+        }
+    }
+    None
+}
+
+/// Whether a PostgreSQL statement names something with `U&"..."`. The
+/// tokenizer sees the identifier `U`, the operator `&`, then a quoted name.
+fn unicode_name(statement: &str) -> bool {
+    let tokens: Vec<Token> = tokenize(Dialect::Postgres, statement)
+        .into_iter()
+        .filter(|token| token.kind != TokenKind::Whitespace)
+        .collect();
+    tokens.windows(3).any(|three| {
+        statement[three[0].range.clone()].eq_ignore_ascii_case("U")
+            && &statement[three[1].range.clone()] == "&"
+            && three[2].kind == TokenKind::QuotedIdentifier
+    })
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
@@ -1036,5 +1164,180 @@ mod tests {
             words(Dialect::MySql, "/* x */ set @@session.`tx_read_only` = 0"),
             vec!["SET", "SESSION", "TX_READ_ONLY"]
         );
+    }
+
+    #[test]
+    fn transaction_and_session_statements_are_refused() {
+        let refused = |dialect, text: &str| refusal(dialect, text);
+        for text in [
+            "BEGIN",
+            "start transaction",
+            "COMMIT",
+            "end",
+            "ROLLBACK",
+            "abort",
+            "SAVEPOINT a",
+            "RELEASE a",
+            "PREPARE TRANSACTION 'x'",
+            "COMMIT PREPARED 'x'",
+            "SET TRANSACTION READ WRITE",
+            "SET SESSION CHARACTERISTICS AS TRANSACTION READ WRITE",
+            "set default_transaction_read_only = off",
+            r#"SET "default_transaction_read_only" = off"#,
+            "RESET ALL",
+            "reset default_transaction_read_only",
+            "SET standard_conforming_strings = off",
+            r#"SET U&"default_transaction_read\005fonly" = off"#,
+            "SELECT set_config('standard_conforming_strings', 'off', false)",
+            "SET client_encoding = 'SJIS'",
+            "DISCARD ALL",
+            "COPY users TO STDOUT",
+            "/* hi */ commit",
+        ] {
+            assert!(refused(Dialect::Postgres, text).is_some(), "{text}");
+        }
+        for text in [
+            "SET SESSION TRANSACTION READ WRITE",
+            "SET GLOBAL TRANSACTION READ WRITE",
+            "SET @@session.transaction_read_only = 0",
+            "set `tx_read_only` = 0",
+            "SET autocommit = 1",
+            "XA START 'x'",
+            "LOCK TABLES t READ",
+            "UNLOCK TABLES",
+            "CALL p()",
+            "CREATE USER x",
+            "ALTER USER x IDENTIFIED BY 'y'",
+            "DROP USER x",
+            "RENAME USER x TO y",
+            "CREATE ROLE r",
+            "DROP ROLE r",
+            "GRANT ALL ON *.* TO x",
+            "REVOKE ALL ON *.* FROM x",
+            "SET PASSWORD = 'x'",
+            "SET DEFAULT ROLE ALL TO x",
+            "FLUSH PRIVILEGES",
+            "INSTALL PLUGIN p SONAME 'p.so'",
+            "UNINSTALL PLUGIN p",
+            "SELECT * FROM t INTO OUTFILE '/tmp/x'",
+            "SELECT 1 INTO DUMPFILE '/tmp/x'",
+            "SELECT 1 /*! , 2 */",
+            "SELECT 1 /*M! , 2 */",
+            "SET sql_mode = 'ANSI_QUOTES'",
+            "SET @@session.sql_mode = ''",
+            "SET NAMES gbk",
+            "SET CHARACTER SET gbk",
+            "SET character_set_client = gbk",
+            "RESET sql_mode",
+        ] {
+            assert!(refused(Dialect::MySql, text).is_some(), "{text}");
+        }
+        assert!(refused(Dialect::Sqlite, "BEGIN IMMEDIATE").is_some());
+    }
+
+    #[test]
+    fn unterminated_names_are_not_refused_or_a_panic() {
+        assert_eq!(refusal(Dialect::MySql, "SELECT `ë"), None);
+    }
+
+    #[test]
+    fn look_alikes_are_allowed() {
+        for (dialect, text) in [
+            (Dialect::Postgres, "SELECT 'COMMIT'"),
+            (Dialect::Postgres, "SELECT end_date FROM t"),
+            (Dialect::Postgres, "SET search_path = public"),
+            (Dialect::Postgres, "SELECT 1 -- COMMIT"),
+            (Dialect::Postgres, "WITH x AS (SELECT 1) SELECT * FROM x"),
+            (Dialect::MySql, r#"SELECT "into outfile""#),
+            (Dialect::MySql, "SET time_zone = '+00:00'"),
+            (Dialect::MySql, "SELECT * FROM users"),
+            (Dialect::Sqlite, "PRAGMA table_info(users)"),
+            (Dialect::Sqlite, "SELECT * FROM `call`"),
+        ] {
+            assert_eq!(refusal(dialect, text), None, "{text}");
+        }
+    }
+
+    #[test]
+    fn more_spellings_of_the_same_statements_are_refused() {
+        for text in [
+            "ROLLBACK PREPARED 'x'",
+            "SET SESSION TRANSACTION READ WRITE",
+            "SET LOCAL transaction_read_only = off",
+            "RESET character_set_client",
+            "RESET client_encoding",
+            "RESET \"standard_conforming_strings\"",
+            "  -- note\n  END",
+            "set U&\"x\" = 1",
+        ] {
+            assert!(refusal(Dialect::Postgres, text).is_some(), "{text}");
+        }
+        for text in [
+            "SET CHARSET utf8mb4",
+            "SET @@global.sql_mode = ''",
+            "SET SESSION sql_mode = ''",
+            "SET @a = 1, @@autocommit = 1",
+            "set `character_set_results` = NULL",
+            "COMMIT",
+            "SELECT 1 INTO\nOUTFILE '/tmp/x'",
+            "SELECT 1 INTO /* x */ DUMPFILE '/tmp/x'",
+        ] {
+            assert!(refusal(Dialect::MySql, text).is_some(), "{text}");
+        }
+    }
+
+    #[test]
+    fn the_refusal_names_the_statement() {
+        assert_eq!(
+            refusal(Dialect::Postgres, "commit").as_deref(),
+            Some("COMMIT")
+        );
+        assert_eq!(
+            refusal(Dialect::MySql, "SELECT 1 INTO OUTFILE 'x'").as_deref(),
+            Some("INTO OUTFILE")
+        );
+        assert_eq!(
+            refusal(Dialect::Postgres, "SET client_encoding = 'x'").as_deref(),
+            Some("SET CLIENT_ENCODING")
+        );
+    }
+
+    #[test]
+    fn dialect_specific_refusals_stay_in_their_dialect() {
+        // `/*!` is an ordinary comment outside MySQL; COPY and CALL are
+        // ordinary names or other statements elsewhere.
+        assert_eq!(refusal(Dialect::Postgres, "SELECT 1 /*! , 2 */"), None);
+        assert_eq!(refusal(Dialect::Sqlite, "SELECT 1 /*! , 2 */"), None);
+        assert_eq!(refusal(Dialect::MySql, "SELECT set_config FROM t"), None);
+        assert_eq!(refusal(Dialect::Sqlite, "SELECT * FROM copy"), None);
+        assert_eq!(
+            refusal(Dialect::MySql, "SELECT 'x' AS `into`, outfile FROM t"),
+            None
+        );
+    }
+
+    #[test]
+    fn odd_text_never_panics_the_guard() {
+        for dialect in [Dialect::Postgres, Dialect::MySql, Dialect::Sqlite] {
+            for text in [
+                "",
+                "U",
+                "U&",
+                "U&\"",
+                "SET U&\"ë",
+                "set `ë",
+                "/*!",
+                "/*M!",
+                "SET",
+                "RESET",
+                "SET ë",
+                "'ë",
+                "$$ë",
+                "[ë",
+                "SELECT 1 INTO",
+            ] {
+                let _ = refusal(dialect, text);
+            }
+        }
     }
 }
