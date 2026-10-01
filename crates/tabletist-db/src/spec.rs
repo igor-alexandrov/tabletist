@@ -34,6 +34,15 @@ impl Driver {
             Self::Sqlite => "SQLite",
         }
     }
+
+    /// The SQL dialect the driver speaks.
+    pub fn dialect(self) -> crate::Dialect {
+        match self {
+            Self::Postgres => crate::Dialect::Postgres,
+            Self::MySql => crate::Dialect::MySql,
+            Self::Sqlite => crate::Dialect::Sqlite,
+        }
+    }
 }
 
 /// libpq's `sslmode` values; MySQL's `ssl-mode` maps onto them.
@@ -299,6 +308,13 @@ impl ConnectSpec {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn each_driver_has_its_dialect() {
+        assert_eq!(Driver::Postgres.dialect(), crate::Dialect::Postgres);
+        assert_eq!(Driver::MySql.dialect(), crate::Dialect::MySql);
+        assert_eq!(Driver::Sqlite.dialect(), crate::Dialect::Sqlite);
+    }
 
     #[test]
     fn postgres_urls_parse_with_decoded_parts() {

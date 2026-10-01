@@ -11,7 +11,8 @@ use rusqlite::{ErrorCode, OpenFlags};
 
 use crate::{
     ColumnInfo, ColumnMeta, Dialect, Error, ForeignKeyInfo, IndexInfo, MAX_LISTED, ObjectInfo,
-    ObjectKind, ObjectRef, Result, RowPage, RowQuery, Structure, Value, ValueKind,
+    ObjectKind, ObjectRef, Result, RowPage, RowQuery, ScriptOutcome, StatementOutcome,
+    StatementResult, StopFlag, Structure, Value, ValueKind,
 };
 
 /// An open SQLite database.
@@ -58,6 +59,121 @@ impl Drop for InterruptOnDrop {
     }
 }
 
+/// Runs `texts` between `BEGIN` and a `ROLLBACK` that always happens.
+fn script(
+    connection: &rusqlite::Connection,
+    texts: &[String],
+    limit: usize,
+    stop: &StopFlag,
+) -> Result<ScriptOutcome> {
+    let mut outcome = ScriptOutcome::default();
+    if stop.is_stopped() {
+        return Ok(outcome);
+    }
+    connection
+        .execute_batch("BEGIN DEFERRED")
+        .map_err(map_error)?;
+    // SQLite calls this every 1000 virtual machine steps; `true` interrupts
+    // the running statement, which fails with SQLITE_INTERRUPT (Cancelled).
+    let watching = stop.clone();
+    connection.progress_handler(1_000, Some(move || watching.is_stopped()));
+    let ran = statements(connection, texts, limit, stop, &mut outcome);
+    // Removed before the rollback, so a stop cannot interrupt the cleanup.
+    connection.progress_handler(0, None::<fn() -> bool>);
+    // An error can end SQLite's transaction by itself; roll back only one
+    // that is still open.
+    let rolled_back = if connection.is_autocommit() {
+        Ok(())
+    } else {
+        connection
+            .execute_batch("ROLLBACK")
+            .or_else(|_| connection.execute_batch("ROLLBACK"))
+            .map_err(map_error)
+    };
+    ran?;
+    rolled_back.map_err(|error| crate::script::cleanup_failed(&error))?;
+    Ok(outcome)
+}
+
+fn statements(
+    connection: &rusqlite::Connection,
+    texts: &[String],
+    limit: usize,
+    stop: &StopFlag,
+    outcome: &mut ScriptOutcome,
+) -> Result<()> {
+    for text in texts {
+        if stop.is_stopped() {
+            outcome.results.push(StatementResult {
+                elapsed: std::time::Duration::ZERO,
+                outcome: StatementOutcome::Cancelled,
+            });
+            break;
+        }
+        let started = Instant::now();
+        let result = match statement(connection, text, limit) {
+            Ok(result) => result,
+            Err(error) => crate::script::statement_failed(error, None)?,
+        };
+        let last = matches!(
+            result,
+            StatementOutcome::Error { .. } | StatementOutcome::Cancelled
+        );
+        outcome.results.push(StatementResult {
+            elapsed: started.elapsed(),
+            outcome: result,
+        });
+        if last {
+            break;
+        }
+    }
+    Ok(())
+}
+
+fn statement(
+    connection: &rusqlite::Connection,
+    text: &str,
+    limit: usize,
+) -> Result<StatementOutcome> {
+    // prepare refuses a second statement in the text (MultipleStatement).
+    let mut statement = connection.prepare(text).map_err(map_error)?;
+    let declared: Vec<(String, String)> = statement
+        .columns()
+        .iter()
+        .map(|column| {
+            (
+                column.name().to_owned(),
+                column.decl_type().unwrap_or_default().to_owned(),
+            )
+        })
+        .collect();
+    if declared.is_empty() {
+        let changed = statement.raw_execute().map_err(map_error)?;
+        return Ok(StatementOutcome::Done {
+            affected: Some(changed as u64),
+        });
+    }
+    let mut rows = statement.raw_query();
+    let mut values: Vec<Vec<Value>> = Vec::new();
+    while let Some(row) = rows.next().map_err(map_error)? {
+        let mut cells = Vec::with_capacity(declared.len());
+        for index in 0..declared.len() {
+            cells.push(from_sqlite(row.get_ref(index).map_err(map_error)?));
+        }
+        values.push(cells);
+        if values.len() > limit {
+            break;
+        }
+    }
+    let truncated = values.len() > limit;
+    values.truncate(limit);
+    Ok(StatementOutcome::Rows {
+        columns: column_metas(declared, &values),
+        rows: values,
+        truncated,
+    })
+}
+
 fn to_sqlite(value: &Value) -> rusqlite::types::Value {
     use rusqlite::types::Value as Sqlite;
     match value {
@@ -96,6 +212,30 @@ fn from_sqlite(value: rusqlite::types::ValueRef<'_>) -> Value {
         ValueRef::Text(bytes) => Value::Text(String::from_utf8_lossy(bytes).into()),
         ValueRef::Blob(bytes) => Value::Bytes(bytes.into()),
     }
+}
+
+/// Result columns from their declared types; a column without one takes
+/// its kind from the first value that is not NULL.
+fn column_metas(declared: Vec<(String, String)>, rows: &[Vec<Value>]) -> Vec<ColumnMeta> {
+    declared
+        .into_iter()
+        .enumerate()
+        .map(|(index, (name, type_name))| {
+            let kind = if type_name.is_empty() {
+                rows.iter()
+                    .map(|row| &row[index])
+                    .find(|value| !value.is_null())
+                    .map_or(ValueKind::Other, ValueKind::of_value)
+            } else {
+                ValueKind::from_sqlite_decl(&type_name)
+            };
+            ColumnMeta {
+                name,
+                type_name,
+                kind,
+            }
+        })
+        .collect()
 }
 
 /// Refuses a raw WHERE that ends inside a `/*` comment, which SQLite would
@@ -195,6 +335,31 @@ impl Conn {
         .await;
         guard.disarm();
         result.map_err(|error| Error::Io(error.to_string()))?
+    }
+
+    /// See [`crate::Connection::run_script`]. The whole script is one
+    /// blocking job; a progress handler checks `stop` while a statement
+    /// runs.
+    pub async fn run_script(
+        &self,
+        texts: Vec<String>,
+        limit: u32,
+        stop: &StopFlag,
+    ) -> Result<ScriptOutcome> {
+        let stop = stop.clone();
+        let limit = limit as usize;
+        self.run(move |connection| script(connection, &texts, limit, &stop))
+            .await
+    }
+
+    pub async fn server_version(&self) -> Result<String> {
+        self.run(|connection| {
+            let version: String = connection
+                .query_row("SELECT sqlite_version()", [], |row| row.get(0))
+                .map_err(map_error)?;
+            Ok(format!("SQLite {version}"))
+        })
+        .await
     }
 
     pub(crate) fn interrupt_handle(&self) -> Arc<rusqlite::InterruptHandle> {
@@ -318,26 +483,7 @@ impl Conn {
             }
             let has_more = values.len() > limit;
             values.truncate(limit);
-            let columns = declared
-                .into_iter()
-                .enumerate()
-                .map(|(index, (name, type_name))| {
-                    let kind = if type_name.is_empty() {
-                        values
-                            .iter()
-                            .map(|row| &row[index])
-                            .find(|value| !value.is_null())
-                            .map_or(ValueKind::Other, ValueKind::of_value)
-                    } else {
-                        ValueKind::from_sqlite_decl(&type_name)
-                    };
-                    ColumnMeta {
-                        name,
-                        type_name,
-                        kind,
-                    }
-                })
-                .collect();
+            let columns = column_metas(declared, &values);
             Ok(RowPage {
                 columns,
                 rows: values,

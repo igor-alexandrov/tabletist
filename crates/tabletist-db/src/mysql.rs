@@ -38,6 +38,21 @@ pub struct Conn {
 }
 
 impl Conn {
+    /// Placeholder until the SQL editor lands for this driver.
+    pub async fn run_script(
+        &self,
+        _texts: &[String],
+        _limit: u32,
+        _stop: &crate::StopFlag,
+    ) -> Result<crate::ScriptOutcome> {
+        Err(Error::Unsupported("the SQL editor on this database"))
+    }
+
+    /// Placeholder until the SQL editor lands for this driver.
+    pub async fn server_version(&self) -> Result<String> {
+        Err(Error::Unsupported("the SQL editor on this database"))
+    }
+
     /// Connects to the spec's server, or through a tunnel's local port `via`.
     pub async fn connect(spec: &ConnectSpec, secrets: &Secrets, via: Option<u16>) -> Result<Self> {
         if spec.user.trim().is_empty() {

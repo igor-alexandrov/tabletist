@@ -19,8 +19,9 @@ tokio = { version = "1", features = ["rt", "sync", "net", "io-util"] }
 # SSH tunnels, on ring (no aws-lc to build).
 russh = { version = "0.63", default-features = false, features = ["ring", "rsa", "flate2"] }
 # SQLite, compiled in so every platform gets the same, recent version.
-# column_decltype gives each result column's declared type.
-rusqlite = { version = "0.37", features = ["bundled", "column_decltype"] }
+# column_decltype gives each result column's declared type; hooks gives the
+# progress handler that stops a SQL editor script.
+rusqlite = { version = "0.37", features = ["bundled", "column_decltype", "hooks"] }
 # Parsing postgres:// and mysql:// connection URLs.
 url = "2"
 # Decoding user names, passwords and database names in URLs.
