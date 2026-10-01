@@ -1778,6 +1778,8 @@ impl App {
                     object.count.finish(request, result);
                 }
             }
+            // The SQL editor's results: nothing reads them yet.
+            Event::SqlRan { .. } | Event::ServerVersion { .. } => {}
         }
     }
 

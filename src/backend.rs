@@ -3,11 +3,13 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, mpsc};
+use std::time::Duration;
 
 use tabletist_db::{
     CancelHandle, ConnectSpec, Connection, Driver, Error, HostKeys, ObjectInfo, ObjectRef, RowPage,
-    RowQuery, Secrets, Structure,
+    RowQuery, ScriptOutcome, Secrets, StopFlag, Structure,
 };
 use tokio::sync::mpsc as tokio_mpsc;
 
@@ -109,6 +111,22 @@ pub enum Command {
         session: SessionId,
         request: RequestId,
     },
+    /// Run a SQL editor script (see `Connection::run_script`). A timeout
+    /// stops it as a user's Cancel does; the script still runs to its end,
+    /// rolling back.
+    RunSql {
+        session: SessionId,
+        request: RequestId,
+        statements: Vec<tabletist_db::sql::Statement>,
+        /// The most rows kept per statement.
+        limit: u32,
+        timeout: Option<Duration>,
+    },
+    /// The server's name and version, for the SQL editor's footer.
+    ServerVersion {
+        session: SessionId,
+        request: RequestId,
+    },
     /// Writes a state file atomically. Saves to one file are written in
     /// order, and a burst of them writes only the newest.
     Save {
@@ -126,6 +144,7 @@ pub enum Command {
 pub enum StateFile {
     Connections(SavedConnections),
     KnownHosts(HostKeys),
+    Settings(crate::settings::Settings),
 }
 
 impl StateFile {
@@ -133,6 +152,7 @@ impl StateFile {
         match self {
             Self::Connections(connections) => connections.save(path),
             Self::KnownHosts(keys) => crate::known_hosts::save(path, keys),
+            Self::Settings(settings) => settings.save(path),
         }
     }
 }
@@ -207,11 +227,32 @@ pub enum Event {
         request: RequestId,
         result: Result<Vec<String>, Error>,
     },
+    /// A `RunSql` ended.
+    SqlRan {
+        session: SessionId,
+        request: RequestId,
+        result: Result<ScriptOutcome, Error>,
+        /// Who stopped the run, when a stop ended it.
+        cancel: Option<CancelReason>,
+    },
+    ServerVersion {
+        session: SessionId,
+        request: RequestId,
+        result: Result<String, Error>,
+    },
     /// A `Save` was written, or why it was not.
     Saved {
         path: PathBuf,
         result: Result<(), String>,
     },
+}
+
+/// Who stopped a SQL editor run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CancelReason {
+    User,
+    /// The run's timeout, which was this long.
+    Timeout(Duration),
 }
 
 /// Sends events to the UI and wakes it.
@@ -410,6 +451,9 @@ struct Running {
     /// Cancels sent for the running request. The session waits for them
     /// before it starts the next command, so none can land on that one.
     cancels: Vec<tokio::task::JoinHandle<()>>,
+    /// The running SQL editor script's stop flag: a Cancel sets it too, so
+    /// the script also stops between statements.
+    stop: Option<StopFlag>,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -639,6 +683,11 @@ impl Worker {
                 if let Some(handle) = self.sessions.get(&session) {
                     let mut running = lock(&handle.running);
                     if running.request == Some(request) {
+                        // Before the cancel is sent: a script it ends at
+                        // once must already see who stopped it.
+                        if let Some(stop) = &running.stop {
+                            stop.stop();
+                        }
                         let cancel = handle.cancel.clone();
                         running.cancels.retain(|task| !task.is_finished());
                         running.cancels.push(tokio::spawn(async move {
@@ -720,7 +769,9 @@ fn session_of(command: &Command) -> SessionId {
         | Command::Describe { session, .. }
         | Command::FetchRows { session, .. }
         | Command::CountRows { session, .. }
-        | Command::ListDatabases { session, .. } => *session,
+        | Command::ListDatabases { session, .. }
+        | Command::RunSql { session, .. }
+        | Command::ServerVersion { session, .. } => *session,
         Command::Test { .. }
         | Command::LoadSecret { .. }
         | Command::StoreSecret { .. }
@@ -737,7 +788,9 @@ fn request_of(command: &Command) -> Option<RequestId> {
         | Command::Describe { request, .. }
         | Command::FetchRows { request, .. }
         | Command::CountRows { request, .. }
-        | Command::ListDatabases { request, .. } => Some(*request),
+        | Command::ListDatabases { request, .. }
+        | Command::RunSql { request, .. }
+        | Command::ServerVersion { request, .. } => Some(*request),
         Command::Connect { .. }
         | Command::Test { .. }
         | Command::Close { .. }
@@ -789,6 +842,19 @@ fn fail(outbox: &Outbox, command: Command, error: Error) {
             result: Err(error),
         },
         Command::ListDatabases { session, request } => Event::Databases {
+            session,
+            request,
+            result: Err(error),
+        },
+        Command::RunSql {
+            session, request, ..
+        } => Event::SqlRan {
+            session,
+            request,
+            result: Err(error),
+            cancel: None,
+        },
+        Command::ServerVersion { session, request } => Event::ServerVersion {
             session,
             request,
             result: Err(error),
@@ -855,6 +921,9 @@ async fn run_session(
             }
             if !skipped {
                 running.request = request;
+                // In the same critical section, so a Cancel that arrives
+                // right after the run starts always finds the flag.
+                running.stop = matches!(command, Command::RunSql { .. }).then(StopFlag::new);
             }
             skipped
         };
@@ -940,6 +1009,49 @@ async fn run_session(
                 });
                 lost
             }
+            Command::RunSql {
+                session,
+                request,
+                statements,
+                limit,
+                timeout,
+            } => {
+                let stop = lock(&running).stop.clone().unwrap_or_default();
+                let timer = timeout.map(|after| {
+                    Timer::start(
+                        after,
+                        stop.clone(),
+                        connection.cancel_handle(),
+                        Arc::clone(&running),
+                    )
+                });
+                // Awaited to its end whatever stops it: the script rolls
+                // back and leaves the session as it found it.
+                let result = connection.run_script(&statements, limit, &stop).await;
+                let timed_out = match timer {
+                    Some(timer) => timer.end().await,
+                    None => false,
+                };
+                let cancel = cancel_reason(&stop, timeout.filter(|_| timed_out), &result);
+                let lost = lost_error(&result);
+                outbox.emit(Event::SqlRan {
+                    session,
+                    request,
+                    result,
+                    cancel,
+                });
+                lost
+            }
+            Command::ServerVersion { session, request } => {
+                let result = connection.server_version().await;
+                let lost = lost_error(&result);
+                outbox.emit(Event::ServerVersion {
+                    session,
+                    request,
+                    result,
+                });
+                lost
+            }
             Command::Connect { .. }
             | Command::Test { .. }
             | Command::Close { .. }
@@ -949,7 +1061,11 @@ async fn run_session(
             | Command::Save { .. }
             | Command::Flush { .. } => None,
         };
-        lock(&running).request = None;
+        {
+            let mut running = lock(&running);
+            running.request = None;
+            running.stop = None;
+        }
         if let Some(error) = lost {
             fail_queued(&mut commands, &outbox, &error);
             outbox.emit(Event::Disconnected { session, error });
@@ -964,6 +1080,86 @@ fn lost_error<T>(result: &Result<T, Error>) -> Option<Error> {
         Err(error) if error.is_connection_lost() => Some(error.clone()),
         _ => None,
     }
+}
+
+/// How long the timeout waits before it cancels again.
+const CANCEL_AGAIN: Duration = Duration::from_millis(500);
+
+/// A running script's timeout. The script is never dropped: once the time
+/// is up the timer stops it through its flag and the session's cancel, and
+/// the session goes on waiting for the script to roll back and return.
+struct Timer {
+    task: tokio::task::JoinHandle<()>,
+    fired: Arc<AtomicBool>,
+}
+
+impl Timer {
+    fn start(
+        after: Duration,
+        stop: StopFlag,
+        cancel: CancelHandle,
+        running: Arc<Mutex<Running>>,
+    ) -> Self {
+        let fired = Arc::new(AtomicBool::new(false));
+        let timed_out = Arc::clone(&fired);
+        let task = tokio::spawn(async move {
+            tokio::time::sleep(after).await;
+            timed_out.store(true, Ordering::SeqCst);
+            stop.stop();
+            // A cancel can reach the server before the statement it is
+            // meant for, so it is sent again until the run reaches its
+            // cleanup, where a cancel would only interrupt the rollback.
+            while !stop.is_finishing() {
+                let cancel = cancel.clone();
+                let task = tokio::spawn(async move {
+                    let _ = cancel.cancel().await;
+                });
+                {
+                    // With the user's cancels: the session waits for all
+                    // of them before its next command.
+                    let mut running = lock(&running);
+                    running.cancels.retain(|task| !task.is_finished());
+                    running.cancels.push(task);
+                }
+                tokio::time::sleep(CANCEL_AGAIN).await;
+            }
+        });
+        Self { task, fired }
+    }
+
+    /// Stops the timer and says whether the time was up. Waits until its
+    /// task is gone, so every cancel it sent is in `Running.cancels` by
+    /// now and none can be sent after the script has returned.
+    async fn end(mut self) -> bool {
+        self.task.abort();
+        let _ = (&mut self.task).await;
+        self.fired.load(Ordering::SeqCst)
+    }
+}
+
+impl Drop for Timer {
+    /// A timer must not outlive its script, however the script ends.
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+/// Who stopped a script, when a stop ended it: `timed_out` holds the
+/// timeout when its timer fired, and anything else that set `stop` is the
+/// user. A stop that came after the script had ended by itself is no
+/// reason, and neither is a cancel nobody here asked for (the server's
+/// own `statement_timeout`, say).
+fn cancel_reason(
+    stop: &StopFlag,
+    timed_out: Option<Duration>,
+    result: &Result<ScriptOutcome, Error>,
+) -> Option<CancelReason> {
+    let cancelled = match result {
+        Ok(outcome) => outcome.was_cancelled(),
+        Err(error) => *error == Error::Cancelled,
+    };
+    (stop.is_stopped() && cancelled)
+        .then(|| timed_out.map_or(CancelReason::User, CancelReason::Timeout))
 }
 
 #[cfg(test)]
@@ -1179,6 +1375,439 @@ mod tests {
             "(SELECT count(*) FROM big a, big b WHERE b.id <= {rows}) > 0"
         ));
         slow
+    }
+
+    fn statements(text: &str) -> Vec<tabletist_db::sql::Statement> {
+        tabletist_db::sql::statements(tabletist_db::Dialect::Sqlite, text)
+    }
+
+    fn connected_sqlite() -> (tempfile::TempDir, Backend, SessionId) {
+        let (dir, spec) = fixture();
+        let (backend, session) = connected(spec);
+        (dir, backend, session)
+    }
+
+    /// Never ends by itself: only a stop or a cancel ends it.
+    const ENDLESS: &str =
+        "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n) SELECT count(*) FROM n";
+
+    #[test]
+    fn a_script_runs_and_answers_with_its_outcome() {
+        let (_dir, mut backend, session) = connected_sqlite();
+        backend.send(Command::RunSql {
+            session,
+            request: RequestId(2),
+            statements: statements("SELECT 1; SELECT 2"),
+            limit: 10,
+            timeout: None,
+        });
+        let Some(Event::SqlRan {
+            request: RequestId(2),
+            result: Ok(outcome),
+            cancel: None,
+            ..
+        }) = backend.wait(WAIT)
+        else {
+            panic!("expected SqlRan");
+        };
+        assert_eq!(outcome.results.len(), 2);
+    }
+
+    #[test]
+    fn a_script_that_ends_before_its_timeout_is_not_cancelled() {
+        let (_dir, mut backend, session) = connected_sqlite();
+        backend.send(Command::RunSql {
+            session,
+            request: RequestId(2),
+            statements: statements("SELECT 1"),
+            limit: 10,
+            timeout: Some(Duration::from_secs(3600)),
+        });
+        let Some(Event::SqlRan {
+            result: Ok(outcome),
+            cancel: None,
+            ..
+        }) = backend.wait(WAIT)
+        else {
+            panic!("expected SqlRan without a cancel reason");
+        };
+        assert!(!outcome.was_cancelled());
+        // The timer is gone: the session takes the next command at once.
+        backend.send(Command::ListSchemas {
+            session,
+            request: RequestId(3),
+        });
+        assert!(matches!(
+            backend.wait(WAIT),
+            Some(Event::Schemas { result: Ok(_), .. })
+        ));
+    }
+
+    #[test]
+    fn a_timeout_cancels_the_script_and_keeps_earlier_results() {
+        let (_dir, mut backend, session) = connected_sqlite();
+        backend.send(Command::RunSql {
+            session,
+            request: RequestId(2),
+            statements: statements(&format!("SELECT 1; {ENDLESS}")),
+            limit: 10,
+            timeout: Some(Duration::from_millis(300)),
+        });
+        let Some(Event::SqlRan {
+            result: Ok(outcome),
+            cancel: Some(CancelReason::Timeout(limit)),
+            ..
+        }) = backend.wait(WAIT)
+        else {
+            panic!("expected a timed-out SqlRan");
+        };
+        assert_eq!(limit, Duration::from_millis(300));
+        assert!(matches!(
+            outcome.results[0].outcome,
+            tabletist_db::StatementOutcome::Rows { .. }
+        ));
+        assert!(matches!(
+            outcome.results[1].outcome,
+            tabletist_db::StatementOutcome::Cancelled
+        ));
+        // The session keeps working, and no cancel of the timer's stops
+        // what runs next.
+        backend.send(Command::RunSql {
+            session,
+            request: RequestId(3),
+            statements: statements("SELECT count(*) FROM big"),
+            limit: 10,
+            timeout: None,
+        });
+        let Some(Event::SqlRan {
+            request: RequestId(3),
+            result: Ok(outcome),
+            cancel: None,
+            ..
+        }) = backend.wait(WAIT)
+        else {
+            panic!("expected the next script to run");
+        };
+        assert!(!outcome.was_cancelled());
+    }
+
+    #[test]
+    fn a_user_cancel_stops_a_script() {
+        let (_dir, mut backend, session) = connected_sqlite();
+        backend.send(Command::RunSql {
+            session,
+            request: RequestId(2),
+            statements: statements(&format!("SELECT 1; {ENDLESS}")),
+            limit: 10,
+            timeout: Some(Duration::from_secs(3600)),
+        });
+        // Long enough for the session to have started the script: a cancel
+        // for a request still queued skips it instead.
+        std::thread::sleep(Duration::from_millis(300));
+        backend.send(Command::Cancel {
+            session,
+            request: RequestId(2),
+        });
+        let Some(Event::SqlRan {
+            request: RequestId(2),
+            result: Ok(outcome),
+            cancel: Some(CancelReason::User),
+            ..
+        }) = backend.wait(WAIT)
+        else {
+            panic!("expected a SqlRan cancelled by the user");
+        };
+        assert!(outcome.was_cancelled());
+        assert!(matches!(
+            outcome.results[0].outcome,
+            tabletist_db::StatementOutcome::Rows { .. }
+        ));
+        backend.send(Command::ListSchemas {
+            session,
+            request: RequestId(3),
+        });
+        assert!(matches!(
+            backend.wait(WAIT),
+            Some(Event::Schemas { result: Ok(_), .. })
+        ));
+    }
+
+    #[test]
+    fn a_script_cancelled_while_queued_never_runs() {
+        let (_dir, mut backend, session) = connected_sqlite();
+        backend.send(Command::RunSql {
+            session,
+            request: RequestId(2),
+            statements: statements(ENDLESS),
+            limit: 10,
+            timeout: None,
+        });
+        backend.send(Command::RunSql {
+            session,
+            request: RequestId(3),
+            statements: statements(ENDLESS),
+            limit: 10,
+            timeout: None,
+        });
+        // Superseded while the first still runs (or waits its turn).
+        backend.send(Command::Cancel {
+            session,
+            request: RequestId(3),
+        });
+        let deadline = std::time::Instant::now() + WAIT;
+        let mut events = Vec::new();
+        while events.len() < 2 {
+            assert!(std::time::Instant::now() < deadline, "both must answer");
+            backend.send(Command::Cancel {
+                session,
+                request: RequestId(2),
+            });
+            events.extend(backend.wait(Duration::from_millis(200)));
+        }
+        assert!(
+            matches!(
+                events.as_slice(),
+                [
+                    Event::SqlRan {
+                        request: RequestId(2),
+                        ..
+                    },
+                    // Answered as cancelled, never run: no stop ended it.
+                    Event::SqlRan {
+                        request: RequestId(3),
+                        result: Err(Error::Cancelled),
+                        cancel: None,
+                        ..
+                    },
+                ]
+            ),
+            "{events:?}"
+        );
+    }
+
+    #[test]
+    fn a_refused_script_runs_nothing_and_keeps_the_session() {
+        let (_dir, mut backend, session) = connected_sqlite();
+        backend.send(Command::RunSql {
+            session,
+            request: RequestId(2),
+            statements: statements("SELECT 1;\nCOMMIT"),
+            limit: 10,
+            timeout: Some(Duration::from_secs(3600)),
+        });
+        assert!(matches!(
+            backend.wait(WAIT),
+            Some(Event::SqlRan {
+                result: Err(Error::Refused { line: 2, .. }),
+                cancel: None,
+                ..
+            })
+        ));
+        backend.send(Command::ListSchemas {
+            session,
+            request: RequestId(3),
+        });
+        assert!(matches!(
+            backend.wait(WAIT),
+            Some(Event::Schemas { result: Ok(_), .. })
+        ));
+    }
+
+    fn cancelled_outcome() -> ScriptOutcome {
+        ScriptOutcome {
+            results: vec![tabletist_db::StatementResult {
+                elapsed: Duration::ZERO,
+                outcome: tabletist_db::StatementOutcome::Cancelled,
+            }],
+            stopped: true,
+        }
+    }
+
+    #[test]
+    fn a_cancel_reason_needs_a_stop_that_ended_the_run() {
+        let after = Duration::from_secs(30);
+        let stopped = StopFlag::new();
+        stopped.stop();
+        let cancelled = Ok(cancelled_outcome());
+        assert_eq!(
+            cancel_reason(&stopped, None, &cancelled),
+            Some(CancelReason::User)
+        );
+        assert_eq!(
+            cancel_reason(&stopped, Some(after), &cancelled),
+            Some(CancelReason::Timeout(after))
+        );
+        // Stopped before the first statement: no results, still cancelled.
+        let before_any = Ok(ScriptOutcome {
+            results: Vec::new(),
+            stopped: true,
+        });
+        assert_eq!(
+            cancel_reason(&stopped, None, &before_any),
+            Some(CancelReason::User)
+        );
+        assert_eq!(
+            cancel_reason(&stopped, None, &Err(Error::Cancelled)),
+            Some(CancelReason::User)
+        );
+        // The stop came too late: the script had already ended by itself.
+        assert_eq!(
+            cancel_reason(&stopped, Some(after), &Ok(ScriptOutcome::default())),
+            None
+        );
+        assert_eq!(
+            cancel_reason(&stopped, None, &Err(Error::LeftReadOnly)),
+            None
+        );
+        // Cancelled by the server (a statement_timeout, say), not by a stop.
+        assert_eq!(cancel_reason(&StopFlag::new(), None, &cancelled), None);
+        assert_eq!(
+            cancel_reason(&StopFlag::new(), None, &Err(Error::Cancelled)),
+            None
+        );
+    }
+
+    #[test]
+    fn a_script_that_loses_the_session_counts_as_lost() {
+        let left: Result<ScriptOutcome, Error> = Err(Error::LeftReadOnly);
+        assert_eq!(lost_error(&left), Some(Error::LeftReadOnly));
+        let cleanup: Result<ScriptOutcome, Error> = Err(Error::ConnectionLost(
+            "could not end the read-only transaction".into(),
+        ));
+        assert!(lost_error(&cleanup).is_some());
+        // The session stays usable after these.
+        for kept in [
+            Error::Cancelled,
+            Error::Unsupported("too old"),
+            Error::Refused {
+                line: 1,
+                what: "COMMIT".into(),
+            },
+        ] {
+            assert_eq!(lost_error(&Err::<ScriptOutcome, _>(kept)), None);
+        }
+        assert_eq!(lost_error(&Ok(cancelled_outcome())), None);
+    }
+
+    #[test]
+    fn a_lost_connection_answers_queued_scripts() {
+        let (sender, mut commands) = tokio_mpsc::unbounded_channel();
+        let (events, received) = mpsc::channel();
+        let outbox = Outbox {
+            events,
+            waker: Waker::default(),
+        };
+        let session = SessionId(1);
+        sender
+            .send(Command::RunSql {
+                session,
+                request: RequestId(2),
+                statements: statements("SELECT 1"),
+                limit: 10,
+                timeout: Some(Duration::from_secs(30)),
+            })
+            .unwrap();
+        sender
+            .send(Command::ServerVersion {
+                session,
+                request: RequestId(3),
+            })
+            .unwrap();
+        fail_queued(&mut commands, &outbox, &Error::LeftReadOnly);
+        let answered: Vec<Event> = received.try_iter().collect();
+        assert!(
+            matches!(
+                answered.as_slice(),
+                [
+                    Event::SqlRan {
+                        request: RequestId(2),
+                        result: Err(Error::LeftReadOnly),
+                        cancel: None,
+                        ..
+                    },
+                    Event::ServerVersion {
+                        request: RequestId(3),
+                        result: Err(Error::LeftReadOnly),
+                        ..
+                    },
+                ]
+            ),
+            "{answered:?}"
+        );
+    }
+
+    #[test]
+    fn scripts_and_version_requests_belong_to_their_session() {
+        let script = Command::RunSql {
+            session: SessionId(7),
+            request: RequestId(2),
+            statements: statements("SELECT 1"),
+            limit: 10,
+            timeout: None,
+        };
+        let version = Command::ServerVersion {
+            session: SessionId(7),
+            request: RequestId(3),
+        };
+        assert_eq!(session_of(&script), SessionId(7));
+        assert_eq!(request_of(&script), Some(RequestId(2)));
+        assert_eq!(session_of(&version), SessionId(7));
+        assert_eq!(request_of(&version), Some(RequestId(3)));
+    }
+
+    #[test]
+    fn the_server_version_is_asked_for() {
+        let (_dir, mut backend, session) = connected_sqlite();
+        backend.send(Command::ServerVersion {
+            session,
+            request: RequestId(2),
+        });
+        assert!(matches!(
+            backend.wait(WAIT),
+            Some(Event::ServerVersion { request: RequestId(2), result: Ok(version), .. })
+                if version.starts_with("SQLite")
+        ));
+    }
+
+    #[test]
+    fn a_closed_session_fails_a_script() {
+        let (_dir, mut backend, session) = connected_sqlite();
+        backend.send(Command::Close { session });
+        backend.send(Command::RunSql {
+            session,
+            request: RequestId(2),
+            statements: statements("SELECT 1"),
+            limit: 10,
+            timeout: None,
+        });
+        match backend.wait(WAIT) {
+            Some(Event::SqlRan {
+                result: Err(error),
+                cancel: None,
+                ..
+            }) => assert!(error.is_connection_lost()),
+            other => panic!("expected a lost-connection error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn settings_are_saved_as_a_state_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config").join("settings.json");
+        let settings = crate::settings::Settings {
+            page_size: 50,
+            ..Default::default()
+        };
+        let mut backend = Backend::start_with(Waker::default(), Keyring::memory());
+        backend.send(Command::Save {
+            path: path.clone(),
+            file: StateFile::Settings(settings.clone()),
+        });
+        assert!(matches!(
+            backend.wait(WAIT),
+            Some(Event::Saved { result: Ok(()), .. })
+        ));
+        assert_eq!(crate::settings::Settings::load(&path), settings);
     }
 
     #[test]
