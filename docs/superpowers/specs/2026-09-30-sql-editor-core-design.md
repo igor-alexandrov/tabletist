@@ -19,8 +19,8 @@ editor changes data through this session.
 The promise is about data, as it is for the raw WHERE today. Side effects
 outside table data that a read-only transaction allows stay possible for a
 user with the privileges: PostgreSQL session advisory locks,
-`pg_terminate_backend`, `dblink_exec`, `lo_export`; SQLite `ATTACH` and
-connection `PRAGMA`s for the life of the session.
+`pg_terminate_backend`, `dblink_exec`, `lo_export`; MySQL `KILL`; SQLite
+`ATTACH` and connection `PRAGMA`s for the life of the session.
 
 The designs are the "SQL editor" artboards (macOS and Omarchy) in the design
 canvas Artifact. They are not copied into the repository.
@@ -113,9 +113,8 @@ Three layers, all in `tabletist-db`, so no caller can skip them.
 
 1. **Refusal before running.** `run_script` checks every statement first and
    runs nothing if any is refused. The whole script fails with
-   `Error::Refused { line, reason }`, shown as "Line 4: Tabletist runs every
-   query in a read-only transaction; COMMIT is not allowed". Refused, by
-   leading keywords:
+   `Error::Refused { line, what }`, shown as "line 4: Tabletist runs every
+   query in a read-only transaction, so COMMIT is not allowed". Refused:
    - `BEGIN`, `START` (TRANSACTION), `COMMIT`, `END`, `ROLLBACK`, `ABORT`,
      `SAVEPOINT`, `RELEASE`, `PREPARE TRANSACTION`, `COMMIT PREPARED`,
      `ROLLBACK PREPARED`, `XA`;
@@ -128,9 +127,16 @@ Three layers, all in `tabletist-db`, so no caller can skip them.
      `RESET` naming `sql_mode`, `standard_conforming_strings`,
      `client_encoding`, a `character_set_*` variable, and `SET NAMES`,
      `SET CHARACTER SET`, `SET CHARSET` (a client character set such as GBK
-     can swallow a backslash the tokenizer saw); on PostgreSQL also any
-     `SET` or `RESET` with a `U&"..."` name (escapes can spell a guarded
-     name) and any statement calling `set_config`;
+     can swallow a backslash the tokenizer saw), checked in every
+     assignment of a `SET` that has several (`SET @a = 1, NAMES gbk`); on
+     PostgreSQL also any statement with a `U&"..."` name (escapes can
+     spell any name, `set_config` included) and any statement calling
+     `set_config` (best effort: a function can still call it, but its
+     changes roll back and cannot split a statement, since every statement
+     is prepared alone);
+   - `PREPARE`, `EXECUTE` and `DEALLOCATE` in both PostgreSQL and MySQL
+     (and MariaDB's `EXECUTE IMMEDIATE`): the SQL they run is a string the
+     guard cannot read, and prepared statements outlive the rollback;
    - `RESET ALL`, `RESET` of the names above, `DISCARD ALL`;
    - PostgreSQL only: `COPY` (`COPY ... TO STDOUT` answers with a copy
      stream the simple-query protocol cannot read, and `TO 'file'` or
@@ -139,14 +145,28 @@ Three layers, all in `tabletist-db`, so no caller can skip them.
    - MySQL only: `LOCK TABLES`, `UNLOCK TABLES`, `CALL` (a MySQL procedure
      may commit and change the session's transaction mode); account and
      server statements that commit implicitly and are not table writes:
-     `CREATE USER`, `ALTER USER`, `DROP USER`, `RENAME USER`, `CREATE ROLE`,
-     `DROP ROLE`, `GRANT`, `REVOKE`, `SET PASSWORD`, `SET DEFAULT ROLE`,
-     `FLUSH`, `INSTALL`, `UNINSTALL`; any statement with the tokens
+     `CREATE [OR REPLACE] USER`, `ALTER USER`, `DROP USER`, `RENAME USER`,
+     `CREATE [OR REPLACE] ROLE`, `DROP ROLE`, `GRANT`, `REVOKE`,
+     `SET PASSWORD`, `SET DEFAULT ROLE`, `FLUSH`, `INSTALL`, `UNINSTALL`;
+     server state that is neither rolled back nor reset: any `SET` with
+     `GLOBAL`, `PERSIST` or `PERSIST_ONLY` (also as `@@global.`,
+     `@@persist.`), any `RESET` (`RESET MASTER`, `RESET REPLICA`,
+     `RESET PERSIST`), `PURGE`, `CHANGE` (`CHANGE MASTER`,
+     `CHANGE REPLICATION SOURCE`), `STOP` (`STOP REPLICA`), `SHUTDOWN`,
+     `RESTART`, `CLONE`; any statement with the tokens
      `INTO OUTFILE` or `INTO DUMPFILE` (they write files on the server); and
      any statement holding a `/*! ... */` or `/*M! ... */` executable
      comment.
    The list is matched on tokens, never on raw text, so `SELECT 'COMMIT'`
-   and a column named `end_date` are fine.
+   and a column named `end_date` are fine. It errs toward refusing: a `SET`
+   naming a guarded word anywhere is refused.
+
+   One statement at a time is a layer of its own: PostgreSQL prepares every
+   statement before running it, and MySQL runs statements only through the
+   prepared protocol; both refuse text holding a second statement, so a
+   setting changed by one statement can never split another. mysql_async
+   refuses `LOAD DATA LOCAL INFILE` unless a handler is configured, and none
+   is.
 2. **Snapshot first (PostgreSQL).** After `BEGIN READ ONLY`, the session runs
    `SELECT 1` before any user statement. PostgreSQL refuses to make a
    transaction read-write once a snapshot is taken, so even a statement the
