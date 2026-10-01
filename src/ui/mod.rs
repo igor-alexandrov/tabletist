@@ -1,6 +1,7 @@
 //! The interface. Views read `App` and push `Action`s; they never change
 //! state directly.
 
+pub mod about;
 pub mod conn_tabs;
 pub mod connect_dialog;
 pub mod data_view;
@@ -51,6 +52,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     host_key_prompt::show(app, &ui.ctx().clone());
     quick_open::show(app, &ui.ctx().clone());
     help::show(app, &ui.ctx().clone());
+    about::show(app, &ui.ctx().clone());
 }
 
 /// A problem worth the user's attention that belongs to no one tab (a

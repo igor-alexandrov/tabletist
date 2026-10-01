@@ -685,6 +685,12 @@ impl App {
                     self.dialog = Some(Dialog::Help);
                 }
             }
+            Action::ShowAbout => {
+                // The shortcuts dialog offers it, and gives way to it.
+                if matches!(self.dialog, None | Some(Dialog::Help)) {
+                    self.dialog = Some(Dialog::About);
+                }
+            }
             Action::OpenQuickOpen => {
                 let tab = self.active_tab_id();
                 if self.dialog.is_none() && self.workspace(tab).is_some() {

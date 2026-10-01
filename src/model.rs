@@ -224,6 +224,8 @@ pub enum Action {
     },
     /// Show the keyboard shortcuts.
     ShowHelp,
+    /// Show the About dialog.
+    ShowAbout,
     /// Open quick open for the active connection tab.
     OpenQuickOpen,
     /// Move quick open's selection by this many results.
@@ -900,6 +902,8 @@ pub enum Dialog {
     QuickOpen(Box<QuickOpen>),
     /// The keyboard shortcuts.
     Help,
+    /// The app's name, version and where it lives.
+    About,
 }
 
 /// Cmd/Ctrl+P: find a loaded table or view by name.

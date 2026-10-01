@@ -73,10 +73,15 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                     });
             });
         ui.add_space(8.0);
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if widgets::button(ui, &gettext(locale, "Close"), &look).clicked() {
-                actions.push(Action::CloseDialog);
+        ui.horizontal(|ui| {
+            if widgets::button(ui, &gettext(locale, "About Tabletist"), &look).clicked() {
+                actions.push(Action::ShowAbout);
             }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if widgets::button(ui, &gettext(locale, "Close"), &look).clicked() {
+                    actions.push(Action::CloseDialog);
+                }
+            });
         });
     });
     if modal.is_top_modal
