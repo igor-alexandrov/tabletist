@@ -672,7 +672,7 @@ async fn rows_of(connection: &Connection, text: &str) -> Vec<Vec<Value>> {
 /// What a script sees of the settings every connection starts with: the
 /// session is read-only, in the server's time zone, without a mode that
 /// changes how text is lexed, in the character set of the handshake, and
-/// without a variable an earlier script set. (`mysql.rs` compares a
+/// without a variable an earlier script set. (`mysql/script.rs` compares a
 /// session with itself at connect, setting by setting.)
 async fn assert_connect_time_settings(connection: &Connection) {
     let rows = rows_of(
@@ -1140,7 +1140,7 @@ async fn bypasses_cannot_write() {
     admin.query_drop("TRUNCATE probe").await.unwrap();
     // The refusal stops these before anything runs. What the driver does
     // with transaction statements past the refusal is tested next to it
-    // (`mysql.rs`).
+    // (`mysql/script.rs`).
     for attempt in [
         "COMMIT; SET SESSION TRANSACTION READ WRITE; INSERT INTO probe VALUES (1)",
         "SET @@session.transaction_read_only = 0; INSERT INTO probe VALUES (1)",

@@ -741,7 +741,7 @@ async fn bypasses_cannot_write() {
         .await
         .unwrap();
     // The refusal stops these before anything runs. What the driver does
-    // with them past the refusal is tested next to it (`pg.rs`).
+    // with them past the refusal is tested next to it (`pg/script.rs`).
     for attempt in [
         "SET TRANSACTION READ WRITE; INSERT INTO probe VALUES (1)",
         "ROLLBACK; SET default_transaction_read_only = off; INSERT INTO probe VALUES (1)",
