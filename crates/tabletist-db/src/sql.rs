@@ -634,6 +634,7 @@ pub fn refusal(dialect: Dialect, statement: &str) -> Option<String> {
             | "SHUTDOWN"
             | "RESTART"
             | "CLONE"
+            | "BACKUP"
     ) {
         return Some(word(0).to_owned());
     }
@@ -644,6 +645,8 @@ pub fn refusal(dialect: Dialect, statement: &str) -> Option<String> {
         ("RENAME", "USER"),
         ("CREATE", "ROLE"),
         ("DROP", "ROLE"),
+        ("DROP", "PREPARE"),
+        ("ALTER", "INSTANCE"),
         ("SET", "PASSWORD"),
         ("SET", "DEFAULT"),
     ]
@@ -674,6 +677,20 @@ fn set_refusal(
     tokens: &[Token],
     words: &[String],
 ) -> Option<String> {
+    // MariaDB's SET STATEMENT var=value FOR <statement> wraps any statement
+    // behind a leading SET; refuse it outright rather than read inside.
+    // Only the token right after SET counts: `SET @statement = 1` has an
+    // `@` there.
+    let mut code = tokens
+        .iter()
+        .filter(|token| !matches!(token.kind, TokenKind::Whitespace | TokenKind::Comment));
+    if dialect == Dialect::MySql
+        && let Some(second) = code.nth(1)
+        && matches!(second.kind, TokenKind::Keyword | TokenKind::Identifier)
+        && statement[second.range.clone()].eq_ignore_ascii_case("STATEMENT")
+    {
+        return Some("SET STATEMENT".into());
+    }
     let has = |wanted: &str| words.iter().skip(1).any(|word| word == wanted);
     if has("CHARACTERISTICS") {
         return Some("SET SESSION CHARACTERISTICS".into());
@@ -716,7 +733,9 @@ fn set_refusal(
 }
 
 /// The words of each top-level assignment of a `SET` (split on commas
-/// outside parentheses), without the leading `SET`.
+/// outside parentheses), without the leading `SET`. Unbalanced parentheses
+/// leave the rest of the statement in one assignment, which fails open, but
+/// the server rejects such text as a syntax error, so nothing runs.
 fn assignments(statement: &str, tokens: &[Token]) -> Vec<Vec<String>> {
     let mut found = vec![Vec::new()];
     let mut depth = 0_usize;
@@ -1571,5 +1590,44 @@ mod tests {
         ] {
             assert_eq!(refusal(dialect, text).as_deref(), Some(what), "{text}");
         }
+    }
+
+    #[test]
+    fn set_statement_wraps_nothing_past_the_guard() {
+        for text in [
+            "SET STATEMENT max_statement_time=0 FOR COMMIT",
+            "SET STATEMENT max_statement_time=0 FOR ROLLBACK",
+            "SET STATEMENT max_statement_time=0 FOR GRANT ALL ON *.* TO x",
+            "SET STATEMENT max_statement_time=0 FOR CALL p()",
+            "SET STATEMENT max_statement_time=0 FOR EXECUTE IMMEDIATE 'COMMIT'",
+            "set /* x */ statement a=1 for commit",
+        ] {
+            assert_eq!(
+                refusal(Dialect::MySql, text).as_deref(),
+                Some("SET STATEMENT"),
+                "{text}"
+            );
+        }
+        // Only the token right after SET counts.
+        assert_eq!(refusal(Dialect::MySql, "SET @statement = 1"), None);
+        assert_eq!(refusal(Dialect::MySql, "SET time_zone = 'statement'"), None);
+    }
+
+    #[test]
+    fn the_last_mysql_server_statements_are_refused() {
+        for (text, what) in [
+            ("DROP PREPARE s", "DROP PREPARE"),
+            ("ALTER INSTANCE ROTATE INNODB MASTER KEY", "ALTER INSTANCE"),
+            ("BACKUP STAGE START", "BACKUP"),
+            ("BACKUP LOCK db.t", "BACKUP"),
+        ] {
+            assert_eq!(
+                refusal(Dialect::MySql, text).as_deref(),
+                Some(what),
+                "{text}"
+            );
+        }
+        assert_eq!(refusal(Dialect::MySql, "SELECT backup FROM t"), None);
+        assert_eq!(refusal(Dialect::Postgres, "DROP PREPARE s"), None);
     }
 }
