@@ -119,13 +119,15 @@ const SQLITE_KEYWORDS: &[&str] = &["GLOB", "PRAGMA", "RETURNING"];
 
 /// Whether `word` (any case) is highlighted as a keyword in `dialect`.
 pub fn is_keyword(dialect: Dialect, word: &str) -> bool {
-    let upper = word.to_ascii_uppercase();
     let own = match dialect {
         Dialect::Postgres => POSTGRES_KEYWORDS,
         Dialect::MySql => MYSQL_KEYWORDS,
         Dialect::Sqlite => SQLITE_KEYWORDS,
     };
-    KEYWORDS.contains(&upper.as_str()) || own.contains(&upper.as_str())
+    KEYWORDS
+        .iter()
+        .chain(own)
+        .any(|keyword| keyword.eq_ignore_ascii_case(word))
 }
 
 /// Splits `text` into tokens that cover it end to end.
@@ -136,7 +138,8 @@ pub fn tokenize(dialect: Dialect, text: &str) -> Vec<Token> {
     while at < bytes.len() {
         let start = at;
         let (kind, end) = next(dialect, text, start);
-        debug_assert!(end > start && text.is_char_boundary(end));
+        // A hard assert: an arm that stopped short would loop forever.
+        assert!(end > start && text.is_char_boundary(end));
         tokens.push(Token {
             kind,
             range: start..end,
@@ -151,16 +154,16 @@ fn next(dialect: Dialect, text: &str, start: usize) -> (TokenKind, usize) {
     let byte = bytes[start];
     let peek = |offset: usize| bytes.get(start + offset).copied();
     match byte {
-        b if b.is_ascii_whitespace() => (
-            TokenKind::Whitespace,
-            scan(bytes, start, |b| b.is_ascii_whitespace()),
-        ),
+        b if is_space(b) => (TokenKind::Whitespace, scan(bytes, start, is_space)),
         b'-' if peek(1) == Some(b'-') && dash_comment(dialect, peek(2)) => {
-            (TokenKind::Comment, line_end(bytes, start))
+            (TokenKind::Comment, line_end(dialect, bytes, start))
         }
-        b'#' if dialect == Dialect::MySql => (TokenKind::Comment, line_end(bytes, start)),
+        b'#' if dialect == Dialect::MySql => (TokenKind::Comment, line_end(dialect, bytes, start)),
         b'/' if peek(1) == Some(b'*') => {
-            let kind = if dialect == Dialect::MySql && peek(2) == Some(b'!') {
+            // `/*!` and MariaDB's `/*M!`: MySQL runs what is inside.
+            let executable =
+                peek(2) == Some(b'!') || (peek(2) == Some(b'M') && peek(3) == Some(b'!'));
+            let kind = if dialect == Dialect::MySql && executable {
                 TokenKind::ExecutableComment
             } else {
                 TokenKind::Comment
@@ -175,7 +178,7 @@ fn next(dialect: Dialect, text: &str, start: usize) -> (TokenKind, usize) {
             quoted_end(bytes, start, b'\'', dialect == Dialect::MySql),
         ),
         b'E' | b'e' if dialect == Dialect::Postgres && peek(1) == Some(b'\'') => {
-            (TokenKind::String, quoted_end(bytes, start + 1, b'\'', true))
+            (TokenKind::String, escape_string_end(bytes, start))
         }
         b'"' if dialect == Dialect::MySql => {
             (TokenKind::String, quoted_end(bytes, start, b'"', true))
@@ -234,8 +237,7 @@ fn next(dialect: Dialect, text: &str, start: usize) -> (TokenKind, usize) {
 /// `--` starts a comment everywhere but MySQL, where whitespace or a
 /// control character (or the end) must follow: `1--1` is arithmetic.
 fn dash_comment(dialect: Dialect, after: Option<u8>) -> bool {
-    dialect != Dialect::MySql
-        || after.is_none_or(|b| b.is_ascii_whitespace() || b.is_ascii_control())
+    dialect != Dialect::MySql || after.is_none_or(|b| is_space(b) || b.is_ascii_control())
 }
 
 fn is_word_start(byte: u8) -> bool {
@@ -256,9 +258,18 @@ fn scan(bytes: &[u8], from: usize, keep: impl Fn(u8) -> bool) -> usize {
         .map_or(bytes.len(), |offset| from + offset)
 }
 
-/// The end of a line comment: the newline stays outside it.
-fn line_end(bytes: &[u8], from: usize) -> usize {
-    scan(bytes, from, |b| b != b'\n')
+/// Whitespace as MySQL, SQLite and PostgreSQL 17+ read it (vertical tab
+/// included, which Rust's `is_ascii_whitespace` leaves out). Earlier
+/// PostgreSQL rejects a bare vertical tab, so treating it as space is safe.
+fn is_space(byte: u8) -> bool {
+    byte.is_ascii_whitespace() || byte == 0x0B
+}
+
+/// The end of a line comment: the newline stays outside it. PostgreSQL ends
+/// it at a carriage return too; MySQL and SQLite only at a line feed.
+fn line_end(dialect: Dialect, bytes: &[u8], from: usize) -> usize {
+    let cr_ends = dialect == Dialect::Postgres;
+    scan(bytes, from, |b| b != b'\n' && !(cr_ends && b == b'\r'))
 }
 
 fn find(bytes: &[u8], from: usize, needle: &[u8]) -> Option<usize> {
@@ -310,9 +321,56 @@ fn quoted_end(bytes: &[u8], start: usize, quote: u8, backslash: bool) -> usize {
     bytes.len()
 }
 
+/// An `E'...'` string from `start` (the `E`). PostgreSQL continues it over a
+/// newline into the next quote, still with backslash escapes, so the whole
+/// run is one token. Plain strings are left alone: with no escapes their
+/// pieces end where the continued string would, and each piece is a string.
+fn escape_string_end(bytes: &[u8], start: usize) -> usize {
+    let mut end = quoted_end(bytes, start + 1, b'\'', true);
+    while let Some(quote) = string_continuation(bytes, end) {
+        end = quoted_end(bytes, quote, b'\'', true);
+    }
+    end
+}
+
+/// After a string closes at `from`: blanks and comments, a newline, then
+/// more blanks and comment lines, then a quote. That quote's offset, if so.
+fn string_continuation(bytes: &[u8], from: usize) -> Option<usize> {
+    let non_newline = |b: u8| b != b'\n' && b != b'\r';
+    let is_newline = |at: usize| matches!(bytes.get(at), Some(b'\n' | b'\r'));
+    let is_comment = |at: usize| bytes.get(at) == Some(&b'-') && bytes.get(at + 1) == Some(&b'-');
+    let mut at = from;
+    loop {
+        match bytes.get(at) {
+            Some(b' ' | b'\t' | 0x0B | 0x0C) => at += 1,
+            _ if is_comment(at) => at = scan(bytes, at, non_newline),
+            _ => break,
+        }
+    }
+    if !is_newline(at) {
+        return None;
+    }
+    loop {
+        match bytes.get(at) {
+            Some(b'\'') => return Some(at),
+            Some(&b) if is_space(b) => at += 1,
+            _ if is_comment(at) => {
+                at = scan(bytes, at, non_newline);
+                // A comment here must end in a newline.
+                if !is_newline(at) {
+                    return None;
+                }
+            }
+            _ => return None,
+        }
+    }
+}
+
 /// `$tag$` or `$$` at `start`: the end of the opening tag.
 fn dollar_tag(bytes: &[u8], start: usize) -> Option<usize> {
-    let tag_end = scan(bytes, start + 1, |b| b.is_ascii_alphanumeric() || b == b'_');
+    let tag_end = scan(bytes, start + 1, |b| {
+        b.is_ascii_alphanumeric() || b == b'_' || b >= 0x80
+    });
     let tag = &bytes[start + 1..tag_end];
     let starts_well = tag.first().is_none_or(|b| !b.is_ascii_digit());
     (starts_well && bytes.get(tag_end) == Some(&b'$')).then_some(tag_end + 1)
@@ -495,6 +553,184 @@ mod tests {
                 at = token.range.end;
             }
             assert_eq!(at, text.len());
+        }
+    }
+
+    #[test]
+    fn postgres_line_comments_end_at_a_carriage_return() {
+        use TokenKind::*;
+        assert_eq!(
+            kinds(Dialect::Postgres, "--x\rCOMMIT\nAND"),
+            vec![(Comment, "--x"), (Keyword, "COMMIT"), (Keyword, "AND")]
+        );
+        // MySQL and SQLite run a comment to the line feed only.
+        assert_eq!(
+            kinds(Dialect::Sqlite, "--x\rCOMMIT\nAND"),
+            vec![(Comment, "--x\rCOMMIT"), (Keyword, "AND")]
+        );
+        assert_eq!(
+            kinds(Dialect::MySql, "-- x\rCOMMIT\nAND"),
+            vec![(Comment, "-- x\rCOMMIT"), (Keyword, "AND")]
+        );
+        assert_eq!(
+            kinds(Dialect::MySql, "#x\rCOMMIT\nAND"),
+            vec![(Comment, "#x\rCOMMIT"), (Keyword, "AND")]
+        );
+    }
+
+    #[test]
+    fn mariadb_executable_comments() {
+        use TokenKind::*;
+        let tokens = kinds(Dialect::MySql, "/*M! COMMIT */ SELECT 1");
+        assert_eq!(tokens[0], (ExecutableComment, "/*M! COMMIT */"));
+        assert_eq!(tokens[1], (Keyword, "SELECT"));
+        // Only MySQL's dialect runs them; elsewhere they are comments.
+        assert_eq!(
+            kinds(Dialect::Postgres, "/*M! COMMIT */")[0],
+            (Comment, "/*M! COMMIT */")
+        );
+        assert_eq!(
+            kinds(Dialect::MySql, "/*M COMMIT */")[0],
+            (Comment, "/*M COMMIT */")
+        );
+    }
+
+    #[test]
+    fn postgres_escape_strings_continue_over_newlines() {
+        use TokenKind::*;
+        assert_eq!(
+            kinds(Dialect::Postgres, "SELECT E'a'\n'\\''; COMMIT; --'"),
+            vec![
+                (Keyword, "SELECT"),
+                (String, "E'a'\n'\\''"),
+                (Semicolon, ";"),
+                (Keyword, "COMMIT"),
+                (Semicolon, ";"),
+                (Comment, "--'"),
+            ]
+        );
+        // Blanks and a comment before the newline, comment lines and blank
+        // lines after it, and several pieces.
+        let text = "E'a' -- c\r\n  -- d\n\n 'b\\'' \n'c'";
+        assert_eq!(kinds(Dialect::Postgres, text), vec![(String, text)]);
+        // A vertical tab may precede the newline too.
+        assert_eq!(
+            kinds(Dialect::Postgres, "E'a'\x0b\n'\\''x"),
+            vec![(String, "E'a'\x0b\n'\\''"), (Identifier, "x")]
+        );
+        // No newline, no continuation.
+        assert_eq!(
+            kinds(Dialect::Postgres, "E'a' 'b'"),
+            vec![(String, "E'a'"), (String, "'b'")]
+        );
+        // A comment after the newline must end in a newline itself.
+        assert_eq!(
+            kinds(Dialect::Postgres, "E'a'\n-- x"),
+            vec![(String, "E'a'"), (Comment, "-- x")]
+        );
+        // A non-quote ends it.
+        assert_eq!(
+            kinds(Dialect::Postgres, "E'a'\nSELECT"),
+            vec![(String, "E'a'"), (Keyword, "SELECT")]
+        );
+        // Plain strings stay separate tokens.
+        assert_eq!(
+            kinds(Dialect::Postgres, "'a'\n'b'"),
+            vec![(String, "'a'"), (String, "'b'")]
+        );
+        // MySQL has no continuation.
+        assert_eq!(
+            kinds(Dialect::MySql, "'a'\n'b'"),
+            vec![(String, "'a'"), (String, "'b'")]
+        );
+    }
+
+    #[test]
+    fn postgres_dollar_tags_may_hold_non_ascii_letters() {
+        use TokenKind::*;
+        assert_eq!(
+            kinds(Dialect::Postgres, "SELECT $é$ ' $é$; COMMIT"),
+            vec![
+                (Keyword, "SELECT"),
+                (String, "$é$ ' $é$"),
+                (Semicolon, ";"),
+                (Keyword, "COMMIT"),
+            ]
+        );
+        // A dollar sign inside a word belongs to the word.
+        assert_eq!(
+            kinds(Dialect::Postgres, "a$$b$$"),
+            vec![(Identifier, "a$$b$$")]
+        );
+    }
+
+    #[test]
+    fn a_vertical_tab_is_whitespace_everywhere() {
+        for dialect in [Dialect::Postgres, Dialect::MySql, Dialect::Sqlite] {
+            assert_eq!(
+                kinds(dialect, "\x0bCOMMIT"),
+                vec![(TokenKind::Keyword, "COMMIT")]
+            );
+        }
+    }
+
+    #[test]
+    fn a_trailing_backslash_is_part_of_the_string() {
+        assert_eq!(
+            kinds(Dialect::MySql, "'abc\\"),
+            vec![(TokenKind::String, "'abc\\")]
+        );
+        assert_eq!(
+            kinds(Dialect::Postgres, "E'abc\\"),
+            vec![(TokenKind::String, "E'abc\\")]
+        );
+    }
+
+    #[test]
+    fn edges_of_comments_brackets_and_numbers() {
+        use TokenKind::*;
+        assert_eq!(kinds(Dialect::MySql, "--"), vec![(Comment, "--")]);
+        assert_eq!(
+            kinds(Dialect::Sqlite, "[a]b]"),
+            vec![
+                (QuotedIdentifier, "[a]"),
+                (Identifier, "b"),
+                (Punctuation, "]")
+            ]
+        );
+        assert_eq!(
+            kinds(Dialect::Postgres, "/* a /* b */ c"),
+            vec![(Comment, "/* a /* b */ c")]
+        );
+        assert_eq!(kinds(Dialect::Postgres, "1."), vec![(Number, "1.")]);
+    }
+
+    #[test]
+    fn every_short_text_is_covered_without_panics() {
+        let alphabet = [
+            "'", "\"", "\\", "$", "/", "*", "-", "#", "[", "]", "`", "E", "é", "\n", "\r", "!",
+            "1", ".", "e", "\x0b",
+        ];
+        let mut texts = vec![String::new()];
+        let mut level = vec![String::new()];
+        for _ in 0..4 {
+            level = level
+                .iter()
+                .flat_map(|prefix| alphabet.iter().map(move |piece| format!("{prefix}{piece}")))
+                .collect();
+            texts.extend(level.iter().cloned());
+        }
+        for dialect in [Dialect::Postgres, Dialect::MySql, Dialect::Sqlite] {
+            for text in &texts {
+                let mut at = 0;
+                for token in tokenize(dialect, text) {
+                    assert_eq!(token.range.start, at, "{dialect:?} {text:?}");
+                    assert!(token.range.end > at, "{dialect:?} {text:?}");
+                    assert!(text.is_char_boundary(token.range.end));
+                    at = token.range.end;
+                }
+                assert_eq!(at, text.len(), "{dialect:?} {text:?}");
+            }
         }
     }
 }
