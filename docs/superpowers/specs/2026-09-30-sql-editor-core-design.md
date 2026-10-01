@@ -153,7 +153,9 @@ Three layers, all in `tabletist-db`, so no caller can skip them.
      `@@persist.`), any `RESET` (`RESET MASTER`, `RESET REPLICA`,
      `RESET PERSIST`), `PURGE`, `CHANGE` (`CHANGE MASTER`,
      `CHANGE REPLICATION SOURCE`), `STOP` (`STOP REPLICA`), `SHUTDOWN`,
-     `RESTART`, `CLONE`; any statement with the tokens
+     `RESTART`, `CLONE`, `ALTER INSTANCE`, `BACKUP`, `DROP PREPARE`;
+     MariaDB's `SET STATEMENT ... FOR <statement>`, which wraps any
+     statement behind a leading `SET`; any statement with the tokens
      `INTO OUTFILE` or `INTO DUMPFILE` (they write files on the server); and
      any statement holding a `/*! ... */` or `/*M! ... */` executable
      comment.
