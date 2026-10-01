@@ -70,9 +70,16 @@ fn script(
     if stop.is_stopped() {
         return Ok(outcome);
     }
-    connection
+    // A cancel (the session's interrupt) can land while BEGIN runs; that
+    // ends the run with no results.
+    match connection
         .execute_batch("BEGIN DEFERRED")
-        .map_err(map_error)?;
+        .map_err(map_error)
+    {
+        Err(Error::Cancelled) => return Ok(outcome),
+        Err(error) => return Err(error),
+        Ok(()) => {}
+    }
     // SQLite calls this every 1000 virtual machine steps; `true` interrupts
     // the running statement, which fails with SQLITE_INTERRUPT (Cancelled).
     let watching = stop.clone();

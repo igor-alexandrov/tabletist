@@ -548,6 +548,32 @@ async fn a_statement_without_rows_is_done() {
 }
 
 #[tokio::test]
+async fn a_failing_statement_still_rolls_the_transaction_back() {
+    let (connection, _dir) = fixture().await;
+    let failed = connection
+        .run_script(
+            &script("SELECT 1; SELECT nope FROM users"),
+            10,
+            &StopFlag::new(),
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        failed.results[1].outcome,
+        StatementOutcome::Error { .. }
+    ));
+    // A transaction left open would make this BEGIN fail.
+    let after = connection
+        .run_script(&script("SELECT 1"), 10, &StopFlag::new())
+        .await
+        .unwrap();
+    assert!(matches!(
+        after.results[0].outcome,
+        StatementOutcome::Rows { .. }
+    ));
+}
+
+#[tokio::test]
 async fn a_hidden_second_statement_is_the_statements_error_not_a_second_run() {
     let (connection, _dir) = fixture().await;
     // Handed over as one piece, as if the splitter had missed the second.
