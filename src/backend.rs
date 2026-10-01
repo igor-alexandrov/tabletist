@@ -451,9 +451,26 @@ struct Running {
     /// Cancels sent for the running request. The session waits for them
     /// before it starts the next command, so none can land on that one.
     cancels: Vec<tokio::task::JoinHandle<()>>,
-    /// The running SQL editor script's stop flag: a Cancel sets it too, so
-    /// the script also stops between statements.
+    /// The running SQL editor script's stop flag: a Cancel and a Close set
+    /// it too, so the script also stops between statements.
     stop: Option<StopFlag>,
+}
+
+impl Running {
+    /// Tells the running script, if there is one, to stop: it runs no
+    /// further statement, whether or not a cancel reaches the one running.
+    fn stop_script(&self) {
+        if let Some(stop) = &self.stop {
+            stop.stop();
+        }
+    }
+
+    /// Whether a cancel sent now can still reach what it is meant for. Not
+    /// once a script has begun its cleanup: there it would only interrupt
+    /// the rollback. Any other command takes a cancel while it runs.
+    fn takes_a_cancel(&self) -> bool {
+        !self.stop.as_ref().is_some_and(StopFlag::is_finishing)
+    }
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -667,6 +684,10 @@ impl Worker {
             }
             Command::Close { session } => {
                 if let Some(handle) = self.sessions.remove(&session) {
+                    // The cancel below stops one statement at most, and
+                    // none when it arrives between two: a script must not
+                    // run the rest of its statements for a closed session.
+                    lock(&handle.running).stop_script();
                     let cancel = handle.cancel.clone();
                     // Stop first: the cancel can end the running query on
                     // another thread at once, and the session must already
@@ -685,14 +706,14 @@ impl Worker {
                     if running.request == Some(request) {
                         // Before the cancel is sent: a script it ends at
                         // once must already see who stopped it.
-                        if let Some(stop) = &running.stop {
-                            stop.stop();
+                        running.stop_script();
+                        if running.takes_a_cancel() {
+                            let cancel = handle.cancel.clone();
+                            running.cancels.retain(|task| !task.is_finished());
+                            running.cancels.push(tokio::spawn(async move {
+                                let _ = cancel.cancel().await;
+                            }));
                         }
-                        let cancel = handle.cancel.clone();
-                        running.cancels.retain(|task| !task.is_finished());
-                        running.cancels.push(tokio::spawn(async move {
-                            let _ = cancel.cancel().await;
-                        }));
                     } else {
                         // Queued, or already answered: the session drops
                         // the id once it passes it.
@@ -871,6 +892,22 @@ fn fail(outbox: &Outbox, command: Command, error: Error) {
     outbox.emit(event);
 }
 
+/// Answers a command the user cancelled while it was still queued: it
+/// never ran. A script says who stopped it, as one that had started does.
+fn skip(outbox: &Outbox, command: Command) {
+    match command {
+        Command::RunSql {
+            session, request, ..
+        } => outbox.emit(Event::SqlRan {
+            session,
+            request,
+            result: Err(Error::Cancelled),
+            cancel: Some(CancelReason::User),
+        }),
+        command => fail(outbox, command, Error::Cancelled),
+    }
+}
+
 /// Answers every command still queued for a session whose connection is
 /// gone, and closes the queue so later commands fail at the sender.
 fn fail_queued(
@@ -928,7 +965,7 @@ async fn run_session(
             skipped
         };
         if skipped {
-            fail(&outbox, command, Error::Cancelled);
+            skip(&outbox, command);
             continue;
         }
         let lost = match command {
@@ -1568,21 +1605,157 @@ mod tests {
             matches!(
                 events.as_slice(),
                 [
+                    // Stopped while it ran, or before it began.
                     Event::SqlRan {
                         request: RequestId(2),
+                        cancel: Some(CancelReason::User),
                         ..
                     },
-                    // Answered as cancelled, never run: no stop ended it.
+                    // Never run, and it was the user's cancel too.
                     Event::SqlRan {
                         request: RequestId(3),
                         result: Err(Error::Cancelled),
-                        cancel: None,
+                        cancel: Some(CancelReason::User),
                         ..
                     },
                 ]
             ),
             "{events:?}"
         );
+    }
+
+    #[test]
+    fn only_a_script_cancelled_while_queued_names_the_user() {
+        let (events, received) = mpsc::channel();
+        let outbox = Outbox {
+            events,
+            waker: Waker::default(),
+        };
+        let session = SessionId(1);
+        skip(
+            &outbox,
+            Command::RunSql {
+                session,
+                request: RequestId(2),
+                statements: statements("SELECT 1"),
+                limit: 10,
+                timeout: None,
+            },
+        );
+        skip(
+            &outbox,
+            Command::ListSchemas {
+                session,
+                request: RequestId(3),
+            },
+        );
+        // A script that fails for another reason was stopped by nobody.
+        fail(
+            &outbox,
+            Command::RunSql {
+                session,
+                request: RequestId(4),
+                statements: statements("SELECT 1"),
+                limit: 10,
+                timeout: None,
+            },
+            lost(),
+        );
+        let answered: Vec<Event> = received.try_iter().collect();
+        assert!(
+            matches!(
+                answered.as_slice(),
+                [
+                    Event::SqlRan {
+                        request: RequestId(2),
+                        result: Err(Error::Cancelled),
+                        cancel: Some(CancelReason::User),
+                        ..
+                    },
+                    Event::Schemas {
+                        request: RequestId(3),
+                        result: Err(Error::Cancelled),
+                        ..
+                    },
+                    Event::SqlRan {
+                        request: RequestId(4),
+                        result: Err(Error::ConnectionLost(_)),
+                        cancel: None,
+                        ..
+                    },
+                ]
+            ),
+            "{answered:?}"
+        );
+    }
+
+    #[test]
+    fn closing_a_session_stops_its_script() {
+        let (_dir, mut backend, session) = connected_sqlite();
+        backend.send(Command::RunSql {
+            session,
+            request: RequestId(2),
+            statements: statements(&format!("SELECT 1; {ENDLESS}")),
+            limit: 10,
+            timeout: None,
+        });
+        // Long enough for the session to have started the script: one
+        // still queued when the session closes never runs or answers.
+        std::thread::sleep(Duration::from_millis(300));
+        backend.send(Command::Close { session });
+        // A reason is reported only when the stop flag was set: the cancel
+        // alone would end this run with none.
+        let Some(Event::SqlRan {
+            request: RequestId(2),
+            result: Ok(outcome),
+            cancel: Some(CancelReason::User),
+            ..
+        }) = backend.wait(WAIT)
+        else {
+            panic!("expected the script stopped by its flag");
+        };
+        assert!(outcome.was_cancelled());
+        backend.send(Command::ListSchemas {
+            session,
+            request: RequestId(3),
+        });
+        match backend.wait(WAIT) {
+            Some(Event::Schemas {
+                result: Err(error), ..
+            }) => assert!(error.is_connection_lost()),
+            other => panic!("expected a lost-connection error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_cancel_is_not_sent_to_a_script_that_is_cleaning_up() {
+        // Not a script: a cancel is sent, as it always was.
+        let other = Running::default();
+        other.stop_script();
+        assert!(other.takes_a_cancel());
+
+        let stop = StopFlag::new();
+        let script = Running {
+            stop: Some(stop.clone()),
+            ..Running::default()
+        };
+        assert!(script.takes_a_cancel());
+        assert!(!stop.is_stopped());
+        script.stop_script();
+        assert!(stop.is_stopped());
+        assert!(script.takes_a_cancel());
+
+        // The driver has begun its cleanup: the flag is still set (it says
+        // who stopped the run), but no cancel goes out.
+        let stop = StopFlag::new();
+        let finishing = Running {
+            stop: Some(stop.clone()),
+            ..Running::default()
+        };
+        stop.finish();
+        finishing.stop_script();
+        assert!(stop.is_stopped());
+        assert!(!finishing.takes_a_cancel());
     }
 
     #[test]
