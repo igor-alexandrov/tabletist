@@ -402,7 +402,7 @@ enum Dialog { Connection(..), Password(..), HostKey(..), QuickOpen(..), Help }
   the same saved connection can be opened in more than one tab.
 - A tab shows the connection's color tag, name, and status (connecting,
   connected, disconnected).
-- `+` or Cmd/Ctrl+T opens a new tab with the **picker**. The app starts with
+- `+` or Cmd/Ctrl+O opens a new tab with the **picker**. The app starts with
   one picker tab.
 - Closing a tab cancels its running query, closes the connection and the SSH
   tunnel, and removes the tab. Middle-click closes. The bar scrolls when it
@@ -484,7 +484,8 @@ read-only table (structure data is small; the data grid is not needed).
 
 | Shortcut | Action |
 |---|---|
-| Cmd/Ctrl+T | New connection tab (picker) |
+| Cmd/Ctrl+O | New connection tab (picker) |
+| Cmd/Ctrl+T | New SQL editor (added after v1, see `2026-09-30-sql-editor-core-design.md`) |
 | Cmd/Ctrl+Shift+W | Close connection tab |
 | Cmd/Ctrl+1..9, Ctrl+Tab, Ctrl+Shift+Tab | Switch connection tab |
 | Cmd/Ctrl+N | New connection |
