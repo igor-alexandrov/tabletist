@@ -620,22 +620,36 @@ async fn a_failing_statement_still_rolls_the_transaction_back() {
 #[tokio::test]
 async fn a_script_cannot_change_the_sessions_settings_for_later() {
     let (connection, _dir) = fixture().await;
-    run(
+    let changed = run(
         &connection,
-        "PRAGMA query_only = OFF; PRAGMA trusted_schema = ON",
+        "PRAGMA query_only = OFF; PRAGMA trusted_schema = ON; PRAGMA busy_timeout = 0; \
+         PRAGMA case_sensitive_like = ON",
     )
     .await
     .unwrap();
-    let outcome = run(&connection, "PRAGMA query_only; PRAGMA trusted_schema")
-        .await
-        .unwrap();
+    assert_eq!(changed.results.len(), 4, "{changed:?}");
+    assert!(
+        !changed
+            .results
+            .iter()
+            .any(|result| matches!(result.outcome, StatementOutcome::Error { .. })),
+        "{changed:?}"
+    );
+    let outcome = run(
+        &connection,
+        "PRAGMA query_only; PRAGMA trusted_schema; PRAGMA busy_timeout; SELECT 'x' LIKE 'X'",
+    )
+    .await
+    .unwrap();
     let value = |index: usize| match &outcome.results[index].outcome {
         StatementOutcome::Rows { rows, .. } => rows[0][0].clone(),
         other => panic!("{other:?}"),
     };
-    // query_only back on, trusted_schema back off.
+    // Every setting is back as the connection opened with it.
     assert_eq!(value(0), Value::Int(1));
     assert_eq!(value(1), Value::Int(0));
+    assert_eq!(value(2), Value::Int(5000));
+    assert_eq!(value(3), Value::Int(1));
 }
 
 #[tokio::test]
@@ -692,7 +706,7 @@ async fn a_stopped_script_is_cancelled_whatever_the_timing() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_stopped_script_keeps_the_results_that_finished() {
+async fn a_stopped_script_never_reports_partial_rows() {
     let (connection, _dir) = fixture().await;
     let connection = std::sync::Arc::new(connection);
     let stop = StopFlag::new();
@@ -735,8 +749,9 @@ async fn a_session_cancel_ends_the_script_as_cancelled() {
                 .await
         })
     };
-    // SQLite ignores an interrupt when nothing runs yet, so keep cancelling
-    // until the script ends (the backend's timeout does the same).
+    // SQLite ignores an interrupt when nothing runs yet. This test has no
+    // stop flag, so it repeats the interrupt until one lands; the backend
+    // sets the stop flag with its cancel instead.
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     while !running.is_finished() {
         assert!(
@@ -747,11 +762,11 @@ async fn a_session_cancel_ends_the_script_as_cancelled() {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
     let outcome = running.await.unwrap().unwrap();
+    // An interrupt that lands on BEGIN ends the run with no results.
     assert!(outcome.was_cancelled());
-    assert!(matches!(
-        outcome.results.last().map(|result| &result.outcome),
-        Some(StatementOutcome::Cancelled)
-    ));
+    if let Some(last) = outcome.results.last() {
+        assert_eq!(last.outcome, StatementOutcome::Cancelled);
+    }
     // The session works, and the transaction was rolled back.
     let after = run(&connection, "SELECT 1").await.unwrap();
     assert!(matches!(

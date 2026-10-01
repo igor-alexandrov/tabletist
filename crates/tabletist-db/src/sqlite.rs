@@ -79,6 +79,9 @@ fn script(
     {
         Err(Error::Cancelled) => {
             outcome.stopped = true;
+            // The interrupt may have left a transaction open.
+            stop.finish();
+            end_transaction(connection).map_err(|error| crate::script::cleanup_failed(&error))?;
             return Ok(outcome);
         }
         Err(error) => return Err(error),
@@ -91,6 +94,7 @@ fn script(
     let ran = statements(connection, texts, limit, stop, &mut outcome);
     // Removed before the cleanup, so a stop cannot interrupt it.
     connection.progress_handler(0, None::<fn() -> bool>);
+    stop.finish();
     let ended = end_transaction(connection);
     ran?;
     ended.map_err(|error| crate::script::cleanup_failed(&error))?;
@@ -261,11 +265,15 @@ fn from_sqlite(value: rusqlite::types::ValueRef<'_>) -> Value {
     }
 }
 
-/// The settings that keep a session read-only and its schema untrusted.
+/// The settings every session has from the start: read-only, an untrusted
+/// schema, a busy timeout and LIKE ignoring case (the filters rely on it).
 /// `open` sets them, and a script run sets them again afterwards, since a
-/// script may have changed them.
+/// script may have changed any of them.
 fn set_session_pragmas(connection: &rusqlite::Connection) -> rusqlite::Result<()> {
-    connection.execute_batch("PRAGMA query_only = ON; PRAGMA trusted_schema = OFF;")
+    connection.busy_timeout(std::time::Duration::from_secs(5))?;
+    connection.execute_batch(
+        "PRAGMA query_only = ON; PRAGMA trusted_schema = OFF; PRAGMA case_sensitive_like = OFF;",
+    )
 }
 
 /// Stops a script when dropped, unless disarmed first: a `run_script`
@@ -351,9 +359,6 @@ impl Conn {
             }
             let flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX;
             let connection = rusqlite::Connection::open_with_flags(plain_file_name(&path), flags)
-                .map_err(map_error)?;
-            connection
-                .busy_timeout(std::time::Duration::from_secs(5))
                 .map_err(map_error)?;
             // A double-quoted name that matches no column is an error, not a
             // string literal: a filter on a renamed column must fail rather

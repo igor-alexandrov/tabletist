@@ -63,8 +63,16 @@ pub enum StatementOutcome {
 /// Tells a running script to stop: checked between statements, and by
 /// SQLite while a statement runs. The backend sets it together with the
 /// session's cancel.
+///
+/// One flag per run: a stop cannot be undone, and dropping the run sets it.
 #[derive(Debug, Clone, Default)]
-pub struct StopFlag(Arc<AtomicBool>);
+pub struct StopFlag(Arc<Flags>);
+
+#[derive(Debug, Default)]
+struct Flags {
+    stopped: AtomicBool,
+    finishing: AtomicBool,
+}
 
 impl StopFlag {
     /// A flag that is not stopped.
@@ -74,12 +82,24 @@ impl StopFlag {
 
     /// Stops every run holding this flag or a clone of it.
     pub fn stop(&self) {
-        self.0.store(true, Ordering::SeqCst);
+        self.0.stopped.store(true, Ordering::SeqCst);
     }
 
     /// Whether [`StopFlag::stop`] was called.
     pub fn is_stopped(&self) -> bool {
-        self.0.load(Ordering::SeqCst)
+        self.0.stopped.load(Ordering::SeqCst)
+    }
+
+    /// Set by the driver when the run's cleanup begins: a cancel sent after
+    /// this could land on the cleanup instead of a statement, so the backend
+    /// stops repeating its cancel.
+    pub fn finish(&self) {
+        self.0.finishing.store(true, Ordering::SeqCst);
+    }
+
+    /// Whether the run's cleanup has begun (see [`StopFlag::finish`]).
+    pub fn is_finishing(&self) -> bool {
+        self.0.finishing.load(Ordering::SeqCst)
     }
 }
 
@@ -97,4 +117,22 @@ pub(crate) fn statement_failed(error: Error, position: Option<usize>) -> Result<
 /// script's transaction.
 pub(crate) fn cleanup_failed(error: &Error) -> Error {
     Error::ConnectionLost(format!("could not end the read-only transaction: {error}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stopping_and_finishing_are_separate_and_shared_by_clones() {
+        let flag = StopFlag::new();
+        let clone = flag.clone();
+        assert!(!flag.is_stopped() && !flag.is_finishing());
+        clone.finish();
+        assert!(flag.is_finishing());
+        assert!(!flag.is_stopped());
+        clone.stop();
+        assert!(flag.is_stopped());
+        assert!(flag.is_finishing());
+    }
 }
