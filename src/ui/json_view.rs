@@ -5,6 +5,7 @@ use std::sync::Arc;
 use egui::cache::{ComputerMut, FrameCache};
 use egui::{Align, Color32, Id, Label, Layout, Sense, Ui, WidgetInfo, vec2};
 use serde::de::{MapAccess, SeqAccess, Visitor};
+use tabletist_db::{Value, ValueKind};
 
 use crate::i18n::{Locale, gettext, ngettext};
 use crate::theme::{self, Icon, Palette};
@@ -12,6 +13,8 @@ use crate::typography::{Text, TextRole};
 
 /// JSON larger than this is shown as plain text, not parsed into a tree.
 pub const TREE_MAX: usize = 256 * 1024;
+/// JSON larger than this is not summarised in a grid cell.
+pub const CELL_MAX: usize = 16 * 1024;
 /// Documents this short open fully; longer ones open only the top level.
 const OPEN_LINES: usize = 40;
 /// Most lines one value draws, so expanding a huge document stays fast.
@@ -150,12 +153,7 @@ impl ComputerMut<&str, Option<Arc<Doc>>> for Parser {
 
 /// `text` parsed, from a cache kept while the value stays on screen, so a
 /// document is not re-parsed every frame.
-pub fn parsed(ui: &Ui, text: &str) -> Option<Arc<Doc>> {
-    parsed_in(ui.ctx(), text)
-}
-
-/// [`parsed`], from the context's cache.
-pub fn parsed_in(ctx: &egui::Context, text: &str) -> Option<Arc<Doc>> {
+fn parsed_in(ctx: &egui::Context, text: &str) -> Option<Arc<Doc>> {
     ctx.memory_mut(|memory| {
         memory
             .caches
@@ -163,6 +161,42 @@ pub fn parsed_in(ctx: &egui::Context, text: &str) -> Option<Arc<Doc>> {
             .get(text)
             .clone()
     })
+}
+
+/// The document `value` holds, when it is at most `max` bytes. A JSON column
+/// holds one whatever its value; a text column holds one only when its value
+/// is an object or an array (a number or a word there is just text). Other
+/// kinds never do: PostgreSQL writes an empty array as `{}` and a range as
+/// `[1,2]`.
+pub fn document(
+    ctx: &egui::Context,
+    kind: ValueKind,
+    value: &Value,
+    max: usize,
+) -> Option<Arc<Doc>> {
+    let Value::Text(text) = value else {
+        return None;
+    };
+    let holds = match kind {
+        ValueKind::Json => true,
+        ValueKind::Text => looks_like_document(text),
+        _ => false,
+    };
+    if holds && text.len() <= max {
+        parsed_in(ctx, text)
+    } else {
+        None
+    }
+}
+
+/// Whether `text` opens and closes as a JSON object or array does. Cheap, so
+/// ordinary text is never hashed or parsed.
+fn looks_like_document(text: &str) -> bool {
+    let bytes = text.trim_ascii().as_bytes();
+    matches!(
+        (bytes.first(), bytes.last()),
+        (Some(b'{'), Some(b'}')) | (Some(b'['), Some(b']'))
+    )
 }
 
 /// What a JSON cell shows: how many keys (or items) its top level holds,
@@ -632,6 +666,35 @@ mod tests {
     fn invalid_json_does_not_parse() {
         assert!(parse("not json").is_none());
         assert!(parse(r#"{"a":1"#).is_none());
+    }
+
+    #[test]
+    fn a_text_column_holds_a_document_only_as_an_object_or_an_array() {
+        let ctx = egui::Context::default();
+        let holds =
+            |kind, text: &str| document(&ctx, kind, &Value::Text(text.into()), TREE_MAX).is_some();
+        for text in [r#"{"a":1}"#, " [1, 2]\n", "{}", "[]"] {
+            assert!(holds(ValueKind::Text, text), "{text}");
+        }
+        // Text that is JSON only by accident, or only looks like it.
+        for text in [
+            "12",
+            "true",
+            "null",
+            r#""quoted""#,
+            "[draft] notes",
+            "{a,b}",
+            "",
+        ] {
+            assert!(!holds(ValueKind::Text, text), "{text}");
+        }
+        // A JSON column's scalars are still documents.
+        assert!(holds(ValueKind::Json, "12"));
+        // A PostgreSQL empty array and an inclusive range are not.
+        assert!(!holds(ValueKind::Other, "{}"));
+        assert!(!holds(ValueKind::Other, "[1.5,2.5]"));
+        assert!(document(&ctx, ValueKind::Text, &Value::Null, TREE_MAX).is_none());
+        assert!(document(&ctx, ValueKind::Text, &Value::Text("[1, 2]".into()), 5).is_none());
     }
 
     #[test]
