@@ -496,6 +496,47 @@ impl Harness {
     }
 }
 
+/// A SQL editor statement's result, shaped like the fixture's users table.
+pub fn rows_outcome(rows: usize) -> tabletist_db::StatementOutcome {
+    let page = page(rows, false);
+    tabletist_db::StatementOutcome::Rows {
+        columns: page.columns,
+        rows: page.rows,
+        truncated: false,
+    }
+}
+
+impl Harness {
+    /// Answers the newest `RunSql`, as the backend does when the script
+    /// ends: with what it did (or why it failed as a whole) and who stopped
+    /// it, if someone did.
+    pub fn answer_sql(
+        &mut self,
+        result: Result<tabletist_db::ScriptOutcome, tabletist_db::Error>,
+        cancel: Option<crate::backend::CancelReason>,
+    ) {
+        let (session, request) = self
+            .app
+            .backend
+            .sent
+            .iter()
+            .rev()
+            .find_map(|command| match command {
+                Command::RunSql {
+                    session, request, ..
+                } => Some((*session, *request)),
+                _ => None,
+            })
+            .expect("a RunSql was sent");
+        self.app.apply(Action::Backend(Event::SqlRan {
+            session,
+            request,
+            result,
+            cancel,
+        }));
+    }
+}
+
 impl Harness {
     pub fn with_backend(size: egui::Vec2, backend: crate::backend::Backend) -> Self {
         let dir = tempfile::tempdir().expect("temp dir");

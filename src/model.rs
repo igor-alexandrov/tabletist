@@ -215,9 +215,39 @@ pub enum Action {
         cols: isize,
     },
     ToggleRowPanel(ConnTabId),
-    /// Refetch the active object tab (and its structure if loaded).
+    /// Refetch the active object tab (and its structure if loaded). Does
+    /// nothing on a SQL editor.
     Refresh(ConnTabId),
+    /// Stop what the active tab waits for: an object tab's loads, a SQL
+    /// editor's run.
     CancelQuery(ConnTabId),
+    /// Open a SQL editor in the connection tab's workspace and show it.
+    NewSqlTab(ConnTabId),
+    /// Run the statement at the editor's cursor, or every statement.
+    RunSql {
+        tab: ConnTabId,
+        sql_tab: TabId,
+        all: bool,
+    },
+    /// The Limit menu: this editor's row limit, and the one new editors get.
+    SetSqlLimit {
+        tab: ConnTabId,
+        sql_tab: TabId,
+        limit: u32,
+    },
+    /// The Timeout menu: this editor's timeout in seconds (`None` waits
+    /// for ever), and the one new editors get.
+    SetSqlTimeout {
+        tab: ConnTabId,
+        sql_tab: TabId,
+        secs: Option<u32>,
+    },
+    /// Show a SQL editor's Results or its Messages.
+    SetResultPane {
+        tab: ConnTabId,
+        sql_tab: TabId,
+        pane: ResultPane,
+    },
     /// A key for the sidebar tree.
     TreeKey {
         tab: ConnTabId,
@@ -1551,6 +1581,13 @@ pub enum ResultPane {
     Messages,
 }
 
+/// A result's columns and rows, and whether the limit cut rows off.
+pub type ShownRows<'a> = (
+    &'a [tabletist_db::ColumnMeta],
+    &'a [Vec<tabletist_db::Value>],
+    bool,
+);
+
 /// A finished SQL editor run.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SqlRun {
@@ -1685,6 +1722,83 @@ impl SqlTab {
     /// How long the run in flight has been going.
     pub fn running_for(&self) -> Option<Duration> {
         self.in_flight.as_ref().map(|run| run.started.elapsed())
+    }
+
+    /// What the Results pane shows: the last statement of the last finished
+    /// run that returned rows, with its index in the run.
+    pub fn shown(&self) -> Option<(usize, &tabletist_db::StatementResult)> {
+        let run = self.run.value.as_ref()?;
+        run.outcome
+            .results
+            .iter()
+            .enumerate()
+            .rev()
+            .find(|(_, result)| {
+                matches!(result.outcome, tabletist_db::StatementOutcome::Rows { .. })
+            })
+    }
+
+    /// The shown result's columns and rows, and whether the limit cut
+    /// rows off.
+    pub fn shown_rows(&self) -> Option<ShownRows<'_>> {
+        match &self.shown()?.1.outcome {
+            tabletist_db::StatementOutcome::Rows {
+                columns,
+                rows,
+                truncated,
+            } => Some((columns, rows, *truncated)),
+            _ => None,
+        }
+    }
+
+    /// Rows and columns of the shown result; zero of both without one.
+    pub fn dims(&self) -> (usize, usize) {
+        self.shown_rows()
+            .map_or((0, 0), |(columns, rows, _)| (rows.len(), columns.len()))
+    }
+
+    /// The cursor's 1-based line and column (in characters).
+    pub fn line_col(&self) -> (usize, usize) {
+        // The view reports the cursor a frame after the text changes.
+        let before = &self.text[..self.text.floor_char_boundary(self.cursor)];
+        let line = before.matches('\n').count() + 1;
+        let column = before
+            .rsplit('\n')
+            .next()
+            .map_or(0, |line| line.chars().count())
+            + 1;
+        (line, column)
+    }
+
+    /// Where the last run failed: the editor line, and the column when the
+    /// database gave a position. `None` while a run is in flight.
+    pub fn error_mark(&self) -> Option<(usize, Option<usize>)> {
+        if self.is_running() {
+            return None;
+        }
+        match &self.run.error {
+            Some(Error::Refused { line, .. }) => return Some((*line, None)),
+            // Nothing ran, so the result still held is an older run's.
+            Some(_) => return None,
+            None => {}
+        }
+        let run = self.run.value.as_ref()?;
+        // One result per statement that started, in order.
+        run.statements
+            .iter()
+            .zip(&run.outcome.results)
+            .find_map(|(statement, result)| {
+                let tabletist_db::StatementOutcome::Error { position, .. } = &result.outcome else {
+                    return None;
+                };
+                Some(match position {
+                    Some(position) => {
+                        let (line, column) = statement.line_col(*position);
+                        (line, Some(column))
+                    }
+                    None => (statement.first_line, None),
+                })
+            })
     }
 }
 
@@ -2047,6 +2161,152 @@ mod tests {
         // Abandoning nothing changes nothing.
         sql.abandon_run();
         assert!(sql.run.value.is_some());
+    }
+
+    /// Runs `text` in `sql` and answers with one outcome per statement
+    /// that started.
+    fn ran(sql: &mut SqlTab, text: &str, outcomes: Vec<tabletist_db::StatementOutcome>) {
+        sql.text = text.into();
+        let request = RequestId(sql.run.loaded.map_or(9, |last| last.0 + 1));
+        let _ = sql.start_run(request, script(text));
+        let outcome = tabletist_db::ScriptOutcome {
+            results: outcomes
+                .into_iter()
+                .map(|outcome| tabletist_db::StatementResult {
+                    elapsed: Duration::from_millis(14),
+                    outcome,
+                })
+                .collect(),
+            stopped: false,
+        };
+        assert!(sql.finish_run(request, Ok(outcome), None));
+    }
+
+    fn failed(message: &str, position: Option<usize>) -> tabletist_db::StatementOutcome {
+        tabletist_db::StatementOutcome::Error {
+            error: Error::query(message),
+            position,
+        }
+    }
+
+    #[test]
+    fn a_sql_tab_reports_its_cursor_line_and_column() {
+        let mut sql = editor();
+        assert_eq!(sql.line_col(), (1, 1));
+        sql.text = "SELECT 1;\nSELECT ë, 2".into();
+        sql.cursor = sql.text.len();
+        assert_eq!(sql.line_col(), (2, 12), "columns count characters");
+        sql.cursor = "SELECT 1;\n".len();
+        assert_eq!(sql.line_col(), (2, 1));
+        sql.cursor = "SELECT 1".len();
+        assert_eq!(sql.line_col(), (1, 9));
+        // A cursor the text no longer reaches, or inside a character
+        // (the view reports it a frame late), stays in the text.
+        sql.cursor = sql.text.len() + 40;
+        assert_eq!(sql.line_col(), (2, 12));
+        sql.cursor = "SELECT 1;\nSELECT ".len() + 1;
+        assert_eq!(sql.line_col(), (2, 8));
+    }
+
+    #[test]
+    fn results_show_the_last_statement_that_returned_rows() {
+        use crate::testing::rows_outcome;
+        let mut sql = editor();
+        assert!(sql.shown().is_none() && sql.shown_rows().is_none());
+        assert_eq!(sql.dims(), (0, 0));
+        ran(
+            &mut sql,
+            "SELECT 1; SELECT 2; SET x = 1",
+            vec![
+                rows_outcome(5),
+                rows_outcome(2),
+                tabletist_db::StatementOutcome::Done { affected: None },
+            ],
+        );
+        let (index, result) = sql.shown().unwrap();
+        assert_eq!(index, 1);
+        assert_eq!(result.elapsed, Duration::from_millis(14));
+        let (columns, rows, truncated) = sql.shown_rows().unwrap();
+        assert_eq!((columns.len(), rows.len(), truncated), (3, 2, false));
+        assert_eq!(sql.dims(), (2, 3));
+        assert_eq!(sql.error_mark(), None);
+        // A run without a result set shows none.
+        ran(
+            &mut sql,
+            "SET x = 1",
+            vec![tabletist_db::StatementOutcome::Done { affected: None }],
+        );
+        assert!(sql.shown().is_none());
+        assert_eq!(sql.dims(), (0, 0));
+    }
+
+    #[test]
+    fn a_failed_statement_is_marked_on_the_line_of_its_sql() {
+        let mut sql = editor();
+        ran(
+            &mut sql,
+            "SELECT 1;\n-- the typo\nSELECT x",
+            vec![
+                crate::testing::rows_outcome(1),
+                failed("no such column: x", None),
+            ],
+        );
+        assert_eq!(sql.error_mark(), Some((3, None)));
+        assert_eq!(sql.shown().map(|(index, _)| index), Some(0));
+    }
+
+    #[test]
+    fn an_error_position_becomes_an_editor_line_and_column() {
+        let text = "SELECT 1;\n  SELECT a,\n  nope FROM t";
+        // On the statement's first line the column counts from the line's
+        // start, not the statement's.
+        let mut sql = editor();
+        ran(
+            &mut sql,
+            text,
+            vec![
+                crate::testing::rows_outcome(1),
+                failed("column \"a\" does not exist", Some(8)),
+            ],
+        );
+        assert_eq!(sql.error_mark(), Some((2, Some(10))));
+        // "nope" is the 13th character of the second statement.
+        ran(
+            &mut sql,
+            text,
+            vec![
+                crate::testing::rows_outcome(1),
+                failed("column \"nope\" does not exist", Some(13)),
+            ],
+        );
+        assert_eq!(sql.error_mark(), Some((3, Some(3))));
+    }
+
+    #[test]
+    fn a_refusal_is_marked_and_an_older_runs_error_is_not() {
+        let mut sql = editor();
+        ran(
+            &mut sql,
+            "SELECT x",
+            vec![failed("no such column: x", None)],
+        );
+        assert_eq!(sql.error_mark(), Some((1, None)));
+        // The run in flight has not failed anywhere yet.
+        let _ = sql.start_run(RequestId(20), script("SELECT 1;\n\n\nCOMMIT"));
+        assert_eq!(sql.error_mark(), None);
+        let refused = Error::Refused {
+            line: 4,
+            what: "COMMIT".into(),
+        };
+        assert!(sql.finish_run(RequestId(20), Err(refused), None));
+        assert_eq!(sql.error_mark(), Some((4, None)));
+        // A run that failed as a whole for another reason marks nothing:
+        // the result still shown is an older run's.
+        let _ = sql.start_run(RequestId(21), script("SELECT 1"));
+        let lost = Error::ConnectionLost("the server went away".into());
+        assert!(sql.finish_run(RequestId(21), Err(lost), None));
+        assert!(sql.run.value.is_some());
+        assert_eq!(sql.error_mark(), None);
     }
 
     #[test]
