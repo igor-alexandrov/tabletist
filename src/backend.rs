@@ -283,7 +283,15 @@ pub struct Backend {
     outbox: Outbox,
     #[cfg(test)]
     pub sent: Vec<Command>,
+    #[cfg(test)]
+    watched: Watched,
 }
+
+/// What every session of a backend is doing, for a test to look at: one
+/// that cancels or closes a session first waits until it runs the request
+/// the test means.
+#[cfg(test)]
+type Watched = Arc<Mutex<HashMap<SessionId, Arc<Mutex<Running>>>>>;
 
 impl Backend {
     /// Starts the backend thread and its runtime with the given keyring: the
@@ -297,6 +305,10 @@ impl Backend {
         };
         let (handle_tx, handle_rx) = mpsc::channel();
         let worker_outbox = outbox.clone();
+        #[cfg(test)]
+        let watched = Watched::default();
+        #[cfg(test)]
+        let worker_watched = Arc::clone(&watched);
         std::thread::Builder::new()
             .name("tabletist-backend".into())
             .spawn(move || {
@@ -314,6 +326,11 @@ impl Backend {
                 };
                 let _ = handle_tx.send(runtime.handle().clone());
                 let (worker, ready) = Worker::new(worker_outbox, keyring);
+                #[cfg(test)]
+                let worker = Worker {
+                    watched: worker_watched,
+                    ..worker
+                };
                 runtime.block_on(worker.run(command_rx, ready));
             })
             .expect("spawn the backend thread");
@@ -325,6 +342,8 @@ impl Backend {
             outbox,
             #[cfg(test)]
             sent: Vec::new(),
+            #[cfg(test)]
+            watched,
         }
     }
 
@@ -342,6 +361,8 @@ impl Backend {
             },
             #[cfg(test)]
             sent: Vec::new(),
+            #[cfg(test)]
+            watched: Watched::default(),
         }
     }
 
@@ -432,6 +453,15 @@ impl Backend {
     #[cfg(test)]
     pub fn wait(&mut self, timeout: std::time::Duration) -> Option<Event> {
         self.events.recv_timeout(timeout).ok()
+    }
+
+    /// The request `session` runs now, and whether it is a script (one
+    /// with a stop flag).
+    #[cfg(test)]
+    fn running(&self, session: SessionId) -> Option<(RequestId, bool)> {
+        let watched = lock(&self.watched);
+        let running = lock(watched.get(&session)?);
+        Some((running.request?, running.stop.is_some()))
     }
 }
 
@@ -601,6 +631,8 @@ struct Worker {
     /// Sessions closed before they finished connecting.
     closed_early: std::collections::HashSet<SessionId>,
     connecting: std::collections::HashSet<SessionId>,
+    #[cfg(test)]
+    watched: Watched,
 }
 
 impl Worker {
@@ -614,6 +646,8 @@ impl Worker {
             ready,
             closed_early: Default::default(),
             connecting: Default::default(),
+            #[cfg(test)]
+            watched: Watched::default(),
         };
         (worker, ready_rx)
     }
@@ -644,6 +678,8 @@ impl Worker {
             // Dropping the handle stops the session task, which closes it.
             Ok(_) if closed => {}
             Ok((driver, encrypted, handle)) => {
+                #[cfg(test)]
+                lock(&self.watched).insert(done.session, Arc::clone(&handle.running));
                 self.sessions.insert(done.session, handle);
                 self.outbox.emit(Event::Connected {
                     session: done.session,
@@ -1580,6 +1616,20 @@ mod tests {
         (dir, backend, session)
     }
 
+    /// Waits until the session runs `request` (a script, or not): a Cancel
+    /// for a request still queued skips it, and a Close ends the session
+    /// before a queued request runs or answers.
+    fn wait_until_running(backend: &Backend, session: SessionId, request: RequestId, script: bool) {
+        let deadline = std::time::Instant::now() + WAIT;
+        while backend.running(session) != Some((request, script)) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the session must start {request:?}"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
     /// The next event, which must be a script's answer.
     fn sql_ran(
         backend: &mut Backend,
@@ -1700,9 +1750,7 @@ mod tests {
             limit: 10,
             timeout: Some(Duration::from_secs(3600)),
         });
-        // Long enough for the session to have started the script: a cancel
-        // for a request still queued skips it instead.
-        std::thread::sleep(Duration::from_millis(300));
+        wait_until_running(&backend, session, RequestId(2), true);
         backend.send(Command::Cancel {
             session,
             request: RequestId(2),
@@ -1712,11 +1760,13 @@ mod tests {
         assert_eq!(cancel, Some(CancelReason::User));
         let outcome = result.unwrap();
         assert!(outcome.was_cancelled());
+        // The cancel lands in the endless statement, and the rows of the
+        // one before it are kept. The test does not wait for that one to
+        // end, so the cancel can also land before it: then nothing ran.
+        use tabletist_db::StatementOutcome::{Cancelled, Rows};
+        let ran: Vec<_> = outcome.results.iter().map(|ran| &ran.outcome).collect();
         assert!(
-            matches!(
-                outcome.results.first().map(|first| &first.outcome),
-                Some(tabletist_db::StatementOutcome::Rows { .. })
-            ),
+            matches!(ran.as_slice(), [Rows { .. }, Cancelled] | [Cancelled] | []),
             "{outcome:?}"
         );
         backend.send(Command::ListSchemas {
@@ -1868,9 +1918,7 @@ mod tests {
             limit: 10,
             timeout: None,
         });
-        // Long enough for the session to have started the script: one
-        // still queued when the session closes never runs or answers.
-        std::thread::sleep(Duration::from_millis(300));
+        wait_until_running(&backend, session, RequestId(2), true);
         backend.send(Command::Close { session });
         // A reason is reported only when the stop flag was set: the cancel
         // alone would end this run with none.
@@ -2915,7 +2963,7 @@ mod tests {
                 request: RequestId(request),
             });
         }
-        std::thread::sleep(Duration::from_millis(300));
+        wait_until_running(&backend, session, RequestId(2), false);
         backend.send(Command::Close { session });
         // The running count ends (cancelled); the queued listings never run.
         let mut schemas = 0;
