@@ -21,7 +21,7 @@ pub struct Harness {
     pub fullscreen: bool,
     /// Every piece of text the last frame painted, with its color.
     pub painted: Vec<(String, egui::Color32)>,
-    /// Every rectangle and circle the last frame filled, and where.
+    /// Every rectangle, circle and outline the last frame filled, and where.
     pub fills: Vec<(egui::Rect, egui::Color32)>,
     /// The colour of every line and outline the last frame drew.
     pub strokes: Vec<egui::Color32>,
@@ -264,6 +264,12 @@ fn collect_paint(
             stroke(circle.stroke);
         }
         egui::Shape::LineSegment { stroke: line, .. } => stroke(*line),
+        // A filled outline (the connection dialog's stripe), by the
+        // rectangle round it.
+        egui::Shape::Path(path) if path.fill.a() > 0 => {
+            let bounds = egui::Rect::from_points(&path.points);
+            fills.push((bounds, path.fill));
+        }
         _ => {}
     }
 }

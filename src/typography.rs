@@ -594,16 +594,3 @@ pub fn text_styles(faces: Faces) -> std::collections::BTreeMap<egui::TextStyle, 
     ]
     .into()
 }
-
-/// The pre-role helpers, kept for the edit connection dialog until it
-/// moves to [`TextRole`] (it is out of 0.1.0's scope).
-pub mod legacy {
-    use egui::FontId;
-
-    /// Dialog titles.
-    pub const TEXT_TITLE: f32 = 17.0;
-
-    pub fn semibold(size: f32) -> FontId {
-        fastframe_fonts::Weight::SemiBold.font_id(size)
-    }
-}

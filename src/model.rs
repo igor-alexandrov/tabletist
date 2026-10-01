@@ -396,7 +396,7 @@ pub struct ConnectionForm {
     /// The URL field is showing: the dialog's URL tab, the terminal look's
     /// `u`.
     pub url_mode: bool,
-    /// A validation or URL error shown under the fields.
+    /// A validation or URL error shown above the footer.
     pub message: Option<String>,
     pub test: TestState,
     /// When the running Test was sent to the server.
@@ -717,8 +717,8 @@ impl ConnectionForm {
                 // public certificate, so verify-ca needs its own CA.
                 if self.tls == TlsMode::VerifyCa && ca_file.is_empty() {
                     return Err(
-                        "Verify certificate needs a CA file. Choose Verify certificate \
-                                and host to use the system certificates."
+                        "verify-ca needs a CA file. Choose verify-full to use the system \
+                         certificates."
                             .into(),
                     );
                 }

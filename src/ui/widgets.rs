@@ -472,69 +472,6 @@ fn paint_chevrons(painter: &egui::Painter, rect: Rect, color: Color32) {
     }
 }
 
-/// How an Omarchy toggle draws in one state.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct ToggleColors {
-    pub fill: Color32,
-    pub stroke: Stroke,
-    pub text: Color32,
-}
-
-/// A toggle's colours on Omarchy, from the shell's control states:
-/// selected is foreground @ 18% with accent text, hover foreground @ 8%, and
-/// keyboard focus adds the 1 px foreground @ 25% border. `None` elsewhere:
-/// the other looks keep egui's selected button, tinted with the accent.
-pub fn toggle_colors(
-    selected: bool,
-    hovered: bool,
-    focused: bool,
-    look: &Look,
-    palette: &Palette,
-) -> Option<ToggleColors> {
-    if !look.bordered_controls {
-        return None;
-    }
-    let fg = palette.text;
-    let fill = if selected {
-        fg.gamma_multiply(0.18)
-    } else if hovered || focused {
-        fg.gamma_multiply(0.08)
-    } else {
-        Color32::TRANSPARENT
-    };
-    let stroke = if focused {
-        Stroke::new(1.0, fg.gamma_multiply(0.25))
-    } else {
-        Stroke::NONE
-    };
-    Some(ToggleColors {
-        fill,
-        stroke,
-        text: if selected { palette.accent } else { fg },
-    })
-}
-
-/// A button in a group where one is selected: the footer's Data/Structure
-/// switch and the connection dialog's drivers. Announced as a toggle with
-/// its text as the name.
-pub fn toggle(ui: &mut Ui, selected: bool, text: &str, look: &Look, palette: &Palette) -> Response {
-    // Read last frame's state as egui's Button does, to pick this frame's colours.
-    let state = ui.ctx().read_response(ui.next_auto_id());
-    let hovered = state.as_ref().is_some_and(Response::hovered);
-    let focused = state.as_ref().is_some_and(Response::has_focus);
-    let Some(colors) = toggle_colors(selected, hovered, focused, look, palette) else {
-        let laid = Text::one(look, body(look), text, Color32::PLACEHOLDER).layout(ui.ctx());
-        return ui.add(egui::Button::selectable(selected, laid.galley));
-    };
-    let laid = Text::one(look, body(look), text, colors.text).layout(ui.ctx());
-    ui.add(
-        egui::Button::new(laid.galley)
-            .selected(selected)
-            .fill(colors.fill)
-            .stroke(colors.stroke),
-    )
-}
-
 /// `text` in the body role as a galley for a widget egui draws (a combo
 /// box's value, a menu item, a field's hint).
 pub fn galley(ui: &Ui, text: &str, color: Color32, look: &Look) -> std::sync::Arc<egui::Galley> {
@@ -750,12 +687,6 @@ pub fn primary_button(ui: &mut Ui, text: &str, look: &Look, palette: &Palette) -
 /// A dialog: a soft shadow over a dimmed window, or Omarchy's accent border
 /// over a scrim.
 pub fn modal(id: egui::Id, look: &Look, palette: &Palette) -> egui::Modal {
-    modal_edged(id, look, palette, palette.accent)
-}
-
-/// [`modal`] whose accent border (Omarchy) takes `edge`: the connection
-/// dialog's environment colour.
-pub fn modal_edged(id: egui::Id, look: &Look, palette: &Palette, edge: Color32) -> egui::Modal {
     let frame = egui::Frame::new()
         .fill(palette.overlay)
         .corner_radius(CornerRadius::same(look.dialog_radius))
@@ -780,7 +711,7 @@ pub fn modal_edged(id: egui::Id, look: &Look, palette: &Palette, edge: Color32) 
         DialogStyle::AccentBorder => {
             let [r, g, b, _] = palette.window.to_array();
             egui::Modal::new(id)
-                .frame(frame.stroke(Stroke::new(2.0, edge)))
+                .frame(frame.stroke(Stroke::new(2.0, palette.accent)))
                 .backdrop_color(Color32::from_rgba_unmultiplied(r, g, b, 128))
         }
     }
@@ -1820,66 +1751,6 @@ mod tests {
                 .unwrap_or_else(|| panic!("{}", look.name));
             let (_, node) = tree.nodes.iter().find(|(n, _)| *n == id).unwrap();
             assert_eq!(node.value(), Some("bookshop_test"), "{}", look.name);
-        }
-    }
-
-    #[test]
-    fn omarchy_toggles_use_the_shells_selected_state() {
-        use crate::theme::{Look, Palette};
-        for palette in [Palette::dark(), Palette::light()] {
-            let look = Look::omarchy();
-            let colors = |selected, hovered, focused| {
-                super::toggle_colors(selected, hovered, focused, &look, &palette).unwrap()
-            };
-            let selected = colors(true, false, false);
-            assert_eq!(selected.fill, palette.text.gamma_multiply(0.18));
-            assert_eq!(selected.stroke, Stroke::NONE);
-            assert_eq!(selected.text, palette.accent);
-            assert_eq!(colors(true, true, false).fill, selected.fill);
-            let hovered = colors(false, true, false);
-            assert_eq!(hovered.fill, palette.text.gamma_multiply(0.08));
-            assert_eq!(hovered.text, palette.text);
-            let idle = colors(false, false, false);
-            assert_eq!(idle.fill, Color32::TRANSPARENT);
-            assert_eq!(idle.stroke, Stroke::NONE);
-            // Keyboard focus shows the hover fill and a border, as the shell does.
-            let focused = colors(false, false, true);
-            assert_eq!(focused.fill, palette.text.gamma_multiply(0.08));
-            assert_eq!(
-                focused.stroke,
-                Stroke::new(1.0, palette.text.gamma_multiply(0.25))
-            );
-            assert_eq!(colors(true, false, true).fill, selected.fill);
-            assert_ne!(colors(true, false, true).stroke, Stroke::NONE);
-        }
-        for look in [Look::standard(), Look::macos()] {
-            assert_eq!(
-                super::toggle_colors(true, false, false, &look, &Palette::dark()),
-                None,
-                "{} keeps egui's selected button",
-                look.name
-            );
-        }
-    }
-
-    #[test]
-    fn toggles_keep_their_name_and_state_in_every_look() {
-        for look in crate::theme::Look::ALL {
-            let mut harness = crate::testing::Harness::new();
-            harness.set_look(look);
-            let palette = harness.app.palette;
-            let tree = harness.frame_with(|ui| {
-                super::toggle(ui, true, "Data", &look, &palette);
-                super::toggle(ui, false, "Structure", &look, &palette);
-            });
-            let state = |label| {
-                let id = crate::testing::node(&tree, label, egui::accesskit::Role::Button)
-                    .unwrap_or_else(|| panic!("{label}, {}", look.name));
-                let (_, node) = tree.nodes.iter().find(|(n, _)| *n == id).unwrap();
-                node.toggled()
-            };
-            assert_eq!(state("Data"), Some(egui::accesskit::Toggled::True));
-            assert_eq!(state("Structure"), Some(egui::accesskit::Toggled::False));
         }
     }
 

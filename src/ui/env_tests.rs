@@ -129,6 +129,17 @@ fn the_connections_list_shows_each_environment_in_its_colours() {
     }
 }
 
+/// The environment as the connection dialog's choices name it, in the
+/// look's case. (A badge says it its own way: `label`.)
+fn dialog_name(harness: &Harness, env: Environment) -> String {
+    let names = ["Local", "Dev", "Staging", "Production", "None"];
+    let at = Environment::ALL
+        .iter()
+        .position(|listed| *listed == env)
+        .expect("a listed environment");
+    harness.app.look.label(names[at])
+}
+
 #[test]
 fn the_connection_dialog_takes_the_chosen_environments_colours() {
     for (look, palette) in setups() {
@@ -136,21 +147,72 @@ fn the_connection_dialog_takes_the_chosen_environments_colours() {
             let mut harness = harness(look, palette);
             harness.app.apply(Action::NewConnection);
             if let Some(Dialog::Connection(form)) = &mut harness.app.dialog {
+                // Named, so the header's line about the connection is not
+                // the environment's name alone.
+                form.name = "Bookshop".into();
                 form.environment = Some(env);
             }
-            harness.finish_animations();
+            let tree = harness.finish_animations();
             let colors = colors(&harness, env);
             let case = format!("{} dark={} {env:?}", look.name, palette.dark);
+            // The dialog's title: a label, where the window behind has a
+            // button of the same name.
+            let title = crate::testing::bounds(
+                &tree,
+                &look.label("New connection"),
+                egui::accesskit::Role::Label,
+            )
+            .expect("the dialog's title");
             assert_eq!(
-                harness.painted_color(label(&harness, env)),
+                harness.painted_color(&dialog_name(&harness, env)),
                 Some(colors.badge_fg()),
-                "chosen segment, {case}"
+                "the chosen environment's name, {case}"
             );
-            assert!(filled(&harness, colors.badge_bg(), |_| true), "{case}");
             if look.terminal {
+                // The border, the chosen button, and the title's line.
                 assert!(harness.strokes.contains(&colors.base()), "border, {case}");
+                assert!(
+                    filled(&harness, colors.badge_bg(), |_| true),
+                    "chosen button, {case}"
+                );
+                let title_line = |rect: egui::Rect| rect.contains_rect(title);
+                assert!(
+                    filled(&harness, colors.bar_bg(), title_line),
+                    "title line, {case}"
+                );
             } else {
-                assert!(filled(&harness, colors.base(), |_| true), "stripe, {case}");
+                // The dot inside the chosen segment: the stripe and the
+                // read-only note's box take the same colour elsewhere.
+                let segment = crate::testing::bounds(
+                    &tree,
+                    &dialog_name(&harness, env),
+                    egui::accesskit::Role::RadioButton,
+                )
+                .expect("the chosen segment");
+                let in_segment = |rect: egui::Rect| segment.contains_rect(rect);
+                assert!(filled(&harness, colors.base(), in_segment), "dot, {case}");
+                // The read-only note's tint, and its box inside it.
+                let boxed = |note: egui::Rect| {
+                    filled(&harness, colors.base(), |rect| note.contains_rect(rect))
+                };
+                assert!(
+                    filled(&harness, colors.bar_bg(), boxed),
+                    "read-only note, {case}"
+                );
+                // The stripe runs over the header, from before the title to
+                // past Close. No environment, no stripe.
+                let close = crate::testing::bounds(&tree, "Close", egui::accesskit::Role::Button)
+                    .expect("Close");
+                let stripe = |rect: egui::Rect| {
+                    rect.left() <= title.left()
+                        && rect.right() >= close.right()
+                        && rect.bottom() <= title.top()
+                };
+                assert_eq!(
+                    filled(&harness, colors.base(), stripe),
+                    env != Environment::None,
+                    "stripe, {case}"
+                );
             }
         }
     }
