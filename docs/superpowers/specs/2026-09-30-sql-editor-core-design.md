@@ -109,7 +109,7 @@ guard treat as one.
 
 ### The read-only guard
 
-Three layers, all in `tabletist-db`, so no caller can skip them.
+Four layers, all in `tabletist-db`, so no caller can skip them.
 
 1. **Refusal before running.** `run_script` checks every statement first and
    runs nothing if any is refused. The whole script fails with
@@ -175,7 +175,14 @@ Three layers, all in `tabletist-db`, so no caller can skip them.
    list missed cannot flip it. MySQL's session is already read-only
    (`SET SESSION TRANSACTION READ ONLY` at connect), and the list keeps it
    so. SQLite is opened read-only by the driver.
-3. **Check before rolling back.** After the last statement, when the
+3. **Check before every statement.** So that a statement the list missed
+   can end the transaction but never be followed by a write, each driver
+   confirms it is still where it started before running the next statement:
+   PostgreSQL issues `SAVEPOINT tabletist_guard`, which fails outside a
+   transaction block; MySQL reads `@@session.transaction_read_only`. A
+   failed check ends the run with `Error::LeftReadOnly` before the statement
+   runs.
+4. **Check before rolling back.** After the last statement, when the
    transaction is still usable, PostgreSQL asks `SHOW transaction_read_only`
    and MySQL `SELECT @@session.transaction_read_only` (falling back to
    `@@session.tx_read_only` on "unknown system variable", for MariaDB before
