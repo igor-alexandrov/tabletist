@@ -121,7 +121,8 @@ Four layers, all in `tabletist-db`, so no caller can skip them.
    - `SET TRANSACTION`, `SET SESSION CHARACTERISTICS`,
      `SET SESSION TRANSACTION`, `SET GLOBAL TRANSACTION`, and any `SET` whose
      statement names `read_only` (`transaction_read_only`, `tx_read_only`,
-     `default_transaction_read_only`) or `autocommit`, matched on the name
+     `default_transaction_read_only`), `autocommit` or `completion_type`
+     (it can make our `ROLLBACK` end the session), matched on the name
      with its quotes or backticks removed, including `SET @@...` forms;
    - settings that change how later statements are lexed: any `SET` or
      `RESET` naming `sql_mode`, `standard_conforming_strings`,
@@ -190,12 +191,17 @@ Four layers, all in `tabletist-db`, so no caller can skip them.
    session found outside a transaction but still read-only gets a new
    `START TRANSACTION READ ONLY` and the run goes on; a transaction not
    marked read-only (`SET TRANSACTION READ WRITE` affects only the next
-   transaction and does not show in the variable) means the script left.
+   transaction and does not show in the variable) means the script left. A
+   server that does not mark its read-only transactions at all (every
+   supported MySQL and MariaDB does) cannot be checked, so the run is not
+   started.
    A failed check ends the run with `Error::LeftReadOnly` before the
    statement runs.
-   After the last statement the same check runs once more, so a statement
-   that ended the transaction in last position closes the session rather
-   than leaving a committed setting behind.
+   After the last statement the same check runs once more, so on
+   PostgreSQL a statement that ended the transaction in last position closes
+   the session rather than leaving a committed setting behind. On MySQL a
+   session merely found outside a transaction is not closed: nothing there
+   is transactional, and the reset below wipes its state.
 4. **Check before rolling back.** After the last statement, when the
    transaction is still usable, PostgreSQL asks `SHOW transaction_read_only`
    and MySQL `SELECT @@session.transaction_read_only` (falling back to
@@ -311,7 +317,11 @@ pub enum StatementOutcome {
     MySQL's "not supported in the prepared statement protocol" error is the
     statement's `Error` outcome, and so is a statement with parameters
     (`?`, or `:name` as the driver reads it): there are no values to bind,
-    and the driver would close the connection. The script sets `sql_select_limit` to
+    and the driver would close the connection. Rows past `limit + 1` that
+    the server still sends (`SHOW`, a `SELECT` with its own larger `LIMIT`)
+    are read and dropped. The run needs a server that can reset its
+    session (MySQL 5.7.3, MariaDB 10.2.4); an older one is told so before
+    anything runs. The script sets `sql_select_limit` to
     `limit + 1` after starting the transaction, so the server stops
     producing rows; the cleanup's reset puts it back. Column types come from
     the result metadata, as in `fetch_rows`.
