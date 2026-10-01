@@ -390,6 +390,123 @@ fn number_end(bytes: &[u8], start: usize) -> usize {
     at
 }
 
+/// One statement of a script, as the editor shows it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Statement {
+    /// Byte range in the script, without surrounding whitespace or the `;`.
+    pub range: Range<usize>,
+    /// Byte offset just past its `;`, or `range.end` when it has none.
+    pub end: usize,
+    /// 1-based line of `range.start`.
+    pub start_line: usize,
+    /// Characters before `range.start` on its line.
+    pub start_column: usize,
+    /// 1-based line of its first token that is not a comment: the SQL,
+    /// not a comment above it.
+    pub first_line: usize,
+    /// The script's text in `range`.
+    pub text: String,
+}
+
+impl Statement {
+    /// The 1-based line and column in the script of a 1-based character
+    /// `position` in `text` (as PostgreSQL reports error positions).
+    pub fn line_col(&self, position: usize) -> (usize, usize) {
+        let before: String = self.text.chars().take(position.saturating_sub(1)).collect();
+        let lines = before.matches('\n').count();
+        let column = before
+            .rsplit('\n')
+            .next()
+            .map_or(0, |line| line.chars().count())
+            + 1;
+        let first_column = if lines == 0 { self.start_column } else { 0 };
+        (self.start_line + lines, column + first_column)
+    }
+}
+
+fn is_code(kind: TokenKind) -> bool {
+    !matches!(
+        kind,
+        TokenKind::Whitespace | TokenKind::Comment | TokenKind::ExecutableComment
+    )
+}
+
+fn line_of(text: &str, byte: usize) -> usize {
+    text[..byte].matches('\n').count() + 1
+}
+
+/// The statements of `script`, split on `;` tokens. Pieces holding only
+/// whitespace and comments are dropped.
+pub fn statements(dialect: Dialect, script: &str) -> Vec<Statement> {
+    let tokens = tokenize(dialect, script);
+    let mut found = Vec::new();
+    for piece in tokens.split_inclusive(|token| token.kind == TokenKind::Semicolon) {
+        let body: &[Token] = match piece.last() {
+            Some(last) if last.kind == TokenKind::Semicolon => &piece[..piece.len() - 1],
+            _ => piece,
+        };
+        let Some(first_code) = body.iter().find(|token| is_code(token.kind)) else {
+            continue;
+        };
+        let mut visible = body
+            .iter()
+            .filter(|token| token.kind != TokenKind::Whitespace);
+        let (Some(first), Some(last)) = (visible.clone().next(), visible.next_back()) else {
+            continue;
+        };
+        let range = first.range.start..last.range.end;
+        let end = piece.last().map_or(range.end, |token| token.range.end);
+        let line_start = script[..range.start].rfind('\n').map_or(0, |at| at + 1);
+        found.push(Statement {
+            start_line: line_of(script, range.start),
+            start_column: script[line_start..range.start].chars().count(),
+            first_line: line_of(script, first_code.range.start),
+            text: script[range.clone()].to_owned(),
+            range,
+            end,
+        });
+    }
+    found
+}
+
+/// The statement Run executes for a cursor at byte `cursor`: the one whose
+/// range, extended to its `;`, holds it; else the nearest one ending
+/// before it; else the first after it.
+pub fn statement_at(statements: &[Statement], cursor: usize) -> Option<&Statement> {
+    statements
+        .iter()
+        .find(|statement| statement.range.start <= cursor && cursor <= statement.end)
+        .or_else(|| {
+            statements
+                .iter()
+                .rev()
+                .find(|statement| statement.end <= cursor)
+        })
+        .or_else(|| statements.first())
+}
+
+/// The statement's words (keywords and names, quotes removed), upper-cased,
+/// in order. Comments and strings are skipped.
+pub fn words(dialect: Dialect, text: &str) -> Vec<String> {
+    tokenize(dialect, text)
+        .into_iter()
+        .filter_map(|token| {
+            let word = &text[token.range];
+            match token.kind {
+                TokenKind::Keyword | TokenKind::Identifier => Some(word.to_ascii_uppercase()),
+                // Strip the quotes, not a byte count: an unterminated name can
+                // end inside a multi-byte character.
+                TokenKind::QuotedIdentifier => Some(
+                    word.trim_start_matches(['"', '`', '['])
+                        .trim_end_matches(['"', '`', ']'])
+                        .to_ascii_uppercase(),
+                ),
+                _ => None,
+            }
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
@@ -732,5 +849,121 @@ mod tests {
                 assert_eq!(at, text.len(), "{dialect:?} {text:?}");
             }
         }
+    }
+
+    fn texts(dialect: Dialect, text: &str) -> Vec<String> {
+        statements(dialect, text)
+            .into_iter()
+            .map(|s| s.text)
+            .collect()
+    }
+
+    #[test]
+    fn splits_on_semicolons_outside_strings_and_bodies() {
+        let script = "SELECT ';'; SELECT $$a;b$$;\n-- only a comment;\nSELECT 3";
+        assert_eq!(
+            texts(Dialect::Postgres, script),
+            // A leading comment belongs to the statement after it (its `;`
+            // is inside the comment).
+            vec![
+                "SELECT ';'",
+                "SELECT $$a;b$$",
+                "-- only a comment;\nSELECT 3"
+            ]
+        );
+        assert_eq!(
+            texts(Dialect::MySql, "SELECT `a;b`; SELECT \"c;d\""),
+            vec!["SELECT `a;b`", "SELECT \"c;d\""]
+        );
+    }
+
+    #[test]
+    fn empty_and_comment_only_pieces_are_dropped() {
+        assert!(statements(Dialect::Sqlite, " ;; -- nothing\n/* x */ ;").is_empty());
+    }
+
+    #[test]
+    fn an_empty_script_has_no_statements() {
+        assert!(statements(Dialect::Postgres, "").is_empty());
+        assert!(statements(Dialect::Postgres, "  \n\t").is_empty());
+    }
+
+    #[test]
+    fn first_line_skips_leading_comments() {
+        let script = "SELECT 1;\n\n-- counts\nSELECT\n  2;";
+        let found = statements(Dialect::Postgres, script);
+        assert_eq!(found[0].first_line, 1);
+        assert_eq!(found[1].start_line, 3);
+        assert_eq!(found[1].first_line, 4);
+        assert_eq!(found[1].text, "-- counts\nSELECT\n  2");
+    }
+
+    #[test]
+    fn the_statement_at_the_cursor() {
+        let script = "SELECT 1;  SELECT 2;\n\nSELECT 3";
+        let found = statements(Dialect::Postgres, script);
+        let at = |cursor| statement_at(&found, cursor).map(|s| s.text.as_str());
+        assert_eq!(at(0), Some("SELECT 1"));
+        assert_eq!(at(8), Some("SELECT 1")); // just before the ;
+        assert_eq!(at(9), Some("SELECT 1")); // just after it
+        assert_eq!(at(10), Some("SELECT 1")); // between: the one before
+        assert_eq!(at(14), Some("SELECT 2"));
+        assert_eq!(at(21), Some("SELECT 2")); // blank line after it
+        assert_eq!(at(script.len()), Some("SELECT 3"));
+        assert_eq!(at(script.len() + 50), Some("SELECT 3")); // past the end
+        let leading = statements(Dialect::Postgres, "\n\n  SELECT 1");
+        assert_eq!(statement_at(&leading, 0).map(|s| s.first_line), Some(3));
+        assert!(statement_at(&[], 0).is_none());
+    }
+
+    #[test]
+    fn a_position_maps_to_a_line_and_column() {
+        let script = "SELECT 0;\nSELECT a,\n  bogus FROM t";
+        let second = &statements(Dialect::Postgres, script)[1];
+        // PostgreSQL positions are 1-based characters in the statement.
+        let position = second.text.find("bogus").unwrap() + 1;
+        assert_eq!(second.line_col(position), (3, 3));
+        assert_eq!(second.line_col(1), (2, 1));
+    }
+
+    #[test]
+    fn line_col_counts_characters_and_the_statement_offset() {
+        // The statement starts after "é; " on its line: 3 characters.
+        let script = "é; SELECT 'ü', zz";
+        let second = &statements(Dialect::Postgres, script)[1];
+        assert_eq!(second.start_column, 3);
+        let position = second.text.chars().position(|c| c == 'z').unwrap() + 1;
+        assert_eq!(second.line_col(position), (1, 3 + position));
+        // A position of 0 or past the end clamps instead of panicking.
+        assert_eq!(second.line_col(0), (1, 4));
+        assert_eq!(second.line_col(1000), (1, 4 + second.text.chars().count()));
+    }
+
+    #[test]
+    fn crlf_line_endings_keep_lines_and_columns() {
+        let script = "SELECT 1;\r\nSELECT a,\r\n  bogus";
+        let found = statements(Dialect::Postgres, script);
+        assert_eq!(found[0].text, "SELECT 1");
+        assert_eq!(found[1].start_line, 2);
+        assert_eq!(found[1].text, "SELECT a,\r\n  bogus");
+        let position = found[1].text.find("bogus").unwrap() + 1;
+        assert_eq!(found[1].line_col(position), (3, 3));
+    }
+
+    #[test]
+    fn an_unterminated_quoted_name_does_not_panic() {
+        assert_eq!(
+            words(Dialect::Postgres, "SELECT \"Zoë"),
+            vec!["SELECT", "ZOë"]
+        );
+        assert_eq!(words(Dialect::Sqlite, "[Zoë"), vec!["ZOë"]);
+    }
+
+    #[test]
+    fn words_skip_comments_and_upper_case() {
+        assert_eq!(
+            words(Dialect::MySql, "/* x */ set @@session.`tx_read_only` = 0"),
+            vec!["SET", "SESSION", "TX_READ_ONLY"]
+        );
     }
 }
