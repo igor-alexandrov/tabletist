@@ -2232,11 +2232,17 @@ impl App {
 
     /// Runs the statement at the editor's cursor, or every statement. An
     /// editor holding no statement (empty, or only comments) runs nothing.
+    /// Nor does one whose session is not connected: the backend would
+    /// answer that the connection is closed, and a run that fails as a
+    /// whole takes the result before it away.
     fn run_sql(&mut self, tab: ConnTabId, id: TabId, all: bool) {
         let request = RequestId(self.next_id());
         let Some(workspace) = self.workspace_mut(tab) else {
             return;
         };
+        if !matches!(workspace.status, SessionStatus::Connected) {
+            return;
+        }
         let (session, dialect) = (workspace.session, workspace.driver.dialect());
         let Some(sql) = workspace.sql_tab_mut(id) else {
             return;
@@ -4230,6 +4236,50 @@ mod tests {
         let editor = sql(&harness, tab, id);
         assert!(!editor.is_running() && editor.run.error.is_none());
         assert_eq!(editor.dims(), (5, 3));
+    }
+
+    #[test]
+    fn a_run_waits_for_a_connected_session() {
+        let mut harness = Harness::new();
+        let (tab, id) = new_sql(&mut harness);
+        type_sql(&mut harness, tab, id, "SELECT 1", 0);
+        run(&mut harness, tab, id, false);
+        harness.answer_sql(Ok(script_outcome(vec![rows_outcome(5)])), None);
+        let kept = |harness: &Harness| {
+            let editor = sql(harness, tab, id);
+            assert!(!editor.is_running() && editor.run.error.is_none());
+            assert_eq!(editor.dims(), (5, 3));
+        };
+        // Connecting to the other database: the backend would answer that
+        // the connection is closed, and that failure drops the result.
+        harness.app.apply(Action::SwitchDatabase {
+            tab,
+            database: "other".into(),
+        });
+        let status = &harness.app.workspace(tab).unwrap().status;
+        assert!(matches!(status, SessionStatus::Connecting { .. }));
+        let sent = harness.app.backend.sent.len();
+        run(&mut harness, tab, id, false);
+        run(&mut harness, tab, id, true);
+        assert_eq!(harness.app.backend.sent.len(), sent, "nothing is sent");
+        kept(&harness);
+        // Nor on a session that is gone.
+        let session = answer_connect(&mut harness);
+        harness.app.apply(Action::Backend(Event::Disconnected {
+            session,
+            error: Error::ConnectionLost("gone".into()),
+        }));
+        let sent = harness.app.backend.sent.len();
+        run(&mut harness, tab, id, false);
+        assert_eq!(harness.app.backend.sent.len(), sent, "nothing is sent");
+        kept(&harness);
+        // Connected again, it runs.
+        harness.app.apply(Action::Reconnect(tab));
+        answer_connect(&mut harness);
+        let sent = harness.app.backend.sent.len();
+        run(&mut harness, tab, id, false);
+        assert_eq!(runs_since(&harness, sent), 1);
+        assert!(sql(&harness, tab, id).is_running());
     }
 
     #[test]
