@@ -731,6 +731,15 @@ impl App {
                     sql.pane = pane;
                 }
             }
+            Action::SetSqlSplit {
+                tab,
+                sql_tab,
+                split,
+            } => {
+                if let Some(sql) = self.sql_tab_mut(tab, sql_tab) {
+                    sql.set_split(split);
+                }
+            }
             Action::CountRows { tab, object_tab } => self.count_rows(tab, object_tab),
             Action::ShowHelp => {
                 if self.dialog.is_none() {
@@ -4502,6 +4511,41 @@ mod tests {
             pane: ResultPane::Results,
         });
         assert_eq!(sql(&harness, tab, id).pane, ResultPane::Results);
+        assert_eq!(harness.app.backend.sent.len(), sent);
+    }
+
+    #[test]
+    fn the_split_is_each_sql_tabs_own_and_starts_at_the_default() {
+        let mut harness = Harness::new();
+        let (tab, first) = new_sql(&mut harness);
+        let sent = harness.app.backend.sent.len();
+        harness.app.apply(Action::SetSqlSplit {
+            tab,
+            sql_tab: first,
+            split: 0.7,
+        });
+        assert_eq!(sql(&harness, tab, first).split, 0.7);
+        // A share past the whole height is all of it.
+        harness.app.apply(Action::SetSqlSplit {
+            tab,
+            sql_tab: first,
+            split: 3.0,
+        });
+        assert_eq!(sql(&harness, tab, first).split, 1.0);
+        harness.app.apply(Action::NewSqlTab(tab));
+        let second = harness.app.workspace(tab).unwrap().active_tab.unwrap();
+        assert_eq!(sql(&harness, tab, second).split, SqlTab::DEFAULT_SPLIT);
+        assert_eq!(sql(&harness, tab, first).split, 1.0);
+        // Nothing is asked of the backend or saved, and a tab that closed
+        // since is left alone.
+        assert_eq!(harness.app.backend.sent.len(), sent);
+        harness.app.apply(Action::CloseTab { tab, id: second });
+        harness.app.apply(Action::SetSqlSplit {
+            tab,
+            sql_tab: second,
+            split: 0.2,
+        });
+        assert_eq!(sql(&harness, tab, first).split, 1.0);
         assert_eq!(harness.app.backend.sent.len(), sent);
     }
 

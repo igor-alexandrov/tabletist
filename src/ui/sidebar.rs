@@ -527,26 +527,22 @@ fn schema_header(
                 .image(palette.secondary, 10.0)
                 .paint_at(ui, Rect::from_center_size(glyph, vec2(10.0, 10.0)));
         }
-        egui::Popup::menu(&response).show(|ui| {
-            ui.set_min_width(160.0);
-            for other in schemas {
-                let name = display_safe(other);
-                let text = Text::one(look, widgets::body(look), &name, egui::Color32::PLACEHOLDER)
-                    .layout(ui.ctx());
-                if ui
-                    .add(egui::Button::selectable(
-                        Some(other.as_str()) == shown,
-                        text.galley,
-                    ))
-                    .clicked()
-                {
-                    actions.push(Action::ShowSchema {
-                        tab,
-                        schema: other.clone(),
-                    });
-                }
-            }
+        let picked = widgets::popup_menu(&response, 160.0, look, || {
+            schemas
+                .iter()
+                .map(|other| widgets::MenuChoice {
+                    text: display_safe(other).into_owned(),
+                    name: None,
+                    selected: Some(other.as_str()) == shown,
+                })
+                .collect()
         });
+        if let Some(schema) = picked.and_then(|index| schemas.get(index)) {
+            actions.push(Action::ShowSchema {
+                tab,
+                schema: schema.clone(),
+            });
+        }
     }
     // Right to left, 8 in: Reload (macOS, 28 square), 2 apart, then the
     // tree/flat switch.

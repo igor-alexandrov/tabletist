@@ -59,6 +59,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
         .collect();
     let active = workspace.active_tab;
     let row_panel = workspace.row_panel;
+    // A SQL editor has no row panel to show or hide.
+    let on_editor = workspace.active_sql_tab().is_some();
     if tabs.is_empty() && !look.terminal {
         return;
     }
@@ -173,7 +175,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                         });
                     });
             });
-            if look.terminal {
+            if look.terminal && !on_editor {
                 let cell = Rect::from_min_max(pos2(bar.right() - TOGGLE_CELL, bar.top()), bar.max);
                 ui.painter()
                     .rect_filled(cell, CornerRadius::ZERO, palette.panel);

@@ -248,6 +248,13 @@ pub enum Action {
         sql_tab: TabId,
         pane: ResultPane,
     },
+    /// The splitter under a SQL editor: the editor's share of the height
+    /// it and its results have.
+    SetSqlSplit {
+        tab: ConnTabId,
+        sql_tab: TabId,
+        split: f32,
+    },
     /// A key for the sidebar tree.
     TreeKey {
         tab: ConnTabId,
@@ -1658,6 +1665,9 @@ pub struct SqlTab {
     /// The run `run` waits for: `Some` exactly while it is pending.
     pub in_flight: Option<RunInFlight>,
     pub pane: ResultPane,
+    /// The editor's share of the height it and its results have, from 0
+    /// to 1. Change it through `set_split`.
+    pub split: f32,
     pub selection: Option<CellPos>,
     /// Focus the editor on the next frame.
     pub focus_editor: bool,
@@ -1676,6 +1686,7 @@ impl std::fmt::Debug for SqlTab {
             .field("run", &self.run)
             .field("in_flight", &self.in_flight)
             .field("pane", &self.pane)
+            .field("split", &self.split)
             .field("selection", &self.selection)
             .field("focus_editor", &self.focus_editor)
             .finish_non_exhaustive()
@@ -1683,6 +1694,9 @@ impl std::fmt::Debug for SqlTab {
 }
 
 impl SqlTab {
+    /// The editor's share of the height in a new tab.
+    pub const DEFAULT_SPLIT: f32 = 0.45;
+
     pub fn new(id: TabId, number: u32, limit: u32, timeout: Option<Duration>) -> Self {
         Self {
             id,
@@ -1694,8 +1708,17 @@ impl SqlTab {
             run: Fetch::default(),
             in_flight: None,
             pane: ResultPane::default(),
+            split: Self::DEFAULT_SPLIT,
             selection: None,
             focus_editor: true,
+        }
+    }
+
+    /// Gives the editor `split` of the height, kept between none and all
+    /// of it. A share that is no number changes nothing.
+    pub fn set_split(&mut self, split: f32) {
+        if split.is_finite() {
+            self.split = split.clamp(0.0, 1.0);
         }
     }
 
@@ -2079,6 +2102,24 @@ mod tests {
 
     fn editor() -> SqlTab {
         SqlTab::new(TabId(2), 1, 1_000, Some(Duration::from_secs(30)))
+    }
+
+    #[test]
+    fn a_sql_tab_keeps_its_split_between_none_and_all_of_the_height() {
+        let mut sql = editor();
+        assert_eq!(sql.split, SqlTab::DEFAULT_SPLIT);
+        assert_eq!(SqlTab::DEFAULT_SPLIT, 0.45);
+        sql.set_split(0.7);
+        assert_eq!(sql.split, 0.7);
+        sql.set_split(1.5);
+        assert_eq!(sql.split, 1.0);
+        sql.set_split(-0.2);
+        assert_eq!(sql.split, 0.0);
+        sql.set_split(0.3);
+        for odd in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            sql.set_split(odd);
+            assert_eq!(sql.split, 0.3);
+        }
     }
 
     #[test]

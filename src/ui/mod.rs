@@ -1340,23 +1340,28 @@ mod tests {
                 .filter(|(_, node)| node.role() == egui::accesskit::Role::ComboBox)
                 .filter_map(|(_, node)| node.value().map(str::to_owned))
                 .collect();
+            // Named alike in every look; only what is painted is lower
+            // case in the terminal's.
             for value in ["Limit 1,000", "Timeout 30 s"] {
-                let value = if look.terminal {
-                    value.to_lowercase().replace(',', "").replace(" s", "s")
-                } else {
-                    value.to_owned()
-                };
                 assert!(
-                    values.contains(&value),
+                    values.iter().any(|found| found == value),
                     "{value} in {}: {values:?}",
                     look.name
                 );
             }
             assert!(
-                harness.has(&look.label("Read-only transaction")),
+                harness.has("Read-only transaction"),
                 "the transaction note in {}",
                 look.name
             );
+            let reads = if look.terminal {
+                ["limit 1000", "timeout 30s", "read-only transaction"]
+            } else {
+                ["Limit 1,000", "Timeout 30 s", "Read-only transaction"]
+            };
+            for text in reads {
+                assert!(painted(&harness, text), "{text} in {}", look.name);
+            }
             // Nothing of a table tab is drawn for an editor.
             assert!(!harness.has("Add filter") && !harness.has("Structure"));
         }
@@ -1423,30 +1428,28 @@ mod tests {
             let (mut harness, tab) = sql_harness(look);
             assert_eq!(active_sql(&harness, tab).limit, 1_000);
             harness.click("Limit");
-            harness.click(&look.label("Limit 100"));
-            assert_eq!(active_sql(&harness, tab).limit, 100, "{}", look.name);
-            assert_eq!(harness.app.settings.sql_limit, 100);
-            // The menu closes on a pick that came from no pointer too (a
-            // key, a screen reader).
-            let other = if look.terminal {
+            // The choices read in the look's case and are named in one.
+            let reads = if look.terminal {
                 "limit 10000"
             } else {
                 "Limit 10,000"
             };
+            assert!(painted(&harness, reads), "{reads} in {}", look.name);
+            harness.click("Limit 100");
+            assert_eq!(active_sql(&harness, tab).limit, 100, "{}", look.name);
+            assert_eq!(harness.app.settings.sql_limit, 100);
+            // The menu closes on a pick that came from no pointer too (a
+            // key, a screen reader).
             assert!(
-                !harness.has(other),
+                !harness.has("Limit 10,000"),
                 "the Limit menu stays open in {}",
                 look.name
             );
             harness.click("Timeout");
-            harness.click(&look.label("No timeout"));
+            harness.click("No timeout");
             assert_eq!(active_sql(&harness, tab).timeout, None, "{}", look.name);
             harness.click("Timeout");
-            harness.click(&if look.terminal {
-                "timeout 60s".to_owned()
-            } else {
-                "Timeout 60 s".to_owned()
-            });
+            harness.click("Timeout 60 s");
             assert_eq!(
                 active_sql(&harness, tab).timeout,
                 Some(std::time::Duration::from_secs(60)),
@@ -1456,15 +1459,288 @@ mod tests {
         }
     }
 
+    /// Gives the keyboard to the node named `label` with `role`, as a
+    /// screen reader does.
+    fn focus(harness: &mut Harness, label: &str, role: egui::accesskit::Role) {
+        let tree = harness.settle();
+        let target = crate::testing::node(&tree, label, role)
+            .unwrap_or_else(|| panic!("nothing named {label:?}"));
+        harness.frame(vec![egui::Event::AccessKitActionRequest(
+            egui::accesskit::ActionRequest {
+                target_tree: egui::accesskit::TreeId::ROOT,
+                target_node: target,
+                action: egui::accesskit::Action::Focus,
+                data: None,
+            },
+        )]);
+        harness.settle();
+    }
+
     #[test]
-    fn a_toolbar_too_narrow_for_its_menus_keeps_run_and_run_all() {
+    fn the_keyboard_is_back_on_a_menus_button_after_a_pick_or_escape() {
         for look in crate::theme::Look::ALL {
-            // Narrower than the window gets; a wide sidebar leaves as little.
-            let size = egui::vec2(540.0, 480.0);
+            let (mut harness, tab) = sql_harness(look);
+            harness.click("Limit");
+            harness.click("Limit 100");
+            assert_eq!(
+                focused_name(&harness.settle()),
+                "Limit",
+                "after a pick in {}",
+                look.name
+            );
+            harness.click("Timeout");
+            assert!(harness.has("No timeout"));
+            harness.press(Key::Escape, Modifiers::NONE);
+            assert!(!harness.has("No timeout"), "Escape closes the menu");
+            assert_eq!(
+                focused_name(&harness.settle()),
+                "Timeout",
+                "after Escape in {}",
+                look.name
+            );
+            assert_eq!(
+                active_sql(&harness, tab).timeout,
+                Some(std::time::Duration::from_secs(30))
+            );
+        }
+    }
+
+    #[test]
+    fn tab_walks_the_toolbar_in_the_order_it_reads() {
+        for look in crate::theme::Look::ALL {
+            let (mut harness, _tab) = sql_harness(look);
+            // The terminal's toolbar leads with its menus, the others'
+            // with Run.
+            let order = if look.terminal {
+                ["Limit", "Timeout", "Run", "Run all"]
+            } else {
+                ["Run", "Run all", "Limit", "Timeout"]
+            };
+            let role = if look.terminal {
+                egui::accesskit::Role::ComboBox
+            } else {
+                egui::accesskit::Role::Button
+            };
+            focus(&mut harness, order[0], role);
+            let mut reached = vec![focused_name(&harness.settle())];
+            for _ in 1..order.len() {
+                harness.press(Key::Tab, Modifiers::NONE);
+                reached.push(focused_name(&harness.settle()));
+            }
+            assert_eq!(reached, order, "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn the_terminal_strip_has_no_row_panel_toggle_on_a_sql_tab() {
+        let (mut harness, tab) = sql_harness(crate::theme::Look::omarchy());
+        let toggle = "Show or hide the row panel";
+        assert!(!harness.has(toggle), "an editor has no row panel");
+        let panel = harness.app.workspace(tab).unwrap().row_panel;
+        // A table tab keeps it, and coming back to the editor loses it.
+        harness.click("users");
+        harness.answer_rows(crate::testing::page(5, false));
+        assert!(harness.has(toggle));
+        harness.click(toggle);
+        assert_ne!(harness.app.workspace(tab).unwrap().row_panel, panel);
+        harness.click("Query 1 tab");
+        assert!(!harness.has(toggle));
+    }
+
+    /// Presses the pointer at `from`, moves it to `to` and lets go.
+    fn drag(harness: &mut Harness, from: egui::Pos2, to: egui::Pos2) {
+        let button = |pos, pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        };
+        harness.frame(vec![egui::Event::PointerMoved(from)]);
+        harness.frame(vec![button(from, true)]);
+        harness.frame(vec![egui::Event::PointerMoved(to)]);
+        harness.frame(vec![button(to, false)]);
+        harness.settle();
+    }
+
+    /// Where the band between a SQL editor and its results is.
+    fn band(harness: &mut Harness) -> egui::Rect {
+        let tree = harness.settle();
+        crate::testing::bounds(&tree, "Resize the editor", egui::accesskit::Role::Unknown)
+            .expect("the splitter")
+    }
+
+    #[test]
+    fn dragging_the_band_changes_the_editors_share() {
+        for look in crate::theme::Look::ALL {
+            let (mut harness, tab) = sql_harness(look);
+            assert_eq!(active_sql(&harness, tab).split, 0.45);
+            let before = band(&mut harness);
+            let at = before.center();
+            drag(&mut harness, at, at + egui::vec2(0.0, 40.0));
+            let after = band(&mut harness);
+            assert!(
+                (after.top() - before.top() - 40.0).abs() <= 1.0,
+                "the band follows the pointer in {}: {before:?} to {after:?}",
+                look.name
+            );
+            assert!(active_sql(&harness, tab).split > 0.45, "{}", look.name);
+            // Up again, past where it was.
+            let at = after.center();
+            drag(&mut harness, at, at - egui::vec2(0.0, 90.0));
+            assert!(active_sql(&harness, tab).split < 0.45, "{}", look.name);
+            assert!(band(&mut harness).top() < before.top());
+        }
+    }
+
+    #[test]
+    fn the_band_is_no_stop_for_the_tab_key() {
+        let (mut harness, _tab) = sql_harness(crate::theme::Look::macos());
+        for _ in 0..40 {
+            harness.press(Key::Tab, Modifiers::NONE);
+            assert_ne!(focused_name(&harness.settle()), "Resize the editor");
+        }
+    }
+
+    #[test]
+    fn the_editor_and_its_results_keep_their_least_height() {
+        for look in crate::theme::Look::ALL {
+            let (mut harness, tab) = sql_harness(look);
+            let run =
+                crate::testing::bounds(&harness.settle(), "Run", egui::accesskit::Role::Button)
+                    .unwrap();
+            // Far past the toolbar: the editor stays 80 tall under it.
+            let at = band(&mut harness).center();
+            drag(&mut harness, at, egui::pos2(at.x, 0.0));
+            let top = band(&mut harness).top() - run.bottom();
+            assert!((80.0..100.0).contains(&top), "{top} in {}", look.name);
+            assert!(active_sql(&harness, tab).split > 0.0);
+            // Far past the window's end: the results stay 80 tall over the
+            // footer (or the terminal's status line).
+            let at = band(&mut harness).center();
+            drag(&mut harness, at, egui::pos2(at.x, 5_000.0));
+            let rest = harness.size.y - band(&mut harness).bottom();
+            assert!((80.0..120.0).contains(&rest), "{rest} in {}", look.name);
+            assert!(active_sql(&harness, tab).split < 1.0);
+        }
+    }
+
+    #[test]
+    fn the_split_survives_other_tabs_and_a_resized_window() {
+        for look in crate::theme::Look::ALL {
+            let (mut harness, tab) = sql_harness(look);
+            let at = band(&mut harness).center();
+            drag(&mut harness, at, at + egui::vec2(0.0, 60.0));
+            let split = active_sql(&harness, tab).split;
+            let place = band(&mut harness);
+            assert!(split > 0.45);
+            // A table, another editor (which starts at the default), back.
+            harness.click("users");
+            harness.answer_rows(crate::testing::page(5, false));
+            harness.app.apply(crate::model::Action::NewSqlTab(tab));
+            assert_eq!(active_sql(&harness, tab).split, 0.45);
+            assert!(band(&mut harness).top() < place.top());
+            harness.click("Query 1 tab");
+            assert_eq!(active_sql(&harness, tab).split, split, "{}", look.name);
+            assert_eq!(band(&mut harness), place, "{}", look.name);
+            // A taller window gives the editor its share of the new room.
+            harness.size.y += 200.0;
+            let taller = band(&mut harness);
+            assert_eq!(active_sql(&harness, tab).split, split);
+            let grown = taller.top() - place.top();
+            assert!(
+                (grown - split * 200.0).abs() <= 1.0,
+                "the editor grew {grown} of 200 at {split} in {}",
+                look.name
+            );
+            // And back: the window passing through a size changes nothing.
+            harness.size.y -= 200.0;
+            assert_eq!(band(&mut harness), place, "{}", look.name);
+        }
+    }
+
+    /// Drags the sidebar's edge as far right as it goes.
+    fn widen_sidebar(harness: &mut Harness) {
+        let filter = |harness: &mut Harness| {
+            crate::testing::bounds(
+                &harness.settle(),
+                "Filter",
+                egui::accesskit::Role::TextInput,
+            )
+            .expect("the sidebar's filter")
+        };
+        let before = filter(harness);
+        // The edge is a few points right of the filter field.
+        for step in 0..40 {
+            let at = egui::pos2(before.right() + step as f32, before.bottom() + 150.0);
+            drag(harness, at, at + egui::vec2(600.0, 0.0));
+            if filter(harness).right() > before.right() + 100.0 {
+                return;
+            }
+        }
+        panic!("the sidebar did not widen");
+    }
+
+    #[test]
+    fn the_menus_stay_in_reach_in_the_smallest_window_beside_the_widest_sidebar() {
+        for look in crate::theme::Look::ALL {
+            let size = egui::vec2(720.0, 480.0);
             let mut harness = Harness::with_size(size);
             harness.set_look(look);
             let tab = harness.connect_fake();
             harness.app.apply(crate::model::Action::NewSqlTab(tab));
+            widen_sidebar(&mut harness);
+            let tree = harness.settle();
+            let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
+            let controls: Vec<(&str, egui::Rect)> = [
+                ("Run", egui::accesskit::Role::Button),
+                ("Run all", egui::accesskit::Role::Button),
+                ("Limit", egui::accesskit::Role::ComboBox),
+                ("Timeout", egui::accesskit::Role::ComboBox),
+            ]
+            .into_iter()
+            .map(|(label, role)| {
+                let rect = crate::testing::bounds(&tree, label, role)
+                    .unwrap_or_else(|| panic!("{label} missing in {}", look.name));
+                assert!(
+                    screen.contains_rect(rect),
+                    "{label} at {rect:?} is off screen in {}",
+                    look.name
+                );
+                (label, rect)
+            })
+            .collect();
+            // Run sits right of the sidebar, so the sidebar is as wide as
+            // it goes and the toolbar as narrow.
+            assert!(controls[0].1.left() > 400.0, "{:?}", controls[0].1);
+            for (index, (label, rect)) in controls.iter().enumerate() {
+                for (other, other_rect) in &controls[index + 1..] {
+                    assert!(
+                        !rect.intersects(*other_rect),
+                        "{label} overlaps {other} in {}",
+                        look.name
+                    );
+                }
+            }
+            // The menus read short there and keep their whole value for
+            // screen readers; they still open.
+            let short = if look.terminal { "1000" } else { "1,000" };
+            assert!(painted(&harness, short), "{short} in {}", look.name);
+            harness.click("Limit");
+            harness.click("Limit 100");
+            assert_eq!(active_sql(&harness, tab).limit, 100, "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn a_toolbar_too_narrow_for_its_menus_keeps_run_and_run_all() {
+        for look in crate::theme::Look::ALL {
+            // Narrower than the window gets, beside the widest sidebar.
+            let size = egui::vec2(640.0, 480.0);
+            let mut harness = Harness::with_size(size);
+            harness.set_look(look);
+            let tab = harness.connect_fake();
+            harness.app.apply(crate::model::Action::NewSqlTab(tab));
+            widen_sidebar(&mut harness);
             let tree = harness.settle();
             let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
             let bounds = |label: &str| {
@@ -3410,6 +3686,27 @@ mod tests {
             let described = crate::ui::format::describe_error(crate::i18n::Locale::English, &error);
             assert!(described.starts_with(words), "{error:?}: {described}");
         }
+    }
+
+    #[test]
+    fn the_schema_menu_closes_on_a_pick_without_a_pointer() {
+        let (mut harness, tab) = tree_harness();
+        let workspace = harness.app.workspace_mut(tab).unwrap();
+        workspace.tree.schemas.value = Some(vec!["main".into(), "reports".into()]);
+        harness.click("Schema");
+        assert!(harness.has("reports"), "the menu lists the other schema");
+        harness.click("reports");
+        let workspace = harness.app.workspace(tab).unwrap();
+        assert_eq!(
+            workspace
+                .tree
+                .shown_schema(workspace.driver, false)
+                .as_deref(),
+            Some("reports")
+        );
+        // Closed: `main` was only in the menu once `reports` shows.
+        assert!(!harness.has("main"), "the schema menu stays open");
+        assert_eq!(focused_name(&harness.settle()), "Schema");
     }
 
     #[test]
