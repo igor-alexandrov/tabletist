@@ -38,6 +38,9 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 rustls-native-certs = "0.8"
 # Reading a CA file (PEM) the user chose.
 rustls-pki-types = { version = "1", features = ["std"] }
+# Reading PostgreSQL's simple-query row stream one row at a time (already
+# in the tree through tokio-postgres).
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
 
 # MySQL, async. rustls on ring (like PostgreSQL); no aws-lc, no OpenSSL.
 mysql_async = { version = "0.37", default-features = false, features = ["default-rustls-ring"] }

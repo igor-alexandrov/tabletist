@@ -550,3 +550,318 @@ async fn a_running_query_can_be_cancelled() {
     assert_eq!(running.await.unwrap(), Err(Error::Cancelled));
     assert!(connection.fetch_rows(&users(1)).await.is_ok());
 }
+
+use tabletist_db::{Dialect, ScriptOutcome, StatementOutcome, StopFlag};
+
+/// A writable session for the bypass test's probe table.
+async fn admin() -> tokio_postgres::Client {
+    let mut config: tokio_postgres::Config = url().unwrap().parse().unwrap();
+    config.ssl_mode(tokio_postgres::config::SslMode::Disable);
+    let (client, connection) = config.connect(tokio_postgres::NoTls).await.unwrap();
+    tokio::spawn(connection);
+    client
+}
+
+fn script(text: &str) -> Vec<tabletist_db::sql::Statement> {
+    tabletist_db::sql::statements(Dialect::Postgres, text)
+}
+
+/// Awaits `future`, failing the test instead of hanging it.
+async fn within<T>(future: impl std::future::Future<Output = T>) -> T {
+    tokio::time::timeout(Duration::from_secs(10), future)
+        .await
+        .expect("the run hung")
+}
+
+/// Runs `text` with a fresh stop flag.
+async fn run(
+    connection: &Connection,
+    text: &str,
+    limit: u32,
+) -> tabletist_db::Result<ScriptOutcome> {
+    within(connection.run_script(&script(text), limit, &StopFlag::new())).await
+}
+
+#[tokio::test]
+async fn a_script_has_typed_columns_and_truncates_at_the_limit() {
+    let Some(connection) = connect().await else {
+        return;
+    };
+    let outcome = run(&connection, "SELECT id, active FROM users ORDER BY id", 2)
+        .await
+        .unwrap();
+    let StatementOutcome::Rows {
+        columns,
+        rows,
+        truncated,
+    } = &outcome.results[0].outcome
+    else {
+        panic!("rows");
+    };
+    assert_eq!(columns[1].kind, ValueKind::Bool);
+    assert_eq!(rows.len(), 2);
+    assert!(*truncated);
+}
+
+#[tokio::test]
+async fn truncates_at_the_limit() {
+    let Some(connection) = connect().await else {
+        return;
+    };
+    let started = std::time::Instant::now();
+    // In the select list, generate_series streams (in FROM it would
+    // materialise every row first).
+    let outcome = run(&connection, "SELECT generate_series(1, 50000000) AS g", 10)
+        .await
+        .unwrap();
+    assert!(matches!(
+        outcome.results[0].outcome,
+        StatementOutcome::Rows {
+            truncated: true,
+            ..
+        }
+    ));
+    assert!(started.elapsed() < Duration::from_secs(5));
+}
+
+#[tokio::test]
+async fn unions_in_parentheses_and_trailing_comments_use_the_cursor() {
+    let Some(connection) = connect().await else {
+        return;
+    };
+    let outcome = run(
+        &connection,
+        "(SELECT 1 AS n) UNION ALL (SELECT 2) -- note",
+        1,
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        &outcome.results[0].outcome,
+        StatementOutcome::Rows { rows, truncated: true, .. } if rows.len() == 1
+    ));
+}
+
+#[tokio::test]
+async fn show_and_statements_without_rows() {
+    let Some(connection) = connect().await else {
+        return;
+    };
+    let outcome = run(
+        &connection,
+        "SHOW search_path; SET LOCAL work_mem = '8MB'",
+        10,
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        outcome.results[0].outcome,
+        StatementOutcome::Rows { .. }
+    ));
+    assert!(matches!(
+        outcome.results[1].outcome,
+        StatementOutcome::Done { .. }
+    ));
+}
+
+#[tokio::test]
+async fn a_statement_error_keeps_the_session() {
+    let Some(connection) = connect().await else {
+        return;
+    };
+    let outcome = run(
+        &connection,
+        "SELECT 1;\nSELECT a,\n  bogus FROM users; SELECT 3",
+        10,
+    )
+    .await
+    .unwrap();
+    assert_eq!(outcome.results.len(), 2);
+    let StatementOutcome::Error { error, position } = &outcome.results[1].outcome else {
+        panic!("error");
+    };
+    assert!(matches!(error, Error::Query { code: Some(code), .. } if code == "42703"));
+    // Points at "a" (1-based, into the statement's own text).
+    assert_eq!(*position, Some(8));
+    // Not closed: the next run works.
+    run(&connection, "SELECT 1", 1).await.unwrap();
+}
+
+#[tokio::test]
+async fn a_declare_error_points_into_the_users_text() {
+    let Some(connection) = connect().await else {
+        return;
+    };
+    // Prepares (it is a valid WITH) but DECLARE refuses a data-modifying WITH.
+    let outcome = run(
+        &connection,
+        "WITH gone AS (DELETE FROM users RETURNING id) SELECT * FROM gone",
+        10,
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        &outcome.results[0].outcome,
+        StatementOutcome::Error {
+            position: None | Some(1..),
+            ..
+        }
+    ));
+    // A parameter prepares, but DECLARE has no value for it. The server's
+    // position counts the cursor prefix; the outcome's does not.
+    let outcome = run(&connection, "SELECT\n  $1::int AS n", 10)
+        .await
+        .unwrap();
+    let StatementOutcome::Error { error, position } = &outcome.results[0].outcome else {
+        panic!("error");
+    };
+    assert!(matches!(error, Error::Query { code: Some(code), .. } if code == "42P02"));
+    assert_eq!(*position, Some(10));
+}
+
+#[tokio::test]
+async fn bypasses_cannot_write() {
+    let Some(connection) = connect().await else {
+        return;
+    };
+    let admin = admin().await;
+    admin
+        .batch_execute("CREATE TABLE IF NOT EXISTS probe (n int); TRUNCATE probe;")
+        .await
+        .unwrap();
+    for attempt in [
+        "SET TRANSACTION READ WRITE; INSERT INTO probe VALUES (1)",
+        "ROLLBACK; SET default_transaction_read_only = off; INSERT INTO probe VALUES (1)",
+        "SET \"default_transaction_read_only\" = off; INSERT INTO probe VALUES (1)",
+        "SELECT set_config('default_transaction_read_only', 'off', false); INSERT INTO probe VALUES (1)",
+        "INSERT INTO probe VALUES (1)",
+        "COPY probe FROM STDIN",
+        "PREPARE s AS INSERT INTO probe VALUES (1); EXECUTE s",
+        "DO $$ BEGIN INSERT INTO probe VALUES (1); END $$",
+    ] {
+        let _ = run(&connection, attempt, 10).await;
+        let count: i64 = admin
+            .query_one("SELECT count(*) FROM probe", &[])
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(count, 0, "{attempt}");
+    }
+    // And browsing still reads, read-only.
+    assert!(connection.fetch_rows(&users(1)).await.is_ok());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_cancelled_script_keeps_earlier_results_and_the_session() {
+    let Some(connection) = connect().await else {
+        return;
+    };
+    let connection = std::sync::Arc::new(connection);
+    let cancel = connection.cancel_handle();
+    let stop = StopFlag::new();
+    let running = {
+        let connection = std::sync::Arc::clone(&connection);
+        let stop = stop.clone();
+        tokio::spawn(async move {
+            connection
+                .run_script(&script("SELECT 1; SELECT pg_sleep(30)"), 10, &stop)
+                .await
+        })
+    };
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    stop.stop();
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    while !running.is_finished() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "cancel must stop the script"
+        );
+        cancel.cancel().await.unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let outcome = running.await.unwrap().unwrap();
+    assert!(matches!(
+        outcome.results[0].outcome,
+        StatementOutcome::Rows { .. }
+    ));
+    assert!(matches!(
+        outcome.results[1].outcome,
+        StatementOutcome::Cancelled
+    ));
+    assert!(outcome.stopped);
+    // The cleanup began, so the backend stops repeating its cancel.
+    assert!(stop.is_finishing());
+    run(&connection, "SELECT 1", 1).await.unwrap();
+}
+
+#[tokio::test]
+async fn a_script_stopped_before_it_starts_runs_nothing() {
+    let Some(connection) = connect().await else {
+        return;
+    };
+    let stop = StopFlag::new();
+    stop.stop();
+    let outcome = within(connection.run_script(&script("SELECT 1; SELECT 2"), 10, &stop))
+        .await
+        .unwrap();
+    assert_eq!(outcome.results.len(), 1);
+    assert_eq!(outcome.results[0].outcome, StatementOutcome::Cancelled);
+    assert!(outcome.stopped && outcome.was_cancelled());
+    assert!(stop.is_finishing());
+    // The transaction was rolled back: the next run starts its own.
+    let next = run(&connection, "SELECT 1", 1).await.unwrap();
+    assert!(!next.was_cancelled());
+}
+
+#[tokio::test]
+async fn rows_outside_a_cursor_are_cut_at_the_limit_too() {
+    let Some(connection) = connect().await else {
+        return;
+    };
+    // EXPLAIN cannot be a cursor; its plan here has several lines.
+    let outcome = run(
+        &connection,
+        "EXPLAIN SELECT * FROM users a JOIN users b ON a.id = b.id; SELECT 1",
+        1,
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        &outcome.results[0].outcome,
+        StatementOutcome::Rows { rows, truncated: true, .. } if rows.len() == 1
+    ));
+    // The rest of the plan was read off the wire: the next statement runs.
+    assert!(matches!(
+        &outcome.results[1].outcome,
+        StatementOutcome::Rows { rows, truncated: false, .. } if rows.len() == 1
+    ));
+}
+
+#[tokio::test]
+async fn one_piece_cannot_hold_two_statements() {
+    let Some(connection) = connect().await else {
+        return;
+    };
+    // The splitter would never hand over such a piece; the prepare refuses
+    // it anyway, and the text does not run another way.
+    let mut statements = script("SELECT 1");
+    statements[0].text = "SELECT 1; SELECT 2".into();
+    let outcome = within(connection.run_script(&statements, 10, &StopFlag::new()))
+        .await
+        .unwrap();
+    assert_eq!(outcome.results.len(), 1);
+    assert!(matches!(
+        &outcome.results[0].outcome,
+        StatementOutcome::Error { error: Error::Query { code: Some(code), .. }, .. } if code == "42601"
+    ));
+}
+
+#[tokio::test]
+async fn the_server_version_has_no_distribution_suffix() {
+    let Some(connection) = connect().await else {
+        return;
+    };
+    let version = within(connection.server_version()).await.unwrap();
+    assert!(version.starts_with("PostgreSQL "), "{version}");
+    assert!(!version.contains('('), "{version}");
+}

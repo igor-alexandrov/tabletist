@@ -11,10 +11,11 @@ use std::time::{Duration, Instant};
 use tokio_postgres::tls::{MakeTlsConnect, TlsConnect};
 use tokio_postgres::{SimpleQueryMessage, Socket};
 
+use crate::script::{cleanup_failed, retry_cancelled, statement_failed};
 use crate::{
     ColumnInfo, ColumnMeta, ConnectSpec, Dialect, Error, ForeignKeyInfo, IndexInfo, MAX_LISTED,
-    ObjectInfo, ObjectKind, ObjectRef, Result, RowPage, RowQuery, Secrets, Structure, Value,
-    ValueKind, value_from_pg_text,
+    ObjectInfo, ObjectKind, ObjectRef, Result, RowPage, RowQuery, ScriptOutcome, Secrets,
+    StatementOutcome, StatementResult, StopFlag, Structure, Value, ValueKind, value_from_pg_text,
 };
 use tokio_postgres::error::SqlState;
 use tokio_postgres_rustls::MakeRustlsConnect;
@@ -178,20 +179,137 @@ fn unexpected(error: tokio_postgres::Error) -> Error {
     Error::query(format!("unexpected data from the server: {error}"))
 }
 
+/// A prepared statement's result columns.
+fn column_metas(statement: &tokio_postgres::Statement) -> Vec<ColumnMeta> {
+    statement
+        .columns()
+        .iter()
+        .map(|column| ColumnMeta {
+            name: column.name().to_owned(),
+            type_name: column.type_().name().to_owned(),
+            kind: ValueKind::from_pg_type(column.type_().name()),
+        })
+        .collect()
+}
+
+/// A simple-query row's text values, typed by `columns`.
+fn row_values(row: &tokio_postgres::SimpleQueryRow, columns: &[ColumnMeta]) -> Result<Vec<Value>> {
+    columns
+        .iter()
+        .enumerate()
+        .map(|(index, column)| {
+            Ok(match row.try_get(index).map_err(unexpected)? {
+                None => Value::Null,
+                Some(text) => value_from_pg_text(&column.type_name, text),
+            })
+        })
+        .collect()
+}
+
 impl Conn {
-    /// Placeholder until the SQL editor lands for this driver.
+    /// See [`crate::Connection::run_script`]. The transaction is managed by
+    /// hand: `tokio_postgres::Transaction` has no streaming simple query.
     pub async fn run_script(
         &self,
-        _texts: &[String],
-        _limit: u32,
-        _stop: &crate::StopFlag,
-    ) -> Result<crate::ScriptOutcome> {
-        Err(Error::Unsupported("the SQL editor on this database"))
+        texts: &[String],
+        limit: u32,
+        stop: &StopFlag,
+    ) -> Result<ScriptOutcome> {
+        let client = self.client.lock().await;
+        let mut outcome = ScriptOutcome::default();
+        match client
+            .batch_execute("BEGIN READ ONLY")
+            .await
+            .map_err(query_error)
+        {
+            Err(Error::Cancelled) => {
+                // A cancel that lands on BEGIN ends the run with no
+                // results. Nothing should be open, but a ROLLBACK outside a
+                // transaction is only a warning.
+                outcome.stopped = true;
+                stop.finish();
+                retry_cancelled!(rollback(&client)).map_err(|error| cleanup_failed(&error))?;
+                return Ok(outcome);
+            }
+            Err(error) => return Err(error),
+            Ok(()) => {}
+        }
+        // An error that is not a statement's own but still needs the
+        // cleanup before it is returned.
+        let mut failure = None;
+        // Take the snapshot first: PostgreSQL then refuses to make the
+        // transaction read-write, whatever a statement tries.
+        match client.batch_execute("SELECT 1").await.map_err(query_error) {
+            Ok(()) => {
+                for text in texts {
+                    if stop.is_stopped() {
+                        outcome.stopped = true;
+                        outcome.results.push(StatementResult {
+                            elapsed: Duration::ZERO,
+                            outcome: StatementOutcome::Cancelled,
+                        });
+                        break;
+                    }
+                    let started = Instant::now();
+                    let result = match run_statement(&client, text, limit as usize, stop).await {
+                        Ok(result) => result,
+                        // Only a lost session leaves here (nothing to roll
+                        // back); any other failure is the statement's.
+                        Err(error) => statement_failed(error, None)?,
+                    };
+                    let cancelled = result == StatementOutcome::Cancelled;
+                    outcome.stopped |= cancelled;
+                    let last = cancelled || matches!(result, StatementOutcome::Error { .. });
+                    outcome.results.push(StatementResult {
+                        elapsed: started.elapsed(),
+                        outcome: result,
+                    });
+                    if last {
+                        break;
+                    }
+                }
+            }
+            Err(Error::Cancelled) => outcome.stopped = true,
+            Err(error) if error.is_connection_lost() => return Err(error),
+            Err(error) => failure = Some(error),
+        }
+        // From here on a cancel would land on the cleanup: tell the
+        // backend to stop repeating its cancel.
+        stop.finish();
+        // After an error or a cancel the transaction is aborted: it cannot
+        // write, SHOW would fail, and ROLLBACK ends it.
+        let aborted = outcome.results.is_empty()
+            || matches!(
+                outcome.results.last().map(|result| &result.outcome),
+                Some(StatementOutcome::Error { .. } | StatementOutcome::Cancelled)
+            );
+        let read_only = if aborted {
+            Ok(true)
+        } else {
+            retry_cancelled!(still_read_only(&client))
+        };
+        let rolled_back = retry_cancelled!(rollback(&client));
+        match (read_only, rolled_back) {
+            (Ok(false), _) => Err(Error::LeftReadOnly),
+            (Err(error), _) | (_, Err(error)) => Err(cleanup_failed(&error)),
+            (Ok(true), Ok(())) => match failure {
+                Some(error) => Err(error),
+                None => Ok(outcome),
+            },
+        }
     }
 
-    /// Placeholder until the SQL editor lands for this driver.
+    /// See [`crate::Connection::server_version`].
     pub async fn server_version(&self) -> Result<String> {
-        Err(Error::Unsupported("the SQL editor on this database"))
+        let client = self.client.lock().await;
+        let messages = client
+            .simple_query("SHOW server_version")
+            .await
+            .map_err(query_error)?;
+        let version = first_text(&messages).unwrap_or_default();
+        // "17.2 (Debian 17.2-1.pgdg120+1)" reads as "17.2".
+        let version = version.split_whitespace().next().unwrap_or_default();
+        Ok(format!("PostgreSQL {version}"))
     }
 
     /// Connects to the spec's server, or through a tunnel's local port `via`.
@@ -451,15 +569,7 @@ impl Conn {
             .await
             .map_err(query_error)?;
         let statement = transaction.prepare(&sql.text).await.map_err(query_error)?;
-        let columns: Vec<ColumnMeta> = statement
-            .columns()
-            .iter()
-            .map(|column| ColumnMeta {
-                name: column.name().to_owned(),
-                type_name: column.type_().name().to_owned(),
-                kind: ValueKind::from_pg_type(column.type_().name()),
-            })
-            .collect();
+        let columns = column_metas(&statement);
         let messages = transaction
             .simple_query(&sql.text)
             .await
@@ -471,18 +581,7 @@ impl Conn {
                 if rows.len() > limit {
                     break;
                 }
-                rows.push(
-                    columns
-                        .iter()
-                        .enumerate()
-                        .map(|(index, column)| {
-                            Ok(match row.try_get(index).map_err(unexpected)? {
-                                None => Value::Null,
-                                Some(text) => value_from_pg_text(&column.type_name, text),
-                            })
-                        })
-                        .collect::<Result<_>>()?,
-                );
+                rows.push(row_values(&row, &columns)?);
             }
         }
         let has_more = rows.len() > limit;
@@ -526,6 +625,150 @@ impl Conn {
     }
 }
 
+/// What a SQL editor row statement runs as: `DECLARE` with this prefix,
+/// then `FETCH` and `CLOSE`.
+const CURSOR_PREFIX: &str = "DECLARE tabletist_sql NO SCROLL CURSOR FOR ";
+
+/// The first row's first value.
+fn first_text(messages: &[SimpleQueryMessage]) -> Option<String> {
+    messages.iter().find_map(|message| match message {
+        SimpleQueryMessage::Row(row) => row.get(0).map(str::to_owned),
+        _ => None,
+    })
+}
+
+async fn rollback(client: &tokio_postgres::Client) -> Result<()> {
+    client.batch_execute("ROLLBACK").await.map_err(query_error)
+}
+
+/// Whether the script's transaction is still read-only: only an explicit
+/// `off` says it is not.
+async fn still_read_only(client: &tokio_postgres::Client) -> Result<bool> {
+    let messages = client
+        .simple_query("SHOW transaction_read_only")
+        .await
+        .map_err(query_error)?;
+    Ok(first_text(&messages).as_deref() != Some("off"))
+}
+
+/// A statement's failure as its outcome. `offset` is how many characters
+/// of wrapping precede the user's text in what the server saw; `None`
+/// drops the position (it points into other text).
+fn failed(error: tokio_postgres::Error, offset: Option<usize>) -> Result<StatementOutcome> {
+    use tokio_postgres::error::ErrorPosition;
+    let position = error
+        .as_db_error()
+        .and_then(|db| match db.position()? {
+            ErrorPosition::Original(position) => Some(*position as usize),
+            ErrorPosition::Internal { .. } => None,
+        })
+        .zip(offset)
+        .and_then(|(position, offset)| position.checked_sub(offset))
+        .filter(|position| *position > 0);
+    statement_failed(query_error(error), position)
+}
+
+/// Whether a statement that returns rows can run as a cursor: its first
+/// token is `SELECT`, `VALUES`, `TABLE`, `WITH` or `(`.
+fn cursor_statement(text: &str) -> bool {
+    let tokens = crate::sql::tokenize(Dialect::Postgres, text);
+    let first = tokens.iter().find(|token| {
+        !matches!(
+            token.kind,
+            crate::sql::TokenKind::Whitespace | crate::sql::TokenKind::Comment
+        )
+    });
+    first.is_some_and(|token| {
+        let word = text[token.range.clone()].to_ascii_uppercase();
+        matches!(word.as_str(), "SELECT" | "VALUES" | "TABLE" | "WITH" | "(")
+    })
+}
+
+/// Runs one statement of a script inside its transaction.
+async fn run_statement(
+    client: &tokio_postgres::Client,
+    text: &str,
+    limit: usize,
+    stop: &StopFlag,
+) -> Result<StatementOutcome> {
+    // Prepare first: it yields the column types and refuses a second
+    // statement hidden in one piece. A prepare error is the outcome; the
+    // text never runs another way.
+    let prepared = match client.prepare(text).await {
+        Ok(prepared) => prepared,
+        Err(error) => return failed(error, Some(0)),
+    };
+    let columns = column_metas(&prepared);
+    if columns.is_empty() {
+        return match client.simple_query(text).await {
+            Ok(messages) => Ok(StatementOutcome::Done {
+                affected: messages.iter().find_map(|message| match message {
+                    SimpleQueryMessage::CommandComplete(count) => Some(*count),
+                    _ => None,
+                }),
+            }),
+            Err(error) => failed(error, Some(0)),
+        };
+    }
+    if cursor_statement(text) {
+        // Its own call, and a newline, so a trailing -- comment ends there.
+        let declare = format!("{CURSOR_PREFIX}{text}\n");
+        if let Err(error) = client.batch_execute(&declare).await {
+            return failed(error, Some(CURSOR_PREFIX.chars().count()));
+        }
+        if stop.is_stopped() {
+            return Ok(StatementOutcome::Cancelled);
+        }
+        let fetched = client
+            .simple_query(&format!("FETCH {} FROM tabletist_sql", limit + 1))
+            .await;
+        let messages = match fetched {
+            Ok(messages) => messages,
+            Err(error) => return failed(error, None),
+        };
+        if let Err(error) = client.batch_execute("CLOSE tabletist_sql").await {
+            return failed(error, None);
+        }
+        let mut rows = Vec::new();
+        for message in &messages {
+            if let SimpleQueryMessage::Row(row) = message {
+                rows.push(row_values(row, &columns)?);
+            }
+        }
+        let truncated = rows.len() > limit;
+        rows.truncate(limit);
+        return Ok(StatementOutcome::Rows {
+            columns,
+            rows,
+            truncated,
+        });
+    }
+    // SHOW, EXPLAIN and the like: stream, keep limit + 1, drop the rest.
+    use futures_util::StreamExt;
+    let stream = match client.simple_query_raw(text).await {
+        Ok(stream) => stream,
+        Err(error) => return failed(error, Some(0)),
+    };
+    let mut stream = std::pin::pin!(stream);
+    let mut rows = Vec::new();
+    while let Some(message) = stream.next().await {
+        match message {
+            Ok(SimpleQueryMessage::Row(row)) if rows.len() <= limit => {
+                rows.push(row_values(&row, &columns)?);
+            }
+            Ok(_) => {}
+            Err(error) => return failed(error, Some(0)),
+        }
+    }
+    let truncated = rows.len() > limit;
+    rows.truncate(limit);
+    Ok(StatementOutcome::Rows {
+        columns,
+        rows,
+        truncated,
+    })
+}
+
 /// pg_constraint's one-letter referential actions.
 fn action(code: &str) -> &'static str {
     match code {
@@ -558,6 +801,34 @@ mod tests {
         let direct = config(&spec, &secrets, None);
         assert!(direct.get_hostaddrs().is_empty());
         assert_eq!(direct.get_ports(), &[5432]);
+    }
+
+    /// The backend spawns a script run, so its future must be `Send`. This
+    /// fails to compile, not to run.
+    #[test]
+    fn a_script_run_can_be_spawned() {
+        fn send<T: Send>(_: &T) {}
+        let _check = |conn: &Conn, texts: &[String], stop: &StopFlag| {
+            send(&conn.run_script(texts, 10, stop));
+            send(&conn.server_version());
+        };
+    }
+
+    #[test]
+    fn row_statements_run_as_cursors_by_their_first_token() {
+        for text in [
+            "SELECT 1",
+            "select 1",
+            "-- note\n  VALUES (1)",
+            "/* c */ TABLE users",
+            "WITH t AS (SELECT 1) SELECT * FROM t",
+            "(SELECT 1) UNION (SELECT 2)",
+        ] {
+            assert!(cursor_statement(text), "{text}");
+        }
+        for text in ["SHOW search_path", "EXPLAIN SELECT 1", "FETCH 1 FROM c", ""] {
+            assert!(!cursor_statement(text), "{text}");
+        }
     }
 
     /// A server that declines TLS and accepts anyone, answering every

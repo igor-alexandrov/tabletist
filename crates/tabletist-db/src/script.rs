@@ -119,6 +119,21 @@ pub(crate) fn cleanup_failed(error: &Error) -> Error {
     Error::ConnectionLost(format!("could not end the read-only transaction: {error}"))
 }
 
+/// Runs a cleanup step again once when a cancel meant for a statement
+/// landed on it instead: `retry_cancelled!(rollback(&client))` evaluates
+/// the expression (a future of `Result<T>`) a second time. A macro, not a
+/// function taking an async closure: a closure borrowing the connection
+/// makes the run's future not `Send`, and the backend spawns it.
+macro_rules! retry_cancelled {
+    ($step:expr) => {
+        match $step.await {
+            Err($crate::Error::Cancelled) => $step.await,
+            other => other,
+        }
+    };
+}
+pub(crate) use retry_cancelled;
+
 #[cfg(test)]
 mod tests {
     use super::*;
