@@ -2037,6 +2037,25 @@ mod tests {
     }
 
     #[test]
+    fn the_shortcuts_keep_close_on_screen_in_the_smallest_window() {
+        let size = egui::vec2(720.0, 480.0);
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
+        for look in crate::theme::Look::ALL {
+            let mut harness = Harness::with_size(size);
+            harness.set_look(look);
+            harness.frame(vec![egui::Event::Text("?".into())]);
+            let tree = harness.settle();
+            let close = crate::testing::bounds(&tree, "Close", egui::accesskit::Role::Button)
+                .expect("the Close button");
+            assert!(
+                screen.contains_rect(close),
+                "{}: Close at {close:?}",
+                look.name
+            );
+        }
+    }
+
+    #[test]
     fn typing_a_question_mark_in_a_field_does_not_open_help() {
         let mut harness = Harness::new();
         let tab = harness.connect_fake();
