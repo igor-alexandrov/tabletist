@@ -42,7 +42,14 @@ Linux (Omarchy and Hyprland first), macOS and Windows.
   every field in full with a jump along foreign keys, and a Structure view
   (columns, indexes, foreign keys).
 - Server-side sorting and paging, a filter bar with a raw WHERE option, exact
-  counts on demand, and cancel for any running query.
+  counts on demand, and cancel for any running query. MySQL sessions run in
+  utf8mb4, with `ANSI_QUOTES`, the combination modes that imply it and
+  `NO_BACKSLASH_ESCAPES` turned off: in a raw WHERE `"..."` is a string and
+  names take backticks.
+- A SQL editor per connection (Cmd/Ctrl+T): run the statement at the cursor
+  (Cmd/Ctrl+Return) or the whole script, with a row limit and a timeout.
+  Every run happens in a read-only transaction that is rolled back, and
+  statements that would leave it are refused.
 - Quick open (Cmd/Ctrl+P) and a full keyboard map: press `?` in the app.
 - Looks native on each platform: a macOS look in IBM Plex, and on Linux the
   Omarchy look (square, keyboard first, vim keys, the desktop's monospace
