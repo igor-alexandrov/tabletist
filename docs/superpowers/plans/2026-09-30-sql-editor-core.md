@@ -1969,6 +1969,9 @@ Then add to `impl Conn` (replacing the placeholders):
         ) {
             outcome.stopped = true;
         }
+        // From here on a cancel would land on the cleanup: tell the
+        // backend to stop repeating its cancel.
+        stop.finish();
         // After an error or a cancel the transaction is aborted: it cannot
         // write, SHOW would fail, and ROLLBACK ends it.
         let aborted = outcome.results.is_empty()
@@ -2419,6 +2422,7 @@ Add to `impl Conn` (replacing the placeholders):
             Err(Error::Cancelled) => outcome.stopped = true,
             Err(error) if error.is_connection_lost() => return Err(error),
             Err(error) => {
+                stop.finish();
                 end_script(&mut conn).await?;
                 return Err(error);
             }
@@ -2429,6 +2433,7 @@ Add to `impl Conn` (replacing the placeholders):
         ) {
             outcome.stopped = true;
         }
+        stop.finish();
         end_script(&mut conn).await?;
         Ok(outcome)
     }
@@ -2830,8 +2835,10 @@ and clear it where `running.request` is cleared (`lock(&running).request = None;
                         timed_out.store(true, Ordering::SeqCst);
                         stop.stop();
                         // A cancel can reach the server before the statement
-                        // it is meant for; send again until the run ends.
-                        loop {
+                        // it is meant for; send again until the run reaches
+                        // its cleanup (`finish`), where a cancel would only
+                        // interrupt the rollback.
+                        while !stop.is_finishing() {
                             let cancel = cancel.clone();
                             let task = tokio::spawn(async move {
                                 let _ = cancel.cancel().await;
