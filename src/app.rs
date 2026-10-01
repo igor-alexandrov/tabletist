@@ -4403,6 +4403,48 @@ mod tests {
     }
 
     #[test]
+    fn a_password_typed_into_a_connection_saved_without_one_is_stored() {
+        let (mut app, _dir) = app();
+        let conn = postgres_saved(&mut app, PasswordMode::None);
+        app.apply(Action::EditConnection(conn.clone()));
+        assert_eq!(form(&mut app).password_mode, PasswordMode::Keyring);
+        // Saved again untouched, it still has no password.
+        app.apply(Action::SaveConnection { connect: false });
+        assert_eq!(
+            app.connections.get(&conn).unwrap().password,
+            PasswordMode::None
+        );
+        assert!(sent_secrets(&app).is_empty());
+        app.apply(Action::EditConnection(conn.clone()));
+        form(&mut app).password = "pw".into();
+        app.apply(Action::SaveConnection { connect: false });
+        assert_eq!(
+            app.connections.get(&conn).unwrap().password,
+            PasswordMode::Keyring
+        );
+        assert!(app.backend.sent.iter().any(|c| matches!(
+            c,
+            Command::StoreSecret { secret: Some(SecretString(p)), account, .. }
+                if p == "pw" && *account == password_account(&conn)
+        )));
+    }
+
+    #[test]
+    fn editing_an_ask_every_time_connection_keeps_asking() {
+        let (mut app, _dir) = app();
+        let conn = postgres_saved(&mut app, PasswordMode::Ask);
+        app.apply(Action::EditConnection(conn.clone()));
+        assert_eq!(form(&mut app).password_mode, PasswordMode::Ask);
+        form(&mut app).name = "Renamed".into();
+        app.apply(Action::SaveConnection { connect: false });
+        assert_eq!(
+            app.connections.get(&conn).unwrap().password,
+            PasswordMode::Ask
+        );
+        assert!(sent_secrets(&app).is_empty());
+    }
+
+    #[test]
     fn changing_to_ask_deletes_the_saved_password() {
         let (mut app, _dir) = app();
         let conn = postgres_saved(&mut app, PasswordMode::Keyring);

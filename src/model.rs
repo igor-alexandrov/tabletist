@@ -639,7 +639,13 @@ impl ConnectionForm {
                 .as_ref()
                 .map(|path| path.display().to_string())
                 .unwrap_or_default(),
-            password_mode: saved.password,
+            // A connection saved without a password opens in the keyring
+            // mode, so a password typed into it is kept. With nothing typed
+            // it still saves without one (see `to_saved`).
+            password_mode: match saved.password {
+                PasswordMode::Ask => PasswordMode::Ask,
+                PasswordMode::Keyring | PasswordMode::None => PasswordMode::Keyring,
+            },
             has_saved_password: saved.password == PasswordMode::Keyring,
             saved_spec: Some(spec.clone()),
             ssh: spec.ssh.is_some(),
@@ -670,7 +676,7 @@ impl ConnectionForm {
             },
             ssh_secret_mode: match saved.ssh_secret {
                 PasswordMode::Ask => PasswordMode::Ask,
-                _ => PasswordMode::Keyring,
+                PasswordMode::Keyring | PasswordMode::None => PasswordMode::Keyring,
             },
             has_saved_ssh_secret: saved.ssh_secret == PasswordMode::Keyring,
             saved_ssh_auth: spec.ssh.as_ref().map(|ssh| match ssh.auth {
