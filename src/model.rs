@@ -255,6 +255,12 @@ pub enum Action {
         sql_tab: TabId,
         split: f32,
     },
+    /// A SQL editor's text took the keyboard: the arrows it gives up
+    /// (Esc) go to its results, not to the tree.
+    FocusSqlEditor {
+        tab: ConnTabId,
+        sql_tab: TabId,
+    },
     /// A key for the sidebar tree.
     TreeKey {
         tab: ConnTabId,
@@ -1640,6 +1646,31 @@ impl SqlRun {
     }
 }
 
+/// What a text was, without keeping it: its length and a hash. Tells
+/// whether an editor's text is still the one a run started with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TextPrint {
+    len: usize,
+    hash: u64,
+}
+
+impl TextPrint {
+    pub fn of(text: &str) -> Self {
+        use std::hash::{Hash as _, Hasher as _};
+        let mut hasher = std::hash::DefaultHasher::new();
+        text.hash(&mut hasher);
+        Self {
+            len: text.len(),
+            hash: hasher.finish(),
+        }
+    }
+
+    /// Whether `text` is the text this is the print of.
+    pub fn is_of(self, text: &str) -> bool {
+        self.len == text.len() && self == Self::of(text)
+    }
+}
+
 /// A SQL editor run the backend has not answered yet.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RunInFlight {
@@ -1647,6 +1678,8 @@ pub struct RunInFlight {
     pub statements: Vec<tabletist_db::sql::Statement>,
     /// When the run started, for the elapsed time.
     pub started: std::time::Instant,
+    /// The editor's text when the run started.
+    pub text: TextPrint,
 }
 
 /// One SQL editor. Its text lives only in memory.
@@ -1671,6 +1704,9 @@ pub struct SqlTab {
     pub selection: Option<CellPos>,
     /// Focus the editor on the next frame.
     pub focus_editor: bool,
+    /// The text the last run that finished started with. Its error mark
+    /// names a line of that text, so it holds only while the text is that.
+    ran_text: Option<TextPrint>,
 }
 
 // Hand-written so the SQL text never reaches logs or panic messages (a
@@ -1711,6 +1747,7 @@ impl SqlTab {
             split: Self::DEFAULT_SPLIT,
             selection: None,
             focus_editor: true,
+            ran_text: None,
         }
     }
 
@@ -1735,6 +1772,7 @@ impl SqlTab {
         self.in_flight = Some(RunInFlight {
             statements,
             started: std::time::Instant::now(),
+            text: TextPrint::of(&self.text),
         });
         superseded
     }
@@ -1751,11 +1789,9 @@ impl SqlTab {
         if self.run.pending != Some(request) {
             return false;
         }
-        let statements = self
-            .in_flight
-            .take()
-            .map(|run| run.statements)
-            .unwrap_or_default();
+        let in_flight = self.in_flight.take();
+        self.ran_text = in_flight.as_ref().map(|run| run.text);
+        let statements = in_flight.map(|run| run.statements).unwrap_or_default();
         self.run.finish(
             request,
             result.map(|outcome| SqlRun::new(statements, outcome, cancel)),
@@ -1813,7 +1849,8 @@ impl SqlTab {
 
     /// The cursor's 1-based line and column (in characters).
     pub fn line_col(&self) -> (usize, usize) {
-        // The view reports the cursor a frame after the text changes.
+        // The cursor is the view's: text set from elsewhere may leave it
+        // inside a character.
         let before = &self.text[..self.text.floor_char_boundary(self.cursor)];
         let line = before.matches('\n').count() + 1;
         let column = before
@@ -1825,17 +1862,20 @@ impl SqlTab {
     }
 
     /// Where the last run failed: the editor line, and the column when the
-    /// database gave a position. `None` while a run is in flight.
+    /// database gave a position. `None` while a run is in flight, and once
+    /// the text is no longer the one that ran: the line may have moved.
     pub fn error_mark(&self) -> Option<(usize, Option<usize>)> {
         if self.is_running() {
             return None;
         }
-        match &self.run.error {
+        let mark = match &self.run.error {
             Some(Error::Refused { line, .. }) => Some((*line, None)),
             // Nothing ran, so the result still held is an older run's.
             Some(_) => None,
             None => self.run.value.as_ref()?.error_mark,
-        }
+        }?;
+        // Asked every frame: the text is hashed only while there is a mark.
+        self.ran_text?.is_of(&self.text).then_some(mark)
     }
 }
 
@@ -2339,6 +2379,69 @@ mod tests {
         assert!(sql.finish_run(RequestId(21), Err(lost), None));
         assert!(sql.run.value.is_some());
         assert_eq!(sql.error_mark(), None);
+    }
+
+    #[test]
+    fn an_error_mark_holds_only_while_the_text_is_the_one_that_ran() {
+        let failing = || vec![rows_outcome(1), error_outcome("no such column: x", None)];
+        let mut sql = editor();
+        run_script(&mut sql, "SELECT 1;\nSELECT x", failing());
+        assert_eq!(sql.error_mark(), Some((2, None)));
+        // A line typed above moves the statement: the mark would sit on
+        // the wrong line.
+        sql.text.insert_str(0, "-- first\n");
+        assert_eq!(sql.error_mark(), None);
+        // Nor does a change that keeps the text's length keep the mark.
+        sql.text = "SELECT 1;\nSELECT y".into();
+        assert_eq!(sql.error_mark(), None);
+        // The text as it ran is marked again, and so is the next run.
+        sql.text = "SELECT 1;\nSELECT x".into();
+        assert_eq!(sql.error_mark(), Some((2, None)));
+        run_script(&mut sql, "\nSELECT 1;\nSELECT x", failing());
+        assert_eq!(sql.error_mark(), Some((3, None)));
+        // A refusal's line is a line of the text that was refused.
+        sql.text = "SELECT 1;\nCOMMIT".into();
+        let _ = sql.start_run(RequestId(30), script("SELECT 1;\nCOMMIT"));
+        let refused = Error::Refused {
+            line: 2,
+            what: "COMMIT".into(),
+        };
+        assert!(sql.finish_run(RequestId(30), Err(refused), None));
+        assert_eq!(sql.error_mark(), Some((2, None)));
+        sql.text.insert(0, '\n');
+        assert_eq!(sql.error_mark(), None);
+    }
+
+    #[test]
+    fn an_error_mark_is_of_the_text_its_own_run_started_with() {
+        let failing = || vec![error_outcome("no such column: x", None)];
+        // Typed in while the run was in flight: the mark is stale at once.
+        let mut sql = editor();
+        sql.text = "SELECT x".into();
+        let _ = sql.start_run(RequestId(9), script("SELECT x"));
+        sql.text.insert_str(0, "SELECT 1;\n");
+        let outcome = crate::testing::script_outcome(failing());
+        assert!(sql.finish_run(RequestId(9), Ok(outcome), None));
+        assert_eq!(sql.error_mark(), None);
+        // A later run that never answers leaves the older run's mark with
+        // the older run's text.
+        let mut sql = editor();
+        run_script(&mut sql, "SELECT x", failing());
+        sql.text = "\nSELECT x".into();
+        let _ = sql.start_run(RequestId(40), script("\nSELECT x"));
+        sql.abandon_run();
+        assert_eq!(sql.error_mark(), None);
+        sql.text = "SELECT x".into();
+        assert_eq!(sql.error_mark(), Some((1, None)));
+    }
+
+    #[test]
+    fn a_text_print_tells_its_text_from_others_without_keeping_it() {
+        let print = TextPrint::of("SELECT secret");
+        assert!(print.is_of("SELECT secret"));
+        assert!(!print.is_of("SELECT secrex"));
+        assert!(!print.is_of("SELECT secret "));
+        assert!(!format!("{print:?}").contains("secret"));
     }
 
     #[test]

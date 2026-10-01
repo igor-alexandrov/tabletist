@@ -740,6 +740,13 @@ impl App {
                     sql.set_split(split);
                 }
             }
+            Action::FocusSqlEditor { tab, sql_tab } => {
+                if let Some(workspace) = self.workspace_mut(tab)
+                    && workspace.sql_tab(sql_tab).is_some()
+                {
+                    workspace.pane = Pane::Grid;
+                }
+            }
             Action::CountRows { tab, object_tab } => self.count_rows(tab, object_tab),
             Action::ShowHelp => {
                 if self.dialog.is_none() {
@@ -4613,6 +4620,24 @@ mod tests {
             });
             assert_eq!(sql(&harness, tab, id).selection, Some(cell));
         }
+    }
+
+    #[test]
+    fn a_focused_sql_editor_takes_the_arrows_from_the_tree() {
+        let mut harness = Harness::new();
+        let (tab, id) = new_sql(&mut harness);
+        harness.app.workspace_mut(tab).unwrap().pane = Pane::Tree;
+        harness
+            .app
+            .apply(Action::FocusSqlEditor { tab, sql_tab: id });
+        assert_eq!(harness.app.workspace(tab).unwrap().pane, Pane::Grid);
+        // An editor closed since the frame that drew it takes nothing.
+        harness.app.workspace_mut(tab).unwrap().pane = Pane::Tree;
+        harness.app.apply(Action::CloseTab { tab, id });
+        harness
+            .app
+            .apply(Action::FocusSqlEditor { tab, sql_tab: id });
+        assert_eq!(harness.app.workspace(tab).unwrap().pane, Pane::Tree);
     }
 
     #[test]

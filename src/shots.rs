@@ -333,6 +333,23 @@ fn shots() {
         sql_editor(harness);
         harness.click("Timeout");
     });
+    // The cursor in the first statement, which fails on its second line
+    // (the position counts from the comment the statement starts with).
+    both("sql-error", |harness| {
+        let tab = sql_editor(harness);
+        for _ in 0..3 {
+            harness.press(egui::Key::ArrowUp, egui::Modifiers::NONE);
+        }
+        let sql_tab = harness.app.workspace(tab).unwrap().active_tab.unwrap();
+        harness.app.apply(Action::RunSql {
+            tab,
+            sql_tab,
+            all: false,
+        });
+        let message = "relation \"book_images\" does not exist";
+        let failed = crate::testing::error_outcome(message, Some(63));
+        harness.answer_sql(Ok(crate::testing::script_outcome(vec![failed])), None);
+    });
 }
 
 /// A SQL editor beside the open tables, its script run and answered.

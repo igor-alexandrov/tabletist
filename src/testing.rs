@@ -25,6 +25,8 @@ pub struct Harness {
     pub fills: Vec<(egui::Rect, egui::Color32)>,
     /// The colour of every line and outline the last frame drew.
     pub strokes: Vec<egui::Color32>,
+    /// How soon the last frame asked to be drawn again: at once is zero.
+    pub repaint_after: std::time::Duration,
     #[cfg(feature = "shots")]
     renderer: Option<egui_kittest::wgpu::WgpuTestRenderer>,
     #[cfg(feature = "shots")]
@@ -80,11 +82,12 @@ impl Harness {
             collect_text(&clipped.shape, &mut self.painted);
             collect_paint(&clipped.shape, &mut self.fills, &mut self.strokes);
         }
-        self.viewport_commands = output
-            .viewport_output
-            .get(&egui::ViewportId::ROOT)
+        let viewport = output.viewport_output.get(&egui::ViewportId::ROOT);
+        self.viewport_commands = viewport
             .map(|viewport| viewport.commands.clone())
             .unwrap_or_default();
+        self.repaint_after =
+            viewport.map_or(std::time::Duration::MAX, |viewport| viewport.repaint_delay);
         #[cfg(feature = "shots")]
         {
             self.last = Some(output.clone());
@@ -610,6 +613,7 @@ impl Harness {
             painted: Vec::new(),
             fills: Vec::new(),
             strokes: Vec::new(),
+            repaint_after: std::time::Duration::MAX,
             #[cfg(feature = "shots")]
             renderer: None,
             #[cfg(feature = "shots")]

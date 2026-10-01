@@ -812,6 +812,8 @@ mod tests {
         let query = harness.add_sql_tab(tab);
         harness.press(Key::Num2, Modifiers::NONE);
         assert_eq!(harness.app.workspace(tab).unwrap().active_tab, Some(query));
+        // An editor shown for the first time takes the keys.
+        harness.press(Key::Escape, Modifiers::NONE);
         harness.press(Key::Num1, Modifiers::NONE);
         assert_eq!(harness.app.workspace(tab).unwrap().active_tab, users);
     }
@@ -940,12 +942,12 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs the editor view (Task 14)"]
     fn command_return_runs_while_typing() {
         let mut harness = Harness::new();
         let tab = harness.connect_fake();
         harness.press(Key::T, Modifiers::COMMAND);
-        harness.frame(vec![egui::Event::Text("SELECT 1;\nSELECT 2".into())]);
+        type_text(&mut harness, "SELECT 1;\nSELECT 2");
+        assert!(harness.ctx.text_edit_focused(), "the editor has the keys");
         harness.press(Key::Enter, Modifiers::COMMAND);
         assert!(matches!(
             harness.app.backend.sent.last(),
@@ -965,21 +967,21 @@ mod tests {
         );
     }
 
-    // Stands in for `command_return_runs_while_typing` until the editor
-    // view exists: the text and the cursor are set as the view would.
     #[test]
     fn command_return_runs_the_statement_at_the_cursor_and_with_shift_all() {
         let mut harness = Harness::new();
         let tab = harness.connect_fake();
         harness.press(Key::T, Modifiers::COMMAND);
         let text = "SELECT 1;\nSELECT 2";
-        set_sql(&mut harness, tab, text, text.len());
+        type_text(&mut harness, text);
+        // The cursor goes where the editor's own keys put it.
+        harness.press(Key::ArrowUp, Modifiers::NONE);
         let sent = harness.app.backend.sent.len();
         harness.press(Key::Enter, Modifiers::COMMAND);
         assert!(matches!(
             harness.app.backend.sent.last(),
             Some(Command::RunSql { statements, .. })
-                if statements.len() == 1 && statements[0].text == "SELECT 2"
+                if statements.len() == 1 && statements[0].text == "SELECT 1"
         ));
         harness.press(Key::Enter, Modifiers::COMMAND | Modifiers::SHIFT);
         assert!(matches!(
@@ -993,6 +995,307 @@ mod tests {
         assert_eq!(runs, 2, "each press runs once");
         let workspace = harness.app.workspace(tab).unwrap();
         assert_eq!(workspace.active_sql_tab().unwrap().text, text);
+    }
+
+    /// Types `text` into whatever has the keyboard.
+    fn type_text(harness: &mut Harness, text: &str) {
+        harness.frame(vec![egui::Event::Text(text.into())]);
+        harness.settle();
+    }
+
+    /// Clicks the pointer at `pos`.
+    fn click_at(harness: &mut Harness, pos: egui::Pos2) {
+        let button = |pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        };
+        harness.frame(vec![egui::Event::PointerMoved(pos)]);
+        harness.frame(vec![button(true)]);
+        harness.frame(vec![button(false)]);
+        harness.settle();
+    }
+
+    /// Where the SQL editor's text field is.
+    fn editor_rect(harness: &mut Harness) -> egui::Rect {
+        let tree = harness.settle();
+        crate::testing::bounds(&tree, "SQL", egui::accesskit::Role::MultilineTextInput)
+            .expect("the editor")
+    }
+
+    /// Whether the last frame painted `text` as one piece in `color`.
+    fn painted_in(harness: &Harness, text: &str, color: egui::Color32) -> bool {
+        let mut pieces = harness.painted.iter();
+        pieces.any(|(piece, painted)| piece == text && *painted == color)
+    }
+
+    #[test]
+    fn the_editor_is_a_named_text_field_with_the_query() {
+        for look in crate::theme::Look::ALL {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            let tab = harness.connect_fake();
+            harness.press(Key::T, Modifiers::COMMAND);
+            harness.frame(vec![egui::Event::Text("SELECT 1".into())]);
+            let tree = harness.settle();
+            let editor =
+                crate::testing::node(&tree, "SQL", egui::accesskit::Role::MultilineTextInput);
+            assert!(editor.is_some(), "{}", look.name);
+            let sql = active_sql(&harness, tab);
+            assert_eq!(sql.text, "SELECT 1", "{}", look.name);
+            assert_eq!(sql.cursor, 8, "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn the_editor_reports_its_cursor_in_bytes() {
+        let mut harness = Harness::new();
+        let tab = harness.connect_fake();
+        harness.press(Key::T, Modifiers::COMMAND);
+        // Two bytes each, and a line ending of two characters.
+        type_text(&mut harness, "-- żółw\r\nSELECT 'é'");
+        let sql = active_sql(&harness, tab);
+        assert_eq!(sql.cursor, sql.text.len());
+        assert_eq!(sql.line_col(), (2, 11));
+        harness.press(Key::ArrowLeft, Modifiers::NONE);
+        harness.press(Key::ArrowLeft, Modifiers::NONE);
+        let sql = active_sql(&harness, tab);
+        assert_eq!(&sql.text[sql.cursor..], "é'");
+        assert_eq!(sql.line_col(), (2, 9));
+        // Typed there, text lands between the characters, not inside one.
+        type_text(&mut harness, "ü");
+        let sql = active_sql(&harness, tab);
+        assert_eq!(sql.text, "-- żółw\r\nSELECT 'üé'");
+        assert_eq!(&sql.text[sql.cursor..], "é'");
+        harness.press(Key::ArrowUp, Modifiers::NONE);
+        assert_eq!(active_sql(&harness, tab).line_col().0, 1);
+    }
+
+    #[test]
+    fn a_new_editor_asks_for_the_frame_that_gives_it_the_keys() {
+        let mut harness = Harness::new();
+        let tab = harness.connect_fake();
+        harness.settle();
+        harness.app.apply(crate::model::Action::NewSqlTab(tab));
+        // The frame that draws the editor asks for the keyboard, and for
+        // the frame that has it: no event need come first.
+        harness.frame(Vec::new());
+        assert_eq!(harness.repaint_after, std::time::Duration::ZERO);
+        harness.frame(Vec::new());
+        assert!(harness.ctx.text_edit_focused());
+        harness.settle();
+        assert!(harness.repaint_after > std::time::Duration::ZERO, "idle");
+        // The footer is drawn before the editor moves the cursor: the
+        // frame of a key is followed by one that says where it went.
+        type_text(&mut harness, "SELECT 1");
+        harness.frame(vec![crate::testing::key(Key::ArrowLeft, Modifiers::NONE)]);
+        assert_eq!(active_sql(&harness, tab).cursor, 7);
+        assert_eq!(harness.repaint_after, std::time::Duration::ZERO);
+        assert!(!harness.has("Ln 1, Col 9") && harness.has("Ln 1, Col 8"));
+        assert!(harness.repaint_after > std::time::Duration::ZERO, "idle");
+    }
+
+    #[test]
+    fn escape_leaves_the_editor() {
+        let mut harness = Harness::new();
+        let tab = harness.connect_fake();
+        harness.press(Key::T, Modifiers::COMMAND);
+        assert!(harness.ctx.text_edit_focused(), "a new editor has the keys");
+        harness.press(Key::Escape, Modifiers::NONE);
+        assert!(!harness.ctx.text_edit_focused());
+        type_text(&mut harness, "SELECT 1");
+        assert_eq!(active_sql(&harness, tab).text, "");
+    }
+
+    #[test]
+    fn tab_indents_in_the_editor() {
+        let mut harness = Harness::new();
+        let tab = harness.connect_fake();
+        harness.press(Key::T, Modifiers::COMMAND);
+        harness.press(Key::Tab, Modifiers::NONE);
+        type_text(&mut harness, "SELECT 1");
+        assert!(
+            harness.ctx.text_edit_focused(),
+            "the keys stay in the editor"
+        );
+        assert_eq!(active_sql(&harness, tab).text, "\tSELECT 1");
+    }
+
+    #[test]
+    fn arrows_move_the_cursor_not_the_result_while_the_editor_has_the_keys() {
+        let mut harness = Harness::new();
+        let tab = harness.connect_fake();
+        let id = with_sql_result(&mut harness, tab, 30);
+        harness.settle();
+        assert!(harness.ctx.text_edit_focused());
+        assert_eq!(active_sql(&harness, tab).cursor, 8, "after the text");
+        harness.press(Key::ArrowLeft, Modifiers::NONE);
+        assert_eq!(active_sql(&harness, tab).cursor, 7);
+        harness.press(Key::Home, Modifiers::NONE);
+        assert_eq!(active_sql(&harness, tab).cursor, 0);
+        for key in [
+            Key::ArrowDown,
+            Key::ArrowRight,
+            Key::ArrowUp,
+            Key::PageDown,
+            Key::PageUp,
+            Key::End,
+        ] {
+            harness.press(key, Modifiers::NONE);
+        }
+        assert_eq!(sql_selection(&harness, tab, id), None);
+        assert_eq!(active_sql(&harness, tab).text, "SELECT 1");
+    }
+
+    #[test]
+    fn the_terminal_letters_are_typed_while_the_editor_has_the_keys() {
+        let mut harness = Harness::new();
+        harness.set_look(crate::theme::Look::omarchy());
+        let tab = harness.connect_fake();
+        let id = with_sql_result(&mut harness, tab, 3);
+        harness.settle();
+        // A real key press sends the key and its text.
+        harness.frame(vec![
+            crate::testing::key(Key::J, Modifiers::NONE),
+            egui::Event::Text("j".into()),
+        ]);
+        harness.settle();
+        assert_eq!(active_sql(&harness, tab).text, "SELECT 1j");
+        assert_eq!(sql_selection(&harness, tab, id), None);
+    }
+
+    #[test]
+    fn clicking_the_editor_takes_the_arrows_from_the_tree() {
+        let (mut harness, tab) = tree_harness();
+        let id = with_sql_result(&mut harness, tab, 3);
+        harness.press(Key::Escape, Modifiers::NONE);
+        // A table opened from the tree leaves the arrows there.
+        harness.click("users");
+        harness.click("Query 1 tab");
+        let pane = |harness: &Harness| harness.app.workspace(tab).unwrap().pane;
+        assert_eq!(pane(&harness), crate::model::Pane::Tree);
+        assert!(!harness.ctx.text_edit_focused());
+        let editor = editor_rect(&mut harness);
+        click_at(&mut harness, editor.center());
+        assert!(harness.ctx.text_edit_focused(), "a click gives it the keys");
+        assert_eq!(pane(&harness), crate::model::Pane::Grid);
+        // So the arrows the editor gives up go to its result.
+        let cursor = harness.app.workspace(tab).unwrap().tree.cursor.clone();
+        harness.press(Key::Escape, Modifiers::NONE);
+        harness.press(Key::ArrowDown, Modifiers::NONE);
+        harness.press(Key::ArrowDown, Modifiers::NONE);
+        assert_eq!(
+            sql_selection(&harness, tab, id),
+            Some(crate::model::CellPos { row: 1, col: 0 })
+        );
+        assert_eq!(harness.app.workspace(tab).unwrap().tree.cursor, cursor);
+    }
+
+    /// A script of `lines` lines, the last of them a statement.
+    fn script_of(lines: usize) -> String {
+        format!("{}SELECT x", "-- a note\n".repeat(lines - 1))
+    }
+
+    #[test]
+    fn the_gutter_numbers_every_line() {
+        for look in [crate::theme::Look::standard(), crate::theme::Look::macos()] {
+            let (mut harness, _) = sql_harness(look);
+            harness.settle();
+            type_text(&mut harness, &script_of(12));
+            for line in ["10", "11", "12"] {
+                assert!(painted(&harness, line), "{line} in {}", look.name);
+            }
+            assert!(!painted(&harness, "13"), "{}", look.name);
+            // The numbers do not follow the cursor.
+            for _ in 0..11 {
+                harness.press(Key::ArrowUp, Modifiers::NONE);
+            }
+            assert!(painted(&harness, "11") && painted(&harness, "12"));
+        }
+    }
+
+    #[test]
+    fn the_terminal_gutter_counts_lines_from_the_cursor() {
+        let (mut harness, tab) = sql_harness(crate::theme::Look::omarchy());
+        harness.settle();
+        type_text(&mut harness, &script_of(12));
+        // The cursor's line is 12; the first line is 11 lines away.
+        assert_eq!(active_sql(&harness, tab).line_col().0, 12);
+        assert!(painted(&harness, "12") && painted(&harness, "11"));
+        // On the first line, the last one is 11 away and none is 12.
+        for _ in 0..11 {
+            harness.press(Key::ArrowUp, Modifiers::NONE);
+        }
+        assert_eq!(active_sql(&harness, tab).line_col().0, 1);
+        assert!(painted(&harness, "11"));
+        assert!(!painted(&harness, "12"));
+    }
+
+    #[test]
+    fn a_long_line_does_not_wrap() {
+        for look in crate::theme::Look::ALL {
+            let (mut harness, tab) = sql_harness(look);
+            harness.settle();
+            let long = format!("SELECT {}\n", "a_column, ".repeat(400));
+            type_text(&mut harness, &format!("{long}{}", script_of(10)));
+            assert_eq!(active_sql(&harness, tab).line_col().0, 11);
+            // Eleven lines are eleven rows, however long the first is.
+            assert!(painted(&harness, "11"), "{}", look.name);
+            assert!(!painted(&harness, "12"), "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn the_gutter_marks_the_line_that_failed_until_the_text_changes() {
+        for look in crate::theme::Look::ALL {
+            let (mut harness, tab) = sql_harness(look);
+            let danger = harness.app.palette.danger;
+            harness.settle();
+            type_text(&mut harness, &script_of(11));
+            assert!(painted(&harness, "11") && !painted_in(&harness, "11", danger));
+            harness.press(Key::Enter, Modifiers::COMMAND);
+            harness.answer_sql(
+                Ok(crate::testing::script_outcome(vec![
+                    crate::testing::error_outcome("no such column: x", None),
+                ])),
+                None,
+            );
+            harness.settle();
+            assert!(painted_in(&harness, "11", danger), "{}", look.name);
+            // The statement moves down a line: the mark would be a line off.
+            for _ in 0..10 {
+                harness.press(Key::ArrowUp, Modifiers::NONE);
+            }
+            harness.press(Key::Enter, Modifiers::NONE);
+            assert_eq!(active_sql(&harness, tab).line_col().0, 2);
+            let marked = harness
+                .painted
+                .iter()
+                .any(|(piece, color)| *color == danger && piece.parse::<usize>().is_ok());
+            assert!(!marked, "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn a_long_script_stays_responsive() {
+        let mut harness = Harness::new();
+        let tab = harness.connect_fake();
+        harness.press(Key::T, Modifiers::COMMAND);
+        let line = "SELECT id, 'a name', 42 FROM users WHERE id > 7; -- a note\n";
+        harness.frame(vec![egui::Event::Paste(line.repeat(5_000))]);
+        harness.settle();
+        assert_eq!(active_sql(&harness, tab).line_col().0, 5_001);
+        let started = std::time::Instant::now();
+        for _ in 0..10 {
+            harness.frame(vec![egui::Event::Text("x".into())]);
+            harness.frame(vec![crate::testing::key(Key::ArrowUp, Modifiers::NONE)]);
+        }
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(10),
+            "20 frames took {:?}",
+            started.elapsed()
+        );
     }
 
     #[test]
@@ -1117,6 +1420,8 @@ mod tests {
         harness.answer_rows(crate::testing::page(300, true));
         let users = harness.app.workspace(tab).unwrap().active_tab.unwrap();
         let query = with_sql_result(&mut harness, tab, 3);
+        // With the keys out of the editor, where Space would be typed.
+        harness.press(Key::Escape, Modifiers::NONE);
         let panel = harness.app.workspace(tab).unwrap().row_panel;
         let sent = harness.app.backend.sent.len();
         harness.press(Key::Space, Modifiers::NONE);
@@ -1197,7 +1502,10 @@ mod tests {
         let mut harness = Harness::new();
         let tab = harness.connect_fake();
         let id = with_sql_result(&mut harness, tab, 3);
+        harness.settle();
+        assert!(harness.ctx.text_edit_focused(), "the editor has the keys");
         harness.press(Key::Escape, Modifiers::NONE);
+        assert!(!harness.ctx.text_edit_focused());
         harness.press(Key::ArrowDown, Modifiers::NONE);
         harness.press(Key::ArrowDown, Modifiers::NONE);
         assert_eq!(
@@ -1212,6 +1520,7 @@ mod tests {
         let tab = harness.connect_fake();
         let id = with_sql_result(&mut harness, tab, 30);
         let at = |row, col| Some(crate::model::CellPos { row, col });
+        harness.press(Key::Escape, Modifiers::NONE);
         harness.press(Key::End, Modifiers::NONE);
         // The first key selects the first cell.
         assert_eq!(sql_selection(&harness, tab, id), at(0, 0));
@@ -1235,6 +1544,7 @@ mod tests {
         let cursor = |harness: &Harness| harness.app.workspace(tab).unwrap().tree.cursor.clone();
         // An editor that has run nothing has no grid.
         harness.press(Key::T, Modifiers::COMMAND);
+        harness.press(Key::Escape, Modifiers::NONE);
         let before = cursor(&harness);
         harness.press(Key::ArrowDown, Modifiers::NONE);
         let moved = cursor(&harness);
@@ -1242,6 +1552,7 @@ mod tests {
         // Nor has one showing its messages over a result.
         harness.press(Key::W, Modifiers::COMMAND);
         let id = with_sql_result(&mut harness, tab, 3);
+        harness.press(Key::Escape, Modifiers::NONE);
         harness.app.apply(crate::model::Action::SetResultPane {
             tab,
             sql_tab: id,
@@ -1269,6 +1580,7 @@ mod tests {
         let tab = harness.connect_fake();
         let id = with_sql_result(&mut harness, tab, 3);
         let at = |row, col| Some(crate::model::CellPos { row, col });
+        harness.press(Key::Escape, Modifiers::NONE);
         harness.press(Key::J, Modifiers::NONE);
         harness.press(Key::J, Modifiers::NONE);
         harness.press(Key::L, Modifiers::NONE);
@@ -1291,6 +1603,7 @@ mod tests {
         let mut harness = Harness::new();
         let tab = harness.connect_fake();
         let id = with_sql_result(&mut harness, tab, 3);
+        harness.press(Key::Escape, Modifiers::NONE);
         harness.press(Key::J, Modifiers::NONE);
         assert_eq!(sql_selection(&harness, tab, id), None);
     }
@@ -1837,7 +2150,11 @@ mod tests {
             let (mut harness, tab) = sql_harness(look);
             harness.app.workspace_mut(tab).unwrap().server_version.value =
                 Some("SQLite 3.46.0".into());
-            set_sql(&mut harness, tab, "SELECT 1;\nSELECT 2", 12);
+            harness.settle();
+            type_text(&mut harness, "SELECT 1;\nSELECT 2");
+            for _ in 0..6 {
+                harness.press(Key::ArrowLeft, Modifiers::NONE);
+            }
             assert!(harness.has("Ln 2, Col 3"), "{}", look.name);
             assert!(harness.has("SQLite 3.46.0"), "{}", look.name);
             // Nothing ran yet, so nothing was rolled back.
@@ -1882,8 +2199,11 @@ mod tests {
     #[test]
     fn the_terminal_status_line_is_the_editors_on_a_sql_tab() {
         let (mut harness, tab) = sql_harness(crate::theme::Look::omarchy());
-        set_sql(&mut harness, tab, "SELECT 1;\nSELECT 2", 12);
         harness.settle();
+        type_text(&mut harness, "SELECT 1;\nSELECT 2");
+        for _ in 0..6 {
+            harness.press(Key::ArrowLeft, Modifiers::NONE);
+        }
         assert!(painted(&harness, "ln 2:3"), "{:?}", harness.painted);
         for hint in [
             "ctrl+enter run",
