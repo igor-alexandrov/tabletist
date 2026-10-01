@@ -721,7 +721,7 @@ mod mock {
         harness.answer_rows(covers());
         // The tabs in the order the mockups show them.
         let workspace = harness.app.workspace_mut(tab).unwrap();
-        workspace.objects.reverse();
+        workspace.tabs.reverse();
         harness.app.apply(Action::SelectCell {
             tab,
             object_tab,

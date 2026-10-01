@@ -4,7 +4,7 @@ use egui::{CornerRadius, Frame, Id, Rect, Sense, WidgetInfo, WidgetType, pos2, v
 
 use crate::app::App;
 use crate::i18n::gettext;
-use crate::model::{Action, ConnTabId};
+use crate::model::{self, Action, ConnTabId, TabId};
 use crate::theme::{Icon, Look, Palette};
 use crate::typography::{Text, TextRole};
 use crate::ui::widgets::{self, icon_button};
@@ -37,13 +37,21 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
     let Some(workspace) = app.workspace(tab) else {
         return;
     };
-    let tabs: Vec<_> = workspace
-        .objects
+    // A SQL editor is never a preview, so it draws like a pinned tab.
+    let tabs: Vec<(TabId, String, bool)> = workspace
+        .tabs
         .iter()
-        .map(|object| {
-            let shared = workspace.name_is_shared(&object.object);
-            let name = crate::ui::format::object_title(&object.object, shared);
-            (object.id, name, object.pinned)
+        .map(|tab| match tab {
+            model::Tab::Object(object) => {
+                let shared = workspace.name_is_shared(&object.object);
+                let name = crate::ui::format::object_title(&object.object, shared);
+                (object.id, name, object.pinned)
+            }
+            model::Tab::Sql(sql) => (
+                sql.id,
+                format!("{} {}", gettext(locale, "Query"), sql.number),
+                true,
+            ),
         })
         .collect();
     let active = workspace.active_tab;
@@ -127,13 +135,13 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                                         object_tab: *id,
                                     });
                                 } else if response.clicked() {
-                                    actions.push(Action::ActivateObjectTab {
+                                    actions.push(Action::ActivateTab {
                                         tab,
                                         object_tab: *id,
                                     });
                                 }
                                 if response.middle_clicked() {
-                                    actions.push(Action::CloseObjectTab {
+                                    actions.push(Action::CloseTab {
                                         tab,
                                         object_tab: *id,
                                     });
@@ -157,7 +165,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                                     let close = format!("{} {name}", gettext(locale, "Close"));
                                     if small_close(&mut close_ui, &close, &look, &palette).clicked()
                                     {
-                                        actions.push(Action::CloseObjectTab {
+                                        actions.push(Action::CloseTab {
                                             tab,
                                             object_tab: *id,
                                         });

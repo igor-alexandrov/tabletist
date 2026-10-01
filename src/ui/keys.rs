@@ -173,7 +173,7 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
                 key(
                     Modifiers::COMMAND | Modifiers::SHIFT,
                     pressed,
-                    Action::CycleObjectTab { tab, step },
+                    Action::CycleTab { tab, step },
                 );
             }
             key(
@@ -189,7 +189,7 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
             key(
                 Modifiers::COMMAND,
                 Key::W,
-                Action::CloseObjectTab { tab, object_tab },
+                Action::CloseTab { tab, object_tab },
             );
             if !editing && grid && !tree_arrows {
                 let page = 20;
@@ -344,13 +344,14 @@ fn letters(app: &mut App, ctx: &egui::Context, actions: &mut Vec<Action>) {
     };
     let tree = workspace.pane == crate::model::Pane::Tree;
     let panel = workspace.row_panel;
-    let object_tabs: Vec<_> = workspace.objects.iter().map(|object| object.id).collect();
+    // The digits follow the strip, so they reach SQL editors too.
+    let tabs: Vec<_> = workspace.tabs.iter().map(crate::model::Tab::id).collect();
     let active = workspace.active_tab;
     for (index, number) in NUMBERS.into_iter().enumerate() {
         if pressed(number)
-            && let Some(object_tab) = object_tabs.get(index)
+            && let Some(object_tab) = tabs.get(index)
         {
-            actions.push(Action::ActivateObjectTab {
+            actions.push(Action::ActivateTab {
                 tab,
                 object_tab: *object_tab,
             });

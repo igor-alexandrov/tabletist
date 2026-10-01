@@ -305,9 +305,9 @@ pub fn key(key: egui::Key, modifiers: egui::Modifiers) -> egui::Event {
     }
 }
 
-use crate::backend::{Command, Event};
+use crate::backend::{Command, Event, RequestId, SessionId};
 use crate::connections::{ConnectionId, SavedConnection};
-use crate::model::{Action, ConnTabId};
+use crate::model::{Action, ConnTabId, SqlTab, Tab, TabId, Workspace};
 use tabletist_db::{ConnectSpec, Driver, ObjectInfo, ObjectKind};
 
 pub fn last_sent(app: &App) -> &Command {
@@ -315,19 +315,53 @@ pub fn last_sent(app: &App) -> &Command {
 }
 
 impl Harness {
+    /// Puts an empty SQL editor at the end of `tab`'s strip without showing
+    /// it, numbered like the ones the app opens.
+    pub fn add_sql_tab(&mut self, tab: ConnTabId) -> TabId {
+        let id = TabId(self.app.next_id());
+        let workspace = self.app.workspace_mut(tab).expect("a workspace");
+        let number = workspace.next_query;
+        workspace.next_query += 1;
+        workspace.tabs.push(Tab::Sql(Box::new(SqlTab::new(
+            id,
+            number,
+            1_000,
+            Some(std::time::Duration::from_secs(30)),
+        ))));
+        id
+    }
+}
+
+/// The saved connection the fake session stands for.
+fn fixture_connection() -> SavedConnection {
+    SavedConnection {
+        id: ConnectionId::new(),
+        name: "Fixture".into(),
+        environment: crate::env::Environment::Dev,
+        read_only: None,
+        password: crate::connections::PasswordMode::None,
+        ssh_secret: crate::connections::PasswordMode::None,
+        spec: ConnectSpec::sqlite("/tmp/fixture.db"),
+    }
+}
+
+/// A workspace for the fixture connection, still connecting and with no
+/// tabs, for tests that need one without an app.
+pub fn workspace() -> Workspace {
+    Workspace::new(
+        SessionId(1),
+        RequestId(2),
+        fixture_connection(),
+        tabletist_db::Secrets::default(),
+    )
+}
+
+impl Harness {
     /// Connects the active tab through the recording backend and answers the
     /// tree's first requests: schema `main` with `users`, `orders` and the
     /// view `active_users`.
     pub fn connect_fake(&mut self) -> ConnTabId {
-        let saved = SavedConnection {
-            id: ConnectionId::new(),
-            name: "Fixture".into(),
-            environment: crate::env::Environment::Dev,
-            read_only: None,
-            password: crate::connections::PasswordMode::None,
-            ssh_secret: crate::connections::PasswordMode::None,
-            spec: ConnectSpec::sqlite("/tmp/fixture.db"),
-        };
+        let saved = fixture_connection();
         let conn = saved.id.clone();
         self.app.connections.upsert(saved);
         let tab = self.app.active_tab_id();

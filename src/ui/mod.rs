@@ -748,8 +748,38 @@ mod tests {
         let tab = harness.connect_fake();
         harness.click("users");
         harness.click("Close users");
-        assert!(harness.app.workspace(tab).unwrap().objects.is_empty());
+        assert!(harness.app.workspace(tab).unwrap().tabs.is_empty());
         assert!(harness.has("Select a table or view in the sidebar"));
+    }
+
+    #[test]
+    fn the_strip_shows_sql_editors_beside_object_tabs() {
+        let mut harness = Harness::new();
+        let tab = harness.connect_fake();
+        harness.click("users");
+        let users = harness.app.workspace(tab).unwrap().active_tab;
+        let query = harness.add_sql_tab(tab);
+        assert!(harness.has("users tab") && harness.has("Query 1 tab"));
+        harness.click("Query 1 tab");
+        assert_eq!(harness.app.workspace(tab).unwrap().active_tab, Some(query));
+        harness.click("Close Query 1");
+        let workspace = harness.app.workspace(tab).unwrap();
+        assert!(workspace.sql_tab(query).is_none());
+        assert_eq!(workspace.active_tab, users);
+        assert!(!harness.has("Query 1 tab"));
+    }
+
+    #[test]
+    fn the_terminal_digits_reach_every_tab_in_the_strip() {
+        let mut harness = Harness::new();
+        harness.set_look(crate::theme::Look::omarchy());
+        let tab = with_page(&mut harness);
+        let users = harness.app.workspace(tab).unwrap().active_tab;
+        let query = harness.add_sql_tab(tab);
+        harness.press(Key::Num2, Modifiers::NONE);
+        assert_eq!(harness.app.workspace(tab).unwrap().active_tab, Some(query));
+        harness.press(Key::Num1, Modifiers::NONE);
+        assert_eq!(harness.app.workspace(tab).unwrap().active_tab, users);
     }
 
     fn with_page(harness: &mut Harness) -> crate::model::ConnTabId {
@@ -877,7 +907,7 @@ mod tests {
             Command::FetchRows { .. }
         ));
         harness.press(Key::W, Modifiers::COMMAND);
-        assert!(harness.app.workspace(tab).unwrap().objects.is_empty());
+        assert!(harness.app.workspace(tab).unwrap().tabs.is_empty());
         assert_eq!(
             harness.app.tabs.len(),
             1,

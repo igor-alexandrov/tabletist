@@ -1,10 +1,12 @@
 //! Application state types and the actions that change them.
 
+use std::time::Duration;
+
 use tabletist_db::ssh_config::{AgentSocket, ConfigHost, Proxy};
 use tabletist_db::{ConnectSpec, Driver, Filter, FilterOp, SshAuth, SshSpec, TlsMode};
 
 use crate::backend::{Event, RequestId, SessionId};
-use crate::connections::{ConnectionId, PasswordMode};
+use crate::connections::{ConnectionId, PasswordMode, SavedConnection};
 
 /// Identifies a connection tab for its whole life, whatever its position.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -162,11 +164,13 @@ pub enum Action {
         kind: ObjectKind,
         pin: bool,
     },
-    ActivateObjectTab {
+    /// Show this tab (an object tab or a SQL editor).
+    ActivateTab {
         tab: ConnTabId,
         object_tab: TabId,
     },
-    CloseObjectTab {
+    /// Close this tab (an object tab or a SQL editor).
+    CloseTab {
         tab: ConnTabId,
         object_tab: TabId,
     },
@@ -174,7 +178,8 @@ pub enum Action {
         tab: ConnTabId,
         object_tab: TabId,
     },
-    CycleObjectTab {
+    /// Step through the workspace's tabs of either kind, wrapping around.
+    CycleTab {
         tab: ConnTabId,
         step: isize,
     },
@@ -295,7 +300,12 @@ pub struct Workspace {
     pub encrypted: bool,
     pub status: SessionStatus,
     pub tree: Tree,
-    pub objects: Vec<ObjectTab>,
+    /// Open tabs, in strip order.
+    pub tabs: Vec<Tab>,
+    /// The number the next SQL editor gets ("Query 1", "Query 2", ...).
+    pub next_query: u32,
+    /// "PostgreSQL 17.2", asked for when the first SQL editor opens.
+    pub server_version: Fetch<String>,
     /// The tab the workspace shows: an object tab or a SQL editor.
     pub active_tab: Option<TabId>,
     /// Whether the row panel is open.
@@ -1473,15 +1483,192 @@ impl ObjectTab {
     }
 }
 
+/// One open tab in a workspace. Both kinds are boxed: an object tab is
+/// much larger than a SQL editor, and a SQL editor much larger than a
+/// pointer (clippy's large_enum_variant either way).
+#[derive(Debug)]
+pub enum Tab {
+    Object(Box<ObjectTab>),
+    Sql(Box<SqlTab>),
+}
+
+impl Tab {
+    pub fn id(&self) -> TabId {
+        match self {
+            Self::Object(object) => object.id,
+            Self::Sql(sql) => sql.id,
+        }
+    }
+
+    pub fn as_object(&self) -> Option<&ObjectTab> {
+        match self {
+            Self::Object(object) => Some(object.as_ref()),
+            Self::Sql(_) => None,
+        }
+    }
+
+    pub fn as_object_mut(&mut self) -> Option<&mut ObjectTab> {
+        match self {
+            Self::Object(object) => Some(object.as_mut()),
+            Self::Sql(_) => None,
+        }
+    }
+
+    pub fn as_sql(&self) -> Option<&SqlTab> {
+        match self {
+            Self::Sql(sql) => Some(sql.as_ref()),
+            Self::Object(_) => None,
+        }
+    }
+
+    pub fn as_sql_mut(&mut self) -> Option<&mut SqlTab> {
+        match self {
+            Self::Sql(sql) => Some(sql.as_mut()),
+            Self::Object(_) => None,
+        }
+    }
+
+    /// What the tab is loading; closing it cancels these.
+    pub fn pending(&self) -> Vec<RequestId> {
+        match self {
+            Self::Object(object) => object.pending().collect(),
+            Self::Sql(sql) => sql.run.pending.into_iter().collect(),
+        }
+    }
+
+    /// A preview tab is replaced by the next single click. SQL tabs never are.
+    pub fn is_preview(&self) -> bool {
+        matches!(self, Self::Object(object) if !object.pinned)
+    }
+}
+
+/// Which pane of a SQL tab's results shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ResultPane {
+    #[default]
+    Results,
+    Messages,
+}
+
+/// A finished SQL editor run.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SqlRun {
+    /// The statements as split when the run started.
+    pub statements: Vec<tabletist_db::sql::Statement>,
+    pub outcome: tabletist_db::ScriptOutcome,
+    /// Who stopped the run, if someone did.
+    pub cancel: Option<crate::backend::CancelReason>,
+}
+
+/// One SQL editor. Its text lives only in memory.
+#[derive(Debug)]
+pub struct SqlTab {
+    pub id: TabId,
+    /// "Query 3".
+    pub number: u32,
+    pub text: String,
+    /// Byte offset of the editor's cursor, reported by the view.
+    pub cursor: usize,
+    pub limit: u32,
+    pub timeout: Option<Duration>,
+    /// The last run, or the one running (a whole-run failure is its error).
+    pub run: Fetch<SqlRun>,
+    /// The statements of the run in flight.
+    pub running: Vec<tabletist_db::sql::Statement>,
+    /// When the run in flight started, for the elapsed time.
+    pub started: Option<std::time::Instant>,
+    pub pane: ResultPane,
+    pub selection: Option<CellPos>,
+    /// Focus the editor on the next frame.
+    pub focus_editor: bool,
+}
+
+impl SqlTab {
+    pub fn new(id: TabId, number: u32, limit: u32, timeout: Option<Duration>) -> Self {
+        Self {
+            id,
+            number,
+            text: String::new(),
+            cursor: 0,
+            limit,
+            timeout,
+            run: Fetch::default(),
+            running: Vec::new(),
+            started: None,
+            pane: ResultPane::default(),
+            selection: None,
+            focus_editor: true,
+        }
+    }
+}
+
 impl Workspace {
+    /// A workspace for `saved` that is connecting as `session`; `request`
+    /// is the connect it waits for, and `secrets` are the ones typed so far.
+    pub fn new(
+        session: SessionId,
+        request: RequestId,
+        saved: SavedConnection,
+        secrets: tabletist_db::Secrets,
+    ) -> Self {
+        Self {
+            session,
+            environment: saved.environment,
+            conn_id: saved.id,
+            name: saved.name,
+            driver: saved.spec.driver,
+            encrypted: false,
+            spec: saved.spec,
+            status: SessionStatus::Connecting { request },
+            tree: Tree::default(),
+            tabs: Vec::new(),
+            next_query: 1,
+            server_version: Fetch::default(),
+            active_tab: None,
+            row_panel: true,
+            pending_open: None,
+            password_mode: saved.password,
+            secrets,
+            databases: Fetch::default(),
+            save_password: false,
+            needs_prompt: None,
+            ssh_mode: saved.ssh_secret,
+            save_ssh: false,
+            needs_ssh_prompt: None,
+            pane: Pane::Tree,
+            recent: Vec::new(),
+            sidebar_hidden: false,
+            full_precision: false,
+            focus_where: false,
+            fold_documents: None,
+        }
+    }
+
+    pub fn tab(&self, id: TabId) -> Option<&Tab> {
+        self.tabs.iter().find(|tab| tab.id() == id)
+    }
+
+    pub fn tab_mut(&mut self, id: TabId) -> Option<&mut Tab> {
+        self.tabs.iter_mut().find(|tab| tab.id() == id)
+    }
+
     pub fn object_tab(&self, id: TabId) -> Option<&ObjectTab> {
-        self.objects.iter().find(|tab| tab.id == id)
+        self.tab(id)?.as_object()
     }
 
     pub fn object_tab_mut(&mut self, id: TabId) -> Option<&mut ObjectTab> {
-        self.objects.iter_mut().find(|tab| tab.id == id)
+        self.tab_mut(id)?.as_object_mut()
     }
 
+    pub fn sql_tab(&self, id: TabId) -> Option<&SqlTab> {
+        self.tab(id)?.as_sql()
+    }
+
+    pub fn sql_tab_mut(&mut self, id: TabId) -> Option<&mut SqlTab> {
+        self.tab_mut(id)?.as_sql_mut()
+    }
+
+    /// The active tab, when it is an object tab.
     pub fn active_object_tab(&self) -> Option<&ObjectTab> {
         self.object_tab(self.active_tab?)
     }
@@ -1492,8 +1679,7 @@ impl Workspace {
     /// told apart.
     pub fn name_is_shared(&self, object: &ObjectRef) -> bool {
         let other = |schema: &str| schema != object.schema;
-        self.objects
-            .iter()
+        self.objects()
             .any(|tab| tab.object.name == object.name && other(&tab.object.schema))
             || self.tree.nodes.iter().any(|(schema, node)| {
                 other(schema)
@@ -1503,6 +1689,20 @@ impl Workspace {
                         .as_ref()
                         .is_some_and(|objects| objects.iter().any(|info| info.name == object.name))
             })
+    }
+
+    /// The active tab, when it is a SQL editor.
+    pub fn active_sql_tab(&self) -> Option<&SqlTab> {
+        self.sql_tab(self.active_tab?)
+    }
+
+    /// The object tabs, in strip order.
+    pub fn objects(&self) -> impl Iterator<Item = &ObjectTab> {
+        self.tabs.iter().filter_map(Tab::as_object)
+    }
+
+    pub fn objects_mut(&mut self) -> impl Iterator<Item = &mut ObjectTab> {
+        self.tabs.iter_mut().filter_map(Tab::as_object_mut)
     }
 }
 
@@ -1565,6 +1765,84 @@ mod tests {
         billing.objects.value = Some(vec![info("invoices", ObjectKind::Table)]);
         tree.nodes.insert("billing".into(), billing);
         tree
+    }
+
+    fn sql_tab(id: u64) -> Tab {
+        Tab::Sql(Box::new(SqlTab::new(
+            TabId(id),
+            1,
+            1_000,
+            Some(Duration::from_secs(30)),
+        )))
+    }
+
+    fn object_tab(id: u64, name: &str, pinned: bool) -> Tab {
+        Tab::Object(Box::new(ObjectTab::new(
+            TabId(id),
+            ObjectRef::new("main", name),
+            ObjectKind::Table,
+            pinned,
+            100,
+            None,
+        )))
+    }
+
+    #[test]
+    fn a_workspace_finds_its_tabs_by_kind() {
+        let mut workspace = crate::testing::workspace();
+        workspace.tabs.push(object_tab(1, "users", true));
+        workspace.tabs.push(sql_tab(2));
+        workspace.active_tab = Some(TabId(2));
+        assert!(workspace.tab(TabId(1)).is_some() && workspace.tab(TabId(3)).is_none());
+        assert!(workspace.object_tab(TabId(1)).is_some());
+        assert!(workspace.object_tab(TabId(2)).is_none());
+        assert!(workspace.sql_tab(TabId(2)).is_some());
+        assert!(workspace.sql_tab(TabId(1)).is_none());
+        assert!(workspace.active_object_tab().is_none());
+        assert_eq!(workspace.active_sql_tab().map(|sql| sql.number), Some(1));
+        assert_eq!(workspace.objects().count(), 1);
+        assert_eq!(workspace.objects_mut().count(), 1);
+        workspace.active_tab = Some(TabId(1));
+        assert!(workspace.active_sql_tab().is_none());
+        assert_eq!(
+            workspace.active_object_tab().map(|object| object.id),
+            Some(TabId(1))
+        );
+    }
+
+    #[test]
+    fn a_new_workspace_has_no_tabs_and_numbers_queries_from_one() {
+        let workspace = crate::testing::workspace();
+        assert!(workspace.tabs.is_empty() && workspace.active_tab.is_none());
+        assert_eq!(workspace.next_query, 1);
+        assert!(workspace.server_version.needs_load());
+    }
+
+    #[test]
+    fn a_sql_tab_waits_for_its_run() {
+        let mut tab = sql_tab(2);
+        assert!(tab.pending().is_empty());
+        tab.as_sql_mut().unwrap().run.start(RequestId(9));
+        assert_eq!(tab.pending(), vec![RequestId(9)]);
+    }
+
+    #[test]
+    fn an_object_tab_waits_for_everything_it_loads() {
+        let mut tab = object_tab(1, "users", true);
+        assert_eq!(tab.id(), TabId(1));
+        assert!(tab.pending().is_empty());
+        let object = tab.as_object_mut().unwrap();
+        object.rows.start(RequestId(3));
+        object.count.start(RequestId(4));
+        assert_eq!(tab.pending(), vec![RequestId(3), RequestId(4)]);
+        assert!(tab.as_sql().is_none() && tab.as_object().is_some());
+    }
+
+    #[test]
+    fn only_an_unpinned_object_tab_is_a_preview() {
+        assert!(object_tab(1, "users", false).is_preview());
+        assert!(!object_tab(1, "users", true).is_preview());
+        assert!(!sql_tab(2).is_preview());
     }
 
     #[test]
