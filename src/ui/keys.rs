@@ -19,12 +19,14 @@ const NUMBERS: [Key; 9] = [
 
 /// Every shortcut, for the help dialog. `Mod` is Cmd on macOS, Ctrl elsewhere.
 pub const SHORTCUTS: &[(&str, &str)] = &[
-    ("Mod+T", "New connection tab"),
+    ("Mod+O", "New connection tab"),
     ("Mod+Shift+W", "Close connection tab"),
     ("Mod+1…9, Ctrl+Tab, Ctrl+Shift+Tab", "Switch connection tab"),
     ("Mod+N", "New connection"),
-    ("Mod+W", "Close object tab"),
-    ("Mod+Shift+[ / ]", "Previous / next object tab"),
+    ("Mod+T", "New SQL editor"),
+    ("Mod+Return, Mod+Shift+Return", "Run statement / run all"),
+    ("Mod+W", "Close tab"),
+    ("Mod+Shift+[ / ]", "Previous / next tab"),
     ("Mod+R", "Refresh"),
     ("Mod+F", "Filter bar"),
     ("Mod+P", "Quick open"),
@@ -59,12 +61,21 @@ pub fn keys_label(keys: &str) -> String {
 pub fn handle(app: &mut App, ctx: &egui::Context) {
     let active = app.active_tab_id();
     let object = app.active_object();
+    let sql = app.active_sql();
+    let any_tab = app.active_workspace_tab();
+    let in_workspace = app.workspace(active).is_some();
     let editing = ctx.text_edit_focused();
     // Grid keys act only on a visible grid: the Data view of the active tab.
     let grid = object.is_some_and(|(tab, id)| {
         app.workspace(tab)
             .and_then(|workspace| workspace.object_tab(id))
             .is_some_and(|object| object.view == crate::model::ObjectView::Data)
+    });
+    // A SQL editor's result is a grid too, while its Results pane shows it.
+    let sql_grid = sql.is_some_and(|(tab, id)| {
+        app.workspace(tab)
+            .and_then(|workspace| workspace.sql_tab(id))
+            .is_some_and(shows_grid)
     });
     // Space activates a focused button; it only toggles the panel otherwise.
     let focused = ctx.memory(|memory| memory.focused().is_some());
@@ -78,9 +89,9 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
     // Arrows go to the tree when the user last worked there (or no grid is
     // showing), else to the grid.
     let tree_arrows = !editing
-        && app
-            .workspace(active)
-            .is_some_and(|workspace| workspace.pane == crate::model::Pane::Tree || !grid);
+        && app.workspace(active).is_some_and(|workspace| {
+            workspace.pane == crate::model::Pane::Tree || !(grid || sql_grid)
+        });
     let mut actions = Vec::new();
     ctx.input_mut(|input| {
         let mut key = |modifiers: Modifiers, key: Key, action: Action| {
@@ -94,18 +105,47 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
             Key::W,
             Action::CloseConnTab(active),
         );
-        key(
-            Modifiers::COMMAND | Modifiers::SHIFT,
-            Key::R,
-            Action::ToggleRowPanel(active),
-        );
+        // Running works while typing: the editor never sees these.
+        if let Some((tab, sql_tab)) = sql {
+            key(
+                Modifiers::COMMAND | Modifiers::SHIFT,
+                Key::Enter,
+                Action::RunSql {
+                    tab,
+                    sql_tab,
+                    all: true,
+                },
+            );
+            key(
+                Modifiers::COMMAND,
+                Key::Enter,
+                Action::RunSql {
+                    tab,
+                    sql_tab,
+                    all: false,
+                },
+            );
+        }
+        // A SQL editor has no row panel, and nothing to refresh or filter.
+        let on_sql = sql.is_some();
+        if !on_sql {
+            key(
+                Modifiers::COMMAND | Modifiers::SHIFT,
+                Key::R,
+                Action::ToggleRowPanel(active),
+            );
+        }
         key(
             Modifiers::CTRL | Modifiers::SHIFT,
             Key::Tab,
             Action::CycleConnTab(-1),
         );
         key(Modifiers::CTRL, Key::Tab, Action::CycleConnTab(1));
-        key(Modifiers::COMMAND, Key::T, Action::NewConnTab);
+        // A SQL editor belongs to a workspace: the picker has none to open.
+        if in_workspace {
+            key(Modifiers::COMMAND, Key::T, Action::NewSqlTab(active));
+        }
+        key(Modifiers::COMMAND, Key::O, Action::NewConnTab);
         key(Modifiers::COMMAND, Key::N, Action::NewConnection);
         for (index, number) in NUMBERS.into_iter().enumerate() {
             key(
@@ -114,21 +154,25 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
                 Action::ActivateConnTabIndex(index),
             );
         }
-        // The tree refreshes itself when it has the arrows (spec 5.10).
-        let refresh = if tree_arrows {
-            Action::RefreshTree(active)
-        } else {
-            Action::Refresh(active)
-        };
-        key(Modifiers::COMMAND, Key::R, refresh);
+        if !on_sql {
+            // The tree refreshes itself when it has the arrows (spec 5.10).
+            let refresh = if tree_arrows {
+                Action::RefreshTree(active)
+            } else {
+                Action::Refresh(active)
+            };
+            key(Modifiers::COMMAND, Key::R, refresh);
+        }
         key(Modifiers::COMMAND, Key::Period, Action::CancelQuery(active));
-        // An open bar without focus gets it back rather than closing.
-        let filter_key = if filter_open && !editing {
-            Action::FocusFilterBar(active)
-        } else {
-            Action::ToggleFilterBar(active)
-        };
-        key(Modifiers::COMMAND, Key::F, filter_key);
+        if !on_sql {
+            // An open bar without focus gets it back rather than closing.
+            let filter_key = if filter_open && !editing {
+                Action::FocusFilterBar(active)
+            } else {
+                Action::ToggleFilterBar(active)
+            };
+            key(Modifiers::COMMAND, Key::F, filter_key);
+        }
         key(Modifiers::COMMAND, Key::P, Action::OpenQuickOpen);
         key(Modifiers::COMMAND, Key::B, Action::ToggleSidebar(active));
         if tree_arrows {
@@ -162,7 +206,21 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
                 );
             }
         }
+        // Paging is a table's: a SQL result has one page.
         if let Some((tab, object_tab)) = object {
+            key(
+                Modifiers::COMMAND | Modifiers::ALT,
+                Key::ArrowLeft,
+                Action::PrevPage { tab, object_tab },
+            );
+            key(
+                Modifiers::COMMAND | Modifiers::ALT,
+                Key::ArrowRight,
+                Action::NextPage { tab, object_tab },
+            );
+        }
+        // The rest acts on the tab the workspace shows, of either kind.
+        if let Some((tab, id)) = any_tab {
             // With Shift held, US layouts report `{` and `}`, so match both.
             for (pressed, step) in [
                 (Key::OpenBracket, -1),
@@ -176,25 +234,8 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
                     Action::CycleTab { tab, step },
                 );
             }
-            key(
-                Modifiers::COMMAND | Modifiers::ALT,
-                Key::ArrowLeft,
-                Action::PrevPage { tab, object_tab },
-            );
-            key(
-                Modifiers::COMMAND | Modifiers::ALT,
-                Key::ArrowRight,
-                Action::NextPage { tab, object_tab },
-            );
-            key(
-                Modifiers::COMMAND,
-                Key::W,
-                Action::CloseTab {
-                    tab,
-                    id: object_tab,
-                },
-            );
-            if !editing && grid && !tree_arrows {
+            key(Modifiers::COMMAND, Key::W, Action::CloseTab { tab, id });
+            if !editing && (grid || sql_grid) && !tree_arrows {
                 let page = 20;
                 for (pressed, rows, cols) in [
                     (Key::ArrowUp, -1, 0),
@@ -211,13 +252,14 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
                         pressed,
                         Action::MoveSelection {
                             tab,
-                            id: object_tab,
+                            id,
                             rows,
                             cols,
                         },
                     );
                 }
-                if !focused {
+                // The row panel shows a table's row, not a SQL result's.
+                if grid && !focused {
                     key(Modifiers::NONE, Key::Space, Action::ToggleRowPanel(tab));
                 }
             }
@@ -253,6 +295,12 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
         actions.push(Action::ShowHelp);
     }
     app.actions.extend(actions);
+}
+
+/// Whether `sql` shows a result grid for the keys to move in: its last
+/// rows, unless the Messages pane covers them.
+fn shows_grid(sql: &crate::model::SqlTab) -> bool {
+    sql.pane == crate::model::ResultPane::Results && sql.dims().0 > 0
 }
 
 /// The first key of a two-key command (`dd`, `gd`), kept between frames.
@@ -349,8 +397,12 @@ fn letters(app: &mut App, ctx: &egui::Context, actions: &mut Vec<Action>) {
     let panel = workspace.row_panel;
     // The digits follow the strip, so they reach SQL editors too.
     let tabs: Vec<_> = workspace.tabs.iter().map(crate::model::Tab::id).collect();
-    // The letters below act on an object tab: none of them on a SQL editor.
     let active = workspace.active_object_tab().map(|object| object.id);
+    // A SQL editor showing its result takes the letters that move in it.
+    let sql_grid = workspace
+        .active_sql_tab()
+        .filter(|sql| shows_grid(sql))
+        .map(|sql| sql.id);
     for (index, number) in NUMBERS.into_iter().enumerate() {
         if pressed(number)
             && let Some(id) = tabs.get(index)
@@ -375,6 +427,25 @@ fn letters(app: &mut App, ctx: &egui::Context, actions: &mut Vec<Action>) {
             });
         }
     }
+    // What `j/k/h/l` move in: the object's grid, or a SQL result.
+    if !tree && let Some(id) = active.or(sql_grid) {
+        for (key, rows, cols) in [
+            (Key::J, 1, 0),
+            (Key::K, -1, 0),
+            (Key::H, 0, -1),
+            (Key::L, 0, 1),
+        ] {
+            if pressed(key) {
+                actions.push(Action::MoveSelection {
+                    tab,
+                    id,
+                    rows,
+                    cols,
+                });
+            }
+        }
+    }
+    // The letters below act on an object tab: none of them on a SQL editor.
     let Some(object_tab) = active else {
         ctx.data_mut(|data| data.insert_temp(pending_id(), next_pending));
         return;
@@ -385,22 +456,8 @@ fn letters(app: &mut App, ctx: &egui::Context, actions: &mut Vec<Action>) {
         rows,
         cols,
     };
-    if !tree {
-        if pressed(Key::J) {
-            actions.push(step(1, 0));
-        }
-        if pressed(Key::K) {
-            actions.push(step(-1, 0));
-        }
-        if pressed(Key::H) {
-            actions.push(step(0, -1));
-        }
-        if pressed(Key::L) {
-            actions.push(step(0, 1));
-        }
-        if !panel && pressed(Key::Enter) {
-            actions.push(Action::ToggleRowPanel(tab));
-        }
+    if !tree && !panel && pressed(Key::Enter) {
+        actions.push(Action::ToggleRowPanel(tab));
     }
     if typed(ctx, "[") {
         actions.push(step(-1, 0));
@@ -464,8 +521,10 @@ mod tests {
             "Close connection tab",
             "Switch connection tab",
             "New connection",
-            "Close object tab",
-            "Previous / next object tab",
+            "New SQL editor",
+            "Run statement / run all",
+            "Close tab",
+            "Previous / next tab",
             "Refresh",
             "Filter bar",
             "Quick open",
@@ -479,6 +538,22 @@ mod tests {
         ] {
             assert!(descriptions.contains(&expected), "{expected}");
         }
+    }
+
+    #[test]
+    fn the_shortcut_table_names_the_keys_that_open_tabs() {
+        let keys = |what: &str| {
+            SHORTCUTS
+                .iter()
+                .find(|(_, description)| *description == what)
+                .map(|(keys, _)| *keys)
+        };
+        assert_eq!(keys("New SQL editor"), Some("Mod+T"));
+        assert_eq!(keys("New connection tab"), Some("Mod+O"));
+        assert_eq!(
+            keys("Run statement / run all"),
+            Some("Mod+Return, Mod+Shift+Return")
+        );
     }
 
     #[test]
