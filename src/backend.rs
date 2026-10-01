@@ -2189,6 +2189,43 @@ mod tests {
     }
 
     #[test]
+    fn the_waits_between_cancels_grow_while_they_are_sent() {
+        // A paused clock: the waits pass at once, and each is exactly as
+        // long as the loop asked for.
+        let paused = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .start_paused(true)
+            .build()
+            .unwrap();
+        paused.block_on(async {
+            let stop = StopFlag::new();
+            let running = Arc::new(Mutex::new(running_script(&stop)));
+            let sent = Arc::new(Mutex::new(Vec::new()));
+            // A cancel that is over at once, so that only the waits
+            // separate one from the next.
+            let send = {
+                let sent = Arc::clone(&sent);
+                move || {
+                    lock(&sent).push(tokio::time::Instant::now());
+                    async {}
+                }
+            };
+            let cancelling = tokio::spawn(keep_sending(send, Arc::clone(&running)));
+            // Long enough for six cancels, and into the wait after the last.
+            tokio::time::sleep(Duration::from_millis(12_600)).await;
+            // The script reaches its cleanup: no cancel follows.
+            stop.finish();
+            assert!(tokio::time::timeout(WAIT, cancelling).await.is_ok());
+            let sent = lock(&sent);
+            let waits: Vec<u128> = sent
+                .windows(2)
+                .map(|pair| (pair[1] - pair[0]).as_millis())
+                .collect();
+            assert_eq!(waits, [500, 1000, 2000, 4000, 5000]);
+        });
+    }
+
+    #[test]
     fn a_session_that_ends_leaves_nothing_to_cancel() {
         let stop = StopFlag::new();
         let running = Arc::new(Mutex::new(running_script(&stop)));
@@ -2198,6 +2235,39 @@ mod tests {
         assert!(!running.script_takes_a_cancel());
         assert!(running.closed);
         assert_eq!(running.request, None);
+    }
+
+    #[test]
+    fn a_session_whose_queue_ends_says_that_it_is_over() {
+        let (outbox, _received) = quiet_outbox();
+        runtime().block_on(async {
+            let (_dir, connection) = sqlite_connection().await;
+            let (queue, commands) = tokio_mpsc::unbounded_channel();
+            // Kept to the end: it is the queue that ends this session.
+            let (_stop, stopped) = tokio::sync::oneshot::channel();
+            // As if a script were running: what a session that ends under
+            // one would leave behind for the cancels to go on with.
+            let stop = StopFlag::new();
+            let running = Arc::new(Mutex::new(running_script(&stop)));
+            let task = tokio::spawn(run_session(
+                SessionId(1),
+                connection,
+                commands,
+                stopped,
+                Arc::clone(&running),
+                outbox,
+            ));
+            drop(queue);
+            tokio::time::timeout(WAIT, task)
+                .await
+                .expect("the session must end with its queue")
+                .unwrap();
+            let running = lock(&running);
+            assert!(running.closed);
+            assert_eq!(running.request, None);
+            assert!(running.stop.is_none());
+            assert!(!running.script_takes_a_cancel());
+        });
     }
 
     #[test]
