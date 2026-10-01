@@ -1,6 +1,7 @@
 //! SQLite, opened read-only. rusqlite is blocking, so every call runs on
 //! tokio's blocking pool.
 
+use std::borrow::Cow;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -112,6 +113,21 @@ fn check_raw_where(query: &RowQuery) -> Result<()> {
     Ok(())
 }
 
+/// `path` as a name SQLite takes for a file and nothing else. The bundled
+/// SQLite is built with SQLITE_USE_URI, so it reads every name starting with
+/// `file:` as a URI, with or without SQLITE_OPEN_URI. It would then open
+/// another file than the one named, and `immutable=1`, `nolock=1` or `vfs=`
+/// in the name would switch off the locking that keeps a read consistent.
+/// Only a relative path can start that way, and `./` in front of it names the
+/// same file.
+fn plain_file_name(path: &Path) -> Cow<'_, Path> {
+    if path.as_os_str().as_encoded_bytes().starts_with(b"file:") {
+        Cow::Owned(Path::new(".").join(path))
+    } else {
+        Cow::Borrowed(path)
+    }
+}
+
 impl Conn {
     /// Opens `path` read-only. Never creates a file.
     pub async fn open(path: &Path) -> Result<Self> {
@@ -120,11 +136,9 @@ impl Conn {
             if !path.is_file() {
                 return Err(Error::Connect(format!("{} does not exist", path.display())));
             }
-            // No SQLITE_OPEN_URI: the path is a file name, never a URI whose
-            // parameters could change how it opens.
             let flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX;
-            let connection =
-                rusqlite::Connection::open_with_flags(&path, flags).map_err(map_error)?;
+            let connection = rusqlite::Connection::open_with_flags(plain_file_name(&path), flags)
+                .map_err(map_error)?;
             connection
                 .busy_timeout(std::time::Duration::from_secs(5))
                 .map_err(map_error)?;
@@ -493,6 +507,30 @@ mod tests {
         let path = dir.path().join("missing.db");
         assert!(matches!(Conn::open(&path).await, Err(Error::Connect(_))));
         assert!(!path.exists());
+    }
+
+    #[test]
+    fn only_a_name_sqlite_would_read_as_a_uri_is_rewritten() {
+        let dot = |name: &str| Path::new(".").join(name);
+        assert_eq!(
+            plain_file_name(Path::new("file:shop.db")),
+            dot("file:shop.db")
+        );
+        assert_eq!(
+            plain_file_name(Path::new("file:shop.db?immutable=1")),
+            dot("file:shop.db?immutable=1")
+        );
+        for name in [
+            "shop.db",
+            "/data/file:shop.db",
+            "files/shop.db",
+            "FILE:shop.db",
+        ] {
+            assert!(matches!(
+                plain_file_name(Path::new(name)),
+                Cow::Borrowed(path) if path == Path::new(name)
+            ));
+        }
     }
 
     #[tokio::test]
