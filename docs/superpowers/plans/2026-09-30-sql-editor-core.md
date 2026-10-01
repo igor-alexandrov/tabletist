@@ -877,6 +877,8 @@ Append to the `sql.rs` tests:
             r#"SET "default_transaction_read_only" = off"#,
             "RESET ALL",
             "reset default_transaction_read_only",
+            "SET standard_conforming_strings = off",
+            "SET client_encoding = 'SJIS'",
             "DISCARD ALL",
             "COPY users TO STDOUT",
             "/* hi */ commit",
@@ -909,6 +911,13 @@ Append to the `sql.rs` tests:
             "SELECT * FROM t INTO OUTFILE '/tmp/x'",
             "SELECT 1 INTO DUMPFILE '/tmp/x'",
             "SELECT 1 /*! , 2 */",
+            "SELECT 1 /*M! , 2 */",
+            "SET sql_mode = 'ANSI_QUOTES'",
+            "SET @@session.sql_mode = ''",
+            "SET NAMES gbk",
+            "SET CHARACTER SET gbk",
+            "SET character_set_client = gbk",
+            "RESET sql_mode",
         ] {
             assert!(refused(Dialect::MySql, text).is_some(), "{text}");
         }
@@ -1009,13 +1018,27 @@ pub fn refusal(dialect: Dialect, statement: &str) -> Option<String> {
             .find(|(first, second)| word(0) == *first && word(1) == *second)
             .map(|(first, second)| format!("{first} {second}"))
     };
-    let session_name = |name: &str| name.ends_with("READ_ONLY") || name == "AUTOCOMMIT";
+    // Settings that leave read-only, or that change how later statements
+    // are lexed (the tokenizer assumes the connect-time values).
+    let session_name = |name: &str| {
+        name.ends_with("READ_ONLY")
+            || name == "AUTOCOMMIT"
+            || name == "SQL_MODE"
+            || name == "STANDARD_CONFORMING_STRINGS"
+            || name == "CLIENT_ENCODING"
+            || name.starts_with("CHARACTER_SET")
+    };
     match word(0) {
         first @ ("BEGIN" | "START" | "COMMIT" | "END" | "ROLLBACK" | "ABORT" | "SAVEPOINT"
         | "RELEASE") => return Some(first.to_owned()),
         "PREPARE" if word(1) == "TRANSACTION" => return Some("PREPARE TRANSACTION".into()),
         "SET" if words.iter().any(|w| w == "TRANSACTION" || w == "CHARACTERISTICS") => {
             return Some("SET TRANSACTION".into());
+        }
+        "SET" if matches!(word(1), "NAMES" | "CHARSET")
+            || (word(1) == "CHARACTER" && word(2) == "SET") =>
+        {
+            return Some("SET NAMES".into());
         }
         "SET" if words.iter().skip(1).any(|w| session_name(w)) => {
             return Some(format!("SET {}", words.iter().skip(1).find(|w| session_name(w))?));
@@ -2272,7 +2295,7 @@ async fn prepare_session(conn: &mut mysql_async::Conn) -> mysql_async::Result<()
     // Fixed statements: safe to send through the text protocol.
     conn.query_drop("SET SESSION TRANSACTION READ ONLY").await?;
     conn.query_drop(
-        "SET SESSION sql_mode = REPLACE(@@SESSION.sql_mode, 'NO_BACKSLASH_ESCAPES', '')",
+        "SET SESSION sql_mode = REPLACE(REPLACE(@@SESSION.sql_mode, 'NO_BACKSLASH_ESCAPES', ''), 'ANSI_QUOTES', '')",
     )
     .await
 }

@@ -75,14 +75,18 @@ A new module `sql` in `tabletist-db`, with no UI dependencies:
   it cannot classify becomes punctuation, and an unterminated string or
   comment runs to the end of the text.
 - All dialects: `''` escapes inside strings, `/* */` comments.
-- PostgreSQL: `--` comments; `"quoted"` identifiers; `$tag$ ... $tag$`
-  bodies; `E'...'` strings with backslash escapes; nested `/* */` comments.
+- PostgreSQL: `--` comments, which end at a newline or a carriage return;
+  `"quoted"` identifiers; `$tag$ ... $tag$` bodies (tags may hold non-ASCII
+  letters); `E'...'` strings with backslash escapes, continued across a
+  newline by another `'` as PostgreSQL does; nested `/* */` comments.
+- Vertical tab is whitespace in every dialect.
 - MySQL: `--` starts a comment only when followed by whitespace or a control
   character (`SELECT 1--1` is an expression); `#` comments; backtick
-  identifiers; `"..."` is a string, as in MySQL's default `sql_mode`
-  (`ANSI_QUOTES` is not detected); backslash escapes in strings (the session
-  turns `NO_BACKSLASH_ESCAPES` off at connect). A `/*! ... */` executable
-  comment is its own token kind (MySQL runs its contents).
+  identifiers; `"..."` is a string and backslashes escape (the session
+  turns `ANSI_QUOTES` and `NO_BACKSLASH_ESCAPES` off at connect, and the
+  guard refuses changing `sql_mode`, so the server lexes as we do).
+  `/*! ... */` and MariaDB's `/*M! ... */` executable comments are their own
+  token kind (the server runs their contents).
 - SQLite: `--` comments; `"quoted"`, `[bracket]` and backtick identifiers.
 - `sql::statements(dialect, text) -> Vec<Statement>`, splitting on `;`
   tokens (a `;` inside a string, comment or dollar body is not a token of its
@@ -120,6 +124,11 @@ Three layers, all in `tabletist-db`, so no caller can skip them.
      statement names `read_only` (`transaction_read_only`, `tx_read_only`,
      `default_transaction_read_only`) or `autocommit`, matched on the name
      with its quotes or backticks removed, including `SET @@...` forms;
+   - settings that change how later statements are lexed: any `SET` or
+     `RESET` naming `sql_mode`, `standard_conforming_strings`,
+     `client_encoding`, a `character_set_*` variable, and `SET NAMES`,
+     `SET CHARACTER SET`, `SET CHARSET` (a client character set such as GBK
+     can swallow a backslash the tokenizer saw);
    - `RESET ALL`, `RESET` of the names above, `DISCARD ALL`;
    - PostgreSQL only: `COPY` (`COPY ... TO STDOUT` answers with a copy
      stream the simple-query protocol cannot read, and `TO 'file'` or
@@ -132,7 +141,8 @@ Three layers, all in `tabletist-db`, so no caller can skip them.
      `DROP ROLE`, `GRANT`, `REVOKE`, `SET PASSWORD`, `SET DEFAULT ROLE`,
      `FLUSH`, `INSTALL`, `UNINSTALL`; any statement with the tokens
      `INTO OUTFILE` or `INTO DUMPFILE` (they write files on the server); and
-     any statement holding a `/*! ... */` executable comment.
+     any statement holding a `/*! ... */` or `/*M! ... */` executable
+     comment.
    The list is matched on tokens, never on raw text, so `SELECT 'COMMIT'`
    and a column named `end_date` are fine.
 2. **Snapshot first (PostgreSQL).** After `BEGIN READ ONLY`, the session runs
