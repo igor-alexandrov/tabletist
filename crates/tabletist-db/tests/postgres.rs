@@ -701,12 +701,13 @@ async fn a_declare_error_points_into_the_users_text() {
     )
     .await
     .unwrap();
+    // The server names no position for this one.
     assert!(matches!(
         &outcome.results[0].outcome,
         StatementOutcome::Error {
-            position: None | Some(1..),
-            ..
-        }
+            error: Error::Query { code: Some(code), .. },
+            position: None,
+        } if code == "0A000"
     ));
     // A parameter prepares, but DECLARE has no value for it. The server's
     // position counts the cursor prefix; the outcome's does not.
@@ -720,6 +721,15 @@ async fn a_declare_error_points_into_the_users_text() {
     assert_eq!(*position, Some(10));
 }
 
+/// The count of rows in the bypass tests' `probe` table.
+async fn probe_rows(admin: &tokio_postgres::Client) -> i64 {
+    admin
+        .query_one("SELECT count(*) FROM probe", &[])
+        .await
+        .unwrap()
+        .get(0)
+}
+
 #[tokio::test]
 async fn bypasses_cannot_write() {
     let Some(connection) = connect().await else {
@@ -730,26 +740,241 @@ async fn bypasses_cannot_write() {
         .batch_execute("CREATE TABLE IF NOT EXISTS probe (n int); TRUNCATE probe;")
         .await
         .unwrap();
+    // The refusal stops these before anything runs. What the driver does
+    // with them past the refusal is tested next to it (`pg.rs`).
     for attempt in [
         "SET TRANSACTION READ WRITE; INSERT INTO probe VALUES (1)",
         "ROLLBACK; SET default_transaction_read_only = off; INSERT INTO probe VALUES (1)",
         "SET \"default_transaction_read_only\" = off; INSERT INTO probe VALUES (1)",
         "SELECT set_config('default_transaction_read_only', 'off', false); INSERT INTO probe VALUES (1)",
-        "INSERT INTO probe VALUES (1)",
         "COPY probe FROM STDIN",
         "PREPARE s AS INSERT INTO probe VALUES (1); EXECUTE s",
+    ] {
+        let ran = run(&connection, attempt, 10).await;
+        assert!(
+            matches!(ran, Err(Error::Refused { .. })),
+            "{attempt}: {ran:?}"
+        );
+        assert_eq!(probe_rows(&admin).await, 0, "{attempt}");
+    }
+    // These reach the server, which refuses the write.
+    for attempt in [
+        "INSERT INTO probe VALUES (1)",
         "DO $$ BEGIN INSERT INTO probe VALUES (1); END $$",
     ] {
-        let _ = run(&connection, attempt, 10).await;
-        let count: i64 = admin
-            .query_one("SELECT count(*) FROM probe", &[])
-            .await
-            .unwrap()
-            .get(0);
-        assert_eq!(count, 0, "{attempt}");
+        let outcome = run(&connection, attempt, 10).await.unwrap();
+        assert_eq!(outcome.results.len(), 1, "{attempt}");
+        assert!(
+            matches!(
+                &outcome.results[0].outcome,
+                StatementOutcome::Error { error: Error::Query { code: Some(code), .. }, .. }
+                    if code == "25006"
+            ),
+            "{attempt}: {outcome:?}"
+        );
+        assert_eq!(probe_rows(&admin).await, 0, "{attempt}");
     }
     // And browsing still reads, read-only.
     assert!(connection.fetch_rows(&users(1)).await.is_ok());
+}
+
+/// Waits until a statement holding `marker` runs on the server.
+async fn runs_on_the_server(admin: &tokio_postgres::Client, marker: &str) {
+    within(async {
+        loop {
+            let running: i64 = admin
+                .query_one(
+                    "SELECT count(*) FROM pg_stat_activity \
+                     WHERE state = 'active' AND pid <> pg_backend_pid() \
+                       AND position($1 in query) > 0",
+                    &[&marker],
+                )
+                .await
+                .unwrap()
+                .get(0);
+            if running > 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+}
+
+/// Stops and cancels a script once its statement holding `marker` runs.
+async fn cancelled_while_running(text: &'static str, marker: &str) -> Option<ScriptOutcome> {
+    let connection = std::sync::Arc::new(connect().await?);
+    let admin = admin().await;
+    let cancel = connection.cancel_handle();
+    let stop = StopFlag::new();
+    let running = {
+        let connection = std::sync::Arc::clone(&connection);
+        let stop = stop.clone();
+        tokio::spawn(async move { connection.run_script(&script(text), 10, &stop).await })
+    };
+    runs_on_the_server(&admin, marker).await;
+    stop.stop();
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    // As the backend does: repeat the cancel until the cleanup begins.
+    while !stop.is_finishing() && !running.is_finished() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "cancel must stop the script"
+        );
+        cancel.cancel().await.unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let outcome = within(running).await.unwrap().unwrap();
+    assert!(outcome.stopped);
+    assert!(stop.is_finishing());
+    // The session survives.
+    let next = run(&connection, "SELECT 1", 1).await.unwrap();
+    assert!(matches!(
+        next.results[0].outcome,
+        StatementOutcome::Rows { .. }
+    ));
+    Some(outcome)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_cancel_stops_a_statement_that_streams_its_rows() {
+    let Some(outcome) = cancelled_while_running(
+        "SELECT 1; EXPLAIN ANALYZE SELECT /* tabletist streams */ pg_sleep(30)",
+        "/* tabletist streams */",
+    )
+    .await
+    else {
+        return;
+    };
+    assert_eq!(outcome.results.len(), 2);
+    assert!(matches!(
+        outcome.results[0].outcome,
+        StatementOutcome::Rows { .. }
+    ));
+    assert_eq!(outcome.results[1].outcome, StatementOutcome::Cancelled);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_cancel_stops_a_statement_without_rows() {
+    let Some(outcome) = cancelled_while_running(
+        "SELECT 1; DO $$ BEGIN /* tabletist blocks */ PERFORM pg_sleep(30); END $$",
+        "/* tabletist blocks */",
+    )
+    .await
+    else {
+        return;
+    };
+    assert_eq!(outcome.results.len(), 2);
+    assert_eq!(outcome.results[1].outcome, StatementOutcome::Cancelled);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_stop_between_statements_lets_the_running_one_finish() {
+    let Some(connection) = connect().await else {
+        return;
+    };
+    let connection = std::sync::Arc::new(connection);
+    let admin = admin().await;
+    let stop = StopFlag::new();
+    let running = {
+        let connection = std::sync::Arc::clone(&connection);
+        let stop = stop.clone();
+        tokio::spawn(async move {
+            let text = "DO $$ BEGIN /* tabletist between */ PERFORM pg_sleep(1); END $$; SELECT 2";
+            connection.run_script(&script(text), 10, &stop).await
+        })
+    };
+    // A stop without a cancel: the first statement runs to its end, the
+    // second never starts.
+    runs_on_the_server(&admin, "/* tabletist between */").await;
+    stop.stop();
+    let outcome = within(running).await.unwrap().unwrap();
+    assert_eq!(outcome.results.len(), 2);
+    assert_eq!(
+        outcome.results[0].outcome,
+        StatementOutcome::Done { affected: None }
+    );
+    assert_eq!(outcome.results[1].outcome, StatementOutcome::Cancelled);
+    assert!(outcome.stopped);
+    assert!(stop.is_finishing());
+    let next = run(&connection, "SELECT 1", 1).await.unwrap();
+    assert!(!next.was_cancelled());
+}
+
+#[tokio::test]
+async fn a_long_script_runs_every_statement() {
+    let Some(connection) = connect().await else {
+        return;
+    };
+    let text = (1..=300)
+        .map(|n| format!("SELECT {n}"))
+        .collect::<Vec<_>>()
+        .join(";\n");
+    let outcome = run(&connection, &text, 10).await.unwrap();
+    assert_eq!(outcome.results.len(), 300);
+    assert!(outcome.results.iter().all(|result| matches!(
+        &result.outcome,
+        StatementOutcome::Rows { rows, .. } if rows.len() == 1
+    )));
+    assert!(matches!(
+        &outcome.results[299].outcome,
+        StatementOutcome::Rows { rows, truncated: false, .. } if rows[0] == [Value::Int(300)]
+    ));
+}
+
+#[tokio::test]
+async fn a_nul_character_is_the_statements_error() {
+    let Some(connection) = connect().await else {
+        return;
+    };
+    // The driver cannot send a NUL. That is the statement's error: earlier
+    // results stay, and the transaction is still rolled back.
+    let outcome = run(&connection, "SELECT 1; SELECT '\0' AS n; SELECT 3", 10)
+        .await
+        .unwrap();
+    assert_eq!(outcome.results.len(), 2);
+    assert!(matches!(
+        outcome.results[0].outcome,
+        StatementOutcome::Rows { .. }
+    ));
+    assert_eq!(
+        outcome.results[1].outcome,
+        StatementOutcome::Error {
+            error: Error::query("SQL text cannot contain a NUL character"),
+            position: Some(9),
+        }
+    );
+    let next = run(&connection, "SELECT 1", 1).await.unwrap();
+    assert!(matches!(
+        next.results[0].outcome,
+        StatementOutcome::Rows { .. }
+    ));
+}
+
+#[tokio::test]
+async fn a_script_keeps_no_advisory_lock() {
+    let Some(connection) = connect().await else {
+        return;
+    };
+    // A session lock outlives the ROLLBACK; the run releases it.
+    let outcome = run(&connection, "SELECT pg_advisory_lock(424242)", 10)
+        .await
+        .unwrap();
+    assert!(matches!(
+        outcome.results[0].outcome,
+        StatementOutcome::Rows { .. }
+    ));
+    let other = admin().await;
+    let taken: bool = other
+        .query_one("SELECT pg_try_advisory_lock(424242)", &[])
+        .await
+        .unwrap()
+        .get(0);
+    assert!(taken, "the script's session still holds the lock");
+    other
+        .batch_execute("SELECT pg_advisory_unlock(424242)")
+        .await
+        .unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -772,7 +997,8 @@ async fn a_cancelled_script_keeps_earlier_results_and_the_session() {
     tokio::time::sleep(Duration::from_millis(500)).await;
     stop.stop();
     let deadline = std::time::Instant::now() + Duration::from_secs(15);
-    while !running.is_finished() {
+    // As the backend does: repeat the cancel until the cleanup begins.
+    while !stop.is_finishing() && !running.is_finished() {
         assert!(
             std::time::Instant::now() < deadline,
             "cancel must stop the script"
@@ -780,7 +1006,7 @@ async fn a_cancelled_script_keeps_earlier_results_and_the_session() {
         cancel.cancel().await.unwrap();
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    let outcome = running.await.unwrap().unwrap();
+    let outcome = within(running).await.unwrap().unwrap();
     assert!(matches!(
         outcome.results[0].outcome,
         StatementOutcome::Rows { .. }
