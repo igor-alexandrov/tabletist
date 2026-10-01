@@ -690,12 +690,19 @@ fn rows_text(count: u64, words: Words) -> String {
     format!("{} {}", format::group_digits(count), words.say(noun))
 }
 
-/// The first statement the run was stopped before, when it was stopped
-/// between statements (or before the first): the one that reads as
-/// cancelled. Those after it did not run.
+/// The statement that reads as cancelled though it has no result: the
+/// first one, when the run was stopped before it began. A run stopped
+/// later has a `Cancelled` result of its own (every driver gives the
+/// statement it was stopped in or before one), and whatever has no result
+/// after that did not run.
 fn stopped_at(run: &SqlRun) -> Option<usize> {
-    let started = run.outcome.results.len();
-    (run.outcome.stopped && started < run.statements.len()).then_some(started)
+    let outcome = &run.outcome;
+    let cancelled = outcome
+        .results
+        .iter()
+        .any(|result| result.outcome == StatementOutcome::Cancelled);
+    let started = outcome.results.len();
+    (outcome.stopped && !cancelled && started < run.statements.len()).then_some(started)
 }
 
 /// How a line of the messages reads.
@@ -811,8 +818,6 @@ enum Line<'a> {
     More(&'static str, &'a str),
     /// A run that failed as a whole, in the error's own words.
     Whole(&'a Error),
-    /// The run was stopped once its last statement had ended.
-    Stopped,
 }
 
 impl Line<'_> {
@@ -821,7 +826,6 @@ impl Line<'_> {
     fn wraps(&self, run: Option<&SqlRun>) -> bool {
         match self {
             Self::More(..) | Self::Whole(_) => true,
-            Self::Stopped => false,
             Self::Statement(index) => run
                 .and_then(|run| run.outcome.results.get(*index))
                 .is_some_and(|result| matches!(result.outcome, StatementOutcome::Error { .. })),
@@ -843,7 +847,7 @@ fn more(error: &Error) -> impl Iterator<Item = Line<'_>> {
 
 /// A line for every statement of `run`, in the script's order.
 fn lines(run: &SqlRun) -> Vec<Line<'_>> {
-    let mut lines = Vec::with_capacity(run.statements.len() + 1);
+    let mut lines = Vec::with_capacity(run.statements.len());
     for index in 0..run.statements.len() {
         lines.push(Line::Statement(index));
         if let Some(result) = run.outcome.results.get(index)
@@ -851,16 +855,6 @@ fn lines(run: &SqlRun) -> Vec<Line<'_>> {
         {
             lines.extend(more(error));
         }
-    }
-    // Stopped with nothing left to stop: no statement reads as cancelled,
-    // so the run does.
-    let cancelled = run
-        .outcome
-        .results
-        .iter()
-        .any(|result| result.outcome == StatementOutcome::Cancelled);
-    if run.outcome.stopped && stopped_at(run).is_none() && !cancelled {
-        lines.push(Line::Stopped);
     }
     lines
 }
@@ -878,10 +872,6 @@ fn message(line: Line<'_>, run: Option<&SqlRun>, words: Words) -> Message {
             Tone::Muted,
         ),
         Line::Whole(error) => Message::new(String::new(), error_text(error), Tone::Failed),
-        Line::Stopped => {
-            let text = cancel_text(run.and_then(|run| run.cancel), words);
-            Message::new(String::new(), text, Tone::Cancelled)
-        }
     }
 }
 
@@ -1111,13 +1101,14 @@ mod tests {
 
     use egui::accesskit::Role;
     use egui::{Key, Modifiers};
-    use tabletist_db::{Error, ScriptOutcome, StatementOutcome};
+    use tabletist_db::{Error, StatementOutcome};
 
     use super::*;
     use crate::backend::{CancelReason, Command};
     use crate::model::{Action, CellPos, ResultPane, SqlTab};
     use crate::testing::{
         Harness, bounds, error_outcome, labels, node, rows_outcome, script_outcome,
+        stopped_before_it_began,
     };
     use crate::theme::Look;
 
@@ -1556,11 +1547,7 @@ mod tests {
             ] {
                 let (mut harness, tab) = editor(look, "SELECT 1;\nSELECT 2");
                 run_all(&mut harness);
-                let stopped = ScriptOutcome {
-                    results: Vec::new(),
-                    stopped: true,
-                };
-                harness.answer_sql(Ok(stopped), cancel);
+                harness.answer_sql(Ok(stopped_before_it_began()), cancel);
                 assert_eq!(sql(&harness, tab).pane, ResultPane::Messages);
                 for line in [format!("Line 1: {text}"), "Line 2: Not run".to_owned()] {
                     assert!(harness.has(&line), "{line} in {}", look.name);
@@ -1578,8 +1565,10 @@ mod tests {
     fn a_run_stopped_between_statements_says_where() {
         let (mut harness, tab) = editor(Look::standard(), "SELECT 1;\nSELECT 2;\nSELECT 3");
         run_all(&mut harness);
-        let mut outcome = script_outcome(vec![done(None)]);
-        outcome.stopped = true;
+        // As every driver reports it: the statement the run was stopped
+        // before is its last result, and it is the cancelled one.
+        let outcome = script_outcome(vec![done(None), StatementOutcome::Cancelled]);
+        assert!(outcome.stopped);
         harness.answer_sql(Ok(outcome), Some(CancelReason::User));
         assert_eq!(sql(&harness, tab).pane, ResultPane::Messages);
         for line in [
@@ -1594,23 +1583,39 @@ mod tests {
         harness.click("Results");
         assert!(harness.has("Cancelled"));
         assert!(!says_it_ran(&mut harness));
-        // Stopped once its last statement had ended, no statement reads
-        // as cancelled: the run does, after them.
-        let (mut harness, _tab) = editor(Look::standard(), "SELECT 1");
-        run(&mut harness);
-        let mut outcome = script_outcome(vec![done(None)]);
-        outcome.stopped = true;
-        let timeout = CancelReason::Timeout(Duration::from_secs(10));
-        harness.answer_sql(Ok(outcome), Some(timeout));
-        for line in [
-            "Line 1: Statement ran · 14 ms",
-            "Cancelled after 10 s (timeout)",
+    }
+
+    #[test]
+    fn the_statements_after_a_cancelled_one_did_not_run() {
+        let timeout = CancelReason::Timeout(Duration::from_secs(30));
+        for (cancel, text) in [
+            (Some(CancelReason::User), "Cancelled"),
+            (Some(timeout), "Cancelled after 30 s (timeout)"),
         ] {
-            assert!(harness.has(line), "{line}");
+            let script = "SELECT 1;\nSELECT 2;\nSELECT 3;\nSELECT 4";
+            let (mut harness, _tab) = editor(Look::standard(), script);
+            run_all(&mut harness);
+            // A cancel in the middle of the second statement of four.
+            let outcome = script_outcome(vec![rows_outcome(2), StatementOutcome::Cancelled]);
+            assert!(outcome.stopped);
+            harness.answer_sql(Ok(outcome), cancel);
+            harness.click("Messages");
+            let tree = harness.settle();
+            let mut lines: Vec<String> = labels(&tree)
+                .into_iter()
+                .filter(|label| label.starts_with("Line ") && label.contains(':'))
+                .collect();
+            lines.sort();
+            assert_eq!(
+                lines,
+                [
+                    "Line 1: 2 rows · 14 ms".to_owned(),
+                    format!("Line 2: {text}"),
+                    "Line 3: Not run".to_owned(),
+                    "Line 4: Not run".to_owned(),
+                ]
+            );
         }
-        harness.click("Results");
-        assert!(harness.has("Cancelled after 10 s (timeout)"));
-        assert!(!says_it_ran(&mut harness));
     }
 
     #[test]

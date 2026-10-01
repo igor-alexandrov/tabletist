@@ -4257,10 +4257,7 @@ mod tests {
         let (tab, id) = new_sql(&mut harness);
         type_sql(&mut harness, tab, id, "SELECT 1", 0);
         run(&mut harness, tab, id, false);
-        let stopped = tabletist_db::ScriptOutcome {
-            results: Vec::new(),
-            stopped: true,
-        };
+        let stopped = crate::testing::stopped_before_it_began();
         harness.answer_sql(Ok(stopped), Some(CancelReason::User));
         let editor = sql(&harness, tab, id);
         assert!(!editor.is_running());

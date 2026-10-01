@@ -531,11 +531,13 @@ pub fn error_outcome(message: &str, position: Option<usize>) -> tabletist_db::St
     }
 }
 
-/// What a script did: one outcome per statement that started, each taking
-/// 14 ms, and nobody stopping it.
+/// What a script did, as a driver reports it: one outcome per statement
+/// that started, each taking 14 ms. A `Cancelled` outcome is a stopped run,
+/// as it is for every driver.
 pub fn script_outcome(
     outcomes: Vec<tabletist_db::StatementOutcome>,
 ) -> tabletist_db::ScriptOutcome {
+    let stopped = outcomes.contains(&tabletist_db::StatementOutcome::Cancelled);
     tabletist_db::ScriptOutcome {
         results: outcomes
             .into_iter()
@@ -544,7 +546,16 @@ pub fn script_outcome(
                 outcome,
             })
             .collect(),
-        stopped: false,
+        stopped,
+    }
+}
+
+/// A script stopped before it began: cancelled while it was queued, or
+/// while its transaction opened. No statement has a result.
+pub fn stopped_before_it_began() -> tabletist_db::ScriptOutcome {
+    tabletist_db::ScriptOutcome {
+        results: Vec::new(),
+        stopped: true,
     }
 }
 
