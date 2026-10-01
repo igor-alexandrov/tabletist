@@ -182,6 +182,9 @@ Four layers, all in `tabletist-db`, so no caller can skip them.
    transaction block; MySQL reads `@@session.transaction_read_only`. A
    failed check ends the run with `Error::LeftReadOnly` before the statement
    runs.
+   After the last statement the same check runs once more, so a statement
+   that ended the transaction in last position closes the session rather
+   than leaving a committed setting behind.
 4. **Check before rolling back.** After the last statement, when the
    transaction is still usable, PostgreSQL asks `SHOW transaction_read_only`
    and MySQL `SELECT @@session.transaction_read_only` (falling back to
@@ -210,12 +213,17 @@ A cancel is meant for a user statement, but it can land on the queries
 around them. One that lands on the opening queries (`BEGIN`, `SELECT 1`,
 MySQL's `SET sql_select_limit`) ends the run with no statement results and
 reports it as cancelled: `Ok` with no results, and the backend's
-`CancelReason`. One that lands on the check or on the cleanup is ignored for
-the outcome, and the interrupted step runs once more (the backend sends at
-most one cancel per press or timeout, so the retry is not cancelled again);
-a MySQL session is never left read-write after a reset because a `SET` was
-interrupted. If `LeftReadOnly` is found, or a cleanup step fails (including
-a retried step that fails again), `run_script` returns the error and the backend closes the session, so its
+`CancelReason`. One that lands on the check before a statement counts as a
+stop between statements: that statement is `Cancelled` and the run ends.
+One that lands on the checks after the last statement or on the cleanup is
+ignored for the outcome, and the interrupted step runs once more (the driver
+marks the run as finishing first, so the backend stops repeating its
+cancel); a MySQL session is never left read-write after a reset because a
+`SET` was interrupted. On PostgreSQL a cancel aborts the transaction, so a
+check it interrupted cannot be run again and the session is closed instead:
+a safe failure in a narrow window. If `LeftReadOnly` is found, or a cleanup
+step fails (including a retried step that fails again), `run_script`
+returns the error and the backend closes the session, so its
 state cannot reach later queries; the error counts as a lost connection
 (`is_connection_lost`), so the tab shows the existing reconnect banner.
 
