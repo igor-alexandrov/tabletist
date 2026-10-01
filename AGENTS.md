@@ -13,6 +13,9 @@ MySQL, SQLite) on egui/eframe and fastframe. The design lives in
 - Database, network, and disk work runs on the backend runtime
   (`src/backend.rs`), never on the UI thread.
 - `crates/tabletist-db` has no UI dependencies.
+- The workspace forbids `unsafe`. AppKit calls that cannot be made without it
+  go in `crates/tabletist-appkit`, behind a safe API, each with a SAFETY note;
+  `src/macos.rs` and everything else stay free of it.
 - Platform code sits behind `cfg`. A fix for one platform keeps Linux, macOS,
   and Windows compiling.
 - Settings and state files stay readable, backward compatible, and atomically

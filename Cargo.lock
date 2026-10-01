@@ -5593,12 +5593,22 @@ dependencies = [
  "serde",
  "serde_json",
  "skrifa",
+ "tabletist-appkit",
  "tabletist-db",
  "tempfile",
  "tokio",
  "uuid",
  "windows-native-keyring-store",
  "zbus-secret-service-keyring-store",
+]
+
+[[package]]
+name = "tabletist-appkit"
+version = "0.1.0"
+dependencies = [
+ "objc2 0.6.4",
+ "objc2-app-kit 0.3.2",
+ "objc2-foundation 0.3.2",
 ]
 
 [[package]]
