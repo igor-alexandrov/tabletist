@@ -178,9 +178,11 @@ Four layers, all in `tabletist-db`, so no caller can skip them.
 3. **Check before every statement.** So that a statement the list missed
    can end the transaction but never be followed by a write, each driver
    confirms it is still where it started before running the next statement:
-   PostgreSQL issues `SAVEPOINT tabletist_guard; RELEASE tabletist_guard`,
-   which fails outside a transaction block (released at once, so a long
-   script does not nest thousands of savepoints on the server); MySQL reads `@@session.transaction_read_only`. A
+   PostgreSQL keeps one savepoint from the start of the run and swaps it
+   (`RELEASE tabletist_guard; SAVEPOINT tabletist_guard`): that fails
+   outside a transaction block and in a transaction the script chained to
+   (`COMMIT AND CHAIN`), keeps every statement inside a subtransaction
+   (where read-write mode cannot be set), and never nests deeper than one; MySQL reads `@@session.transaction_read_only`. A
    failed check ends the run with `Error::LeftReadOnly` before the statement
    runs.
    After the last statement the same check runs once more, so a statement
