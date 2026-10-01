@@ -16,7 +16,7 @@ Decided while planning; the spec's intent holds.
 
 - `run_script` takes a `StopFlag` as well: the backend sets it with the cancel, so a stop between statements (and SQLite's progress handler during one) never races a cancel that arrives before its statement.
 - `StatementOutcome::Error` carries the whole `Error` (code, detail, hint) rather than a message string.
-- The editor/results splitter is egui's own resizable panel, its height kept by egui per tab id; there is no `SqlTab.split` or `SetSqlSplit`.
+- (Withdrawn after review.) The editor/results splitter was first planned as egui's own resizable panel; that loses the split on a passing window resize and keeps it in egui's persisted memory under ids that repeat across launches. The split is a share kept on the tab (`SqlTab.split`, `SetSqlSplit`), as the spec says.
 - The server version is asked for when a workspace's first SQL tab opens (`Command::ServerVersion`, kept as `Workspace.server_version: Fetch<String>`), not at connect: adding an event at connect would reorder every existing backend and app test.
 - The refusal message comes from the error's own text and starts "line N:" (lower case, like the crate's other messages); Messages shows it as is.
 - The PostgreSQL position of an error from `FETCH` or `CLOSE` is dropped (it points into Tabletist's text, not the user's).
