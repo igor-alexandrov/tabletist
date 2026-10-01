@@ -10,7 +10,7 @@ use tabletist_db::{Value, ValueKind};
 
 use crate::app::App;
 use crate::i18n::gettext;
-use crate::model::{Action, ConnTabId, ObjectTabId};
+use crate::model::{Action, ConnTabId, TabId};
 use crate::theme::{Icon, Look, Palette};
 use crate::typography::{Text, TextRole};
 use crate::ui::format;
@@ -84,7 +84,7 @@ fn label(name: &str, type_name: &str, kind: ValueKind, info: &FieldInfo, look: &
     text
 }
 
-pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: ObjectTabId) {
+pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId) {
     let locale = app.locale;
     let palette = app.palette;
     let look = app.look;
@@ -600,7 +600,7 @@ struct FieldSkin<'a> {
 fn field(
     ui: &mut egui::Ui,
     tab: ConnTabId,
-    object_tab: ObjectTabId,
+    object_tab: TabId,
     row: usize,
     col: usize,
     column: &tabletist_db::ColumnMeta,

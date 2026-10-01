@@ -14,8 +14,8 @@ use crate::i18n::Locale;
 use crate::model::{Action, ConnTab, ConnTabContent, ConnTabId, PickerState};
 use crate::model::{
     CellPos, ConnectionForm, Dialog, Fetch, FilterBar, FilterRow, HostKeyPrompt, ObjectTab,
-    ObjectTabId, ObjectView, Pane, PasswordPrompt, PickTarget, QuickOpen, SecretKind,
-    SessionStatus, TestState, Tree, TreeKey, TreeNode, Workspace,
+    ObjectView, Pane, PasswordPrompt, PickTarget, QuickOpen, SecretKind, SessionStatus, TabId,
+    TestState, Tree, TreeKey, TreeNode, Workspace,
 };
 use crate::paths::AppDirs;
 use crate::secrets::{SecretString, password_account, ssh_account};
@@ -234,7 +234,7 @@ impl App {
             let ConnTabContent::Workspace(workspace) = &mut tab.content else {
                 continue;
             };
-            let (open, active) = (workspace.row_panel, workspace.active_object);
+            let (open, active) = (workspace.row_panel, workspace.active_tab);
             for object in &mut workspace.objects {
                 let row = object
                     .selection
@@ -492,7 +492,7 @@ impl App {
                 if let Some(workspace) = self.workspace_mut(tab)
                     && workspace.object_tab(object_tab).is_some()
                 {
-                    workspace.active_object = Some(object_tab);
+                    workspace.active_tab = Some(object_tab);
                 }
             }
             Action::CloseObjectTab { tab, object_tab } => {
@@ -501,8 +501,8 @@ impl App {
                 {
                     let closed = workspace.objects.remove(index);
                     let session = workspace.session;
-                    if workspace.active_object == Some(object_tab) {
-                        workspace.active_object = workspace
+                    if workspace.active_tab == Some(object_tab) {
+                        workspace.active_tab = workspace
                             .objects
                             .get(index)
                             .or_else(|| workspace.objects.last())
@@ -524,11 +524,11 @@ impl App {
                 {
                     let len = workspace.objects.len() as isize;
                     let current = workspace
-                        .active_object
+                        .active_tab
                         .and_then(|id| workspace.objects.iter().position(|o| o.id == id))
                         .unwrap_or(0) as isize;
                     let next = (current + step).rem_euclid(len) as usize;
-                    workspace.active_object = Some(workspace.objects[next].id);
+                    workspace.active_tab = Some(workspace.objects[next].id);
                 }
             }
             Action::SetView {
@@ -879,7 +879,7 @@ impl App {
                     workspace.spec.database = database;
                     workspace.tree = Tree::default();
                     workspace.objects.clear();
-                    workspace.active_object = None;
+                    workspace.active_tab = None;
                 }
                 self.reconnect(tab);
             }
@@ -1101,7 +1101,7 @@ impl App {
             status: SessionStatus::Connecting { request },
             tree: Tree::default(),
             objects: Vec::new(),
-            active_object: None,
+            active_tab: None,
             row_panel: true,
             pending_open: None,
             password_mode: saved.password,
@@ -1952,7 +1952,7 @@ impl App {
         let Some(workspace) = self.workspace_mut(tab) else {
             return;
         };
-        let active = workspace.active_object;
+        let active = workspace.active_tab;
         let pending = workspace.pending_open.take();
         // A count queued on the old session will never answer, and one the
         // lost connection failed is worth another try.
@@ -1962,7 +1962,7 @@ impl App {
                 let _ = object.reset_count();
             }
         }
-        let stale: Vec<(ObjectTabId, bool, bool)> = workspace
+        let stale: Vec<(TabId, bool, bool)> = workspace
             .objects
             .iter()
             .map(|object| {
@@ -2056,20 +2056,20 @@ impl App {
         }
     }
 
-    fn object_tab_mut(&mut self, tab: ConnTabId, id: ObjectTabId) -> Option<&mut ObjectTab> {
+    fn object_tab_mut(&mut self, tab: ConnTabId, id: TabId) -> Option<&mut ObjectTab> {
         self.workspace_mut(tab)?.object_tab_mut(id)
     }
 
     /// The connection tab and object tab the keyboard acts on.
-    pub fn active_object(&self) -> Option<(ConnTabId, ObjectTabId)> {
+    pub fn active_object(&self) -> Option<(ConnTabId, TabId)> {
         let tab = self.active_tab_id();
         let workspace = self.workspace(tab)?;
-        Some((tab, workspace.active_object?))
+        Some((tab, workspace.active_tab?))
     }
 
     pub fn open_object(&mut self, tab: ConnTabId, object: ObjectRef, kind: ObjectKind, pin: bool) {
         let page_size = self.settings.page_size;
-        let new_id = ObjectTabId(self.next_id());
+        let new_id = TabId(self.next_id());
         let Some(workspace) = self.workspace_mut(tab) else {
             return;
         };
@@ -2079,7 +2079,7 @@ impl App {
         workspace.tree.reveal(&object);
         if let Some(existing) = workspace.objects.iter_mut().find(|o| o.object == object) {
             existing.pinned |= pin;
-            workspace.active_object = Some(existing.id);
+            workspace.active_tab = Some(existing.id);
             return;
         }
         let estimate = workspace
@@ -2100,7 +2100,7 @@ impl App {
                 None
             }
         };
-        workspace.active_object = Some(new_id);
+        workspace.active_tab = Some(new_id);
         if let Some(replaced) = replaced {
             self.cancel(session, replaced.pending());
         }
@@ -2125,7 +2125,7 @@ impl App {
         self.open_object(tab, object, kind, true);
         let Some(id) = self
             .workspace(tab)
-            .and_then(|workspace| workspace.active_object)
+            .and_then(|workspace| workspace.active_tab)
         else {
             return;
         };
@@ -2151,7 +2151,7 @@ impl App {
     }
 
     /// Forgets the object tab's exact count and stops it if still running.
-    fn reset_count(&mut self, tab: ConnTabId, id: ObjectTabId) {
+    fn reset_count(&mut self, tab: ConnTabId, id: TabId) {
         let Some(workspace) = self.workspace_mut(tab) else {
             return;
         };
@@ -2163,7 +2163,7 @@ impl App {
     }
 
     /// Loads the object tab's rows, replacing any load still pending.
-    pub fn fetch_rows(&mut self, tab: ConnTabId, id: ObjectTabId) {
+    pub fn fetch_rows(&mut self, tab: ConnTabId, id: TabId) {
         let request = RequestId(self.next_id());
         let Some(workspace) = self.workspace_mut(tab) else {
             return;
@@ -2295,7 +2295,7 @@ impl App {
 
     /// Runs the object tab's query with its filter bar's conditions, from
     /// the first page.
-    fn apply_filters(&mut self, tab: ConnTabId, id: ObjectTabId) {
+    fn apply_filters(&mut self, tab: ConnTabId, id: TabId) {
         let Some(object) = self.object_tab_mut(tab, id) else {
             return;
         };
@@ -2315,7 +2315,7 @@ impl App {
         self.fetch_rows(tab, id);
     }
 
-    pub fn count_rows(&mut self, tab: ConnTabId, id: ObjectTabId) {
+    pub fn count_rows(&mut self, tab: ConnTabId, id: TabId) {
         let request = RequestId(self.next_id());
         let Some(workspace) = self.workspace_mut(tab) else {
             return;
@@ -2335,7 +2335,7 @@ impl App {
         });
     }
 
-    pub fn describe(&mut self, tab: ConnTabId, id: ObjectTabId) {
+    pub fn describe(&mut self, tab: ConnTabId, id: TabId) {
         let request = RequestId(self.next_id());
         let Some(workspace) = self.workspace_mut(tab) else {
             return;
@@ -3183,7 +3183,7 @@ mod tests {
         );
     }
 
-    use crate::model::{CellPos, ObjectTabId, ObjectView};
+    use crate::model::{CellPos, ObjectView, TabId};
     use crate::testing::{last_sent, page};
     use tabletist_db::{ObjectRef, SortDir};
 
@@ -3296,17 +3296,17 @@ mod tests {
         ObjectRef::new("main", "users")
     }
 
-    fn open(harness: &mut Harness, tab: ConnTabId, name: &str, pin: bool) -> ObjectTabId {
+    fn open(harness: &mut Harness, tab: ConnTabId, name: &str, pin: bool) -> TabId {
         harness.app.apply(Action::OpenObject {
             tab,
             object: ObjectRef::new("main", name),
             kind: ObjectKind::Table,
             pin,
         });
-        harness.app.workspace(tab).unwrap().active_object.unwrap()
+        harness.app.workspace(tab).unwrap().active_tab.unwrap()
     }
 
-    fn object(harness: &Harness, tab: ConnTabId, id: ObjectTabId) -> &crate::model::ObjectTab {
+    fn object(harness: &Harness, tab: ConnTabId, id: TabId) -> &crate::model::ObjectTab {
         harness.app.workspace(tab).unwrap().object_tab(id).unwrap()
     }
 
@@ -3374,11 +3374,11 @@ mod tests {
         harness
             .app
             .apply(Action::CloseObjectTab { tab, object_tab: b });
-        assert_eq!(harness.app.workspace(tab).unwrap().active_object, Some(a));
+        assert_eq!(harness.app.workspace(tab).unwrap().active_tab, Some(a));
         harness
             .app
             .apply(Action::CloseObjectTab { tab, object_tab: a });
-        assert_eq!(harness.app.workspace(tab).unwrap().active_object, None);
+        assert_eq!(harness.app.workspace(tab).unwrap().active_tab, None);
     }
 
     #[test]
@@ -3388,9 +3388,9 @@ mod tests {
         let a = open(&mut harness, tab, "users", true);
         let b = open(&mut harness, tab, "orders", true);
         harness.app.apply(Action::CycleObjectTab { tab, step: 1 });
-        assert_eq!(harness.app.workspace(tab).unwrap().active_object, Some(a));
+        assert_eq!(harness.app.workspace(tab).unwrap().active_tab, Some(a));
         harness.app.apply(Action::CycleObjectTab { tab, step: -1 });
-        assert_eq!(harness.app.workspace(tab).unwrap().active_object, Some(b));
+        assert_eq!(harness.app.workspace(tab).unwrap().active_tab, Some(b));
     }
 
     #[test]
@@ -5480,11 +5480,11 @@ mod tests {
     /// Batch 7: count, filters, quick open, tree keys.
     mod power {
         use super::*;
-        use crate::model::{FilterRow, ObjectTabId, Pane, TreeKey, TreeNode};
+        use crate::model::{FilterRow, Pane, TabId, TreeKey, TreeNode};
         use crate::testing::{Harness, page};
         use tabletist_db::{ObjectKind, ObjectRef};
 
-        pub(super) fn open_users(harness: &mut Harness) -> (ConnTabId, ObjectTabId) {
+        pub(super) fn open_users(harness: &mut Harness) -> (ConnTabId, TabId) {
             let tab = harness.connect_fake();
             harness.app.apply(Action::OpenObject {
                 tab,
@@ -5493,7 +5493,7 @@ mod tests {
                 pin: true,
             });
             harness.answer_rows(page(3, false));
-            let id = harness.app.workspace(tab).unwrap().active_object.unwrap();
+            let id = harness.app.workspace(tab).unwrap().active_tab.unwrap();
             (tab, id)
         }
 
@@ -5784,9 +5784,7 @@ mod tests {
             harness.app.apply(Action::QuickOpenPick);
             assert!(harness.app.dialog.is_none());
             let workspace = harness.app.workspace(tab).unwrap();
-            let object = workspace
-                .object_tab(workspace.active_object.unwrap())
-                .unwrap();
+            let object = workspace.object_tab(workspace.active_tab.unwrap()).unwrap();
             assert_eq!(object.object, ObjectRef::new("shop", "users"));
             assert!(object.pinned);
         }
@@ -5853,9 +5851,7 @@ mod tests {
             key(&mut harness, TreeKey::Up);
             key(&mut harness, TreeKey::Enter);
             let workspace = harness.app.workspace(tab).unwrap();
-            let object = workspace
-                .object_tab(workspace.active_object.unwrap())
-                .unwrap();
+            let object = workspace.object_tab(workspace.active_tab.unwrap()).unwrap();
             assert_eq!(object.object.name, "order_notes");
             assert!(object.pinned);
             assert_eq!(workspace.pane, Pane::Grid);

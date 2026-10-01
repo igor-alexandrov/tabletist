@@ -10,7 +10,7 @@ use tabletist_db::{SortDir, ValueKind};
 
 use crate::app::App;
 use crate::i18n::gettext;
-use crate::model::{Action, ConnTabId, ObjectTab, ObjectTabId, ObjectView};
+use crate::model::{Action, ConnTabId, ObjectTab, ObjectView, TabId};
 use crate::theme::{Icon, Look, Palette};
 use crate::typography::{Text, TextRole};
 use crate::ui::format;
@@ -93,7 +93,7 @@ fn paint_named(ui: &egui::Ui, x: f32, y: f32, text: Text, name: &str) -> f32 {
 
 /// The object's name and counts, the Data/Structure switch, and Add row
 /// (disabled until editing arrives).
-pub fn header(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: ObjectTabId) {
+pub fn header(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId) {
     let locale = app.locale;
     let palette = app.palette;
     let look = app.look;
@@ -383,7 +383,7 @@ fn sort_chip(
 
 /// Above the grid: Add filter and the filters in use (macOS), or the
 /// terminal's WHERE line; the sort; and how timestamps are shown.
-pub fn toolbar(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: ObjectTabId) {
+pub fn toolbar(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId) {
     let locale = app.locale;
     let palette = app.palette;
     let look = app.look;
@@ -594,7 +594,7 @@ fn where_line(
     app: &mut App,
     ui: &mut egui::Ui,
     tab: ConnTabId,
-    object_tab: ObjectTabId,
+    object_tab: TabId,
     rect: Rect,
     actions: &mut Vec<Action>,
 ) {
@@ -715,7 +715,7 @@ fn dashed_rect(ui: &egui::Ui, rect: Rect, radius: f32, color: egui::Color32) {
 
 /// The status footer: the page's range and paging, then what is selected
 /// and how long the query took.
-pub fn footer(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: ObjectTabId) {
+pub fn footer(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId) {
     let locale = app.locale;
     let palette = app.palette;
     let look = app.look;
@@ -935,7 +935,7 @@ fn type_line(
     (line, key)
 }
 
-pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: ObjectTabId) {
+pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId) {
     let locale = app.locale;
     let palette = app.palette;
     let look = app.look;
@@ -1189,7 +1189,7 @@ mod tests {
                 pin: true,
             });
             harness.answer_rows(book_images());
-            let object_tab = harness.app.workspace(tab).unwrap().active_object.unwrap();
+            let object_tab = harness.app.workspace(tab).unwrap().active_tab.unwrap();
             harness.app.apply(Action::SelectCell {
                 tab,
                 object_tab,

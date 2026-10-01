@@ -5,7 +5,7 @@ use tabletist_db::FilterOp;
 
 use crate::app::App;
 use crate::i18n::gettext;
-use crate::model::{Action, ConnTabId, ObjectTabId};
+use crate::model::{Action, ConnTabId, TabId};
 use crate::theme::Icon;
 use crate::ui::format::display_safe;
 use crate::ui::widgets::{self, icon_button};
@@ -41,13 +41,13 @@ pub fn op_label(op: FilterOp) -> &'static str {
 }
 
 /// Whether the active object tab's filter bar is open.
-pub fn is_open(app: &App, tab: ConnTabId, object_tab: ObjectTabId) -> bool {
+pub fn is_open(app: &App, tab: ConnTabId, object_tab: TabId) -> bool {
     app.workspace(tab)
         .and_then(|workspace| workspace.object_tab(object_tab))
         .is_some_and(|object| object.filter.open)
 }
 
-pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: ObjectTabId) {
+pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId) {
     let locale = app.locale;
     let palette = app.palette;
     let look = app.look;

@@ -126,7 +126,7 @@ pub enum Action {
     /// Drop one applied filter (the raw WHERE counts last) and query again.
     DropFilter {
         tab: ConnTabId,
-        object_tab: ObjectTabId,
+        object_tab: TabId,
         index: usize,
     },
     /// Put keyboard focus in the terminal look's WHERE line.
@@ -136,17 +136,17 @@ pub enum Action {
     /// Fold (or unfold) every JSON document in the row panel (`za`).
     FoldDocuments {
         tab: ConnTabId,
-        object_tab: ObjectTabId,
+        object_tab: TabId,
     },
     /// Follow the foreign key of the selected cell's column (`gd`).
     FollowSelectedKey {
         tab: ConnTabId,
-        object_tab: ObjectTabId,
+        object_tab: TabId,
     },
     /// Drop the active object tab's sort, back to the key order.
     ClearSort {
         tab: ConnTabId,
-        object_tab: ObjectTabId,
+        object_tab: TabId,
     },
     /// Open the table a foreign key points at, filtered to the row it names.
     FollowForeignKey {
@@ -164,15 +164,15 @@ pub enum Action {
     },
     ActivateObjectTab {
         tab: ConnTabId,
-        object_tab: ObjectTabId,
+        object_tab: TabId,
     },
     CloseObjectTab {
         tab: ConnTabId,
-        object_tab: ObjectTabId,
+        object_tab: TabId,
     },
     PinObjectTab {
         tab: ConnTabId,
-        object_tab: ObjectTabId,
+        object_tab: TabId,
     },
     CycleObjectTab {
         tab: ConnTabId,
@@ -180,31 +180,31 @@ pub enum Action {
     },
     SetView {
         tab: ConnTabId,
-        object_tab: ObjectTabId,
+        object_tab: TabId,
         view: ObjectView,
     },
     NextPage {
         tab: ConnTabId,
-        object_tab: ObjectTabId,
+        object_tab: TabId,
     },
     PrevPage {
         tab: ConnTabId,
-        object_tab: ObjectTabId,
+        object_tab: TabId,
     },
     SortBy {
         tab: ConnTabId,
-        object_tab: ObjectTabId,
+        object_tab: TabId,
         column: String,
     },
     SelectCell {
         tab: ConnTabId,
-        object_tab: ObjectTabId,
+        object_tab: TabId,
         cell: CellPos,
     },
     /// Arrow keys (±1), Page Up/Down (±page), Home/End (isize::MIN/MAX).
     MoveSelection {
         tab: ConnTabId,
-        object_tab: ObjectTabId,
+        object_tab: TabId,
         rows: isize,
         cols: isize,
     },
@@ -238,35 +238,35 @@ pub enum Action {
     ToggleFilterBar(ConnTabId),
     AddFilterRow {
         tab: ConnTabId,
-        object_tab: ObjectTabId,
+        object_tab: TabId,
     },
     RemoveFilterRow {
         tab: ConnTabId,
-        object_tab: ObjectTabId,
+        object_tab: TabId,
         index: usize,
     },
     /// Query with the filter bar's conditions, from the first page.
     ApplyFilters {
         tab: ConnTabId,
-        object_tab: ObjectTabId,
+        object_tab: TabId,
     },
     /// Drop every condition, close the bar, and query everything.
     ClearFilters {
         tab: ConnTabId,
-        object_tab: ObjectTabId,
+        object_tab: TabId,
     },
     /// Count the object tab's rows exactly (with its filters).
     CountRows {
         tab: ConnTabId,
-        object_tab: ObjectTabId,
+        object_tab: TabId,
     },
     RetryRows {
         tab: ConnTabId,
-        object_tab: ObjectTabId,
+        object_tab: TabId,
     },
     RetryStructure {
         tab: ConnTabId,
-        object_tab: ObjectTabId,
+        object_tab: TabId,
     },
     /// The connection dialog's driver switch.
     SetDriver(Driver),
@@ -296,7 +296,8 @@ pub struct Workspace {
     pub status: SessionStatus,
     pub tree: Tree,
     pub objects: Vec<ObjectTab>,
-    pub active_object: Option<ObjectTabId>,
+    /// The tab the workspace shows: an object tab or a SQL editor.
+    pub active_tab: Option<TabId>,
     /// Whether the row panel is open.
     pub row_panel: bool,
     /// An object to open as soon as the session connects (demo mode).
@@ -327,7 +328,7 @@ pub struct Workspace {
     /// Focus the WHERE line on the next frame.
     pub focus_where: bool,
     /// Fold or unfold the row panel's documents on the next frame (`za`).
-    pub fold_documents: Option<ObjectTabId>,
+    pub fold_documents: Option<TabId>,
 }
 
 /// How many objects the sidebar's Recent section keeps.
@@ -1306,8 +1307,10 @@ impl Tree {
     }
 }
 
+/// One open tab in a workspace (an object or a SQL editor). Ids come from
+/// `App::next_id`, so they never repeat.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct ObjectTabId(pub u64);
+pub struct TabId(pub u64);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ObjectView {
@@ -1326,7 +1329,7 @@ pub struct CellPos {
 /// One open table or view.
 #[derive(Debug)]
 pub struct ObjectTab {
-    pub id: ObjectTabId,
+    pub id: TabId,
     pub object: ObjectRef,
     pub kind: ObjectKind,
     /// A preview tab (not pinned) is replaced by the next single click.
@@ -1407,7 +1410,7 @@ impl FilterBar {
 
 impl ObjectTab {
     pub fn new(
-        id: ObjectTabId,
+        id: TabId,
         object: ObjectRef,
         kind: ObjectKind,
         pinned: bool,
@@ -1471,16 +1474,16 @@ impl ObjectTab {
 }
 
 impl Workspace {
-    pub fn object_tab(&self, id: ObjectTabId) -> Option<&ObjectTab> {
+    pub fn object_tab(&self, id: TabId) -> Option<&ObjectTab> {
         self.objects.iter().find(|tab| tab.id == id)
     }
 
-    pub fn object_tab_mut(&mut self, id: ObjectTabId) -> Option<&mut ObjectTab> {
+    pub fn object_tab_mut(&mut self, id: TabId) -> Option<&mut ObjectTab> {
         self.objects.iter_mut().find(|tab| tab.id == id)
     }
 
     pub fn active_object_tab(&self) -> Option<&ObjectTab> {
-        self.object_tab(self.active_object?)
+        self.object_tab(self.active_tab?)
     }
 
     /// Whether another schema has an object named like `object`, among

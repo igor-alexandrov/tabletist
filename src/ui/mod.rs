@@ -262,7 +262,7 @@ mod tests {
     fn a_filter_chip_drops_its_filter_and_the_sort_chip_its_sort() {
         let mut harness = Harness::new();
         let tab = with_page(&mut harness);
-        let id = harness.app.workspace(tab).unwrap().active_object.unwrap();
+        let id = harness.app.workspace(tab).unwrap().active_tab.unwrap();
         let object = harness
             .app
             .workspace_mut(tab)
@@ -1912,9 +1912,7 @@ mod tests {
         harness.press(Key::Enter, Modifiers::NONE);
         assert!(harness.app.dialog.is_none());
         let workspace = harness.app.workspace(tab).unwrap();
-        let object = workspace
-            .object_tab(workspace.active_object.unwrap())
-            .unwrap();
+        let object = workspace.object_tab(workspace.active_tab.unwrap()).unwrap();
         assert_eq!(object.object.name, "users");
     }
 
@@ -1996,7 +1994,7 @@ mod tests {
                 tabletist_db::ObjectKind::Table
             ))
         );
-        let object_tab = workspace.active_object.unwrap();
+        let object_tab = workspace.active_tab.unwrap();
         assert_eq!(
             workspace.object_tab(object_tab).unwrap().selection,
             None,
@@ -2073,9 +2071,7 @@ mod tests {
         harness.frame(vec![egui::Event::Text("?".into())]);
         assert!(harness.app.dialog.is_none());
         let workspace = harness.app.workspace(tab).unwrap();
-        let object = workspace
-            .object_tab(workspace.active_object.unwrap())
-            .unwrap();
+        let object = workspace.object_tab(workspace.active_tab.unwrap()).unwrap();
         assert_eq!(object.filter.rows[0].value, "?");
     }
 
@@ -2090,7 +2086,7 @@ mod tests {
             pin: true,
         });
         harness.answer_rows(crate::testing::page(3, true));
-        let id = harness.app.workspace(tab).unwrap().active_object.unwrap();
+        let id = harness.app.workspace(tab).unwrap().active_tab.unwrap();
         let object = harness
             .app
             .workspace_mut(tab)
@@ -2513,7 +2509,7 @@ mod tests {
             pin: true,
         });
         harness.answer_rows(crate::testing::page(3, false));
-        let id = harness.app.workspace(tab).unwrap().active_object.unwrap();
+        let id = harness.app.workspace(tab).unwrap().active_tab.unwrap();
         harness
             .app
             .workspace_mut(tab)
@@ -2648,7 +2644,7 @@ mod tests {
                 .app
                 .workspace(harness.app.active_tab_id())
                 .unwrap()
-                .active_object
+                .active_tab
                 .unwrap(),
             cell: crate::model::CellPos { row: 0, col: 0 },
         });
@@ -2767,9 +2763,7 @@ mod tests {
         );
     }
 
-    fn users_with_bar(
-        harness: &mut Harness,
-    ) -> (crate::model::ConnTabId, crate::model::ObjectTabId) {
+    fn users_with_bar(harness: &mut Harness) -> (crate::model::ConnTabId, crate::model::TabId) {
         let tab = harness.connect_fake();
         harness.app.apply(crate::model::Action::OpenObject {
             tab,
@@ -2778,7 +2772,7 @@ mod tests {
             pin: true,
         });
         harness.answer_rows(crate::testing::page(3, false));
-        let id = harness.app.workspace(tab).unwrap().active_object.unwrap();
+        let id = harness.app.workspace(tab).unwrap().active_tab.unwrap();
         harness.press(Key::F, Modifiers::COMMAND);
         (tab, id)
     }
@@ -2929,7 +2923,7 @@ mod tests {
         harness.answer_rows(page);
         let workspace = harness.app.workspace_mut(tab).unwrap();
         workspace.row_panel = true;
-        let object_tab = workspace.active_object.unwrap();
+        let object_tab = workspace.active_tab.unwrap();
         harness.app.apply(crate::model::Action::SelectCell {
             tab,
             object_tab,
@@ -2965,7 +2959,7 @@ mod tests {
         harness.click("orders");
         harness.answer_rows(crate::testing::page(1, false));
         assert!(harness.has("orders tab"));
-        let orders = harness.app.workspace(tab).unwrap().active_object.unwrap();
+        let orders = harness.app.workspace(tab).unwrap().active_tab.unwrap();
         harness.app.apply(crate::model::Action::PinObjectTab {
             tab,
             object_tab: orders,
@@ -2982,7 +2976,7 @@ mod tests {
         harness.answer_rows(crate::testing::page(1, false));
         let workspace = harness.app.workspace_mut(tab).unwrap();
         workspace.row_panel = true;
-        let object_tab = workspace.active_object.unwrap();
+        let object_tab = workspace.active_tab.unwrap();
         harness.app.apply(crate::model::Action::SelectCell {
             tab,
             object_tab,

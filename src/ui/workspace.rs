@@ -63,7 +63,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
     if !connected {
         return; // still connecting; the banner shows progress
     }
-    let active = workspace.active_object;
+    let active = workspace.active_tab;
     let view = workspace.active_object_tab().map(|object| object.view);
     let row_panel = workspace.row_panel;
     super::sidebar::show(app, ui, tab);

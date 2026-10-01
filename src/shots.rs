@@ -207,7 +207,7 @@ fn workspace(harness: &mut Harness) -> ConnTabId {
         });
         harness.answer_rows(page());
     }
-    let object_tab = harness.app.workspace(tab).unwrap().active_object.unwrap();
+    let object_tab = harness.app.workspace(tab).unwrap().active_tab.unwrap();
     harness.app.apply(Action::SelectCell {
         tab,
         object_tab,
@@ -271,7 +271,7 @@ fn shots() {
         let node = workspace.tree.nodes.entry("reports".into()).or_default();
         node.expanded = true;
         node.objects.value = Some(Vec::new());
-        let object_tab = workspace.active_object.unwrap();
+        let object_tab = workspace.active_tab.unwrap();
         let object = workspace.object_tab_mut(object_tab).unwrap();
         object.filter.rows = vec![crate::model::FilterRow {
             column: "kind".into(),
@@ -295,7 +295,7 @@ fn shots() {
     });
     both("state-error", |harness| {
         let tab = workspace(harness);
-        let object_tab = harness.app.workspace(tab).unwrap().active_object.unwrap();
+        let object_tab = harness.app.workspace(tab).unwrap().active_tab.unwrap();
         harness.app.apply(Action::RetryRows { tab, object_tab });
         let (session, request) = match harness.app.backend.sent.last() {
             Some(crate::backend::Command::FetchRows {
@@ -318,7 +318,7 @@ fn shots() {
     });
     both("structure", |harness| {
         let tab = workspace(harness);
-        let object_tab = harness.app.workspace(tab).unwrap().active_object.unwrap();
+        let object_tab = harness.app.workspace(tab).unwrap().active_tab.unwrap();
         harness.app.apply(Action::SetView {
             tab,
             object_tab,
@@ -427,7 +427,7 @@ mod mock {
                 }
                 Self::OmarchyWorkspace => {
                     let tab = workspace(harness);
-                    let object_tab = harness.app.workspace(tab).unwrap().active_object.unwrap();
+                    let object_tab = harness.app.workspace(tab).unwrap().active_tab.unwrap();
                     let object = harness
                         .app
                         .workspace_mut(tab)
@@ -712,7 +712,7 @@ mod mock {
             harness.answer_structure(covers_structure());
             harness.answer_rows(covers());
         }
-        let object_tab = harness.app.workspace(tab).unwrap().active_object.unwrap();
+        let object_tab = harness.app.workspace(tab).unwrap().active_tab.unwrap();
         harness.app.apply(Action::SortBy {
             tab,
             object_tab,

@@ -345,7 +345,7 @@ fn letters(app: &mut App, ctx: &egui::Context, actions: &mut Vec<Action>) {
     let tree = workspace.pane == crate::model::Pane::Tree;
     let panel = workspace.row_panel;
     let object_tabs: Vec<_> = workspace.objects.iter().map(|object| object.id).collect();
-    let active = workspace.active_object;
+    let active = workspace.active_tab;
     for (index, number) in NUMBERS.into_iter().enumerate() {
         if pressed(number)
             && let Some(object_tab) = object_tabs.get(index)

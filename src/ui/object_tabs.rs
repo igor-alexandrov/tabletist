@@ -46,7 +46,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
             (object.id, name, object.pinned)
         })
         .collect();
-    let active = workspace.active_object;
+    let active = workspace.active_tab;
     let row_panel = workspace.row_panel;
     if tabs.is_empty() && !look.terminal {
         return;
