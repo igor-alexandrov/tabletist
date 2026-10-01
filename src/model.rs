@@ -255,9 +255,10 @@ pub enum Action {
         sql_tab: TabId,
         split: f32,
     },
-    /// A SQL editor's text took the keyboard: the arrows it gives up
-    /// (Esc) go to its results, not to the tree.
-    FocusSqlEditor {
+    /// A SQL editor's text has taken the keyboard (the view tells, it is
+    /// not asked to): the arrows it gives up (Esc) go to its results, not
+    /// to the tree.
+    SqlEditorFocused {
         tab: ConnTabId,
         sql_tab: TabId,
     },
@@ -1648,10 +1649,18 @@ impl SqlRun {
 
 /// What a text was, without keeping it: its length and a hash. Tells
 /// whether an editor's text is still the one a run started with.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub struct TextPrint {
     len: usize,
     hash: u64,
+}
+
+// Hand-written: a guess at a script can be checked against its hash, so
+// the hash stays out of logs and panic messages as the script does.
+impl std::fmt::Debug for TextPrint {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TextPrint").finish_non_exhaustive()
+    }
 }
 
 impl TextPrint {
@@ -2441,7 +2450,7 @@ mod tests {
         assert!(print.is_of("SELECT secret"));
         assert!(!print.is_of("SELECT secrex"));
         assert!(!print.is_of("SELECT secret "));
-        assert!(!format!("{print:?}").contains("secret"));
+        assert_eq!(format!("{print:?}"), "TextPrint { .. }");
     }
 
     #[test]
@@ -2454,6 +2463,20 @@ mod tests {
             assert!(printed.contains("SqlTab"), "{printed}");
             assert!(!printed.contains("secret_column"), "{printed}");
             assert!(!printed.contains("vault"), "{printed}");
+        }
+        // Nor what a guess at the text could be checked against: the
+        // print of the text the run in flight started with shows no hash.
+        let sql = tab.as_sql().unwrap();
+        let print = sql.in_flight.as_ref().unwrap().text;
+        for printed in [
+            format!("{print:?}"),
+            format!("{:?}", sql.in_flight),
+            format!("{tab:?}"),
+            format!("{tab:#?}"),
+        ] {
+            assert!(printed.contains("TextPrint"), "{printed}");
+            assert!(!printed.contains(&print.hash.to_string()), "{printed}");
+            assert!(!printed.contains(&format!("{:x}", print.hash)), "{printed}");
         }
     }
 

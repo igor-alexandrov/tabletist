@@ -89,6 +89,10 @@ pub struct App {
     system_theme: Option<egui::Theme>,
     /// The window title last sent, so it is sent only when it changes.
     window_title: String,
+    /// SQL editors closed since the last frame: what egui keeps for each
+    /// (its undo history holds copies of the script) is dropped once a
+    /// frame has the `egui::Context` to drop it from.
+    pub closed_editors: Vec<(ConnTabId, TabId)>,
     next_id: u64,
 }
 
@@ -124,6 +128,7 @@ impl App {
             titlebar: TitleBar::default(),
             system_theme: None,
             window_title: "Tabletist".into(),
+            closed_editors: Vec::new(),
             next_id: 1,
         };
         let tab = app.picker_tab();
@@ -289,6 +294,7 @@ impl App {
                 if let Some(workspace) = self.workspace(tab) {
                     let session = workspace.session;
                     self.backend.send(Command::Close { session });
+                    self.close_editors(tab);
                     if let Some(entry) = self.tabs.iter_mut().find(|t| t.id == tab) {
                         entry.content = ConnTabContent::Picker(PickerState::default());
                     }
@@ -501,6 +507,7 @@ impl App {
                 {
                     let closed = workspace.tabs.remove(index);
                     let session = workspace.session;
+                    let editor = closed.as_sql().map(|sql| (tab, sql.id));
                     if workspace.active_tab == Some(id) {
                         workspace.active_tab = workspace
                             .tabs
@@ -511,6 +518,7 @@ impl App {
                     // Nothing will show what it was loading (a count or a
                     // script can hold the connection for minutes).
                     self.cancel(session, closed.pending());
+                    self.closed_editors.extend(editor);
                 }
             }
             Action::PinObjectTab { tab, object_tab } => {
@@ -740,7 +748,7 @@ impl App {
                     sql.set_split(split);
                 }
             }
-            Action::FocusSqlEditor { tab, sql_tab } => {
+            Action::SqlEditorFocused { tab, sql_tab } => {
                 if let Some(workspace) = self.workspace_mut(tab)
                     && workspace.sql_tab(sql_tab).is_some()
                 {
@@ -1129,6 +1137,18 @@ impl App {
         }
     }
 
+    /// Records the SQL editors of `tab`'s workspace as closed, before the
+    /// workspace goes.
+    fn close_editors(&mut self, tab: ConnTabId) {
+        let editors: Vec<_> = self
+            .workspace(tab)
+            .into_iter()
+            .flat_map(|workspace| workspace.sql_tabs())
+            .map(|sql| (tab, sql.id))
+            .collect();
+        self.closed_editors.extend(editors);
+    }
+
     fn close_tab(&mut self, id: ConnTabId) {
         let Some(index) = self.tab_index(id) else {
             return;
@@ -1138,6 +1158,7 @@ impl App {
                 session: workspace.session,
             });
         }
+        self.close_editors(id);
         self.tabs.remove(index);
         if self.tabs.is_empty() {
             let tab = self.picker_tab();
@@ -2623,6 +2644,10 @@ impl App {
             ui.ctx()
                 .send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
             self.window_title = title;
+        }
+        // After the frame drew them for the last time.
+        for (tab, id) in self.closed_editors.drain(..) {
+            crate::ui::sql_text::forget(ui.ctx(), tab, id);
         }
     }
 }
@@ -4623,20 +4648,51 @@ mod tests {
     }
 
     #[test]
+    fn closed_sql_editors_are_recorded_for_the_frame_to_forget() {
+        let mut harness = Harness::new();
+        let (tab, first) = new_sql(&mut harness);
+        let users = open(&mut harness, tab, "users", true);
+        harness.app.apply(Action::NewSqlTab(tab));
+        let second = harness.app.workspace(tab).unwrap().active_tab.unwrap();
+        harness.app.apply(Action::NewSqlTab(tab));
+        let third = harness.app.workspace(tab).unwrap().active_tab.unwrap();
+        assert!(harness.app.closed_editors.is_empty());
+        // A table tab has no editor to forget.
+        harness.app.apply(Action::CloseTab { tab, id: users });
+        assert!(harness.app.closed_editors.is_empty());
+        harness.app.apply(Action::CloseTab { tab, id: second });
+        assert_eq!(harness.app.closed_editors, [(tab, second)]);
+        // Closed twice (two clicks in one frame), it is recorded once.
+        harness.app.apply(Action::CloseTab { tab, id: second });
+        assert_eq!(harness.app.closed_editors, [(tab, second)]);
+        // The connection tab closes the editors it still has.
+        harness.app.apply(Action::CloseConnTab(tab));
+        assert_eq!(
+            harness.app.closed_editors,
+            [(tab, second), (tab, first), (tab, third)]
+        );
+        // So does leaving the connection for the picker.
+        let mut harness = Harness::new();
+        let (tab, id) = new_sql(&mut harness);
+        harness.app.apply(Action::Disconnect(tab));
+        assert_eq!(harness.app.closed_editors, [(tab, id)]);
+    }
+
+    #[test]
     fn a_focused_sql_editor_takes_the_arrows_from_the_tree() {
         let mut harness = Harness::new();
         let (tab, id) = new_sql(&mut harness);
         harness.app.workspace_mut(tab).unwrap().pane = Pane::Tree;
         harness
             .app
-            .apply(Action::FocusSqlEditor { tab, sql_tab: id });
+            .apply(Action::SqlEditorFocused { tab, sql_tab: id });
         assert_eq!(harness.app.workspace(tab).unwrap().pane, Pane::Grid);
         // An editor closed since the frame that drew it takes nothing.
         harness.app.workspace_mut(tab).unwrap().pane = Pane::Tree;
         harness.app.apply(Action::CloseTab { tab, id });
         harness
             .app
-            .apply(Action::FocusSqlEditor { tab, sql_tab: id });
+            .apply(Action::SqlEditorFocused { tab, sql_tab: id });
         assert_eq!(harness.app.workspace(tab).unwrap().pane, Pane::Tree);
     }
 

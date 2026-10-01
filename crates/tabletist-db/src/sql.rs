@@ -481,7 +481,12 @@ impl<'a> Walker<'a> {
 /// The statements of `script`, split on `;` tokens. Pieces holding only
 /// whitespace and comments are dropped.
 pub fn statements(dialect: Dialect, script: &str) -> Vec<Statement> {
-    let tokens = tokenize(dialect, script);
+    statements_from(script, &tokenize(dialect, script))
+}
+
+/// [`statements`] of a `script` already tokenized into `tokens`, for a
+/// caller that needs the tokens as well (the editor colours them).
+pub fn statements_from(script: &str, tokens: &[Token]) -> Vec<Statement> {
     let mut found = Vec::new();
     let mut walker = Walker::new(script);
     for piece in tokens.split_inclusive(|token| token.kind == TokenKind::Semicolon) {
@@ -1205,6 +1210,25 @@ mod tests {
     #[test]
     fn empty_and_comment_only_pieces_are_dropped() {
         assert!(statements(Dialect::Sqlite, " ;; -- nothing\n/* x */ ;").is_empty());
+    }
+
+    #[test]
+    fn statements_come_from_tokens_made_once() {
+        for dialect in [Dialect::Postgres, Dialect::MySql, Dialect::Sqlite] {
+            for script in [
+                "",
+                "SELECT 1",
+                "-- note\nSELECT 'a;b';\r\n  SELECT 2 ;\n/* done */",
+                "/*! COMMIT */; SELECT `x`",
+            ] {
+                let tokens = tokenize(dialect, script);
+                assert_eq!(
+                    statements_from(script, &tokens),
+                    statements(dialect, script),
+                    "{dialect:?}"
+                );
+            }
+        }
     }
 
     #[test]

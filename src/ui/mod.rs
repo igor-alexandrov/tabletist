@@ -1278,24 +1278,163 @@ mod tests {
     }
 
     #[test]
-    fn a_long_script_stays_responsive() {
+    fn the_script_is_tokenized_once_when_it_changes_and_not_otherwise() {
+        use crate::ui::sql_text::TOKENIZED;
+        let count = || TOKENIZED.with(std::cell::Cell::get);
         let mut harness = Harness::new();
         let tab = harness.connect_fake();
         harness.press(Key::T, Modifiers::COMMAND);
         let line = "SELECT id, 'a name', 42 FROM users WHERE id > 7; -- a note\n";
-        harness.frame(vec![egui::Event::Paste(line.repeat(5_000))]);
+        harness.frame(vec![egui::Event::Paste(line.repeat(500))]);
         harness.settle();
-        assert_eq!(active_sql(&harness, tab).line_col().0, 5_001);
-        let started = std::time::Instant::now();
-        for _ in 0..10 {
-            harness.frame(vec![egui::Event::Text("x".into())]);
-            harness.frame(vec![crate::testing::key(Key::ArrowUp, Modifiers::NONE)]);
+        assert_eq!(active_sql(&harness, tab).line_col().0, 501);
+        // Frames that leave the text alone tokenize nothing: idle ones, a
+        // moved cursor, a moved pointer.
+        let before = count();
+        harness.settle();
+        harness.press(Key::ArrowUp, Modifiers::NONE);
+        harness.frame(vec![egui::Event::PointerMoved(egui::pos2(700.0, 300.0))]);
+        assert_eq!(active_sql(&harness, tab).line_col().0, 500);
+        assert_eq!(count(), before);
+        // A frame that changes it tokenizes it once, for the colours and
+        // for the statements both.
+        harness.frame(vec![egui::Event::Text("x".into())]);
+        assert_eq!(count(), before + 1);
+        harness.settle();
+        assert_eq!(count(), before + 1);
+        // Running splits the script in the app, not in the view.
+        harness.press(Key::Enter, Modifiers::COMMAND);
+        assert!(matches!(
+            harness.app.backend.sent.last(),
+            Some(Command::RunSql { .. })
+        ));
+        assert_eq!(count(), before + 1);
+        // Another editor's script is its own: coming back costs nothing.
+        harness.press(Key::T, Modifiers::COMMAND);
+        type_text(&mut harness, "SELECT 2");
+        let after = count();
+        harness.click("Query 1 tab");
+        harness.click("Query 2 tab");
+        assert_eq!(count(), after);
+    }
+
+    #[test]
+    fn a_new_palette_recolours_the_script() {
+        let mut harness = Harness::new();
+        harness.connect_fake();
+        harness.press(Key::T, Modifiers::COMMAND);
+        type_text(&mut harness, "SELECT 1");
+        let old = harness.app.palette;
+        let new = if old.dark {
+            crate::theme::Palette::light()
+        } else {
+            crate::theme::Palette::dark()
+        };
+        assert_ne!(old.magenta, new.magenta);
+        // The script is painted as one piece, in its first token's colour.
+        assert!(painted_in(&harness, "SELECT 1", old.magenta));
+        harness.app.palette = new;
+        harness.settle();
+        assert!(painted_in(&harness, "SELECT 1", new.magenta));
+    }
+
+    #[test]
+    fn a_closed_editor_leaves_nothing_in_eguis_memory() {
+        use crate::ui::sql_text::{editor_id, remembered};
+        let mut harness = Harness::new();
+        let tab = harness.connect_fake();
+        let open = |harness: &mut Harness| {
+            harness.press(Key::T, Modifiers::COMMAND);
+            type_text(harness, "SELECT 1");
+            harness.app.workspace(tab).unwrap().active_tab.unwrap()
+        };
+        let everything = ["text", "parsed", "scroll id", "scroll"];
+        // The text field's state is its cursor and its undo history, which
+        // holds copies of the script.
+        let first = open(&mut harness);
+        let state = |harness: &Harness, id| {
+            egui::TextEdit::load_state(&harness.ctx, editor_id(tab, id)).is_some()
+        };
+        assert!(state(&harness, first));
+        assert_eq!(remembered(&harness.ctx, tab, first), everything);
+        harness.press(Key::W, Modifiers::COMMAND);
+        assert!(!state(&harness, first));
+        assert!(remembered(&harness.ctx, tab, first).is_empty());
+        // Editors that go with their connection tab are forgotten too,
+        // the one shown and the one behind it.
+        let second = open(&mut harness);
+        let third = open(&mut harness);
+        for id in [second, third] {
+            assert_eq!(remembered(&harness.ctx, tab, id), everything);
         }
-        assert!(
-            started.elapsed() < std::time::Duration::from_secs(10),
-            "20 frames took {:?}",
-            started.elapsed()
-        );
+        harness.press(Key::W, Modifiers::COMMAND | Modifiers::SHIFT);
+        assert!(harness.app.workspace(tab).is_none());
+        for id in [second, third] {
+            assert!(!state(&harness, id));
+            assert!(remembered(&harness.ctx, tab, id).is_empty());
+        }
+        assert!(harness.app.closed_editors.is_empty(), "each forgotten once");
+    }
+
+    #[test]
+    fn the_statement_at_the_cursor_is_marked_and_a_comment_is_not() {
+        for look in crate::theme::Look::ALL {
+            let (mut harness, _) = sql_harness(look);
+            // The bar's colour, which other things are filled with too.
+            let bar = crate::ui::sql_text::bar_color(&look, &harness.app.palette);
+            let bars = |harness: &Harness| {
+                harness
+                    .fills
+                    .iter()
+                    .filter(|(_, fill)| *fill == bar)
+                    .count()
+            };
+            harness.settle();
+            let none = bars(&harness);
+            // A script of comments holds no statement to run.
+            type_text(&mut harness, "-- only a note");
+            assert_eq!(bars(&harness), none, "{}", look.name);
+            type_text(&mut harness, "\nSELECT 1");
+            assert_eq!(bars(&harness), none + 1, "{}", look.name);
+            // It stays with the statement when the keys leave the editor.
+            harness.press(Key::Escape, Modifiers::NONE);
+            assert_eq!(bars(&harness), none + 1, "{}", look.name);
+            let editor = editor_rect(&mut harness);
+            click_at(&mut harness, editor.center());
+            for _ in 0.."SELECT 1".len() {
+                harness.press(Key::Backspace, Modifiers::NONE);
+            }
+            assert_eq!(bars(&harness), none, "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn a_press_on_the_gutter_gives_the_editor_the_keys_on_that_line() {
+        for look in crate::theme::Look::ALL {
+            let (mut harness, tab) = sql_harness(look);
+            harness.settle();
+            type_text(&mut harness, "SELECT 1;\nSELECT 2;\nSELECT 3");
+            harness.press(Key::Escape, Modifiers::NONE);
+            assert!(!harness.ctx.text_edit_focused());
+            // Left of the text, beside its first line.
+            let editor = editor_rect(&mut harness);
+            let gutter = editor.left() - 20.0;
+            click_at(&mut harness, egui::pos2(gutter, editor.top() + 12.0));
+            assert!(harness.ctx.text_edit_focused(), "{}", look.name);
+            assert_eq!(active_sql(&harness, tab).line_col(), (1, 1));
+            type_text(&mut harness, "x");
+            assert!(active_sql(&harness, tab).text.starts_with("xSELECT 1;"));
+            // With the keys in the editor, a press there keeps them. Under
+            // the last line, it is the end of the script.
+            click_at(&mut harness, egui::pos2(gutter, editor.bottom() - 4.0));
+            assert!(harness.ctx.text_edit_focused(), "{}", look.name);
+            assert_eq!(active_sql(&harness, tab).line_col(), (3, 9));
+            // Screen readers find the gutter by its name.
+            let tree = harness.settle();
+            let numbers =
+                crate::testing::node(&tree, "Line numbers", egui::accesskit::Role::Unknown);
+            assert!(numbers.is_some(), "{}", look.name);
+        }
     }
 
     #[test]

@@ -5,13 +5,17 @@
 use std::ops::{Range, RangeInclusive};
 use std::sync::Arc;
 
-use egui::{Color32, CornerRadius, Galley, Id, Margin, Rect, Shape, Ui, pos2};
+use egui::text::CCursorRange;
+use egui::{
+    Color32, CornerRadius, Galley, Id, Margin, Rect, Sense, Shape, Ui, WidgetInfo, WidgetType,
+    pos2, vec2,
+};
 use tabletist_db::Dialect;
-use tabletist_db::sql::{self, Statement, TokenKind};
+use tabletist_db::sql::{self, Statement, Token, TokenKind};
 
 use crate::app::App;
 use crate::i18n::gettext;
-use crate::model::{Action, ConnTabId, Pane, SqlTab, TabId};
+use crate::model::{Action, ConnTabId, Pane, SqlTab, TabId, TextPrint};
 use crate::theme::{Look, Palette};
 use crate::typography::{Text, TextRole};
 use crate::ui::widgets;
@@ -40,8 +44,8 @@ pub fn color_of(kind: TokenKind, palette: &Palette) -> Color32 {
 }
 
 /// `text` as runs of one colour, in order and without gaps: neighbouring
-/// tokens that share a colour are one run.
-fn runs(dialect: Dialect, text: &str, palette: &Palette) -> Vec<(Range<usize>, Color32)> {
+/// `tokens` that share a colour are one run.
+fn runs(tokens: &[Token], text: &str, palette: &Palette) -> Vec<(Range<usize>, Color32)> {
     let mut runs: Vec<(Range<usize>, Color32)> = Vec::new();
     let mut push = |range: Range<usize>, color: Color32| {
         if range.is_empty() {
@@ -55,36 +59,140 @@ fn runs(dialect: Dialect, text: &str, palette: &Palette) -> Vec<(Range<usize>, C
         }
     };
     let mut at = 0;
-    for token in sql::tokenize(dialect, text) {
+    for token in tokens {
         // The tokens cover the text; were one missing, its text is plain.
         push(at..token.range.start, palette.text);
         at = token.range.end;
-        push(token.range, color_of(token.kind, palette));
+        push(token.range.clone(), color_of(token.kind, palette));
     }
     push(at..text.len(), palette.text);
     runs
 }
 
-/// A text edit layouter that colours `dialect`'s tokens and never wraps:
-/// one galley row per line, so the gutter can number the rows.
+#[cfg(test)]
+thread_local! {
+    /// How many times this thread tokenized an editor's script.
+    pub static TOKENIZED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// What an editor works out from its script, tokenized once for both: the
+/// colours it is drawn in and the statements it holds.
+struct Parsed {
+    /// What it was worked out from: the script, the dialect that reads it
+    /// and the colours.
+    of: (TextPrint, Dialect, Palette),
+    runs: Vec<(Range<usize>, Color32)>,
+    statements: Vec<Statement>,
+}
+
+/// `text` parsed, from egui's memory for the editor `id` when that is of
+/// the same text, dialect and colours: a frame that changes none of them
+/// tokenizes nothing.
+fn parsed(
+    ctx: &egui::Context,
+    id: Id,
+    dialect: Dialect,
+    palette: &Palette,
+    text: &str,
+) -> Arc<Parsed> {
+    let of = (TextPrint::of(text), dialect, *palette);
+    let kept: Option<Arc<Parsed>> = ctx.data(|data| data.get_temp(id));
+    if let Some(kept) = kept
+        && kept.of == of
+    {
+        return kept;
+    }
+    #[cfg(test)]
+    TOKENIZED.with(|count| count.set(count.get() + 1));
+    let tokens = sql::tokenize(dialect, text);
+    let parsed = Arc::new(Parsed {
+        of,
+        runs: runs(&tokens, text, palette),
+        statements: sql::statements_from(text, &tokens),
+    });
+    ctx.data_mut(|data| data.insert_temp(id, Arc::clone(&parsed)));
+    parsed
+}
+
+/// The id egui keeps the text field of the editor `id` under.
+pub fn editor_id(tab: ConnTabId, id: TabId) -> Id {
+    Id::new(("sql-text", tab.0, id.0))
+}
+
+/// The scroll area of an editor, kept under the editor's id so `forget`
+/// finds it.
+#[derive(Clone, Copy)]
+struct ScrollId(Id);
+
+/// Drops what egui's memory keeps for a closed editor: its text field's
+/// cursor and undo history (which holds copies of the script), what was
+/// worked out from the script, and where it was scrolled to.
+pub fn forget(ctx: &egui::Context, tab: ConnTabId, id: TabId) {
+    let editor = editor_id(tab, id);
+    ctx.data_mut(|data| {
+        data.remove::<egui::text_edit::TextEditState>(editor);
+        data.remove::<Arc<Parsed>>(editor);
+        if let Some(ScrollId(area)) = data.get_temp(editor) {
+            data.remove::<egui::scroll_area::State>(area);
+        }
+        data.remove::<ScrollId>(editor);
+    });
+}
+
+/// What egui's memory keeps for the editor `id`, by name.
+#[cfg(test)]
+pub fn remembered(ctx: &egui::Context, tab: ConnTabId, id: TabId) -> Vec<&'static str> {
+    let editor = editor_id(tab, id);
+    let area: Option<ScrollId> = ctx.data(|data| data.get_temp(editor));
+    let scrolled =
+        area.is_some_and(|ScrollId(area)| egui::scroll_area::State::load(ctx, area).is_some());
+    [
+        ("text", egui::TextEdit::load_state(ctx, editor).is_some()),
+        (
+            "parsed",
+            ctx.data(|data| data.get_temp::<Arc<Parsed>>(editor).is_some()),
+        ),
+        ("scroll id", area.is_some()),
+        ("scroll", scrolled),
+    ]
+    .into_iter()
+    .filter_map(|(name, kept)| kept.then_some(name))
+    .collect()
+}
+
+/// A text edit layouter for the editor `id` that colours `dialect`'s
+/// tokens and never wraps: one galley row per line, so the gutter can
+/// number the rows.
 pub fn layouter(
     look: &Look,
     palette: &Palette,
     dialect: Dialect,
+    id: Id,
 ) -> impl FnMut(&Ui, &dyn egui::TextBuffer, f32) -> Arc<Galley> + use<> {
     let (faces, role, palette) = (look.faces, role(look), *palette);
     move |ui, buffer, _wrap| {
         let text = buffer.as_str();
-        let runs = runs(dialect, text, &palette);
+        let parsed = parsed(ui.ctx(), id, dialect, &palette, text);
+        let runs = parsed.runs.iter();
         let mut laid = Text::in_faces(faces).add_runs(
             role,
-            runs.into_iter().map(|(range, color)| (&text[range], color)),
+            runs.map(|(range, color)| (&text[range.clone()], *color)),
         );
         if text.is_empty() {
             // An empty script still has a line, as tall as any other.
             laid = laid.add(role, "", palette.text);
         }
         laid.layout(ui.ctx()).galley
+    }
+}
+
+/// The colour of the bar beside the statement Run executes: the accent in
+/// the terminal, the splitter grip's grey elsewhere.
+pub fn bar_color(look: &Look, palette: &Palette) -> Color32 {
+    if look.terminal {
+        palette.accent
+    } else {
+        palette.border.lerp_to_gamma(palette.faint, 0.3)
     }
 }
 
@@ -182,18 +290,19 @@ pub fn show(app: &mut App, ui: &mut Ui, tab: ConnTabId, id: TabId) {
     let pane = ui.max_rect();
     let lines = sql_tab.text.bytes().filter(|b| *b == b'\n').count() + 1;
     let gutter = Gutter::new(ui, &look, lines);
+    let editor = editor_id(tab, id);
     // Behind the text: filled in once the rows are laid out.
     let backdrop = ui.painter().add(Shape::Noop);
     // The text scrolls both ways beside the gutter, which stays put.
     let text_pane = Rect::from_min_max(pos2(pane.left() + gutter.width, pane.top()), pane.max);
     let mut child = ui.new_child(egui::UiBuilder::new().id_salt("text").max_rect(text_pane));
     child.set_clip_rect(text_pane.intersect(ui.clip_rect()));
-    let edited = egui::ScrollArea::both()
+    let scrolled = egui::ScrollArea::both()
         .id_salt("scroll")
         .auto_shrink([false, false])
         .show(&mut child, |ui| {
             let field = Field {
-                id: Id::new(("sql-text", tab.0, id.0)),
+                id: editor,
                 name: &gettext(locale, "SQL"),
                 left: gutter.text_left,
                 dialect,
@@ -201,17 +310,40 @@ pub fn show(app: &mut App, ui: &mut Ui, tab: ConnTabId, id: TabId) {
                 palette: &palette,
             };
             edit(ui, sql_tab, &field)
-        })
-        .inner;
+        });
+    ui.data_mut(|data| data.insert_temp(editor, ScrollId(scrolled.id)));
+    let mut edited = scrolled.inner;
+    // The gutter is the editor's too: a press on it gives the editor the
+    // keys, with the cursor at the start of the line pressed. (After the
+    // field, which gives the keys up when a press lands outside it.)
+    let numbers = Rect::from_min_max(pane.min, pos2(text_pane.left(), pane.bottom()));
+    let pressed = ui.interact(numbers, ui.id().with("gutter"), Sense::CLICK);
+    let name = gettext(locale, "Line numbers");
+    pressed.widget_info(|| WidgetInfo::labeled(WidgetType::Other, true, name.as_ref()));
+    // From the press to the click that ends it: the field gives the keys
+    // up on either, whichever egui counts as a click elsewhere.
+    if (pressed.is_pointer_button_down_on() || pressed.clicked())
+        && let Some(pointer) = pressed.interact_pointer_pos()
+    {
+        let at = edited
+            .galley
+            .cursor_from_pos(vec2(0.0, pointer.y - edited.origin.y));
+        let mut state = egui::TextEdit::load_state(ui.ctx(), editor).unwrap_or_default();
+        state.cursor.set_char_range(Some(CCursorRange::one(at)));
+        egui::TextEdit::store_state(ui.ctx(), editor, state);
+        sql_tab.cursor = byte_offset(&sql_tab.text, at.index.0);
+        ui.memory_mut(|memory| memory.request_focus(editor));
+        edited.focused = true;
+    }
     let (cursor_line, _) = sql_tab.line_col();
     let error_line = sql_tab.error_mark().map(|(line, _)| line);
-    // The statement Run executes: split once a frame.
-    let statements = sql::statements(dialect, &sql_tab.text);
-    let statement = sql::statement_at(&statements, sql_tab.cursor)
+    // The statement Run executes, from the tokens the colours came from.
+    let parsed = parsed(ui.ctx(), editor, dialect, &palette, &sql_tab.text);
+    let statement = sql::statement_at(&parsed.statements, sql_tab.cursor)
         .and_then(|statement| edited.span(&statement_lines(statement)));
     if edited.focused && tree_has_arrows {
         app.actions
-            .push(Action::FocusSqlEditor { tab, sql_tab: id });
+            .push(Action::SqlEditorFocused { tab, sql_tab: id });
     }
     let across = |x: egui::Rangef, y| Rect::from_x_y_ranges(x, y);
     let fill = |rect, color| Shape::rect_filled(rect, CornerRadius::ZERO, color);
@@ -235,13 +367,8 @@ pub fn show(app: &mut App, ui: &mut Ui, tab: ConnTabId, id: TabId) {
         behind.push(fill(across(pane.x_range(), y), color));
     }
     if let Some(y) = statement {
-        let color = if look.terminal {
-            palette.accent
-        } else {
-            palette.border.lerp_to_gamma(palette.faint, 0.3)
-        };
         let bar = egui::Rangef::new(pane.left() + gutter.bar.min, pane.left() + gutter.bar.max);
-        behind.push(fill(across(bar, y), color));
+        behind.push(fill(across(bar, y), bar_color(&look, &palette)));
     }
     ui.painter().set(backdrop, Shape::Vec(behind));
     // The numbers of the rows in sight.
@@ -308,7 +435,7 @@ fn edit(ui: &mut Ui, sql_tab: &mut SqlTab, field: &Field<'_>) -> Edited {
         top: top as i8,
         bottom: bottom as i8,
     };
-    let mut layouter = layouter(field.look, field.palette, field.dialect);
+    let mut layouter = layouter(field.look, field.palette, field.dialect, field.id);
     let output = egui::TextEdit::multiline(&mut sql_tab.text)
         .id(field.id)
         .font(font)
@@ -373,7 +500,7 @@ mod tests {
     fn a_script_is_coloured_in_runs_that_cover_it() {
         let palette = Palette::light();
         let text = "SELECT name, 42 FROM books -- all\nWHERE kind = 'é'";
-        let runs = runs(Dialect::Postgres, text, &palette);
+        let runs = runs(&sql::tokenize(Dialect::Postgres, text), text, &palette);
         let pieces: Vec<(&str, Color32)> = runs
             .iter()
             .map(|(range, color)| (&text[range.clone()], *color))
@@ -397,7 +524,8 @@ mod tests {
         );
         // Nothing is left out, whatever the text.
         for text in ["", " ", "'unterminated", "/* open", "ż ó\r\n\tł;;"] {
-            let runs = super::runs(Dialect::MySql, text, &palette);
+            let tokens = sql::tokenize(Dialect::MySql, text);
+            let runs = super::runs(&tokens, text, &palette);
             let joined: String = runs.iter().map(|(range, _)| &text[range.clone()]).collect();
             assert_eq!(joined, text);
         }
@@ -410,7 +538,8 @@ mod tests {
         let mut galleys = Vec::new();
         let mut harness = crate::testing::Harness::new();
         harness.frame_with(|ui| {
-            let mut layouter = layouter(&look, &palette, Dialect::Postgres);
+            let id = Id::new("an editor");
+            let mut layouter = layouter(&look, &palette, Dialect::Postgres, id);
             // A width to wrap at is not taken: lines scroll instead.
             galleys.push(layouter(ui, &long, 100.0));
             galleys.push(layouter(ui, &String::new(), 100.0));
