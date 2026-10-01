@@ -8,14 +8,14 @@ use tabletist_db::{
     Driver, Error, FilterOp, HostKeys, ObjectKind, ObjectRef, Secrets, Sort, SortDir, SshStage,
 };
 
-use crate::backend::{Command, Event, RequestId, StateFile};
+use crate::backend::{CancelReason, Command, Event, RequestId, StateFile};
 use crate::connections::{PasswordMode, SavedConnection};
 use crate::i18n::Locale;
 use crate::model::{Action, ConnTab, ConnTabContent, ConnTabId, PickerState};
 use crate::model::{
     CellPos, ConnectionForm, Dialog, Fetch, FilterBar, FilterRow, HostKeyPrompt, ObjectTab,
-    ObjectTabId, ObjectView, Pane, PasswordPrompt, PickTarget, QuickOpen, SecretKind,
-    SessionStatus, TestState, Tree, TreeKey, TreeNode, Workspace,
+    ObjectView, Pane, PasswordPrompt, PickTarget, QuickOpen, ResultPane, SecretKind, SessionStatus,
+    SqlTab, Tab, TabId, TestState, Tree, TreeKey, TreeNode, Workspace,
 };
 use crate::paths::AppDirs;
 use crate::secrets::{SecretString, password_account, ssh_account};
@@ -89,6 +89,10 @@ pub struct App {
     system_theme: Option<egui::Theme>,
     /// The window title last sent, so it is sent only when it changes.
     window_title: String,
+    /// SQL editors closed since the last frame: what egui keeps for each
+    /// (its undo history holds copies of the script) is dropped once a
+    /// frame has the `egui::Context` to drop it from.
+    pub closed_editors: Vec<(ConnTabId, TabId)>,
     next_id: u64,
 }
 
@@ -124,6 +128,7 @@ impl App {
             titlebar: TitleBar::default(),
             system_theme: None,
             window_title: "Tabletist".into(),
+            closed_editors: Vec::new(),
             next_id: 1,
         };
         let tab = app.picker_tab();
@@ -234,8 +239,8 @@ impl App {
             let ConnTabContent::Workspace(workspace) = &mut tab.content else {
                 continue;
             };
-            let (open, active) = (workspace.row_panel, workspace.active_object);
-            for object in &mut workspace.objects {
+            let (open, active) = (workspace.row_panel, workspace.active_tab);
+            for object in workspace.object_tabs_mut() {
                 let row = object
                     .selection
                     .filter(|_| open && active == Some(object.id))
@@ -289,6 +294,7 @@ impl App {
                 if let Some(workspace) = self.workspace(tab) {
                     let session = workspace.session;
                     self.backend.send(Command::Close { session });
+                    self.close_editors(tab);
                     if let Some(entry) = self.tabs.iter_mut().find(|t| t.id == tab) {
                         entry.content = ConnTabContent::Picker(PickerState::default());
                     }
@@ -488,29 +494,31 @@ impl App {
                 }
             }
             Action::TreeKey { tab, key } => self.tree_key(tab, key),
-            Action::ActivateObjectTab { tab, object_tab } => {
+            Action::ActivateTab { tab, id } => {
                 if let Some(workspace) = self.workspace_mut(tab)
-                    && workspace.object_tab(object_tab).is_some()
+                    && workspace.tab(id).is_some()
                 {
-                    workspace.active_object = Some(object_tab);
+                    workspace.active_tab = Some(id);
                 }
             }
-            Action::CloseObjectTab { tab, object_tab } => {
+            Action::CloseTab { tab, id } => {
                 if let Some(workspace) = self.workspace_mut(tab)
-                    && let Some(index) = workspace.objects.iter().position(|o| o.id == object_tab)
+                    && let Some(index) = workspace.tabs.iter().position(|t| t.id() == id)
                 {
-                    let closed = workspace.objects.remove(index);
+                    let closed = workspace.tabs.remove(index);
                     let session = workspace.session;
-                    if workspace.active_object == Some(object_tab) {
-                        workspace.active_object = workspace
-                            .objects
+                    let editor = closed.as_sql().map(|sql| (tab, sql.id));
+                    if workspace.active_tab == Some(id) {
+                        workspace.active_tab = workspace
+                            .tabs
                             .get(index)
-                            .or_else(|| workspace.objects.last())
-                            .map(|o| o.id);
+                            .or_else(|| workspace.tabs.last())
+                            .map(Tab::id);
                     }
-                    // Nothing will show what it was loading (a count can
-                    // hold the connection for minutes).
+                    // Nothing will show what it was loading (a count or a
+                    // script can hold the connection for minutes).
                     self.cancel(session, closed.pending());
+                    self.closed_editors.extend(editor);
                 }
             }
             Action::PinObjectTab { tab, object_tab } => {
@@ -518,17 +526,17 @@ impl App {
                     object.pinned = true;
                 }
             }
-            Action::CycleObjectTab { tab, step } => {
+            Action::CycleTab { tab, step } => {
                 if let Some(workspace) = self.workspace_mut(tab)
-                    && !workspace.objects.is_empty()
+                    && !workspace.tabs.is_empty()
                 {
-                    let len = workspace.objects.len() as isize;
+                    let len = workspace.tabs.len() as isize;
                     let current = workspace
-                        .active_object
-                        .and_then(|id| workspace.objects.iter().position(|o| o.id == id))
+                        .active_tab
+                        .and_then(|id| workspace.tabs.iter().position(|t| t.id() == id))
                         .unwrap_or(0) as isize;
                     let next = (current + step).rem_euclid(len) as usize;
-                    workspace.active_object = Some(workspace.objects[next].id);
+                    workspace.active_tab = Some(workspace.tabs[next].id());
                 }
             }
             Action::SetView {
@@ -599,14 +607,17 @@ impl App {
                     self.fetch_rows(tab, object_tab);
                 }
             }
-            Action::SelectCell {
-                tab,
-                object_tab,
-                cell,
-            } => {
-                if let Some(object) = self.object_tab_mut(tab, object_tab) {
+            Action::SelectCell { tab, id, cell } => {
+                if let Some(object) = self.object_tab_mut(tab, id) {
                     object.selection = Some(cell);
                     object.pinned = true;
+                } else if let Some(sql) = self.sql_tab_mut(tab, id) {
+                    // The result may have been replaced since the frame
+                    // that drew the cell.
+                    let (height, width) = sql.dims();
+                    if cell.row < height && cell.col < width {
+                        sql.selection = Some(cell);
+                    }
                 }
                 if let Some(workspace) = self.workspace_mut(tab) {
                     workspace.pane = Pane::Grid;
@@ -614,11 +625,20 @@ impl App {
             }
             Action::MoveSelection {
                 tab,
-                object_tab,
+                id,
                 rows,
                 cols,
             } => {
-                if let Some(object) = self.object_tab_mut(tab, object_tab) {
+                if let Some(sql) = self.sql_tab_mut(tab, id) {
+                    let (height, width) = sql.dims();
+                    sql.selection = (height > 0 && width > 0).then(|| match sql.selection {
+                        None => CellPos { row: 0, col: 0 },
+                        Some(cell) => CellPos {
+                            row: step(cell.row, rows, height),
+                            col: step(cell.col, cols, width),
+                        },
+                    });
+                } else if let Some(object) = self.object_tab_mut(tab, id) {
                     let (height, width) = object
                         .page()
                         .map(|page| (page.rows.len(), page.columns.len()))
@@ -643,6 +663,14 @@ impl App {
                 }
             }
             Action::Refresh(tab) => {
+                // A SQL editor has nothing to fetch again: its text runs
+                // only when asked.
+                if self
+                    .workspace(tab)
+                    .is_some_and(|workspace| workspace.active_sql_tab().is_some())
+                {
+                    return;
+                }
                 let active = self
                     .workspace(tab)
                     .and_then(|w| w.active_object_tab())
@@ -664,12 +692,13 @@ impl App {
                 }
             }
             Action::CancelQuery(tab) => {
-                // What the tab shows a spinner for: the active object's
-                // loads, or the tree's when no object is open.
+                // What the tab shows a spinner for: the active tab's loads
+                // or run, or the tree's when no tab is open.
                 if let Some(workspace) = self.workspace(tab) {
                     let session = workspace.session;
-                    let pending: Vec<RequestId> = match workspace.active_object_tab() {
-                        Some(object) => object.pending().collect(),
+                    let active = workspace.active_tab.and_then(|id| workspace.tab(id));
+                    let pending: Vec<RequestId> = match active {
+                        Some(active) => active.pending(),
                         None => std::iter::once(workspace.tree.schemas.pending)
                             .chain(workspace.tree.nodes.values().map(|n| n.objects.pending))
                             .chain(std::iter::once(workspace.databases.pending))
@@ -677,6 +706,53 @@ impl App {
                             .collect(),
                     };
                     self.cancel(session, pending);
+                }
+            }
+            Action::NewSqlTab(tab) => self.new_sql_tab(tab),
+            Action::RunSql { tab, sql_tab, all } => self.run_sql(tab, sql_tab, all),
+            Action::SetSqlLimit {
+                tab,
+                sql_tab,
+                limit,
+            } => {
+                let limit = Settings::valid_sql_limit(limit);
+                if let Some(sql) = self.sql_tab_mut(tab, sql_tab) {
+                    sql.limit = limit;
+                }
+                if self.settings.sql_limit != limit {
+                    self.settings.sql_limit = limit;
+                    self.save_settings();
+                }
+            }
+            Action::SetSqlTimeout { tab, sql_tab, secs } => {
+                let secs = Settings::valid_sql_timeout(secs);
+                if let Some(sql) = self.sql_tab_mut(tab, sql_tab) {
+                    sql.timeout = Settings::timeout_of(secs);
+                }
+                if self.settings.sql_timeout_secs != secs {
+                    self.settings.sql_timeout_secs = secs;
+                    self.save_settings();
+                }
+            }
+            Action::SetResultPane { tab, sql_tab, pane } => {
+                if let Some(sql) = self.sql_tab_mut(tab, sql_tab) {
+                    sql.pane = pane;
+                }
+            }
+            Action::SetSqlSplit {
+                tab,
+                sql_tab,
+                split,
+            } => {
+                if let Some(sql) = self.sql_tab_mut(tab, sql_tab) {
+                    sql.set_split(split);
+                }
+            }
+            Action::SqlEditorFocused { tab, sql_tab } => {
+                if let Some(workspace) = self.workspace_mut(tab)
+                    && workspace.sql_tab(sql_tab).is_some()
+                {
+                    workspace.pane = Pane::Grid;
                 }
             }
             Action::CountRows { tab, object_tab } => self.count_rows(tab, object_tab),
@@ -878,9 +954,16 @@ impl App {
                 if let Some(workspace) = self.workspace_mut(tab) {
                     workspace.spec.database = database;
                     workspace.tree = Tree::default();
-                    workspace.objects.clear();
-                    workspace.active_object = None;
+                    // The other database has other objects, but a SQL
+                    // editor's text is the user's work: it stays.
+                    workspace.tabs.retain(|open| matches!(open, Tab::Sql(_)));
+                    workspace.active_tab = workspace
+                        .active_tab
+                        .filter(|id| workspace.tab(*id).is_some())
+                        .or_else(|| workspace.tabs.first().map(Tab::id));
                 }
+                // Which also forgets what the editors asked the old
+                // session for.
                 self.reconnect(tab);
             }
             Action::Backend(event) => self.apply_event(event),
@@ -1074,6 +1157,18 @@ impl App {
         }
     }
 
+    /// Records the SQL editors of `tab`'s workspace as closed, before the
+    /// workspace goes.
+    fn close_editors(&mut self, tab: ConnTabId) {
+        let editors: Vec<_> = self
+            .workspace(tab)
+            .into_iter()
+            .flat_map(|workspace| workspace.sql_tabs())
+            .map(|sql| (tab, sql.id))
+            .collect();
+        self.closed_editors.extend(editors);
+    }
+
     fn close_tab(&mut self, id: ConnTabId) {
         let Some(index) = self.tab_index(id) else {
             return;
@@ -1083,6 +1178,7 @@ impl App {
                 session: workspace.session,
             });
         }
+        self.close_editors(id);
         self.tabs.remove(index);
         if self.tabs.is_empty() {
             let tab = self.picker_tab();
@@ -1106,39 +1202,11 @@ impl App {
     fn open_workspace(&mut self, tab: ConnTabId, saved: SavedConnection, typed: Secrets) {
         let session = SessionId(self.next_id());
         let request = RequestId(self.next_id());
-        let environment = saved.environment;
         let Some(entry) = self.tabs.iter_mut().find(|t| t.id == tab) else {
             return;
         };
-        entry.content = ConnTabContent::Workspace(Box::new(Workspace {
-            session,
-            conn_id: saved.id,
-            environment,
-            name: saved.name,
-            driver: saved.spec.driver,
-            encrypted: false,
-            spec: saved.spec,
-            status: SessionStatus::Connecting { request },
-            tree: Tree::default(),
-            objects: Vec::new(),
-            active_object: None,
-            row_panel: true,
-            pending_open: None,
-            password_mode: saved.password,
-            secrets: typed,
-            databases: Fetch::default(),
-            save_password: false,
-            needs_prompt: None,
-            ssh_mode: saved.ssh_secret,
-            save_ssh: false,
-            needs_ssh_prompt: None,
-            pane: Pane::Tree,
-            recent: Vec::new(),
-            sidebar_hidden: false,
-            full_precision: false,
-            focus_where: false,
-            fold_documents: None,
-        }));
+        entry.content =
+            ConnTabContent::Workspace(Box::new(Workspace::new(session, request, saved, typed)));
     }
 
     /// Fills the tab's secrets one at a time (the database password, then
@@ -1283,6 +1351,7 @@ impl App {
         if let Some(workspace) = self.workspace_mut(tab) {
             let old = std::mem::replace(&mut workspace.session, session);
             workspace.status = SessionStatus::Connecting { request };
+            workspace.forget_session_requests();
             self.backend.send(Command::Close { session: old });
         }
     }
@@ -1430,6 +1499,7 @@ impl App {
         };
         let old = std::mem::replace(&mut workspace.session, session);
         workspace.status = SessionStatus::Connecting { request };
+        workspace.forget_session_requests();
         self.backend.send(Command::Close { session: old });
         // Reuses the secrets this tab already has; asks only for missing ones.
         self.authenticate(tab);
@@ -1664,8 +1734,7 @@ impl App {
                     return;
                 };
                 let Some(object) = workspace
-                    .objects
-                    .iter_mut()
+                    .object_tabs_mut()
                     .find(|o| o.rows.pending == Some(request))
                 else {
                     return;
@@ -1692,8 +1761,7 @@ impl App {
                 if let Some(tab) = self.tab_for_session(session)
                     && let Some(workspace) = self.workspace_mut(tab)
                     && let Some(object) = workspace
-                        .objects
-                        .iter_mut()
+                        .object_tabs_mut()
                         .find(|o| o.structure.pending == Some(request))
                 {
                     object.structure.finish(request, result);
@@ -1797,11 +1865,50 @@ impl App {
                 if let Some(tab) = self.tab_for_session(session)
                     && let Some(workspace) = self.workspace_mut(tab)
                     && let Some(object) = workspace
-                        .objects
-                        .iter_mut()
+                        .object_tabs_mut()
                         .find(|o| o.count.pending == Some(request))
                 {
                     object.count.finish(request, result);
+                }
+            }
+            Event::ServerVersion {
+                session,
+                request,
+                result,
+            } => {
+                if let Some(tab) = self.tab_for_session(session)
+                    && let Some(workspace) = self.workspace_mut(tab)
+                {
+                    workspace.server_version.finish(request, result);
+                }
+            }
+            Event::SqlRan {
+                session,
+                request,
+                result,
+                cancel,
+            } => {
+                // An answer for a closed tab or a replaced run finds no
+                // editor waiting for it.
+                let Some(sql) = self
+                    .tab_for_session(session)
+                    .and_then(|tab| self.workspace_mut(tab))
+                    .and_then(|workspace| {
+                        workspace
+                            .sql_tabs_mut()
+                            .find(|sql| sql.run.pending == Some(request))
+                    })
+                else {
+                    return;
+                };
+                let messages = opens_messages(&result, cancel);
+                if sql.finish_run(request, result, cancel) {
+                    sql.selection = None;
+                    sql.pane = if messages {
+                        ResultPane::Messages
+                    } else {
+                        ResultPane::Results
+                    };
                 }
             }
         }
@@ -1884,6 +1991,14 @@ impl App {
         self.backend.send(Command::Save {
             path: self.dirs.connections_file(),
             file: StateFile::Connections(self.connections.clone()),
+        });
+    }
+
+    /// Writes the settings (the SQL editor's menus change them).
+    pub fn save_settings(&mut self) {
+        self.backend.send(Command::Save {
+            path: self.dirs.settings_file(),
+            file: StateFile::Settings(self.settings.clone()),
         });
     }
 
@@ -1979,23 +2094,36 @@ impl App {
             self.backend
                 .send(Command::ListDatabases { session, request });
         }
+        // The footer of a SQL editor names the server; ask again when the
+        // session is new (see `Workspace::forget_session_requests`).
+        if let Some(workspace) = self.workspace(tab)
+            && workspace.sql_tabs().next().is_some()
+            && workspace.server_version.needs_load()
+        {
+            let session = workspace.session;
+            let request = RequestId(self.next_id());
+            if let Some(workspace) = self.workspace_mut(tab) {
+                workspace.server_version.start(request);
+            }
+            self.backend
+                .send(Command::ServerVersion { session, request });
+        }
         self.refresh_tree(tab);
         let Some(workspace) = self.workspace_mut(tab) else {
             return;
         };
-        let active = workspace.active_object;
+        let active = workspace.active_tab;
         let pending = workspace.pending_open.take();
         // A count queued on the old session will never answer, and one the
         // lost connection failed is worth another try.
-        for object in &mut workspace.objects {
+        for object in workspace.object_tabs_mut() {
             if object.count.is_loading() || lost(&object.count) {
                 // The old session is closed, so its count never runs.
                 let _ = object.reset_count();
             }
         }
-        let stale: Vec<(ObjectTabId, bool, bool)> = workspace
-            .objects
-            .iter()
+        let stale: Vec<(TabId, bool, bool)> = workspace
+            .object_tabs()
             .map(|object| {
                 let is_active = Some(object.id) == active;
                 (
@@ -2087,20 +2215,104 @@ impl App {
         }
     }
 
-    fn object_tab_mut(&mut self, tab: ConnTabId, id: ObjectTabId) -> Option<&mut ObjectTab> {
+    fn object_tab_mut(&mut self, tab: ConnTabId, id: TabId) -> Option<&mut ObjectTab> {
         self.workspace_mut(tab)?.object_tab_mut(id)
     }
 
-    /// The connection tab and object tab the keyboard acts on.
-    pub fn active_object(&self) -> Option<(ConnTabId, ObjectTabId)> {
+    fn sql_tab_mut(&mut self, tab: ConnTabId, id: TabId) -> Option<&mut SqlTab> {
+        self.workspace_mut(tab)?.sql_tab_mut(id)
+    }
+
+    /// The active connection tab and the tab its workspace shows, of
+    /// either kind.
+    pub fn active_workspace_tab(&self) -> Option<(ConnTabId, TabId)> {
+        let tab = self.active_tab_id();
+        Some((tab, self.workspace(tab)?.active_tab?))
+    }
+
+    /// The active connection tab and the SQL editor its workspace shows:
+    /// none while it shows an object tab.
+    pub fn active_sql(&self) -> Option<(ConnTabId, TabId)> {
+        let tab = self.active_tab_id();
+        Some((tab, self.workspace(tab)?.active_sql_tab()?.id))
+    }
+
+    /// Opens an empty SQL editor after the workspace's other tabs, with the
+    /// limit and timeout of the settings, and shows it.
+    fn new_sql_tab(&mut self, tab: ConnTabId) {
+        let id = TabId(self.next_id());
+        let request = RequestId(self.next_id());
+        let (limit, timeout) = (self.settings.sql_limit, self.settings.sql_timeout());
+        let Some(workspace) = self.workspace_mut(tab) else {
+            return;
+        };
+        workspace.push_sql_tab(id, limit, timeout);
+        workspace.active_tab = Some(id);
+        workspace.pane = Pane::Grid;
+        // The editor's footer names the server. A session still connecting
+        // is asked once it has (see `after_connect`).
+        if matches!(workspace.status, SessionStatus::Connected)
+            && workspace.server_version.needs_load()
+        {
+            workspace.server_version.start(request);
+            let session = workspace.session;
+            self.backend
+                .send(Command::ServerVersion { session, request });
+        }
+    }
+
+    /// Runs the statement at the editor's cursor, or every statement. An
+    /// editor holding no statement (empty, or only comments) runs nothing.
+    /// Nor does one whose session is not connected: the backend would
+    /// answer that the connection is closed, and a run that fails as a
+    /// whole takes the result before it away.
+    fn run_sql(&mut self, tab: ConnTabId, id: TabId, all: bool) {
+        let request = RequestId(self.next_id());
+        let Some(workspace) = self.workspace_mut(tab) else {
+            return;
+        };
+        if !matches!(workspace.status, SessionStatus::Connected) {
+            return;
+        }
+        let (session, dialect) = (workspace.session, workspace.driver.dialect());
+        let Some(sql) = workspace.sql_tab_mut(id) else {
+            return;
+        };
+        let mut statements = tabletist_db::sql::statements(dialect, &sql.text);
+        if !all {
+            statements = tabletist_db::sql::statement_at(&statements, sql.cursor)
+                .cloned()
+                .into_iter()
+                .collect();
+        }
+        if statements.is_empty() {
+            return;
+        }
+        let (limit, timeout) = (sql.limit, sql.timeout);
+        let superseded = sql.start_run(request, statements.clone());
+        // The session runs one thing at a time: the run still going must
+        // stop before this one can start.
+        self.cancel(session, superseded);
+        self.backend.send(Command::RunSql {
+            session,
+            request,
+            statements,
+            limit,
+            timeout,
+        });
+    }
+
+    /// The connection tab and object tab the keyboard acts on: none while
+    /// the workspace shows a SQL editor.
+    pub fn active_object(&self) -> Option<(ConnTabId, TabId)> {
         let tab = self.active_tab_id();
         let workspace = self.workspace(tab)?;
-        Some((tab, workspace.active_object?))
+        Some((tab, workspace.active_object_tab()?.id))
     }
 
     pub fn open_object(&mut self, tab: ConnTabId, object: ObjectRef, kind: ObjectKind, pin: bool) {
         let page_size = self.settings.page_size;
-        let new_id = ObjectTabId(self.next_id());
+        let new_id = TabId(self.next_id());
         let Some(workspace) = self.workspace_mut(tab) else {
             return;
         };
@@ -2108,9 +2320,15 @@ impl App {
         workspace.recent.insert(0, (object.clone(), kind));
         workspace.recent.truncate(crate::model::RECENT);
         workspace.tree.reveal(&object);
-        if let Some(existing) = workspace.objects.iter_mut().find(|o| o.object == object) {
-            existing.pinned |= pin;
-            workspace.active_object = Some(existing.id);
+        let existing = workspace
+            .object_tabs_mut()
+            .find(|o| o.object == object)
+            .map(|existing| {
+                existing.pinned |= pin;
+                existing.id
+            });
+        if let Some(id) = existing {
+            workspace.active_tab = Some(id);
             return;
         }
         let estimate = workspace
@@ -2121,17 +2339,18 @@ impl App {
         let preview = if pin {
             None
         } else {
-            workspace.objects.iter().position(|o| !o.pinned)
+            workspace.tabs.iter().position(Tab::is_preview)
         };
         let session = workspace.session;
+        let opened = Tab::Object(Box::new(opened));
         let replaced = match preview {
-            Some(index) => Some(std::mem::replace(&mut workspace.objects[index], opened)),
+            Some(index) => Some(std::mem::replace(&mut workspace.tabs[index], opened)),
             None => {
-                workspace.objects.push(opened);
+                workspace.tabs.push(opened);
                 None
             }
         };
-        workspace.active_object = Some(new_id);
+        workspace.active_tab = Some(new_id);
         if let Some(replaced) = replaced {
             self.cancel(session, replaced.pending());
         }
@@ -2156,7 +2375,7 @@ impl App {
         self.open_object(tab, object, kind, true);
         let Some(id) = self
             .workspace(tab)
-            .and_then(|workspace| workspace.active_object)
+            .and_then(|workspace| workspace.active_tab)
         else {
             return;
         };
@@ -2182,7 +2401,7 @@ impl App {
     }
 
     /// Forgets the object tab's exact count and stops it if still running.
-    fn reset_count(&mut self, tab: ConnTabId, id: ObjectTabId) {
+    fn reset_count(&mut self, tab: ConnTabId, id: TabId) {
         let Some(workspace) = self.workspace_mut(tab) else {
             return;
         };
@@ -2194,7 +2413,7 @@ impl App {
     }
 
     /// Loads the object tab's rows, replacing any load still pending.
-    pub fn fetch_rows(&mut self, tab: ConnTabId, id: ObjectTabId) {
+    pub fn fetch_rows(&mut self, tab: ConnTabId, id: TabId) {
         let request = RequestId(self.next_id());
         let Some(workspace) = self.workspace_mut(tab) else {
             return;
@@ -2326,7 +2545,7 @@ impl App {
 
     /// Runs the object tab's query with its filter bar's conditions, from
     /// the first page.
-    fn apply_filters(&mut self, tab: ConnTabId, id: ObjectTabId) {
+    fn apply_filters(&mut self, tab: ConnTabId, id: TabId) {
         let Some(object) = self.object_tab_mut(tab, id) else {
             return;
         };
@@ -2346,7 +2565,7 @@ impl App {
         self.fetch_rows(tab, id);
     }
 
-    pub fn count_rows(&mut self, tab: ConnTabId, id: ObjectTabId) {
+    pub fn count_rows(&mut self, tab: ConnTabId, id: TabId) {
         let request = RequestId(self.next_id());
         let Some(workspace) = self.workspace_mut(tab) else {
             return;
@@ -2366,7 +2585,7 @@ impl App {
         });
     }
 
-    pub fn describe(&mut self, tab: ConnTabId, id: ObjectTabId) {
+    pub fn describe(&mut self, tab: ConnTabId, id: TabId) {
         let request = RequestId(self.next_id());
         let Some(workspace) = self.workspace_mut(tab) else {
             return;
@@ -2463,6 +2682,11 @@ impl App {
                 .send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
             self.window_title = title;
         }
+        // After the frame drew them for the last time.
+        for (tab, id) in self.closed_editors.drain(..) {
+            crate::ui::sql_text::forget(ui.ctx(), tab, id);
+            crate::ui::sql_results::forget(ui.ctx(), tab, id);
+        }
     }
 }
 
@@ -2538,6 +2762,29 @@ fn apply_url(form: &mut ConnectionForm) -> Result<(), String> {
     form.message = None;
     form.url_mode = false;
     Ok(())
+}
+
+/// Whether a finished SQL run opens Messages rather than Results. It does
+/// when the run failed, as a whole or in a statement; when its timeout
+/// stopped it (nobody asked for that, so the reason must show); and when
+/// it was cancelled without a statement returning rows, which leaves
+/// Results nothing to show. A run the user stopped after rows came back
+/// stays on Results.
+fn opens_messages(
+    result: &Result<tabletist_db::ScriptOutcome, Error>,
+    cancel: Option<CancelReason>,
+) -> bool {
+    use tabletist_db::StatementOutcome;
+    let Ok(outcome) = result else {
+        return true;
+    };
+    let any = |wanted: fn(&StatementOutcome) -> bool| {
+        outcome.results.iter().any(|result| wanted(&result.outcome))
+    };
+    any(|outcome| matches!(outcome, StatementOutcome::Error { .. }))
+        || matches!(cancel, Some(CancelReason::Timeout(_)))
+        || (outcome.was_cancelled()
+            && !any(|outcome| matches!(outcome, StatementOutcome::Rows { .. })))
 }
 
 /// Moves `index` by `delta` within `0..len` (len > 0), saturating.
@@ -2946,6 +3193,17 @@ mod tests {
             }
             other => panic!("{other:?}"),
         }
+    }
+
+    #[test]
+    fn saving_settings_sends_them_to_the_backend() {
+        let mut harness = Harness::new();
+        harness.app.settings.sql_limit = 100;
+        harness.app.save_settings();
+        assert!(matches!(
+            crate::testing::last_sent(&harness.app),
+            Command::Save { file: StateFile::Settings(settings), .. } if settings.sql_limit == 100
+        ));
     }
 
     #[test]
@@ -3444,8 +3702,9 @@ mod tests {
         );
     }
 
-    use crate::model::{CellPos, ObjectTabId, ObjectView};
-    use crate::testing::{last_sent, page};
+    use crate::model::{CellPos, ObjectView, TabId};
+    use crate::testing::{error_outcome, last_sent, page, rows_outcome, script_outcome};
+    use std::time::Duration;
     use tabletist_db::{ObjectRef, SortDir};
 
     #[test]
@@ -3557,17 +3816,17 @@ mod tests {
         ObjectRef::new("main", "users")
     }
 
-    fn open(harness: &mut Harness, tab: ConnTabId, name: &str, pin: bool) -> ObjectTabId {
+    fn open(harness: &mut Harness, tab: ConnTabId, name: &str, pin: bool) -> TabId {
         harness.app.apply(Action::OpenObject {
             tab,
             object: ObjectRef::new("main", name),
             kind: ObjectKind::Table,
             pin,
         });
-        harness.app.workspace(tab).unwrap().active_object.unwrap()
+        harness.app.workspace(tab).unwrap().active_tab.unwrap()
     }
 
-    fn object(harness: &Harness, tab: ConnTabId, id: ObjectTabId) -> &crate::model::ObjectTab {
+    fn object(harness: &Harness, tab: ConnTabId, id: TabId) -> &crate::model::ObjectTab {
         harness.app.workspace(tab).unwrap().object_tab(id).unwrap()
     }
 
@@ -3603,13 +3862,16 @@ mod tests {
         open(&mut harness, tab, "users", false);
         open(&mut harness, tab, "orders", false);
         let workspace = harness.app.workspace(tab).unwrap();
-        assert_eq!(workspace.objects.len(), 1, "the preview was replaced");
-        assert_eq!(workspace.objects[0].object.name, "orders");
+        assert_eq!(workspace.tabs.len(), 1, "the preview was replaced");
+        assert_eq!(
+            workspace.object_tabs().next().unwrap().object.name,
+            "orders"
+        );
         let orders = open(&mut harness, tab, "orders", true);
         assert!(object(&harness, tab, orders).pinned);
         open(&mut harness, tab, "users", false);
         assert_eq!(
-            harness.app.workspace(tab).unwrap().objects.len(),
+            harness.app.workspace(tab).unwrap().tabs.len(),
             2,
             "a pinned tab is never replaced"
         );
@@ -3632,14 +3894,10 @@ mod tests {
         let tab = connect_tab(&mut harness);
         let a = open(&mut harness, tab, "users", true);
         let b = open(&mut harness, tab, "orders", true);
-        harness
-            .app
-            .apply(Action::CloseObjectTab { tab, object_tab: b });
-        assert_eq!(harness.app.workspace(tab).unwrap().active_object, Some(a));
-        harness
-            .app
-            .apply(Action::CloseObjectTab { tab, object_tab: a });
-        assert_eq!(harness.app.workspace(tab).unwrap().active_object, None);
+        harness.app.apply(Action::CloseTab { tab, id: b });
+        assert_eq!(harness.app.workspace(tab).unwrap().active_tab, Some(a));
+        harness.app.apply(Action::CloseTab { tab, id: a });
+        assert_eq!(harness.app.workspace(tab).unwrap().active_tab, None);
     }
 
     #[test]
@@ -3648,10 +3906,1157 @@ mod tests {
         let tab = connect_tab(&mut harness);
         let a = open(&mut harness, tab, "users", true);
         let b = open(&mut harness, tab, "orders", true);
-        harness.app.apply(Action::CycleObjectTab { tab, step: 1 });
-        assert_eq!(harness.app.workspace(tab).unwrap().active_object, Some(a));
-        harness.app.apply(Action::CycleObjectTab { tab, step: -1 });
-        assert_eq!(harness.app.workspace(tab).unwrap().active_object, Some(b));
+        harness.app.apply(Action::CycleTab { tab, step: 1 });
+        assert_eq!(harness.app.workspace(tab).unwrap().active_tab, Some(a));
+        harness.app.apply(Action::CycleTab { tab, step: -1 });
+        assert_eq!(harness.app.workspace(tab).unwrap().active_tab, Some(b));
+    }
+
+    /// Puts a run in flight on a SQL editor, as running its text does.
+    fn start_run(harness: &mut Harness, tab: ConnTabId, id: TabId) -> RequestId {
+        let request = RequestId(harness.app.next_id());
+        let workspace = harness.app.workspace_mut(tab).unwrap();
+        let statements = tabletist_db::sql::statements(workspace.driver.dialect(), "SELECT 1");
+        let superseded = workspace
+            .sql_tab_mut(id)
+            .unwrap()
+            .start_run(request, statements);
+        assert_eq!(superseded, None);
+        request
+    }
+
+    /// Answers the newest Connect, as the backend does once it connected.
+    fn answer_connect(harness: &mut Harness) -> SessionId {
+        let Command::Connect {
+            session, request, ..
+        } = *last_sent(&harness.app)
+        else {
+            panic!("expected Connect");
+        };
+        harness.app.apply(Action::Backend(Event::Connected {
+            session,
+            request,
+            driver: Driver::Sqlite,
+            encrypted: false,
+        }));
+        session
+    }
+
+    fn version_requests(harness: &Harness, from: usize) -> Vec<(SessionId, RequestId)> {
+        harness.app.backend.sent[from..]
+            .iter()
+            .filter_map(|command| match command {
+                Command::ServerVersion { session, request } => Some((*session, *request)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn reconnecting_forgets_a_sql_run_and_asks_for_the_version_again() {
+        let mut harness = Harness::new();
+        let tab = connect_tab(&mut harness);
+        let query = harness.add_sql_tab(tab);
+        let running = start_run(&mut harness, tab, query);
+        let workspace = harness.app.workspace_mut(tab).unwrap();
+        workspace.server_version.value = Some("SQLite 3.46.0".into());
+        workspace.sql_tab_mut(query).unwrap().text = "SELECT 1".into();
+        let old = workspace.session;
+        harness.app.apply(Action::Backend(Event::Disconnected {
+            session: old,
+            error: Error::ConnectionLost("gone".into()),
+        }));
+        let sent = harness.app.backend.sent.len();
+        harness.app.apply(Action::Reconnect(tab));
+        let workspace = harness.app.workspace(tab).unwrap();
+        let sql = workspace.sql_tab(query).unwrap();
+        assert!(
+            !sql.is_running() && sql.in_flight.is_none(),
+            "nothing answers for the closed session"
+        );
+        assert_eq!(sql.text, "SELECT 1", "the editor keeps what was typed");
+        assert!(workspace.server_version.needs_load());
+        assert!(
+            version_requests(&harness, sent).is_empty(),
+            "not before the session connects"
+        );
+        // The answer of the old session, should it still come, is dropped.
+        harness.app.apply(Action::Backend(Event::SqlRan {
+            session: old,
+            request: running,
+            result: Ok(Default::default()),
+            cancel: None,
+        }));
+        // So is anything else the old session says, even about the run
+        // the new session has in flight.
+        let rerun = start_run(&mut harness, tab, query);
+        harness.app.apply(Action::Backend(Event::SqlRan {
+            session: old,
+            request: rerun,
+            result: Ok(Default::default()),
+            cancel: None,
+        }));
+        let workspace = harness.app.workspace(tab).unwrap();
+        let sql = workspace.sql_tab(query).unwrap();
+        assert_eq!(sql.run.pending, Some(rerun), "still running");
+        assert!(sql.run.value.is_none());
+        let session = answer_connect(&mut harness);
+        let asked = version_requests(&harness, sent);
+        assert_eq!(asked.len(), 1);
+        assert_eq!(asked[0].0, session);
+        let workspace = harness.app.workspace(tab).unwrap();
+        assert_eq!(workspace.server_version.pending, Some(asked[0].1));
+        assert!(workspace.sql_tab(query).unwrap().run.value.is_none());
+        harness.app.apply(Action::Backend(Event::ServerVersion {
+            session,
+            request: asked[0].1,
+            result: Ok("SQLite 3.46.1".into()),
+        }));
+        assert_eq!(
+            harness
+                .app
+                .workspace(tab)
+                .unwrap()
+                .server_version
+                .value
+                .as_deref(),
+            Some("SQLite 3.46.1")
+        );
+    }
+
+    #[test]
+    fn connecting_without_a_sql_editor_does_not_ask_for_the_version() {
+        let mut harness = Harness::new();
+        let tab = connect_tab(&mut harness);
+        open(&mut harness, tab, "users", true);
+        harness.app.apply(Action::Reconnect(tab));
+        answer_connect(&mut harness);
+        assert!(version_requests(&harness, 0).is_empty());
+        assert!(
+            harness
+                .app
+                .workspace(tab)
+                .unwrap()
+                .server_version
+                .needs_load()
+        );
+    }
+
+    #[test]
+    fn a_version_answer_for_another_request_is_ignored() {
+        let mut harness = Harness::new();
+        let tab = connect_tab(&mut harness);
+        harness.add_sql_tab(tab);
+        harness.app.apply(Action::Reconnect(tab));
+        let session = answer_connect(&mut harness);
+        let asked = version_requests(&harness, 0);
+        harness.app.apply(Action::Backend(Event::ServerVersion {
+            session,
+            request: RequestId(asked[0].1.0 + 1_000),
+            result: Ok("stale".into()),
+        }));
+        let workspace = harness.app.workspace(tab).unwrap();
+        assert!(workspace.server_version.value.is_none());
+        assert!(workspace.server_version.is_loading());
+    }
+
+    fn strip(harness: &Harness, tab: ConnTabId) -> Vec<TabId> {
+        let workspace = harness.app.workspace(tab).unwrap();
+        workspace.tabs.iter().map(Tab::id).collect()
+    }
+
+    #[test]
+    fn tabs_of_both_kinds_activate_and_cycle() {
+        let mut harness = Harness::new();
+        let tab = connect_tab(&mut harness);
+        let users = open(&mut harness, tab, "users", true);
+        let query = harness.add_sql_tab(tab);
+        let orders = open(&mut harness, tab, "orders", true);
+        assert_eq!(strip(&harness, tab), vec![users, query, orders]);
+        let active = |harness: &Harness| harness.app.workspace(tab).unwrap().active_tab;
+        harness.app.apply(Action::CycleTab { tab, step: -1 });
+        assert_eq!(active(&harness), Some(query));
+        harness.app.apply(Action::CycleTab { tab, step: -1 });
+        assert_eq!(active(&harness), Some(users));
+        harness.app.apply(Action::CycleTab { tab, step: -1 });
+        assert_eq!(active(&harness), Some(orders));
+        harness.app.apply(Action::ActivateTab { tab, id: query });
+        assert_eq!(active(&harness), Some(query));
+        // A tab that is not there (closed since the click) changes nothing.
+        harness.app.apply(Action::ActivateTab {
+            tab,
+            id: TabId(u64::MAX),
+        });
+        assert_eq!(active(&harness), Some(query));
+    }
+
+    #[test]
+    fn no_object_is_active_while_a_sql_editor_shows() {
+        let mut harness = Harness::new();
+        let tab = connect_tab(&mut harness);
+        let users = open(&mut harness, tab, "users", true);
+        assert_eq!(harness.app.active_object(), Some((tab, users)));
+        let query = harness.add_sql_tab(tab);
+        harness.app.apply(Action::ActivateTab { tab, id: query });
+        assert_eq!(harness.app.active_object(), None);
+        assert!(
+            harness
+                .app
+                .workspace(tab)
+                .unwrap()
+                .active_sql_tab()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn closing_a_sql_editor_stops_its_run_and_shows_a_neighbour() {
+        let mut harness = Harness::new();
+        let tab = connect_tab(&mut harness);
+        let users = open(&mut harness, tab, "users", true);
+        let query = harness.add_sql_tab(tab);
+        let running = start_run(&mut harness, tab, query);
+        harness.app.workspace_mut(tab).unwrap().active_tab = Some(query);
+        let sent = harness.app.backend.sent.len();
+        harness.app.apply(Action::CloseTab { tab, id: query });
+        assert_eq!(cancels_since(&harness, sent), vec![running]);
+        assert_eq!(strip(&harness, tab), vec![users]);
+        assert_eq!(
+            harness.app.workspace(tab).unwrap().active_tab,
+            Some(users),
+            "the last tab left takes over"
+        );
+    }
+
+    #[test]
+    fn a_preview_never_replaces_a_sql_editor() {
+        let mut harness = Harness::new();
+        let tab = connect_tab(&mut harness);
+        let query = harness.add_sql_tab(tab);
+        let users = open(&mut harness, tab, "users", false);
+        assert_eq!(strip(&harness, tab), vec![query, users]);
+        let orders = open(&mut harness, tab, "orders", false);
+        assert_eq!(
+            strip(&harness, tab),
+            vec![query, orders],
+            "only the preview object tab gives way"
+        );
+    }
+
+    /// Opens a SQL editor on the fixture connection.
+    fn new_sql(harness: &mut Harness) -> (ConnTabId, TabId) {
+        let tab = harness.connect_fake();
+        harness.app.apply(Action::NewSqlTab(tab));
+        let id = harness.app.workspace(tab).unwrap().active_tab.unwrap();
+        (tab, id)
+    }
+
+    fn sql(harness: &Harness, tab: ConnTabId, id: TabId) -> &SqlTab {
+        harness.app.workspace(tab).unwrap().sql_tab(id).unwrap()
+    }
+
+    /// Types `text` into the editor, leaving the cursor at byte `cursor`.
+    fn type_sql(harness: &mut Harness, tab: ConnTabId, id: TabId, text: &str, cursor: usize) {
+        let workspace = harness.app.workspace_mut(tab).unwrap();
+        let sql = workspace.sql_tab_mut(id).unwrap();
+        sql.text = text.into();
+        sql.cursor = cursor;
+    }
+
+    fn run(harness: &mut Harness, tab: ConnTabId, id: TabId, all: bool) {
+        harness.app.apply(Action::RunSql {
+            tab,
+            sql_tab: id,
+            all,
+        });
+    }
+
+    fn runs_since(harness: &Harness, from: usize) -> usize {
+        harness.app.backend.sent[from..]
+            .iter()
+            .filter(|command| matches!(command, Command::RunSql { .. }))
+            .count()
+    }
+
+    #[test]
+    fn sql_tabs_are_numbered_per_connection_and_ask_for_the_version() {
+        let mut harness = Harness::new();
+        let tab = harness.connect_fake();
+        open(&mut harness, tab, "users", true);
+        harness.app.workspace_mut(tab).unwrap().pane = Pane::Tree;
+        harness.app.apply(Action::NewSqlTab(tab));
+        assert!(matches!(
+            last_sent(&harness.app),
+            Command::ServerVersion { .. }
+        ));
+        let workspace = harness.app.workspace(tab).unwrap();
+        let first = workspace.active_tab.unwrap();
+        assert_eq!(harness.app.active_sql(), Some((tab, first)));
+        assert_eq!(harness.app.active_workspace_tab(), Some((tab, first)));
+        assert_eq!(harness.app.active_object(), None);
+        assert_eq!(workspace.pane, Pane::Grid, "the tree gives up the keys");
+        harness.app.apply(Action::NewSqlTab(tab));
+        let workspace = harness.app.workspace(tab).unwrap();
+        let second = workspace.active_tab.unwrap();
+        assert_ne!(first, second);
+        assert_eq!(workspace.tabs.len(), 3, "after the object tab");
+        assert_eq!(workspace.sql_tab(first).unwrap().number, 1);
+        assert_eq!(workspace.sql_tab(second).unwrap().number, 2);
+        assert_eq!(workspace.sql_tab(second).unwrap().limit, 1_000);
+        assert_eq!(
+            workspace.sql_tab(second).unwrap().timeout,
+            Some(Duration::from_secs(30))
+        );
+        assert!(workspace.sql_tab(second).unwrap().focus_editor);
+        assert_eq!(
+            version_requests(&harness, 0).len(),
+            1,
+            "the version is asked for once"
+        );
+    }
+
+    #[test]
+    fn a_new_sql_tab_starts_from_the_settings() {
+        let mut harness = Harness::new();
+        let tab = harness.connect_fake();
+        harness.app.settings.sql_limit = 100;
+        harness.app.settings.sql_timeout_secs = None;
+        harness.app.apply(Action::NewSqlTab(tab));
+        let workspace = harness.app.workspace(tab).unwrap();
+        let sql = workspace.active_sql_tab().unwrap();
+        assert_eq!((sql.limit, sql.timeout), (100, None));
+    }
+
+    #[test]
+    fn a_sql_tab_opened_while_connecting_asks_for_the_version_once_connected() {
+        let (mut app, _dir) = app();
+        let (tab, session, request) = connect(&mut app);
+        app.apply(Action::NewSqlTab(tab));
+        assert!(app.workspace(tab).unwrap().active_sql_tab().is_some());
+        let asked = |app: &App| {
+            app.backend
+                .sent
+                .iter()
+                .filter(|command| matches!(command, Command::ServerVersion { .. }))
+                .count()
+        };
+        assert_eq!(asked(&app), 0, "the session cannot answer yet");
+        assert!(app.workspace(tab).unwrap().server_version.needs_load());
+        app.apply(Action::Backend(Event::Connected {
+            session,
+            request,
+            driver: Driver::Sqlite,
+            encrypted: false,
+        }));
+        assert_eq!(asked(&app), 1);
+        // On a picker there is no workspace to open an editor in.
+        app.apply(Action::NewConnTab);
+        let picker = app.active_tab_id();
+        app.apply(Action::NewSqlTab(picker));
+        assert!(app.workspace(picker).is_none());
+        assert_eq!(app.active_sql(), None);
+        assert_eq!(app.active_workspace_tab(), None);
+    }
+
+    #[test]
+    fn run_sends_the_statement_at_the_cursor_and_run_all_sends_every_one() {
+        let mut harness = Harness::new();
+        let (tab, id) = new_sql(&mut harness);
+        type_sql(&mut harness, tab, id, "SELECT 1;\nSELECT 2;", 12);
+        run(&mut harness, tab, id, false);
+        let session = harness.app.workspace(tab).unwrap().session;
+        assert!(matches!(
+            last_sent(&harness.app),
+            Command::RunSql { session: sent, statements, limit: 1_000, timeout: Some(timeout), .. }
+                if *sent == session
+                    && statements.len() == 1
+                    && statements[0].text == "SELECT 2"
+                    && statements[0].first_line == 2
+                    && *timeout == Duration::from_secs(30)
+        ));
+        let editor = sql(&harness, tab, id);
+        assert!(editor.is_running());
+        assert_eq!(editor.in_flight.as_ref().unwrap().statements.len(), 1);
+        run(&mut harness, tab, id, true);
+        assert!(matches!(
+            last_sent(&harness.app),
+            Command::RunSql { statements, .. } if statements.len() == 2
+        ));
+        assert_eq!(
+            sql(&harness, tab, id)
+                .in_flight
+                .as_ref()
+                .unwrap()
+                .statements
+                .len(),
+            2
+        );
+    }
+
+    #[test]
+    fn running_an_empty_editor_does_nothing() {
+        let mut harness = Harness::new();
+        let (tab, id) = new_sql(&mut harness);
+        let sent = harness.app.backend.sent.len();
+        for all in [false, true] {
+            type_sql(&mut harness, tab, id, "", 0);
+            run(&mut harness, tab, id, all);
+            type_sql(&mut harness, tab, id, "  -- nothing\n /* at all */ ;\n", 4);
+            run(&mut harness, tab, id, all);
+        }
+        assert_eq!(harness.app.backend.sent.len(), sent);
+        let editor = sql(&harness, tab, id);
+        assert!(editor.run.needs_load(), "no run, and no error");
+        assert!(!editor.is_running());
+        assert_eq!(editor.pane, ResultPane::Results);
+    }
+
+    #[test]
+    fn running_nothing_leaves_the_run_in_flight_alone() {
+        let mut harness = Harness::new();
+        let (tab, id) = new_sql(&mut harness);
+        type_sql(&mut harness, tab, id, "SELECT 1", 0);
+        run(&mut harness, tab, id, false);
+        let running = sql(&harness, tab, id).run.pending;
+        let sent = harness.app.backend.sent.len();
+        type_sql(&mut harness, tab, id, "-- nothing", 0);
+        run(&mut harness, tab, id, true);
+        assert_eq!(harness.app.backend.sent.len(), sent, "nothing is cancelled");
+        assert_eq!(sql(&harness, tab, id).run.pending, running);
+    }
+
+    #[test]
+    fn run_on_something_that_is_not_a_sql_tab_does_nothing() {
+        let mut harness = Harness::new();
+        let (tab, id) = new_sql(&mut harness);
+        let users = open(&mut harness, tab, "users", true);
+        harness.answer_rows(page(5, false));
+        type_sql(&mut harness, tab, id, "SELECT 1", 0);
+        let sent = harness.app.backend.sent.len();
+        run(&mut harness, tab, users, false);
+        run(&mut harness, tab, TabId(u64::MAX), true);
+        run(&mut harness, ConnTabId(u64::MAX), id, true);
+        assert_eq!(harness.app.backend.sent.len(), sent);
+        assert!(!sql(&harness, tab, id).is_running());
+    }
+
+    #[test]
+    fn a_new_run_cancels_the_one_still_running() {
+        let mut harness = Harness::new();
+        let (tab, id) = new_sql(&mut harness);
+        type_sql(&mut harness, tab, id, "SELECT 1", 0);
+        run(&mut harness, tab, id, false);
+        let first = sql(&harness, tab, id).run.pending.unwrap();
+        let sent = harness.app.backend.sent.len();
+        run(&mut harness, tab, id, false);
+        let second = sql(&harness, tab, id).run.pending.unwrap();
+        assert_ne!(first, second);
+        assert_eq!(cancels_since(&harness, sent), vec![first]);
+        assert!(
+            matches!(
+                harness.app.backend.sent[sent],
+                Command::Cancel { request, .. } if request == first
+            ),
+            "the cancel goes first: the session runs one thing at a time"
+        );
+        assert_eq!(runs_since(&harness, sent), 1);
+    }
+
+    #[test]
+    fn a_late_answer_for_a_replaced_run_is_dropped() {
+        let mut harness = Harness::new();
+        let (tab, id) = new_sql(&mut harness);
+        type_sql(&mut harness, tab, id, "SELECT 1", 0);
+        run(&mut harness, tab, id, false);
+        let session = harness.app.workspace(tab).unwrap().session;
+        let first = sql(&harness, tab, id).run.pending.unwrap();
+        run(&mut harness, tab, id, false);
+        let workspace = harness.app.workspace_mut(tab).unwrap();
+        let editor = workspace.sql_tab_mut(id).unwrap();
+        editor.pane = ResultPane::Messages;
+        editor.selection = Some(CellPos { row: 0, col: 0 });
+        harness.app.apply(Action::Backend(Event::SqlRan {
+            session,
+            request: first,
+            result: Ok(script_outcome(vec![rows_outcome(5)])),
+            cancel: Some(CancelReason::User),
+        }));
+        let editor = sql(&harness, tab, id);
+        assert!(editor.is_running(), "the second run is still in flight");
+        assert!(editor.run.value.is_none());
+        assert_eq!(editor.pane, ResultPane::Messages, "nothing was touched");
+        assert_eq!(editor.selection, Some(CellPos { row: 0, col: 0 }));
+        harness.answer_sql(Ok(script_outcome(vec![rows_outcome(2)])), None);
+        let editor = sql(&harness, tab, id);
+        assert!(!editor.is_running());
+        assert_eq!(editor.dims(), (2, 3));
+        // Nor does an answer from another session, even one naming the
+        // run in flight.
+        run(&mut harness, tab, id, false);
+        let third = sql(&harness, tab, id).run.pending.unwrap();
+        harness.app.apply(Action::Backend(Event::SqlRan {
+            session: SessionId(u64::MAX),
+            request: third,
+            result: Ok(script_outcome(vec![rows_outcome(9)])),
+            cancel: None,
+        }));
+        let editor = sql(&harness, tab, id);
+        assert_eq!(editor.run.pending, Some(third), "still running");
+        assert_eq!(editor.dims(), (2, 3));
+    }
+
+    #[test]
+    fn a_result_shows_its_rows_and_an_error_opens_messages() {
+        let mut harness = Harness::new();
+        let (tab, id) = new_sql(&mut harness);
+        type_sql(&mut harness, tab, id, "SELECT 1;\nSELECT x", 0);
+        run(&mut harness, tab, id, true);
+        harness
+            .app
+            .workspace_mut(tab)
+            .unwrap()
+            .sql_tab_mut(id)
+            .unwrap()
+            .selection = Some(CellPos { row: 4, col: 2 });
+        harness.answer_sql(
+            Ok(script_outcome(vec![
+                rows_outcome(5),
+                error_outcome("no such column: x", None),
+            ])),
+            None,
+        );
+        let editor = sql(&harness, tab, id);
+        assert!(!editor.is_running() && editor.in_flight.is_none());
+        assert_eq!(editor.pane, ResultPane::Messages);
+        assert_eq!(editor.selection, None, "a new result starts unselected");
+        assert_eq!(editor.shown().map(|(index, _)| index), Some(0));
+        assert_eq!(editor.dims(), (5, 3));
+        assert_eq!(editor.error_mark(), Some((2, None)));
+        assert_eq!(editor.run.value.as_ref().unwrap().statements.len(), 2);
+        // The next run that works shows its rows again.
+        type_sql(&mut harness, tab, id, "SELECT 1", 0);
+        run(&mut harness, tab, id, false);
+        harness.answer_sql(Ok(script_outcome(vec![rows_outcome(3)])), None);
+        let editor = sql(&harness, tab, id);
+        assert_eq!(editor.pane, ResultPane::Results);
+        assert_eq!(editor.dims(), (3, 3));
+        assert_eq!(editor.error_mark(), None);
+    }
+
+    #[test]
+    fn a_refused_script_is_the_runs_error() {
+        let mut harness = Harness::new();
+        let (tab, id) = new_sql(&mut harness);
+        type_sql(&mut harness, tab, id, "SELECT 1", 0);
+        run(&mut harness, tab, id, false);
+        harness.answer_sql(Ok(script_outcome(vec![rows_outcome(5)])), None);
+        type_sql(&mut harness, tab, id, "SELECT 1;\nCOMMIT", 0);
+        run(&mut harness, tab, id, true);
+        let refused = Error::Refused {
+            line: 2,
+            what: "COMMIT".into(),
+        };
+        harness.answer_sql(Err(refused.clone()), None);
+        let editor = sql(&harness, tab, id);
+        assert!(!editor.is_running());
+        assert_eq!(editor.run.error, Some(refused));
+        assert_eq!(editor.pane, ResultPane::Messages);
+        assert_eq!(editor.error_mark(), Some((2, None)));
+        // Nothing ran: the rows of the run before are not this run's.
+        assert!(editor.last_run().is_none());
+        assert_eq!(editor.dims(), (0, 0));
+    }
+
+    #[test]
+    fn a_result_stays_when_the_session_is_replaced_with_nothing_failed() {
+        let mut harness = Harness::new();
+        let (tab, id) = new_sql(&mut harness);
+        type_sql(&mut harness, tab, id, "SELECT 1", 0);
+        run(&mut harness, tab, id, false);
+        harness.answer_sql(Ok(script_outcome(vec![rows_outcome(5)])), None);
+        // The run in flight goes with its session; the result before it
+        // does not, for nothing failed.
+        run(&mut harness, tab, id, false);
+        harness.app.apply(Action::SwitchDatabase {
+            tab,
+            database: "other".into(),
+        });
+        let editor = sql(&harness, tab, id);
+        assert!(!editor.is_running() && editor.run.error.is_none());
+        assert_eq!(editor.dims(), (5, 3));
+        assert_eq!(editor.last_run().map(|run| run.statements.len()), Some(1));
+        // Nor does a reconnect drop it.
+        let session = answer_connect(&mut harness);
+        run(&mut harness, tab, id, false);
+        assert!(sql(&harness, tab, id).is_running());
+        harness.app.apply(Action::Backend(Event::Disconnected {
+            session,
+            error: Error::ConnectionLost("gone".into()),
+        }));
+        harness.app.apply(Action::Reconnect(tab));
+        let editor = sql(&harness, tab, id);
+        assert!(!editor.is_running() && editor.run.error.is_none());
+        assert_eq!(editor.dims(), (5, 3));
+    }
+
+    #[test]
+    fn a_run_waits_for_a_connected_session() {
+        let mut harness = Harness::new();
+        let (tab, id) = new_sql(&mut harness);
+        type_sql(&mut harness, tab, id, "SELECT 1", 0);
+        run(&mut harness, tab, id, false);
+        harness.answer_sql(Ok(script_outcome(vec![rows_outcome(5)])), None);
+        let kept = |harness: &Harness| {
+            let editor = sql(harness, tab, id);
+            assert!(!editor.is_running() && editor.run.error.is_none());
+            assert_eq!(editor.dims(), (5, 3));
+        };
+        // Connecting to the other database: the backend would answer that
+        // the connection is closed, and that failure drops the result.
+        harness.app.apply(Action::SwitchDatabase {
+            tab,
+            database: "other".into(),
+        });
+        let status = &harness.app.workspace(tab).unwrap().status;
+        assert!(matches!(status, SessionStatus::Connecting { .. }));
+        let sent = harness.app.backend.sent.len();
+        run(&mut harness, tab, id, false);
+        run(&mut harness, tab, id, true);
+        assert_eq!(harness.app.backend.sent.len(), sent, "nothing is sent");
+        kept(&harness);
+        // Nor on a session that is gone.
+        let session = answer_connect(&mut harness);
+        harness.app.apply(Action::Backend(Event::Disconnected {
+            session,
+            error: Error::ConnectionLost("gone".into()),
+        }));
+        let sent = harness.app.backend.sent.len();
+        run(&mut harness, tab, id, false);
+        assert_eq!(harness.app.backend.sent.len(), sent, "nothing is sent");
+        kept(&harness);
+        // Connected again, it runs.
+        harness.app.apply(Action::Reconnect(tab));
+        answer_connect(&mut harness);
+        let sent = harness.app.backend.sent.len();
+        run(&mut harness, tab, id, false);
+        assert_eq!(runs_since(&harness, sent), 1);
+        assert!(sql(&harness, tab, id).is_running());
+    }
+
+    #[test]
+    fn a_run_that_lost_the_session_keeps_the_text_and_no_older_result() {
+        let mut harness = Harness::new();
+        let (tab, id) = new_sql(&mut harness);
+        type_sql(&mut harness, tab, id, "SELECT 1", 0);
+        run(&mut harness, tab, id, false);
+        harness.answer_sql(Ok(script_outcome(vec![rows_outcome(5)])), None);
+        run(&mut harness, tab, id, false);
+        harness.answer_sql(Err(Error::LeftReadOnly), None);
+        let editor = sql(&harness, tab, id);
+        assert!(!editor.is_running());
+        assert_eq!(editor.run.error, Some(Error::LeftReadOnly));
+        assert_eq!(editor.pane, ResultPane::Messages);
+        assert_eq!(editor.error_mark(), None);
+        assert_eq!(editor.text, "SELECT 1");
+        assert!(editor.last_run().is_none());
+        assert_eq!(editor.dims(), (0, 0));
+    }
+
+    #[test]
+    fn a_run_stopped_before_it_started_is_a_finished_run_without_results() {
+        let mut harness = Harness::new();
+        let (tab, id) = new_sql(&mut harness);
+        type_sql(&mut harness, tab, id, "SELECT 1", 0);
+        run(&mut harness, tab, id, false);
+        let stopped = crate::testing::stopped_before_it_began();
+        harness.answer_sql(Ok(stopped), Some(CancelReason::User));
+        let editor = sql(&harness, tab, id);
+        assert!(!editor.is_running());
+        assert!(editor.run.error.is_none());
+        let finished = editor.run.value.as_ref().unwrap();
+        assert!(finished.outcome.was_cancelled());
+        assert_eq!(finished.cancel, Some(CancelReason::User));
+        assert_eq!(finished.statements.len(), 1);
+        assert!(editor.shown().is_none());
+        assert_eq!(
+            editor.pane,
+            ResultPane::Messages,
+            "Results has nothing to show, Messages says it was cancelled"
+        );
+    }
+
+    #[test]
+    fn a_run_that_was_only_cancelled_opens_messages() {
+        let mut harness = Harness::new();
+        let (tab, id) = new_sql(&mut harness);
+        type_sql(&mut harness, tab, id, "SET x = 1; SELECT slow()", 0);
+        // With or without a reason (a statement_timeout the script set
+        // itself cancels without one).
+        for cancel in [Some(CancelReason::User), None] {
+            run(&mut harness, tab, id, true);
+            harness.answer_sql(
+                Ok(script_outcome(vec![
+                    tabletist_db::StatementOutcome::Done { affected: None },
+                    tabletist_db::StatementOutcome::Cancelled,
+                ])),
+                cancel,
+            );
+            let editor = sql(&harness, tab, id);
+            assert!(editor.shown().is_none());
+            assert_eq!(editor.pane, ResultPane::Messages, "{cancel:?}");
+            // A run that works brings Results back.
+            run(&mut harness, tab, id, true);
+            harness.answer_sql(Ok(script_outcome(vec![rows_outcome(1)])), None);
+            assert_eq!(sql(&harness, tab, id).pane, ResultPane::Results);
+        }
+    }
+
+    #[test]
+    fn a_user_cancel_after_rows_stays_on_results() {
+        let mut harness = Harness::new();
+        let (tab, id) = new_sql(&mut harness);
+        type_sql(&mut harness, tab, id, "SELECT 1; SELECT slow()", 0);
+        run(&mut harness, tab, id, true);
+        harness
+            .app
+            .workspace_mut(tab)
+            .unwrap()
+            .sql_tab_mut(id)
+            .unwrap()
+            .pane = ResultPane::Messages;
+        harness.answer_sql(
+            Ok(script_outcome(vec![
+                rows_outcome(4),
+                tabletist_db::StatementOutcome::Cancelled,
+            ])),
+            Some(CancelReason::User),
+        );
+        let editor = sql(&harness, tab, id);
+        assert_eq!(editor.dims(), (4, 3));
+        assert_eq!(
+            editor.pane,
+            ResultPane::Results,
+            "the user stopped it and has rows to read"
+        );
+    }
+
+    #[test]
+    fn a_timed_out_statement_keeps_the_reason_and_the_earlier_rows() {
+        let mut harness = Harness::new();
+        let (tab, id) = new_sql(&mut harness);
+        type_sql(&mut harness, tab, id, "SELECT 1; SELECT slow()", 0);
+        run(&mut harness, tab, id, true);
+        let timeout = CancelReason::Timeout(Duration::from_secs(30));
+        harness.answer_sql(
+            Ok(script_outcome(vec![
+                rows_outcome(4),
+                tabletist_db::StatementOutcome::Cancelled,
+            ])),
+            Some(timeout),
+        );
+        let editor = sql(&harness, tab, id);
+        assert_eq!(editor.run.value.as_ref().unwrap().cancel, Some(timeout));
+        assert_eq!(editor.dims(), (4, 3));
+        assert_eq!(editor.error_mark(), None);
+        assert_eq!(
+            editor.pane,
+            ResultPane::Messages,
+            "nobody asked for the run to stop, so say why it did"
+        );
+    }
+
+    #[test]
+    fn a_result_for_a_closed_sql_tab_is_ignored() {
+        let mut harness = Harness::new();
+        let (tab, id) = new_sql(&mut harness);
+        type_sql(&mut harness, tab, id, "SELECT 1", 0);
+        run(&mut harness, tab, id, false);
+        let request = sql(&harness, tab, id).run.pending.unwrap();
+        let sent = harness.app.backend.sent.len();
+        harness.app.apply(Action::CloseTab { tab, id });
+        assert_eq!(cancels_since(&harness, sent), vec![request]);
+        harness.answer_sql(Ok(script_outcome(vec![rows_outcome(5)])), None);
+        assert!(harness.app.workspace(tab).unwrap().tabs.is_empty());
+    }
+
+    #[test]
+    fn a_result_lands_in_its_own_sql_tab() {
+        let mut harness = Harness::new();
+        let (tab, first) = new_sql(&mut harness);
+        harness.app.apply(Action::NewSqlTab(tab));
+        let second = harness.app.workspace(tab).unwrap().active_tab.unwrap();
+        type_sql(&mut harness, tab, first, "SELECT 1", 0);
+        run(&mut harness, tab, first, false);
+        type_sql(&mut harness, tab, second, "SELECT 2", 0);
+        run(&mut harness, tab, second, false);
+        // The newest RunSql is the second tab's, though the first is hidden.
+        harness.answer_sql(Ok(script_outcome(vec![rows_outcome(2)])), None);
+        assert!(sql(&harness, tab, first).is_running());
+        assert_eq!(sql(&harness, tab, first).dims(), (0, 0));
+        assert_eq!(sql(&harness, tab, second).dims(), (2, 3));
+    }
+
+    #[test]
+    fn cancel_stops_the_active_sql_run() {
+        let mut harness = Harness::new();
+        let (tab, id) = new_sql(&mut harness);
+        let users = open(&mut harness, tab, "users", true);
+        harness.app.apply(Action::ActivateTab { tab, id });
+        // Nothing runs in the editor: the object's load behind it is not
+        // what the tab shows a spinner for.
+        let sent = harness.app.backend.sent.len();
+        harness.app.apply(Action::CancelQuery(tab));
+        assert_eq!(harness.app.backend.sent.len(), sent);
+        type_sql(&mut harness, tab, id, "SELECT 1", 0);
+        run(&mut harness, tab, id, false);
+        let request = sql(&harness, tab, id).run.pending.unwrap();
+        let sent = harness.app.backend.sent.len();
+        harness.app.apply(Action::CancelQuery(tab));
+        assert_eq!(cancels_since(&harness, sent), vec![request]);
+        assert!(
+            sql(&harness, tab, id).is_running(),
+            "until the backend answers"
+        );
+        // On an object tab Cancel still stops its loads, not the script.
+        harness.app.apply(Action::ActivateTab { tab, id: users });
+        let loading: Vec<RequestId> = object(&harness, tab, users).pending().collect();
+        assert!(!loading.is_empty());
+        let sent = harness.app.backend.sent.len();
+        harness.app.apply(Action::CancelQuery(tab));
+        assert_eq!(cancels_since(&harness, sent), loading);
+    }
+
+    #[test]
+    fn the_limit_and_timeout_menus_change_the_next_run_and_the_settings() {
+        let mut harness = Harness::new();
+        let (tab, id) = new_sql(&mut harness);
+        harness.app.apply(Action::SetSqlLimit {
+            tab,
+            sql_tab: id,
+            limit: 100,
+        });
+        assert!(matches!(
+            last_sent(&harness.app),
+            Command::Save { file: StateFile::Settings(settings), .. }
+                if settings.sql_limit == 100
+        ));
+        let sent = harness.app.backend.sent.len();
+        harness.app.apply(Action::SetSqlTimeout {
+            tab,
+            sql_tab: id,
+            secs: None,
+        });
+        assert!(matches!(
+            &harness.app.backend.sent[sent..],
+            [Command::Save { file: StateFile::Settings(settings), .. }]
+                if settings.sql_limit == 100 && settings.sql_timeout_secs.is_none()
+        ));
+        type_sql(&mut harness, tab, id, "SELECT 1", 0);
+        run(&mut harness, tab, id, false);
+        assert!(matches!(
+            last_sent(&harness.app),
+            Command::RunSql {
+                limit: 100,
+                timeout: None,
+                ..
+            }
+        ));
+        assert_eq!(harness.app.settings.sql_limit, 100);
+        assert_eq!(harness.app.settings.sql_timeout_secs, None);
+        // The next editor starts from them; the menus of one editor leave
+        // the others as they are.
+        harness.app.apply(Action::NewSqlTab(tab));
+        let second = harness.app.workspace(tab).unwrap().active_tab.unwrap();
+        assert_eq!(sql(&harness, tab, second).limit, 100);
+        assert_eq!(sql(&harness, tab, second).timeout, None);
+        harness.app.apply(Action::SetSqlTimeout {
+            tab,
+            sql_tab: second,
+            secs: Some(60),
+        });
+        assert_eq!(
+            sql(&harness, tab, second).timeout,
+            Some(Duration::from_secs(60))
+        );
+        assert_eq!(sql(&harness, tab, id).timeout, None);
+        assert_eq!(harness.app.settings.sql_timeout_secs, Some(60));
+    }
+
+    fn saves_since(harness: &Harness, from: usize) -> usize {
+        harness.app.backend.sent[from..]
+            .iter()
+            .filter(|command| matches!(command, Command::Save { .. }))
+            .count()
+    }
+
+    #[test]
+    fn picking_the_limit_or_timeout_already_set_saves_nothing() {
+        let mut harness = Harness::new();
+        let (tab, first) = new_sql(&mut harness);
+        harness.app.apply(Action::NewSqlTab(tab));
+        let second = harness.app.workspace(tab).unwrap().active_tab.unwrap();
+        let sent = harness.app.backend.sent.len();
+        // The second editor's menus change the settings...
+        harness.app.apply(Action::SetSqlLimit {
+            tab,
+            sql_tab: second,
+            limit: 100,
+        });
+        harness.app.apply(Action::SetSqlTimeout {
+            tab,
+            sql_tab: second,
+            secs: Some(60),
+        });
+        assert_eq!(saves_since(&harness, sent), 2);
+        // ...so the same picks in the first only change that editor.
+        let sent = harness.app.backend.sent.len();
+        harness.app.apply(Action::SetSqlLimit {
+            tab,
+            sql_tab: first,
+            limit: 100,
+        });
+        harness.app.apply(Action::SetSqlTimeout {
+            tab,
+            sql_tab: first,
+            secs: Some(60),
+        });
+        assert_eq!(harness.app.backend.sent.len(), sent, "nothing to save");
+        assert_eq!(sql(&harness, tab, first).limit, 100);
+        assert_eq!(
+            sql(&harness, tab, first).timeout,
+            Some(Duration::from_secs(60))
+        );
+        assert_eq!(harness.app.settings.sql_limit, 100);
+        assert_eq!(harness.app.settings.sql_timeout_secs, Some(60));
+        // A timeout of no seconds is no timeout, which is a change once.
+        harness.app.apply(Action::SetSqlTimeout {
+            tab,
+            sql_tab: first,
+            secs: Some(0),
+        });
+        harness.app.apply(Action::SetSqlTimeout {
+            tab,
+            sql_tab: first,
+            secs: None,
+        });
+        assert_eq!(saves_since(&harness, sent), 1);
+    }
+
+    #[test]
+    fn a_limit_or_timeout_that_cannot_work_is_not_taken() {
+        let mut harness = Harness::new();
+        let (tab, id) = new_sql(&mut harness);
+        harness.app.apply(Action::SetSqlLimit {
+            tab,
+            sql_tab: id,
+            limit: 0,
+        });
+        assert_eq!(sql(&harness, tab, id).limit, 1);
+        assert_eq!(harness.app.settings.sql_limit, 1);
+        harness.app.apply(Action::SetSqlLimit {
+            tab,
+            sql_tab: id,
+            limit: u32::MAX,
+        });
+        assert_eq!(sql(&harness, tab, id).limit, Settings::MAX_SQL_LIMIT);
+        assert_eq!(harness.app.settings.sql_limit, Settings::MAX_SQL_LIMIT);
+        // A timeout of no seconds would cancel every run at once.
+        harness.app.apply(Action::SetSqlTimeout {
+            tab,
+            sql_tab: id,
+            secs: Some(0),
+        });
+        assert_eq!(sql(&harness, tab, id).timeout, None);
+        assert_eq!(harness.app.settings.sql_timeout_secs, None);
+    }
+
+    #[test]
+    fn the_result_pane_switches() {
+        let mut harness = Harness::new();
+        let (tab, id) = new_sql(&mut harness);
+        let sent = harness.app.backend.sent.len();
+        harness.app.apply(Action::SetResultPane {
+            tab,
+            sql_tab: id,
+            pane: ResultPane::Messages,
+        });
+        assert_eq!(sql(&harness, tab, id).pane, ResultPane::Messages);
+        harness.app.apply(Action::SetResultPane {
+            tab,
+            sql_tab: id,
+            pane: ResultPane::Results,
+        });
+        assert_eq!(sql(&harness, tab, id).pane, ResultPane::Results);
+        assert_eq!(harness.app.backend.sent.len(), sent);
+    }
+
+    #[test]
+    fn the_split_is_each_sql_tabs_own_and_starts_at_the_default() {
+        let mut harness = Harness::new();
+        let (tab, first) = new_sql(&mut harness);
+        let sent = harness.app.backend.sent.len();
+        harness.app.apply(Action::SetSqlSplit {
+            tab,
+            sql_tab: first,
+            split: 0.7,
+        });
+        assert_eq!(sql(&harness, tab, first).split, 0.7);
+        // A share past the whole height is all of it.
+        harness.app.apply(Action::SetSqlSplit {
+            tab,
+            sql_tab: first,
+            split: 3.0,
+        });
+        assert_eq!(sql(&harness, tab, first).split, 1.0);
+        harness.app.apply(Action::NewSqlTab(tab));
+        let second = harness.app.workspace(tab).unwrap().active_tab.unwrap();
+        assert_eq!(sql(&harness, tab, second).split, SqlTab::DEFAULT_SPLIT);
+        assert_eq!(sql(&harness, tab, first).split, 1.0);
+        // Nothing is asked of the backend or saved, and a tab that closed
+        // since is left alone.
+        assert_eq!(harness.app.backend.sent.len(), sent);
+        harness.app.apply(Action::CloseTab { tab, id: second });
+        harness.app.apply(Action::SetSqlSplit {
+            tab,
+            sql_tab: second,
+            split: 0.2,
+        });
+        assert_eq!(sql(&harness, tab, first).split, 1.0);
+        assert_eq!(harness.app.backend.sent.len(), sent);
+    }
+
+    #[test]
+    fn arrows_move_in_a_sql_result() {
+        let mut harness = Harness::new();
+        let (tab, id) = new_sql(&mut harness);
+        let step = |harness: &mut Harness, rows, cols| {
+            harness.app.apply(Action::MoveSelection {
+                tab,
+                id,
+                rows,
+                cols,
+            });
+            sql(harness, tab, id).selection
+        };
+        assert_eq!(step(&mut harness, 1, 0), None, "nothing to move in yet");
+        type_sql(&mut harness, tab, id, "SELECT 1", 0);
+        run(&mut harness, tab, id, false);
+        harness.answer_sql(Ok(script_outcome(vec![rows_outcome(3)])), None);
+        assert_eq!(
+            step(&mut harness, 1, 0),
+            Some(CellPos { row: 0, col: 0 }),
+            "the first key lands on the first cell"
+        );
+        assert_eq!(step(&mut harness, 1, 1), Some(CellPos { row: 1, col: 1 }));
+        assert_eq!(
+            step(&mut harness, isize::MAX, isize::MAX),
+            Some(CellPos { row: 2, col: 2 })
+        );
+        assert_eq!(
+            step(&mut harness, isize::MIN, 0),
+            Some(CellPos { row: 0, col: 2 })
+        );
+        // A run without a result set leaves nothing to select.
+        run(&mut harness, tab, id, false);
+        harness.answer_sql(
+            Ok(script_outcome(vec![tabletist_db::StatementOutcome::Done {
+                affected: None,
+            }])),
+            None,
+        );
+        assert_eq!(step(&mut harness, 1, 0), None);
+    }
+
+    #[test]
+    fn a_click_selects_a_cell_of_a_sql_result() {
+        let mut harness = Harness::new();
+        let (tab, id) = new_sql(&mut harness);
+        type_sql(&mut harness, tab, id, "SELECT 1", 0);
+        run(&mut harness, tab, id, false);
+        harness.answer_sql(Ok(script_outcome(vec![rows_outcome(3)])), None);
+        harness.app.workspace_mut(tab).unwrap().pane = Pane::Tree;
+        let cell = CellPos { row: 2, col: 1 };
+        harness.app.apply(Action::SelectCell { tab, id, cell });
+        assert_eq!(sql(&harness, tab, id).selection, Some(cell));
+        assert_eq!(harness.app.workspace(tab).unwrap().pane, Pane::Grid);
+        // A click on a cell the result no longer has (it was replaced
+        // after the frame was drawn) selects nothing new.
+        for gone in [CellPos { row: 3, col: 0 }, CellPos { row: 0, col: 3 }] {
+            harness.app.apply(Action::SelectCell {
+                tab,
+                id,
+                cell: gone,
+            });
+            assert_eq!(sql(&harness, tab, id).selection, Some(cell));
+        }
+    }
+
+    #[test]
+    fn closed_sql_editors_are_recorded_for_the_frame_to_forget() {
+        let mut harness = Harness::new();
+        let (tab, first) = new_sql(&mut harness);
+        let users = open(&mut harness, tab, "users", true);
+        harness.app.apply(Action::NewSqlTab(tab));
+        let second = harness.app.workspace(tab).unwrap().active_tab.unwrap();
+        harness.app.apply(Action::NewSqlTab(tab));
+        let third = harness.app.workspace(tab).unwrap().active_tab.unwrap();
+        assert!(harness.app.closed_editors.is_empty());
+        // A table tab has no editor to forget.
+        harness.app.apply(Action::CloseTab { tab, id: users });
+        assert!(harness.app.closed_editors.is_empty());
+        harness.app.apply(Action::CloseTab { tab, id: second });
+        assert_eq!(harness.app.closed_editors, [(tab, second)]);
+        // Closed twice (two clicks in one frame), it is recorded once.
+        harness.app.apply(Action::CloseTab { tab, id: second });
+        assert_eq!(harness.app.closed_editors, [(tab, second)]);
+        // The connection tab closes the editors it still has.
+        harness.app.apply(Action::CloseConnTab(tab));
+        assert_eq!(
+            harness.app.closed_editors,
+            [(tab, second), (tab, first), (tab, third)]
+        );
+        // So does leaving the connection for the picker.
+        let mut harness = Harness::new();
+        let (tab, id) = new_sql(&mut harness);
+        harness.app.apply(Action::Disconnect(tab));
+        assert_eq!(harness.app.closed_editors, [(tab, id)]);
+    }
+
+    #[test]
+    fn a_focused_sql_editor_takes_the_arrows_from_the_tree() {
+        let mut harness = Harness::new();
+        let (tab, id) = new_sql(&mut harness);
+        harness.app.workspace_mut(tab).unwrap().pane = Pane::Tree;
+        harness
+            .app
+            .apply(Action::SqlEditorFocused { tab, sql_tab: id });
+        assert_eq!(harness.app.workspace(tab).unwrap().pane, Pane::Grid);
+        // An editor closed since the frame that drew it takes nothing.
+        harness.app.workspace_mut(tab).unwrap().pane = Pane::Tree;
+        harness.app.apply(Action::CloseTab { tab, id });
+        harness
+            .app
+            .apply(Action::SqlEditorFocused { tab, sql_tab: id });
+        assert_eq!(harness.app.workspace(tab).unwrap().pane, Pane::Tree);
+    }
+
+    #[test]
+    fn refresh_does_nothing_on_a_sql_tab() {
+        let mut harness = Harness::new();
+        let (tab, id) = new_sql(&mut harness);
+        let users = open(&mut harness, tab, "users", true);
+        harness.answer_rows(page(5, false));
+        harness.app.apply(Action::ActivateTab { tab, id });
+        let sent = harness.app.backend.sent.len();
+        harness.app.apply(Action::Refresh(tab));
+        assert_eq!(
+            harness.app.backend.sent.len(),
+            sent,
+            "neither the tree nor the object tab behind it reloads"
+        );
+        harness.app.apply(Action::ActivateTab { tab, id: users });
+        harness.app.apply(Action::Refresh(tab));
+        assert!(matches!(last_sent(&harness.app), Command::FetchRows { .. }));
     }
 
     #[test]
@@ -3757,12 +5162,9 @@ mod tests {
         let mut harness = Harness::new();
         let tab = connect_tab(&mut harness);
         let id = open(&mut harness, tab, "users", true);
-        harness.app.apply(Action::CloseObjectTab {
-            tab,
-            object_tab: id,
-        });
+        harness.app.apply(Action::CloseTab { tab, id });
         harness.answer_rows(page(5, false));
-        assert!(harness.app.workspace(tab).unwrap().objects.is_empty());
+        assert!(harness.app.workspace(tab).unwrap().tabs.is_empty());
     }
 
     #[test]
@@ -3773,7 +5175,7 @@ mod tests {
         harness.answer_rows(page(300, true));
         harness.app.apply(Action::SelectCell {
             tab,
-            object_tab: id,
+            id,
             cell: CellPos { row: 200, col: 2 },
         });
         assert!(object(&harness, tab, id).pinned);
@@ -3796,7 +5198,7 @@ mod tests {
         harness.answer_rows(page(300, true));
         harness.app.apply(Action::SelectCell {
             tab,
-            object_tab: id,
+            id,
             cell: CellPos { row: 3, col: 0 },
         });
         harness.app.apply(Action::NextPage {
@@ -3814,7 +5216,7 @@ mod tests {
         let mv = |harness: &mut Harness, rows: isize, cols: isize| {
             harness.app.apply(Action::MoveSelection {
                 tab,
-                object_tab: id,
+                id,
                 rows,
                 cols,
             });
@@ -3952,10 +5354,7 @@ mod tests {
         });
         let counting = object(&harness, tab, id).count.pending.unwrap();
         let sent = harness.app.backend.sent.len();
-        harness.app.apply(Action::CloseObjectTab {
-            tab,
-            object_tab: id,
-        });
+        harness.app.apply(Action::CloseTab { tab, id });
         // With the describe that opening it started.
         assert!(cancels_since(&harness, sent).contains(&counting));
     }
@@ -3995,7 +5394,7 @@ mod tests {
         harness.answer_rows(page(2, false));
         harness.app.apply(Action::SelectCell {
             tab,
-            object_tab: id,
+            id,
             cell: CellPos { row: 0, col: 1 },
         });
         assert_eq!(
@@ -4353,6 +5752,36 @@ mod tests {
             sent_secrets(&app).is_empty(),
             "a rejected password is never saved"
         );
+    }
+
+    #[test]
+    fn answering_a_prompt_after_a_failure_forgets_sql_runs_of_the_old_session() {
+        let (mut app, _dir) = app();
+        let conn = postgres_saved(&mut app, PasswordMode::Ask);
+        let tab = app.active_tab_id();
+        app.apply(Action::Connect { tab, conn });
+        prompt(&mut app).password = "wrong".into();
+        app.apply(Action::SubmitPassword);
+        let (session, request, _) = last_connect(&app);
+        app.apply(Action::Backend(Event::ConnectFailed {
+            session,
+            request,
+            error: rejected(),
+        }));
+        let id = TabId(app.next_id());
+        let run = RequestId(app.next_id());
+        let workspace = app.workspace_mut(tab).unwrap();
+        let statements = tabletist_db::sql::statements(workspace.driver.dialect(), "SELECT 1");
+        let _ = workspace
+            .push_sql_tab(id, 1_000, None)
+            .start_run(run, statements);
+        workspace.server_version.value = Some("PostgreSQL 17.2".into());
+        prompt(&mut app).password = "right".into();
+        app.apply(Action::SubmitPassword);
+        let workspace = app.workspace(tab).unwrap();
+        assert_ne!(workspace.session, session, "a fresh session");
+        assert!(!workspace.sql_tab(id).unwrap().is_running());
+        assert!(workspace.server_version.needs_load());
     }
 
     #[test]
@@ -4838,11 +6267,80 @@ mod tests {
         });
         let workspace = app.workspace(tab).unwrap();
         assert_eq!(workspace.spec.database, "other");
-        assert!(workspace.tree.schemas.value.is_none() && workspace.objects.is_empty());
+        assert!(workspace.tree.schemas.value.is_none() && workspace.tabs.is_empty());
         match app.backend.sent.last() {
             Some(Command::Connect { spec, .. }) => assert_eq!(spec.database, "other"),
             other => panic!("{other:?}"),
         }
+    }
+
+    #[test]
+    fn switching_database_keeps_sql_editors_and_drops_object_tabs() {
+        let mut harness = Harness::new();
+        let tab = connect_tab(&mut harness);
+        let users = open(&mut harness, tab, "users", true);
+        let first = harness.add_sql_tab(tab);
+        open(&mut harness, tab, "orders", true);
+        let second = harness.add_sql_tab(tab);
+        start_run(&mut harness, tab, second);
+        let workspace = harness.app.workspace_mut(tab).unwrap();
+        workspace.server_version.value = Some("SQLite 3.46.0".into());
+        workspace.active_tab = Some(users);
+        workspace.sql_tab_mut(second).unwrap().text = "SELECT 1".into();
+        assert!(workspace.sql_tab(second).unwrap().is_running());
+        harness.app.apply(Action::SwitchDatabase {
+            tab,
+            database: "other".into(),
+        });
+        let workspace = harness.app.workspace(tab).unwrap();
+        assert_eq!(strip(&harness, tab), vec![first, second]);
+        assert_eq!(workspace.object_tabs().count(), 0);
+        assert_eq!(
+            workspace.active_tab,
+            Some(first),
+            "the object tab it showed is gone"
+        );
+        assert!(workspace.server_version.needs_load());
+        assert_eq!(workspace.next_query, 3, "numbers are not handed out again");
+        let sql = workspace.sql_tab(second).unwrap();
+        assert_eq!(sql.text, "SELECT 1");
+        // The old session is closed, so the run will never answer.
+        assert!(!sql.is_running() && sql.in_flight.is_none());
+        assert!(sql.running_for().is_none());
+        assert!(matches!(
+            last_sent(&harness.app),
+            Command::Connect { spec, .. } if spec.database == "other"
+        ));
+    }
+
+    #[test]
+    fn switching_database_stays_on_the_sql_editor_it_showed() {
+        let mut harness = Harness::new();
+        let tab = connect_tab(&mut harness);
+        harness.add_sql_tab(tab);
+        open(&mut harness, tab, "users", true);
+        let second = harness.add_sql_tab(tab);
+        harness.app.workspace_mut(tab).unwrap().active_tab = Some(second);
+        harness.app.apply(Action::SwitchDatabase {
+            tab,
+            database: "other".into(),
+        });
+        assert_eq!(harness.app.workspace(tab).unwrap().active_tab, Some(second));
+    }
+
+    #[test]
+    fn switching_database_with_only_object_tabs_shows_none() {
+        let mut harness = Harness::new();
+        let tab = connect_tab(&mut harness);
+        open(&mut harness, tab, "users", true);
+        open(&mut harness, tab, "orders", false);
+        harness.app.apply(Action::SwitchDatabase {
+            tab,
+            database: "other".into(),
+        });
+        let workspace = harness.app.workspace(tab).unwrap();
+        assert!(workspace.tabs.is_empty());
+        assert_eq!(workspace.active_tab, None);
     }
 
     #[test]
@@ -5783,11 +7281,11 @@ mod tests {
     /// Batch 7: count, filters, quick open, tree keys.
     mod power {
         use super::*;
-        use crate::model::{FilterRow, ObjectTabId, Pane, TreeKey, TreeNode};
+        use crate::model::{FilterRow, Pane, TabId, TreeKey, TreeNode};
         use crate::testing::{Harness, page};
         use tabletist_db::{ObjectKind, ObjectRef};
 
-        pub(super) fn open_users(harness: &mut Harness) -> (ConnTabId, ObjectTabId) {
+        pub(super) fn open_users(harness: &mut Harness) -> (ConnTabId, TabId) {
             let tab = harness.connect_fake();
             harness.app.apply(Action::OpenObject {
                 tab,
@@ -5796,7 +7294,7 @@ mod tests {
                 pin: true,
             });
             harness.answer_rows(page(3, false));
-            let id = harness.app.workspace(tab).unwrap().active_object.unwrap();
+            let id = harness.app.workspace(tab).unwrap().active_tab.unwrap();
             (tab, id)
         }
 
@@ -6087,9 +7585,7 @@ mod tests {
             harness.app.apply(Action::QuickOpenPick);
             assert!(harness.app.dialog.is_none());
             let workspace = harness.app.workspace(tab).unwrap();
-            let object = workspace
-                .object_tab(workspace.active_object.unwrap())
-                .unwrap();
+            let object = workspace.object_tab(workspace.active_tab.unwrap()).unwrap();
             assert_eq!(object.object, ObjectRef::new("shop", "users"));
             assert!(object.pinned);
         }
@@ -6156,9 +7652,7 @@ mod tests {
             key(&mut harness, TreeKey::Up);
             key(&mut harness, TreeKey::Enter);
             let workspace = harness.app.workspace(tab).unwrap();
-            let object = workspace
-                .object_tab(workspace.active_object.unwrap())
-                .unwrap();
+            let object = workspace.object_tab(workspace.active_tab.unwrap()).unwrap();
             assert_eq!(object.object.name, "order_notes");
             assert!(object.pinned);
             assert_eq!(workspace.pane, Pane::Grid);

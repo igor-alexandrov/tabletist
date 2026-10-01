@@ -11,7 +11,9 @@ pub mod fixtures;
 mod mysql;
 mod pg;
 mod query;
+mod script;
 mod spec;
+pub mod sql;
 mod sqlite;
 mod ssh;
 pub mod ssh_config;
@@ -27,6 +29,7 @@ pub use catalog::{
 pub use dialect::{Dialect, Sql, escape_like, quote_literal};
 pub use error::{Error, Result, SshStage};
 pub use query::{Filter, FilterOp, RowPage, RowQuery, Sort, SortDir};
+pub use script::{ScriptOutcome, StatementOutcome, StatementResult, StopFlag};
 pub use spec::{ConnectSpec, Driver, ParsedUrl, Secrets, SshAuth, SshSpec, TlsMode};
 pub use ssh::HostKeys;
 pub use value::{ColumnMeta, Value, ValueKind, value_from_pg_text};
@@ -120,10 +123,48 @@ impl Connection {
     }
 
     pub fn dialect(&self) -> Dialect {
+        self.driver().dialect()
+    }
+
+    /// Runs `statements` in order in one read-only transaction that is
+    /// always rolled back, keeping at most `limit` rows per statement.
+    /// Refuses the whole script, running nothing, when a statement could
+    /// leave the transaction (see [`sql::refusal`]). `stop` ends the run
+    /// between statements (and, on SQLite, inside one); the caller also
+    /// fires [`CancelHandle::cancel`] for a statement already running.
+    pub async fn run_script(
+        &self,
+        statements: &[sql::Statement],
+        limit: u32,
+        stop: &StopFlag,
+    ) -> Result<ScriptOutcome> {
+        let dialect = self.dialect();
+        for statement in statements {
+            if let Some(what) = sql::refusal(dialect, &statement.text) {
+                return Err(Error::Refused {
+                    line: statement.first_line,
+                    what,
+                });
+            }
+        }
+        if statements.is_empty() {
+            return Ok(ScriptOutcome::default());
+        }
+        let texts: Vec<String> = statements.iter().map(|s| s.text.clone()).collect();
         match &self.inner {
-            Inner::Sqlite(_) => Dialect::Sqlite,
-            Inner::Postgres(_) => Dialect::Postgres,
-            Inner::MySql(_) => Dialect::MySql,
+            Inner::Sqlite(conn) => conn.run_script(texts, limit, stop).await,
+            Inner::Postgres(conn) => conn.run_script(&texts, limit, stop).await,
+            Inner::MySql(conn) => conn.run_script(&texts, limit, stop).await,
+        }
+    }
+
+    /// The server's name and version for the footer: `PostgreSQL 17.2`,
+    /// `MySQL 8.4.3`, `MariaDB 10.11.6`, `SQLite 3.46.0`.
+    pub async fn server_version(&self) -> Result<String> {
+        match &self.inner {
+            Inner::Sqlite(conn) => conn.server_version().await,
+            Inner::Postgres(conn) => conn.server_version().await,
+            Inner::MySql(conn) => conn.server_version().await,
         }
     }
 

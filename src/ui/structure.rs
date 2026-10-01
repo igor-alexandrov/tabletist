@@ -2,7 +2,7 @@
 
 use crate::app::App;
 use crate::i18n::gettext;
-use crate::model::{Action, ConnTabId, ObjectTabId};
+use crate::model::{Action, ConnTabId, TabId};
 use crate::theme::{self, Look, Palette};
 use crate::typography::TextRole;
 use crate::ui::format::{display_safe, for_display};
@@ -32,7 +32,7 @@ fn quiet(ui: &mut egui::Ui, text: &str, look: &Look, palette: &Palette) {
     widgets::label(ui, widgets::body(look), text, palette.secondary, look);
 }
 
-pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: ObjectTabId) {
+pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId) {
     let locale = app.locale;
     let palette = app.palette;
     let look = app.look;

@@ -1,16 +1,25 @@
 //! MySQL 8.0+. Rows and catalog queries use prepared statements (the binary
 //! protocol): typed values, column types, and never more than one statement.
-//! Rows are read inside a read-only transaction.
+//! Rows are read inside a read-only transaction. A SQL editor script runs
+//! its statements the same way, in one read-only transaction, and the
+//! session is reset afterwards: MySQL session state is not transactional.
+//!
+//! MariaDB is meant to work, but the tests run against MySQL only. What is
+//! written for MariaDB alone (in `script`) has never met a MariaDB server:
+//! the older name of the read-only setting (`READ_ONLY_SETTINGS`), its
+//! version for the session reset (`can_reset`), and its marking of a
+//! read-only transaction in the server status (`begin`).
 
 use std::borrow::Cow;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use mysql_async::consts::{ColumnFlags, ColumnType};
+use mysql_async::consts::{ColumnFlags, ColumnType, StatusFlags};
 use mysql_async::prelude::Queryable;
 use mysql_async::{DriverError, IoError, Opts, OptsBuilder, Params, SslOpts, TxOpts};
 use mysql_common::named_params::ParsedNamedParams;
 
+use crate::script::retry_cancelled;
 use crate::{
     ColumnInfo, ColumnMeta, ConnectSpec, Dialect, Error, ForeignKeyInfo, IndexInfo, MAX_LISTED,
     ObjectInfo, ObjectKind, ObjectRef, Result, RowPage, RowQuery, Secrets, Structure, TlsMode,
@@ -25,6 +34,8 @@ const UNKNOWN_SYSTEM_VARIABLE: u16 = 1193;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
+mod script;
+
 pub struct Conn {
     pub(crate) conn: tokio::sync::Mutex<mysql_async::Conn>,
     /// For KILL QUERY from a second connection.
@@ -36,9 +47,17 @@ pub struct Conn {
     pub(crate) encrypted: bool,
     /// The server that thread id belongs to (see `server_identity`).
     pub(crate) server: String,
+    /// `SELECT VERSION()` at connect, like `8.4.3` or
+    /// `10.11.6-MariaDB-1:10.11.6+maria~ubu2204`.
+    pub(crate) version: String,
 }
 
 impl Conn {
+    /// See [`crate::Connection::server_version`]. Asked at connect.
+    pub async fn server_version(&self) -> Result<String> {
+        Ok(version_name(&self.version))
+    }
+
     /// Connects to the spec's server, or through a tunnel's local port `via`.
     pub async fn connect(spec: &ConnectSpec, secrets: &Secrets, via: Option<u16>) -> Result<Self> {
         if spec.user.trim().is_empty() {
@@ -87,26 +106,24 @@ impl Conn {
                 }
                 Ok(Err(error)) => return Err(connect_error(error)),
             };
-        // Fixed statements: safe to send through the text protocol.
-        conn.query_drop("SET SESSION TRANSACTION READ ONLY")
-            .await
-            .map_err(query_error)?;
-        conn.query_drop(
-            "SET SESSION sql_mode = REPLACE(@@SESSION.sql_mode, 'NO_BACKSLASH_ESCAPES', '')",
-        )
-        .await
-        .map_err(query_error)?;
+        prepare_session(&mut conn).await?;
         let id = conn.id();
         // mysql_async fails rather than go on in plain text when it was
         // given TLS options, so the options that connected say it.
         let encrypted = opts.ssl_opts().is_some();
         let server = server_identity(&mut conn).await.map_err(query_error)?;
+        let version: Option<mysql_async::Row> = conn
+            .query_first("SELECT VERSION()")
+            .await
+            .map_err(query_error)?;
+        let version = version.map(from_row).transpose()?.unwrap_or_default();
         Ok(Self {
             conn: tokio::sync::Mutex::new(conn),
             opts,
             id,
             encrypted,
             server,
+            version,
         })
     }
 
@@ -309,6 +326,30 @@ fn from_row<T: mysql_async::prelude::FromRow>(row: mysql_async::Row) -> Result<T
     })
 }
 
+/// A result set's columns.
+fn column_metas(columns: &[mysql_async::Column]) -> Vec<ColumnMeta> {
+    columns
+        .iter()
+        .map(|column| {
+            let type_name = type_name(column.column_type(), column.flags(), column.character_set());
+            ColumnMeta {
+                name: column.name_str().into_owned(),
+                kind: kind(&type_name),
+                type_name: type_name.into_owned(),
+            }
+        })
+        .collect()
+}
+
+/// A row's values, typed by `columns`.
+fn row_values(row: mysql_async::Row, columns: &[ColumnMeta]) -> Vec<Value> {
+    row.unwrap()
+        .into_iter()
+        .zip(columns)
+        .map(|(cell, column)| value(cell, &column.type_name))
+        .collect()
+}
+
 /// Up to `limit + 1` rows of a page, so the caller can tell there are more.
 async fn read_page(
     transaction: &mut mysql_async::Transaction<'_>,
@@ -320,27 +361,10 @@ async fn read_page(
         .exec_iter(&statement, params(&sql.params))
         .await
         .map_err(query_error)?;
-    let columns: Vec<ColumnMeta> = result
-        .columns_ref()
-        .iter()
-        .map(|column| {
-            let type_name = type_name(column.column_type(), column.flags(), column.character_set());
-            ColumnMeta {
-                name: column.name_str().into_owned(),
-                kind: kind(&type_name),
-                type_name: type_name.into_owned(),
-            }
-        })
-        .collect();
+    let columns = column_metas(result.columns_ref());
     let mut rows = Vec::new();
     while let Some(row) = result.next().await.map_err(query_error)? {
-        rows.push(
-            row.unwrap()
-                .into_iter()
-                .zip(&columns)
-                .map(|(cell, column)| value(cell, &column.type_name))
-                .collect(),
-        );
+        rows.push(row_values(row, &columns));
         if rows.len() > limit {
             break;
         }
@@ -427,6 +451,73 @@ async fn finish<T>(transaction: mysql_async::Transaction<'_>, outcome: Result<T>
     let value = outcome?;
     rolled_back.map_err(query_error)?;
     Ok(value)
+}
+
+/// Makes the session read-only: no transaction of its own can write.
+const READ_ONLY: &str = "SET SESSION TRANSACTION READ ONLY";
+
+/// The character set and collation of the driver's handshake. A session
+/// reset puts the server's defaults in their place, while the driver goes
+/// on sending and reading UTF-8.
+const NAMES: &str = "SET NAMES utf8mb4 COLLATE utf8mb4_general_ci";
+
+/// The sql_mode names a session runs without, so that the server lexes
+/// text as `sql::tokenize` does: with `ANSI_QUOTES` a `"..."` is a name,
+/// and with `NO_BACKSLASH_ESCAPES` a backslash is a character. The others
+/// are combination modes, which turn `ANSI_QUOTES` back on if they stay.
+/// In this order: `ANSI` is also the start of `ANSI_QUOTES`.
+const LEXING_MODES: [&str; 8] = [
+    "NO_BACKSLASH_ESCAPES",
+    "ANSI_QUOTES",
+    "ANSI",
+    "POSTGRESQL",
+    "ORACLE",
+    "MSSQL",
+    "DB2",
+    "MAXDB",
+];
+
+/// The session settings every connection runs with, set at connect and
+/// again after a SQL editor script's reset, which undoes them. Read-only
+/// comes first. After a reset a cancel meant for a statement can land
+/// here, so a statement it interrupts runs once more: the session is not
+/// left read-write because a `SET` was interrupted.
+async fn prepare_session(conn: &mut mysql_async::Conn) -> Result<()> {
+    let sql_mode = LEXING_MODES
+        .iter()
+        .fold("@@SESSION.sql_mode".to_owned(), |mode, name| {
+            format!("REPLACE({mode}, '{name}', '')")
+        });
+    let sql_mode = format!("SET SESSION sql_mode = {sql_mode}");
+    // Fixed statements: safe to send through the text protocol.
+    for statement in [READ_ONLY, NAMES, sql_mode.as_str()] {
+        retry_cancelled!(execute(conn, statement))?;
+    }
+    Ok(())
+}
+
+/// Runs one of the driver's own statements, through the text protocol.
+async fn execute(conn: &mut mysql_async::Conn, statement: &str) -> Result<()> {
+    conn.query_drop(statement).await.map_err(query_error)
+}
+
+/// The server's status after the last query that worked: whether the
+/// session is in a transaction, and whether that one is read-only.
+fn status(conn: &mysql_async::Conn) -> StatusFlags {
+    conn.last_ok_packet()
+        .map_or(StatusFlags::empty(), |ok| ok.status_flags())
+}
+
+/// `SELECT VERSION()` as the footer shows it: the name, and the number
+/// without what a distribution adds after a `-`.
+fn version_name(full: &str) -> String {
+    let name = if full.contains("MariaDB") {
+        "MariaDB"
+    } else {
+        "MySQL"
+    };
+    let number = full.split('-').next().unwrap_or_default();
+    format!("{name} {number}")
 }
 
 /// A readable type name from a result column's metadata. Result columns do
@@ -959,19 +1050,31 @@ mod tests {
         assert_eq!(same_server("", ""), different);
     }
 
-    /// Needs TABLETIST_TEST_MYSQL_URL (see AGENTS.md); skipped without it.
+    /// The test server's URL, or `None` (test skipped). See AGENTS.md and
+    /// `tests/mysql.rs`.
+    pub(super) fn test_url() -> Option<String> {
+        let url = std::env::var("TABLETIST_TEST_MYSQL_URL")
+            .ok()
+            .filter(|url| !url.trim().is_empty());
+        if url.is_none() {
+            eprintln!("skipped: TABLETIST_TEST_MYSQL_URL is not set");
+        }
+        url
+    }
+
+    /// A fresh read-only session, as the app opens it.
+    pub(super) async fn session(url: &str) -> Conn {
+        let (mut spec, secrets) = ConnectSpec::from_url(url).unwrap();
+        spec.tls = TlsMode::Disable;
+        Conn::connect(&spec, &secrets, None).await.unwrap()
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_cancel_that_reaches_another_server_kills_nothing() {
-        let Some(url) = std::env::var("TABLETIST_TEST_MYSQL_URL")
-            .ok()
-            .filter(|url| !url.trim().is_empty())
-        else {
-            eprintln!("skipped: TABLETIST_TEST_MYSQL_URL is not set");
+        let Some(url) = test_url() else {
             return;
         };
-        let (mut spec, secrets) = ConnectSpec::from_url(&url).unwrap();
-        spec.tls = TlsMode::Disable;
-        let session = std::sync::Arc::new(Conn::connect(&spec, &secrets, None).await.unwrap());
+        let session = std::sync::Arc::new(session(&url).await);
         assert!(session.server.starts_with("uuid "), "{}", session.server);
         let running = {
             let session = std::sync::Arc::clone(&session);
@@ -990,6 +1093,72 @@ mod tests {
             ))
         );
         assert_eq!(running.await.unwrap().unwrap(), Some(0));
+    }
+
+    #[test]
+    fn versions_lose_what_a_distribution_adds() {
+        assert_eq!(version_name("8.4.3"), "MySQL 8.4.3");
+        assert_eq!(version_name("8.0.36-0ubuntu0.22.04.1"), "MySQL 8.0.36");
+        assert_eq!(
+            version_name("10.11.6-MariaDB-1:10.11.6+maria~ubu2204"),
+            "MariaDB 10.11.6"
+        );
+        assert_eq!(version_name("11.4.2-MariaDB"), "MariaDB 11.4.2");
+    }
+
+    /// The connect-time settings undo what a server's defaults (or a reset
+    /// to them) can hold: a read-write session, a mode that changes how
+    /// text is lexed, another character set.
+    #[tokio::test]
+    async fn the_session_settings_undo_modes_that_change_lexing() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        let conn = session(&url).await;
+        let mut conn = conn.conn.lock().await;
+        for mode in [
+            // A combination mode holds ANSI_QUOTES, and brings it back when
+            // only ANSI_QUOTES is taken out.
+            "ANSI",
+            "ANSI_QUOTES,NO_BACKSLASH_ESCAPES,STRICT_ALL_TABLES",
+            "NO_BACKSLASH_ESCAPES,ANSI,TRADITIONAL",
+            "",
+        ] {
+            conn.query_drop(format!("SET SESSION sql_mode = '{mode}'"))
+                .await
+                .unwrap();
+            conn.query_drop("SET SESSION TRANSACTION READ WRITE")
+                .await
+                .unwrap();
+            conn.query_drop("SET NAMES latin1").await.unwrap();
+            prepare_session(&mut conn).await.unwrap();
+            let (read_only, sql_mode, client, collation): (i64, String, String, String) = conn
+                .query_first(
+                    "SELECT @@session.transaction_read_only, @@session.sql_mode, \
+                            @@session.character_set_client, @@session.collation_connection",
+                )
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(read_only, 1, "{mode}");
+            assert!(!sql_mode.contains("ANSI"), "{mode}: {sql_mode}");
+            assert!(
+                !sql_mode.contains("NO_BACKSLASH_ESCAPES"),
+                "{mode}: {sql_mode}"
+            );
+            // What does not change lexing stays.
+            assert_eq!(
+                sql_mode.contains("STRICT_ALL_TABLES"),
+                mode.contains("STRICT_ALL_TABLES") || mode.contains("TRADITIONAL"),
+                "{mode}: {sql_mode}"
+            );
+            assert_eq!(client, "utf8mb4", "{mode}");
+            assert_eq!(collation, "utf8mb4_general_ci", "{mode}");
+            // A quoted string is a string, and a backslash escapes.
+            let texts: Option<(String, String)> =
+                conn.exec_first(r#"SELECT "a", 'b\'c'"#, ()).await.unwrap();
+            assert_eq!(texts, Some(("a".into(), "b'c".into())), "{mode}");
+        }
     }
 
     #[test]

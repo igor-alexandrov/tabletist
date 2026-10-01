@@ -19,6 +19,8 @@ use crate::{
 use tokio_postgres::error::SqlState;
 use tokio_postgres_rustls::MakeRustlsConnect;
 
+mod script;
+
 pub struct Conn {
     pub(crate) client: tokio::sync::Mutex<tokio_postgres::Client>,
     pub(crate) cancel: tokio_postgres::CancelToken,
@@ -178,7 +180,47 @@ fn unexpected(error: tokio_postgres::Error) -> Error {
     Error::query(format!("unexpected data from the server: {error}"))
 }
 
+/// A prepared statement's result columns.
+fn column_metas(statement: &tokio_postgres::Statement) -> Vec<ColumnMeta> {
+    statement
+        .columns()
+        .iter()
+        .map(|column| ColumnMeta {
+            name: column.name().to_owned(),
+            type_name: column.type_().name().to_owned(),
+            kind: ValueKind::from_pg_type(column.type_().name()),
+        })
+        .collect()
+}
+
+/// A simple-query row's text values, typed by `columns`.
+fn row_values(row: &tokio_postgres::SimpleQueryRow, columns: &[ColumnMeta]) -> Result<Vec<Value>> {
+    columns
+        .iter()
+        .enumerate()
+        .map(|(index, column)| {
+            Ok(match row.try_get(index).map_err(unexpected)? {
+                None => Value::Null,
+                Some(text) => value_from_pg_text(&column.type_name, text),
+            })
+        })
+        .collect()
+}
+
 impl Conn {
+    /// See [`crate::Connection::server_version`].
+    pub async fn server_version(&self) -> Result<String> {
+        let client = self.client.lock().await;
+        let messages = client
+            .simple_query("SHOW server_version")
+            .await
+            .map_err(query_error)?;
+        let version = first_text(&messages).unwrap_or_default();
+        // "17.2 (Debian 17.2-1.pgdg120+1)" reads as "17.2".
+        let version = version.split_whitespace().next().unwrap_or_default();
+        Ok(format!("PostgreSQL {version}"))
+    }
+
     /// Connects to the spec's server, or through a tunnel's local port `via`.
     pub async fn connect(spec: &ConnectSpec, secrets: &Secrets, via: Option<u16>) -> Result<Self> {
         if spec.user.trim().is_empty() {
@@ -436,15 +478,7 @@ impl Conn {
             .await
             .map_err(query_error)?;
         let statement = transaction.prepare(&sql.text).await.map_err(query_error)?;
-        let columns: Vec<ColumnMeta> = statement
-            .columns()
-            .iter()
-            .map(|column| ColumnMeta {
-                name: column.name().to_owned(),
-                type_name: column.type_().name().to_owned(),
-                kind: ValueKind::from_pg_type(column.type_().name()),
-            })
-            .collect();
+        let columns = column_metas(&statement);
         let messages = transaction
             .simple_query(&sql.text)
             .await
@@ -456,18 +490,7 @@ impl Conn {
                 if rows.len() > limit {
                     break;
                 }
-                rows.push(
-                    columns
-                        .iter()
-                        .enumerate()
-                        .map(|(index, column)| {
-                            Ok(match row.try_get(index).map_err(unexpected)? {
-                                None => Value::Null,
-                                Some(text) => value_from_pg_text(&column.type_name, text),
-                            })
-                        })
-                        .collect::<Result<_>>()?,
-                );
+                rows.push(row_values(&row, &columns)?);
             }
         }
         let has_more = rows.len() > limit;
@@ -511,6 +534,14 @@ impl Conn {
     }
 }
 
+/// The first row's first value.
+fn first_text(messages: &[SimpleQueryMessage]) -> Option<String> {
+    messages.iter().find_map(|message| match message {
+        SimpleQueryMessage::Row(row) => row.get(0).map(str::to_owned),
+        _ => None,
+    })
+}
+
 /// pg_constraint's one-letter referential actions.
 fn action(code: &str) -> &'static str {
     match code {
@@ -543,6 +574,25 @@ mod tests {
         let direct = config(&spec, &secrets, None);
         assert!(direct.get_hostaddrs().is_empty());
         assert_eq!(direct.get_ports(), &[5432]);
+    }
+
+    /// The test server's URL, or `None` (test skipped). See
+    /// `tests/postgres.rs`.
+    pub(super) fn test_url() -> Option<String> {
+        let url = std::env::var("TABLETIST_TEST_PG_URL")
+            .ok()
+            .filter(|url| !url.trim().is_empty());
+        if url.is_none() {
+            eprintln!("skipped: TABLETIST_TEST_PG_URL is not set");
+        }
+        url
+    }
+
+    /// A fresh read-only session, as the app opens it.
+    pub(super) async fn session(url: &str) -> Conn {
+        let (mut spec, secrets) = ConnectSpec::from_url(url).unwrap();
+        spec.tls = crate::TlsMode::Disable;
+        Conn::connect(&spec, &secrets, None).await.unwrap()
     }
 
     /// A server that declines TLS and accepts anyone, answering every

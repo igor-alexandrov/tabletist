@@ -1,10 +1,12 @@
 //! Application state types and the actions that change them.
 
+use std::time::Duration;
+
 use tabletist_db::ssh_config::{AgentSocket, ConfigHost, Proxy};
 use tabletist_db::{ConnectSpec, Driver, Filter, FilterOp, SshAuth, SshSpec, TlsMode};
 
 use crate::backend::{Event, RequestId, SessionId};
-use crate::connections::{ConnectionId, PasswordMode};
+use crate::connections::{ConnectionId, PasswordMode, SavedConnection};
 
 /// Identifies a connection tab for its whole life, whatever its position.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -128,7 +130,7 @@ pub enum Action {
     /// Drop one applied filter (the raw WHERE counts last) and query again.
     DropFilter {
         tab: ConnTabId,
-        object_tab: ObjectTabId,
+        object_tab: TabId,
         index: usize,
     },
     /// Put keyboard focus in the terminal look's WHERE line.
@@ -138,17 +140,17 @@ pub enum Action {
     /// Fold (or unfold) every JSON document in the row panel (`za`).
     FoldDocuments {
         tab: ConnTabId,
-        object_tab: ObjectTabId,
+        object_tab: TabId,
     },
     /// Follow the foreign key of the selected cell's column (`gd`).
     FollowSelectedKey {
         tab: ConnTabId,
-        object_tab: ObjectTabId,
+        object_tab: TabId,
     },
     /// Drop the active object tab's sort, back to the key order.
     ClearSort {
         tab: ConnTabId,
-        object_tab: ObjectTabId,
+        object_tab: TabId,
     },
     /// Open the table a foreign key points at, filtered to the row it names.
     FollowForeignKey {
@@ -164,56 +166,104 @@ pub enum Action {
         kind: ObjectKind,
         pin: bool,
     },
-    ActivateObjectTab {
+    /// Show this tab (an object tab or a SQL editor).
+    ActivateTab {
         tab: ConnTabId,
-        object_tab: ObjectTabId,
+        id: TabId,
     },
-    CloseObjectTab {
+    /// Close this tab (an object tab or a SQL editor).
+    CloseTab {
         tab: ConnTabId,
-        object_tab: ObjectTabId,
+        id: TabId,
     },
     PinObjectTab {
         tab: ConnTabId,
-        object_tab: ObjectTabId,
+        object_tab: TabId,
     },
-    CycleObjectTab {
+    /// Step through the workspace's tabs of either kind, wrapping around.
+    CycleTab {
         tab: ConnTabId,
         step: isize,
     },
     SetView {
         tab: ConnTabId,
-        object_tab: ObjectTabId,
+        object_tab: TabId,
         view: ObjectView,
     },
     NextPage {
         tab: ConnTabId,
-        object_tab: ObjectTabId,
+        object_tab: TabId,
     },
     PrevPage {
         tab: ConnTabId,
-        object_tab: ObjectTabId,
+        object_tab: TabId,
     },
     SortBy {
         tab: ConnTabId,
-        object_tab: ObjectTabId,
+        object_tab: TabId,
         column: String,
     },
+    /// Select a cell of an object tab's page or a SQL editor's result.
     SelectCell {
         tab: ConnTabId,
-        object_tab: ObjectTabId,
+        id: TabId,
         cell: CellPos,
     },
     /// Arrow keys (±1), Page Up/Down (±page), Home/End (isize::MIN/MAX).
     MoveSelection {
         tab: ConnTabId,
-        object_tab: ObjectTabId,
+        id: TabId,
         rows: isize,
         cols: isize,
     },
     ToggleRowPanel(ConnTabId),
-    /// Refetch the active object tab (and its structure if loaded).
+    /// Refetch the active object tab (and its structure if loaded). Does
+    /// nothing on a SQL editor.
     Refresh(ConnTabId),
+    /// Stop what the active tab waits for: an object tab's loads, a SQL
+    /// editor's run.
     CancelQuery(ConnTabId),
+    /// Open a SQL editor in the connection tab's workspace and show it.
+    NewSqlTab(ConnTabId),
+    /// Run the statement at the editor's cursor, or every statement.
+    RunSql {
+        tab: ConnTabId,
+        sql_tab: TabId,
+        all: bool,
+    },
+    /// The Limit menu: this editor's row limit, and the one new editors get.
+    SetSqlLimit {
+        tab: ConnTabId,
+        sql_tab: TabId,
+        limit: u32,
+    },
+    /// The Timeout menu: this editor's timeout in seconds (`None` waits
+    /// for ever), and the one new editors get.
+    SetSqlTimeout {
+        tab: ConnTabId,
+        sql_tab: TabId,
+        secs: Option<u32>,
+    },
+    /// Show a SQL editor's Results or its Messages.
+    SetResultPane {
+        tab: ConnTabId,
+        sql_tab: TabId,
+        pane: ResultPane,
+    },
+    /// The splitter under a SQL editor: the editor's share of the height
+    /// it and its results have.
+    SetSqlSplit {
+        tab: ConnTabId,
+        sql_tab: TabId,
+        split: f32,
+    },
+    /// A SQL editor's text has taken the keyboard (the view tells, it is
+    /// not asked to): the arrows it gives up (Esc) go to its results, not
+    /// to the tree.
+    SqlEditorFocused {
+        tab: ConnTabId,
+        sql_tab: TabId,
+    },
     /// A key for the sidebar tree.
     TreeKey {
         tab: ConnTabId,
@@ -240,35 +290,35 @@ pub enum Action {
     ToggleFilterBar(ConnTabId),
     AddFilterRow {
         tab: ConnTabId,
-        object_tab: ObjectTabId,
+        object_tab: TabId,
     },
     RemoveFilterRow {
         tab: ConnTabId,
-        object_tab: ObjectTabId,
+        object_tab: TabId,
         index: usize,
     },
     /// Query with the filter bar's conditions, from the first page.
     ApplyFilters {
         tab: ConnTabId,
-        object_tab: ObjectTabId,
+        object_tab: TabId,
     },
     /// Drop every condition, close the bar, and query everything.
     ClearFilters {
         tab: ConnTabId,
-        object_tab: ObjectTabId,
+        object_tab: TabId,
     },
     /// Count the object tab's rows exactly (with its filters).
     CountRows {
         tab: ConnTabId,
-        object_tab: ObjectTabId,
+        object_tab: TabId,
     },
     RetryRows {
         tab: ConnTabId,
-        object_tab: ObjectTabId,
+        object_tab: TabId,
     },
     RetryStructure {
         tab: ConnTabId,
-        object_tab: ObjectTabId,
+        object_tab: TabId,
     },
     /// The connection dialog's driver switch.
     SetDriver(Driver),
@@ -297,8 +347,14 @@ pub struct Workspace {
     pub encrypted: bool,
     pub status: SessionStatus,
     pub tree: Tree,
-    pub objects: Vec<ObjectTab>,
-    pub active_object: Option<ObjectTabId>,
+    /// Open tabs, in strip order.
+    pub tabs: Vec<Tab>,
+    /// The number the next SQL editor gets ("Query 1", "Query 2", ...).
+    pub next_query: u32,
+    /// "PostgreSQL 17.2", asked for when the first SQL editor opens.
+    pub server_version: Fetch<String>,
+    /// The tab the workspace shows: an object tab or a SQL editor.
+    pub active_tab: Option<TabId>,
     /// Whether the row panel is open.
     pub row_panel: bool,
     /// An object to open as soon as the session connects (demo mode).
@@ -329,7 +385,7 @@ pub struct Workspace {
     /// Focus the WHERE line on the next frame.
     pub focus_where: bool,
     /// Fold or unfold the row panel's documents on the next frame (`za`).
-    pub fold_documents: Option<ObjectTabId>,
+    pub fold_documents: Option<TabId>,
 }
 
 /// How many objects the sidebar's Recent section keeps.
@@ -1325,8 +1381,10 @@ impl Tree {
     }
 }
 
+/// One open tab in a workspace (an object or a SQL editor). Ids come from
+/// `App::next_id`, so they never repeat.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct ObjectTabId(pub u64);
+pub struct TabId(pub u64);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ObjectView {
@@ -1345,7 +1403,7 @@ pub struct CellPos {
 /// One open table or view.
 #[derive(Debug)]
 pub struct ObjectTab {
-    pub id: ObjectTabId,
+    pub id: TabId,
     pub object: ObjectRef,
     pub kind: ObjectKind,
     /// A preview tab (not pinned) is replaced by the next single click.
@@ -1426,7 +1484,7 @@ impl FilterBar {
 
 impl ObjectTab {
     pub fn new(
-        id: ObjectTabId,
+        id: TabId,
         object: ObjectRef,
         kind: ObjectKind,
         pinned: bool,
@@ -1489,17 +1547,447 @@ impl ObjectTab {
     }
 }
 
+/// One open tab in a workspace. Both kinds are boxed: an object tab is
+/// much larger than a SQL editor, and a SQL editor much larger than a
+/// pointer (clippy's large_enum_variant either way).
+#[derive(Debug)]
+pub enum Tab {
+    Object(Box<ObjectTab>),
+    Sql(Box<SqlTab>),
+}
+
+impl Tab {
+    pub fn id(&self) -> TabId {
+        match self {
+            Self::Object(object) => object.id,
+            Self::Sql(sql) => sql.id,
+        }
+    }
+
+    pub fn as_object(&self) -> Option<&ObjectTab> {
+        match self {
+            Self::Object(object) => Some(object.as_ref()),
+            Self::Sql(_) => None,
+        }
+    }
+
+    pub fn as_object_mut(&mut self) -> Option<&mut ObjectTab> {
+        match self {
+            Self::Object(object) => Some(object.as_mut()),
+            Self::Sql(_) => None,
+        }
+    }
+
+    pub fn as_sql(&self) -> Option<&SqlTab> {
+        match self {
+            Self::Sql(sql) => Some(sql.as_ref()),
+            Self::Object(_) => None,
+        }
+    }
+
+    pub fn as_sql_mut(&mut self) -> Option<&mut SqlTab> {
+        match self {
+            Self::Sql(sql) => Some(sql.as_mut()),
+            Self::Object(_) => None,
+        }
+    }
+
+    /// What the tab is loading; closing it cancels these.
+    pub fn pending(&self) -> Vec<RequestId> {
+        match self {
+            Self::Object(object) => object.pending().collect(),
+            Self::Sql(sql) => sql.run.pending.into_iter().collect(),
+        }
+    }
+
+    /// A preview tab is replaced by the next single click. SQL tabs never are.
+    pub fn is_preview(&self) -> bool {
+        matches!(self, Self::Object(object) if !object.pinned)
+    }
+}
+
+/// Which pane of a SQL tab's results shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ResultPane {
+    #[default]
+    Results,
+    Messages,
+}
+
+/// A result's columns and rows, and whether the limit cut rows off.
+pub type ShownRows<'a> = (
+    &'a [tabletist_db::ColumnMeta],
+    &'a [Vec<tabletist_db::Value>],
+    bool,
+);
+
+/// A finished SQL editor run.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SqlRun {
+    /// The statements as split when the run started.
+    pub statements: Vec<tabletist_db::sql::Statement>,
+    pub outcome: tabletist_db::ScriptOutcome,
+    /// Who stopped the run, if someone did.
+    pub cancel: Option<crate::backend::CancelReason>,
+    /// Where the first statement that failed sits in the editor: its line,
+    /// and the column when the database gave a position. Worked out once,
+    /// when the run finishes, since views ask every frame.
+    pub error_mark: Option<(usize, Option<usize>)>,
+}
+
+impl SqlRun {
+    fn new(
+        statements: Vec<tabletist_db::sql::Statement>,
+        outcome: tabletist_db::ScriptOutcome,
+        cancel: Option<crate::backend::CancelReason>,
+    ) -> Self {
+        // One result per statement that started, in order.
+        let error_mark = statements
+            .iter()
+            .zip(&outcome.results)
+            .find_map(|(statement, result)| {
+                let tabletist_db::StatementOutcome::Error { position, .. } = &result.outcome else {
+                    return None;
+                };
+                Some(match position {
+                    Some(position) => {
+                        let (line, column) = statement.line_col(*position);
+                        (line, Some(column))
+                    }
+                    None => (statement.first_line, None),
+                })
+            });
+        Self {
+            statements,
+            outcome,
+            cancel,
+            error_mark,
+        }
+    }
+}
+
+/// What a text was, without keeping it: its length and a hash. Tells
+/// whether an editor's text is still the one a run started with.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct TextPrint {
+    len: usize,
+    hash: u64,
+}
+
+// Hand-written: a guess at a script can be checked against its hash, so
+// the hash stays out of logs and panic messages as the script does.
+impl std::fmt::Debug for TextPrint {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TextPrint").finish_non_exhaustive()
+    }
+}
+
+impl TextPrint {
+    pub fn of(text: &str) -> Self {
+        use std::hash::{Hash as _, Hasher as _};
+        let mut hasher = std::hash::DefaultHasher::new();
+        text.hash(&mut hasher);
+        Self {
+            len: text.len(),
+            hash: hasher.finish(),
+        }
+    }
+
+    /// Whether `text` is the text this is the print of.
+    pub fn is_of(self, text: &str) -> bool {
+        self.len == text.len() && self == Self::of(text)
+    }
+}
+
+/// A SQL editor run the backend has not answered yet.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RunInFlight {
+    /// The statements as split when the run started.
+    pub statements: Vec<tabletist_db::sql::Statement>,
+    /// When the run started, for the elapsed time.
+    pub started: std::time::Instant,
+    /// The editor's text when the run started.
+    pub text: TextPrint,
+}
+
+/// One SQL editor. Its text lives only in memory.
+pub struct SqlTab {
+    pub id: TabId,
+    /// "Query 3".
+    pub number: u32,
+    pub text: String,
+    /// Byte offset of the editor's cursor, reported by the view.
+    pub cursor: usize,
+    pub limit: u32,
+    pub timeout: Option<Duration>,
+    /// The last run, or the one running (a whole-run failure is its error).
+    /// Change it through `start_run`, `finish_run` and `abandon_run`.
+    pub run: Fetch<SqlRun>,
+    /// The run `run` waits for: `Some` exactly while it is pending.
+    pub in_flight: Option<RunInFlight>,
+    pub pane: ResultPane,
+    /// The editor's share of the height it and its results have, from 0
+    /// to 1. Change it through `set_split`.
+    pub split: f32,
+    pub selection: Option<CellPos>,
+    /// Focus the editor on the next frame.
+    pub focus_editor: bool,
+    /// The text the last run that finished started with. Its error mark
+    /// names a line of that text, so it holds only while the text is that.
+    ran_text: Option<TextPrint>,
+}
+
+// Hand-written so the SQL text never reaches logs or panic messages (a
+// statement prints without its text too).
+impl std::fmt::Debug for SqlTab {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SqlTab")
+            .field("id", &self.id)
+            .field("number", &self.number)
+            .field("cursor", &self.cursor)
+            .field("limit", &self.limit)
+            .field("timeout", &self.timeout)
+            .field("run", &self.run)
+            .field("in_flight", &self.in_flight)
+            .field("pane", &self.pane)
+            .field("split", &self.split)
+            .field("selection", &self.selection)
+            .field("focus_editor", &self.focus_editor)
+            .finish_non_exhaustive()
+    }
+}
+
+impl SqlTab {
+    /// The editor's share of the height in a new tab.
+    pub const DEFAULT_SPLIT: f32 = 0.45;
+
+    pub fn new(id: TabId, number: u32, limit: u32, timeout: Option<Duration>) -> Self {
+        Self {
+            id,
+            number,
+            text: String::new(),
+            cursor: 0,
+            limit,
+            timeout,
+            run: Fetch::default(),
+            in_flight: None,
+            pane: ResultPane::default(),
+            split: Self::DEFAULT_SPLIT,
+            selection: None,
+            focus_editor: true,
+            ran_text: None,
+        }
+    }
+
+    /// Gives the editor `split` of the height, kept between none and all
+    /// of it. A share that is no number changes nothing.
+    pub fn set_split(&mut self, split: f32) {
+        if split.is_finite() {
+            self.split = split.clamp(0.0, 1.0);
+        }
+    }
+
+    /// Starts a run of `statements` as `request`. Returns the run it
+    /// replaces, if one was still pending, for the caller to cancel.
+    #[must_use]
+    pub fn start_run(
+        &mut self,
+        request: RequestId,
+        statements: Vec<tabletist_db::sql::Statement>,
+    ) -> Option<RequestId> {
+        let superseded = self.run.pending;
+        self.run.start(request);
+        self.in_flight = Some(RunInFlight {
+            statements,
+            started: std::time::Instant::now(),
+            text: TextPrint::of(&self.text),
+        });
+        superseded
+    }
+
+    /// Applies the answer to `request` if that is the run in flight, and
+    /// returns whether it was. A run that failed as a whole becomes
+    /// `run.error` and drops the result of the run before it: nothing ran,
+    /// so nothing of an older run may read as this one's.
+    pub fn finish_run(
+        &mut self,
+        request: RequestId,
+        result: Result<tabletist_db::ScriptOutcome, Error>,
+        cancel: Option<crate::backend::CancelReason>,
+    ) -> bool {
+        if self.run.pending != Some(request) {
+            return false;
+        }
+        let in_flight = self.in_flight.take();
+        self.ran_text = in_flight.as_ref().map(|run| run.text);
+        if result.is_err() {
+            self.run.value = None;
+            self.run.loaded = None;
+        }
+        let statements = in_flight.map(|run| run.statements).unwrap_or_default();
+        self.run.finish(
+            request,
+            result.map(|outcome| SqlRun::new(statements, outcome, cancel)),
+        )
+    }
+
+    /// Forgets the run in flight (its session is gone, so nothing will
+    /// answer it) and keeps the last result.
+    pub fn abandon_run(&mut self) {
+        self.run.pending = None;
+        self.in_flight = None;
+    }
+
+    pub fn is_running(&self) -> bool {
+        self.run.is_loading()
+    }
+
+    /// How long the run in flight has been going.
+    pub fn running_for(&self) -> Option<Duration> {
+        self.in_flight.as_ref().map(|run| run.started.elapsed())
+    }
+
+    /// The last run that ran: none before any run, and none after one
+    /// that failed as a whole. It stays while the next run is in flight.
+    /// What the results, the footer and the gutter show is all this run's.
+    pub fn last_run(&self) -> Option<&SqlRun> {
+        self.run.value.as_ref()
+    }
+
+    /// What the Results pane shows: the last statement of the last run
+    /// that returned rows, with its index in the run.
+    pub fn shown(&self) -> Option<(usize, &tabletist_db::StatementResult)> {
+        let run = self.last_run()?;
+        run.outcome
+            .results
+            .iter()
+            .enumerate()
+            .rev()
+            .find(|(_, result)| {
+                matches!(result.outcome, tabletist_db::StatementOutcome::Rows { .. })
+            })
+    }
+
+    /// The shown result's columns and rows, and whether the limit cut
+    /// rows off.
+    pub fn shown_rows(&self) -> Option<ShownRows<'_>> {
+        match &self.shown()?.1.outcome {
+            tabletist_db::StatementOutcome::Rows {
+                columns,
+                rows,
+                truncated,
+            } => Some((columns, rows, *truncated)),
+            _ => None,
+        }
+    }
+
+    /// Rows and columns of the shown result; zero of both without one.
+    pub fn dims(&self) -> (usize, usize) {
+        self.shown_rows()
+            .map_or((0, 0), |(columns, rows, _)| (rows.len(), columns.len()))
+    }
+
+    /// The cursor's 1-based line and column (in characters).
+    pub fn line_col(&self) -> (usize, usize) {
+        // The cursor is the view's: text set from elsewhere may leave it
+        // inside a character.
+        let before = &self.text[..self.text.floor_char_boundary(self.cursor)];
+        let line = before.matches('\n').count() + 1;
+        let column = before
+            .rsplit('\n')
+            .next()
+            .map_or(0, |line| line.chars().count())
+            + 1;
+        (line, column)
+    }
+
+    /// Where the last run failed: the editor line, and the column when the
+    /// database gave a position. `None` while a run is in flight, and once
+    /// the text is no longer the one that ran: the line may have moved.
+    pub fn error_mark(&self) -> Option<(usize, Option<usize>)> {
+        if self.is_running() {
+            return None;
+        }
+        let mark = match &self.run.error {
+            Some(Error::Refused { line, .. }) => Some((*line, None)),
+            // Nothing ran: there is no statement to mark.
+            Some(_) => None,
+            None => self.last_run()?.error_mark,
+        }?;
+        // Asked every frame: the text is hashed only while there is a mark.
+        self.ran_text?.is_of(&self.text).then_some(mark)
+    }
+}
+
 impl Workspace {
-    pub fn object_tab(&self, id: ObjectTabId) -> Option<&ObjectTab> {
-        self.objects.iter().find(|tab| tab.id == id)
+    /// A workspace for `saved` that is connecting as `session`; `request`
+    /// is the connect it waits for, and `secrets` are the ones typed so far.
+    pub fn new(
+        session: SessionId,
+        request: RequestId,
+        saved: SavedConnection,
+        secrets: tabletist_db::Secrets,
+    ) -> Self {
+        Self {
+            session,
+            environment: saved.environment,
+            conn_id: saved.id,
+            name: saved.name,
+            driver: saved.spec.driver,
+            encrypted: false,
+            spec: saved.spec,
+            status: SessionStatus::Connecting { request },
+            tree: Tree::default(),
+            tabs: Vec::new(),
+            next_query: 1,
+            server_version: Fetch::default(),
+            active_tab: None,
+            row_panel: true,
+            pending_open: None,
+            password_mode: saved.password,
+            secrets,
+            databases: Fetch::default(),
+            save_password: false,
+            needs_prompt: None,
+            ssh_mode: saved.ssh_secret,
+            save_ssh: false,
+            needs_ssh_prompt: None,
+            pane: Pane::Tree,
+            recent: Vec::new(),
+            sidebar_hidden: false,
+            full_precision: false,
+            focus_where: false,
+            fold_documents: None,
+        }
     }
 
-    pub fn object_tab_mut(&mut self, id: ObjectTabId) -> Option<&mut ObjectTab> {
-        self.objects.iter_mut().find(|tab| tab.id == id)
+    pub fn tab(&self, id: TabId) -> Option<&Tab> {
+        self.tabs.iter().find(|tab| tab.id() == id)
     }
 
+    pub fn tab_mut(&mut self, id: TabId) -> Option<&mut Tab> {
+        self.tabs.iter_mut().find(|tab| tab.id() == id)
+    }
+
+    pub fn object_tab(&self, id: TabId) -> Option<&ObjectTab> {
+        self.tab(id)?.as_object()
+    }
+
+    pub fn object_tab_mut(&mut self, id: TabId) -> Option<&mut ObjectTab> {
+        self.tab_mut(id)?.as_object_mut()
+    }
+
+    pub fn sql_tab(&self, id: TabId) -> Option<&SqlTab> {
+        self.tab(id)?.as_sql()
+    }
+
+    pub fn sql_tab_mut(&mut self, id: TabId) -> Option<&mut SqlTab> {
+        self.tab_mut(id)?.as_sql_mut()
+    }
+
+    /// The active tab, when it is an object tab.
     pub fn active_object_tab(&self) -> Option<&ObjectTab> {
-        self.object_tab(self.active_object?)
+        self.object_tab(self.active_tab?)
     }
 
     /// Whether another schema has an object named like `object`, among
@@ -1508,8 +1996,7 @@ impl Workspace {
     /// told apart.
     pub fn name_is_shared(&self, object: &ObjectRef) -> bool {
         let other = |schema: &str| schema != object.schema;
-        self.objects
-            .iter()
+        self.object_tabs()
             .any(|tab| tab.object.name == object.name && other(&tab.object.schema))
             || self.tree.nodes.iter().any(|(schema, node)| {
                 other(schema)
@@ -1519,6 +2006,59 @@ impl Workspace {
                         .as_ref()
                         .is_some_and(|objects| objects.iter().any(|info| info.name == object.name))
             })
+    }
+
+    /// The active tab, when it is a SQL editor.
+    pub fn active_sql_tab(&self) -> Option<&SqlTab> {
+        self.sql_tab(self.active_tab?)
+    }
+
+    /// The object tabs, in strip order.
+    pub fn object_tabs(&self) -> impl Iterator<Item = &ObjectTab> {
+        self.tabs.iter().filter_map(Tab::as_object)
+    }
+
+    pub fn object_tabs_mut(&mut self) -> impl Iterator<Item = &mut ObjectTab> {
+        self.tabs.iter_mut().filter_map(Tab::as_object_mut)
+    }
+
+    /// The SQL editors, in strip order.
+    pub fn sql_tabs(&self) -> impl Iterator<Item = &SqlTab> {
+        self.tabs.iter().filter_map(Tab::as_sql)
+    }
+
+    pub fn sql_tabs_mut(&mut self) -> impl Iterator<Item = &mut SqlTab> {
+        self.tabs.iter_mut().filter_map(Tab::as_sql_mut)
+    }
+
+    /// Adds an empty SQL editor at the end of the strip, numbered after the
+    /// last one, without showing it.
+    pub fn push_sql_tab(
+        &mut self,
+        id: TabId,
+        limit: u32,
+        timeout: Option<Duration>,
+    ) -> &mut SqlTab {
+        let number = self.next_query;
+        self.next_query += 1;
+        self.tabs
+            .push(Tab::Sql(Box::new(SqlTab::new(id, number, limit, timeout))));
+        match self.tabs.last_mut() {
+            Some(Tab::Sql(sql)) => sql,
+            _ => unreachable!("a SQL tab was just pushed"),
+        }
+    }
+
+    /// Forgets what the SQL editors asked the session for. Call it wherever
+    /// `session` is replaced: answers for the old one are dropped, so a run
+    /// left pending would look like it runs for ever. The server may differ
+    /// too, so its version is asked for again (see `App::after_connect`).
+    /// Object tabs are not touched: the connect reloads them.
+    pub fn forget_session_requests(&mut self) {
+        for sql in self.sql_tabs_mut() {
+            sql.abandon_run();
+        }
+        self.server_version = Fetch::default();
     }
 }
 
@@ -1581,6 +2121,519 @@ mod tests {
         billing.objects.value = Some(vec![info("invoices", ObjectKind::Table)]);
         tree.nodes.insert("billing".into(), billing);
         tree
+    }
+
+    fn sql_tab(id: u64) -> Tab {
+        Tab::Sql(Box::new(SqlTab::new(
+            TabId(id),
+            1,
+            1_000,
+            Some(Duration::from_secs(30)),
+        )))
+    }
+
+    fn object_tab(id: u64, name: &str, pinned: bool) -> Tab {
+        Tab::Object(Box::new(ObjectTab::new(
+            TabId(id),
+            ObjectRef::new("main", name),
+            ObjectKind::Table,
+            pinned,
+            100,
+            None,
+        )))
+    }
+
+    #[test]
+    fn a_workspace_finds_its_tabs_by_kind() {
+        let mut workspace = crate::testing::workspace();
+        workspace.tabs.push(object_tab(1, "users", true));
+        workspace.tabs.push(sql_tab(2));
+        workspace.active_tab = Some(TabId(2));
+        assert!(workspace.tab(TabId(1)).is_some() && workspace.tab(TabId(3)).is_none());
+        assert!(workspace.object_tab(TabId(1)).is_some());
+        assert!(workspace.object_tab(TabId(2)).is_none());
+        assert!(workspace.sql_tab(TabId(2)).is_some());
+        assert!(workspace.sql_tab(TabId(1)).is_none());
+        assert!(workspace.active_object_tab().is_none());
+        assert_eq!(workspace.active_sql_tab().map(|sql| sql.number), Some(1));
+        assert_eq!(workspace.object_tabs().count(), 1);
+        assert_eq!(workspace.object_tabs_mut().count(), 1);
+        assert_eq!(workspace.sql_tabs().count(), 1);
+        assert_eq!(workspace.sql_tabs_mut().count(), 1);
+        workspace.active_tab = Some(TabId(1));
+        assert!(workspace.active_sql_tab().is_none());
+        assert_eq!(
+            workspace.active_object_tab().map(|object| object.id),
+            Some(TabId(1))
+        );
+    }
+
+    #[test]
+    fn a_new_workspace_has_no_tabs_and_numbers_queries_from_one() {
+        let workspace = crate::testing::workspace();
+        assert!(workspace.tabs.is_empty() && workspace.active_tab.is_none());
+        assert_eq!(workspace.next_query, 1);
+        assert!(workspace.server_version.needs_load());
+    }
+
+    fn script(text: &str) -> Vec<tabletist_db::sql::Statement> {
+        tabletist_db::sql::statements(Driver::Sqlite.dialect(), text)
+    }
+
+    fn editor() -> SqlTab {
+        SqlTab::new(TabId(2), 1, 1_000, Some(Duration::from_secs(30)))
+    }
+
+    #[test]
+    fn a_sql_tab_keeps_its_split_between_none_and_all_of_the_height() {
+        let mut sql = editor();
+        assert_eq!(sql.split, SqlTab::DEFAULT_SPLIT);
+        assert_eq!(SqlTab::DEFAULT_SPLIT, 0.45);
+        sql.set_split(0.7);
+        assert_eq!(sql.split, 0.7);
+        sql.set_split(1.5);
+        assert_eq!(sql.split, 1.0);
+        sql.set_split(-0.2);
+        assert_eq!(sql.split, 0.0);
+        sql.set_split(0.3);
+        for odd in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            sql.set_split(odd);
+            assert_eq!(sql.split, 0.3);
+        }
+    }
+
+    #[test]
+    fn a_sql_tab_waits_for_its_run() {
+        let mut tab = sql_tab(2);
+        assert!(tab.pending().is_empty());
+        let sql = tab.as_sql_mut().unwrap();
+        assert_eq!(sql.start_run(RequestId(9), script("SELECT 1")), None);
+        assert_eq!(tab.pending(), vec![RequestId(9)]);
+    }
+
+    #[test]
+    fn a_new_run_names_the_one_it_replaces() {
+        let mut sql = editor();
+        assert!(!sql.is_running() && sql.running_for().is_none());
+        assert_eq!(sql.start_run(RequestId(9), script("SELECT 1")), None);
+        assert!(sql.is_running() && sql.running_for().is_some());
+        assert_eq!(
+            sql.start_run(RequestId(10), script("SELECT 2; SELECT 3")),
+            Some(RequestId(9)),
+            "the caller cancels it"
+        );
+        assert_eq!(sql.run.pending, Some(RequestId(10)));
+        assert_eq!(sql.in_flight.as_ref().unwrap().statements.len(), 2);
+    }
+
+    #[test]
+    fn a_finished_run_keeps_the_statements_it_ran() {
+        let mut sql = editor();
+        let _ = sql.start_run(RequestId(9), script("SELECT 1; SELECT 2"));
+        let cancel = Some(crate::backend::CancelReason::User);
+        let outcome = tabletist_db::ScriptOutcome {
+            stopped: true,
+            ..Default::default()
+        };
+        assert!(sql.finish_run(RequestId(9), Ok(outcome.clone()), cancel));
+        assert!(!sql.is_running() && sql.running_for().is_none());
+        assert!(sql.in_flight.is_none());
+        let run = sql.run.value.as_ref().unwrap();
+        assert_eq!(run.statements, script("SELECT 1; SELECT 2"));
+        assert_eq!(run.outcome, outcome);
+        assert_eq!(run.cancel, cancel);
+        assert_eq!(sql.run.loaded, Some(RequestId(9)));
+    }
+
+    #[test]
+    fn a_stale_answer_does_not_finish_the_run() {
+        let mut sql = editor();
+        let _ = sql.start_run(RequestId(9), script("SELECT 1"));
+        let _ = sql.start_run(RequestId(10), script("SELECT 2"));
+        assert!(!sql.finish_run(RequestId(9), Ok(Default::default()), None));
+        assert_eq!(sql.run.pending, Some(RequestId(10)));
+        assert!(sql.run.value.is_none());
+        assert_eq!(
+            sql.in_flight.as_ref().unwrap().statements,
+            script("SELECT 2"),
+            "the run in flight keeps its statements"
+        );
+        // Nor does an answer when nothing runs.
+        let mut idle = editor();
+        assert!(!idle.finish_run(RequestId(9), Ok(Default::default()), None));
+        assert!(idle.run.needs_load());
+    }
+
+    #[test]
+    fn a_run_that_fails_as_a_whole_is_the_runs_error_and_leaves_no_result() {
+        let mut sql = editor();
+        let _ = sql.start_run(RequestId(9), script("SELECT 1"));
+        assert!(sql.finish_run(RequestId(9), Ok(Default::default()), None));
+        let _ = sql.start_run(RequestId(10), script("SELECT 2"));
+        let lost = Error::ConnectionLost("the server went away".into());
+        assert!(sql.finish_run(RequestId(10), Err(lost.clone()), None));
+        assert!(!sql.is_running() && sql.in_flight.is_none());
+        assert_eq!(sql.run.error, Some(lost));
+        // Nothing ran: the result of the run before is not this run's.
+        assert_eq!(sql.run.loaded, None);
+        assert!(sql.run.value.is_none());
+    }
+
+    #[test]
+    fn abandoning_a_run_keeps_the_last_result() {
+        let mut sql = editor();
+        let _ = sql.start_run(RequestId(9), script("SELECT 1"));
+        assert!(sql.finish_run(RequestId(9), Ok(Default::default()), None));
+        let _ = sql.start_run(RequestId(10), script("SELECT 2"));
+        sql.abandon_run();
+        assert!(!sql.is_running() && sql.running_for().is_none());
+        assert!(sql.in_flight.is_none());
+        assert_eq!(sql.run.loaded, Some(RequestId(9)));
+        // Its answer, should one still arrive, is dropped.
+        assert!(!sql.finish_run(RequestId(10), Ok(Default::default()), None));
+        // Abandoning nothing changes nothing.
+        sql.abandon_run();
+        assert!(sql.run.value.is_some());
+    }
+
+    use crate::testing::{error_outcome, rows_outcome, run_script};
+
+    #[test]
+    fn a_sql_tab_reports_its_cursor_line_and_column() {
+        let mut sql = editor();
+        assert_eq!(sql.line_col(), (1, 1));
+        sql.text = "SELECT 1;\nSELECT ë, 2".into();
+        sql.cursor = sql.text.len();
+        assert_eq!(sql.line_col(), (2, 12), "columns count characters");
+        sql.cursor = "SELECT 1;\n".len();
+        assert_eq!(sql.line_col(), (2, 1));
+        sql.cursor = "SELECT 1".len();
+        assert_eq!(sql.line_col(), (1, 9));
+        // A cursor the text no longer reaches, or inside a character
+        // (the view reports it a frame late), stays in the text.
+        sql.cursor = sql.text.len() + 40;
+        assert_eq!(sql.line_col(), (2, 12));
+        sql.cursor = "SELECT 1;\nSELECT ".len() + 1;
+        assert_eq!(sql.line_col(), (2, 8));
+    }
+
+    #[test]
+    fn results_show_the_last_statement_that_returned_rows() {
+        let mut sql = editor();
+        assert!(sql.shown().is_none() && sql.shown_rows().is_none());
+        assert_eq!(sql.dims(), (0, 0));
+        run_script(
+            &mut sql,
+            "SELECT 1; SELECT 2; SET x = 1",
+            vec![
+                rows_outcome(5),
+                rows_outcome(2),
+                tabletist_db::StatementOutcome::Done { affected: None },
+            ],
+        );
+        let (index, result) = sql.shown().unwrap();
+        assert_eq!(index, 1);
+        assert_eq!(result.elapsed, Duration::from_millis(14));
+        let (columns, rows, truncated) = sql.shown_rows().unwrap();
+        assert_eq!((columns.len(), rows.len(), truncated), (3, 2, false));
+        assert_eq!(sql.dims(), (2, 3));
+        assert_eq!(sql.error_mark(), None);
+        // A run without a result set shows none.
+        run_script(
+            &mut sql,
+            "SET x = 1",
+            vec![tabletist_db::StatementOutcome::Done { affected: None }],
+        );
+        assert!(sql.shown().is_none());
+        assert_eq!(sql.dims(), (0, 0));
+    }
+
+    #[test]
+    fn a_failed_statement_is_marked_on_the_line_of_its_sql() {
+        let mut sql = editor();
+        run_script(
+            &mut sql,
+            "SELECT 1;\n-- the typo\nSELECT x",
+            vec![rows_outcome(1), error_outcome("no such column: x", None)],
+        );
+        assert_eq!(sql.error_mark(), Some((3, None)));
+        assert_eq!(
+            sql.run.value.as_ref().unwrap().error_mark,
+            Some((3, None)),
+            "kept with the run, not worked out again for every frame"
+        );
+        assert_eq!(sql.shown().map(|(index, _)| index), Some(0));
+    }
+
+    #[test]
+    fn an_error_position_becomes_an_editor_line_and_column() {
+        let text = "SELECT 1;\n  SELECT a,\n  nope FROM t";
+        // On the statement's first line the column counts from the line's
+        // start, not the statement's.
+        let mut sql = editor();
+        run_script(
+            &mut sql,
+            text,
+            vec![
+                rows_outcome(1),
+                error_outcome("column \"a\" does not exist", Some(8)),
+            ],
+        );
+        assert_eq!(sql.error_mark(), Some((2, Some(10))));
+        // "nope" is the 13th character of the second statement.
+        run_script(
+            &mut sql,
+            text,
+            vec![
+                rows_outcome(1),
+                error_outcome("column \"nope\" does not exist", Some(13)),
+            ],
+        );
+        assert_eq!(sql.error_mark(), Some((3, Some(3))));
+    }
+
+    /// What the views read of `sql`: the last run's statements, the rows
+    /// that show, and the gutter's mark.
+    fn readings(sql: &SqlTab) -> (Option<usize>, bool, (usize, usize), Option<usize>) {
+        (
+            sql.last_run().map(|run| run.statements.len()),
+            sql.shown().is_some(),
+            sql.dims(),
+            sql.error_mark().map(|(line, _)| line),
+        )
+    }
+
+    #[test]
+    fn a_run_that_failed_as_a_whole_drops_the_result_before_it() {
+        let mut sql = editor();
+        assert_eq!(readings(&sql), (None, false, (0, 0), None));
+        run_script(&mut sql, "SELECT 1", vec![rows_outcome(5)]);
+        assert_eq!(readings(&sql), (Some(1), true, (5, 3), None));
+        // The run in flight leaves the last one in place.
+        let _ = sql.start_run(RequestId(20), script("COMMIT"));
+        assert_eq!(readings(&sql), (Some(1), true, (5, 3), None));
+        let lost = Error::ConnectionLost("the server went away".into());
+        assert!(sql.finish_run(RequestId(20), Err(lost), None));
+        assert!(sql.run.value.is_none() && sql.run.loaded.is_none());
+        assert_eq!(readings(&sql), (None, false, (0, 0), None));
+        // Starting the next run clears the error and brings nothing back,
+        // nor does an answer for a run that was replaced.
+        let _ = sql.start_run(RequestId(21), script("SELECT 2"));
+        assert!(sql.run.error.is_none());
+        assert_eq!(readings(&sql), (None, false, (0, 0), None));
+        assert!(!sql.finish_run(RequestId(20), Ok(Default::default()), None));
+        assert_eq!(readings(&sql), (None, false, (0, 0), None));
+        run_script(&mut sql, "SELECT 2", vec![rows_outcome(2)]);
+        assert_eq!(readings(&sql), (Some(1), true, (2, 3), None));
+    }
+
+    #[test]
+    fn what_the_views_read_agrees_after_an_error_a_failure_and_an_abandoned_run() {
+        let mut sql = editor();
+        // A statement fails: the run ran, and its line is marked.
+        let failing = vec![rows_outcome(1), error_outcome("no such column: x", None)];
+        run_script(&mut sql, "SELECT 1;\nSELECT x", failing);
+        assert_eq!(readings(&sql), (Some(2), true, (1, 3), Some(2)));
+        // The next run fails as a whole: nothing of the run before stays,
+        // its rows and its mark alike.
+        let _ = sql.start_run(RequestId(20), script("SELECT 1;\nSELECT x"));
+        assert_eq!(readings(&sql), (Some(2), true, (1, 3), None), "in flight");
+        assert!(sql.finish_run(RequestId(20), Err(Error::LeftReadOnly), None));
+        assert_eq!(readings(&sql), (None, false, (0, 0), None));
+        // The run after it is never answered (its session is gone).
+        let _ = sql.start_run(RequestId(21), script("SELECT 1;\nSELECT x"));
+        assert_eq!(readings(&sql), (None, false, (0, 0), None));
+        sql.abandon_run();
+        assert!(sql.run.error.is_none() && !sql.is_running());
+        assert_eq!(readings(&sql), (None, false, (0, 0), None));
+        // A refusal is the one whole-run failure with a line to mark, and
+        // it too leaves no rows.
+        run_script(&mut sql, "SELECT 1;\nSELECT x", vec![rows_outcome(4)]);
+        let _ = sql.start_run(RequestId(30), script("SELECT 1;\nSELECT x"));
+        let refused = Error::Refused {
+            line: 2,
+            what: "COMMIT".into(),
+        };
+        assert!(sql.finish_run(RequestId(30), Err(refused), None));
+        assert_eq!(readings(&sql), (None, false, (0, 0), Some(2)));
+    }
+
+    #[test]
+    fn a_refusal_is_marked_and_an_older_runs_error_is_not() {
+        let mut sql = editor();
+        run_script(
+            &mut sql,
+            "SELECT x",
+            vec![error_outcome("no such column: x", None)],
+        );
+        assert_eq!(sql.error_mark(), Some((1, None)));
+        // The run in flight has not failed anywhere yet.
+        let _ = sql.start_run(RequestId(20), script("SELECT 1;\n\n\nCOMMIT"));
+        assert_eq!(sql.error_mark(), None);
+        let refused = Error::Refused {
+            line: 4,
+            what: "COMMIT".into(),
+        };
+        assert!(sql.finish_run(RequestId(20), Err(refused), None));
+        assert_eq!(sql.error_mark(), Some((4, None)));
+        // A run that failed as a whole for another reason marks nothing:
+        // no statement ran.
+        let _ = sql.start_run(RequestId(21), script("SELECT 1"));
+        let lost = Error::ConnectionLost("the server went away".into());
+        assert!(sql.finish_run(RequestId(21), Err(lost), None));
+        assert!(sql.run.value.is_none());
+        assert_eq!(sql.error_mark(), None);
+    }
+
+    #[test]
+    fn an_error_mark_holds_only_while_the_text_is_the_one_that_ran() {
+        let failing = || vec![rows_outcome(1), error_outcome("no such column: x", None)];
+        let mut sql = editor();
+        run_script(&mut sql, "SELECT 1;\nSELECT x", failing());
+        assert_eq!(sql.error_mark(), Some((2, None)));
+        // A line typed above moves the statement: the mark would sit on
+        // the wrong line.
+        sql.text.insert_str(0, "-- first\n");
+        assert_eq!(sql.error_mark(), None);
+        // Nor does a change that keeps the text's length keep the mark.
+        sql.text = "SELECT 1;\nSELECT y".into();
+        assert_eq!(sql.error_mark(), None);
+        // The text as it ran is marked again, and so is the next run.
+        sql.text = "SELECT 1;\nSELECT x".into();
+        assert_eq!(sql.error_mark(), Some((2, None)));
+        run_script(&mut sql, "\nSELECT 1;\nSELECT x", failing());
+        assert_eq!(sql.error_mark(), Some((3, None)));
+        // A refusal's line is a line of the text that was refused.
+        sql.text = "SELECT 1;\nCOMMIT".into();
+        let _ = sql.start_run(RequestId(30), script("SELECT 1;\nCOMMIT"));
+        let refused = Error::Refused {
+            line: 2,
+            what: "COMMIT".into(),
+        };
+        assert!(sql.finish_run(RequestId(30), Err(refused), None));
+        assert_eq!(sql.error_mark(), Some((2, None)));
+        sql.text.insert(0, '\n');
+        assert_eq!(sql.error_mark(), None);
+    }
+
+    #[test]
+    fn an_error_mark_is_of_the_text_its_own_run_started_with() {
+        let failing = || vec![error_outcome("no such column: x", None)];
+        // Typed in while the run was in flight: the mark is stale at once.
+        let mut sql = editor();
+        sql.text = "SELECT x".into();
+        let _ = sql.start_run(RequestId(9), script("SELECT x"));
+        sql.text.insert_str(0, "SELECT 1;\n");
+        let outcome = crate::testing::script_outcome(failing());
+        assert!(sql.finish_run(RequestId(9), Ok(outcome), None));
+        assert_eq!(sql.error_mark(), None);
+        // A later run that never answers leaves the older run's mark with
+        // the older run's text.
+        let mut sql = editor();
+        run_script(&mut sql, "SELECT x", failing());
+        sql.text = "\nSELECT x".into();
+        let _ = sql.start_run(RequestId(40), script("\nSELECT x"));
+        sql.abandon_run();
+        assert_eq!(sql.error_mark(), None);
+        sql.text = "SELECT x".into();
+        assert_eq!(sql.error_mark(), Some((1, None)));
+    }
+
+    #[test]
+    fn a_text_print_tells_its_text_from_others_without_keeping_it() {
+        let print = TextPrint::of("SELECT secret");
+        assert!(print.is_of("SELECT secret"));
+        assert!(!print.is_of("SELECT secrex"));
+        assert!(!print.is_of("SELECT secret "));
+        assert_eq!(format!("{print:?}"), "TextPrint { .. }");
+    }
+
+    #[test]
+    fn a_sql_tab_never_prints_its_text() {
+        let mut tab = sql_tab(2);
+        let sql = tab.as_sql_mut().unwrap();
+        sql.text = "SELECT secret_column FROM vault".into();
+        let _ = sql.start_run(RequestId(9), script("SELECT secret_column FROM vault"));
+        for printed in [format!("{tab:?}"), format!("{tab:#?}")] {
+            assert!(printed.contains("SqlTab"), "{printed}");
+            assert!(!printed.contains("secret_column"), "{printed}");
+            assert!(!printed.contains("vault"), "{printed}");
+        }
+        // Nor what a guess at the text could be checked against: the
+        // print of the text the run in flight started with shows no hash.
+        let sql = tab.as_sql().unwrap();
+        let print = sql.in_flight.as_ref().unwrap().text;
+        for printed in [
+            format!("{print:?}"),
+            format!("{:?}", sql.in_flight),
+            format!("{tab:?}"),
+            format!("{tab:#?}"),
+        ] {
+            assert!(printed.contains("TextPrint"), "{printed}");
+            assert!(!printed.contains(&print.hash.to_string()), "{printed}");
+            assert!(!printed.contains(&format!("{:x}", print.hash)), "{printed}");
+        }
+    }
+
+    #[test]
+    fn a_pushed_sql_tab_takes_the_next_number_and_is_not_shown() {
+        let mut workspace = crate::testing::workspace();
+        workspace.tabs.push(object_tab(1, "users", true));
+        workspace.active_tab = Some(TabId(1));
+        let first = workspace.push_sql_tab(TabId(2), 500, None);
+        assert_eq!(
+            (first.id, first.number, first.limit, first.timeout),
+            (TabId(2), 1, 500, None)
+        );
+        let second = workspace.push_sql_tab(TabId(3), 1_000, Some(Duration::from_secs(5)));
+        assert_eq!(second.number, 2);
+        assert_eq!(workspace.next_query, 3);
+        assert_eq!(workspace.active_tab, Some(TabId(1)));
+        assert_eq!(
+            workspace.tabs.iter().map(Tab::id).collect::<Vec<_>>(),
+            vec![TabId(1), TabId(2), TabId(3)]
+        );
+    }
+
+    #[test]
+    fn forgetting_the_session_abandons_runs_and_the_server_version() {
+        let mut workspace = crate::testing::workspace();
+        workspace.tabs.push(object_tab(1, "users", true));
+        workspace.push_sql_tab(TabId(2), 1_000, None);
+        let running = workspace.push_sql_tab(TabId(3), 1_000, None);
+        let _ = running.start_run(RequestId(9), script("SELECT 1"));
+        workspace.server_version.value = Some("SQLite 3.46.0".into());
+        workspace
+            .object_tab_mut(TabId(1))
+            .unwrap()
+            .rows
+            .start(RequestId(4));
+        workspace.forget_session_requests();
+        assert!(workspace.sql_tabs().all(|sql| !sql.is_running()));
+        assert!(workspace.server_version.needs_load());
+        assert!(
+            workspace.object_tab(TabId(1)).unwrap().rows.is_loading(),
+            "object tabs are reloaded after the connect instead"
+        );
+    }
+
+    #[test]
+    fn an_object_tab_waits_for_everything_it_loads() {
+        let mut tab = object_tab(1, "users", true);
+        assert_eq!(tab.id(), TabId(1));
+        assert!(tab.pending().is_empty());
+        let object = tab.as_object_mut().unwrap();
+        object.rows.start(RequestId(3));
+        object.count.start(RequestId(4));
+        assert_eq!(tab.pending(), vec![RequestId(3), RequestId(4)]);
+        assert!(tab.as_sql().is_none() && tab.as_object().is_some());
+    }
+
+    #[test]
+    fn only_an_unpinned_object_tab_is_a_preview() {
+        assert!(object_tab(1, "users", false).is_preview());
+        assert!(!object_tab(1, "users", true).is_preview());
+        assert!(!sql_tab(2).is_preview());
     }
 
     #[test]

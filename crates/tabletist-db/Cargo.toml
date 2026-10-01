@@ -19,8 +19,9 @@ tokio = { version = "1", features = ["rt", "sync", "net", "io-util"] }
 # SSH tunnels, on ring (no aws-lc to build).
 russh = { version = "0.63", default-features = false, features = ["ring", "rsa", "flate2"] }
 # SQLite, compiled in so every platform gets the same, recent version.
-# column_decltype gives each result column's declared type.
-rusqlite = { version = "0.37", features = ["bundled", "column_decltype"] }
+# column_decltype gives each result column's declared type; hooks gives the
+# progress handler that stops a SQL editor script.
+rusqlite = { version = "0.37", features = ["bundled", "column_decltype", "hooks"] }
 # Parsing postgres:// and mysql:// connection URLs.
 url = "2"
 # Decoding user names, passwords and database names in URLs.
@@ -37,12 +38,15 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 rustls-native-certs = "0.8"
 # Reading a CA file (PEM) the user chose.
 rustls-pki-types = { version = "1", features = ["std"] }
+# Reading PostgreSQL's simple-query row stream one row at a time (already
+# in the tree through tokio-postgres).
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
 
 # MySQL, async. rustls on ring (like PostgreSQL); no aws-lc, no OpenSSL.
 mysql_async = { version = "0.37", default-features = false, features = ["default-rustls-ring"] }
 # mysql_async's own protocol crate (already in the tree), for its reading of
-# `:name` parameters: a raw WHERE it would rewrite is not run. Moves with
-# mysql_async; mysql.rs fails to compile if the two drift apart.
+# `:name` parameters: a raw WHERE or SQL editor text it would rewrite is not
+# run. Moves with mysql_async; mysql.rs fails to compile if the two drift apart.
 mysql_common = { version = "0.37", default-features = false }
 
 [dev-dependencies]

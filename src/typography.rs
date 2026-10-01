@@ -85,6 +85,8 @@ pub enum TextRole {
     JsonChip,
     /// Values in the inspector.
     InspectorValue,
+    /// The SQL editor's script and its line numbers.
+    Code,
     /// Labels over the connection dialog's own fields (name, type, environment, the URL).
     FormLabel,
     /// The connection dialog's group headings (Database, Server, Security).
@@ -105,10 +107,12 @@ pub enum TextRole {
     OField,
     /// The picker's environment badges (upper case in the data, untracked).
     OBadge,
+    /// The SQL editor's script and its line numbers.
+    OCode,
 }
 
 impl TextRole {
-    pub const ALL: [TextRole; 36] = [
+    pub const ALL: [TextRole; 38] = [
         Self::UiBody,
         Self::UiBodyStrong,
         Self::TableTitle,
@@ -131,6 +135,7 @@ impl TextRole {
         Self::ValueTag,
         Self::JsonChip,
         Self::InspectorValue,
+        Self::Code,
         Self::FormLabel,
         Self::Legend,
         Self::OBody,
@@ -145,6 +150,7 @@ impl TextRole {
         Self::OModeLine,
         Self::OField,
         Self::OBadge,
+        Self::OCode,
     ];
 
     /// The style's name in the 0.1.0 typography spec.
@@ -172,6 +178,7 @@ impl TextRole {
             Self::ValueTag => "value-tag",
             Self::JsonChip => "json-chip",
             Self::InspectorValue => "inspector-value",
+            Self::Code => "code",
             Self::FormLabel => "form-label",
             Self::Legend => "legend",
             Self::OBody => "o-body",
@@ -186,6 +193,7 @@ impl TextRole {
             Self::OModeLine => "o-mode-line",
             Self::OField => "o-field",
             Self::OBadge => "o-badge",
+            Self::OCode => "o-code",
         }
     }
 
@@ -244,6 +252,8 @@ impl TextRole {
             Self::ValueTag => style(Mono, 400, 11.5),
             Self::JsonChip => style(Mono, 400, 11.0),
             Self::InspectorValue => style(Mono, 400, 13.0),
+            // 22 pt lines.
+            Self::Code => lines(Mono, 400, 13.0, 22.0 / 13.0),
             Self::FormLabel => style(Sans, 500, 12.0),
             Self::Legend => style(Sans, 600, 12.0),
             Self::OBody => style(Mono, 400, 13.0),
@@ -258,6 +268,7 @@ impl TextRole {
             Self::OModeLine => style(Mono, 700, 12.0),
             Self::OField => style(Mono, 400, 12.5),
             Self::OBadge => style(Mono, 700, 11.5),
+            Self::OCode => lines(Mono, 400, 13.0, 22.0 / 13.0),
         }
     }
 
@@ -407,6 +418,26 @@ impl Text {
     /// Appends `text` in `role` and `color`.
     pub fn add(self, role: TextRole, text: &str, color: Color32) -> Self {
         self.add_with(role, text, 0.0, |format| format.color = color)
+    }
+
+    /// Appends `runs` in `role`, each in its own colour: for text cut
+    /// into many pieces (highlighted code), which share one format.
+    pub fn add_runs<'a>(
+        mut self,
+        role: TextRole,
+        runs: impl IntoIterator<Item = (&'a str, Color32)>,
+    ) -> Self {
+        let format = role.format(self.faces, Color32::PLACEHOLDER);
+        for (text, color) in runs {
+            let text = role.transform(text);
+            self.chars += text.chars().count();
+            let format = TextFormat {
+                color,
+                ..format.clone()
+            };
+            self.job.append(&text, 0.0, format);
+        }
+        self
     }
 
     /// Appends white space in `role`: room between pieces.

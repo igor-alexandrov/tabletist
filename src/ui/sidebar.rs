@@ -1,5 +1,6 @@
-//! The sidebar: filter, recent objects, the schema picker, and the shown
-//! schema's objects in prefix groups or one flat list.
+//! The sidebar: filter, recent objects, the schema picker, the shown
+//! schema's objects in prefix groups or one flat list, and the button that
+//! opens a SQL editor.
 
 use egui::{CornerRadius, Id, Rect, Sense, WidgetInfo, WidgetType, pos2, vec2};
 use tabletist_db::{ObjectKind, ObjectRef};
@@ -10,7 +11,7 @@ use crate::model::{Action, ConnTabId, TreeNode, TreeRow};
 use crate::theme::{Icon, Look, Palette};
 use crate::typography::{Text, TextRole};
 use crate::ui::format::display_safe;
-use crate::ui::widgets::{self, icon_button};
+use crate::ui::widgets::{self, ButtonSpec, icon_button};
 
 /// The sidebar's width when it opens, per look: the design's 264 and 248
 /// and the 1 pt rule it draws outside them.
@@ -265,7 +266,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                     }
                 });
             }
-            let footer = if look.terminal { FOOTER } else { 0.0 };
+            let footer = if look.terminal { FOOTER } else { SQL_FOOTER };
             let body = ui.available_height() - footer;
             ui.allocate_ui(vec2(full.width(), body.max(0.0)), |ui| {
                 egui::ScrollArea::vertical()
@@ -310,6 +311,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
             });
             if look.terminal {
                 terminal_footer(ui, full, &look, &palette);
+            } else {
+                sql_button(ui, full, tab, locale, &look, &palette, &mut actions);
             }
         });
     if reveal_pending && let Some(workspace) = app.workspace_mut(tab) {
@@ -350,6 +353,53 @@ fn terminal_footer(ui: &mut egui::Ui, full: Rect, look: &Look, palette: &Palette
     text.wrap(full.width() - 24.0)
         .layout(ui.ctx())
         .paint(ui.painter(), pos2(full.left() + 12.0, top + 1.0 + 8.0));
+}
+
+/// The room under the tree for the SQL Editor button (macOS and standard):
+/// a rule, then 10 above and 12 below a 34 pt button.
+const SQL_FOOTER: f32 = 1.0 + 10.0 + 34.0 + 12.0;
+
+/// The button that opens a SQL editor, with its keys: as wide as the
+/// sidebar, 12 in from its sides.
+fn sql_button(
+    ui: &mut egui::Ui,
+    full: Rect,
+    tab: ConnTabId,
+    locale: Locale,
+    look: &Look,
+    palette: &Palette,
+    actions: &mut Vec<Action>,
+) {
+    let top = full.bottom() - SQL_FOOTER;
+    widgets::hline(ui, full.x_range(), top + 0.5, palette.surface_hover);
+    let rect = Rect::from_min_size(
+        pos2(full.left() + 12.0, top + 1.0 + 10.0),
+        vec2(full.width() - 24.0, 34.0),
+    );
+    let label = gettext(locale, "SQL Editor");
+    let keys = format!("{}T", look.command_key());
+    // 10 at its sides, a 14 pt plus, 8, the words; the keys at the right.
+    let button = || {
+        ButtonSpec::new(&label)
+            .icon(Icon::Plus)
+            .primary()
+            .padding(10.0)
+            .gap(8.0)
+            .justified()
+    };
+    // In a sidebar too narrow for them the keys give way.
+    let with_keys = button().shortcut(&keys);
+    let button = if with_keys.width(ui, look) <= rect.width() {
+        with_keys
+    } else {
+        button()
+    };
+    let response = button
+        .show_at(ui, rect, look, palette)
+        .on_hover_text(gettext(locale, "Open a new SQL editor"));
+    if response.clicked() {
+        actions.push(Action::NewSqlTab(tab));
+    }
 }
 
 /// The Recent section: the objects opened lately, newest first.
@@ -477,26 +527,22 @@ fn schema_header(
                 .image(palette.secondary, 10.0)
                 .paint_at(ui, Rect::from_center_size(glyph, vec2(10.0, 10.0)));
         }
-        egui::Popup::menu(&response).show(|ui| {
-            ui.set_min_width(160.0);
-            for other in schemas {
-                let name = display_safe(other);
-                let text = Text::one(look, widgets::body(look), &name, egui::Color32::PLACEHOLDER)
-                    .layout(ui.ctx());
-                if ui
-                    .add(egui::Button::selectable(
-                        Some(other.as_str()) == shown,
-                        text.galley,
-                    ))
-                    .clicked()
-                {
-                    actions.push(Action::ShowSchema {
-                        tab,
-                        schema: other.clone(),
-                    });
-                }
-            }
+        let picked = widgets::popup_menu(&response, 160.0, look, || {
+            schemas
+                .iter()
+                .map(|other| widgets::MenuChoice {
+                    text: display_safe(other).into_owned(),
+                    name: None,
+                    selected: Some(other.as_str()) == shown,
+                })
+                .collect()
         });
+        if let Some(schema) = picked.and_then(|index| schemas.get(index)) {
+            actions.push(Action::ShowSchema {
+                tab,
+                schema: schema.clone(),
+            });
+        }
     }
     // Right to left, 8 in: Reload (macOS, 28 square), 2 apart, then the
     // tree/flat switch.

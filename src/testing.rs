@@ -25,6 +25,8 @@ pub struct Harness {
     pub fills: Vec<(egui::Rect, egui::Color32)>,
     /// The colour of every line and outline the last frame drew.
     pub strokes: Vec<egui::Color32>,
+    /// How soon the last frame asked to be drawn again: at once is zero.
+    pub repaint_after: std::time::Duration,
     #[cfg(feature = "shots")]
     renderer: Option<egui_kittest::wgpu::WgpuTestRenderer>,
     #[cfg(feature = "shots")]
@@ -80,11 +82,12 @@ impl Harness {
             collect_text(&clipped.shape, &mut self.painted);
             collect_paint(&clipped.shape, &mut self.fills, &mut self.strokes);
         }
-        self.viewport_commands = output
-            .viewport_output
-            .get(&egui::ViewportId::ROOT)
+        let viewport = output.viewport_output.get(&egui::ViewportId::ROOT);
+        self.viewport_commands = viewport
             .map(|viewport| viewport.commands.clone())
             .unwrap_or_default();
+        self.repaint_after =
+            viewport.map_or(std::time::Duration::MAX, |viewport| viewport.repaint_delay);
         #[cfg(feature = "shots")]
         {
             self.last = Some(output.clone());
@@ -326,9 +329,9 @@ pub fn release(key: egui::Key, modifiers: egui::Modifiers) -> egui::Event {
     }
 }
 
-use crate::backend::{Command, Event};
+use crate::backend::{Command, Event, RequestId, SessionId};
 use crate::connections::{ConnectionId, SavedConnection};
-use crate::model::{Action, ConnTabId};
+use crate::model::{Action, ConnTabId, TabId, Workspace};
 use tabletist_db::{ConnectSpec, Driver, ObjectInfo, ObjectKind};
 
 pub fn last_sent(app: &App) -> &Command {
@@ -336,19 +339,46 @@ pub fn last_sent(app: &App) -> &Command {
 }
 
 impl Harness {
+    /// Puts an empty SQL editor at the end of `tab`'s strip without showing
+    /// it, numbered like the ones the app opens.
+    pub fn add_sql_tab(&mut self, tab: ConnTabId) -> TabId {
+        let id = TabId(self.app.next_id());
+        let workspace = self.app.workspace_mut(tab).expect("a workspace");
+        workspace.push_sql_tab(id, 1_000, Some(std::time::Duration::from_secs(30)));
+        id
+    }
+}
+
+/// The saved connection the fake session stands for.
+fn fixture_connection() -> SavedConnection {
+    SavedConnection {
+        id: ConnectionId::new(),
+        name: "Fixture".into(),
+        environment: crate::env::Environment::Dev,
+        read_only: None,
+        password: crate::connections::PasswordMode::None,
+        ssh_secret: crate::connections::PasswordMode::None,
+        spec: ConnectSpec::sqlite("/tmp/fixture.db"),
+    }
+}
+
+/// A workspace for the fixture connection, still connecting and with no
+/// tabs, for tests that need one without an app.
+pub fn workspace() -> Workspace {
+    Workspace::new(
+        SessionId(1),
+        RequestId(2),
+        fixture_connection(),
+        tabletist_db::Secrets::default(),
+    )
+}
+
+impl Harness {
     /// Connects the active tab through the recording backend and answers the
     /// tree's first requests: schema `main` with `users`, `orders` and the
     /// view `active_users`.
     pub fn connect_fake(&mut self) -> ConnTabId {
-        let saved = SavedConnection {
-            id: ConnectionId::new(),
-            name: "Fixture".into(),
-            environment: crate::env::Environment::Dev,
-            read_only: None,
-            password: crate::connections::PasswordMode::None,
-            ssh_secret: crate::connections::PasswordMode::None,
-            spec: ConnectSpec::sqlite("/tmp/fixture.db"),
-        };
+        let saved = fixture_connection();
         let conn = saved.id.clone();
         self.app.connections.upsert(saved);
         let tab = self.app.active_tab_id();
@@ -490,6 +520,98 @@ impl Harness {
     }
 }
 
+/// A SQL editor statement's result, shaped like the fixture's users table.
+pub fn rows_outcome(rows: usize) -> tabletist_db::StatementOutcome {
+    let page = page(rows, false);
+    tabletist_db::StatementOutcome::Rows {
+        columns: page.columns,
+        rows: page.rows,
+        truncated: false,
+    }
+}
+
+/// A SQL editor statement that failed with `message`, at the 1-based
+/// character `position` of its text when the database gives one.
+pub fn error_outcome(message: &str, position: Option<usize>) -> tabletist_db::StatementOutcome {
+    tabletist_db::StatementOutcome::Error {
+        error: tabletist_db::Error::query(message),
+        position,
+    }
+}
+
+/// What a script did, as a driver reports it: one outcome per statement
+/// that started, each taking 14 ms. A `Cancelled` outcome is a stopped run,
+/// as it is for every driver.
+pub fn script_outcome(
+    outcomes: Vec<tabletist_db::StatementOutcome>,
+) -> tabletist_db::ScriptOutcome {
+    let stopped = outcomes.contains(&tabletist_db::StatementOutcome::Cancelled);
+    tabletist_db::ScriptOutcome {
+        results: outcomes
+            .into_iter()
+            .map(|outcome| tabletist_db::StatementResult {
+                elapsed: std::time::Duration::from_millis(14),
+                outcome,
+            })
+            .collect(),
+        stopped,
+    }
+}
+
+/// A script stopped before it began: cancelled while it was queued, or
+/// while its transaction opened. No statement has a result.
+pub fn stopped_before_it_began() -> tabletist_db::ScriptOutcome {
+    tabletist_db::ScriptOutcome {
+        results: Vec::new(),
+        stopped: true,
+    }
+}
+
+/// Types `text` into `sql`, runs all of it (split as SQLite does) and
+/// finishes the run with `outcomes`, without an app.
+pub fn run_script(
+    sql: &mut crate::model::SqlTab,
+    text: &str,
+    outcomes: Vec<tabletist_db::StatementOutcome>,
+) {
+    sql.text = text.into();
+    let request = RequestId(sql.run.loaded.map_or(9, |last| last.0 + 1));
+    let statements = tabletist_db::sql::statements(Driver::Sqlite.dialect(), text);
+    let _ = sql.start_run(request, statements);
+    assert!(sql.finish_run(request, Ok(script_outcome(outcomes)), None));
+}
+
+impl Harness {
+    /// Answers the newest `RunSql`, as the backend does when the script
+    /// ends: with what it did (or why it failed as a whole) and who stopped
+    /// it, if someone did.
+    pub fn answer_sql(
+        &mut self,
+        result: Result<tabletist_db::ScriptOutcome, tabletist_db::Error>,
+        cancel: Option<crate::backend::CancelReason>,
+    ) {
+        let (session, request) = self
+            .app
+            .backend
+            .sent
+            .iter()
+            .rev()
+            .find_map(|command| match command {
+                Command::RunSql {
+                    session, request, ..
+                } => Some((*session, *request)),
+                _ => None,
+            })
+            .expect("a RunSql was sent");
+        self.app.apply(Action::Backend(Event::SqlRan {
+            session,
+            request,
+            result,
+            cancel,
+        }));
+    }
+}
+
 impl Harness {
     pub fn with_backend(size: egui::Vec2, backend: crate::backend::Backend) -> Self {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -510,6 +632,7 @@ impl Harness {
             painted: Vec::new(),
             fills: Vec::new(),
             strokes: Vec::new(),
+            repaint_after: std::time::Duration::MAX,
             #[cfg(feature = "shots")]
             renderer: None,
             #[cfg(feature = "shots")]

@@ -11,7 +11,8 @@ use rusqlite::{ErrorCode, OpenFlags};
 
 use crate::{
     ColumnInfo, ColumnMeta, Dialect, Error, ForeignKeyInfo, IndexInfo, MAX_LISTED, ObjectInfo,
-    ObjectKind, ObjectRef, Result, RowPage, RowQuery, Structure, Value, ValueKind,
+    ObjectKind, ObjectRef, Result, RowPage, RowQuery, ScriptOutcome, StatementOutcome,
+    StatementResult, StopFlag, Structure, Value, ValueKind,
 };
 
 /// An open SQLite database.
@@ -58,6 +59,172 @@ impl Drop for InterruptOnDrop {
     }
 }
 
+/// Runs `texts` between `BEGIN` and a `ROLLBACK` that always happens.
+fn script(
+    connection: &rusqlite::Connection,
+    texts: &[String],
+    limit: usize,
+    stop: &StopFlag,
+) -> Result<ScriptOutcome> {
+    let mut outcome = ScriptOutcome::default();
+    if stop.is_stopped() {
+        outcome.stopped = true;
+        return Ok(outcome);
+    }
+    // A cancel (the session's interrupt) can land while BEGIN runs; that
+    // ends the run with no results.
+    match connection
+        .execute_batch("BEGIN DEFERRED")
+        .map_err(map_error)
+    {
+        Err(Error::Cancelled) => {
+            outcome.stopped = true;
+            // The interrupt may have left a transaction open.
+            stop.finish();
+            end_transaction(connection).map_err(|error| crate::script::cleanup_failed(&error))?;
+            return Ok(outcome);
+        }
+        Err(error) => return Err(error),
+        Ok(()) => {}
+    }
+    // SQLite calls this every 1000 virtual machine steps; `true` interrupts
+    // the running statement, which fails with SQLITE_INTERRUPT (Cancelled).
+    let watching = stop.clone();
+    connection.progress_handler(1_000, Some(move || watching.is_stopped()));
+    let ran = statements(connection, texts, limit, stop, &mut outcome);
+    // Removed before the cleanup, so a stop cannot interrupt it.
+    connection.progress_handler(0, None::<fn() -> bool>);
+    stop.finish();
+    let ended = end_transaction(connection);
+    ran?;
+    ended.map_err(|error| crate::script::cleanup_failed(&error))?;
+    Ok(outcome)
+}
+
+/// Rolls back what is still open and puts the connect-time settings back
+/// (a script may have changed them). A cancel can interrupt the cleanup
+/// itself, so it gets one more try.
+fn end_transaction(connection: &rusqlite::Connection) -> Result<()> {
+    let attempt = || -> rusqlite::Result<()> {
+        // An error can end SQLite's transaction by itself; roll back only
+        // one that is still open.
+        if !connection.is_autocommit() {
+            connection.execute_batch("ROLLBACK")?;
+        }
+        set_session_pragmas(connection)
+    };
+    attempt().or_else(|_| attempt()).map_err(map_error)
+}
+
+fn statements(
+    connection: &rusqlite::Connection,
+    texts: &[String],
+    limit: usize,
+    stop: &StopFlag,
+    outcome: &mut ScriptOutcome,
+) -> Result<()> {
+    for text in texts {
+        if stop.is_stopped() {
+            outcome.stopped = true;
+            outcome.results.push(StatementResult {
+                elapsed: std::time::Duration::ZERO,
+                outcome: StatementOutcome::Cancelled,
+            });
+            break;
+        }
+        let started = Instant::now();
+        let result = match statement(connection, text, limit) {
+            Ok(result) => result,
+            Err(error) => crate::script::statement_failed(error, None)?,
+        };
+        let cancelled = result == StatementOutcome::Cancelled;
+        outcome.stopped |= cancelled;
+        let last = cancelled || matches!(result, StatementOutcome::Error { .. });
+        outcome.results.push(StatementResult {
+            elapsed: started.elapsed(),
+            outcome: result,
+        });
+        if last {
+            break;
+        }
+    }
+    Ok(())
+}
+
+/// `text` up to the end of its last token that is not a comment.
+fn code_only(text: &str) -> &str {
+    let end = crate::sql::tokenize(Dialect::Sqlite, text)
+        .iter()
+        .rev()
+        .find(|token| {
+            !matches!(
+                token.kind,
+                crate::sql::TokenKind::Whitespace | crate::sql::TokenKind::Comment
+            )
+        })
+        .map_or(0, |token| token.range.end);
+    &text[..end]
+}
+
+/// Whether `sqlite3_changes()` describes this statement: it keeps the count
+/// of the last INSERT, UPDATE or DELETE, whatever ran since.
+fn counts_changes(text: &str) -> bool {
+    crate::sql::words(Dialect::Sqlite, text)
+        .first()
+        .is_some_and(|word| matches!(word.as_str(), "INSERT" | "UPDATE" | "DELETE" | "REPLACE"))
+}
+
+fn statement(
+    connection: &rusqlite::Connection,
+    text: &str,
+    limit: usize,
+) -> Result<StatementOutcome> {
+    // SQLite names an unaliased column after its text, so a comment after
+    // the last token would end up in the name.
+    let text = code_only(text);
+    // Only comments: SQLite prepares nothing, and there is nothing to run.
+    if text.is_empty() {
+        return Ok(StatementOutcome::Done { affected: None });
+    }
+    // prepare refuses a second statement in the text (MultipleStatement).
+    let mut statement = connection.prepare(text).map_err(map_error)?;
+    let declared: Vec<(String, String)> = statement
+        .columns()
+        .iter()
+        .map(|column| {
+            (
+                column.name().to_owned(),
+                column.decl_type().unwrap_or_default().to_owned(),
+            )
+        })
+        .collect();
+    if declared.is_empty() {
+        let changed = statement.raw_execute().map_err(map_error)?;
+        return Ok(StatementOutcome::Done {
+            affected: counts_changes(text).then_some(changed as u64),
+        });
+    }
+    let mut rows = statement.raw_query();
+    let mut values: Vec<Vec<Value>> = Vec::new();
+    while let Some(row) = rows.next().map_err(map_error)? {
+        let mut cells = Vec::with_capacity(declared.len());
+        for index in 0..declared.len() {
+            cells.push(from_sqlite(row.get_ref(index).map_err(map_error)?));
+        }
+        values.push(cells);
+        if values.len() > limit {
+            break;
+        }
+    }
+    let truncated = values.len() > limit;
+    values.truncate(limit);
+    Ok(StatementOutcome::Rows {
+        columns: column_metas(declared, &values),
+        rows: values,
+        truncated,
+    })
+}
+
 fn to_sqlite(value: &Value) -> rusqlite::types::Value {
     use rusqlite::types::Value as Sqlite;
     match value {
@@ -96,6 +263,60 @@ fn from_sqlite(value: rusqlite::types::ValueRef<'_>) -> Value {
         ValueRef::Text(bytes) => Value::Text(String::from_utf8_lossy(bytes).into()),
         ValueRef::Blob(bytes) => Value::Bytes(bytes.into()),
     }
+}
+
+/// The settings every session has from the start: read-only, an untrusted
+/// schema, a busy timeout and LIKE ignoring case (the filters rely on it).
+/// `open` sets them, and a script run sets them again afterwards, since a
+/// script may have changed any of them.
+fn set_session_pragmas(connection: &rusqlite::Connection) -> rusqlite::Result<()> {
+    connection.busy_timeout(std::time::Duration::from_secs(5))?;
+    connection.execute_batch(
+        "PRAGMA query_only = ON; PRAGMA trusted_schema = OFF; PRAGMA case_sensitive_like = OFF;",
+    )
+}
+
+/// Stops a script when dropped, unless disarmed first: a `run_script`
+/// future that is dropped must not leave its blocking job running the
+/// remaining statements.
+struct StopOnDrop(Option<StopFlag>);
+
+impl StopOnDrop {
+    fn disarm(mut self) {
+        self.0 = None;
+    }
+}
+
+impl Drop for StopOnDrop {
+    fn drop(&mut self) {
+        if let Some(stop) = self.0.take() {
+            stop.stop();
+        }
+    }
+}
+
+/// Result columns from their declared types; a column without one takes
+/// its kind from the first value that is not NULL.
+fn column_metas(declared: Vec<(String, String)>, rows: &[Vec<Value>]) -> Vec<ColumnMeta> {
+    declared
+        .into_iter()
+        .enumerate()
+        .map(|(index, (name, type_name))| {
+            let kind = if type_name.is_empty() {
+                rows.iter()
+                    .map(|row| &row[index])
+                    .find(|value| !value.is_null())
+                    .map_or(ValueKind::Other, ValueKind::of_value)
+            } else {
+                ValueKind::from_sqlite_decl(&type_name)
+            };
+            ColumnMeta {
+                name,
+                type_name,
+                kind,
+            }
+        })
+        .collect()
 }
 
 /// Refuses a raw WHERE that ends inside a `/*` comment, which SQLite would
@@ -139,9 +360,6 @@ impl Conn {
             let flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX;
             let connection = rusqlite::Connection::open_with_flags(plain_file_name(&path), flags)
                 .map_err(map_error)?;
-            connection
-                .busy_timeout(std::time::Duration::from_secs(5))
-                .map_err(map_error)?;
             // A double-quoted name that matches no column is an error, not a
             // string literal: a filter on a renamed column must fail rather
             // than compare against its own name and match every row.
@@ -154,9 +372,7 @@ impl Conn {
             ] {
                 connection.set_db_config(option, on).map_err(map_error)?;
             }
-            connection
-                .execute_batch("PRAGMA query_only = ON; PRAGMA trusted_schema = OFF;")
-                .map_err(map_error)?;
+            set_session_pragmas(&connection).map_err(map_error)?;
             // A file that is not a database only fails on its first read.
             connection
                 .query_row("SELECT count(*) FROM sqlite_master", [], |row| {
@@ -194,7 +410,47 @@ impl Conn {
         })
         .await;
         guard.disarm();
-        result.map_err(|error| Error::Io(error.to_string()))?
+        result.map_err(|error| {
+            // A panic may have left the connection half-used (the mutex is
+            // poisoned too): the session must be reconnected.
+            if error.is_panic() {
+                Error::ConnectionLost("the SQLite worker panicked".into())
+            } else {
+                Error::Io(error.to_string())
+            }
+        })?
+    }
+
+    /// See [`crate::Connection::run_script`]. The whole script is one
+    /// blocking job; a progress handler checks `stop` while a statement
+    /// runs.
+    pub async fn run_script(
+        &self,
+        texts: Vec<String>,
+        limit: u32,
+        stop: &StopFlag,
+    ) -> Result<ScriptOutcome> {
+        let stop = stop.clone();
+        let limit = limit as usize;
+        // If the caller drops this future, `run` interrupts the statement
+        // that is running; this stops the ones that have not begun.
+        let guard = StopOnDrop(Some(stop.clone()));
+        let outcome = self
+            .run(move |connection| script(connection, &texts, limit, &stop))
+            .await;
+        guard.disarm();
+        outcome
+    }
+
+    /// The server's name and version for the footer, like `SQLite 3.46.0`.
+    pub async fn server_version(&self) -> Result<String> {
+        self.run(|connection| {
+            let version: String = connection
+                .query_row("SELECT sqlite_version()", [], |row| row.get(0))
+                .map_err(map_error)?;
+            Ok(format!("SQLite {version}"))
+        })
+        .await
     }
 
     pub(crate) fn interrupt_handle(&self) -> Arc<rusqlite::InterruptHandle> {
@@ -318,26 +574,7 @@ impl Conn {
             }
             let has_more = values.len() > limit;
             values.truncate(limit);
-            let columns = declared
-                .into_iter()
-                .enumerate()
-                .map(|(index, (name, type_name))| {
-                    let kind = if type_name.is_empty() {
-                        values
-                            .iter()
-                            .map(|row| &row[index])
-                            .find(|value| !value.is_null())
-                            .map_or(ValueKind::Other, ValueKind::of_value)
-                    } else {
-                        ValueKind::from_sqlite_decl(&type_name)
-                    };
-                    ColumnMeta {
-                        name,
-                        type_name,
-                        kind,
-                    }
-                })
-                .collect();
+            let columns = column_metas(declared, &values);
             Ok(RowPage {
                 columns,
                 rows: values,
@@ -492,6 +729,40 @@ fn foreign_keys(
 
 #[cfg(test)]
 mod tests {
+    use super::{code_only, counts_changes};
+
+    #[test]
+    fn only_data_changes_report_a_count() {
+        for text in [
+            "INSERT INTO t VALUES (1)",
+            "update t set a = 1",
+            "DELETE FROM t",
+            "REPLACE INTO t VALUES (1)",
+            "-- c\nDELETE FROM t",
+        ] {
+            assert!(counts_changes(text), "{text}");
+        }
+        for text in [
+            "PRAGMA foreign_keys = ON",
+            "CREATE TABLE t (a)",
+            "WITH x AS (SELECT 1) DELETE FROM t",
+            "ANALYZE",
+            "",
+        ] {
+            assert!(!counts_changes(text), "{text}");
+        }
+    }
+
+    #[test]
+    fn trailing_comments_and_blanks_are_trimmed() {
+        assert_eq!(code_only("SELECT 1 -- note\n"), "SELECT 1");
+        assert_eq!(code_only("SELECT 1 /* x */ "), "SELECT 1");
+        assert_eq!(code_only("/* only */ -- comments"), "");
+        assert_eq!(
+            code_only("SELECT '-- not a comment'"),
+            "SELECT '-- not a comment'"
+        );
+    }
     use super::*;
 
     async fn fixture() -> (Conn, tempfile::TempDir) {

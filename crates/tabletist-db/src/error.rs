@@ -26,6 +26,15 @@ pub enum Error {
     },
     #[error("the query was cancelled")]
     Cancelled,
+    /// A script holds a statement that could end or change the read-only
+    /// transaction; nothing ran.
+    #[error(
+        "line {line}: Tabletist runs every query in a read-only transaction, so {what} is not allowed"
+    )]
+    Refused { line: usize, what: String },
+    /// A script left the session read-write. The session is closed.
+    #[error("the script left the read-only transaction, so the session was closed")]
+    LeftReadOnly,
     #[error("the operation timed out")]
     Timeout,
     #[error("the connection was lost: {0}")]
@@ -51,7 +60,7 @@ impl Error {
 
     /// Whether the session is unusable and must be reconnected.
     pub fn is_connection_lost(&self) -> bool {
-        matches!(self, Self::ConnectionLost(_))
+        matches!(self, Self::ConnectionLost(_) | Self::LeftReadOnly)
     }
 }
 
@@ -123,6 +132,20 @@ mod tests {
         assert_eq!(
             error.to_string(),
             "SSH (unknown host key SHA256:abc): unknown host key"
+        );
+    }
+
+    #[test]
+    fn leaving_read_only_counts_as_a_lost_connection() {
+        assert!(Error::LeftReadOnly.is_connection_lost());
+        let refused = Error::Refused {
+            line: 4,
+            what: "COMMIT".into(),
+        };
+        assert!(!refused.is_connection_lost());
+        assert_eq!(
+            refused.to_string(),
+            "line 4: Tabletist runs every query in a read-only transaction, so COMMIT is not allowed"
         );
     }
 }

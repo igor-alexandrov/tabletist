@@ -51,6 +51,10 @@ pub struct Column<'a> {
     pub key: bool,
     /// Takes the room left over when every column fits (a document).
     pub flexible: bool,
+    /// A click on its header sorts by it. A header that sorts nothing (a
+    /// SQL result's) is a label: no button, no stop for the Tab key, no
+    /// fill under the pointer.
+    pub sortable: bool,
 }
 
 /// How a cell draws its text.
@@ -286,6 +290,41 @@ pub fn initial_widths<'a>(
         .collect()
 }
 
+/// What a grid keeps in egui's memory under ids only it can tell, kept
+/// under the grid's own id so [`forget`] finds all of it.
+#[derive(Clone, Copy)]
+struct Kept {
+    /// How many columns the widths kept are for.
+    columns: usize,
+    scroll: Id,
+}
+
+/// Drops what egui's memory keeps for the grid `id`: its columns' widths,
+/// the selection it last revealed and where it was scrolled to. For a grid
+/// that will not be drawn again (a SQL editor's result, once the next run
+/// has its own grid).
+pub fn forget(ctx: &egui::Context, id: Id) {
+    ctx.data_mut(|data| {
+        if let Some(Kept { columns, scroll }) = data.get_temp(id) {
+            data.remove::<Vec<f32>>(id.with(("widths", columns)));
+            data.remove::<egui::scroll_area::State>(scroll);
+        }
+        data.remove::<Option<CellPos>>(id.with("last-selection"));
+        data.remove::<Kept>(id);
+    });
+}
+
+/// Whether egui's memory keeps anything for the grid `id`.
+#[cfg(test)]
+pub fn remembered(ctx: &egui::Context, id: Id) -> bool {
+    ctx.data(|data| {
+        data.get_temp::<Kept>(id).is_some()
+            || data
+                .get_temp::<Option<CellPos>>(id.with("last-selection"))
+                .is_some()
+    })
+}
+
 #[allow(clippy::too_many_arguments)] // one call site per view; a struct adds nothing
 pub fn show<'a>(
     ui: &mut Ui,
@@ -452,14 +491,22 @@ pub fn show<'a>(
             let mut x = origin.x + gutter;
             for (col, column) in columns.iter().enumerate() {
                 let rect = Rect::from_min_size(pos2(x, top), vec2(widths[col], header_height));
-                let response = ui.interact(rect, id.with(("header", col)), Sense::click());
+                // A header that sorts nothing still takes the pointer's
+                // clicks, and drops them: a hover-only header would let
+                // them through to a row scrolled under it.
+                let (sense, kind) = if column.sortable {
+                    (Sense::click(), WidgetType::Button)
+                } else {
+                    (Sense::CLICK, WidgetType::Label)
+                };
+                let response = ui.interact(rect, id.with(("header", col)), sense);
                 // Column names come from the server: nothing hidden in them.
                 let name = display_safe(column.name);
-                response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, &*name));
-                if response.clicked() {
+                response.widget_info(|| WidgetInfo::labeled(kind, true, &*name));
+                if response.clicked() && column.sortable {
                     output.sort_clicked = Some(col);
                 }
-                if response.hovered() {
+                if response.hovered() && column.sortable {
                     painter.rect_filled(
                         rect.shrink2(vec2(0.0, hairline)),
                         CornerRadius::ZERO,
@@ -580,6 +627,13 @@ pub fn show<'a>(
     ui.data_mut(|data| {
         data.insert_temp(widths_id, widths);
         data.insert_temp(last_id, selection);
+        data.insert_temp(
+            id,
+            Kept {
+                columns: columns.len(),
+                scroll: scroll.id,
+            },
+        );
     });
     output
 }
@@ -899,7 +953,8 @@ mod tests {
         assert_eq!(row_fill(false, false, false, &terminal, &palette), None);
     }
 
-    fn columns() -> Vec<Column<'static>> {
+    /// Two columns whose headers sort, or are labels.
+    fn columns_that(sortable: bool) -> Vec<Column<'static>> {
         vec![
             Column {
                 name: "id",
@@ -908,6 +963,7 @@ mod tests {
                 sort: None,
                 key: true,
                 flexible: false,
+                sortable,
             },
             Column {
                 name: "email",
@@ -916,14 +972,29 @@ mod tests {
                 sort: Some(SortDir::Asc),
                 key: false,
                 flexible: false,
+                sortable,
             },
         ]
+    }
+
+    fn columns() -> Vec<Column<'static>> {
+        columns_that(true)
     }
 
     /// Runs one frame of a grid with `rows` rows and returns its output and
     /// the AccessKit tree.
     fn frame(
         ctx: &egui::Context,
+        rows: usize,
+        events: Vec<egui::Event>,
+    ) -> (GridOutput, egui::accesskit::TreeUpdate) {
+        frame_of(ctx, &columns(), rows, events)
+    }
+
+    /// [`frame`] of a grid with `columns`.
+    fn frame_of(
+        ctx: &egui::Context,
+        columns: &[Column<'_>],
         rows: usize,
         events: Vec<egui::Event>,
     ) -> (GridOutput, egui::accesskit::TreeUpdate) {
@@ -939,11 +1010,10 @@ mod tests {
                 ..Default::default()
             },
             |ui| {
-                let columns = columns();
                 result = show(
                     ui,
                     egui::Id::new("grid"),
-                    &columns,
+                    columns,
                     rows,
                     0,
                     None,
@@ -1045,6 +1115,87 @@ mod tests {
             .filter(|(_, node)| node.label().is_some_and(|label| label.starts_with("Row ")))
             .count();
         assert!(rows > 5 && rows < 40, "{rows} rows built");
+    }
+
+    #[test]
+    fn a_forgotten_grid_leaves_nothing_in_eguis_memory() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx, false, &crate::theme::Look::standard());
+        ctx.enable_accesskit();
+        let id = egui::Id::new("grid");
+        frame(&ctx, 10, vec![]);
+        frame(&ctx, 10, vec![]);
+        let kept: Kept = ctx.data(|data| data.get_temp(id)).expect("kept");
+        let widths = id.with(("widths", kept.columns));
+        let has_widths = || ctx.data(|data| data.get_temp::<Vec<f32>>(widths).is_some());
+        let scrolled = || egui::scroll_area::State::load(&ctx, kept.scroll).is_some();
+        assert_eq!(kept.columns, columns().len());
+        assert!(remembered(&ctx, id) && has_widths() && scrolled());
+        forget(&ctx, id);
+        assert!(!remembered(&ctx, id) && !has_widths() && !scrolled());
+        // Forgetting a grid never drawn, or one already forgotten, is fine.
+        forget(&ctx, id);
+        forget(&ctx, egui::Id::new("another grid"));
+        // Drawn again, it fits its columns anew.
+        frame(&ctx, 10, vec![]);
+        assert!(remembered(&ctx, id) && has_widths());
+    }
+
+    #[test]
+    fn a_header_that_sorts_nothing_is_a_label_that_keeps_clicks_from_the_rows() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx, false, &crate::theme::Look::standard());
+        ctx.enable_accesskit();
+        let columns = columns_that(false);
+        frame_of(&ctx, &columns, 100, vec![]);
+        let (_, tree) = frame_of(&ctx, &columns, 100, vec![]);
+        assert!(crate::testing::node(&tree, "email", Role::Button).is_none());
+        let email = crate::testing::node(&tree, "email", Role::Label).expect("email header");
+        let (output, _) = frame_of(&ctx, &columns, 100, vec![click(email)]);
+        assert_eq!(output, GridOutput::default());
+        // Scrolled, rows pass under the header: a press on the header is
+        // not one on the row under it.
+        let header = crate::testing::bounds(&tree, "email", Role::Label).unwrap();
+        let at = header.center();
+        let wheel = egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: egui::vec2(0.0, -300.0),
+            modifiers: egui::Modifiers::NONE,
+            phase: egui::TouchPhase::Move,
+        };
+        frame_of(&ctx, &columns, 100, vec![egui::Event::PointerMoved(at)]);
+        frame_of(&ctx, &columns, 100, vec![wheel]);
+        for _ in 0..60 {
+            frame_of(&ctx, &columns, 100, vec![]);
+        }
+        let (_, tree) = frame_of(&ctx, &columns, 100, vec![]);
+        assert!(
+            crate::testing::node(&tree, "Row 1", Role::Button).is_none()
+                || crate::testing::bounds(&tree, "Row 1", Role::Button)
+                    .is_some_and(|row| row.bottom() <= header.top()),
+            "the rows scrolled"
+        );
+        let press = |pressed| egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        let (down, _) = frame_of(&ctx, &columns, 100, vec![press(true)]);
+        let (up, _) = frame_of(&ctx, &columns, 100, vec![press(false)]);
+        assert_eq!((down, up), (GridOutput::default(), GridOutput::default()));
+        // A press under the header does select the row there.
+        let below = at + egui::vec2(0.0, header.height() + 10.0);
+        let press = |pressed| egui::Event::PointerButton {
+            pos: below,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        frame_of(&ctx, &columns, 100, vec![egui::Event::PointerMoved(below)]);
+        frame_of(&ctx, &columns, 100, vec![press(true)]);
+        let (up, _) = frame_of(&ctx, &columns, 100, vec![press(false)]);
+        assert!(up.clicked.is_some_and(|cell| cell.row > 0), "{up:?}");
     }
 
     #[test]

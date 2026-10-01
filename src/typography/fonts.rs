@@ -272,7 +272,7 @@ mod tests {
             assert!(
                 harness
                     .ctx
-                    .fonts_mut(|fonts| fonts.has_glyphs(&font, "⌘⌫↩")),
+                    .fonts_mut(|fonts| fonts.has_glyphs(&font, "⌘⇧⌫↩")),
                 "{}: a replacement box instead of a key",
                 role.id()
             );

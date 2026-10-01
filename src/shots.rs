@@ -119,12 +119,17 @@ const TABLES: [&str; 30] = [
 ];
 
 fn page() -> RowPage {
+    page_of(13)
+}
+
+/// The first `rows` rows of `book_images`.
+fn page_of(rows: i64) -> RowPage {
     let column = |name: &str, type_name: &str, kind| ColumnMeta {
         name: name.into(),
         type_name: type_name.into(),
         kind,
     };
-    let rows = (0..13i64)
+    let rows = (0..rows)
         .map(|i| {
             vec![
                 Value::Int(i + 2),
@@ -252,10 +257,10 @@ fn workspace(harness: &mut Harness) -> ConnTabId {
         });
         harness.answer_rows(page());
     }
-    let object_tab = harness.app.workspace(tab).unwrap().active_object.unwrap();
+    let object_tab = harness.app.workspace(tab).unwrap().active_tab.unwrap();
     harness.app.apply(Action::SelectCell {
         tab,
-        object_tab,
+        id: object_tab,
         cell: CellPos { row: 4, col: 0 },
     });
     tab
@@ -320,7 +325,7 @@ fn shots() {
         let node = workspace.tree.nodes.entry("reports".into()).or_default();
         node.expanded = true;
         node.objects.value = Some(Vec::new());
-        let object_tab = workspace.active_object.unwrap();
+        let object_tab = workspace.active_tab.unwrap();
         let object = workspace.object_tab_mut(object_tab).unwrap();
         object.filter.rows = vec![crate::model::FilterRow {
             column: "kind".into(),
@@ -344,7 +349,7 @@ fn shots() {
     });
     both("state-error", |harness| {
         let tab = workspace(harness);
-        let object_tab = harness.app.workspace(tab).unwrap().active_object.unwrap();
+        let object_tab = harness.app.workspace(tab).unwrap().active_tab.unwrap();
         harness.app.apply(Action::RetryRows { tab, object_tab });
         let (session, request) = match harness.app.backend.sent.last() {
             Some(crate::backend::Command::FetchRows {
@@ -367,7 +372,7 @@ fn shots() {
     });
     both("structure", |harness| {
         let tab = workspace(harness);
-        let object_tab = harness.app.workspace(tab).unwrap().active_object.unwrap();
+        let object_tab = harness.app.workspace(tab).unwrap().active_tab.unwrap();
         harness.app.apply(Action::SetView {
             tab,
             object_tab,
@@ -375,6 +380,174 @@ fn shots() {
         });
         harness.answer_structure(structure());
     });
+    both("sql", |harness| {
+        sql_editor(harness);
+    });
+    both("sql-menu", |harness| {
+        sql_editor(harness);
+        harness.click("Timeout");
+    });
+    // The cursor in the first statement, which fails on its second line
+    // (the position counts from the comment the statement starts with).
+    both("sql-error", |harness| {
+        let tab = sql_editor(harness);
+        for _ in 0..3 {
+            harness.press(egui::Key::ArrowUp, egui::Modifiers::NONE);
+        }
+        let sql_tab = harness.app.workspace(tab).unwrap().active_tab.unwrap();
+        harness.app.apply(Action::RunSql {
+            tab,
+            sql_tab,
+            all: false,
+        });
+        let message = "relation \"book_images\" does not exist";
+        let failed = crate::testing::error_outcome(message, Some(63));
+        harness.answer_sql(Ok(crate::testing::script_outcome(vec![failed])), None);
+    });
+    // The results' other states: nothing run yet, a run on its way, every
+    // statement in Messages, a refusal, a cancel and a cut result. Each
+    // answer is one its script could get.
+    both("sql-idle", |harness| {
+        let tab = workspace(harness);
+        harness.app.apply(Action::NewSqlTab(tab));
+    });
+    both("sql-running", |harness| {
+        let tab = sql_editor(harness);
+        run_sql(harness, tab, true);
+    });
+    // The first statement names a column that is not there, on its second
+    // line (the position counts from the comment it starts with).
+    both("sql-messages", |harness| {
+        let script = SCRIPT
+            .replace("SELECT kind", "SELECT kindd")
+            .replace("BY kind", "BY kindd");
+        let tab = sql_script(harness, &script);
+        run_sql(harness, tab, true);
+        let failed = tabletist_db::StatementOutcome::Error {
+            error: tabletist_db::Error::Query {
+                code: Some("42703".into()),
+                message: "column \"kindd\" does not exist".into(),
+                detail: None,
+                hint: Some("Perhaps you meant to reference the column \"kind\".".into()),
+            },
+            position: Some(31),
+        };
+        harness.answer_sql(Ok(crate::testing::script_outcome(vec![failed])), None);
+    });
+    // The script's sixth line would end the transaction.
+    both("sql-refused", |harness| {
+        let script = SCRIPT.replace("SELECT * FROM book_images", "COMMIT");
+        let tab = sql_script(harness, &script);
+        run_sql(harness, tab, true);
+        let refused = tabletist_db::Error::Refused {
+            line: 6,
+            what: "COMMIT".into(),
+        };
+        harness.answer_sql(Err(refused), None);
+        let sql_tab = harness.app.workspace(tab).unwrap().active_tab.unwrap();
+        harness.app.apply(Action::SetResultPane {
+            tab,
+            sql_tab,
+            pane: crate::model::ResultPane::Results,
+        });
+    });
+    // The first statement counts the two kinds; the second runs out of time.
+    both("sql-cancelled", |harness| {
+        let tab = sql_script(harness, SCRIPT);
+        run_sql(harness, tab, true);
+        let column = |name: &str, type_name: &str, kind| ColumnMeta {
+            name: name.into(),
+            type_name: type_name.into(),
+            kind,
+        };
+        let kinds = tabletist_db::StatementOutcome::Rows {
+            columns: vec![
+                column("kind", "varchar", ValueKind::Text),
+                column("images", "int8", ValueKind::Numeric),
+            ],
+            rows: vec![
+                vec![Value::Text("cover".into()), Value::Int(7)],
+                vec![Value::Text("preview".into()), Value::Int(6)],
+            ],
+            truncated: false,
+        };
+        let outcome =
+            crate::testing::script_outcome(vec![kinds, tabletist_db::StatementOutcome::Cancelled]);
+        let timeout = crate::backend::CancelReason::Timeout(Duration::from_secs(30));
+        harness.answer_sql(Ok(outcome), Some(timeout));
+    });
+    // A limit of 100 rows, and a table with more.
+    both("sql-truncated", |harness| {
+        let tab = sql_script(harness, SCRIPT);
+        let sql_tab = harness.app.workspace(tab).unwrap().active_tab.unwrap();
+        harness.app.apply(Action::SetSqlLimit {
+            tab,
+            sql_tab,
+            limit: 100,
+        });
+        run_sql(harness, tab, false);
+        let page = page_of(100);
+        let cut = tabletist_db::StatementOutcome::Rows {
+            columns: page.columns,
+            rows: page.rows,
+            truncated: true,
+        };
+        harness.answer_sql(Ok(crate::testing::script_outcome(vec![cut])), None);
+    });
+}
+
+/// Runs the active SQL editor's statement, or `all` of its script.
+fn run_sql(harness: &mut Harness, tab: ConnTabId, all: bool) {
+    let sql_tab = harness.app.workspace(tab).unwrap().active_tab.unwrap();
+    harness.app.apply(Action::RunSql { tab, sql_tab, all });
+}
+
+/// The script the SQL scenes show: two statements over `book_images`.
+const SCRIPT: &str = "-- Images of each kind\n\
+                      SELECT kind, count(*) AS images\n  \
+                      FROM book_images\n \
+                      GROUP BY kind;\n\n\
+                      SELECT * FROM book_images";
+
+/// A SQL editor beside the open tables, holding `script`.
+fn sql_script(harness: &mut Harness, script: &str) -> ConnTabId {
+    let tab = workspace(harness);
+    harness.app.apply(Action::NewSqlTab(tab));
+    let workspace = harness.app.workspace_mut(tab).unwrap();
+    workspace.server_version.value = Some("PostgreSQL 17.2".into());
+    let id = workspace.active_tab.unwrap();
+    let sql = workspace.sql_tab_mut(id).unwrap();
+    sql.text = script.into();
+    sql.cursor = sql.text.len();
+    tab
+}
+
+/// A SQL editor beside the open tables, its last statement run and
+/// answered with the table's rows.
+fn sql_editor(harness: &mut Harness) -> ConnTabId {
+    let tab = sql_script(harness, SCRIPT);
+    let id = harness.app.workspace(tab).unwrap().active_tab.unwrap();
+    harness.app.apply(Action::RunSql {
+        tab,
+        sql_tab: id,
+        all: false,
+    });
+    let page = page();
+    harness.answer_sql(
+        Ok(tabletist_db::ScriptOutcome {
+            results: vec![tabletist_db::StatementResult {
+                elapsed: Duration::from_millis(14),
+                outcome: tabletist_db::StatementOutcome::Rows {
+                    columns: page.columns,
+                    rows: page.rows,
+                    truncated: false,
+                },
+            }],
+            stopped: false,
+        }),
+        None,
+    );
+    tab
 }
 
 #[test]
@@ -484,7 +657,7 @@ mod mock {
                 }
                 Self::OmarchyWorkspace => {
                     let tab = workspace(harness);
-                    let object_tab = harness.app.workspace(tab).unwrap().active_object.unwrap();
+                    let object_tab = harness.app.workspace(tab).unwrap().active_tab.unwrap();
                     let object = harness
                         .app
                         .workspace_mut(tab)
@@ -497,7 +670,7 @@ mod mock {
                     harness.answer_rows(covers());
                     harness.app.apply(Action::SelectCell {
                         tab,
-                        object_tab,
+                        id: object_tab,
                         cell: CellPos { row: 0, col: 0 },
                     });
                 }
@@ -773,7 +946,7 @@ mod mock {
             harness.answer_structure(covers_structure());
             harness.answer_rows(covers());
         }
-        let object_tab = harness.app.workspace(tab).unwrap().active_object.unwrap();
+        let object_tab = harness.app.workspace(tab).unwrap().active_tab.unwrap();
         harness.app.apply(Action::SortBy {
             tab,
             object_tab,
@@ -782,10 +955,10 @@ mod mock {
         harness.answer_rows(covers());
         // The tabs in the order the mockups show them.
         let workspace = harness.app.workspace_mut(tab).unwrap();
-        workspace.objects.reverse();
+        workspace.tabs.reverse();
         harness.app.apply(Action::SelectCell {
             tab,
-            object_tab,
+            id: object_tab,
             cell: CellPos { row: 0, col: 0 },
         });
         tab

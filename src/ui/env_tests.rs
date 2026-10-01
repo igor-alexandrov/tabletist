@@ -81,7 +81,7 @@ fn a_connected_tabs_dot_is_its_environments_colour() {
             let base = colors(&harness, env).base();
             let case = format!("{} dark={} {env:?}", look.name, palette.dark);
             // Inactive, behind a new tab; then active.
-            harness.press(Key::T, Modifiers::COMMAND);
+            harness.press(Key::O, Modifiers::COMMAND);
             assert!(filled(&harness, base, dot), "inactive, {case}");
             harness.app.apply(Action::ActivateConnTab(tab));
             harness.settle();

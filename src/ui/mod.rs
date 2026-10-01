@@ -20,6 +20,9 @@ pub mod picker;
 pub mod quick_open;
 pub mod row_panel;
 pub mod sidebar;
+pub mod sql_editor;
+pub mod sql_results;
+pub mod sql_text;
 pub mod structure;
 pub mod value_tags;
 pub mod widgets;
@@ -148,6 +151,37 @@ mod tests {
                     "the sidebar filter is missing in {} at {size:?}",
                     look.name
                 );
+                // A SQL editor keeps its controls on screen and apart.
+                harness.app.apply(crate::model::Action::NewSqlTab(tab));
+                let tree = harness.settle();
+                let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
+                let controls: Vec<(&str, egui::Rect)> = [
+                    ("Run", egui::accesskit::Role::Button),
+                    ("Run all", egui::accesskit::Role::Button),
+                    ("Limit", egui::accesskit::Role::ComboBox),
+                    ("Timeout", egui::accesskit::Role::ComboBox),
+                ]
+                .into_iter()
+                .map(|(label, role)| {
+                    let rect = crate::testing::bounds(&tree, label, role)
+                        .unwrap_or_else(|| panic!("{label} missing in {} at {size:?}", look.name));
+                    assert!(
+                        screen.contains_rect(rect),
+                        "{label} at {rect:?} is off screen in {} at {size:?}",
+                        look.name
+                    );
+                    (label, rect)
+                })
+                .collect();
+                for (index, (label, rect)) in controls.iter().enumerate() {
+                    for (other, other_rect) in &controls[index + 1..] {
+                        assert!(
+                            !rect.intersects(*other_rect),
+                            "{label} overlaps {other} in {} at {size:?}",
+                            look.name
+                        );
+                    }
+                }
                 // The connection dialog keeps its buttons on screen; the
                 // PostgreSQL form with the SSH tunnel open is the tallest.
                 harness.press(Key::N, Modifiers::COMMAND);
@@ -194,7 +228,7 @@ mod tests {
         let mut harness = Harness::new();
         assert!(!harness.has("New tab"));
         assert!(!harness.has("New connection tab"));
-        harness.press(Key::T, Modifiers::COMMAND);
+        harness.press(Key::O, Modifiers::COMMAND);
         assert!(harness.has("New tab"));
         assert!(harness.has("New connection tab"));
     }
@@ -262,7 +296,7 @@ mod tests {
     fn a_filter_chip_drops_its_filter_and_the_sort_chip_its_sort() {
         let mut harness = Harness::new();
         let tab = with_page(&mut harness);
-        let id = harness.app.workspace(tab).unwrap().active_object.unwrap();
+        let id = harness.app.workspace(tab).unwrap().active_tab.unwrap();
         let object = harness
             .app
             .workspace_mut(tab)
@@ -410,9 +444,9 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_t_opens_a_tab() {
+    fn ctrl_o_opens_a_tab() {
         let mut harness = Harness::new();
-        harness.press(Key::T, Modifiers::COMMAND);
+        harness.press(Key::O, Modifiers::COMMAND);
         assert_eq!(harness.app.tabs.len(), 2);
     }
 
@@ -748,8 +782,74 @@ mod tests {
         let tab = harness.connect_fake();
         harness.click("users");
         harness.click("Close users");
-        assert!(harness.app.workspace(tab).unwrap().objects.is_empty());
+        assert!(harness.app.workspace(tab).unwrap().tabs.is_empty());
         assert!(harness.has("Select a table or view in the sidebar"));
+    }
+
+    #[test]
+    fn the_strip_shows_sql_editors_beside_object_tabs() {
+        let mut harness = Harness::new();
+        let tab = harness.connect_fake();
+        harness.click("users");
+        let users = harness.app.workspace(tab).unwrap().active_tab;
+        let query = harness.add_sql_tab(tab);
+        assert!(harness.has("users tab") && harness.has("Query 1 tab"));
+        harness.click("Query 1 tab");
+        assert_eq!(harness.app.workspace(tab).unwrap().active_tab, Some(query));
+        harness.click("Close Query 1");
+        let workspace = harness.app.workspace(tab).unwrap();
+        assert!(workspace.sql_tab(query).is_none());
+        assert_eq!(workspace.active_tab, users);
+        assert!(!harness.has("Query 1 tab"));
+    }
+
+    #[test]
+    fn the_terminal_digits_reach_every_tab_in_the_strip() {
+        let mut harness = Harness::new();
+        harness.set_look(crate::theme::Look::omarchy());
+        let tab = with_page(&mut harness);
+        let users = harness.app.workspace(tab).unwrap().active_tab;
+        let query = harness.add_sql_tab(tab);
+        harness.press(Key::Num2, Modifiers::NONE);
+        assert_eq!(harness.app.workspace(tab).unwrap().active_tab, Some(query));
+        // An editor shown for the first time takes the keys.
+        harness.press(Key::Escape, Modifiers::NONE);
+        harness.press(Key::Num1, Modifiers::NONE);
+        assert_eq!(harness.app.workspace(tab).unwrap().active_tab, users);
+    }
+
+    #[test]
+    fn the_terminal_letters_for_an_object_do_nothing_on_a_sql_editor() {
+        let mut harness = Harness::new();
+        harness.set_look(crate::theme::Look::omarchy());
+        let tab = with_page(&mut harness);
+        focus_grid(&mut harness, tab);
+        let users = harness.app.workspace(tab).unwrap().active_tab.unwrap();
+        let query = harness.add_sql_tab(tab);
+        harness
+            .app
+            .apply(crate::model::Action::ActivateTab { tab, id: query });
+        let panel = harness.app.workspace(tab).unwrap().row_panel;
+        harness.settle();
+        // A real key press sends the key and its text.
+        harness.frame(vec![
+            crate::testing::key(Key::Slash, Modifiers::NONE),
+            egui::Event::Text("/".into()),
+        ]);
+        // Read before the next frame, which would take the flag.
+        assert!(
+            !harness.app.workspace(tab).unwrap().focus_where,
+            "a SQL editor has no WHERE line to focus"
+        );
+        harness.press(Key::I, Modifiers::NONE);
+        harness.press(Key::S, Modifiers::NONE);
+        let workspace = harness.app.workspace(tab).unwrap();
+        assert_eq!(workspace.row_panel, panel);
+        assert_eq!(
+            workspace.object_tab(users).unwrap().view,
+            crate::model::ObjectView::Data
+        );
+        assert_eq!(workspace.active_tab, Some(query));
     }
 
     fn with_page(harness: &mut Harness) -> crate::model::ConnTabId {
@@ -763,6 +863,1546 @@ mod tests {
     /// table from the sidebar leaves them with the tree).
     fn focus_grid(harness: &mut Harness, tab: crate::model::ConnTabId) {
         harness.app.workspace_mut(tab).unwrap().pane = crate::model::Pane::Grid;
+    }
+
+    /// Opens a SQL editor in `tab`, runs `SELECT 1` in it and answers with
+    /// `rows` rows.
+    fn with_sql_result(
+        harness: &mut Harness,
+        tab: crate::model::ConnTabId,
+        rows: usize,
+    ) -> crate::model::TabId {
+        harness.app.apply(crate::model::Action::NewSqlTab(tab));
+        let id = harness.app.workspace(tab).unwrap().active_tab.unwrap();
+        set_sql(harness, tab, "SELECT 1", 0);
+        harness.app.apply(crate::model::Action::RunSql {
+            tab,
+            sql_tab: id,
+            all: false,
+        });
+        harness.answer_sql(
+            Ok(crate::testing::script_outcome(vec![
+                crate::testing::rows_outcome(rows),
+            ])),
+            None,
+        );
+        id
+    }
+
+    /// Puts `text` in the active SQL editor with the cursor at byte `cursor`.
+    fn set_sql(harness: &mut Harness, tab: crate::model::ConnTabId, text: &str, cursor: usize) {
+        let workspace = harness.app.workspace_mut(tab).unwrap();
+        let id = workspace.active_tab.unwrap();
+        let sql = workspace.sql_tab_mut(id).unwrap();
+        sql.text = text.into();
+        sql.cursor = cursor;
+    }
+
+    fn sql_selection(
+        harness: &Harness,
+        tab: crate::model::ConnTabId,
+        id: crate::model::TabId,
+    ) -> Option<crate::model::CellPos> {
+        let workspace = harness.app.workspace(tab).unwrap();
+        workspace.sql_tab(id).unwrap().selection
+    }
+
+    #[test]
+    fn command_t_opens_a_sql_editor_and_command_o_a_connection_tab() {
+        let mut harness = Harness::new();
+        let tab = harness.connect_fake();
+        harness.press(Key::T, Modifiers::COMMAND);
+        let workspace = harness.app.workspace(tab).unwrap();
+        assert!(workspace.active_sql_tab().is_some());
+        assert!(harness.has("Query 1 tab"));
+        let tabs = harness.app.tabs.len();
+        harness.press(Key::O, Modifiers::COMMAND);
+        assert_eq!(harness.app.tabs.len(), tabs + 1);
+        // On the picker, Mod+T does nothing.
+        harness.press(Key::T, Modifiers::COMMAND);
+        assert_eq!(harness.app.tabs.len(), tabs + 1);
+        let workspace = harness.app.workspace(tab).unwrap();
+        assert_eq!(workspace.tabs.len(), 1, "nor in the workspace behind it");
+    }
+
+    #[test]
+    fn command_t_opens_a_sql_editor_without_a_connection() {
+        let mut harness = Harness::new();
+        let tab = harness.connect_fake();
+        let session = harness.app.workspace(tab).unwrap().session;
+        harness.app.apply(crate::model::Action::Backend(
+            crate::backend::Event::Disconnected {
+                session,
+                error: tabletist_db::Error::ConnectionLost("server went away".into()),
+            },
+        ));
+        harness.press(Key::T, Modifiers::COMMAND);
+        let workspace = harness.app.workspace(tab).unwrap();
+        assert!(workspace.active_sql_tab().is_some());
+    }
+
+    #[test]
+    fn command_return_runs_while_typing() {
+        let mut harness = Harness::new();
+        let tab = harness.connect_fake();
+        harness.press(Key::T, Modifiers::COMMAND);
+        type_text(&mut harness, "SELECT 1;\nSELECT 2");
+        assert!(harness.ctx.text_edit_focused(), "the editor has the keys");
+        harness.press(Key::Enter, Modifiers::COMMAND);
+        assert!(matches!(
+            harness.app.backend.sent.last(),
+            Some(crate::backend::Command::RunSql { statements, .. })
+                if statements.len() == 1 && statements[0].text == "SELECT 2"
+        ));
+        harness.press(Key::Enter, Modifiers::COMMAND | Modifiers::SHIFT);
+        assert!(matches!(
+            harness.app.backend.sent.last(),
+            Some(crate::backend::Command::RunSql { statements, .. }) if statements.len() == 2
+        ));
+        // Mod+Return did not type a newline.
+        let workspace = harness.app.workspace(tab).unwrap();
+        assert_eq!(
+            workspace.active_sql_tab().unwrap().text,
+            "SELECT 1;\nSELECT 2"
+        );
+    }
+
+    #[test]
+    fn command_return_runs_the_statement_at_the_cursor_and_with_shift_all() {
+        let mut harness = Harness::new();
+        let tab = harness.connect_fake();
+        harness.press(Key::T, Modifiers::COMMAND);
+        let text = "SELECT 1;\nSELECT 2";
+        type_text(&mut harness, text);
+        // The cursor goes where the editor's own keys put it.
+        harness.press(Key::ArrowUp, Modifiers::NONE);
+        let sent = harness.app.backend.sent.len();
+        harness.press(Key::Enter, Modifiers::COMMAND);
+        assert!(matches!(
+            harness.app.backend.sent.last(),
+            Some(Command::RunSql { statements, .. })
+                if statements.len() == 1 && statements[0].text == "SELECT 1"
+        ));
+        harness.press(Key::Enter, Modifiers::COMMAND | Modifiers::SHIFT);
+        assert!(matches!(
+            harness.app.backend.sent.last(),
+            Some(Command::RunSql { statements, .. }) if statements.len() == 2
+        ));
+        let runs = harness.app.backend.sent[sent..]
+            .iter()
+            .filter(|command| matches!(command, Command::RunSql { .. }))
+            .count();
+        assert_eq!(runs, 2, "each press runs once");
+        let workspace = harness.app.workspace(tab).unwrap();
+        assert_eq!(workspace.active_sql_tab().unwrap().text, text);
+    }
+
+    /// Types `text` into whatever has the keyboard.
+    fn type_text(harness: &mut Harness, text: &str) {
+        harness.frame(vec![egui::Event::Text(text.into())]);
+        harness.settle();
+    }
+
+    /// Clicks the pointer at `pos`.
+    fn click_at(harness: &mut Harness, pos: egui::Pos2) {
+        let button = |pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        };
+        harness.frame(vec![egui::Event::PointerMoved(pos)]);
+        harness.frame(vec![button(true)]);
+        harness.frame(vec![button(false)]);
+        harness.settle();
+    }
+
+    /// Where the SQL editor's text field is.
+    fn editor_rect(harness: &mut Harness) -> egui::Rect {
+        let tree = harness.settle();
+        crate::testing::bounds(&tree, "SQL", egui::accesskit::Role::MultilineTextInput)
+            .expect("the editor")
+    }
+
+    /// Whether the last frame painted `text` as one piece in `color`.
+    fn painted_in(harness: &Harness, text: &str, color: egui::Color32) -> bool {
+        let mut pieces = harness.painted.iter();
+        pieces.any(|(piece, painted)| piece == text && *painted == color)
+    }
+
+    #[test]
+    fn the_editor_is_a_named_text_field_with_the_query() {
+        for look in crate::theme::Look::ALL {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            let tab = harness.connect_fake();
+            harness.press(Key::T, Modifiers::COMMAND);
+            harness.frame(vec![egui::Event::Text("SELECT 1".into())]);
+            let tree = harness.settle();
+            let editor =
+                crate::testing::node(&tree, "SQL", egui::accesskit::Role::MultilineTextInput);
+            assert!(editor.is_some(), "{}", look.name);
+            let sql = active_sql(&harness, tab);
+            assert_eq!(sql.text, "SELECT 1", "{}", look.name);
+            assert_eq!(sql.cursor, 8, "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn the_editor_reports_its_cursor_in_bytes() {
+        let mut harness = Harness::new();
+        let tab = harness.connect_fake();
+        harness.press(Key::T, Modifiers::COMMAND);
+        // Two bytes each, and a line ending of two characters.
+        type_text(&mut harness, "-- żółw\r\nSELECT 'é'");
+        let sql = active_sql(&harness, tab);
+        assert_eq!(sql.cursor, sql.text.len());
+        assert_eq!(sql.line_col(), (2, 11));
+        harness.press(Key::ArrowLeft, Modifiers::NONE);
+        harness.press(Key::ArrowLeft, Modifiers::NONE);
+        let sql = active_sql(&harness, tab);
+        assert_eq!(&sql.text[sql.cursor..], "é'");
+        assert_eq!(sql.line_col(), (2, 9));
+        // Typed there, text lands between the characters, not inside one.
+        type_text(&mut harness, "ü");
+        let sql = active_sql(&harness, tab);
+        assert_eq!(sql.text, "-- żółw\r\nSELECT 'üé'");
+        assert_eq!(&sql.text[sql.cursor..], "é'");
+        harness.press(Key::ArrowUp, Modifiers::NONE);
+        assert_eq!(active_sql(&harness, tab).line_col().0, 1);
+    }
+
+    #[test]
+    fn a_new_editor_asks_for_the_frame_that_gives_it_the_keys() {
+        let mut harness = Harness::new();
+        let tab = harness.connect_fake();
+        harness.settle();
+        harness.app.apply(crate::model::Action::NewSqlTab(tab));
+        // The frame that draws the editor asks for the keyboard, and for
+        // the frame that has it: no event need come first.
+        harness.frame(Vec::new());
+        assert_eq!(harness.repaint_after, std::time::Duration::ZERO);
+        harness.frame(Vec::new());
+        assert!(harness.ctx.text_edit_focused());
+        harness.settle();
+        assert!(harness.repaint_after > std::time::Duration::ZERO, "idle");
+        // The footer is drawn before the editor moves the cursor: the
+        // frame of a key is followed by one that says where it went.
+        type_text(&mut harness, "SELECT 1");
+        harness.frame(vec![crate::testing::key(Key::ArrowLeft, Modifiers::NONE)]);
+        assert_eq!(active_sql(&harness, tab).cursor, 7);
+        assert_eq!(harness.repaint_after, std::time::Duration::ZERO);
+        assert!(!harness.has("Ln 1, Col 9") && harness.has("Ln 1, Col 8"));
+        assert!(harness.repaint_after > std::time::Duration::ZERO, "idle");
+    }
+
+    #[test]
+    fn escape_leaves_the_editor() {
+        let mut harness = Harness::new();
+        let tab = harness.connect_fake();
+        harness.press(Key::T, Modifiers::COMMAND);
+        assert!(harness.ctx.text_edit_focused(), "a new editor has the keys");
+        harness.press(Key::Escape, Modifiers::NONE);
+        assert!(!harness.ctx.text_edit_focused());
+        type_text(&mut harness, "SELECT 1");
+        assert_eq!(active_sql(&harness, tab).text, "");
+    }
+
+    #[test]
+    fn tab_indents_in_the_editor() {
+        let mut harness = Harness::new();
+        let tab = harness.connect_fake();
+        harness.press(Key::T, Modifiers::COMMAND);
+        harness.press(Key::Tab, Modifiers::NONE);
+        type_text(&mut harness, "SELECT 1");
+        assert!(
+            harness.ctx.text_edit_focused(),
+            "the keys stay in the editor"
+        );
+        assert_eq!(active_sql(&harness, tab).text, "\tSELECT 1");
+    }
+
+    #[test]
+    fn arrows_move_the_cursor_not_the_result_while_the_editor_has_the_keys() {
+        let mut harness = Harness::new();
+        let tab = harness.connect_fake();
+        let id = with_sql_result(&mut harness, tab, 30);
+        harness.settle();
+        assert!(harness.ctx.text_edit_focused());
+        assert_eq!(active_sql(&harness, tab).cursor, 8, "after the text");
+        harness.press(Key::ArrowLeft, Modifiers::NONE);
+        assert_eq!(active_sql(&harness, tab).cursor, 7);
+        harness.press(Key::Home, Modifiers::NONE);
+        assert_eq!(active_sql(&harness, tab).cursor, 0);
+        for key in [
+            Key::ArrowDown,
+            Key::ArrowRight,
+            Key::ArrowUp,
+            Key::PageDown,
+            Key::PageUp,
+            Key::End,
+        ] {
+            harness.press(key, Modifiers::NONE);
+        }
+        assert_eq!(sql_selection(&harness, tab, id), None);
+        assert_eq!(active_sql(&harness, tab).text, "SELECT 1");
+    }
+
+    #[test]
+    fn the_terminal_letters_are_typed_while_the_editor_has_the_keys() {
+        let mut harness = Harness::new();
+        harness.set_look(crate::theme::Look::omarchy());
+        let tab = harness.connect_fake();
+        let id = with_sql_result(&mut harness, tab, 3);
+        harness.settle();
+        // A real key press sends the key and its text.
+        harness.frame(vec![
+            crate::testing::key(Key::J, Modifiers::NONE),
+            egui::Event::Text("j".into()),
+        ]);
+        harness.settle();
+        assert_eq!(active_sql(&harness, tab).text, "SELECT 1j");
+        assert_eq!(sql_selection(&harness, tab, id), None);
+    }
+
+    #[test]
+    fn clicking_the_editor_takes_the_arrows_from_the_tree() {
+        let (mut harness, tab) = tree_harness();
+        let id = with_sql_result(&mut harness, tab, 3);
+        harness.press(Key::Escape, Modifiers::NONE);
+        // A table opened from the tree leaves the arrows there.
+        harness.click("users");
+        harness.click("Query 1 tab");
+        let pane = |harness: &Harness| harness.app.workspace(tab).unwrap().pane;
+        assert_eq!(pane(&harness), crate::model::Pane::Tree);
+        assert!(!harness.ctx.text_edit_focused());
+        let editor = editor_rect(&mut harness);
+        click_at(&mut harness, editor.center());
+        assert!(harness.ctx.text_edit_focused(), "a click gives it the keys");
+        assert_eq!(pane(&harness), crate::model::Pane::Grid);
+        // So the arrows the editor gives up go to its result.
+        let cursor = harness.app.workspace(tab).unwrap().tree.cursor.clone();
+        harness.press(Key::Escape, Modifiers::NONE);
+        harness.press(Key::ArrowDown, Modifiers::NONE);
+        harness.press(Key::ArrowDown, Modifiers::NONE);
+        assert_eq!(
+            sql_selection(&harness, tab, id),
+            Some(crate::model::CellPos { row: 1, col: 0 })
+        );
+        assert_eq!(harness.app.workspace(tab).unwrap().tree.cursor, cursor);
+    }
+
+    /// A script of `lines` lines, the last of them a statement.
+    fn script_of(lines: usize) -> String {
+        format!("{}SELECT x", "-- a note\n".repeat(lines - 1))
+    }
+
+    #[test]
+    fn the_gutter_numbers_every_line() {
+        for look in [crate::theme::Look::standard(), crate::theme::Look::macos()] {
+            let (mut harness, _) = sql_harness(look);
+            harness.settle();
+            type_text(&mut harness, &script_of(12));
+            for line in ["10", "11", "12"] {
+                assert!(painted(&harness, line), "{line} in {}", look.name);
+            }
+            assert!(!painted(&harness, "13"), "{}", look.name);
+            // The numbers do not follow the cursor.
+            for _ in 0..11 {
+                harness.press(Key::ArrowUp, Modifiers::NONE);
+            }
+            assert!(painted(&harness, "11") && painted(&harness, "12"));
+        }
+    }
+
+    #[test]
+    fn the_terminal_gutter_counts_lines_from_the_cursor() {
+        let (mut harness, tab) = sql_harness(crate::theme::Look::omarchy());
+        harness.settle();
+        type_text(&mut harness, &script_of(12));
+        // The cursor's line is 12; the first line is 11 lines away.
+        assert_eq!(active_sql(&harness, tab).line_col().0, 12);
+        assert!(painted(&harness, "12") && painted(&harness, "11"));
+        // On the first line, the last one is 11 away and none is 12.
+        for _ in 0..11 {
+            harness.press(Key::ArrowUp, Modifiers::NONE);
+        }
+        assert_eq!(active_sql(&harness, tab).line_col().0, 1);
+        assert!(painted(&harness, "11"));
+        assert!(!painted(&harness, "12"));
+    }
+
+    #[test]
+    fn a_long_line_does_not_wrap() {
+        for look in crate::theme::Look::ALL {
+            let (mut harness, tab) = sql_harness(look);
+            harness.settle();
+            let long = format!("SELECT {}\n", "a_column, ".repeat(400));
+            type_text(&mut harness, &format!("{long}{}", script_of(10)));
+            assert_eq!(active_sql(&harness, tab).line_col().0, 11);
+            // Eleven lines are eleven rows, however long the first is.
+            assert!(painted(&harness, "11"), "{}", look.name);
+            assert!(!painted(&harness, "12"), "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn the_gutter_marks_the_line_that_failed_until_the_text_changes() {
+        for look in crate::theme::Look::ALL {
+            let (mut harness, tab) = sql_harness(look);
+            let danger = harness.app.palette.danger;
+            harness.settle();
+            type_text(&mut harness, &script_of(11));
+            assert!(painted(&harness, "11") && !painted_in(&harness, "11", danger));
+            harness.press(Key::Enter, Modifiers::COMMAND);
+            harness.answer_sql(
+                Ok(crate::testing::script_outcome(vec![
+                    crate::testing::error_outcome("no such column: x", None),
+                ])),
+                None,
+            );
+            harness.settle();
+            assert!(painted_in(&harness, "11", danger), "{}", look.name);
+            // The statement moves down a line: the mark would be a line off.
+            for _ in 0..10 {
+                harness.press(Key::ArrowUp, Modifiers::NONE);
+            }
+            harness.press(Key::Enter, Modifiers::NONE);
+            assert_eq!(active_sql(&harness, tab).line_col().0, 2);
+            let marked = harness
+                .painted
+                .iter()
+                .any(|(piece, color)| *color == danger && piece.parse::<usize>().is_ok());
+            assert!(!marked, "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn the_script_is_tokenized_once_when_it_changes_and_not_otherwise() {
+        use crate::ui::sql_text::TOKENIZED;
+        let count = || TOKENIZED.with(std::cell::Cell::get);
+        let mut harness = Harness::new();
+        let tab = harness.connect_fake();
+        harness.press(Key::T, Modifiers::COMMAND);
+        let line = "SELECT id, 'a name', 42 FROM users WHERE id > 7; -- a note\n";
+        harness.frame(vec![egui::Event::Paste(line.repeat(500))]);
+        harness.settle();
+        assert_eq!(active_sql(&harness, tab).line_col().0, 501);
+        // Frames that leave the text alone tokenize nothing: idle ones, a
+        // moved cursor, a moved pointer.
+        let before = count();
+        harness.settle();
+        harness.press(Key::ArrowUp, Modifiers::NONE);
+        harness.frame(vec![egui::Event::PointerMoved(egui::pos2(700.0, 300.0))]);
+        assert_eq!(active_sql(&harness, tab).line_col().0, 500);
+        assert_eq!(count(), before);
+        // A frame that changes it tokenizes it once, for the colours and
+        // for the statements both.
+        harness.frame(vec![egui::Event::Text("x".into())]);
+        assert_eq!(count(), before + 1);
+        harness.settle();
+        assert_eq!(count(), before + 1);
+        // Running splits the script in the app, not in the view.
+        harness.press(Key::Enter, Modifiers::COMMAND);
+        assert!(matches!(
+            harness.app.backend.sent.last(),
+            Some(Command::RunSql { .. })
+        ));
+        assert_eq!(count(), before + 1);
+        // Another editor's script is its own: coming back costs nothing.
+        harness.press(Key::T, Modifiers::COMMAND);
+        type_text(&mut harness, "SELECT 2");
+        let after = count();
+        harness.click("Query 1 tab");
+        harness.click("Query 2 tab");
+        assert_eq!(count(), after);
+    }
+
+    #[test]
+    fn a_new_palette_recolours_the_script() {
+        let mut harness = Harness::new();
+        harness.connect_fake();
+        harness.press(Key::T, Modifiers::COMMAND);
+        type_text(&mut harness, "SELECT 1");
+        let old = harness.app.palette;
+        let new = if old.dark {
+            crate::theme::Palette::light()
+        } else {
+            crate::theme::Palette::dark()
+        };
+        assert_ne!(old.magenta, new.magenta);
+        // The script is painted as one piece, in its first token's colour.
+        assert!(painted_in(&harness, "SELECT 1", old.magenta));
+        harness.app.palette = new;
+        harness.settle();
+        assert!(painted_in(&harness, "SELECT 1", new.magenta));
+    }
+
+    #[test]
+    fn a_closed_editor_leaves_nothing_in_eguis_memory() {
+        use crate::ui::sql_text::{editor_id, remembered};
+        let mut harness = Harness::new();
+        let tab = harness.connect_fake();
+        let open = |harness: &mut Harness| {
+            harness.press(Key::T, Modifiers::COMMAND);
+            type_text(harness, "SELECT 1");
+            harness.app.workspace(tab).unwrap().active_tab.unwrap()
+        };
+        let everything = ["text", "parsed", "scroll id", "scroll"];
+        // The text field's state is its cursor and its undo history, which
+        // holds copies of the script.
+        let first = open(&mut harness);
+        let state = |harness: &Harness, id| {
+            egui::TextEdit::load_state(&harness.ctx, editor_id(tab, id)).is_some()
+        };
+        assert!(state(&harness, first));
+        assert_eq!(remembered(&harness.ctx, tab, first), everything);
+        harness.press(Key::W, Modifiers::COMMAND);
+        assert!(!state(&harness, first));
+        assert!(remembered(&harness.ctx, tab, first).is_empty());
+        // Editors that go with their connection tab are forgotten too,
+        // the one shown and the one behind it.
+        let second = open(&mut harness);
+        let third = open(&mut harness);
+        for id in [second, third] {
+            assert_eq!(remembered(&harness.ctx, tab, id), everything);
+        }
+        harness.press(Key::W, Modifiers::COMMAND | Modifiers::SHIFT);
+        assert!(harness.app.workspace(tab).is_none());
+        for id in [second, third] {
+            assert!(!state(&harness, id));
+            assert!(remembered(&harness.ctx, tab, id).is_empty());
+        }
+        assert!(harness.app.closed_editors.is_empty(), "each forgotten once");
+    }
+
+    #[test]
+    fn the_statement_at_the_cursor_is_marked_and_a_comment_is_not() {
+        for look in crate::theme::Look::ALL {
+            let (mut harness, _) = sql_harness(look);
+            // The bar's colour, which other things are filled with too.
+            let bar = crate::ui::sql_text::bar_color(&look, &harness.app.palette);
+            let bars = |harness: &Harness| {
+                harness
+                    .fills
+                    .iter()
+                    .filter(|(_, fill)| *fill == bar)
+                    .count()
+            };
+            harness.settle();
+            let none = bars(&harness);
+            // A script of comments holds no statement to run.
+            type_text(&mut harness, "-- only a note");
+            assert_eq!(bars(&harness), none, "{}", look.name);
+            type_text(&mut harness, "\nSELECT 1");
+            assert_eq!(bars(&harness), none + 1, "{}", look.name);
+            // It stays with the statement when the keys leave the editor.
+            harness.press(Key::Escape, Modifiers::NONE);
+            assert_eq!(bars(&harness), none + 1, "{}", look.name);
+            let editor = editor_rect(&mut harness);
+            click_at(&mut harness, editor.center());
+            for _ in 0.."SELECT 1".len() {
+                harness.press(Key::Backspace, Modifiers::NONE);
+            }
+            assert_eq!(bars(&harness), none, "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn a_press_on_the_gutter_gives_the_editor_the_keys_on_that_line() {
+        for look in crate::theme::Look::ALL {
+            let (mut harness, tab) = sql_harness(look);
+            harness.settle();
+            type_text(&mut harness, "SELECT 1;\nSELECT 2;\nSELECT 3");
+            harness.press(Key::Escape, Modifiers::NONE);
+            assert!(!harness.ctx.text_edit_focused());
+            // Left of the text, beside its first line.
+            let editor = editor_rect(&mut harness);
+            let gutter = editor.left() - 20.0;
+            click_at(&mut harness, egui::pos2(gutter, editor.top() + 12.0));
+            assert!(harness.ctx.text_edit_focused(), "{}", look.name);
+            assert_eq!(active_sql(&harness, tab).line_col(), (1, 1));
+            type_text(&mut harness, "x");
+            assert!(active_sql(&harness, tab).text.starts_with("xSELECT 1;"));
+            // With the keys in the editor, a press there keeps them. Under
+            // the last line, it is the end of the script.
+            click_at(&mut harness, egui::pos2(gutter, editor.bottom() - 4.0));
+            assert!(harness.ctx.text_edit_focused(), "{}", look.name);
+            assert_eq!(active_sql(&harness, tab).line_col(), (3, 9));
+            // Screen readers find the gutter by its name.
+            let tree = harness.settle();
+            let numbers =
+                crate::testing::node(&tree, "Line numbers", egui::accesskit::Role::Unknown);
+            assert!(numbers.is_some(), "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn a_held_run_key_runs_once() {
+        let mut harness = Harness::new();
+        let tab = harness.connect_fake();
+        harness.press(Key::T, Modifiers::COMMAND);
+        set_sql(&mut harness, tab, "SELECT 1;\nSELECT 2", 0);
+        let runs = |harness: &Harness| {
+            let sent = &harness.app.backend.sent;
+            sent.iter()
+                .filter(|command| matches!(command, Command::RunSql { .. }))
+                .count()
+        };
+        // What the window sends while the chord is held. egui decides for
+        // itself what repeats: a key going down that has not come up.
+        let repeat = |modifiers: Modifiers| egui::Event::Key {
+            key: Key::Enter,
+            physical_key: None,
+            pressed: true,
+            repeat: true,
+            modifiers,
+        };
+        let down = |modifiers: Modifiers| crate::testing::key(Key::Enter, modifiers);
+        let up = |modifiers: Modifiers| crate::testing::release(Key::Enter, modifiers);
+        let command = Modifiers::COMMAND;
+        let shift = Modifiers::COMMAND | Modifiers::SHIFT;
+        harness.settle();
+        harness.frame(vec![down(command), repeat(command)]);
+        harness.frame(vec![repeat(command)]);
+        harness.frame(vec![repeat(command), repeat(command)]);
+        harness.settle();
+        assert_eq!(runs(&harness), 1, "the press runs, its repeats do not");
+        harness.frame(vec![up(command)]);
+        harness.frame(vec![down(shift)]);
+        harness.frame(vec![repeat(shift)]);
+        harness.settle();
+        assert_eq!(runs(&harness), 2, "nor does a repeat run the statement");
+        assert!(matches!(
+            harness.app.backend.sent.last(),
+            Some(Command::RunSql { statements, .. }) if statements.len() == 2
+        ));
+        // Let go and pressed again, it runs again.
+        harness.frame(vec![up(shift)]);
+        harness.frame(vec![down(command)]);
+        harness.settle();
+        assert_eq!(runs(&harness), 3);
+    }
+
+    #[test]
+    fn command_return_does_nothing_on_an_object_tab() {
+        let mut harness = Harness::new();
+        let tab = with_page(&mut harness);
+        let sent = harness.app.backend.sent.len();
+        harness.press(Key::Enter, Modifiers::COMMAND);
+        harness.press(Key::Enter, Modifiers::COMMAND | Modifiers::SHIFT);
+        assert_eq!(harness.app.backend.sent.len(), sent);
+        assert!(harness.app.workspace(tab).unwrap().row_panel);
+    }
+
+    #[test]
+    fn command_period_cancels_a_sql_run() {
+        let mut harness = Harness::new();
+        let tab = harness.connect_fake();
+        harness.press(Key::T, Modifiers::COMMAND);
+        set_sql(&mut harness, tab, "SELECT 1", 0);
+        harness.press(Key::Enter, Modifiers::COMMAND);
+        let Some(Command::RunSql { request: run, .. }) = harness.app.backend.sent.last() else {
+            panic!("expected RunSql");
+        };
+        let run = *run;
+        harness.press(Key::Period, Modifiers::COMMAND);
+        assert!(matches!(
+            crate::testing::last_sent(&harness.app),
+            Command::Cancel { request, .. } if *request == run
+        ));
+    }
+
+    #[test]
+    fn refresh_and_filter_do_nothing_on_a_sql_tab() {
+        let mut harness = Harness::new();
+        let tab = harness.connect_fake();
+        harness.press(Key::T, Modifiers::COMMAND);
+        let sent = harness.app.backend.sent.len();
+        // The two Mod+R steps are the ones that need the gate in
+        // `keys::handle`: the tree has the arrows (here because the editor
+        // shows no grid, below because the tree was used last), so without
+        // the gate the key would refresh the tree.
+        harness.press(Key::R, Modifiers::COMMAND);
+        assert_eq!(harness.app.backend.sent.len(), sent, "no grid showing");
+        harness.app.workspace_mut(tab).unwrap().pane = crate::model::Pane::Tree;
+        harness.press(Key::R, Modifiers::COMMAND);
+        assert_eq!(harness.app.backend.sent.len(), sent, "the tree pane");
+        // Mod+F shows nothing of the gate: the reducers ignore the filter
+        // bar on a SQL editor as well. So does Mod+R once a result's grid
+        // has the arrows (the reducer has nothing to refresh).
+        harness.press(Key::F, Modifiers::COMMAND);
+        with_sql_result(&mut harness, tab, 3);
+        let sent = harness.app.backend.sent.len();
+        harness.press(Key::R, Modifiers::COMMAND);
+        assert_eq!(harness.app.backend.sent.len(), sent);
+        assert!(
+            harness
+                .app
+                .workspace(tab)
+                .unwrap()
+                .active_sql_tab()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn the_row_panel_and_paging_keys_do_nothing_on_a_sql_tab() {
+        let mut harness = Harness::new();
+        let tab = harness.connect_fake();
+        harness.app.apply(crate::model::Action::OpenObject {
+            tab,
+            object: tabletist_db::ObjectRef::new("main", "users"),
+            kind: tabletist_db::ObjectKind::Table,
+            pin: true,
+        });
+        harness.answer_rows(crate::testing::page(300, true));
+        let users = harness.app.workspace(tab).unwrap().active_tab.unwrap();
+        let query = with_sql_result(&mut harness, tab, 3);
+        // With the keys out of the editor, where Space would be typed.
+        harness.press(Key::Escape, Modifiers::NONE);
+        let panel = harness.app.workspace(tab).unwrap().row_panel;
+        let sent = harness.app.backend.sent.len();
+        harness.press(Key::Space, Modifiers::NONE);
+        assert_eq!(harness.app.workspace(tab).unwrap().row_panel, panel);
+        harness.press(Key::R, Modifiers::COMMAND | Modifiers::SHIFT);
+        assert_eq!(harness.app.workspace(tab).unwrap().row_panel, panel);
+        harness.press(Key::ArrowRight, Modifiers::COMMAND | Modifiers::ALT);
+        harness.press(Key::ArrowLeft, Modifiers::COMMAND | Modifiers::ALT);
+        assert_eq!(
+            harness.app.backend.sent.len(),
+            sent,
+            "the table behind the editor did not page or refresh"
+        );
+        let workspace = harness.app.workspace(tab).unwrap();
+        assert_eq!(workspace.object_tab(users).unwrap().query.offset, 0);
+        assert_eq!(
+            sql_selection(&harness, tab, query),
+            None,
+            "nor did the result's selection move"
+        );
+    }
+
+    #[test]
+    fn command_w_closes_a_sql_tab() {
+        let mut harness = Harness::new();
+        let tab = harness.connect_fake();
+        harness.press(Key::T, Modifiers::COMMAND);
+        harness.press(Key::W, Modifiers::COMMAND);
+        assert!(harness.app.workspace(tab).unwrap().tabs.is_empty());
+        assert_eq!(harness.app.tabs.len(), 1, "not the connection tab");
+    }
+
+    #[test]
+    fn command_shift_brackets_cycle_through_tabs_of_both_kinds() {
+        let mut harness = Harness::new();
+        let tab = with_page(&mut harness);
+        let users = harness.app.workspace(tab).unwrap().active_tab;
+        harness.press(Key::T, Modifiers::COMMAND);
+        let query = harness.app.workspace(tab).unwrap().active_tab;
+        assert_ne!(query, users);
+        let shift = Modifiers::COMMAND | Modifiers::SHIFT;
+        harness.press(Key::OpenBracket, shift);
+        assert_eq!(harness.app.workspace(tab).unwrap().active_tab, users);
+        harness.press(Key::CloseBracket, shift);
+        assert_eq!(harness.app.workspace(tab).unwrap().active_tab, query);
+        // US layouts report the curly bracket with Shift held.
+        harness.press(Key::CloseCurlyBracket, shift);
+        assert_eq!(harness.app.workspace(tab).unwrap().active_tab, users);
+    }
+
+    #[test]
+    fn the_shortcuts_of_any_tab_work_on_a_sql_tab() {
+        let (mut harness, tab) = tree_harness();
+        harness.app.apply(crate::model::Action::NewConnTab);
+        harness.press(Key::Num1, Modifiers::COMMAND);
+        assert_eq!(harness.app.active_tab_id(), tab);
+        harness.press(Key::T, Modifiers::COMMAND);
+        let workspace = harness.app.workspace(tab).unwrap();
+        assert!(workspace.active_sql_tab().is_some());
+        harness.press(Key::Num2, Modifiers::COMMAND);
+        assert_eq!(harness.app.active, 1);
+        harness.press(Key::Num1, Modifiers::COMMAND);
+        assert_eq!(harness.app.active, 0);
+        assert!(harness.has("orders"));
+        harness.press(Key::B, Modifiers::COMMAND);
+        assert!(!harness.has("orders"));
+        harness.press(Key::B, Modifiers::COMMAND);
+        harness.press(Key::P, Modifiers::COMMAND);
+        assert!(harness.has("Open table or view"));
+        harness.press(Key::Escape, Modifiers::NONE);
+        assert!(harness.app.dialog.is_none());
+        harness.frame(vec![egui::Event::Text("?".into())]);
+        assert!(harness.has("Keyboard shortcuts"));
+    }
+
+    #[test]
+    fn after_escape_arrows_move_in_a_sql_result() {
+        let mut harness = Harness::new();
+        let tab = harness.connect_fake();
+        let id = with_sql_result(&mut harness, tab, 3);
+        harness.settle();
+        assert!(harness.ctx.text_edit_focused(), "the editor has the keys");
+        harness.press(Key::Escape, Modifiers::NONE);
+        assert!(!harness.ctx.text_edit_focused());
+        harness.press(Key::ArrowDown, Modifiers::NONE);
+        harness.press(Key::ArrowDown, Modifiers::NONE);
+        assert_eq!(
+            sql_selection(&harness, tab, id),
+            Some(crate::model::CellPos { row: 1, col: 0 })
+        );
+    }
+
+    #[test]
+    fn the_grid_keys_move_in_a_sql_result() {
+        let mut harness = Harness::new();
+        let tab = harness.connect_fake();
+        let id = with_sql_result(&mut harness, tab, 30);
+        let at = |row, col| Some(crate::model::CellPos { row, col });
+        harness.press(Key::Escape, Modifiers::NONE);
+        harness.press(Key::End, Modifiers::NONE);
+        // The first key selects the first cell.
+        assert_eq!(sql_selection(&harness, tab, id), at(0, 0));
+        harness.press(Key::End, Modifiers::NONE);
+        assert_eq!(sql_selection(&harness, tab, id), at(29, 0));
+        harness.press(Key::Home, Modifiers::NONE);
+        assert_eq!(sql_selection(&harness, tab, id), at(0, 0));
+        harness.press(Key::PageDown, Modifiers::NONE);
+        assert_eq!(sql_selection(&harness, tab, id), at(20, 0));
+        harness.press(Key::ArrowRight, Modifiers::NONE);
+        harness.press(Key::ArrowUp, Modifiers::NONE);
+        assert_eq!(sql_selection(&harness, tab, id), at(19, 1));
+        harness.press(Key::PageUp, Modifiers::NONE);
+        harness.press(Key::ArrowLeft, Modifiers::NONE);
+        assert_eq!(sql_selection(&harness, tab, id), at(0, 0));
+    }
+
+    #[test]
+    fn arrows_stay_in_the_tree_while_a_sql_tab_shows_no_grid() {
+        let (mut harness, tab) = tree_harness();
+        let cursor = |harness: &Harness| harness.app.workspace(tab).unwrap().tree.cursor.clone();
+        // An editor that has run nothing has no grid.
+        harness.press(Key::T, Modifiers::COMMAND);
+        harness.press(Key::Escape, Modifiers::NONE);
+        let before = cursor(&harness);
+        harness.press(Key::ArrowDown, Modifiers::NONE);
+        let moved = cursor(&harness);
+        assert_ne!(moved, before);
+        // Nor has one showing its messages over a result.
+        harness.press(Key::W, Modifiers::COMMAND);
+        let id = with_sql_result(&mut harness, tab, 3);
+        harness.press(Key::Escape, Modifiers::NONE);
+        harness.app.apply(crate::model::Action::SetResultPane {
+            tab,
+            sql_tab: id,
+            pane: crate::model::ResultPane::Messages,
+        });
+        harness.press(Key::ArrowDown, Modifiers::NONE);
+        assert_ne!(cursor(&harness), moved);
+        assert_eq!(sql_selection(&harness, tab, id), None);
+        // With the tree clicked last, a shown grid leaves the arrows there.
+        harness.app.apply(crate::model::Action::SetResultPane {
+            tab,
+            sql_tab: id,
+            pane: crate::model::ResultPane::Results,
+        });
+        harness.app.workspace_mut(tab).unwrap().pane = crate::model::Pane::Tree;
+        harness.press(Key::ArrowUp, Modifiers::NONE);
+        assert_eq!(cursor(&harness), moved);
+        assert_eq!(sql_selection(&harness, tab, id), None);
+    }
+
+    #[test]
+    fn the_terminal_letters_move_in_a_sql_result() {
+        let mut harness = Harness::new();
+        harness.set_look(crate::theme::Look::omarchy());
+        let tab = harness.connect_fake();
+        let id = with_sql_result(&mut harness, tab, 3);
+        let at = |row, col| Some(crate::model::CellPos { row, col });
+        harness.press(Key::Escape, Modifiers::NONE);
+        harness.press(Key::J, Modifiers::NONE);
+        harness.press(Key::J, Modifiers::NONE);
+        harness.press(Key::L, Modifiers::NONE);
+        assert_eq!(sql_selection(&harness, tab, id), at(1, 1));
+        harness.press(Key::K, Modifiers::NONE);
+        harness.press(Key::H, Modifiers::NONE);
+        assert_eq!(sql_selection(&harness, tab, id), at(0, 0));
+        // Not in the messages, which have no cells.
+        harness.app.apply(crate::model::Action::SetResultPane {
+            tab,
+            sql_tab: id,
+            pane: crate::model::ResultPane::Messages,
+        });
+        harness.press(Key::J, Modifiers::NONE);
+        assert_eq!(sql_selection(&harness, tab, id), at(0, 0));
+    }
+
+    #[test]
+    fn letters_do_not_move_in_a_sql_result_outside_the_terminal_look() {
+        let mut harness = Harness::new();
+        let tab = harness.connect_fake();
+        let id = with_sql_result(&mut harness, tab, 3);
+        harness.press(Key::Escape, Modifiers::NONE);
+        harness.press(Key::J, Modifiers::NONE);
+        assert_eq!(sql_selection(&harness, tab, id), None);
+    }
+
+    /// Opens a SQL editor in `tab` of a harness drawn with `look`.
+    fn sql_harness(look: crate::theme::Look) -> (Harness, crate::model::ConnTabId) {
+        let mut harness = Harness::new();
+        harness.set_look(look);
+        let tab = harness.connect_fake();
+        harness.app.apply(crate::model::Action::NewSqlTab(tab));
+        (harness, tab)
+    }
+
+    fn active_sql(harness: &Harness, tab: crate::model::ConnTabId) -> &crate::model::SqlTab {
+        let workspace = harness.app.workspace(tab).unwrap();
+        workspace.active_sql_tab().unwrap()
+    }
+
+    /// Whether the last frame painted `text` as one piece.
+    fn painted(harness: &Harness, text: &str) -> bool {
+        harness.painted.iter().any(|(piece, _)| piece == text)
+    }
+
+    #[test]
+    fn a_sql_tab_shows_its_toolbar_in_every_look() {
+        for look in crate::theme::Look::ALL {
+            let (mut harness, _tab) = sql_harness(look);
+            let tree = harness.settle();
+            for name in ["Run", "Run all", "Query 1 tab"] {
+                assert!(
+                    crate::testing::node(&tree, name, egui::accesskit::Role::Button).is_some(),
+                    "{name} in {}",
+                    look.name
+                );
+            }
+            for name in ["Limit", "Timeout"] {
+                assert!(
+                    crate::testing::node(&tree, name, egui::accesskit::Role::ComboBox).is_some(),
+                    "{name} in {}",
+                    look.name
+                );
+            }
+            // What the menus are set to is their value.
+            let values: Vec<_> = tree
+                .nodes
+                .iter()
+                .filter(|(_, node)| node.role() == egui::accesskit::Role::ComboBox)
+                .filter_map(|(_, node)| node.value().map(str::to_owned))
+                .collect();
+            // Named alike in every look; only what is painted is lower
+            // case in the terminal's.
+            for value in ["Limit 1,000", "Timeout 30 s"] {
+                assert!(
+                    values.iter().any(|found| found == value),
+                    "{value} in {}: {values:?}",
+                    look.name
+                );
+            }
+            assert!(
+                harness.has("Read-only transaction"),
+                "the transaction note in {}",
+                look.name
+            );
+            let reads = if look.terminal {
+                ["limit 1000", "timeout 30s", "read-only transaction"]
+            } else {
+                ["Limit 1,000", "Timeout 30 s", "Read-only transaction"]
+            };
+            for text in reads {
+                assert!(painted(&harness, text), "{text} in {}", look.name);
+            }
+            // Nothing of a table tab is drawn for an editor.
+            assert!(!harness.has("Add filter") && !harness.has("Structure"));
+        }
+    }
+
+    #[test]
+    fn the_sidebar_button_and_the_terminal_plus_open_a_sql_editor() {
+        for look in crate::theme::Look::ALL {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            let tab = harness.connect_fake();
+            // "+ sql" ends the terminal's strip; the others have a button
+            // under the tree. Both are named for what they open.
+            let name = if look.terminal {
+                "New SQL editor"
+            } else {
+                "SQL Editor"
+            };
+            harness.click(name);
+            let workspace = harness.app.workspace(tab).unwrap();
+            assert!(workspace.active_sql_tab().is_some(), "{}", look.name);
+            // Still there with an editor open, for the next one.
+            harness.click(name);
+            assert_eq!(
+                harness.app.workspace(tab).unwrap().sql_tabs().count(),
+                2,
+                "{}",
+                look.name
+            );
+        }
+    }
+
+    #[test]
+    fn clicking_run_sends_the_statement_and_run_all_the_script() {
+        for look in crate::theme::Look::ALL {
+            let (mut harness, tab) = sql_harness(look);
+            set_sql(&mut harness, tab, "SELECT 1;\nSELECT 2", 0);
+            harness.click("Run");
+            assert!(
+                matches!(
+                    harness.app.backend.sent.last(),
+                    Some(crate::backend::Command::RunSql { statements, .. })
+                        if statements.len() == 1
+                ),
+                "Run in {}",
+                look.name
+            );
+            harness.click("Run all");
+            assert!(
+                matches!(
+                    harness.app.backend.sent.last(),
+                    Some(crate::backend::Command::RunSql { statements, .. })
+                        if statements.len() == 2
+                ),
+                "Run all in {}",
+                look.name
+            );
+        }
+    }
+
+    #[test]
+    fn the_limit_and_timeout_menus_change_the_editor() {
+        for look in crate::theme::Look::ALL {
+            let (mut harness, tab) = sql_harness(look);
+            assert_eq!(active_sql(&harness, tab).limit, 1_000);
+            harness.click("Limit");
+            // The choices read in the look's case and are named in one.
+            let reads = if look.terminal {
+                "limit 10000"
+            } else {
+                "Limit 10,000"
+            };
+            assert!(painted(&harness, reads), "{reads} in {}", look.name);
+            harness.click("Limit 100");
+            assert_eq!(active_sql(&harness, tab).limit, 100, "{}", look.name);
+            assert_eq!(harness.app.settings.sql_limit, 100);
+            // The menu closes on a pick that came from no pointer too (a
+            // key, a screen reader).
+            assert!(
+                !harness.has("Limit 10,000"),
+                "the Limit menu stays open in {}",
+                look.name
+            );
+            harness.click("Timeout");
+            harness.click("No timeout");
+            assert_eq!(active_sql(&harness, tab).timeout, None, "{}", look.name);
+            harness.click("Timeout");
+            harness.click("Timeout 60 s");
+            assert_eq!(
+                active_sql(&harness, tab).timeout,
+                Some(std::time::Duration::from_secs(60)),
+                "{}",
+                look.name
+            );
+        }
+    }
+
+    /// Gives the keyboard to the node named `label` with `role`, as a
+    /// screen reader does.
+    fn focus(harness: &mut Harness, label: &str, role: egui::accesskit::Role) {
+        let tree = harness.settle();
+        let target = crate::testing::node(&tree, label, role)
+            .unwrap_or_else(|| panic!("nothing named {label:?}"));
+        harness.frame(vec![egui::Event::AccessKitActionRequest(
+            egui::accesskit::ActionRequest {
+                target_tree: egui::accesskit::TreeId::ROOT,
+                target_node: target,
+                action: egui::accesskit::Action::Focus,
+                data: None,
+            },
+        )]);
+        harness.settle();
+    }
+
+    #[test]
+    fn the_keyboard_is_back_on_a_menus_button_after_a_pick_or_escape() {
+        for look in crate::theme::Look::ALL {
+            let (mut harness, tab) = sql_harness(look);
+            harness.click("Limit");
+            harness.click("Limit 100");
+            assert_eq!(
+                focused_name(&harness.settle()),
+                "Limit",
+                "after a pick in {}",
+                look.name
+            );
+            harness.click("Timeout");
+            assert!(harness.has("No timeout"));
+            harness.press(Key::Escape, Modifiers::NONE);
+            assert!(!harness.has("No timeout"), "Escape closes the menu");
+            assert_eq!(
+                focused_name(&harness.settle()),
+                "Timeout",
+                "after Escape in {}",
+                look.name
+            );
+            assert_eq!(
+                active_sql(&harness, tab).timeout,
+                Some(std::time::Duration::from_secs(30))
+            );
+        }
+    }
+
+    #[test]
+    fn tab_walks_the_toolbar_in_the_order_it_reads() {
+        for look in crate::theme::Look::ALL {
+            let (mut harness, _tab) = sql_harness(look);
+            // The terminal's toolbar leads with its menus, the others'
+            // with Run.
+            let order = if look.terminal {
+                ["Limit", "Timeout", "Run", "Run all"]
+            } else {
+                ["Run", "Run all", "Limit", "Timeout"]
+            };
+            let role = if look.terminal {
+                egui::accesskit::Role::ComboBox
+            } else {
+                egui::accesskit::Role::Button
+            };
+            focus(&mut harness, order[0], role);
+            let mut reached = vec![focused_name(&harness.settle())];
+            for _ in 1..order.len() {
+                harness.press(Key::Tab, Modifiers::NONE);
+                reached.push(focused_name(&harness.settle()));
+            }
+            assert_eq!(reached, order, "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn the_terminal_strip_has_no_row_panel_toggle_on_a_sql_tab() {
+        let (mut harness, tab) = sql_harness(crate::theme::Look::omarchy());
+        let toggle = "Show or hide the row panel";
+        assert!(!harness.has(toggle), "an editor has no row panel");
+        let panel = harness.app.workspace(tab).unwrap().row_panel;
+        // A table tab keeps it, and coming back to the editor loses it.
+        harness.click("users");
+        harness.answer_rows(crate::testing::page(5, false));
+        assert!(harness.has(toggle));
+        harness.click(toggle);
+        assert_ne!(harness.app.workspace(tab).unwrap().row_panel, panel);
+        harness.click("Query 1 tab");
+        assert!(!harness.has(toggle));
+    }
+
+    /// Presses the pointer at `from`, moves it to `to` and lets go.
+    fn drag(harness: &mut Harness, from: egui::Pos2, to: egui::Pos2) {
+        let button = |pos, pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        };
+        harness.frame(vec![egui::Event::PointerMoved(from)]);
+        harness.frame(vec![button(from, true)]);
+        harness.frame(vec![egui::Event::PointerMoved(to)]);
+        harness.frame(vec![button(to, false)]);
+        harness.settle();
+    }
+
+    /// Where the band between a SQL editor and its results is.
+    fn band(harness: &mut Harness) -> egui::Rect {
+        let tree = harness.settle();
+        crate::testing::bounds(&tree, "Resize the editor", egui::accesskit::Role::Unknown)
+            .expect("the splitter")
+    }
+
+    #[test]
+    fn dragging_the_band_changes_the_editors_share() {
+        for look in crate::theme::Look::ALL {
+            let (mut harness, tab) = sql_harness(look);
+            assert_eq!(active_sql(&harness, tab).split, 0.45);
+            let before = band(&mut harness);
+            let at = before.center();
+            drag(&mut harness, at, at + egui::vec2(0.0, 40.0));
+            let after = band(&mut harness);
+            assert!(
+                (after.top() - before.top() - 40.0).abs() <= 1.0,
+                "the band follows the pointer in {}: {before:?} to {after:?}",
+                look.name
+            );
+            assert!(active_sql(&harness, tab).split > 0.45, "{}", look.name);
+            // Up again, past where it was.
+            let at = after.center();
+            drag(&mut harness, at, at - egui::vec2(0.0, 90.0));
+            assert!(active_sql(&harness, tab).split < 0.45, "{}", look.name);
+            assert!(band(&mut harness).top() < before.top());
+        }
+    }
+
+    #[test]
+    fn the_band_is_no_stop_for_the_tab_key() {
+        let (mut harness, _tab) = sql_harness(crate::theme::Look::macos());
+        for _ in 0..40 {
+            harness.press(Key::Tab, Modifiers::NONE);
+            assert_ne!(focused_name(&harness.settle()), "Resize the editor");
+        }
+    }
+
+    #[test]
+    fn the_editor_and_its_results_keep_their_least_height() {
+        for look in crate::theme::Look::ALL {
+            let (mut harness, tab) = sql_harness(look);
+            let run =
+                crate::testing::bounds(&harness.settle(), "Run", egui::accesskit::Role::Button)
+                    .unwrap();
+            // Far past the toolbar: the editor stays 80 tall under it.
+            let at = band(&mut harness).center();
+            drag(&mut harness, at, egui::pos2(at.x, 0.0));
+            let top = band(&mut harness).top() - run.bottom();
+            assert!((80.0..100.0).contains(&top), "{top} in {}", look.name);
+            assert!(active_sql(&harness, tab).split > 0.0);
+            // Far past the window's end: the results stay 80 tall over the
+            // footer (or the terminal's status line).
+            let at = band(&mut harness).center();
+            drag(&mut harness, at, egui::pos2(at.x, 5_000.0));
+            let rest = harness.size.y - band(&mut harness).bottom();
+            assert!((80.0..120.0).contains(&rest), "{rest} in {}", look.name);
+            assert!(active_sql(&harness, tab).split < 1.0);
+        }
+    }
+
+    #[test]
+    fn the_split_survives_other_tabs_and_a_resized_window() {
+        for look in crate::theme::Look::ALL {
+            let (mut harness, tab) = sql_harness(look);
+            let at = band(&mut harness).center();
+            drag(&mut harness, at, at + egui::vec2(0.0, 60.0));
+            let split = active_sql(&harness, tab).split;
+            let place = band(&mut harness);
+            assert!(split > 0.45);
+            // A table, another editor (which starts at the default), back.
+            harness.click("users");
+            harness.answer_rows(crate::testing::page(5, false));
+            harness.app.apply(crate::model::Action::NewSqlTab(tab));
+            assert_eq!(active_sql(&harness, tab).split, 0.45);
+            assert!(band(&mut harness).top() < place.top());
+            harness.click("Query 1 tab");
+            assert_eq!(active_sql(&harness, tab).split, split, "{}", look.name);
+            assert_eq!(band(&mut harness), place, "{}", look.name);
+            // A taller window gives the editor its share of the new room.
+            harness.size.y += 200.0;
+            let taller = band(&mut harness);
+            assert_eq!(active_sql(&harness, tab).split, split);
+            let grown = taller.top() - place.top();
+            assert!(
+                (grown - split * 200.0).abs() <= 1.0,
+                "the editor grew {grown} of 200 at {split} in {}",
+                look.name
+            );
+            // And back: the window passing through a size changes nothing.
+            harness.size.y -= 200.0;
+            assert_eq!(band(&mut harness), place, "{}", look.name);
+        }
+    }
+
+    /// Drags the sidebar's edge as far right as it goes.
+    fn widen_sidebar(harness: &mut Harness) {
+        let filter = |harness: &mut Harness| {
+            crate::testing::bounds(
+                &harness.settle(),
+                "Filter",
+                egui::accesskit::Role::TextInput,
+            )
+            .expect("the sidebar's filter")
+        };
+        let before = filter(harness);
+        // The edge is a few points right of the filter field.
+        for step in 0..40 {
+            let at = egui::pos2(before.right() + step as f32, before.bottom() + 150.0);
+            drag(harness, at, at + egui::vec2(600.0, 0.0));
+            if filter(harness).right() > before.right() + 100.0 {
+                return;
+            }
+        }
+        panic!("the sidebar did not widen");
+    }
+
+    #[test]
+    fn the_menus_stay_in_reach_in_the_smallest_window_beside_the_widest_sidebar() {
+        for look in crate::theme::Look::ALL {
+            let size = egui::vec2(720.0, 480.0);
+            let mut harness = Harness::with_size(size);
+            harness.set_look(look);
+            let tab = harness.connect_fake();
+            harness.app.apply(crate::model::Action::NewSqlTab(tab));
+            widen_sidebar(&mut harness);
+            let tree = harness.settle();
+            let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
+            let controls: Vec<(&str, egui::Rect)> = [
+                ("Run", egui::accesskit::Role::Button),
+                ("Run all", egui::accesskit::Role::Button),
+                ("Limit", egui::accesskit::Role::ComboBox),
+                ("Timeout", egui::accesskit::Role::ComboBox),
+            ]
+            .into_iter()
+            .map(|(label, role)| {
+                let rect = crate::testing::bounds(&tree, label, role)
+                    .unwrap_or_else(|| panic!("{label} missing in {}", look.name));
+                assert!(
+                    screen.contains_rect(rect),
+                    "{label} at {rect:?} is off screen in {}",
+                    look.name
+                );
+                (label, rect)
+            })
+            .collect();
+            // Run sits right of the sidebar, so the sidebar is as wide as
+            // it goes and the toolbar as narrow.
+            assert!(controls[0].1.left() > 400.0, "{:?}", controls[0].1);
+            for (index, (label, rect)) in controls.iter().enumerate() {
+                for (other, other_rect) in &controls[index + 1..] {
+                    assert!(
+                        !rect.intersects(*other_rect),
+                        "{label} overlaps {other} in {}",
+                        look.name
+                    );
+                }
+            }
+            // The menus read short there and keep their whole value for
+            // screen readers; they still open.
+            let short = if look.terminal { "1000" } else { "1,000" };
+            assert!(painted(&harness, short), "{short} in {}", look.name);
+            harness.click("Limit");
+            harness.click("Limit 100");
+            assert_eq!(active_sql(&harness, tab).limit, 100, "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn the_toolbar_gives_way_in_order_and_shortens_its_menus_last() {
+        // The keys go first: the help and the terminal's status line say
+        // them too, while the menus' words are all that say what "1,000"
+        // and "30 s" are. So the labels read in full until only they are
+        // left to give way.
+        for look in crate::theme::Look::ALL {
+            let (mut harness, _tab) = sql_harness(look);
+            let (keys, note, full, short) = if look.terminal {
+                ("ctrl+enter", "read-only transaction", "limit 1000", "1000")
+            } else if look == crate::theme::Look::macos() {
+                ("⌘↩", "Read-only transaction", "Limit 1,000", "1,000")
+            } else {
+                (
+                    "Ctrl+Enter",
+                    "Read-only transaction",
+                    "Limit 1,000",
+                    "1,000",
+                )
+            };
+            // Every state the toolbar passes through as the window narrows,
+            // in the order it meets them.
+            let mut states = Vec::new();
+            for width in (500..=1600).rev().step_by(10) {
+                harness.size.x = width as f32;
+                let tree = harness.settle();
+                let has = |role, name: &str| crate::testing::node(&tree, name, role).is_some();
+                let state = [
+                    painted(&harness, keys),
+                    painted(&harness, note),
+                    painted(&harness, full),
+                    // The terminal's title, which the others do not have.
+                    !look.terminal || has(egui::accesskit::Role::Label, "query 1"),
+                    has(egui::accesskit::Role::ComboBox, "Limit"),
+                ];
+                assert!(
+                    has(egui::accesskit::Role::Button, "Run")
+                        && has(egui::accesskit::Role::Button, "Run all"),
+                    "the run buttons at {width} in {}",
+                    look.name
+                );
+                // A menu reads in full or short, never neither.
+                assert_eq!(
+                    state[4] && !state[2],
+                    painted(&harness, short),
+                    "{short} at {width} in {}",
+                    look.name
+                );
+                if states.last() != Some(&state) {
+                    states.push(state);
+                }
+            }
+            // keys, note, full labels, title, menus
+            let mut expected = vec![
+                [true, true, true, true, true],
+                [false, true, true, true, true],
+                [false, false, true, true, true],
+            ];
+            if look.terminal {
+                // The title goes before the labels shorten: the tab says
+                // it too.
+                expected.push([false, false, true, false, true]);
+            }
+            let title = !look.terminal;
+            expected.push([false, false, false, title, true]);
+            expected.push([false, false, false, title, false]);
+            assert_eq!(states, expected, "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn a_toolbar_too_narrow_for_its_menus_keeps_run_and_run_all() {
+        for look in crate::theme::Look::ALL {
+            // Narrower than the window gets, beside the widest sidebar.
+            let size = egui::vec2(640.0, 480.0);
+            let mut harness = Harness::with_size(size);
+            harness.set_look(look);
+            let tab = harness.connect_fake();
+            harness.app.apply(crate::model::Action::NewSqlTab(tab));
+            widen_sidebar(&mut harness);
+            let tree = harness.settle();
+            let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
+            let bounds = |label: &str| {
+                crate::testing::bounds(&tree, label, egui::accesskit::Role::Button)
+                    .unwrap_or_else(|| panic!("{label} missing in {}", look.name))
+            };
+            let (run, all) = (bounds("Run"), bounds("Run all"));
+            assert!(screen.contains_rect(run) && screen.contains_rect(all));
+            assert!(!run.intersects(all), "{}", look.name);
+            for menu in ["Limit", "Timeout"] {
+                let menu = crate::testing::bounds(&tree, menu, egui::accesskit::Role::ComboBox);
+                assert!(
+                    menu.is_none_or(|menu| !menu.intersects(run) && !menu.intersects(all)),
+                    "{menu:?} under a run button in {}",
+                    look.name
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_footer_tells_the_cursor_the_server_and_the_last_run() {
+        for look in [crate::theme::Look::standard(), crate::theme::Look::macos()] {
+            let (mut harness, tab) = sql_harness(look);
+            harness.app.workspace_mut(tab).unwrap().server_version.value =
+                Some("SQLite 3.46.0".into());
+            harness.settle();
+            type_text(&mut harness, "SELECT 1;\nSELECT 2");
+            for _ in 0..6 {
+                harness.press(Key::ArrowLeft, Modifiers::NONE);
+            }
+            assert!(harness.has("Ln 2, Col 3"), "{}", look.name);
+            assert!(harness.has("SQLite 3.46.0"), "{}", look.name);
+            // Nothing ran yet, so nothing was rolled back.
+            assert!(!harness.has("Read-only transaction · rolled back"));
+            let id = harness.app.workspace(tab).unwrap().active_tab.unwrap();
+            harness.app.apply(crate::model::Action::RunSql {
+                tab,
+                sql_tab: id,
+                all: false,
+            });
+            // Nor while the run is on its way.
+            assert!(!harness.has("Read-only transaction · rolled back"));
+            harness.answer_sql(
+                Ok(crate::testing::script_outcome(vec![
+                    crate::testing::rows_outcome(3),
+                ])),
+                None,
+            );
+            assert!(harness.has("3 rows · 14 ms"), "{}", look.name);
+            assert!(harness.has("Read-only transaction · rolled back"));
+            // A run that failed as a whole ran nothing, and the rows of
+            // the run before it are gone with it.
+            harness.app.apply(crate::model::Action::RunSql {
+                tab,
+                sql_tab: id,
+                all: false,
+            });
+            harness.answer_sql(Err(tabletist_db::Error::query("no such server")), None);
+            assert!(!harness.has("3 rows · 14 ms"), "{}", look.name);
+            assert!(!harness.has("Read-only transaction · rolled back"));
+            // Nor do they come back with a run that is never answered
+            // (its session went away), which leaves no error either.
+            harness.app.apply(crate::model::Action::RunSql {
+                tab,
+                sql_tab: id,
+                all: false,
+            });
+            let workspace = harness.app.workspace_mut(tab).unwrap();
+            workspace.forget_session_requests();
+            let sql = active_sql(&harness, tab);
+            assert!(!sql.is_running() && sql.run.error.is_none());
+            assert!(!harness.has("3 rows · 14 ms"), "{}", look.name);
+            assert!(!harness.has("Read-only transaction · rolled back"));
+        }
+    }
+
+    #[test]
+    fn a_result_of_one_row_is_counted_as_one_row() {
+        let mut harness = Harness::new();
+        let tab = harness.connect_fake();
+        with_sql_result(&mut harness, tab, 1);
+        assert!(harness.has("1 row · 14 ms"));
+    }
+
+    #[test]
+    fn the_terminal_status_line_is_the_editors_on_a_sql_tab() {
+        let (mut harness, tab) = sql_harness(crate::theme::Look::omarchy());
+        harness.settle();
+        type_text(&mut harness, "SELECT 1;\nSELECT 2");
+        for _ in 0..6 {
+            harness.press(Key::ArrowLeft, Modifiers::NONE);
+        }
+        assert!(painted(&harness, "ln 2:3"), "{:?}", harness.painted);
+        for hint in [
+            "ctrl+enter run",
+            "ctrl+shift+enter run all",
+            "ctrl+. cancel",
+        ] {
+            assert!(painted(&harness, hint), "{hint}: {:?}", harness.painted);
+        }
+        // A table's keys do nothing here, so the line does not offer them.
+        for hint in ["j/k row", "/ filter", "s structure", "e edit"] {
+            assert!(!painted(&harness, hint), "{hint}");
+        }
+        let id = harness.app.workspace(tab).unwrap().active_tab.unwrap();
+        harness.app.apply(crate::model::Action::RunSql {
+            tab,
+            sql_tab: id,
+            all: false,
+        });
+        harness.answer_sql(
+            Ok(crate::testing::script_outcome(vec![
+                crate::testing::rows_outcome(3),
+            ])),
+            None,
+        );
+        harness.settle();
+        assert!(
+            painted(&harness, "ln 2:3 · 3 rows · 14 ms · rolled back"),
+            "{:?}",
+            harness.painted
+        );
+        // A table tab keeps its own line.
+        harness.click("users");
+        harness.answer_rows(crate::testing::page(5, false));
+        harness.settle();
+        assert!(painted(&harness, "j/k row"));
+        assert!(!painted(&harness, "ctrl+enter run"));
+    }
+
+    #[test]
+    fn a_sql_tab_is_named_as_the_look_names_things() {
+        let (mut harness, _tab) = sql_harness(crate::theme::Look::omarchy());
+        harness.settle();
+        assert!(painted(&harness, "query 1"), "{:?}", harness.painted);
+        assert!(!painted(&harness, "Query 1"));
+        let (mut harness, _tab) = sql_harness(crate::theme::Look::macos());
+        harness.settle();
+        assert!(painted(&harness, "Query 1"), "{:?}", harness.painted);
     }
 
     fn selection(harness: &Harness, tab: crate::model::ConnTabId) -> Option<crate::model::CellPos> {
@@ -877,7 +2517,7 @@ mod tests {
             Command::FetchRows { .. }
         ));
         harness.press(Key::W, Modifiers::COMMAND);
-        assert!(harness.app.workspace(tab).unwrap().objects.is_empty());
+        assert!(harness.app.workspace(tab).unwrap().tabs.is_empty());
         assert_eq!(
             harness.app.tabs.len(),
             1,
@@ -1122,7 +2762,7 @@ mod tests {
             form.name = "typed".into();
         }
         harness.press(Key::W, Modifiers::COMMAND | Modifiers::SHIFT);
-        harness.press(Key::T, Modifiers::COMMAND);
+        harness.press(Key::O, Modifiers::COMMAND);
         harness.press(Key::N, Modifiers::COMMAND);
         assert_eq!(
             harness.app.tabs.len(),
@@ -3154,9 +4794,7 @@ mod tests {
         harness.press(Key::Enter, Modifiers::NONE);
         assert!(harness.app.dialog.is_none());
         let workspace = harness.app.workspace(tab).unwrap();
-        let object = workspace
-            .object_tab(workspace.active_object.unwrap())
-            .unwrap();
+        let object = workspace.object_tab(workspace.active_tab.unwrap()).unwrap();
         assert_eq!(object.object.name, "users");
     }
 
@@ -3238,7 +4876,7 @@ mod tests {
                 tabletist_db::ObjectKind::Table
             ))
         );
-        let object_tab = workspace.active_object.unwrap();
+        let object_tab = workspace.active_tab.unwrap();
         assert_eq!(
             workspace.object_tab(object_tab).unwrap().selection,
             None,
@@ -3246,7 +4884,7 @@ mod tests {
         );
         harness.app.apply(crate::model::Action::SelectCell {
             tab,
-            object_tab,
+            id: object_tab,
             cell: crate::model::CellPos { row: 0, col: 0 },
         });
         harness.press(Key::ArrowDown, Modifiers::NONE);
@@ -3315,9 +4953,7 @@ mod tests {
         harness.frame(vec![egui::Event::Text("?".into())]);
         assert!(harness.app.dialog.is_none());
         let workspace = harness.app.workspace(tab).unwrap();
-        let object = workspace
-            .object_tab(workspace.active_object.unwrap())
-            .unwrap();
+        let object = workspace.object_tab(workspace.active_tab.unwrap()).unwrap();
         assert_eq!(object.filter.rows[0].value, "?");
     }
 
@@ -3332,7 +4968,7 @@ mod tests {
             pin: true,
         });
         harness.answer_rows(crate::testing::page(3, true));
-        let id = harness.app.workspace(tab).unwrap().active_object.unwrap();
+        let id = harness.app.workspace(tab).unwrap().active_tab.unwrap();
         let object = harness
             .app
             .workspace_mut(tab)
@@ -3755,7 +5391,7 @@ mod tests {
             pin: true,
         });
         harness.answer_rows(crate::testing::page(3, false));
-        let id = harness.app.workspace(tab).unwrap().active_object.unwrap();
+        let id = harness.app.workspace(tab).unwrap().active_tab.unwrap();
         harness
             .app
             .workspace_mut(tab)
@@ -3837,6 +5473,27 @@ mod tests {
     }
 
     #[test]
+    fn the_schema_menu_closes_on_a_pick_without_a_pointer() {
+        let (mut harness, tab) = tree_harness();
+        let workspace = harness.app.workspace_mut(tab).unwrap();
+        workspace.tree.schemas.value = Some(vec!["main".into(), "reports".into()]);
+        harness.click("Schema");
+        assert!(harness.has("reports"), "the menu lists the other schema");
+        harness.click("reports");
+        let workspace = harness.app.workspace(tab).unwrap();
+        assert_eq!(
+            workspace
+                .tree
+                .shown_schema(workspace.driver, false)
+                .as_deref(),
+            Some("reports")
+        );
+        // Closed: `main` was only in the menu once `reports` shows.
+        assert!(!harness.has("main"), "the schema menu stays open");
+        assert_eq!(focused_name(&harness.settle()), "Schema");
+    }
+
+    #[test]
     fn a_database_without_visible_schemas_says_so() {
         let (mut harness, tab) = tree_harness();
         harness.app.workspace_mut(tab).unwrap().tree.schemas.value = Some(Vec::new());
@@ -3888,11 +5545,11 @@ mod tests {
         harness.answer_rows(crate::testing::page(3, true));
         harness.app.apply(crate::model::Action::SelectCell {
             tab: harness.app.active_tab_id(),
-            object_tab: harness
+            id: harness
                 .app
                 .workspace(harness.app.active_tab_id())
                 .unwrap()
-                .active_object
+                .active_tab
                 .unwrap(),
             cell: crate::model::CellPos { row: 0, col: 0 },
         });
@@ -3905,6 +5562,13 @@ mod tests {
         harness.press(Key::Escape, Modifiers::NONE);
         harness.frame(vec![egui::Event::Text("?".into())]);
         scenes.push(("help", harness.settle()));
+
+        for look in crate::theme::Look::ALL {
+            let (mut harness, tab) = sql_harness(look);
+            scenes.push(("sql editor", harness.settle()));
+            with_sql_result(&mut harness, tab, 3);
+            scenes.push(("sql result", harness.settle()));
+        }
 
         let (mut harness, tab) = tree_harness();
         with_database_picker(&mut harness, tab);
@@ -4022,9 +5686,7 @@ mod tests {
         );
     }
 
-    fn users_with_bar(
-        harness: &mut Harness,
-    ) -> (crate::model::ConnTabId, crate::model::ObjectTabId) {
+    fn users_with_bar(harness: &mut Harness) -> (crate::model::ConnTabId, crate::model::TabId) {
         let tab = harness.connect_fake();
         harness.app.apply(crate::model::Action::OpenObject {
             tab,
@@ -4033,7 +5695,7 @@ mod tests {
             pin: true,
         });
         harness.answer_rows(crate::testing::page(3, false));
-        let id = harness.app.workspace(tab).unwrap().active_object.unwrap();
+        let id = harness.app.workspace(tab).unwrap().active_tab.unwrap();
         harness.press(Key::F, Modifiers::COMMAND);
         (tab, id)
     }
@@ -4184,10 +5846,10 @@ mod tests {
         harness.answer_rows(page);
         let workspace = harness.app.workspace_mut(tab).unwrap();
         workspace.row_panel = true;
-        let object_tab = workspace.active_object.unwrap();
+        let id = workspace.active_tab.unwrap();
         harness.app.apply(crate::model::Action::SelectCell {
             tab,
-            object_tab,
+            id,
             cell: crate::model::CellPos { row: 0, col: 1 },
         });
         let labels = crate::testing::labels(&harness.settle());
@@ -4220,7 +5882,7 @@ mod tests {
         harness.click("orders");
         harness.answer_rows(crate::testing::page(1, false));
         assert!(harness.has("orders tab"));
-        let orders = harness.app.workspace(tab).unwrap().active_object.unwrap();
+        let orders = harness.app.workspace(tab).unwrap().active_tab.unwrap();
         harness.app.apply(crate::model::Action::PinObjectTab {
             tab,
             object_tab: orders,
@@ -4237,10 +5899,10 @@ mod tests {
         harness.answer_rows(crate::testing::page(1, false));
         let workspace = harness.app.workspace_mut(tab).unwrap();
         workspace.row_panel = true;
-        let object_tab = workspace.active_object.unwrap();
+        let id = workspace.active_tab.unwrap();
         harness.app.apply(crate::model::Action::SelectCell {
             tab,
-            object_tab,
+            id,
             cell: crate::model::CellPos { row: 0, col: 0 },
         });
         harness.settle();
