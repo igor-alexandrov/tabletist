@@ -1,0 +1,30 @@
+[package]
+name = "tabletist-appkit"
+version = "0.1.0"
+description = "The AppKit calls Tabletist cannot make without unsafe code"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+# The workspace forbids unsafe code. Giving a menu item a target and an action
+# means defining an Objective-C class and sending messages the compiler cannot
+# check, so this crate carries the workspace's lints with `unsafe_code` lowered
+# to `deny`, allowed only in `about.rs` and its test, each use with a SAFETY
+# note. The app and the database layer keep `forbid`.
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+unwrap_used = "warn"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# The same versions the app's title bar code uses.
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSString"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSResponder", "NSMenu", "NSMenuItem"] }
+
+# AppKit's menus belong to the main thread, which the test harness keeps for
+# itself: this test has its own `main`.
+[[test]]
+name = "about_menu"
+harness = false

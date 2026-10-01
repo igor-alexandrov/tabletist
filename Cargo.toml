@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "crates/tabletist-db"]
+members = [".", "crates/tabletist-appkit", "crates/tabletist-db"]
 resolver = "3"
 
 [workspace.package]
@@ -100,6 +100,9 @@ apple-native-keyring-store = { version = "1.0.2", features = ["keychain"] }
 objc2 = "0.6"
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSGeometry"] }
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSResponder", "NSView", "NSWindow", "NSToolbar", "NSControl", "NSButton", "objc2-core-foundation"] }
+# The app menu's About item: the one AppKit call that needs unsafe code, kept
+# in a crate of its own because this one forbids it.
+tabletist-appkit = { path = "crates/tabletist-appkit" }
 
 [target.'cfg(windows)'.dependencies]
 windows-native-keyring-store = { version = "1.1", default-features = false }

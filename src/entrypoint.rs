@@ -125,12 +125,24 @@ pub fn main() -> anyhow::Result<()> {
             if demo {
                 demo_setup(&mut app);
             }
+            // The menu bar is up by now: winit builds it before the window.
+            #[cfg(target_os = "macos")]
+            let about_menu = crate::macos::AboutMenu::attach(
+                &cc.egui_ctx,
+                &crate::i18n::gettext(app.locale, "About Tabletist"),
+            );
+            #[cfg(target_os = "macos")]
+            if about_menu.is_none() {
+                log::warn!("the app menu has no About item to take over");
+            }
             Ok(Box::new(Window {
                 app,
                 shot,
                 demo,
                 #[cfg(target_os = "macos")]
                 title_bar: None,
+                #[cfg(target_os = "macos")]
+                about_menu,
             }))
         }),
     )
@@ -259,6 +271,9 @@ struct Window {
     /// exists.
     #[cfg(target_os = "macos")]
     title_bar: Option<crate::macos::UnifiedTitleBar>,
+    /// macOS: the app menu's About item, which opens the About dialog.
+    #[cfg(target_os = "macos")]
+    about_menu: Option<crate::macos::AboutMenu>,
 }
 
 impl Window {
@@ -304,6 +319,15 @@ impl eframe::App for Window {
     }
 
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // The same dialog the shortcuts dialog's About button opens.
+        #[cfg(target_os = "macos")]
+        if self
+            .about_menu
+            .as_ref()
+            .is_some_and(crate::macos::AboutMenu::take)
+        {
+            self.app.actions.push(crate::model::Action::ShowAbout);
+        }
         self.app.logic(ctx);
         self.drive_shot(ctx);
     }
