@@ -944,8 +944,10 @@ impl App {
                 }
             }
             Action::ApplyUrl => {
-                if let Some(Dialog::Connection(form)) = &mut self.dialog {
-                    apply_url(form);
+                if let Some(Dialog::Connection(form)) = &mut self.dialog
+                    && let Err(message) = apply_url(form)
+                {
+                    form.message = Some(message);
                 }
             }
             Action::TrustHostKey => {
@@ -981,10 +983,15 @@ impl App {
                 let Some(Dialog::Connection(form)) = &mut self.dialog else {
                     return;
                 };
+                if !use_typed_url(form) {
+                    return;
+                }
                 let spec = match form.to_spec() {
                     Ok(spec) => spec,
                     Err(message) => {
                         form.message = Some(message);
+                        // The message names fields: show them.
+                        form.url_mode = false;
                         return;
                     }
                 };
@@ -1884,6 +1891,9 @@ impl App {
         let Some(Dialog::Connection(form)) = &mut self.dialog else {
             return;
         };
+        if !use_typed_url(form) {
+            return;
+        }
         // The connection being edited was deleted while the dialog was open:
         // saving must not bring it back.
         if let Some(id) = &form.editing
@@ -1896,6 +1906,8 @@ impl App {
             Ok(saved) => saved,
             Err(message) => {
                 form.message = Some(message);
+                // The message names fields: show them.
+                form.url_mode = false;
                 return;
             }
         };
@@ -2454,23 +2466,30 @@ impl App {
     }
 }
 
-/// Fills the form from its URL field.
-fn apply_url(form: &mut ConnectionForm) {
+/// A URL being typed comes before the parameters: saving or testing fills
+/// the form from it first. False when it does not parse (the message says
+/// why), so nothing is saved or tested in its place.
+fn use_typed_url(form: &mut ConnectionForm) -> bool {
+    if form.url_mode
+        && !form.url.trim().is_empty()
+        && let Err(message) = apply_url(form)
+    {
+        form.message = Some(message);
+        return false;
+    }
+    true
+}
+
+/// Fills the form from its URL field and leaves the URL mode, or says why
+/// the URL cannot be used: then the form is as it was, the URL too.
+fn apply_url(form: &mut ConnectionForm) -> Result<(), String> {
     let tabletist_db::ParsedUrl {
         spec,
         secrets,
         names_tls,
         names_ca_file,
-        without_password,
-    } = match tabletist_db::ParsedUrl::parse(&form.url) {
-        Ok(parsed) => parsed,
-        Err(error) => {
-            form.message = Some(error.to_string());
-            return;
-        }
-    };
-    // The password moves to the masked field; the URL field is not masked.
-    form.url = without_password;
+        ..
+    } = tabletist_db::ParsedUrl::parse(&form.url).map_err(|error| error.to_string())?;
     match spec.driver {
         Driver::Sqlite => {
             let path = spec
@@ -2483,8 +2502,6 @@ fn apply_url(form: &mut ConnectionForm) {
             }
             form.driver = Driver::Sqlite;
             form.sqlite_path = path;
-            form.message = None;
-            form.url_mode = false;
         }
         Driver::Postgres | Driver::MySql => {
             if form.name.trim().is_empty() {
@@ -2512,10 +2529,15 @@ fn apply_url(form: &mut ConnectionForm) {
             if form.password_mode == PasswordMode::None {
                 form.password_mode = PasswordMode::Keyring;
             }
-            form.message = None;
-            form.url_mode = false;
         }
     }
+    // The field is emptied once it has filled the form: its password is in
+    // the masked field now, and a URL left behind would fill the form again
+    // on the next save, over anything edited since.
+    form.url.clear();
+    form.message = None;
+    form.url_mode = false;
+    Ok(())
 }
 
 /// Moves `index` by `delta` within `0..len` (len > 0), saturating.
@@ -3003,15 +3025,112 @@ mod tests {
             form(&mut app).url_mode,
             "a URL that does not parse stays to be fixed"
         );
+        assert_eq!(form(&mut app).url, "not a url");
         form(&mut app).url = "postgres://me@db.example.com/app".into();
         app.apply(Action::ApplyUrl);
         assert!(!form(&mut app).url_mode);
         assert_eq!(form(&mut app).host, "db.example.com");
+        assert_eq!(
+            form(&mut app).url,
+            "",
+            "a URL that fills the form is used up"
+        );
         form(&mut app).url_mode = true;
         form(&mut app).url = "sqlite:///srv/app.db".into();
         app.apply(Action::ApplyUrl);
         assert!(!form(&mut app).url_mode);
         assert_eq!(form(&mut app).sqlite_path, "/srv/app.db");
+        assert_eq!(form(&mut app).url, "");
+    }
+
+    #[test]
+    fn a_url_that_filled_the_form_does_not_undo_a_later_edit() {
+        let (mut app, _dir) = app();
+        app.apply(Action::NewConnection);
+        form(&mut app).name = "Shop".into();
+        form(&mut app).url_mode = true;
+        form(&mut app).url = "postgres://me@db.example.com/app".into();
+        app.apply(Action::ApplyUrl);
+        // The host is corrected by hand, and the URL field shown again.
+        form(&mut app).host = "replica.example.com".into();
+        form(&mut app).url_mode = true;
+        app.apply(Action::SaveConnection { connect: false });
+        assert!(app.dialog.is_none());
+        assert_eq!(
+            app.connections.connections[0].spec.host,
+            "replica.example.com"
+        );
+    }
+
+    #[test]
+    fn saving_from_the_url_field_saves_the_urls_connection() {
+        let (mut app, _dir) = app();
+        app.apply(Action::NewConnection);
+        form(&mut app).name = "Shop".into();
+        form(&mut app).url_mode = true;
+        form(&mut app).url = "postgres://me@db.example.com/app".into();
+        app.apply(Action::SaveConnection { connect: false });
+        assert!(app.dialog.is_none(), "the URL was filled in and saved");
+        assert_eq!(app.connections.connections.len(), 1);
+        let saved = &app.connections.connections[0];
+        assert_eq!(saved.name, "Shop");
+        assert_eq!(saved.spec.driver, Driver::Postgres);
+        assert_eq!(saved.spec.host, "db.example.com");
+    }
+
+    #[test]
+    fn a_url_that_does_not_parse_is_not_saved_over() {
+        let (mut app, _dir) = app();
+        app.apply(Action::NewConnection);
+        // The parameters describe a connection; the URL being typed does not.
+        form(&mut app).name = "Shop".into();
+        form(&mut app).sqlite_path = "/tmp/shop.db".into();
+        form(&mut app).url_mode = true;
+        form(&mut app).url = "not a url".into();
+        app.apply(Action::SaveConnection { connect: false });
+        assert!(app.connections.connections.is_empty(), "nothing is saved");
+        assert!(form(&mut app).message.is_some());
+        assert!(form(&mut app).url_mode, "the URL stays to be fixed");
+        let before = app.backend.sent.len();
+        app.apply(Action::TestConnection);
+        assert!(
+            !app.backend.sent[before..]
+                .iter()
+                .any(|command| matches!(command, Command::Test { .. })),
+            "and nothing is tested"
+        );
+        assert!(form(&mut app).url_mode);
+    }
+
+    #[test]
+    fn a_test_from_the_url_field_tests_the_urls_server() {
+        let (mut app, _dir) = app();
+        app.apply(Action::NewConnection);
+        form(&mut app).url_mode = true;
+        form(&mut app).url = "postgres://me@db.example.com/app".into();
+        app.apply(Action::TestConnection);
+        match app.backend.sent.last() {
+            Some(Command::Test { spec, .. }) => assert_eq!(spec.host, "db.example.com"),
+            other => panic!("{other:?}"),
+        }
+        assert!(!form(&mut app).url_mode);
+    }
+
+    #[test]
+    fn a_message_about_the_fields_leaves_the_url_field() {
+        // Nothing typed anywhere: the message names fields the URL mode
+        // does not show.
+        let (mut app, _dir) = app();
+        app.apply(Action::NewConnection);
+        form(&mut app).url_mode = true;
+        app.apply(Action::SaveConnection { connect: false });
+        assert!(form(&mut app).message.is_some());
+        assert!(!form(&mut app).url_mode, "a failed save shows the fields");
+        form(&mut app).url_mode = true;
+        form(&mut app).message = None;
+        app.apply(Action::TestConnection);
+        assert!(form(&mut app).message.is_some());
+        assert!(!form(&mut app).url_mode, "a failed test shows the fields");
     }
 
     #[test]
@@ -4533,7 +4652,7 @@ mod tests {
         assert_eq!(filled.tls, tabletist_db::TlsMode::VerifyFull);
         assert_eq!(filled.ca_file, "/etc/ca.pem");
         assert_eq!(filled.password, "secret");
-        assert_eq!(filled.url, "postgres://me@other.example.com/app");
+        assert_eq!(filled.url, "", "the unmasked field keeps nothing");
 
         // A URL that names them wins; one that names them twice is refused.
         form(&mut app).url = "postgres://me@h/app?sslmode=require".into();
