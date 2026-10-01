@@ -286,7 +286,7 @@ pub fn header(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: Obje
                     (TextRole::UiBody, palette.secondary)
                 };
                 let text = Text::one(&look, role, label, color).layout(ui.ctx());
-                text.paint(ui.painter(), cell.center() - text.size() / 2.0);
+                text.paint_center(ui.painter(), cell.center());
                 if response.clicked() && !selected {
                     actions.push(Action::SetView {
                         tab,

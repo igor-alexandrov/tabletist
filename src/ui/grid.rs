@@ -395,9 +395,9 @@ pub fn show<'a>(
                         // The cursor: a bold accent block in the gutter.
                         let cursor =
                             Text::one(look, TextRole::OGroup, "▌", palette.accent).layout(ui.ctx());
-                        cursor.paint(
+                        cursor.paint_center(
                             &painter,
-                            pos2(rect.left() + GUTTER / 2.0, rect.center().y) - cursor.size() / 2.0,
+                            pos2(rect.left() + GUTTER / 2.0, rect.center().y),
                         );
                     } else {
                         let bar = Rect::from_min_size(rect.min, vec2(3.0, rect.height()));
@@ -800,7 +800,7 @@ fn draw_cell(
                     StrokeKind::Inside,
                 );
                 let laid = Text::one(look, chip_role, &label, palette.dim).layout(ui.ctx());
-                laid.paint(&clip, chip.center() - laid.size() / 2.0);
+                laid.paint_center(&clip, chip.center());
                 left = chip.right() + 8.0;
             }
             let room = rect.right() - pad - left;

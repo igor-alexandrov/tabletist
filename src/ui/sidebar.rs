@@ -471,7 +471,7 @@ fn schema_header(
         let glyph = pos2(left + text_width + gap + glyph_width / 2.0, center);
         if look.terminal {
             let mark = Text::one(look, TextRole::OCaption, "▾", palette.dim).layout(ui.ctx());
-            mark.paint(ui.painter(), glyph - mark.size() / 2.0);
+            mark.paint_center(ui.painter(), glyph);
         } else {
             Icon::ChevronDown
                 .image(palette.secondary, 10.0)

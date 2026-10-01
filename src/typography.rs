@@ -309,6 +309,22 @@ impl TextRole {
         ctx.fonts_mut(|fonts| fonts.layout_job(job)).size().x
     }
 
+    /// The height of the role's capitals in points, in faces whose line box
+    /// does not centre on them (Plex).
+    fn capitals(self, faces: Faces) -> Option<f32> {
+        fonts::capitals(faces).map(|ems| ems * self.size())
+    }
+
+    /// Where a line of the role centres, below its top (see
+    /// [`Laid::middle`]): for placing text that egui paints itself, such as a
+    /// field's.
+    pub fn middle(self, ctx: &egui::Context, faces: Faces) -> f32 {
+        Text::in_faces(faces)
+            .add(self, "H", Color32::PLACEHOLDER)
+            .layout(ctx)
+            .middle()
+    }
+
     /// The height of one line in the role, in `faces`.
     pub fn row_height(self, ctx: &egui::Context, faces: Faces) -> f32 {
         self.line_height()
@@ -355,6 +371,8 @@ pub struct Text {
     job: LayoutJob,
     faces: Faces,
     chars: usize,
+    /// The height of the first piece's capitals ([`TextRole::capitals`]).
+    capitals: Option<f32>,
 }
 
 impl Text {
@@ -367,6 +385,7 @@ impl Text {
             job: LayoutJob::default(),
             faces,
             chars: 0,
+            capitals: None,
         }
     }
 
@@ -402,6 +421,9 @@ impl Text {
         let text = role.transform(text);
         let mut format = role.format(self.faces, Color32::PLACEHOLDER);
         style(&mut format);
+        if self.chars == 0 {
+            self.capitals = role.capitals(self.faces);
+        }
         self.chars += text.chars().count();
         self.job.append(&text, leading, format);
         self
@@ -424,7 +446,10 @@ impl Text {
 
     pub fn layout(self, ctx: &egui::Context) -> Laid {
         let galley = ctx.fonts_mut(|fonts| fonts.layout_job(self.job));
-        Laid { galley }
+        Laid {
+            galley,
+            capitals: self.capitals,
+        }
     }
 }
 
@@ -432,6 +457,7 @@ impl Text {
 #[derive(Clone)]
 pub struct Laid {
     pub galley: Arc<Galley>,
+    capitals: Option<f32>,
 }
 
 impl Laid {
@@ -452,19 +478,49 @@ impl Laid {
         painter.galley(pos, self.galley.clone(), Color32::PLACEHOLDER);
     }
 
+    /// How far below its top the text centres: on the middle of its first
+    /// line's capitals, which is where an icon beside it reads as level
+    /// with it. Faces whose line box centres on the capitals by itself
+    /// (all but Plex) use the middle of the box.
+    pub fn middle(&self) -> f32 {
+        let half = self.height() / 2.0;
+        let (Some(capitals), Some(row)) = (self.capitals, self.galley.rows.first()) else {
+            return half;
+        };
+        // How far a glyph's own baseline lies above the leading face's:
+        // epaint centres a fallback face's line box (a key symbol's) on the
+        // leading face's instead of sharing its baseline.
+        let lift = |glyph: &egui::epaint::text::Glyph| {
+            glyph.font_ascent
+                - glyph.font_face_ascent
+                - (glyph.font_height - glyph.font_face_height) / 2.0
+        };
+        let leading = row.glyphs.iter().find(|glyph| lift(glyph) == 0.0);
+        let Some(glyph) = leading.or_else(|| row.glyphs.first()) else {
+            return half;
+        };
+        let baseline = glyph.pos.y + lift(glyph);
+        half - row.size.y / 2.0 + baseline - capitals / 2.0
+    }
+
     /// Paints with the left edge at `x`, centred on `y`. Returns the width.
     pub fn paint_left(&self, painter: &Painter, x: f32, y: f32) -> f32 {
-        self.paint(painter, egui::pos2(x, y - self.height() / 2.0));
+        self.paint(painter, egui::pos2(x, y - self.middle()));
         self.width()
     }
 
     /// Paints with the right edge at `right`, centred on `y`. Returns the width.
     pub fn paint_right(&self, painter: &Painter, right: f32, y: f32) -> f32 {
+        self.paint(painter, egui::pos2(right - self.width(), y - self.middle()));
+        self.width()
+    }
+
+    /// Paints centred on `center`.
+    pub fn paint_center(&self, painter: &Painter, center: Pos2) {
         self.paint(
             painter,
-            egui::pos2(right - self.width(), y - self.height() / 2.0),
+            egui::pos2(center.x - self.width() / 2.0, center.y - self.middle()),
         );
-        self.width()
     }
 
     /// Adds the text as a label widget in `ui`'s layout.
