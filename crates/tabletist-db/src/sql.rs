@@ -664,10 +664,13 @@ pub fn refusal(dialect: Dialect, statement: &str) -> Option<String> {
 }
 
 /// Settings that leave read-only, or that change how later statements are
-/// lexed (the tokenizer assumes the connect-time values).
+/// lexed (the tokenizer assumes the connect-time values). MySQL's
+/// `completion_type` changes what the cleanup's `ROLLBACK` does: with
+/// `RELEASE` it closes the session, with `CHAIN` it starts a transaction.
 fn is_guarded_setting(name: &str) -> bool {
     name.ends_with("READ_ONLY")
         || name == "AUTOCOMMIT"
+        || name == "COMPLETION_TYPE"
         || name == "SQL_MODE"
         || name == "STANDARD_CONFORMING_STRINGS"
         || name == "CLIENT_ENCODING"
@@ -1634,6 +1637,31 @@ mod tests {
         }
         assert_eq!(refusal(Dialect::MySql, "SELECT backup FROM t"), None);
         assert_eq!(refusal(Dialect::Postgres, "DROP PREPARE s"), None);
+    }
+
+    #[test]
+    fn completion_type_is_a_guarded_setting() {
+        for text in [
+            "SET SESSION completion_type = 2",
+            "SET completion_type = RELEASE",
+            "set @@session.`completion_type` = 'CHAIN'",
+            "SET @a = 1, @@completion_type = 1",
+            "SET LOCAL completion_type = DEFAULT",
+        ] {
+            assert_eq!(
+                refusal(Dialect::MySql, text).as_deref(),
+                Some("SET COMPLETION_TYPE"),
+                "{text}"
+            );
+        }
+        // Reading it, or a name like it, is fine.
+        for text in [
+            "SELECT @@session.completion_type",
+            "SET @completion = 'completion_type'",
+            "SHOW VARIABLES LIKE 'completion_type'",
+        ] {
+            assert_eq!(refusal(Dialect::MySql, text), None, "{text}");
+        }
     }
 
     #[test]

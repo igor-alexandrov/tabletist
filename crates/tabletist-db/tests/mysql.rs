@@ -941,14 +941,25 @@ async fn a_parameter_is_the_statements_error_not_a_lost_session() {
     // without values for its parameters, so such a statement never runs.
     // `:name` is the driver's own spelling of a parameter, which it finds
     // by a lexer of its own: after a `-` it takes a string for code.
-    for (text, parameter) in [
-        ("SELECT 1; SELECT ?; SELECT 3", "?"),
-        ("SELECT 1; SELECT :name", ":name"),
-        ("SELECT 1; SELECT ?, :name", "?"),
-        ("SELECT 1; SELECT HEX(-':abc')", ":abc"),
+    let parameter = |spelled: &str| {
+        format!("the statement has a parameter ({spelled}), which the SQL editor cannot fill in")
+    };
+    let misread = |spelled: &str| {
+        format!(
+            "the MySQL driver reads {spelled} here as a parameter; put a space after the - or / \
+             that comes before the quote or comment"
+        )
+    };
+    // The script, its second statement's error, and where that points.
+    for (text, message, position) in [
+        ("SELECT 1; SELECT ?; SELECT 3", parameter("?"), None),
+        ("SELECT 1; SELECT :name", parameter(":name"), Some(8)),
+        ("SELECT 1; SELECT ?, :name", parameter("? and :name"), None),
+        ("SELECT 1; SELECT HEX(-':abc')", misread(":abc"), Some(14)),
         (
             "SELECT 1; SELECT 1 -`:abc` FROM (SELECT 2 AS `:abc`) t",
-            ":abc",
+            misread(":abc"),
+            Some(12),
         ),
     ] {
         let outcome = run(&connection, text, 10).await.unwrap();
@@ -956,10 +967,8 @@ async fn a_parameter_is_the_statements_error_not_a_lost_session() {
         assert_eq!(
             outcome.results[1].outcome,
             StatementOutcome::Error {
-                error: Error::query(format!(
-                    "the statement has a parameter ({parameter}), which the SQL editor cannot fill in"
-                )),
-                position: None,
+                error: Error::query(message),
+                position,
             },
             "{text}"
         );
@@ -1290,6 +1299,47 @@ async fn a_cancelled_script_keeps_earlier_results_and_the_session() {
     // The session survives, as it connected.
     assert_connect_time_settings(&connection).await;
     assert_eq!(connection.count_rows(&users(1)).await.unwrap(), 5);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_cancel_reaches_a_session_an_earlier_run_reset() {
+    let Some(connection) = connect().await else {
+        return;
+    };
+    let connection = std::sync::Arc::new(connection);
+    let mut admin = admin().await;
+    // The handle is the session's own, made before any run: the reset
+    // after a run keeps the connection id the cancel names.
+    let cancel = connection.cancel_handle();
+    let id = rows_of(&connection, "SELECT CONNECTION_ID()").await;
+    for sleep in ["SLEEP(33)", "SLEEP(34)"] {
+        assert_eq!(rows_of(&connection, "SELECT CONNECTION_ID()").await, id);
+        let stop = StopFlag::new();
+        let running = {
+            let connection = std::sync::Arc::clone(&connection);
+            let stop = stop.clone();
+            tokio::spawn(async move {
+                let text = format!("SELECT 1; SELECT count(*) FROM users WHERE {sleep} = 0");
+                connection.run_script(&script(&text), 10, &stop).await
+            })
+        };
+        runs_on_the_server(&mut admin, sleep).await;
+        stop.stop();
+        let deadline = std::time::Instant::now() + Duration::from_secs(15);
+        while !stop.is_finishing() && !running.is_finished() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "cancel must stop the script"
+            );
+            cancel.cancel().await.unwrap();
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        let outcome = within(running).await.unwrap().unwrap();
+        assert!(outcome.stopped);
+        assert_eq!(outcome.results.len(), 2);
+        assert_eq!(outcome.results[1].outcome, StatementOutcome::Cancelled);
+    }
+    assert_connect_time_settings(&connection).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
