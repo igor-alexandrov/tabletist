@@ -18,8 +18,8 @@ editor changes data through this session.
 
 The promise is about data, as it is for the raw WHERE today. Side effects
 outside table data that a read-only transaction allows stay possible for a
-user with the privileges: PostgreSQL session advisory locks,
-`pg_terminate_backend`, `dblink_exec`, `lo_export`; MySQL `KILL`; SQLite
+user with the privileges: PostgreSQL session advisory locks (held until
+the run ends), `pg_terminate_backend`, `dblink_exec`, `lo_export`; MySQL `KILL`; SQLite
 `ATTACH` and connection `PRAGMA`s for the life of the session.
 
 The designs are the "SQL editor" artboards (macOS and Omarchy) in the design
@@ -178,8 +178,9 @@ Four layers, all in `tabletist-db`, so no caller can skip them.
 3. **Check before every statement.** So that a statement the list missed
    can end the transaction but never be followed by a write, each driver
    confirms it is still where it started before running the next statement:
-   PostgreSQL issues `SAVEPOINT tabletist_guard`, which fails outside a
-   transaction block; MySQL reads `@@session.transaction_read_only`. A
+   PostgreSQL issues `SAVEPOINT tabletist_guard; RELEASE tabletist_guard`,
+   which fails outside a transaction block (released at once, so a long
+   script does not nest thousands of savepoints on the server); MySQL reads `@@session.transaction_read_only`. A
    failed check ends the run with `Error::LeftReadOnly` before the statement
    runs.
    After the last statement the same check runs once more, so a statement
@@ -196,8 +197,9 @@ Four layers, all in `tabletist-db`, so no caller can skip them.
 
 Cleanup after every script, on every path:
 
-- PostgreSQL: `ROLLBACK`. Session settings changed by the script are
-  transactional and roll back with it.
+- PostgreSQL: `ROLLBACK`, then `SELECT pg_advisory_unlock_all()`. Session
+  settings changed by the script are transactional and roll back with it;
+  session advisory locks are not, so they are released.
 - MySQL: `ROLLBACK`, then `Conn::reset()` (`COM_RESET_CONNECTION`, which
   keeps the connection id the cancel uses), then the connect-time
   `SET SESSION TRANSACTION READ ONLY` and `sql_mode` statements again. MySQL
@@ -468,6 +470,10 @@ tab's result grid through `TabId`.
 - Run on an empty or comment-only editor does nothing and shows no error.
 - Statements that cannot run in a transaction (PostgreSQL `VACUUM`,
   `CREATE INDEX CONCURRENTLY`) fail with the server's own error.
+- On PostgreSQL a row query runs through a cursor, so it is planned for a
+  fast first row and never in parallel: it can be slower than the same
+  query in psql, and `EXPLAIN` shows the plan psql would use, not the
+  cursor's.
 
 ## Testing
 
