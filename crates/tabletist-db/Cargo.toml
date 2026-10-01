@@ -44,6 +44,10 @@ futures-util = { version = "0.3", default-features = false, features = ["std"] }
 
 # MySQL, async. rustls on ring (like PostgreSQL); no aws-lc, no OpenSSL.
 mysql_async = { version = "0.37", default-features = false, features = ["default-rustls-ring"] }
+# mysql_async's own protocol crate (already in the tree), for its reading of
+# `:name` parameters: SQL editor text it would rewrite is not run. Moves
+# with mysql_async; mysql.rs fails to compile if the two drift apart.
+mysql_common = { version = "0.37", default-features = false }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "net"] }

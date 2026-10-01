@@ -1,19 +1,23 @@
 //! MySQL 8.0+. Rows and catalog queries use prepared statements (the binary
 //! protocol): typed values, column types, and never more than one statement.
-//! Rows are read inside a read-only transaction.
+//! Rows are read inside a read-only transaction. A SQL editor script runs
+//! its statements the same way, in one read-only transaction, and the
+//! session is reset afterwards: MySQL session state is not transactional.
 
 use std::borrow::Cow;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use mysql_async::consts::{ColumnFlags, ColumnType};
+use mysql_async::consts::{ColumnFlags, ColumnType, StatusFlags};
 use mysql_async::prelude::Queryable;
 use mysql_async::{DriverError, IoError, Opts, OptsBuilder, Params, SslOpts, TxOpts};
+use mysql_common::named_params::ParsedNamedParams;
 
+use crate::script::{cleanup_failed, retry_cancelled, statement_failed};
 use crate::{
     ColumnInfo, ColumnMeta, ConnectSpec, Dialect, Error, ForeignKeyInfo, IndexInfo, MAX_LISTED,
-    ObjectInfo, ObjectKind, ObjectRef, Result, RowPage, RowQuery, Secrets, Structure, TlsMode,
-    Value, ValueKind,
+    ObjectInfo, ObjectKind, ObjectRef, Result, RowPage, RowQuery, ScriptOutcome, Secrets,
+    StatementOutcome, StatementResult, StopFlag, Structure, TlsMode, Value, ValueKind,
 };
 
 /// MySQL's `binary` character set: bytes, not text.
@@ -38,19 +42,59 @@ pub struct Conn {
 }
 
 impl Conn {
-    /// Placeholder until the SQL editor lands for this driver.
+    /// See [`crate::Connection::run_script`]. Statements run through the
+    /// prepared protocol, which cannot hold two, and `sql_select_limit`
+    /// makes the server stop at `limit + 1` rows. The transaction is
+    /// managed by hand, and the session is reset afterwards: what a script
+    /// set must not reach table browsing or the next run.
+    ///
+    /// The future must be awaited to its end: a run that is dropped leaves
+    /// the session inside the transaction, with the script's settings. The
+    /// backend never drops one; it stops a run through `stop` and the
+    /// session's cancel.
     pub async fn run_script(
         &self,
-        _texts: &[String],
-        _limit: u32,
-        _stop: &crate::StopFlag,
-    ) -> Result<crate::ScriptOutcome> {
-        Err(Error::Unsupported("the SQL editor on this database"))
+        texts: &[String],
+        limit: u32,
+        stop: &StopFlag,
+    ) -> Result<ScriptOutcome> {
+        let mut conn = self.conn.lock().await;
+        let mut outcome = ScriptOutcome::default();
+        let (ended, marked) = match open(&mut conn, limit).await {
+            // A lost session ends the run here: nothing to close.
+            Ok(marked) => {
+                let ended =
+                    statements(&mut conn, texts, limit as usize, stop, marked, &mut outcome)
+                        .await?;
+                (ended, marked)
+            }
+            // A cancel landed on the opening queries: no results.
+            Err(Error::Cancelled) => {
+                outcome.stopped = true;
+                (Ended::Unconfirmed, false)
+            }
+            Err(error) if error.is_connection_lost() => return Err(error),
+            // The transaction could not start. The next run would fail the
+            // same way, so the session is closed, after an attempt to end
+            // what is open.
+            Err(error) => (Ended::Broken(cannot_start(&error)), false),
+        };
+        // From here on a cancel would land on the cleanup: tell the
+        // backend to stop repeating its cancel.
+        stop.finish();
+        close(&mut conn, ended, marked).await?;
+        Ok(outcome)
     }
 
-    /// Placeholder until the SQL editor lands for this driver.
+    /// See [`crate::Connection::server_version`].
     pub async fn server_version(&self) -> Result<String> {
-        Err(Error::Unsupported("the SQL editor on this database"))
+        let mut conn = self.conn.lock().await;
+        let row: Option<mysql_async::Row> = conn
+            .query_first("SELECT VERSION()")
+            .await
+            .map_err(query_error)?;
+        let full: String = row.map(from_row).transpose()?.unwrap_or_default();
+        Ok(version_name(&full))
     }
 
     /// Connects to the spec's server, or through a tunnel's local port `via`.
@@ -101,15 +145,7 @@ impl Conn {
                 }
                 Ok(Err(error)) => return Err(connect_error(error)),
             };
-        // Fixed statements: safe to send through the text protocol.
-        conn.query_drop("SET SESSION TRANSACTION READ ONLY")
-            .await
-            .map_err(query_error)?;
-        conn.query_drop(
-            "SET SESSION sql_mode = REPLACE(@@SESSION.sql_mode, 'NO_BACKSLASH_ESCAPES', '')",
-        )
-        .await
-        .map_err(query_error)?;
+        prepare_session(&mut conn).await?;
         let id = conn.id();
         // mysql_async fails rather than go on in plain text when it was
         // given TLS options, so the options that connected say it.
@@ -326,6 +362,30 @@ fn from_row<T: mysql_async::prelude::FromRow>(row: mysql_async::Row) -> Result<T
     })
 }
 
+/// A result set's columns.
+fn column_metas(columns: &[mysql_async::Column]) -> Vec<ColumnMeta> {
+    columns
+        .iter()
+        .map(|column| {
+            let type_name = type_name(column.column_type(), column.flags(), column.character_set());
+            ColumnMeta {
+                name: column.name_str().into_owned(),
+                kind: kind(&type_name),
+                type_name: type_name.into_owned(),
+            }
+        })
+        .collect()
+}
+
+/// A row's values, typed by `columns`.
+fn row_values(row: mysql_async::Row, columns: &[ColumnMeta]) -> Vec<Value> {
+    row.unwrap()
+        .into_iter()
+        .zip(columns)
+        .map(|(cell, column)| value(cell, &column.type_name))
+        .collect()
+}
+
 /// Up to `limit + 1` rows of a page, so the caller can tell there are more.
 async fn read_page(
     transaction: &mut mysql_async::Transaction<'_>,
@@ -336,27 +396,10 @@ async fn read_page(
         .exec_iter(sql.text.as_str(), params(&sql.params))
         .await
         .map_err(query_error)?;
-    let columns: Vec<ColumnMeta> = result
-        .columns_ref()
-        .iter()
-        .map(|column| {
-            let type_name = type_name(column.column_type(), column.flags(), column.character_set());
-            ColumnMeta {
-                name: column.name_str().into_owned(),
-                kind: kind(&type_name),
-                type_name: type_name.into_owned(),
-            }
-        })
-        .collect();
+    let columns = column_metas(result.columns_ref());
     let mut rows = Vec::new();
     while let Some(row) = result.next().await.map_err(query_error)? {
-        rows.push(
-            row.unwrap()
-                .into_iter()
-                .zip(&columns)
-                .map(|(cell, column)| value(cell, &column.type_name))
-                .collect(),
-        );
+        rows.push(row_values(row, &columns));
         if rows.len() > limit {
             break;
         }
@@ -374,6 +417,428 @@ async fn finish<T>(transaction: mysql_async::Transaction<'_>, outcome: Result<T>
     let value = outcome?;
     rolled_back.map_err(query_error)?;
     Ok(value)
+}
+
+/// Makes the session read-only: no transaction of its own can write.
+const READ_ONLY: &str = "SET SESSION TRANSACTION READ ONLY";
+
+/// The character set and collation of the driver's handshake. A session
+/// reset puts the server's defaults in their place, while the driver goes
+/// on sending and reading UTF-8.
+const NAMES: &str = "SET NAMES utf8mb4 COLLATE utf8mb4_general_ci";
+
+/// The sql_mode names a session runs without, so that the server lexes
+/// text as `sql::tokenize` does: with `ANSI_QUOTES` a `"..."` is a name,
+/// and with `NO_BACKSLASH_ESCAPES` a backslash is a character. The others
+/// are combination modes, which turn `ANSI_QUOTES` back on if they stay.
+/// In this order: `ANSI` is also the start of `ANSI_QUOTES`.
+const LEXING_MODES: [&str; 8] = [
+    "NO_BACKSLASH_ESCAPES",
+    "ANSI_QUOTES",
+    "ANSI",
+    "POSTGRESQL",
+    "ORACLE",
+    "MSSQL",
+    "DB2",
+    "MAXDB",
+];
+
+/// The session settings every connection runs with, set at connect and
+/// again after a SQL editor script's reset, which undoes them. Read-only
+/// comes first. After a reset a cancel meant for a statement can land
+/// here, so a statement it interrupts runs once more: the session is not
+/// left read-write because a `SET` was interrupted.
+async fn prepare_session(conn: &mut mysql_async::Conn) -> Result<()> {
+    let sql_mode = LEXING_MODES
+        .iter()
+        .fold("@@SESSION.sql_mode".to_owned(), |mode, name| {
+            format!("REPLACE({mode}, '{name}', '')")
+        });
+    let sql_mode = format!("SET SESSION sql_mode = {sql_mode}");
+    // Fixed statements: safe to send through the text protocol.
+    for statement in [READ_ONLY, NAMES, sql_mode.as_str()] {
+        retry_cancelled!(execute(conn, statement))?;
+    }
+    Ok(())
+}
+
+/// Runs one of the driver's own statements, through the text protocol.
+async fn execute(conn: &mut mysql_async::Conn, statement: &str) -> Result<()> {
+    conn.query_drop(statement).await.map_err(query_error)
+}
+
+/// The server's status after the last query that worked: whether the
+/// session is in a transaction, and whether that one is read-only.
+fn status(conn: &mysql_async::Conn) -> StatusFlags {
+    conn.last_ok_packet()
+        .map_or(StatusFlags::empty(), |ok| ok.status_flags())
+}
+
+/// Where a session stands relative to the read-only transaction a script
+/// runs in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Standing {
+    /// Inside a read-only transaction, in a read-only session.
+    Inside,
+    /// In no transaction: a statement ended the script's. The server
+    /// commits before it runs DDL, also when it then refuses the DDL as
+    /// read-only. The session is still read-only.
+    Outside,
+    /// Not read-only any more: the session, or the transaction it is in.
+    Left,
+}
+
+/// What a run knows of its session once no more statements run.
+#[derive(Debug, PartialEq)]
+enum Ended {
+    /// Nothing the run saw says the session left read-only. The close asks
+    /// the server before it trusts this.
+    Unconfirmed,
+    /// The check before a statement found the session read-write.
+    Left,
+    /// A check could not be made, or a transaction could not start: the
+    /// session is closed with this error.
+    Broken(Error),
+}
+
+/// The session's read-only setting. MariaDB before 11.1 knows it only
+/// under its older name.
+const READ_ONLY_SETTINGS: [&str; 2] = ["transaction_read_only", "tx_read_only"];
+
+/// A transaction that could not start closes the session: the next run
+/// would fail the same way.
+fn cannot_start(error: &Error) -> Error {
+    Error::ConnectionLost(format!(
+        "could not start the read-only transaction: {error}"
+    ))
+}
+
+/// Starts a read-only transaction. `Ok` says whether the server's status
+/// marks it as read-only (MySQL and MariaDB do); `stands` then takes a
+/// transaction without the mark for one that is not the script's.
+async fn begin(conn: &mut mysql_async::Conn) -> Result<bool> {
+    execute(conn, "START TRANSACTION READ ONLY").await?;
+    let status = status(conn);
+    if !status.contains(StatusFlags::SERVER_STATUS_IN_TRANS) {
+        return Err(Error::query("the server did not start a transaction"));
+    }
+    Ok(status.contains(StatusFlags::SERVER_STATUS_IN_TRANS_READONLY))
+}
+
+/// Starts the script's transaction and sets its row limit: with
+/// `sql_select_limit` the server stops producing rows, and the close's
+/// reset puts the default back. `Ok` is `begin`'s answer. `Err` is a
+/// cancel that landed on these queries, a lost session, or a transaction
+/// that could not start.
+async fn open(conn: &mut mysql_async::Conn, limit: u32) -> Result<bool> {
+    let marked = begin(conn).await?;
+    // One row more than the limit, to know whether more exist.
+    let rows = u64::from(limit) + 1;
+    execute(conn, &format!("SET SESSION sql_select_limit = {rows}")).await?;
+    Ok(marked)
+}
+
+/// Runs the statements in order, up to the first that fails or is
+/// stopped, and says what that showed of the session. `Err` is a lost
+/// session.
+async fn statements(
+    conn: &mut mysql_async::Conn,
+    texts: &[String],
+    limit: usize,
+    stop: &StopFlag,
+    marked: bool,
+    outcome: &mut ScriptOutcome,
+) -> Result<Ended> {
+    for text in texts {
+        let ready = if stop.is_stopped() {
+            Err(Error::Cancelled)
+        } else {
+            ready(conn, marked).await
+        };
+        match ready {
+            Ok(Standing::Left) => return Ok(Ended::Left),
+            Ok(_) => {}
+            // A stop between statements, or a cancel that landed on the
+            // check: this statement is the cancelled one. The close asks
+            // where the session stands.
+            Err(Error::Cancelled) => {
+                outcome.stopped = true;
+                outcome.results.push(StatementResult {
+                    elapsed: Duration::ZERO,
+                    outcome: StatementOutcome::Cancelled,
+                });
+                return Ok(Ended::Unconfirmed);
+            }
+            Err(error) if error.is_connection_lost() => return Err(error),
+            // Not known to be read-only: nothing more runs.
+            Err(error) => {
+                return Ok(Ended::Broken(Error::ConnectionLost(format!(
+                    "could not confirm that the session is read-only: {error}"
+                ))));
+            }
+        }
+        let started = Instant::now();
+        let result = run_statement(conn, text, limit).await?;
+        outcome.stopped |= result == StatementOutcome::Cancelled;
+        let last = !matches!(
+            result,
+            StatementOutcome::Rows { .. } | StatementOutcome::Done { .. }
+        );
+        outcome.results.push(StatementResult {
+            elapsed: started.elapsed(),
+            outcome: result,
+        });
+        if last {
+            break;
+        }
+    }
+    Ok(Ended::Unconfirmed)
+}
+
+/// The check before every statement: where the session stands, back
+/// inside a read-only transaction when a statement ended the script's.
+///
+/// Outside one, a statement runs in a transaction of its own, read-only
+/// like the session, unless a statement the refusal missed set the next
+/// transaction's mode (`SET TRANSACTION READ WRITE`), which the session's
+/// setting does not show. `START TRANSACTION READ ONLY` overrides that,
+/// and inside a transaction the server refuses to change the mode. So
+/// every statement runs inside a read-only transaction, whatever the one
+/// before it did.
+///
+/// `Err` is a cancel that landed on the check, a lost session, or a check
+/// that could not be made.
+async fn ready(conn: &mut mysql_async::Conn, marked: bool) -> Result<Standing> {
+    match standing(conn, marked).await? {
+        Standing::Outside => {
+            let again = begin(conn).await?;
+            if marked && !again {
+                return Err(Error::query(
+                    "the server did not start a read-only transaction",
+                ));
+            }
+            Ok(Standing::Inside)
+        }
+        standing => Ok(standing),
+    }
+}
+
+/// Asks the server where the session stands: its read-only setting, and
+/// the transaction status that comes with the answer. `marked` is
+/// `begin`'s answer for the script's transaction.
+async fn standing(conn: &mut mysql_async::Conn, marked: bool) -> Result<Standing> {
+    let read_only = read_only_setting(conn, READ_ONLY_SETTINGS).await?;
+    stands(read_only, status(conn), marked)
+}
+
+/// The session's read-only setting, asked for under `name`, or under
+/// `older` when the server does not know `name`.
+async fn read_only_setting(
+    conn: &mut mysql_async::Conn,
+    [name, older]: [&str; 2],
+) -> Result<Option<i64>> {
+    let row = match setting(conn, name).await {
+        Err(mysql_async::Error::Server(error)) if error.code == UNKNOWN_SYSTEM_VARIABLE => {
+            setting(conn, older).await
+        }
+        answer => answer,
+    };
+    row.map_err(query_error)?.map(from_row).transpose()
+}
+
+/// A session setting's value. With a `LIMIT` of its own: a script can set
+/// `sql_select_limit` to 0, and the answer must still come.
+async fn setting(
+    conn: &mut mysql_async::Conn,
+    name: &str,
+) -> mysql_async::Result<Option<mysql_async::Row>> {
+    conn.query_first(format!("SELECT @@session.{name} LIMIT 1"))
+        .await
+}
+
+/// Where a session stands, from its read-only setting and the server's
+/// status. Only an explicit 0 says the session is read-write; a
+/// transaction is the script's kind when it is marked read-only, if the
+/// server marked the script's own (`marked`).
+fn stands(read_only: Option<i64>, status: StatusFlags, marked: bool) -> Result<Standing> {
+    let Some(read_only) = read_only else {
+        return Err(Error::query(
+            "the server did not say whether the session is read-only",
+        ));
+    };
+    Ok(if read_only == 0 {
+        Standing::Left
+    } else if !status.contains(StatusFlags::SERVER_STATUS_IN_TRANS) {
+        Standing::Outside
+    } else if marked && !status.contains(StatusFlags::SERVER_STATUS_IN_TRANS_READONLY) {
+        Standing::Left
+    } else {
+        Standing::Inside
+    })
+}
+
+/// Ends a script's run, whatever state it is in: confirms the session is
+/// still read-only, rolls back, resets the session and applies the
+/// connect-time settings again. A step a cancel interrupted runs once
+/// more. `LeftReadOnly` or any step that fails closes the session (they
+/// count as a lost connection).
+async fn close(conn: &mut mysql_async::Conn, ended: Ended, marked: bool) -> Result<()> {
+    let ended = match ended {
+        Ended::Unconfirmed => match retry_cancelled!(standing(conn, marked)) {
+            Ok(Standing::Left) => Ended::Left,
+            Ok(Standing::Inside | Standing::Outside) => Ended::Unconfirmed,
+            Err(error) => Ended::Broken(cleanup_failed(&error)),
+        },
+        known => known,
+    };
+    // Whatever is open is rolled back and reset as far as that works, also
+    // when the session is closed anyway.
+    let rolled_back = retry_cancelled!(execute(conn, "ROLLBACK"));
+    let reset = retry_cancelled!(reset(conn));
+    let prepared = prepare_session(conn).await;
+    match ended {
+        Ended::Left => Err(Error::LeftReadOnly),
+        Ended::Broken(error) => Err(error),
+        Ended::Unconfirmed => rolled_back
+            .and(reset)
+            .and(prepared)
+            .map_err(|error| cleanup_failed(&error)),
+    }
+}
+
+/// Resets the session (`COM_RESET_CONNECTION`): every session setting goes
+/// back to the server's default, and user variables, temporary tables,
+/// prepared statements and named locks are dropped. The connection id the
+/// cancel uses stays. The session is read-write until `prepare_session`
+/// runs again.
+async fn reset(conn: &mut mysql_async::Conn) -> Result<()> {
+    if conn.reset().await.map_err(query_error)? {
+        Ok(())
+    } else {
+        // The server predates the command (MySQL 5.7.2, MariaDB 10.2.3).
+        Err(Error::query("the server cannot reset the session"))
+    }
+}
+
+/// A statement the server failed, as its outcome. `Err` is a lost session.
+fn failed(error: mysql_async::Error) -> Result<StatementOutcome> {
+    statement_failed(query_error(error), None)
+}
+
+/// The outcome of a statement with a parameter, spelled `spelled`: the SQL
+/// editor has no values for parameters.
+fn parameter(spelled: &str) -> StatementOutcome {
+    StatementOutcome::Error {
+        error: Error::query(format!(
+            "the statement has a parameter ({spelled}), which the SQL editor cannot fill in"
+        )),
+        position: None,
+    }
+}
+
+/// The driver's `mysql_common` is the one named here: this fails to
+/// compile, rather than read parameters another way than the driver does,
+/// when the two versions drift apart.
+const _: fn(mysql_common::params::Params) -> Params = |params| params;
+
+/// The outcome of a statement in which the driver reads a `:name`
+/// parameter. It sends the server a `?` in its place, and it reads by a
+/// lexer of its own, which takes a string right after a `-` or a `/` for
+/// code (`-':name'`). Such text does not run: only the text the guard read
+/// may reach the server, and the driver closes the connection when it has
+/// no value for a parameter, also for one the server did not count.
+fn driver_parameter(text: &str) -> Option<StatementOutcome> {
+    match ParsedNamedParams::parse(text.as_bytes()) {
+        Ok(parsed) => parsed
+            .params()
+            .first()
+            .map(|name| parameter(&format!(":{}", String::from_utf8_lossy(name)))),
+        // A `:name` next to a `?`.
+        Err(_) => Some(parameter("?")),
+    }
+}
+
+/// Whether the statement's answer carries a row count. The server reports
+/// 0 for a statement without one (`SET`, `DO`), which is not "0 rows".
+fn counts_rows(text: &str) -> bool {
+    crate::sql::words(Dialect::MySql, text)
+        .first()
+        .is_some_and(|word| matches!(word.as_str(), "INSERT" | "UPDATE" | "DELETE" | "REPLACE"))
+}
+
+/// Runs one statement of a script. A statement's failure is its outcome;
+/// whether it also ended the transaction, the next check asks. `Err` is a
+/// lost session.
+async fn run_statement(
+    conn: &mut mysql_async::Conn,
+    text: &str,
+    limit: usize,
+) -> Result<StatementOutcome> {
+    if let Some(outcome) = driver_parameter(text) {
+        return Ok(outcome);
+    }
+    // Prepare first: the server refuses a second statement hidden in one
+    // piece, and what the prepared protocol lacks. A prepare error is the
+    // outcome; the text never runs another way.
+    let statement = match conn.prep(text).await {
+        Ok(statement) => statement,
+        Err(error) => return failed(error),
+    };
+    // The driver closes the connection when a statement runs without
+    // values for its parameters, so such a statement does not run.
+    if statement.num_params() > 0 {
+        return Ok(parameter("?"));
+    }
+    let mut result = match conn.exec_iter(&statement, Params::Empty).await {
+        Ok(result) => result,
+        Err(error) => return failed(error),
+    };
+    // From the result, not the prepared statement: EXPLAIN prepares
+    // without columns.
+    let columns = column_metas(result.columns_ref());
+    if columns.is_empty() {
+        let affected = result.affected_rows();
+        if let Err(error) = result.drop_result().await {
+            return failed(error);
+        }
+        return Ok(StatementOutcome::Done {
+            affected: counts_rows(text).then_some(affected),
+        });
+    }
+    // sql_select_limit does not bound every statement (SHOW, a SELECT with
+    // its own LIMIT): keep limit + 1 rows and read the rest off the wire.
+    let mut rows = Vec::new();
+    loop {
+        match result.next().await {
+            Ok(Some(row)) if rows.len() <= limit => rows.push(row_values(row, &columns)),
+            Ok(Some(_)) => {}
+            Ok(None) => break,
+            Err(error) => return failed(error),
+        }
+    }
+    // A statement with several result sets shows its first.
+    if let Err(error) = result.drop_result().await {
+        return failed(error);
+    }
+    let truncated = rows.len() > limit;
+    rows.truncate(limit);
+    Ok(StatementOutcome::Rows {
+        columns,
+        rows,
+        truncated,
+    })
+}
+
+/// `SELECT VERSION()` as the footer shows it: the name, and the number
+/// without what a distribution adds after a `-`.
+fn version_name(full: &str) -> String {
+    let name = if full.contains("MariaDB") {
+        "MariaDB"
+    } else {
+        "MySQL"
+    };
+    let number = full.split('-').next().unwrap_or_default();
+    format!("{name} {number}")
 }
 
 /// A readable type name from a result column's metadata. Result columns do
@@ -877,19 +1342,31 @@ mod tests {
         assert_eq!(same_server("", ""), different);
     }
 
-    /// Needs TABLETIST_TEST_MYSQL_URL (see AGENTS.md); skipped without it.
+    /// The test server's URL, or `None` (test skipped). See AGENTS.md and
+    /// `tests/mysql.rs`.
+    fn test_url() -> Option<String> {
+        let url = std::env::var("TABLETIST_TEST_MYSQL_URL")
+            .ok()
+            .filter(|url| !url.trim().is_empty());
+        if url.is_none() {
+            eprintln!("skipped: TABLETIST_TEST_MYSQL_URL is not set");
+        }
+        url
+    }
+
+    /// A fresh read-only session, as the app opens it.
+    async fn session(url: &str) -> Conn {
+        let (mut spec, secrets) = ConnectSpec::from_url(url).unwrap();
+        spec.tls = TlsMode::Disable;
+        Conn::connect(&spec, &secrets, None).await.unwrap()
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_cancel_that_reaches_another_server_kills_nothing() {
-        let Some(url) = std::env::var("TABLETIST_TEST_MYSQL_URL")
-            .ok()
-            .filter(|url| !url.trim().is_empty())
-        else {
-            eprintln!("skipped: TABLETIST_TEST_MYSQL_URL is not set");
+        let Some(url) = test_url() else {
             return;
         };
-        let (mut spec, secrets) = ConnectSpec::from_url(&url).unwrap();
-        spec.tls = TlsMode::Disable;
-        let session = std::sync::Arc::new(Conn::connect(&spec, &secrets, None).await.unwrap());
+        let session = std::sync::Arc::new(session(&url).await);
         assert!(session.server.starts_with("uuid "), "{}", session.server);
         let running = {
             let session = std::sync::Arc::clone(&session);
@@ -908,6 +1385,666 @@ mod tests {
             ))
         );
         assert_eq!(running.await.unwrap().unwrap(), Some(0));
+    }
+
+    /// The backend spawns a script run, so its future must be `Send`. This
+    /// fails to compile, not to run.
+    #[test]
+    fn a_script_run_can_be_spawned() {
+        fn send<T: Send>(_: &T) {}
+        let _check = |conn: &Conn, texts: &[String], stop: &StopFlag| {
+            send(&conn.run_script(texts, 10, stop));
+            send(&conn.server_version());
+        };
+    }
+
+    #[test]
+    fn only_data_changing_statements_report_a_count() {
+        for text in [
+            "INSERT INTO t VALUES (1)",
+            "update t SET n = 1",
+            "-- note\nDELETE FROM t",
+            "/* note */ REPLACE INTO t VALUES (1)",
+        ] {
+            assert!(counts_rows(text), "{text}");
+        }
+        for text in [
+            "SET @a = 1",
+            "DO 1",
+            "CREATE TABLE t (n int)",
+            "SELECT 1",
+            "",
+        ] {
+            assert!(!counts_rows(text), "{text}");
+        }
+    }
+
+    #[test]
+    fn text_the_driver_would_rewrite_is_a_parameter_error() {
+        let named = |text: &str| match driver_parameter(text) {
+            Some(StatementOutcome::Error { error, .. }) => Some(error.to_string()),
+            Some(other) => panic!("{other:?}"),
+            None => None,
+        };
+        let message = |spelled: &str| {
+            Some(format!(
+                "the statement has a parameter ({spelled}), which the SQL editor cannot fill in"
+            ))
+        };
+        assert_eq!(named("SELECT :id"), message(":id"));
+        assert_eq!(
+            named("SELECT * FROM t WHERE a = :a AND b = :b_2"),
+            message(":a")
+        );
+        assert_eq!(named("SELECT ?, :id"), message("?"));
+        // The driver's lexer loses its place after a `-` or a `/`, and
+        // would change a string or a name.
+        assert_eq!(named("SELECT 1 -':abc'"), message(":abc"));
+        assert_eq!(named("SELECT 1 /`:abc` FROM t"), message(":abc"));
+        // What it leaves alone runs, a `?` included: the server counts
+        // those.
+        for text in [
+            "SELECT ?",
+            "SELECT ':id', \":id\", `:id` FROM t -- :id\n/* :id */ # :id",
+            "SELECT @a := 1",
+            "SELECT '{\"a\":true}', TIME '12:30:00'",
+            "SELECT 1 - ':abc'",
+            "",
+        ] {
+            assert_eq!(named(text), None, "{text}");
+        }
+    }
+
+    #[test]
+    fn versions_lose_what_a_distribution_adds() {
+        assert_eq!(version_name("8.4.3"), "MySQL 8.4.3");
+        assert_eq!(version_name("8.0.36-0ubuntu0.22.04.1"), "MySQL 8.0.36");
+        assert_eq!(
+            version_name("10.11.6-MariaDB-1:10.11.6+maria~ubu2204"),
+            "MariaDB 10.11.6"
+        );
+        assert_eq!(version_name("11.4.2-MariaDB"), "MariaDB 11.4.2");
+    }
+
+    #[test]
+    fn a_session_stands_where_its_setting_and_status_say() {
+        let autocommit = StatusFlags::SERVER_STATUS_AUTOCOMMIT;
+        let in_transaction = autocommit | StatusFlags::SERVER_STATUS_IN_TRANS;
+        let read_only = in_transaction | StatusFlags::SERVER_STATUS_IN_TRANS_READONLY;
+        for marked in [true, false] {
+            assert_eq!(stands(Some(1), read_only, marked), Ok(Standing::Inside));
+            // No transaction: a statement ended it.
+            assert_eq!(stands(Some(1), autocommit, marked), Ok(Standing::Outside));
+            assert_eq!(
+                stands(Some(1), StatusFlags::empty(), marked),
+                Ok(Standing::Outside)
+            );
+            // Only an explicit 0 is read-write, whatever the transaction.
+            for status in [read_only, in_transaction, autocommit] {
+                assert_eq!(stands(Some(0), status, marked), Ok(Standing::Left));
+            }
+            assert_eq!(stands(Some(2), read_only, marked), Ok(Standing::Inside));
+            // No answer is not a yes.
+            assert!(matches!(
+                stands(None, read_only, marked),
+                Err(Error::Query { .. })
+            ));
+        }
+        // A transaction that is not marked read-only is not the script's,
+        // on a server that marked the script's own.
+        assert_eq!(stands(Some(1), in_transaction, true), Ok(Standing::Left));
+        assert_eq!(stands(Some(1), in_transaction, false), Ok(Standing::Inside));
+    }
+
+    /// One test at a time uses the `probe` table: creating it twice at once
+    /// can fail, and one test's TRUNCATE would hide another's stray row.
+    static PROBE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    /// A writable connection, outside the adapter.
+    async fn admin(url: &str) -> mysql_async::Conn {
+        let opts = Opts::from_url(&format!("{url}?prefer_socket=false")).unwrap();
+        mysql_async::Conn::new(opts).await.unwrap()
+    }
+
+    /// A writable connection with an empty `probe` table, and the table's
+    /// lock, held until the test ends.
+    async fn probe(url: &str) -> (mysql_async::Conn, tokio::sync::MutexGuard<'static, ()>) {
+        let turn = PROBE.lock().await;
+        let mut admin = admin(url).await;
+        admin
+            .query_drop("CREATE TABLE IF NOT EXISTS probe (n int)")
+            .await
+            .unwrap();
+        admin.query_drop("TRUNCATE probe").await.unwrap();
+        (admin, turn)
+    }
+
+    /// The rows in the `probe` table.
+    async fn probe_rows(admin: &mut mysql_async::Conn) -> i64 {
+        admin
+            .query_first("SELECT count(*) FROM probe")
+            .await
+            .unwrap()
+            .unwrap()
+    }
+
+    /// Everything of a session that a script could change and the close
+    /// puts back, as text, and whether a transaction is open.
+    async fn settings(conn: &Conn) -> (Vec<Option<String>>, bool) {
+        let mut conn = conn.conn.lock().await;
+        let row: mysql_async::Row = conn
+            .query_first(
+                "SELECT @@session.transaction_read_only, @@session.sql_select_limit, \
+                        @@session.sql_mode, @@session.time_zone, @@session.autocommit, \
+                        @@session.character_set_client, @@session.character_set_connection, \
+                        @@session.character_set_results, @@session.collation_connection, \
+                        @tabletist_left_over, DATABASE() LIMIT 1",
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        let values = row
+            .unwrap()
+            .into_iter()
+            .map(|value| match value {
+                mysql_async::Value::NULL => None,
+                mysql_async::Value::Bytes(bytes) => Some(String::from_utf8(bytes).unwrap()),
+                other => Some(format!("{other:?}")),
+            })
+            .collect();
+        let open = status(&conn).contains(StatusFlags::SERVER_STATUS_IN_TRANS);
+        (values, open)
+    }
+
+    /// Runs statements straight through the driver, as if the refusal had
+    /// missed them.
+    async fn past_the_refusal(
+        conn: &Conn,
+        script: &[&str],
+        stop: &StopFlag,
+    ) -> Result<ScriptOutcome> {
+        let texts: Vec<String> = script.iter().map(|&text| text.to_owned()).collect();
+        tokio::time::timeout(Duration::from_secs(10), conn.run_script(&texts, 10, stop))
+            .await
+            .expect("the run hung")
+    }
+
+    /// The SQLSTATE a statement failed with.
+    fn code(outcome: &StatementOutcome) -> Option<&str> {
+        match outcome {
+            StatementOutcome::Error {
+                error: Error::Query { code, .. },
+                ..
+            } => code.as_deref(),
+            _ => None,
+        }
+    }
+
+    const INSERT: &str = "INSERT INTO probe VALUES (1)";
+
+    /// Statements the refusal stops long before they get here. Run past
+    /// it, they make the session read-write; the statement after them must
+    /// not run, and the run must fail even when nothing follows them, so
+    /// that the session is closed.
+    #[tokio::test]
+    async fn a_script_that_left_read_only_runs_nothing_more_and_fails() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        let (mut admin, _turn) = probe(&url).await;
+        for script in [
+            &["COMMIT", "SET SESSION TRANSACTION READ WRITE", INSERT][..],
+            &["SET SESSION TRANSACTION READ WRITE", INSERT][..],
+            &["SET @@session.transaction_read_only = 0", INSERT][..],
+            &["SET @@session.transaction_read_only = 0", "COMMIT", INSERT][..],
+            // Last in the script, nothing would run after it.
+            &["SELECT 1", "SET SESSION TRANSACTION READ WRITE"][..],
+        ] {
+            // A session of its own, dropped with the loop's turn: whatever
+            // a failing guard let through cannot reach another test.
+            let conn = session(&url).await;
+            let connected = settings(&conn).await;
+            let stop = StopFlag::new();
+            let ran = past_the_refusal(&conn, script, &stop).await;
+            assert_eq!(ran, Err(Error::LeftReadOnly), "{script:?}");
+            assert!(stop.is_finishing(), "{script:?}");
+            assert_eq!(probe_rows(&mut admin).await, 0, "{script:?}");
+            // The backend closes the session on that error. The close has
+            // made it read-only again all the same.
+            assert_eq!(settings(&conn).await, connected, "{script:?}");
+        }
+    }
+
+    /// The refusal keeps these from the driver. Past it, the server still
+    /// refuses the write: every statement runs inside a read-only
+    /// transaction, also after one that ended the script's, and there the
+    /// server lets nothing change the transaction's mode.
+    #[tokio::test]
+    async fn statements_past_the_refusal_cannot_write() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        let (mut admin, _turn) = probe(&url).await;
+        // The script, and the SQLSTATE its last result fails with.
+        for (script, failure) in [
+            (&[INSERT][..], "25006"),
+            // Outside the script's transaction the session is read-only.
+            (&["COMMIT", INSERT][..], "25006"),
+            (&["ROLLBACK", "SELECT 1", INSERT][..], "25006"),
+            // This sets the next transaction's mode only, which the
+            // session's setting does not show: on its own, the INSERT after
+            // it would write. Inside a transaction the server refuses it.
+            (
+                &["COMMIT", "SET TRANSACTION READ WRITE", INSERT][..],
+                "25001",
+            ),
+            (&["SET TRANSACTION READ WRITE", INSERT][..], "25001"),
+            (
+                &["COMMIT", "SET @@transaction_read_only = 0", INSERT][..],
+                "25001",
+            ),
+        ] {
+            let conn = session(&url).await;
+            let connected = settings(&conn).await;
+            let stop = StopFlag::new();
+            let outcome = past_the_refusal(&conn, script, &stop).await.unwrap();
+            let last = outcome.results.len() - 1;
+            assert_eq!(
+                code(&outcome.results[last].outcome),
+                Some(failure),
+                "{script:?}: {outcome:?}"
+            );
+            assert!(
+                outcome.results[..last].iter().all(|result| matches!(
+                    result.outcome,
+                    StatementOutcome::Rows { .. } | StatementOutcome::Done { .. }
+                )),
+                "{script:?}: {outcome:?}"
+            );
+            // The write is the statement that failed, or never ran.
+            assert!(
+                script[last] == INSERT || script[last + 1] == INSERT,
+                "{script:?}: {outcome:?}"
+            );
+            assert_eq!(probe_rows(&mut admin).await, 0, "{script:?}");
+            assert_eq!(settings(&conn).await, connected, "{script:?}");
+        }
+    }
+
+    /// The check before a statement, on its own: a statement that ended
+    /// the script's transaction is followed by a new one, and a read-write
+    /// transaction is not the script's.
+    #[tokio::test]
+    async fn the_check_puts_the_session_back_inside_a_read_only_transaction() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        let (mut admin, _turn) = probe(&url).await;
+        let conn = session(&url).await;
+        let connected = settings(&conn).await;
+        {
+            let mut conn = conn.conn.lock().await;
+            assert_eq!(standing(&mut conn, true).await, Ok(Standing::Outside));
+            let marked = open(&mut conn, 10).await.unwrap();
+            // MySQL and MariaDB mark a read-only transaction.
+            assert!(marked);
+            assert_eq!(standing(&mut conn, marked).await, Ok(Standing::Inside));
+            assert_eq!(ready(&mut conn, marked).await, Ok(Standing::Inside));
+
+            // What a statement that commits would have done, and one that
+            // makes the next transaction read-write: the session's setting
+            // does not show that, and a statement on its own would write.
+            conn.query_drop("COMMIT").await.unwrap();
+            conn.query_drop("SET TRANSACTION READ WRITE").await.unwrap();
+            assert_eq!(standing(&mut conn, marked).await, Ok(Standing::Outside));
+            assert_eq!(ready(&mut conn, marked).await, Ok(Standing::Inside));
+            assert_eq!(standing(&mut conn, marked).await, Ok(Standing::Inside));
+            let written = conn.query_drop(INSERT).await.map_err(query_error);
+            assert!(
+                matches!(&written, Err(Error::Query { code: Some(code), .. }) if code == "25006"),
+                "{written:?}"
+            );
+            assert_eq!(probe_rows(&mut admin).await, 0);
+
+            // A transaction of another kind is not the script's.
+            conn.query_drop("START TRANSACTION READ WRITE")
+                .await
+                .unwrap();
+            assert_eq!(standing(&mut conn, marked).await, Ok(Standing::Left));
+            assert_eq!(ready(&mut conn, marked).await, Ok(Standing::Left));
+            // A server that did not mark the script's own is not held to it.
+            assert_eq!(standing(&mut conn, false).await, Ok(Standing::Inside));
+            assert_eq!(
+                close(&mut conn, Ended::Unconfirmed, marked).await,
+                Err(Error::LeftReadOnly)
+            );
+            assert_eq!(standing(&mut conn, marked).await, Ok(Standing::Outside));
+
+            // A script's own sql_select_limit does not blind the check.
+            open(&mut conn, 10).await.unwrap();
+            conn.query_drop("SET SESSION sql_select_limit = 0")
+                .await
+                .unwrap();
+            assert_eq!(standing(&mut conn, marked).await, Ok(Standing::Inside));
+            conn.query_drop("SET SESSION TRANSACTION READ WRITE")
+                .await
+                .unwrap();
+            assert_eq!(standing(&mut conn, marked).await, Ok(Standing::Left));
+            assert_eq!(
+                close(&mut conn, Ended::Unconfirmed, marked).await,
+                Err(Error::LeftReadOnly)
+            );
+        }
+        assert_eq!(settings(&conn).await, connected);
+        // The session was not closed, and it works.
+        let ran = past_the_refusal(&conn, &["SELECT 1"], &StopFlag::new()).await;
+        assert_eq!(ran.unwrap().results.len(), 1);
+    }
+
+    /// A stop between statements ends the run without a statement failing,
+    /// so the close still asks where the session stands. Here the statement
+    /// before the stop made the session read-write.
+    #[tokio::test]
+    async fn a_stop_after_the_session_left_read_only_still_fails_the_run() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        let conn = session(&url).await;
+        let connected = settings(&conn).await;
+        {
+            let mut conn = conn.conn.lock().await;
+            let marked = open(&mut conn, 10).await.unwrap();
+            // What the first statement of the script would have done.
+            conn.query_drop("SET SESSION TRANSACTION READ WRITE")
+                .await
+                .unwrap();
+            // The stop lands before the second.
+            let stop = StopFlag::new();
+            stop.stop();
+            let mut outcome = ScriptOutcome::default();
+            let texts = ["SELECT 1".to_owned()];
+            let ended = statements(&mut conn, &texts, 10, &stop, marked, &mut outcome).await;
+            assert_eq!(ended, Ok(Ended::Unconfirmed));
+            assert_eq!(outcome.results.len(), 1);
+            assert_eq!(outcome.results[0].outcome, StatementOutcome::Cancelled);
+            assert!(outcome.stopped);
+            assert_eq!(
+                close(&mut conn, Ended::Unconfirmed, marked).await,
+                Err(Error::LeftReadOnly)
+            );
+        }
+        assert_eq!(settings(&conn).await, connected);
+    }
+
+    /// After every way a run can end, the session is as it connected:
+    /// read-only, in no transaction, with the connect-time sql_mode and
+    /// character set, the default sql_select_limit, and nothing a script
+    /// set.
+    #[tokio::test]
+    async fn every_run_leaves_the_session_as_it_connected() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        let conn = session(&url).await;
+        let connected = settings(&conn).await;
+        let text = |index: usize| connected.0[index].as_deref();
+        assert_eq!(text(0), Some("1"));
+        assert_eq!(text(1), Some(u64::MAX.to_string().as_str()));
+        assert!(!text(2).unwrap().contains("ANSI_QUOTES"));
+        assert_eq!(text(5), Some("utf8mb4"));
+        assert_eq!(text(8), Some("utf8mb4_general_ci"));
+        assert_eq!(text(9), None);
+        assert!(!connected.1);
+        const SETS: [&str; 6] = [
+            "SET time_zone = '+05:00'",
+            "SET @tabletist_left_over = 1",
+            "SET collation_connection = latin1_swedish_ci",
+            "SET character_set_results = latin1",
+            "SET sql_select_limit = 3",
+            "SET sql_mode = 'ANSI,NO_BACKSLASH_ESCAPES'",
+        ];
+        // Every statement works.
+        let outcome = past_the_refusal(&conn, &SETS, &StopFlag::new())
+            .await
+            .unwrap();
+        assert_eq!(outcome.results.len(), SETS.len());
+        assert!(
+            outcome
+                .results
+                .iter()
+                .all(|result| result.outcome == StatementOutcome::Done { affected: None })
+        );
+        assert_eq!(settings(&conn).await, connected);
+        // The last statement fails.
+        let mut script = SETS.to_vec();
+        script.push("SELECT nope");
+        let outcome = past_the_refusal(&conn, &script, &StopFlag::new())
+            .await
+            .unwrap();
+        assert_eq!(code(&outcome.results[SETS.len()].outcome), Some("42S22"));
+        assert_eq!(settings(&conn).await, connected);
+        // A statement ended the transaction (the server commits before it
+        // refuses DDL), and the script went on.
+        let outcome = past_the_refusal(&conn, &["COMMIT", SETS[0], SETS[1]], &StopFlag::new())
+            .await
+            .unwrap();
+        assert_eq!(outcome.results.len(), 3);
+        assert_eq!(settings(&conn).await, connected);
+        // Stopped before the first statement.
+        let stop = StopFlag::new();
+        stop.stop();
+        let outcome = past_the_refusal(&conn, &SETS, &stop).await.unwrap();
+        assert_eq!(outcome.results.len(), 1);
+        assert!(outcome.stopped);
+        assert_eq!(settings(&conn).await, connected);
+        // No statement at all.
+        let outcome = past_the_refusal(&conn, &[], &StopFlag::new())
+            .await
+            .unwrap();
+        assert_eq!(outcome, ScriptOutcome::default());
+        assert_eq!(settings(&conn).await, connected);
+        // The session left read-only: closed by the backend, and read-only
+        // again all the same.
+        let mut script = SETS.to_vec();
+        script.push("SET SESSION TRANSACTION READ WRITE");
+        let ran = past_the_refusal(&conn, &script, &StopFlag::new()).await;
+        assert_eq!(ran, Err(Error::LeftReadOnly));
+        assert_eq!(settings(&conn).await, connected);
+    }
+
+    /// A cancelled statement, and cancels that keep coming while the run
+    /// cleans up: the session ends as it connected, or the run fails as a
+    /// lost connection and the backend closes it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_cancelled_run_leaves_the_session_as_it_connected() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        for keep_cancelling in [false, true] {
+            let conn = std::sync::Arc::new(session(&url).await);
+            let connected = settings(&conn).await;
+            let stop = StopFlag::new();
+            let running = {
+                let conn = std::sync::Arc::clone(&conn);
+                let stop = stop.clone();
+                tokio::spawn(async move {
+                    let script = [
+                        "SET time_zone = '+05:00'",
+                        "SELECT count(*) FROM users WHERE SLEEP(30) = 0",
+                    ];
+                    past_the_refusal(&conn, &script, &stop).await
+                })
+            };
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            stop.stop();
+            while !running.is_finished() && (keep_cancelling || !stop.is_finishing()) {
+                cancel(&conn.opts, conn.id, &conn.server).await.unwrap();
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+            match running.await.unwrap() {
+                Ok(outcome) => {
+                    assert!(outcome.stopped, "{outcome:?}");
+                    assert_eq!(
+                        outcome.results.last().map(|result| &result.outcome),
+                        Some(&StatementOutcome::Cancelled)
+                    );
+                    assert_eq!(settings(&conn).await, connected);
+                }
+                Err(error) => {
+                    assert!(keep_cancelling, "{error}");
+                    assert!(error.is_connection_lost(), "{error}");
+                }
+            }
+        }
+    }
+
+    /// The connect-time settings undo what a server's defaults (or a reset
+    /// to them) can hold: a read-write session, a mode that changes how
+    /// text is lexed, another character set.
+    #[tokio::test]
+    async fn the_session_settings_undo_modes_that_change_lexing() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        let conn = session(&url).await;
+        let mut conn = conn.conn.lock().await;
+        for mode in [
+            // A combination mode holds ANSI_QUOTES, and brings it back when
+            // only ANSI_QUOTES is taken out.
+            "ANSI",
+            "ANSI_QUOTES,NO_BACKSLASH_ESCAPES,STRICT_ALL_TABLES",
+            "NO_BACKSLASH_ESCAPES,ANSI,TRADITIONAL",
+            "",
+        ] {
+            conn.query_drop(format!("SET SESSION sql_mode = '{mode}'"))
+                .await
+                .unwrap();
+            conn.query_drop("SET SESSION TRANSACTION READ WRITE")
+                .await
+                .unwrap();
+            conn.query_drop("SET NAMES latin1").await.unwrap();
+            prepare_session(&mut conn).await.unwrap();
+            let (read_only, sql_mode, client, collation): (i64, String, String, String) = conn
+                .query_first(
+                    "SELECT @@session.transaction_read_only, @@session.sql_mode, \
+                            @@session.character_set_client, @@session.collation_connection",
+                )
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(read_only, 1, "{mode}");
+            assert!(!sql_mode.contains("ANSI"), "{mode}: {sql_mode}");
+            assert!(
+                !sql_mode.contains("NO_BACKSLASH_ESCAPES"),
+                "{mode}: {sql_mode}"
+            );
+            // What does not change lexing stays.
+            assert_eq!(
+                sql_mode.contains("STRICT_ALL_TABLES"),
+                mode.contains("STRICT_ALL_TABLES") || mode.contains("TRADITIONAL"),
+                "{mode}: {sql_mode}"
+            );
+            assert_eq!(client, "utf8mb4", "{mode}");
+            assert_eq!(collation, "utf8mb4_general_ci", "{mode}");
+            // A quoted string is a string, and a backslash escapes.
+            let texts: Option<(String, String)> =
+                conn.exec_first(r#"SELECT "a", 'b\'c'"#, ()).await.unwrap();
+            assert_eq!(texts, Some(("a".into(), "b'c".into())), "{mode}");
+        }
+    }
+
+    /// MariaDB before 11.1 knows the read-only setting only under its older
+    /// name. MySQL 8 knows only the newer one, so asking in the other order
+    /// takes the same way round.
+    #[tokio::test]
+    async fn the_read_only_setting_is_asked_for_under_its_other_name() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        let conn = session(&url).await;
+        let mut conn = conn.conn.lock().await;
+        let [name, older] = READ_ONLY_SETTINGS;
+        assert_eq!(
+            read_only_setting(&mut conn, [name, older]).await,
+            Ok(Some(1))
+        );
+        assert_eq!(
+            read_only_setting(&mut conn, [older, name]).await,
+            Ok(Some(1))
+        );
+        assert_eq!(
+            read_only_setting(&mut conn, ["tabletist_no_such_setting", name]).await,
+            Ok(Some(1))
+        );
+        // Unknown under both names: the server's error, not a guess.
+        let unknown = ["tabletist_no_such_setting", "tabletist_nor_this"];
+        assert!(matches!(
+            read_only_setting(&mut conn, unknown).await,
+            Err(Error::Query { .. })
+        ));
+        // Any other error is not a reason to ask again.
+        assert!(matches!(
+            read_only_setting(&mut conn, ["sql_mode + nope", name]).await,
+            Err(Error::Query { .. })
+        ));
+    }
+
+    /// A transaction that cannot start is not a query error to show and
+    /// repeat: the session is closed.
+    #[tokio::test]
+    async fn a_transaction_that_cannot_start_closes_the_session() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        let conn = session(&url).await;
+        // Inside an XA transaction the server refuses to start another.
+        conn.conn
+            .lock()
+            .await
+            .query_drop("XA START 'tabletist_cannot_start'")
+            .await
+            .unwrap();
+        let stop = StopFlag::new();
+        let ran = past_the_refusal(&conn, &["SELECT 1"], &stop).await;
+        assert!(
+            matches!(&ran, Err(Error::ConnectionLost(message))
+                if message.starts_with("could not start the read-only transaction")),
+            "{ran:?}"
+        );
+        assert!(stop.is_finishing());
+    }
+
+    /// A session the server closed ends the run as a lost connection, on
+    /// whichever query finds out.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_lost_session_is_the_runs_error() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        let conn = std::sync::Arc::new(session(&url).await);
+        let stop = StopFlag::new();
+        let running = {
+            let conn = std::sync::Arc::clone(&conn);
+            let stop = stop.clone();
+            tokio::spawn(async move {
+                let script = ["SELECT 1", "SELECT count(*) FROM users WHERE SLEEP(30) = 0"];
+                past_the_refusal(&conn, &script, &stop).await
+            })
+        };
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let mut admin = admin(&url).await;
+        admin.query_drop(format!("KILL {}", conn.id)).await.unwrap();
+        let ran = running.await.unwrap();
+        assert!(
+            matches!(&ran, Err(error) if error.is_connection_lost()),
+            "{ran:?}"
+        );
+        // And so does the next run, without hanging.
+        let next = past_the_refusal(&conn, &["SELECT 1"], &StopFlag::new()).await;
+        assert!(
+            matches!(&next, Err(error) if error.is_connection_lost()),
+            "{next:?}"
+        );
     }
 
     #[test]

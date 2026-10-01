@@ -5608,6 +5608,7 @@ dependencies = [
  "futures-util",
  "log",
  "mysql_async",
+ "mysql_common",
  "percent-encoding",
  "rusqlite",
  "russh",
