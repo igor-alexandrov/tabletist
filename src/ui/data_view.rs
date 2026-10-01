@@ -1097,9 +1097,8 @@ pub fn plain_cell<'a>(
             style: Style::Color(color),
         };
     }
-    if let (ValueKind::Json, tabletist_db::Value::Text(text)) = (kind, value)
-        && text.len() <= 16 * 1024
-        && let Some(doc) = crate::ui::json_view::parsed_in(ctx, text)
+    if let Some(doc) =
+        crate::ui::json_view::document(ctx, kind, value, crate::ui::json_view::CELL_MAX)
     {
         let (count, strings) = crate::ui::json_view::summary(&doc);
         let shown = if look.terminal {
@@ -1295,8 +1294,13 @@ mod tests {
             cell(&document, ValueKind::Json, &Look::omarchy(), false),
             ("store · cover".into(), false, Style::Json(2))
         );
-        // The same text in a column that is no document is plain text.
-        let (text, _, style) = cell(&document, ValueKind::Text, &mac, false);
+        // A text column holds a document too when its value is one.
+        assert_eq!(
+            cell(&document, ValueKind::Text, &mac, false),
+            ("store".into(), false, Style::Json(2))
+        );
+        // The same text in a column of another kind is plain text.
+        let (text, _, style) = cell(&document, ValueKind::Other, &mac, false);
         assert_eq!(
             (text.as_str(), style),
             (r#"{"storage": "store", "kind": "cover"}"#, Style::Plain)

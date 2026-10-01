@@ -2627,6 +2627,39 @@ mod tests {
     }
 
     #[test]
+    fn json_in_a_text_column_is_a_tree_and_a_chip_and_other_text_stays_text() {
+        let mut harness = Harness::new();
+        harness.set_look(crate::theme::Look::macos());
+        harness.connect_fake();
+        harness.click("users");
+        let mut page = crate::testing::page(2, false);
+        page.rows[0][1] = tabletist_db::Value::Text(r#"{"plan":"pro","seats":[3,4]}"#.into());
+        page.rows[1][1] = tabletist_db::Value::Text("[draft] not json]".into());
+        harness.answer_rows(page);
+        harness.settle();
+        // The grid counts the document's keys, as it does for a JSON column.
+        assert!(harness.painted_color("{ 2 }").is_some());
+        harness.click("Row 1");
+        assert!(harness.has("email · TEXT"));
+        assert!(harness.has(r#""plan": "pro","#));
+        harness.click("Collapse email.seats");
+        assert!(harness.has(r#""seats": [ 2 items ]"#));
+        harness.click("Copy email");
+        assert_eq!(
+            harness.copied.as_deref(),
+            Some(r#"{"plan":"pro","seats":[3,4]}"#)
+        );
+        harness.click("Row 2");
+        let tree = harness.settle();
+        assert!(
+            crate::testing::labels(&tree)
+                .iter()
+                .any(|label| label == "[draft] not json]")
+        );
+        assert!(!harness.has("Collapse email"));
+    }
+
+    #[test]
     fn invalid_json_in_a_json_column_is_shown_as_text() {
         let mut harness = Harness::new();
         with_json(&mut harness, "{not json");

@@ -17,6 +17,7 @@ use std::time::{Duration, Instant};
 use mysql_async::consts::{ColumnFlags, ColumnType, StatusFlags};
 use mysql_async::prelude::Queryable;
 use mysql_async::{DriverError, IoError, Opts, OptsBuilder, Params, SslOpts, TxOpts};
+use mysql_common::named_params::ParsedNamedParams;
 
 use crate::script::retry_cancelled;
 use crate::{
@@ -308,10 +309,7 @@ impl Conn {
             .start_transaction(read_only())
             .await
             .map_err(query_error)?;
-        let outcome = transaction
-            .exec_first::<mysql_async::Row, _, _>(sql.text.as_str(), params(&sql.params))
-            .await
-            .map_err(query_error);
+        let outcome = count(&mut transaction, &sql).await;
         let row = finish(transaction, outcome).await?;
         row.map(from_row::<u64>)
             .transpose()?
@@ -358,8 +356,9 @@ async fn read_page(
     sql: &crate::dialect::Sql,
     limit: usize,
 ) -> Result<(Vec<ColumnMeta>, Vec<Vec<Value>>)> {
+    let statement = prepare(transaction, sql).await?;
     let mut result = transaction
-        .exec_iter(sql.text.as_str(), params(&sql.params))
+        .exec_iter(&statement, params(&sql.params))
         .await
         .map_err(query_error)?;
     let columns = column_metas(result.columns_ref());
@@ -372,6 +371,75 @@ async fn read_page(
     }
     result.drop_result().await.map_err(query_error)?;
     Ok((columns, rows))
+}
+
+/// The row of a count.
+async fn count(
+    transaction: &mut mysql_async::Transaction<'_>,
+    sql: &crate::dialect::Sql,
+) -> Result<Option<mysql_async::Row>> {
+    let statement = prepare(transaction, sql).await?;
+    transaction
+        .exec_first(&statement, params(&sql.params))
+        .await
+        .map_err(query_error)
+}
+
+/// Prepares a row query's statement, and refuses one with a parameter the
+/// query has no value for: the driver closes the connection when a
+/// statement runs without a value for each of its parameters. The filters
+/// bind theirs, so such a parameter comes from the raw WHERE.
+async fn prepare(
+    transaction: &mut mysql_async::Transaction<'_>,
+    sql: &crate::dialect::Sql,
+) -> Result<mysql_async::Statement> {
+    driver_parameter(&sql.text)?;
+    let statement = transaction
+        .prep(sql.text.as_str())
+        .await
+        .map_err(query_error)?;
+    if usize::from(statement.num_params()) != sql.params.len() {
+        return Err(parameter("?", None));
+    }
+    Ok(statement)
+}
+
+/// The driver's `mysql_common` is the one named here: this fails to
+/// compile, rather than read parameters another way than the driver does,
+/// when the two versions drift apart.
+const _: fn(mysql_common::params::Params) -> Params = |params| params;
+
+/// Refuses text in which the driver reads a `:name` parameter. It sends
+/// the server a `?` in its place, and it reads by a lexer of its own, which
+/// loses its place at a quote or a comment right after a `-` or a `/` and
+/// then takes what is quoted for code (`-':name'`). Such text does not
+/// run: only the text checked here may reach the server.
+fn driver_parameter(text: &str) -> Result<()> {
+    let Ok(parsed) = ParsedNamedParams::parse(text.as_bytes()) else {
+        // A `:name` next to a `?`, which may be a filter's own.
+        return Err(parameter(":name", Some(MISREAD)));
+    };
+    match parsed.params().first() {
+        None => Ok(()),
+        Some(name) => Err(parameter(
+            &format!(":{}", String::from_utf8_lossy(name)),
+            Some(MISREAD),
+        )),
+    }
+}
+
+/// What to do about a `:name` the driver should not have read as one.
+const MISREAD: &str = "If it stands in a quote or a comment right after a - or a /, put a space \
+                       after the - or the /.";
+
+/// A raw WHERE's parameter, as a query error: there is no value for it.
+fn parameter(spelled: &str, hint: Option<&str>) -> Error {
+    Error::Query {
+        code: None,
+        message: format!("The WHERE text has a parameter ({spelled}), which has no value."),
+        detail: None,
+        hint: hint.map(str::to_owned),
+    }
 }
 
 /// Ends a read transaction whatever happened inside it. mysql_async only
@@ -750,6 +818,35 @@ fn params(values: &[Value]) -> Params {
 mod tests {
     use super::*;
     use mysql_async::Value as My;
+
+    #[test]
+    fn text_the_driver_would_rewrite_is_refused() {
+        for (text, spelled) in [
+            ("SELECT 1 WHERE (\nname = :x\n)", ":x"),
+            ("SELECT 1 WHERE (\nid = 1 -':abc'\n)", ":abc"),
+            ("SELECT 1 WHERE (\nid = 1 /`:col`\n)", ":col"),
+            ("SELECT 1 WHERE `a` = ? AND (\nname = :x\n)", ":name"),
+        ] {
+            match driver_parameter(text) {
+                Err(Error::Query {
+                    code: None,
+                    message,
+                    hint: Some(_),
+                    ..
+                }) => assert!(message.contains(&format!("({spelled})")), "{message}"),
+                other => panic!("{text}: {other:?}"),
+            }
+        }
+        // A `?` is the server's to count, and a `:name` in a quote or a
+        // comment is text.
+        for text in [
+            "SELECT 1 WHERE `a` = ? AND (\nid = ?\n)",
+            "SELECT 1 WHERE (\nname <> ':x' AND `:y` = 1 /* :z */ -- :w\n)",
+            "SELECT 1 WHERE (\n@n := 1\n)",
+        ] {
+            assert_eq!(driver_parameter(text), Ok(()), "{text}");
+        }
+    }
 
     #[test]
     fn column_types_get_readable_names() {

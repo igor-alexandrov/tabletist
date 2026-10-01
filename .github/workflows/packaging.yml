@@ -4,10 +4,10 @@ name: Packaging
 # does, and installs them, whenever packaging changes. No signing here.
 on:
   pull_request:
-    paths: [packaging/**, .cargo/**, Cargo.toml, Cargo.lock, src/main.rs, src/macos.rs, .github/workflows/packaging.yml, .github/workflows/release.yml]
+    paths: [packaging/**, .cargo/**, Cargo.toml, Cargo.lock, src/main.rs, src/macos.rs, crates/tabletist-appkit/**, .github/workflows/packaging.yml, .github/workflows/release.yml]
   push:
     branches: [main]
-    paths: [packaging/**, .cargo/**, Cargo.toml, Cargo.lock, src/main.rs, src/macos.rs, .github/workflows/packaging.yml, .github/workflows/release.yml]
+    paths: [packaging/**, .cargo/**, Cargo.toml, Cargo.lock, src/main.rs, src/macos.rs, crates/tabletist-appkit/**, .github/workflows/packaging.yml, .github/workflows/release.yml]
   workflow_dispatch:
 
 permissions:

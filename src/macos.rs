@@ -12,6 +12,13 @@
 //! buttons out again on resizes and focus changes, and each of those draws
 //! a frame that puts them back. Nothing here is `unsafe`: the window comes
 //! from `NSApplication` and the buttons' title bar is their shared ancestor.
+//!
+//! The app menu's About item opens the app's own About dialog ([`AboutMenu`]).
+//! Pointing a menu item somewhere does need `unsafe`, which this crate
+//! forbids, so that one call lives in `tabletist-appkit`.
+
+use std::cell::Cell;
+use std::rc::Rc;
 
 use objc2::MainThreadMarker;
 use objc2::rc::Retained;
@@ -112,5 +119,43 @@ impl UnifiedTitleBar {
                 button.setFrameOrigin(NSPoint::new(frame.origin.x, y));
             }
         }
+    }
+}
+
+/// The app menu's About item, asking for the app's own About dialog.
+///
+/// winit points that item at AppKit's About panel, which reads the bundle's
+/// Info.plist: a binary run outside Tabletist.app shows a folder icon, the
+/// process name and no version there, and even the bundle shows less than
+/// the dialog does.
+pub struct AboutMenu {
+    chosen: Rc<Cell<bool>>,
+    /// The item is ours for as long as this lives.
+    _item: tabletist_appkit::AboutItem,
+}
+
+impl AboutMenu {
+    /// Takes the About item over, titled `title`. Choosing it draws a frame,
+    /// which finds it with [`AboutMenu::take`]. `None` when the app menu has
+    /// no About item (or off the main thread).
+    pub fn attach(ctx: &egui::Context, title: &str) -> Option<Self> {
+        let chosen = Rc::new(Cell::new(false));
+        let item = tabletist_appkit::AboutItem::take_over(title, {
+            let chosen = chosen.clone();
+            let ctx = ctx.clone();
+            move || {
+                chosen.set(true);
+                ctx.request_repaint();
+            }
+        })?;
+        Some(Self {
+            chosen,
+            _item: item,
+        })
+    }
+
+    /// Whether the item was chosen since the last call.
+    pub fn take(&self) -> bool {
+        self.chosen.replace(false)
     }
 }

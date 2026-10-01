@@ -395,8 +395,10 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
                         .enumerate()
                         .map(|(col, (column, value))| (col, column, value))
                         .collect();
+                    let ctx = ui.ctx().clone();
                     let is_doc = |column: &tabletist_db::ColumnMeta, value: &Value| {
                         column.kind == ValueKind::Json && !value.is_null()
+                            || json_doc(&ctx, value, column.kind).is_some()
                     };
                     if look.terminal {
                         // Short fields two to a line, documents after them.
@@ -619,7 +621,7 @@ fn field(
     } = skin;
     let label_role = caption(look);
     let text = label(&column.name, &column.type_name, column.kind, info, look);
-    let doc = json_doc(ui, value, column.kind);
+    let doc = json_doc(ui.ctx(), value, column.kind);
     let width = ui.available_width();
     // A document's label line holds its 26 pt copy button (macOS); a
     // plain label is one line of its text.
@@ -1107,12 +1109,7 @@ fn dashed(ui: &egui::Ui, rect: Rect, color: egui::Color32) {
     }
 }
 
-/// A JSON column's value as a tree, when it parses and is small enough.
-fn json_doc(ui: &egui::Ui, value: &Value, kind: ValueKind) -> Option<Arc<json_view::Doc>> {
-    match value {
-        Value::Text(text) if kind == ValueKind::Json && text.len() <= json_view::TREE_MAX => {
-            json_view::parsed(ui, text)
-        }
-        _ => None,
-    }
+/// A value as a tree, when it holds a document that is small enough.
+fn json_doc(ctx: &egui::Context, value: &Value, kind: ValueKind) -> Option<Arc<json_view::Doc>> {
+    json_view::document(ctx, kind, value, json_view::TREE_MAX)
 }
