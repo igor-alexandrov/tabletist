@@ -29,6 +29,8 @@ impl Settings {
     pub const DEFAULT_PAGE_SIZE: u32 = 300;
     pub const MIN_PAGE_SIZE: u32 = 10;
     pub const MAX_PAGE_SIZE: u32 = 10_000;
+    /// The most rows a SQL editor statement keeps.
+    pub const MAX_SQL_LIMIT: u32 = 10_000;
     /// The row limits the SQL editor's Limit menu offers.
     pub const SQL_LIMITS: [u32; 3] = [100, 1_000, 10_000];
     /// The timeouts (seconds) the SQL editor's Timeout menu offers; `None`
@@ -41,12 +43,24 @@ impl Settings {
             .map(|secs| std::time::Duration::from_secs(u64::from(secs)))
     }
 
+    /// A row limit the SQL editor can run with.
+    pub fn valid_sql_limit(limit: u32) -> u32 {
+        limit.clamp(1, Self::MAX_SQL_LIMIT)
+    }
+
+    /// A timeout the SQL editor can run with. One of no seconds would
+    /// cancel every run at once, so it counts as no timeout.
+    pub fn valid_sql_timeout(secs: Option<u32>) -> Option<u32> {
+        secs.filter(|secs| *secs > 0)
+    }
+
     pub fn load(path: &Path) -> Self {
         let mut settings: Settings = crate::util::load_json(path);
         settings.page_size = settings
             .page_size
             .clamp(Self::MIN_PAGE_SIZE, Self::MAX_PAGE_SIZE);
-        settings.sql_limit = settings.sql_limit.clamp(1, Self::MAX_PAGE_SIZE);
+        settings.sql_limit = Self::valid_sql_limit(settings.sql_limit);
+        settings.sql_timeout_secs = Self::valid_sql_timeout(settings.sql_timeout_secs);
         settings.version = Self::CURRENT_VERSION;
         settings
     }
@@ -132,6 +146,33 @@ mod tests {
         let settings = Settings::load(&path);
         assert_eq!(settings.sql_limit, 1);
         assert_eq!(settings.sql_timeout_secs, None);
+    }
+
+    #[test]
+    fn the_sql_limit_has_its_own_ceiling() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        std::fs::write(&path, br#"{"sql_limit": 999999999}"#).unwrap();
+        assert_eq!(Settings::load(&path).sql_limit, Settings::MAX_SQL_LIMIT);
+        assert_eq!(Settings::MAX_SQL_LIMIT, 10_000);
+        assert!(
+            Settings::SQL_LIMITS
+                .iter()
+                .all(|limit| (1..=Settings::MAX_SQL_LIMIT).contains(limit)),
+            "every choice of the Limit menu loads as it was saved"
+        );
+    }
+
+    #[test]
+    fn a_timeout_of_no_seconds_loads_as_no_timeout() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        std::fs::write(&path, br#"{"sql_timeout_secs": 0}"#).unwrap();
+        let settings = Settings::load(&path);
+        assert_eq!(settings.sql_timeout_secs, None);
+        assert_eq!(settings.sql_timeout(), None);
+        std::fs::write(&path, br#"{"sql_timeout_secs": 1}"#).unwrap();
+        assert_eq!(Settings::load(&path).sql_timeout_secs, Some(1));
     }
 
     #[test]
