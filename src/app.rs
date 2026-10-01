@@ -930,14 +930,24 @@ impl App {
                     self.backend.pick_key_file(request);
                 }
             }
+            Action::PickCaFile => {
+                let request = RequestId(self.next_id());
+                if let Some(Dialog::Connection(form)) = &mut self.dialog {
+                    form.pick_request = Some(request);
+                    form.pick_target = PickTarget::CaFile;
+                    self.backend.pick_ca_file(request);
+                }
+            }
             Action::PickSshHost(alias) => {
                 if let Some(Dialog::Connection(form)) = &mut self.dialog {
                     form.pick_ssh_host(&alias);
                 }
             }
             Action::ApplyUrl => {
-                if let Some(Dialog::Connection(form)) = &mut self.dialog {
-                    apply_url(form);
+                if let Some(Dialog::Connection(form)) = &mut self.dialog
+                    && let Err(message) = apply_url(form)
+                {
+                    form.message = Some(message);
                 }
             }
             Action::TrustHostKey => {
@@ -973,15 +983,24 @@ impl App {
                 let Some(Dialog::Connection(form)) = &mut self.dialog else {
                     return;
                 };
+                if !use_typed_url(form) {
+                    return;
+                }
                 let spec = match form.to_spec() {
                     Ok(spec) => spec,
                     Err(message) => {
                         form.message = Some(message);
+                        // The message names fields: show them.
+                        form.url_mode = false;
                         return;
                     }
                 };
                 form.message = None;
                 form.test = TestState::Running(request);
+                // The clock starts when the Test is sent, not while a saved
+                // secret is read from the keyring.
+                form.test_started = None;
+                form.test_took = None;
                 // Typed secrets are used as they are; unchanged saved ones
                 // are read from the keyring first, and the test runs once
                 // the last one arrives.
@@ -1026,6 +1045,7 @@ impl App {
                 form.test_secrets = secrets.clone();
                 form.test_waiting = loads.len() as u8;
                 if loads.is_empty() {
+                    form.test_started = Some(std::time::Instant::now());
                     self.backend.send(Command::Test {
                         request,
                         spec,
@@ -1530,6 +1550,8 @@ impl App {
                 if let Some(Dialog::Connection(form)) = &mut self.dialog
                     && form.test == TestState::Running(request)
                 {
+                    let elapsed = form.test_started.take().map(|started| started.elapsed());
+                    form.test_took = if result.is_ok() { elapsed } else { None };
                     // The key belongs to the SSH host the test reached, which
                     // the error names (a Host alias's HostName), not whatever
                     // the fields say now.
@@ -1568,6 +1590,9 @@ impl App {
                     match (path, form.pick_target) {
                         (Some(path), PickTarget::KeyFile) => {
                             form.ssh_key_file = path.display().to_string();
+                        }
+                        (Some(path), PickTarget::CaFile) => {
+                            form.ca_file = path.display().to_string();
                         }
                         (Some(path), PickTarget::Sqlite) => {
                             form.sqlite_path = path.display().to_string();
@@ -1725,6 +1750,7 @@ impl App {
                                 if form.test_waiting == 0
                                     && let Some(spec) = form.test_spec.clone()
                                 {
+                                    form.test_started = Some(std::time::Instant::now());
                                     self.backend.send(Command::Test {
                                         request: test,
                                         spec,
@@ -1865,6 +1891,9 @@ impl App {
         let Some(Dialog::Connection(form)) = &mut self.dialog else {
             return;
         };
+        if !use_typed_url(form) {
+            return;
+        }
         // The connection being edited was deleted while the dialog was open:
         // saving must not bring it back.
         if let Some(id) = &form.editing
@@ -1877,6 +1906,8 @@ impl App {
             Ok(saved) => saved,
             Err(message) => {
                 form.message = Some(message);
+                // The message names fields: show them.
+                form.url_mode = false;
                 return;
             }
         };
@@ -2435,23 +2466,30 @@ impl App {
     }
 }
 
-/// Fills the form from its URL field.
-fn apply_url(form: &mut ConnectionForm) {
+/// A URL being typed comes before the parameters: saving or testing fills
+/// the form from it first. False when it does not parse (the message says
+/// why), so nothing is saved or tested in its place.
+fn use_typed_url(form: &mut ConnectionForm) -> bool {
+    if form.url_mode
+        && !form.url.trim().is_empty()
+        && let Err(message) = apply_url(form)
+    {
+        form.message = Some(message);
+        return false;
+    }
+    true
+}
+
+/// Fills the form from its URL field and leaves the URL mode, or says why
+/// the URL cannot be used: then the form is as it was, the URL too.
+fn apply_url(form: &mut ConnectionForm) -> Result<(), String> {
     let tabletist_db::ParsedUrl {
         spec,
         secrets,
         names_tls,
         names_ca_file,
-        without_password,
-    } = match tabletist_db::ParsedUrl::parse(&form.url) {
-        Ok(parsed) => parsed,
-        Err(error) => {
-            form.message = Some(error.to_string());
-            return;
-        }
-    };
-    // The password moves to the masked field; the URL field is not masked.
-    form.url = without_password;
+        ..
+    } = tabletist_db::ParsedUrl::parse(&form.url).map_err(|error| error.to_string())?;
     match spec.driver {
         Driver::Sqlite => {
             let path = spec
@@ -2464,7 +2502,6 @@ fn apply_url(form: &mut ConnectionForm) {
             }
             form.driver = Driver::Sqlite;
             form.sqlite_path = path;
-            form.message = None;
         }
         Driver::Postgres | Driver::MySql => {
             if form.name.trim().is_empty() {
@@ -2492,9 +2529,15 @@ fn apply_url(form: &mut ConnectionForm) {
             if form.password_mode == PasswordMode::None {
                 form.password_mode = PasswordMode::Keyring;
             }
-            form.message = None;
         }
     }
+    // The field is emptied once it has filled the form: its password is in
+    // the masked field now, and a URL left behind would fill the form again
+    // on the next save, over anything edited since.
+    form.url.clear();
+    form.message = None;
+    form.url_mode = false;
+    Ok(())
 }
 
 /// Moves `index` by `delta` within `0..len` (len > 0), saturating.
@@ -2971,6 +3014,185 @@ mod tests {
     }
 
     #[test]
+    fn a_url_that_fills_the_form_leaves_the_url_field() {
+        let (mut app, _dir) = app();
+        app.apply(Action::NewConnection);
+        form(&mut app).url_mode = true;
+        form(&mut app).url = "not a url".into();
+        app.apply(Action::ApplyUrl);
+        assert!(form(&mut app).message.is_some());
+        assert!(
+            form(&mut app).url_mode,
+            "a URL that does not parse stays to be fixed"
+        );
+        assert_eq!(form(&mut app).url, "not a url");
+        form(&mut app).url = "postgres://me@db.example.com/app".into();
+        app.apply(Action::ApplyUrl);
+        assert!(!form(&mut app).url_mode);
+        assert_eq!(form(&mut app).host, "db.example.com");
+        assert_eq!(
+            form(&mut app).url,
+            "",
+            "a URL that fills the form is used up"
+        );
+        form(&mut app).url_mode = true;
+        form(&mut app).url = "sqlite:///srv/app.db".into();
+        app.apply(Action::ApplyUrl);
+        assert!(!form(&mut app).url_mode);
+        assert_eq!(form(&mut app).sqlite_path, "/srv/app.db");
+        assert_eq!(form(&mut app).url, "");
+    }
+
+    #[test]
+    fn a_url_that_filled_the_form_does_not_undo_a_later_edit() {
+        let (mut app, _dir) = app();
+        app.apply(Action::NewConnection);
+        form(&mut app).name = "Shop".into();
+        form(&mut app).url_mode = true;
+        form(&mut app).url = "postgres://me@db.example.com/app".into();
+        app.apply(Action::ApplyUrl);
+        // The host is corrected by hand, and the URL field shown again.
+        form(&mut app).host = "replica.example.com".into();
+        form(&mut app).url_mode = true;
+        app.apply(Action::SaveConnection { connect: false });
+        assert!(app.dialog.is_none());
+        assert_eq!(
+            app.connections.connections[0].spec.host,
+            "replica.example.com"
+        );
+    }
+
+    #[test]
+    fn saving_from_the_url_field_saves_the_urls_connection() {
+        let (mut app, _dir) = app();
+        app.apply(Action::NewConnection);
+        form(&mut app).name = "Shop".into();
+        form(&mut app).url_mode = true;
+        form(&mut app).url = "postgres://me@db.example.com/app".into();
+        app.apply(Action::SaveConnection { connect: false });
+        assert!(app.dialog.is_none(), "the URL was filled in and saved");
+        assert_eq!(app.connections.connections.len(), 1);
+        let saved = &app.connections.connections[0];
+        assert_eq!(saved.name, "Shop");
+        assert_eq!(saved.spec.driver, Driver::Postgres);
+        assert_eq!(saved.spec.host, "db.example.com");
+    }
+
+    #[test]
+    fn a_url_that_does_not_parse_is_not_saved_over() {
+        let (mut app, _dir) = app();
+        app.apply(Action::NewConnection);
+        // The parameters describe a connection; the URL being typed does not.
+        form(&mut app).name = "Shop".into();
+        form(&mut app).sqlite_path = "/tmp/shop.db".into();
+        form(&mut app).url_mode = true;
+        form(&mut app).url = "not a url".into();
+        app.apply(Action::SaveConnection { connect: false });
+        assert!(app.connections.connections.is_empty(), "nothing is saved");
+        assert!(form(&mut app).message.is_some());
+        assert!(form(&mut app).url_mode, "the URL stays to be fixed");
+        let before = app.backend.sent.len();
+        app.apply(Action::TestConnection);
+        assert!(
+            !app.backend.sent[before..]
+                .iter()
+                .any(|command| matches!(command, Command::Test { .. })),
+            "and nothing is tested"
+        );
+        assert!(form(&mut app).url_mode);
+    }
+
+    #[test]
+    fn a_test_from_the_url_field_tests_the_urls_server() {
+        let (mut app, _dir) = app();
+        app.apply(Action::NewConnection);
+        form(&mut app).url_mode = true;
+        form(&mut app).url = "postgres://me@db.example.com/app".into();
+        app.apply(Action::TestConnection);
+        match app.backend.sent.last() {
+            Some(Command::Test { spec, .. }) => assert_eq!(spec.host, "db.example.com"),
+            other => panic!("{other:?}"),
+        }
+        assert!(!form(&mut app).url_mode);
+    }
+
+    #[test]
+    fn a_message_about_the_fields_leaves_the_url_field() {
+        // Nothing typed anywhere: the message names fields the URL mode
+        // does not show.
+        let (mut app, _dir) = app();
+        app.apply(Action::NewConnection);
+        form(&mut app).url_mode = true;
+        app.apply(Action::SaveConnection { connect: false });
+        assert!(form(&mut app).message.is_some());
+        assert!(!form(&mut app).url_mode, "a failed save shows the fields");
+        form(&mut app).url_mode = true;
+        form(&mut app).message = None;
+        app.apply(Action::TestConnection);
+        assert!(form(&mut app).message.is_some());
+        assert!(!form(&mut app).url_mode, "a failed test shows the fields");
+    }
+
+    #[test]
+    fn a_test_that_passes_says_how_long_it_took() {
+        let (mut app, _dir) = app();
+        app.apply(Action::NewConnection);
+        form(&mut app).url = "postgres://me@localhost/app".into();
+        app.apply(Action::ApplyUrl);
+        app.apply(Action::TestConnection);
+        let request = match form(&mut app).test {
+            TestState::Running(request) => request,
+            ref other => panic!("{other:?}"),
+        };
+        assert!(form(&mut app).test_started.is_some());
+        app.apply(Action::Backend(Event::Tested {
+            request,
+            result: Ok(()),
+        }));
+        assert_eq!(form(&mut app).test, TestState::Passed);
+        assert!(form(&mut app).test_took.is_some());
+        // The next Test forgets that time until it finishes itself.
+        app.apply(Action::TestConnection);
+        assert!(form(&mut app).test_took.is_none());
+        // A Test that fails has no time to show.
+        let request = match form(&mut app).test {
+            TestState::Running(request) => request,
+            ref other => panic!("{other:?}"),
+        };
+        app.apply(Action::Backend(Event::Tested {
+            request,
+            result: Err(Error::Connect("nope".into())),
+        }));
+        assert!(matches!(form(&mut app).test, TestState::Failed(_)));
+        assert!(form(&mut app).test_took.is_none());
+    }
+
+    #[test]
+    fn the_test_clock_starts_when_the_test_is_sent_not_while_the_keyring_is_read() {
+        let (mut app, _dir) = app();
+        let conn = postgres_saved(&mut app, PasswordMode::Keyring);
+        app.apply(Action::EditConnection(conn));
+        app.apply(Action::TestConnection);
+        let Some(Command::LoadSecret { request, .. }) = app.backend.sent.last() else {
+            panic!()
+        };
+        let request = *request;
+        assert!(
+            form(&mut app).test_started.is_none(),
+            "waiting for the keyring is not the Test"
+        );
+        app.apply(Action::Backend(Event::SecretLoaded {
+            request,
+            result: Ok(Some(SecretString("pw".into()))),
+        }));
+        assert!(matches!(
+            app.backend.sent.last(),
+            Some(Command::Test { .. })
+        ));
+        assert!(form(&mut app).test_started.is_some());
+    }
+
+    #[test]
     fn test_results_update_only_the_dialog_that_asked() {
         let (mut app, _dir) = app();
         app.apply(Action::NewConnection);
@@ -3018,6 +3240,45 @@ mod tests {
         }));
         assert_eq!(form(&mut app).sqlite_path, "/data/shop.sqlite");
         assert_eq!(form(&mut app).name, "shop.sqlite");
+    }
+
+    #[test]
+    fn a_picked_ca_certificate_fills_its_field() {
+        let (mut app, _dir) = app();
+        app.apply(Action::NewConnection);
+        app.apply(Action::PickCaFile);
+        let request = form(&mut app).pick_request.expect("a pick is in flight");
+        assert_eq!(form(&mut app).pick_target, PickTarget::CaFile);
+        app.apply(Action::Backend(Event::FilePicked {
+            request,
+            path: Some("/etc/ssl/ca.pem".into()),
+        }));
+        assert_eq!(form(&mut app).ca_file, "/etc/ssl/ca.pem");
+        assert_eq!(form(&mut app).sqlite_path, "", "only the CA file changes");
+    }
+
+    #[test]
+    fn a_pick_overtaken_by_another_fills_nothing() {
+        let (mut app, _dir) = app();
+        app.apply(Action::NewConnection);
+        app.apply(Action::PickKeyFile);
+        let first = form(&mut app).pick_request.expect("a pick is in flight");
+        app.apply(Action::PickCaFile);
+        let second = form(&mut app).pick_request.expect("a second pick");
+        assert_ne!(first, second);
+        app.apply(Action::Backend(Event::FilePicked {
+            request: first,
+            path: Some("/home/me/.ssh/id_ed25519".into()),
+        }));
+        assert_eq!(form(&mut app).ssh_key_file, "");
+        assert_eq!(form(&mut app).ca_file, "");
+        assert_eq!(form(&mut app).pick_request, Some(second));
+        app.apply(Action::Backend(Event::FilePicked {
+            request: second,
+            path: Some("/etc/ssl/ca.pem".into()),
+        }));
+        assert_eq!(form(&mut app).ca_file, "/etc/ssl/ca.pem");
+        assert_eq!(form(&mut app).ssh_key_file, "");
     }
 
     #[test]
@@ -4285,6 +4546,48 @@ mod tests {
     }
 
     #[test]
+    fn a_password_typed_into_a_connection_saved_without_one_is_stored() {
+        let (mut app, _dir) = app();
+        let conn = postgres_saved(&mut app, PasswordMode::None);
+        app.apply(Action::EditConnection(conn.clone()));
+        assert_eq!(form(&mut app).password_mode, PasswordMode::Keyring);
+        // Saved again untouched, it still has no password.
+        app.apply(Action::SaveConnection { connect: false });
+        assert_eq!(
+            app.connections.get(&conn).unwrap().password,
+            PasswordMode::None
+        );
+        assert!(sent_secrets(&app).is_empty());
+        app.apply(Action::EditConnection(conn.clone()));
+        form(&mut app).password = "pw".into();
+        app.apply(Action::SaveConnection { connect: false });
+        assert_eq!(
+            app.connections.get(&conn).unwrap().password,
+            PasswordMode::Keyring
+        );
+        assert!(app.backend.sent.iter().any(|c| matches!(
+            c,
+            Command::StoreSecret { secret: Some(SecretString(p)), account, .. }
+                if p == "pw" && *account == password_account(&conn)
+        )));
+    }
+
+    #[test]
+    fn editing_an_ask_every_time_connection_keeps_asking() {
+        let (mut app, _dir) = app();
+        let conn = postgres_saved(&mut app, PasswordMode::Ask);
+        app.apply(Action::EditConnection(conn.clone()));
+        assert_eq!(form(&mut app).password_mode, PasswordMode::Ask);
+        form(&mut app).name = "Renamed".into();
+        app.apply(Action::SaveConnection { connect: false });
+        assert_eq!(
+            app.connections.get(&conn).unwrap().password,
+            PasswordMode::Ask
+        );
+        assert!(sent_secrets(&app).is_empty());
+    }
+
+    #[test]
     fn changing_to_ask_deletes_the_saved_password() {
         let (mut app, _dir) = app();
         let conn = postgres_saved(&mut app, PasswordMode::Keyring);
@@ -4349,7 +4652,7 @@ mod tests {
         assert_eq!(filled.tls, tabletist_db::TlsMode::VerifyFull);
         assert_eq!(filled.ca_file, "/etc/ca.pem");
         assert_eq!(filled.password, "secret");
-        assert_eq!(filled.url, "postgres://me@other.example.com/app");
+        assert_eq!(filled.url, "", "the unmasked field keeps nothing");
 
         // A URL that names them wins; one that names them twice is refused.
         form(&mut app).url = "postgres://me@h/app?sslmode=require".into();

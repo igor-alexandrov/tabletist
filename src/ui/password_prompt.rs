@@ -26,7 +26,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                 },
                 prompt.name
             );
-            widgets::label(
+            let title = widgets::label(
                 ui,
                 widgets::dialog_title(&look),
                 &title,
@@ -37,11 +37,13 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                 widgets::label(ui, widgets::body(&look), message, palette.secondary, &look);
             }
             ui.add_space(6.0);
-            let field = ui.add(
-                crate::ui::widgets::single(ui, &mut prompt.password, &look)
-                    .password(true)
-                    .desired_width(f32::INFINITY),
-            );
+            let field = ui
+                .add(
+                    crate::ui::widgets::single(ui, &mut prompt.password, &look)
+                        .password(true)
+                        .desired_width(f32::INFINITY),
+                )
+                .labelled_by(title.id);
             if !field.has_focus() && prompt.password.is_empty() {
                 field.request_focus();
             }
@@ -81,4 +83,36 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
         actions.push(Action::CancelPassword);
     }
     app.actions.extend(actions);
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::model::{Dialog, PasswordPrompt, SecretKind};
+    use crate::testing::Harness;
+
+    #[test]
+    fn the_field_is_named_by_the_prompts_title() {
+        let mut harness = Harness::new();
+        harness.app.dialog = Some(Dialog::Password(Box::new(PasswordPrompt {
+            tab: harness.app.active_tab_id(),
+            kind: SecretKind::Database,
+            name: "Prod".into(),
+            password: String::new(),
+            save: true,
+            message: None,
+        })));
+        let tree = harness.settle();
+        let (_, field) = tree
+            .nodes
+            .iter()
+            .find(|(_, node)| node.role() == egui::accesskit::Role::PasswordInput)
+            .expect("the password field");
+        let names: Vec<&str> = field
+            .labelled_by()
+            .iter()
+            .filter_map(|id| tree.nodes.iter().find(|(node, _)| node == id))
+            .filter_map(|(_, label)| label.label().or_else(|| label.value()))
+            .collect();
+        assert_eq!(names, ["Password for Prod"]);
+    }
 }

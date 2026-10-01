@@ -27,7 +27,8 @@ fn tls_error(error: impl std::fmt::Display) -> Error {
 }
 
 /// Why `verify-ca` without a CA file is refused.
-const VERIFY_CA_NEEDS_A_CA_FILE: &str = "Verify certificate needs a CA file; use Verify certificate and host to use the system certificates";
+const VERIFY_CA_NEEDS_A_CA_FILE: &str =
+    "verify-ca needs a CA file; use verify-full to use the system certificates";
 
 /// The rustls configuration for `mode`. `Disable` still gets one (the
 /// connector needs it) but it is never used. Like libpq, `require` with a CA

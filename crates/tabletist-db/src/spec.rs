@@ -144,8 +144,6 @@ pub struct ParsedUrl {
     pub names_tls: bool,
     /// Whether the URL named a CA file (`sslrootcert`, `ssl-ca`).
     pub names_ca_file: bool,
-    /// The URL without its password, safe to leave on screen.
-    pub without_password: String,
 }
 
 impl ParsedUrl {
@@ -164,10 +162,9 @@ impl ParsedUrl {
                 secrets: Secrets::default(),
                 names_tls: false,
                 names_ca_file: false,
-                without_password: url.to_owned(),
             });
         }
-        let mut parsed = url::Url::parse(url)
+        let parsed = url::Url::parse(url)
             .map_err(|error| Error::InvalidSpec(format!("not a connection URL: {error}")))?;
         let driver = match parsed.scheme() {
             "postgres" | "postgresql" => Driver::Postgres,
@@ -219,19 +216,11 @@ impl ParsedUrl {
             password: parsed.password().map(decode),
             ..Secrets::default()
         };
-        let without_password = if secrets.password.is_some() {
-            // Cannot fail: the URL has a host, since it has a password.
-            let _ = parsed.set_password(None);
-            parsed.to_string()
-        } else {
-            url.to_owned()
-        };
         Ok(Self {
             spec,
             secrets,
             names_tls,
             names_ca_file,
-            without_password,
         })
     }
 }
@@ -402,15 +391,11 @@ mod tests {
     }
 
     #[test]
-    fn the_url_left_on_screen_has_no_password() {
+    fn a_urls_password_is_percent_decoded_into_the_secrets() {
         let parsed = ParsedUrl::parse("postgres://me:s%40cret@db.example.com:6543/app").unwrap();
         assert_eq!(parsed.secrets.password.as_deref(), Some("s@cret"));
-        assert_eq!(
-            parsed.without_password,
-            "postgres://me@db.example.com:6543/app"
-        );
         let parsed = ParsedUrl::parse(" mysql://me@h/db ").unwrap();
-        assert_eq!(parsed.without_password, "mysql://me@h/db");
+        assert_eq!(parsed.secrets.password, None);
     }
 
     #[test]

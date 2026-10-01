@@ -79,6 +79,8 @@ pub enum Action {
     PickSqliteFile,
     /// Open the native file dialog for the SSH key file.
     PickKeyFile,
+    /// Open the native file dialog for the CA certificate.
+    PickCaFile,
     /// Put this ~/.ssh/config Host alias in the SSH host field.
     PickSshHost(String),
     /// Fill the connection dialog from its URL field.
@@ -389,11 +391,18 @@ pub struct ConnectionForm {
     /// The connection as saved, when editing one. Saved secrets belong to
     /// its servers and are never sent to another one.
     pub saved_spec: Option<ConnectSpec>,
-    /// Text in the "Paste URL" field.
+    /// Text in the URL field.
     pub url: String,
-    /// A validation or URL error shown under the fields.
+    /// The URL field is showing: the dialog's URL tab, the terminal look's
+    /// `u`.
+    pub url_mode: bool,
+    /// A validation or URL error shown above the footer.
     pub message: Option<String>,
     pub test: TestState,
+    /// When the running Test was sent to the server.
+    pub test_started: Option<std::time::Instant>,
+    /// How long the Test that passed took.
+    pub test_took: Option<std::time::Duration>,
     /// The file dialog request in flight, if any.
     pub pick_request: Option<RequestId>,
     /// Which field the file dialog fills.
@@ -431,6 +440,7 @@ pub enum PickTarget {
     #[default]
     Sqlite,
     KeyFile,
+    CaFile,
 }
 
 /// How the SSH tunnel logs in, as the dialog offers it.
@@ -486,8 +496,11 @@ impl Default for ConnectionForm {
             has_saved_password: false,
             saved_spec: None,
             url: String::new(),
+            url_mode: false,
             message: None,
             test: TestState::Idle,
+            test_started: None,
+            test_took: None,
             pick_request: None,
             pick_target: PickTarget::Sqlite,
             ssh: false,
@@ -626,7 +639,13 @@ impl ConnectionForm {
                 .as_ref()
                 .map(|path| path.display().to_string())
                 .unwrap_or_default(),
-            password_mode: saved.password,
+            // A connection saved without a password opens in the keyring
+            // mode, so a password typed into it is kept. With nothing typed
+            // it still saves without one (see `to_saved`).
+            password_mode: match saved.password {
+                PasswordMode::Ask => PasswordMode::Ask,
+                PasswordMode::Keyring | PasswordMode::None => PasswordMode::Keyring,
+            },
             has_saved_password: saved.password == PasswordMode::Keyring,
             saved_spec: Some(spec.clone()),
             ssh: spec.ssh.is_some(),
@@ -657,7 +676,7 @@ impl ConnectionForm {
             },
             ssh_secret_mode: match saved.ssh_secret {
                 PasswordMode::Ask => PasswordMode::Ask,
-                _ => PasswordMode::Keyring,
+                PasswordMode::Keyring | PasswordMode::None => PasswordMode::Keyring,
             },
             has_saved_ssh_secret: saved.ssh_secret == PasswordMode::Keyring,
             saved_ssh_auth: spec.ssh.as_ref().map(|ssh| match ssh.auth {
@@ -698,8 +717,8 @@ impl ConnectionForm {
                 // public certificate, so verify-ca needs its own CA.
                 if self.tls == TlsMode::VerifyCa && ca_file.is_empty() {
                     return Err(
-                        "Verify certificate needs a CA file. Choose Verify certificate \
-                                and host to use the system certificates."
+                        "verify-ca needs a CA file. Choose verify-full to use the system \
+                         certificates."
                             .into(),
                     );
                 }
