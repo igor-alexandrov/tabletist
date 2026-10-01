@@ -424,15 +424,45 @@ impl Statement {
     }
 }
 
+/// Whether a token is SQL the server runs. An executable comment counts:
+/// MySQL and MariaDB run its contents.
 fn is_code(kind: TokenKind) -> bool {
-    !matches!(
-        kind,
-        TokenKind::Whitespace | TokenKind::Comment | TokenKind::ExecutableComment
-    )
+    !matches!(kind, TokenKind::Whitespace | TokenKind::Comment)
 }
 
-fn line_of(text: &str, byte: usize) -> usize {
-    text[..byte].matches('\n').count() + 1
+/// A line and column that only moves forward through a text, so asking
+/// for many increasing positions costs one pass in all.
+struct Walker<'a> {
+    text: &'a str,
+    byte: usize,
+    line: usize,
+    column: usize,
+}
+
+impl<'a> Walker<'a> {
+    fn new(text: &'a str) -> Self {
+        Self {
+            text,
+            byte: 0,
+            line: 1,
+            column: 0,
+        }
+    }
+
+    /// The 1-based line and the characters before `byte` on it. `byte` must
+    /// not be before the last one asked for.
+    fn at(&mut self, byte: usize) -> (usize, usize) {
+        for ch in self.text[self.byte..byte].chars() {
+            if ch == '\n' {
+                self.line += 1;
+                self.column = 0;
+            } else {
+                self.column += 1;
+            }
+        }
+        self.byte = byte;
+        (self.line, self.column)
+    }
 }
 
 /// The statements of `script`, split on `;` tokens. Pieces holding only
@@ -440,6 +470,7 @@ fn line_of(text: &str, byte: usize) -> usize {
 pub fn statements(dialect: Dialect, script: &str) -> Vec<Statement> {
     let tokens = tokenize(dialect, script);
     let mut found = Vec::new();
+    let mut walker = Walker::new(script);
     for piece in tokens.split_inclusive(|token| token.kind == TokenKind::Semicolon) {
         let body: &[Token] = match piece.last() {
             Some(last) if last.kind == TokenKind::Semicolon => &piece[..piece.len() - 1],
@@ -455,12 +486,16 @@ pub fn statements(dialect: Dialect, script: &str) -> Vec<Statement> {
             continue;
         };
         let range = first.range.start..last.range.end;
-        let end = piece.last().map_or(range.end, |token| token.range.end);
-        let line_start = script[..range.start].rfind('\n').map_or(0, |at| at + 1);
+        let end = match piece.last() {
+            Some(last) if last.kind == TokenKind::Semicolon => last.range.end,
+            _ => range.end,
+        };
+        let (start_line, start_column) = walker.at(range.start);
+        let (first_line, _) = walker.at(first_code.range.start);
         found.push(Statement {
-            start_line: line_of(script, range.start),
-            start_column: script[line_start..range.start].chars().count(),
-            first_line: line_of(script, first_code.range.start),
+            start_line,
+            start_column,
+            first_line,
             text: script[range.clone()].to_owned(),
             range,
             end,
@@ -486,7 +521,9 @@ pub fn statement_at(statements: &[Statement], cursor: usize) -> Option<&Statemen
 }
 
 /// The statement's words (keywords and names, quotes removed), upper-cased,
-/// in order. Comments and strings are skipped.
+/// in order. Only keywords and names count: strings, numbers, operators,
+/// punctuation and comments (executable ones included) are skipped. The
+/// read-only guard checks executable comments separately.
 pub fn words(dialect: Dialect, text: &str) -> Vec<String> {
     tokenize(dialect, text)
         .into_iter()
@@ -899,6 +936,35 @@ mod tests {
     }
 
     #[test]
+    fn many_statements_are_numbered_by_line() {
+        let script = "SELECT 1;\n".repeat(5000);
+        let found = statements(Dialect::Postgres, &script);
+        assert_eq!(found.len(), 5000);
+        assert_eq!(found[4999].first_line, 5000);
+        assert_eq!(found[4999].start_line, 5000);
+    }
+
+    #[test]
+    fn executable_comments_are_code() {
+        let found = statements(Dialect::MySql, "/*! COMMIT */; SELECT 1");
+        assert_eq!(found.len(), 2);
+        assert_eq!(found[0].text, "/*! COMMIT */");
+        let found = statements(Dialect::MySql, "/*M! SET x = 1 */");
+        assert_eq!(found.len(), 1);
+        let same_line = statements(Dialect::MySql, "-- note\n/*! COMMIT */ SELECT 1");
+        assert_eq!(same_line[0].first_line, 2);
+        let next_line = statements(Dialect::MySql, "-- note\n/*! COMMIT */\nSELECT 1");
+        assert_eq!(next_line[0].first_line, 2);
+    }
+
+    #[test]
+    fn end_is_past_the_semicolon_or_the_text() {
+        let found = statements(Dialect::Postgres, "SELECT 1 ;  SELECT 3\n\n");
+        assert_eq!((found[0].range.end, found[0].end), (8, 10));
+        assert_eq!((found[1].range.end, found[1].end), (20, 20));
+    }
+
+    #[test]
     fn the_statement_at_the_cursor() {
         let script = "SELECT 1;  SELECT 2;\n\nSELECT 3";
         let found = statements(Dialect::Postgres, script);
@@ -911,6 +977,11 @@ mod tests {
         assert_eq!(at(21), Some("SELECT 2")); // blank line after it
         assert_eq!(at(script.len()), Some("SELECT 3"));
         assert_eq!(at(script.len() + 50), Some("SELECT 3")); // past the end
+        // Adjacent statements: just after a `;` is still the one before it.
+        let adjacent = statements(Dialect::Postgres, "SELECT 1;SELECT 2");
+        let tie = |cursor| statement_at(&adjacent, cursor).map(|s| s.text.as_str());
+        assert_eq!(tie(9), Some("SELECT 1"));
+        assert_eq!(tie(10), Some("SELECT 2"));
         let leading = statements(Dialect::Postgres, "\n\n  SELECT 1");
         assert_eq!(statement_at(&leading, 0).map(|s| s.first_line), Some(3));
         assert!(statement_at(&[], 0).is_none());
