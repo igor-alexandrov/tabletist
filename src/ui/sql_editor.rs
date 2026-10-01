@@ -483,8 +483,9 @@ fn mac_toolbar(ui: &mut Ui, rect: Rect, bar: &Bar<'_>, actions: &mut Vec<Action>
     let note_width =
         10.0 + 11.0 + 6.0 + TextRole::Secondary.width(ui.ctx(), look.faces, &note) + 10.0;
     // Everything 8 apart, and 16 between the two ends (8 at the tightest).
-    // What gives way as the room runs out: the menus read short, then the
-    // note goes, then the buttons' keys, then the menus' chevrons, and
+    // What gives way as the room runs out: the buttons' keys (the help
+    // says them too), then the note, and only then the menus' words, which
+    // alone say what "1,000" and "30 s" are; then the menus' chevrons, and
     // last the menus (the buttons stay).
     let shapes = [(false, true), (true, true), (true, false)]
         .map(|(short, chevron)| MenuShape { short, chevron });
@@ -500,8 +501,8 @@ fn mac_toolbar(ui: &mut Ui, rect: Rect, bar: &Bar<'_>, actions: &mut Vec<Action>
     };
     let fit = [
         (0, true, true),
-        (1, true, true),
-        (1, false, true),
+        (0, true, false),
+        (0, false, false),
         (1, false, false),
         (2, false, false),
     ]
@@ -590,10 +591,11 @@ fn terminal_toolbar(ui: &mut Ui, rect: Rect, bar: &Bar<'_>, actions: &mut Vec<Ac
         width(role, &note),
         width(role, " · "),
     );
-    // Everything 14 apart. What gives way as the room runs out: the menus
-    // read short, then the buttons' keys go (the status line says them
-    // too), then the note, then the title (the tab says it too), and last
-    // the menus (the buttons stay).
+    // Everything 14 apart. What gives way as the room runs out: the
+    // buttons' keys (the status line says them too), then the note, then
+    // the title (the tab says it too), and only then the menus' words,
+    // which alone say what "1000" and "30s" are; last the menus (the
+    // buttons stay).
     let shapes = [false, true].map(|short| MenuShape {
         short,
         chevron: false,
@@ -610,9 +612,9 @@ fn terminal_toolbar(ui: &mut Ui, rect: Rect, bar: &Bar<'_>, actions: &mut Vec<Ac
     };
     let fit = [
         (0, true, true, true),
-        (1, true, true, true),
-        (1, false, true, true),
-        (1, false, false, true),
+        (0, false, true, true),
+        (0, false, false, true),
+        (0, false, false, false),
         (1, false, false, false),
     ]
     .into_iter()

@@ -1732,6 +1732,76 @@ mod tests {
     }
 
     #[test]
+    fn the_toolbar_gives_way_in_order_and_shortens_its_menus_last() {
+        // The keys go first: the help and the terminal's status line say
+        // them too, while the menus' words are all that say what "1,000"
+        // and "30 s" are. So the labels read in full until only they are
+        // left to give way.
+        for look in crate::theme::Look::ALL {
+            let (mut harness, _tab) = sql_harness(look);
+            let (keys, note, full, short) = if look.terminal {
+                ("ctrl+enter", "read-only transaction", "limit 1000", "1000")
+            } else if look == crate::theme::Look::macos() {
+                ("⌘↩", "Read-only transaction", "Limit 1,000", "1,000")
+            } else {
+                (
+                    "Ctrl+Enter",
+                    "Read-only transaction",
+                    "Limit 1,000",
+                    "1,000",
+                )
+            };
+            // Every state the toolbar passes through as the window narrows,
+            // in the order it meets them.
+            let mut states = Vec::new();
+            for width in (500..=1600).rev().step_by(10) {
+                harness.size.x = width as f32;
+                let tree = harness.settle();
+                let has = |role, name: &str| crate::testing::node(&tree, name, role).is_some();
+                let state = [
+                    painted(&harness, keys),
+                    painted(&harness, note),
+                    painted(&harness, full),
+                    // The terminal's title, which the others do not have.
+                    !look.terminal || has(egui::accesskit::Role::Label, "query 1"),
+                    has(egui::accesskit::Role::ComboBox, "Limit"),
+                ];
+                assert!(
+                    has(egui::accesskit::Role::Button, "Run")
+                        && has(egui::accesskit::Role::Button, "Run all"),
+                    "the run buttons at {width} in {}",
+                    look.name
+                );
+                // A menu reads in full or short, never neither.
+                assert_eq!(
+                    state[4] && !state[2],
+                    painted(&harness, short),
+                    "{short} at {width} in {}",
+                    look.name
+                );
+                if states.last() != Some(&state) {
+                    states.push(state);
+                }
+            }
+            // keys, note, full labels, title, menus
+            let mut expected = vec![
+                [true, true, true, true, true],
+                [false, true, true, true, true],
+                [false, false, true, true, true],
+            ];
+            if look.terminal {
+                // The title goes before the labels shorten: the tab says
+                // it too.
+                expected.push([false, false, true, false, true]);
+            }
+            let title = !look.terminal;
+            expected.push([false, false, false, title, true]);
+            expected.push([false, false, false, title, false]);
+            assert_eq!(states, expected, "{}", look.name);
+        }
+    }
+
+    #[test]
     fn a_toolbar_too_narrow_for_its_menus_keeps_run_and_run_all() {
         for look in crate::theme::Look::ALL {
             // Narrower than the window gets, beside the widest sidebar.
