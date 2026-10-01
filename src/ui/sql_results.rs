@@ -98,8 +98,7 @@ enum State<'a> {
 }
 
 fn state(sql: &SqlTab) -> State<'_> {
-    // A run that failed as a whole ran nothing: the result still held is
-    // an older run's, and `last_run` does not give it.
+    // A run that failed as a whole ran nothing, and left no last run.
     if let Some(error) = &sql.run.error {
         return State::Failed(error);
     }
@@ -254,7 +253,8 @@ fn draw(app: &App, ui: &mut Ui, tab: ConnTabId, id: TabId, actions: &mut Vec<Act
 struct Head {
     /// The rows of the result that shows, beside "Results".
     count: Option<usize>,
-    /// "Statement at line 2 · 14 ms" for it.
+    /// "Statement at line 2 · 14 ms" for it. A run in flight is said in
+    /// its place.
     info: Option<Said>,
     /// How long the run in flight has been going, from when it was queued.
     running: Option<Duration>,
@@ -273,19 +273,16 @@ fn head(sql: &SqlTab, state: &State<'_>, env: &Env<'_>) -> Head {
             StatementOutcome::Rows { rows, .. } => Some(rows.len()),
             _ => None,
         }),
-        // While a run is on its way the header says that instead.
-        info: result
-            .filter(|_| running.is_none())
-            .map(|(statement, result)| {
-                env.said(|words| {
-                    format!(
-                        "{} {} · {}",
-                        words.say("Statement at line"),
-                        statement.first_line,
-                        format::elapsed(result.elapsed)
-                    )
-                })
-            }),
+        info: result.map(|(statement, result)| {
+            env.said(|words| {
+                format!(
+                    "{} {} · {}",
+                    words.say("Statement at line"),
+                    statement.first_line,
+                    format::elapsed(result.elapsed)
+                )
+            })
+        }),
         running,
     }
 }
@@ -553,23 +550,119 @@ fn run_state(ui: &mut Ui, spot: &Spot, running: Duration, env: &Env<'_>) -> bool
     button(with_keys).show_at(ui, at, look, palette).clicked()
 }
 
+/// A message laid out: its place (a line, or what a detail is), then its
+/// text beside it. Two galleys, so that nothing in what a database said (a
+/// right-to-left override, say) can move the place or change how it reads.
+struct LaidMessage {
+    place: Option<Laid>,
+    text: Laid,
+    /// Where the text starts, from the message's left.
+    text_left: f32,
+}
+
+impl LaidMessage {
+    /// Lays `place` and `text` out in `role` within `room` points. Text
+    /// that `wraps` (what a database said) takes the rows it needs beside
+    /// the place; text of ours is one row, cut with "…" where it is too
+    /// long.
+    fn new(
+        ctx: &egui::Context,
+        (place, place_color): (&str, egui::Color32),
+        (text, color): (&str, egui::Color32),
+        (role, room, wraps): (TextRole, f32, bool),
+        look: &Look,
+    ) -> Self {
+        let place =
+            (!place.is_empty()).then(|| Text::one(look, role, place, place_color).layout(ctx));
+        let space = role.width(ctx, look.faces, " ");
+        let text_left = place.as_ref().map_or(0.0, |place| place.width() + space);
+        let room = (room - text_left).max(0.0);
+        let text = if wraps {
+            Text::one(look, role, text, color).wrap(room).layout(ctx)
+        } else {
+            let cut = grid::ellipsize(text, room, false, |text| role.width(ctx, look.faces, text));
+            Text::one(look, role, &cut, color).layout(ctx)
+        };
+        Self {
+            place,
+            text,
+            text_left,
+        }
+    }
+
+    fn size(&self) -> egui::Vec2 {
+        let place = self.place.as_ref().map_or(0.0, Laid::height);
+        vec2(
+            self.text_left + self.text.width(),
+            self.text.height().max(place),
+        )
+    }
+
+    /// Paints with the top-left corner at `at`.
+    fn paint(&self, painter: &egui::Painter, at: egui::Pos2) {
+        if let Some(place) = &self.place {
+            place.paint(painter, at);
+        }
+        self.text.paint(painter, at + vec2(self.text_left, 0.0));
+    }
+}
+
 /// `said` in the middle of `rect`, wrapped to fit it.
 fn note(ui: &Ui, rect: Rect, said: &Said, color: egui::Color32, env: &Env<'_>) {
+    note_at(ui, rect, ("", &said.painted), &said.name, color, env);
+}
+
+/// A note that leads with a `place`: what statement `text` is said of.
+fn note_at(
+    ui: &Ui,
+    rect: Rect,
+    (place, text): (&str, &str),
+    name: &str,
+    color: egui::Color32,
+    env: &Env<'_>,
+) {
     let room = (rect.width() - 2.0 * 24.0).max(0.0);
-    let laid = Text::one(env.look, widgets::body(env.look), &said.painted, color)
-        .wrap(room)
-        .layout(ui.ctx());
+    let laid = LaidMessage::new(
+        ui.ctx(),
+        (place, color),
+        (text, color),
+        (widgets::body(env.look), room, true),
+        env.look,
+    );
     // Kept under the header when there is too little room to centre it.
     let at = rect.center() - laid.size() / 2.0;
     let at = pos2(at.x, at.y.max(rect.top() + 8.0));
     laid.paint(ui.painter(), at);
-    widgets::announce(ui, Rect::from_min_size(at, laid.size()), &said.name);
+    widgets::announce(ui, Rect::from_min_size(at, laid.size()), name);
+}
+
+/// The most characters of what a database said that a message shows.
+const MESSAGE_MAX_CHARS: usize = 2_000;
+
+/// What a database said, cut to what a message shows and ending in "…"
+/// when cut. A message can hold megabytes (PostgreSQL repeats a literal it
+/// cannot read) and is written and laid out every frame, so nothing here
+/// looks past the cut. The start says what went wrong.
+fn capped(text: &str) -> std::borrow::Cow<'_, str> {
+    match text.char_indices().nth(MESSAGE_MAX_CHARS) {
+        Some((end, _)) => format!("{}…", &text[..end]).into(),
+        None => text.into(),
+    }
+}
+
+/// An error in its own words, cut as [`capped`] cuts.
+fn error_text(error: &Error) -> String {
+    match error {
+        // The message itself, without a copy of all of it first.
+        Error::Query { message, .. } => capped(message).into_owned(),
+        other => capped(&other.to_string()).into_owned(),
+    }
 }
 
 /// A whole run's error, in its own words: they name the line when there
 /// is one and say what Tabletist refused or why the session closed.
 fn whole(error: &Error) -> Said {
-    let text = error.to_string();
+    let text = error_text(error);
     Said {
         painted: text.clone(),
         name: text,
@@ -701,7 +794,7 @@ fn statement_message(run: &SqlRun, index: usize, words: Words) -> Message {
                 }
                 None => at,
             };
-            Message::new(at, error.to_string(), Tone::Failed)
+            Message::new(at, error_text(error), Tone::Failed)
         }
         StatementOutcome::Cancelled => {
             Message::new(at, cancel_text(run.cancel, words), Tone::Cancelled)
@@ -781,10 +874,10 @@ fn message(line: Line<'_>, run: Option<&SqlRun>, words: Words) -> Message {
         },
         Line::More(label, text) => Message::new(
             format!("{}:", words.say(label)),
-            text.to_owned(),
+            capped(text).into_owned(),
             Tone::Muted,
         ),
-        Line::Whole(error) => Message::new(String::new(), error.to_string(), Tone::Failed),
+        Line::Whole(error) => Message::new(String::new(), error_text(error), Tone::Failed),
         Line::Stopped => {
             let text = cancel_text(run.and_then(|run| run.cancel), words);
             Message::new(String::new(), text, Tone::Cancelled)
@@ -824,24 +917,24 @@ fn messages(
             0.0
         }
     };
-    let lay = |line: Line<'_>| -> Laid {
+    let lay = |line: Line<'_>| -> LaidMessage {
         let message = message(line, run, painted);
-        let mut laid = Text::new(look);
-        if !message.place.is_empty() {
-            laid = laid.add(role, &message.place, palette.dim).space(role, " ");
-        }
-        laid.add(role, &message.text, message.tone.color(palette))
-            .wrap((room - indent(line)).max(0.0))
-            .layout(&ctx)
+        LaidMessage::new(
+            &ctx,
+            (&message.place, palette.dim),
+            (&message.text, message.tone.color(palette)),
+            (role, (room - indent(line)).max(0.0), line.wraps(run)),
+            look,
+        )
     };
-    // A line of ours is one row. What a database said is as tall as it
-    // wraps to: laid out here for its height, and few (a run stops at its
-    // first error).
+    // A line of ours is one row, cut where it is too long for the pane.
+    // What a database said is as tall as it wraps to: laid out here for
+    // its height, and few (a run stops at its first error).
     let heights: Vec<f32> = lines
         .iter()
         .map(|line| {
             if line.wraps(run) {
-                lay(*line).height() + 6.0
+                lay(*line).size().y + 6.0
             } else {
                 row
             }
@@ -856,7 +949,8 @@ fn messages(
                 let line = lines[index];
                 let size = vec2(ui.available_width(), heights[index]);
                 let (rect, response) = ui.allocate_exact_size(size, Sense::hover());
-                // Named in every look's case, whatever the look paints.
+                // Named in every look's case and in full, whatever the
+                // look paints and however the pane cuts it.
                 let named = Words {
                     locale,
                     lower: false,
@@ -899,8 +993,19 @@ fn results(ui: &mut Ui, run: &SqlRun, place: &Place<'_>, env: &Env<'_>, actions:
             let said = env.said(|words| cancel_text(run.cancel, words));
             note(ui, rect, &said, palette.warning, env);
         } else if let Some(index) = failed {
-            let said = env.said(|words| statement_message(run, index, words).line());
-            note(ui, rect, &said, palette.danger, env);
+            // The statement's line, then what the database said of it.
+            let named = Words {
+                locale,
+                lower: false,
+            };
+            let painted = Words {
+                locale,
+                lower: look.terminal,
+            };
+            let name = statement_message(run, index, named).line();
+            let message = statement_message(run, index, painted);
+            let parts = (message.place.as_str(), message.text.as_str());
+            note_at(ui, rect, parts, &name, palette.danger, env);
         } else {
             let said = env.said(|words| words.say("Statement ran · no rows returned"));
             note(ui, rect, &said, palette.secondary, env);
@@ -946,6 +1051,8 @@ fn results(ui: &mut Ui, run: &SqlRun, place: &Place<'_>, env: &Env<'_>, actions:
                 sort: None,
                 key: false,
                 flexible: column.kind == ValueKind::Json,
+                // A result is in the order its statement gave it.
+                sortable: false,
             }
         })
         .collect();
@@ -1116,7 +1223,8 @@ mod tests {
             harness.answer_sql(Ok(script_outcome(vec![rows_outcome(5)])), None);
             let tree = harness.settle();
             for (name, role) in [
-                ("email", Role::Button),
+                // A result's columns are labels: there is no sorting it.
+                ("email", Role::Label),
                 ("Row 1", Role::Button),
                 ("Row 5", Role::Button),
                 ("Statement at line 2 · 14 ms", Role::Label),
@@ -1194,7 +1302,7 @@ mod tests {
             run(&mut harness);
             harness.answer_sql(Ok(script_outcome(vec![rows_outcome(0)])), None);
             let tree = harness.settle();
-            assert!(node(&tree, "email", Role::Button).is_some());
+            assert!(node(&tree, "email", Role::Label).is_some());
             assert!(harness.has("No rows"), "{}", look.name);
             assert_eq!(count(&mut harness).as_deref(), Some("0"));
             assert!(!harness.has("Statement ran · no rows returned"));
@@ -1254,13 +1362,21 @@ mod tests {
             // The terminal writes our words in lower case, never the
             // database's.
             let reads = if look.terminal {
-                ["line 3, col 8: no such column: Total", "line 4: not run"]
+                ["line 3, col 8:", "line 4:", "not run"]
             } else {
-                ["Line 3, col 8: no such column: Total", "Line 4: Not run"]
+                ["Line 3, col 8:", "Line 4:", "Not run"]
             };
             for text in reads {
                 assert!(painted(&harness, text), "{text}: {:?}", harness.painted);
             }
+            // What the database said is a piece of its own, in the
+            // error's colour.
+            assert_eq!(
+                harness.painted_color("no such column: Total"),
+                Some(harness.app.palette.danger),
+                "{}",
+                look.name
+            );
             // The rows of the statement before the one that failed stay.
             harness.click("Results");
             assert!(harness.has("Row 1") && !harness.has("Row 2"));
@@ -1522,10 +1638,9 @@ mod tests {
                 assert_eq!(sql(&harness, tab).pane, ResultPane::Messages);
                 assert!(harness.has(&text), "{context}");
                 assert!(!harness.has("Line 1: 5 rows · 14 ms"), "{context}");
-                // Results says the same: the rows still held are the
-                // older run's.
+                // Results says the same: the older run's rows are gone.
                 harness.click("Results");
-                assert!(sql(&harness, tab).shown().is_some(), "still held");
+                assert_eq!(sql(&harness, tab).dims(), (0, 0));
                 assert!(harness.has(&text), "{context}");
                 assert!(!harness.has("Row 1"), "{context}");
                 assert!(!harness.has("Statement at line 1 · 14 ms"), "{context}");
@@ -1611,24 +1726,50 @@ mod tests {
         }
     }
 
+    /// The width of the editor's panes: the splitter spans them.
+    fn pane_width(harness: &mut Harness) -> f32 {
+        let tree = harness.settle();
+        let band = bounds(&tree, "Resize the editor", Role::Unknown).expect("the splitter");
+        band.width()
+    }
+
+    /// Narrows the window until the editor's panes are `width` points
+    /// wide. 320 is what the smallest window leaves beside the widest
+    /// sidebar.
+    fn narrow_to(harness: &mut Harness, width: f32) {
+        harness.size.x -= pane_width(harness) - width;
+        let now = pane_width(harness);
+        assert!((now - width).abs() <= 1.0, "the pane is {now} wide");
+    }
+
     #[test]
-    fn the_header_keeps_its_buttons_apart_in_a_narrow_pane() {
+    fn the_header_keeps_its_buttons_apart_in_the_narrowest_pane() {
         for look in Look::ALL {
-            let size = egui::vec2(640.0, 480.0);
-            let mut harness = Harness::with_size(size);
-            harness.set_look(look);
-            harness.connect_fake();
-            harness.press(Key::T, Modifiers::COMMAND);
-            harness.frame(vec![egui::Event::Paste("SELECT 1".into())]);
+            let (mut harness, _tab) = editor(look, "SELECT 1");
+            narrow_to(&mut harness, 320.0);
+            // A count beside Results is the widest the tabs get.
+            run(&mut harness);
+            let page = crate::testing::page(10_000, false);
+            let many = StatementOutcome::Rows {
+                columns: page.columns,
+                rows: page.rows,
+                truncated: true,
+            };
+            harness.answer_sql(Ok(script_outcome(vec![many])), None);
+            assert_eq!(count(&mut harness).as_deref(), Some("10,000"));
             run(&mut harness);
             let tree = harness.settle();
-            let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
+            let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, harness.size);
             let parts: Vec<(&str, egui::Rect)> = ["Results", "Messages", "Cancel query"]
                 .into_iter()
                 .map(|name| {
                     let rect = bounds(&tree, name, Role::Button)
                         .unwrap_or_else(|| panic!("{name} missing in {}", look.name));
-                    assert!(screen.contains_rect(rect), "{name} at {rect:?}");
+                    assert!(
+                        screen.contains_rect(rect),
+                        "{name} at {rect:?} in {}",
+                        look.name
+                    );
                     (name, rect)
                 })
                 .collect();
@@ -1641,6 +1782,91 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    #[test]
+    fn the_messages_keep_their_lines_apart_in_the_narrowest_pane() {
+        for look in Look::ALL {
+            let script = "SELECT 1;\nSELECT a_column_that_is_not_there;\nSELECT 2";
+            let (mut harness, tab) = editor(look, script);
+            narrow_to(&mut harness, 320.0);
+            run_all(&mut harness);
+            let page = crate::testing::page(1_000, false);
+            let cut = StatementOutcome::Rows {
+                columns: page.columns,
+                rows: page.rows,
+                truncated: true,
+            };
+            // Longer than the pane is wide, as a database's words can be.
+            let said = "no such column: a_column_that_is_not_there, \
+                        and nothing like it in any table of the query";
+            harness.answer_sql(
+                Ok(script_outcome(vec![cut, error_outcome(said, None)])),
+                None,
+            );
+            assert_eq!(sql(&harness, tab).pane, ResultPane::Messages);
+            let tree = harness.settle();
+            // Named in full, however the pane cuts or wraps them.
+            let names = [
+                "Line 1: 1,000 rows (limit reached) · 14 ms".to_owned(),
+                format!("Line 2: {said}"),
+                "Line 3: Not run".to_owned(),
+            ];
+            let lines: Vec<egui::Rect> = names
+                .iter()
+                .map(|name| {
+                    bounds(&tree, name, Role::Label)
+                        .unwrap_or_else(|| panic!("{name} in {}: {:?}", look.name, labels(&tree)))
+                })
+                .collect();
+            // A line of ours is one row, its text a piece of its own that
+            // is cut where the pane ends: it is not painted as it would
+            // wrap, over the line under it.
+            let whole = "1,000 rows (limit reached) · 14 ms";
+            let ours = |harness: &Harness| {
+                let pieces = harness.painted.iter().map(|(piece, _)| piece.clone());
+                let mut ours = pieces.filter(|piece| piece.starts_with("1,000 rows ("));
+                ours.next()
+                    .unwrap_or_else(|| panic!("{}: {:?}", look.name, harness.painted))
+            };
+            let is_cut = |piece: &str| {
+                piece.ends_with('…') && whole.starts_with(piece.trim_end_matches('…'))
+            };
+            let piece = ours(&harness);
+            assert!(
+                piece == whole || is_cut(&piece),
+                "{piece:?} in {}",
+                look.name
+            );
+            // What the database said takes the rows it needs, and the
+            // line after it starts under them.
+            assert!(
+                lines[1].height() > lines[0].height() * 1.5,
+                "{:?} in {}",
+                lines[1],
+                look.name
+            );
+            for pair in lines.windows(2) {
+                assert!(
+                    pair[1].top() >= pair[0].bottom() - 0.5,
+                    "{pair:?} in {}",
+                    look.name
+                );
+            }
+            assert_eq!(
+                harness.painted_color(said),
+                Some(harness.app.palette.danger),
+                "the whole of it is painted in {}",
+                look.name
+            );
+            // Narrower than any window leaves it, the line of ours is
+            // cut for certain, and still named in full.
+            narrow_to(&mut harness, 240.0);
+            let tree = harness.settle();
+            let piece = ours(&harness);
+            assert!(is_cut(&piece), "{piece:?} in {}", look.name);
+            assert!(node(&tree, &names[0], Role::Label).is_some());
         }
     }
 
@@ -1661,6 +1887,198 @@ mod tests {
         }
     }
 
+    /// The name of what has the keyboard.
+    fn focused(harness: &mut Harness) -> String {
+        let tree = harness.settle();
+        let node = tree.nodes.iter().find(|(id, _)| *id == tree.focus);
+        node.and_then(|(_, node)| node.label().or_else(|| node.value()))
+            .unwrap_or_default()
+            .to_owned()
+    }
+
+    #[test]
+    fn tab_passes_a_results_column_headers_by() {
+        for look in Look::ALL {
+            let (mut harness, tab) = editor(look, "SELECT 1");
+            run(&mut harness);
+            harness.answer_sql(Ok(script_outcome(vec![rows_outcome(3)])), None);
+            // From the Results tab on (the editor before it keeps Tab to
+            // indent with), as a screen reader puts the keyboard there.
+            let tree = harness.settle();
+            let results = node(&tree, "Results", Role::Button).expect("the Results tab");
+            harness.frame(vec![egui::Event::AccessKitActionRequest(
+                egui::accesskit::ActionRequest {
+                    target_tree: egui::accesskit::TreeId::ROOT,
+                    target_node: results,
+                    action: egui::accesskit::Action::Focus,
+                    data: None,
+                },
+            )]);
+            let mut stops = vec![focused(&mut harness)];
+            for _ in 0..12 {
+                harness.press(Key::Tab, Modifiers::NONE);
+                stops.push(focused(&mut harness));
+            }
+            // It goes on to Messages and the rows, not the headers.
+            for stop in ["Results", "Messages", "Row 1", "Row 3"] {
+                assert!(stops.iter().any(|name| name == stop), "{stop}: {stops:?}");
+            }
+            for header in ["id", "email", "meta"] {
+                assert!(
+                    !stops.iter().any(|name| name == header),
+                    "{header} in {}: {stops:?}",
+                    look.name
+                );
+            }
+            // Nor does a click on one ask for anything.
+            let sent = harness.app.backend.sent.len();
+            let tree = harness.settle();
+            let email = node(&tree, "email", Role::Label).expect("the header");
+            harness.frame(vec![egui::Event::AccessKitActionRequest(
+                egui::accesskit::ActionRequest {
+                    target_tree: egui::accesskit::TreeId::ROOT,
+                    target_node: email,
+                    action: egui::accesskit::Action::Click,
+                    data: None,
+                },
+            )]);
+            harness.settle();
+            assert_eq!(harness.app.backend.sent.len(), sent);
+            assert_eq!(sql(&harness, tab).selection, None);
+        }
+    }
+
+    #[test]
+    fn a_message_is_cut_where_a_database_says_too_much() {
+        assert_eq!(capped("no such column: x"), "no such column: x");
+        let exact = "é".repeat(MESSAGE_MAX_CHARS);
+        assert_eq!(capped(&exact), exact.as_str());
+        // Cut between characters, never inside one.
+        let long = "é".repeat(MESSAGE_MAX_CHARS + 1);
+        assert_eq!(capped(&long), format!("{exact}…"));
+    }
+
+    #[test]
+    fn a_huge_message_builds_a_bounded_amount_of_text() {
+        // PostgreSQL repeats a literal it cannot read: 200 KB of it.
+        let literal = "9".repeat(200_000);
+        let huge = format!("invalid input syntax for type integer: \"{literal}\"");
+        let failed = StatementOutcome::Error {
+            error: Error::Query {
+                code: Some("22P02".into()),
+                message: huge.clone(),
+                detail: Some(huge.clone()),
+                hint: Some(huge.clone()),
+            },
+            position: Some(8),
+        };
+        let lost = Error::ConnectionLost(huge.clone());
+        // What a frame hands to layout and to screen readers: no piece of
+        // text longer than a message may be, with its line before it.
+        let most = MESSAGE_MAX_CHARS + 64;
+        let bounded = |harness: &mut Harness, state: &str| {
+            let tree = harness.settle();
+            for label in labels(&tree) {
+                let length = label.chars().count();
+                assert!(length <= most, "a name of {length} characters, {state}");
+            }
+            for (piece, _) in &harness.painted {
+                let length = piece.chars().count();
+                assert!(length <= most, "{length} characters painted, {state}");
+            }
+        };
+        for look in Look::ALL {
+            let (mut harness, tab) = editor(look, "SELECT '9'::int");
+            run(&mut harness);
+            harness.answer_sql(Ok(script_outcome(vec![failed.clone()])), None);
+            assert_eq!(sql(&harness, tab).pane, ResultPane::Messages);
+            bounded(&mut harness, "in Messages");
+            // Its start is there, and says what went wrong.
+            let start = "Line 1, col 8: invalid input syntax for type integer: \"999";
+            let tree = harness.settle();
+            let line = labels(&tree)
+                .into_iter()
+                .find(|label| label.starts_with(start))
+                .unwrap_or_else(|| panic!("no line in {}", look.name));
+            assert!(line.ends_with('…'), "cut in {}", look.name);
+            show_pane(&mut harness, tab, ResultPane::Results);
+            bounded(&mut harness, "in Results");
+            // A run that failed as a whole with as much to say.
+            run(&mut harness);
+            harness.answer_sql(Err(lost.clone()), None);
+            bounded(&mut harness, "in Messages, of a whole run");
+            show_pane(&mut harness, tab, ResultPane::Results);
+            bounded(&mut harness, "in Results, of a whole run");
+            assert!(
+                harness
+                    .painted
+                    .iter()
+                    .any(|(piece, _)| piece.starts_with("the connection was lost: invalid")),
+                "{}",
+                look.name
+            );
+        }
+    }
+
+    #[test]
+    fn the_time_a_run_shows_counts_from_when_it_was_queued() {
+        let (mut harness, tab) = editor(Look::standard(), "SELECT 1");
+        run(&mut harness);
+        // As if queued a minute and a half ago.
+        let id = sql(&harness, tab).id;
+        let workspace = harness.app.workspace_mut(tab).unwrap();
+        let in_flight = workspace.sql_tab_mut(id).unwrap().in_flight.as_mut();
+        let earlier = std::time::Instant::now().checked_sub(Duration::from_secs(90));
+        in_flight.unwrap().started = earlier.expect("a clock 90 s old");
+        let tree = harness.settle();
+        let running = labels(&tree)
+            .into_iter()
+            .find(|label| label.starts_with("Running · "))
+            .expect("the time");
+        let seconds: f64 = running
+            .trim_start_matches("Running · ")
+            .trim_end_matches(" s")
+            .parse()
+            .unwrap_or_else(|_| panic!("{running}"));
+        assert!((90.0..120.0).contains(&seconds), "{running}");
+    }
+
+    /// The scroll area the editor's messages were last drawn in.
+    fn messages_area(harness: &Harness, tab: ConnTabId, id: TabId) -> Option<Id> {
+        let kept: Option<LastMessages> =
+            harness.ctx.data(|data| data.get_temp(results_id(tab, id)));
+        kept.map(|LastMessages(area)| area)
+    }
+
+    #[test]
+    fn the_messages_of_an_older_run_are_forgotten() {
+        let (mut harness, tab) = editor(Look::standard(), "SELECT x");
+        let id = sql(&harness, tab).id;
+        let scrolled =
+            |harness: &Harness, area| egui::scroll_area::State::load(&harness.ctx, area).is_some();
+        let fail = |harness: &mut Harness| {
+            run(harness);
+            let failed = error_outcome("no such column: x", None);
+            harness.answer_sql(Ok(script_outcome(vec![failed])), None);
+            harness.settle();
+        };
+        assert_eq!(messages_area(&harness, tab, id), None);
+        fail(&mut harness);
+        let first = messages_area(&harness, tab, id).expect("the messages were drawn");
+        assert!(scrolled(&harness, first));
+        // Each run's messages scroll on their own, from their top; what
+        // egui kept for the run before goes when the next is drawn.
+        fail(&mut harness);
+        let second = messages_area(&harness, tab, id).expect("drawn again");
+        assert_ne!(first, second);
+        assert!(!scrolled(&harness, first) && scrolled(&harness, second));
+        // And the last one's when the editor closes.
+        harness.press(Key::W, Modifiers::COMMAND);
+        assert!(harness.app.workspace(tab).unwrap().tabs.is_empty());
+        assert_eq!(messages_area(&harness, tab, id), None);
+        assert!(!scrolled(&harness, second));
+    }
+
     /// A result of three columns, the second named `name`.
     fn result_with(name: &str) -> StatementOutcome {
         let mut page = crate::testing::page(3, false);
@@ -1677,7 +2095,7 @@ mod tests {
         let (mut harness, tab) = editor(Look::standard(), "SELECT 1");
         let width = |harness: &mut Harness, name: &str| {
             let tree = harness.settle();
-            bounds(&tree, name, Role::Button)
+            bounds(&tree, name, Role::Label)
                 .expect("the column")
                 .width()
         };

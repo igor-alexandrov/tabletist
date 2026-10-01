@@ -764,7 +764,7 @@ fn menu(
 }
 
 /// Whether the last run ended and ran something. A run that failed as a
-/// whole ran nothing, and the result still held is an older run's.
+/// whole ran nothing, and leaves no last run.
 fn ran(sql: &SqlTab) -> bool {
     !sql.is_running()
         && sql

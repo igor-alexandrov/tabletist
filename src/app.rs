@@ -4195,11 +4195,45 @@ mod tests {
         assert_eq!(editor.run.error, Some(refused));
         assert_eq!(editor.pane, ResultPane::Messages);
         assert_eq!(editor.error_mark(), Some((2, None)));
-        assert_eq!(editor.dims(), (5, 3), "the last result stays");
+        // Nothing ran: the rows of the run before are not this run's.
+        assert!(editor.last_run().is_none());
+        assert_eq!(editor.dims(), (0, 0));
     }
 
     #[test]
-    fn a_run_that_lost_the_session_keeps_the_text_and_the_last_result() {
+    fn a_result_stays_when_the_session_is_replaced_with_nothing_failed() {
+        let mut harness = Harness::new();
+        let (tab, id) = new_sql(&mut harness);
+        type_sql(&mut harness, tab, id, "SELECT 1", 0);
+        run(&mut harness, tab, id, false);
+        harness.answer_sql(Ok(script_outcome(vec![rows_outcome(5)])), None);
+        // The run in flight goes with its session; the result before it
+        // does not, for nothing failed.
+        run(&mut harness, tab, id, false);
+        harness.app.apply(Action::SwitchDatabase {
+            tab,
+            database: "other".into(),
+        });
+        let editor = sql(&harness, tab, id);
+        assert!(!editor.is_running() && editor.run.error.is_none());
+        assert_eq!(editor.dims(), (5, 3));
+        assert_eq!(editor.last_run().map(|run| run.statements.len()), Some(1));
+        // Nor does a reconnect drop it.
+        let session = answer_connect(&mut harness);
+        run(&mut harness, tab, id, false);
+        assert!(sql(&harness, tab, id).is_running());
+        harness.app.apply(Action::Backend(Event::Disconnected {
+            session,
+            error: Error::ConnectionLost("gone".into()),
+        }));
+        harness.app.apply(Action::Reconnect(tab));
+        let editor = sql(&harness, tab, id);
+        assert!(!editor.is_running() && editor.run.error.is_none());
+        assert_eq!(editor.dims(), (5, 3));
+    }
+
+    #[test]
+    fn a_run_that_lost_the_session_keeps_the_text_and_no_older_result() {
         let mut harness = Harness::new();
         let (tab, id) = new_sql(&mut harness);
         type_sql(&mut harness, tab, id, "SELECT 1", 0);
@@ -4213,7 +4247,8 @@ mod tests {
         assert_eq!(editor.pane, ResultPane::Messages);
         assert_eq!(editor.error_mark(), None);
         assert_eq!(editor.text, "SELECT 1");
-        assert_eq!(editor.dims(), (5, 3));
+        assert!(editor.last_run().is_none());
+        assert_eq!(editor.dims(), (0, 0));
     }
 
     #[test]

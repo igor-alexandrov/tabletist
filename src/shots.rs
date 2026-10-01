@@ -74,12 +74,17 @@ const TABLES: [&str; 30] = [
 ];
 
 fn page() -> RowPage {
+    page_of(13)
+}
+
+/// The first `rows` rows of `book_images`.
+fn page_of(rows: i64) -> RowPage {
     let column = |name: &str, type_name: &str, kind| ColumnMeta {
         name: name.into(),
         type_name: type_name.into(),
         kind,
     };
-    let rows = (0..13i64)
+    let rows = (0..rows)
         .map(|i| {
             vec![
                 Value::Int(i + 2),
@@ -351,7 +356,8 @@ fn shots() {
         harness.answer_sql(Ok(crate::testing::script_outcome(vec![failed])), None);
     });
     // The results' other states: nothing run yet, a run on its way, every
-    // statement in Messages, a refusal, a cancel and a cut result.
+    // statement in Messages, a refusal, a cancel and a cut result. Each
+    // answer is one its script could get.
     both("sql-idle", |harness| {
         let tab = workspace(harness);
         harness.app.apply(Action::NewSqlTab(tab));
@@ -360,8 +366,13 @@ fn shots() {
         let tab = sql_editor(harness);
         run_sql(harness, tab, true);
     });
+    // The first statement names a column that is not there, on its second
+    // line (the position counts from the comment it starts with).
     both("sql-messages", |harness| {
-        let tab = sql_editor(harness);
+        let script = SCRIPT
+            .replace("SELECT kind", "SELECT kindd")
+            .replace("BY kind", "BY kindd");
+        let tab = sql_script(harness, &script);
         run_sql(harness, tab, true);
         let failed = tabletist_db::StatementOutcome::Error {
             error: tabletist_db::Error::Query {
@@ -374,8 +385,10 @@ fn shots() {
         };
         harness.answer_sql(Ok(crate::testing::script_outcome(vec![failed])), None);
     });
+    // The script's sixth line would end the transaction.
     both("sql-refused", |harness| {
-        let tab = sql_editor(harness);
+        let script = SCRIPT.replace("SELECT * FROM book_images", "COMMIT");
+        let tab = sql_script(harness, &script);
         run_sql(harness, tab, true);
         let refused = tabletist_db::Error::Refused {
             line: 6,
@@ -389,21 +402,42 @@ fn shots() {
             pane: crate::model::ResultPane::Results,
         });
     });
+    // The first statement counts the two kinds; the second runs out of time.
     both("sql-cancelled", |harness| {
-        let tab = sql_editor(harness);
+        let tab = sql_script(harness, SCRIPT);
         run_sql(harness, tab, true);
-        let mut outcome = crate::testing::script_outcome(vec![
-            tabletist_db::StatementOutcome::Done { affected: None },
-            tabletist_db::StatementOutcome::Cancelled,
-        ]);
-        outcome.stopped = true;
+        let column = |name: &str, type_name: &str, kind| ColumnMeta {
+            name: name.into(),
+            type_name: type_name.into(),
+            kind,
+        };
+        let kinds = tabletist_db::StatementOutcome::Rows {
+            columns: vec![
+                column("kind", "varchar", ValueKind::Text),
+                column("images", "int8", ValueKind::Numeric),
+            ],
+            rows: vec![
+                vec![Value::Text("cover".into()), Value::Int(7)],
+                vec![Value::Text("preview".into()), Value::Int(6)],
+            ],
+            truncated: false,
+        };
+        let outcome =
+            crate::testing::script_outcome(vec![kinds, tabletist_db::StatementOutcome::Cancelled]);
         let timeout = crate::backend::CancelReason::Timeout(Duration::from_secs(30));
         harness.answer_sql(Ok(outcome), Some(timeout));
     });
+    // A limit of 100 rows, and a table with more.
     both("sql-truncated", |harness| {
-        let tab = sql_editor(harness);
+        let tab = sql_script(harness, SCRIPT);
+        let sql_tab = harness.app.workspace(tab).unwrap().active_tab.unwrap();
+        harness.app.apply(Action::SetSqlLimit {
+            tab,
+            sql_tab,
+            limit: 100,
+        });
         run_sql(harness, tab, false);
-        let page = page();
+        let page = page_of(100);
         let cut = tabletist_db::StatementOutcome::Rows {
             columns: page.columns,
             rows: page.rows,
@@ -419,21 +453,31 @@ fn run_sql(harness: &mut Harness, tab: ConnTabId, all: bool) {
     harness.app.apply(Action::RunSql { tab, sql_tab, all });
 }
 
-/// A SQL editor beside the open tables, its script run and answered.
-fn sql_editor(harness: &mut Harness) -> ConnTabId {
+/// The script the SQL scenes show: two statements over `book_images`.
+const SCRIPT: &str = "-- Images of each kind\n\
+                      SELECT kind, count(*) AS images\n  \
+                      FROM book_images\n \
+                      GROUP BY kind;\n\n\
+                      SELECT * FROM book_images";
+
+/// A SQL editor beside the open tables, holding `script`.
+fn sql_script(harness: &mut Harness, script: &str) -> ConnTabId {
     let tab = workspace(harness);
     harness.app.apply(Action::NewSqlTab(tab));
     let workspace = harness.app.workspace_mut(tab).unwrap();
     workspace.server_version.value = Some("PostgreSQL 17.2".into());
     let id = workspace.active_tab.unwrap();
     let sql = workspace.sql_tab_mut(id).unwrap();
-    sql.text = "-- Images of each kind\n\
-                SELECT kind, count(*) AS images\n  \
-                FROM book_images\n \
-                GROUP BY kind;\n\n\
-                SELECT * FROM book_images"
-        .into();
+    sql.text = script.into();
     sql.cursor = sql.text.len();
+    tab
+}
+
+/// A SQL editor beside the open tables, its last statement run and
+/// answered with the table's rows.
+fn sql_editor(harness: &mut Harness) -> ConnTabId {
+    let tab = sql_script(harness, SCRIPT);
+    let id = harness.app.workspace(tab).unwrap().active_tab.unwrap();
     harness.app.apply(Action::RunSql {
         tab,
         sql_tab: id,

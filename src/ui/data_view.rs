@@ -999,6 +999,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
                         sort: object.sort_of(&column.name),
                         key,
                         flexible: column.kind == ValueKind::Json,
+                        sortable: true,
                     }
                 })
                 .collect();

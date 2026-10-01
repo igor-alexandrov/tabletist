@@ -310,10 +310,9 @@ fn consume_press(input: &mut egui::InputState, modifiers: Modifiers, key: Key) -
 }
 
 /// Whether `sql` shows a result grid for the keys to move in: its last
-/// run's rows, unless the Messages pane covers them. After a run that
-/// failed as a whole the rows still held are an older run's, not shown.
+/// run's rows, unless the Messages pane covers them.
 fn shows_grid(sql: &crate::model::SqlTab) -> bool {
-    sql.pane == crate::model::ResultPane::Results && sql.last_run().is_some() && sql.dims().0 > 0
+    sql.pane == crate::model::ResultPane::Results && sql.dims().0 > 0
 }
 
 /// The first key of a two-key command (`dd`, `gd`), kept between frames.

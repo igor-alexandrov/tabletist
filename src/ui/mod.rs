@@ -2314,14 +2314,27 @@ mod tests {
             );
             assert!(harness.has("3 rows · 14 ms"), "{}", look.name);
             assert!(harness.has("Read-only transaction · rolled back"));
-            // A run that failed as a whole ran nothing: the rows still
-            // held are an older run's.
+            // A run that failed as a whole ran nothing, and the rows of
+            // the run before it are gone with it.
             harness.app.apply(crate::model::Action::RunSql {
                 tab,
                 sql_tab: id,
                 all: false,
             });
             harness.answer_sql(Err(tabletist_db::Error::query("no such server")), None);
+            assert!(!harness.has("3 rows · 14 ms"), "{}", look.name);
+            assert!(!harness.has("Read-only transaction · rolled back"));
+            // Nor do they come back with a run that is never answered
+            // (its session went away), which leaves no error either.
+            harness.app.apply(crate::model::Action::RunSql {
+                tab,
+                sql_tab: id,
+                all: false,
+            });
+            let workspace = harness.app.workspace_mut(tab).unwrap();
+            workspace.forget_session_requests();
+            let sql = active_sql(&harness, tab);
+            assert!(!sql.is_running() && sql.run.error.is_none());
             assert!(!harness.has("3 rows · 14 ms"), "{}", look.name);
             assert!(!harness.has("Read-only transaction · rolled back"));
         }
