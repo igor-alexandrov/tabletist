@@ -962,6 +962,53 @@ mod tests {
     }
 
     #[test]
+    fn a_held_run_key_runs_once() {
+        let mut harness = Harness::new();
+        let tab = harness.connect_fake();
+        harness.press(Key::T, Modifiers::COMMAND);
+        set_sql(&mut harness, tab, "SELECT 1;\nSELECT 2", 0);
+        let runs = |harness: &Harness| {
+            let sent = &harness.app.backend.sent;
+            sent.iter()
+                .filter(|command| matches!(command, Command::RunSql { .. }))
+                .count()
+        };
+        // What the window sends while the chord is held. egui decides for
+        // itself what repeats: a key going down that has not come up.
+        let repeat = |modifiers: Modifiers| egui::Event::Key {
+            key: Key::Enter,
+            physical_key: None,
+            pressed: true,
+            repeat: true,
+            modifiers,
+        };
+        let down = |modifiers: Modifiers| crate::testing::key(Key::Enter, modifiers);
+        let up = |modifiers: Modifiers| crate::testing::key_up(Key::Enter, modifiers);
+        let command = Modifiers::COMMAND;
+        let shift = Modifiers::COMMAND | Modifiers::SHIFT;
+        harness.settle();
+        harness.frame(vec![down(command), repeat(command)]);
+        harness.frame(vec![repeat(command)]);
+        harness.frame(vec![repeat(command), repeat(command)]);
+        harness.settle();
+        assert_eq!(runs(&harness), 1, "the press runs, its repeats do not");
+        harness.frame(vec![up(command)]);
+        harness.frame(vec![down(shift)]);
+        harness.frame(vec![repeat(shift)]);
+        harness.settle();
+        assert_eq!(runs(&harness), 2, "nor does a repeat run the statement");
+        assert!(matches!(
+            harness.app.backend.sent.last(),
+            Some(Command::RunSql { statements, .. }) if statements.len() == 2
+        ));
+        // Let go and pressed again, it runs again.
+        harness.frame(vec![up(shift)]);
+        harness.frame(vec![down(command)]);
+        harness.settle();
+        assert_eq!(runs(&harness), 3);
+    }
+
+    #[test]
     fn command_return_does_nothing_on_an_object_tab() {
         let mut harness = Harness::new();
         let tab = with_page(&mut harness);
@@ -996,10 +1043,21 @@ mod tests {
         let tab = harness.connect_fake();
         harness.press(Key::T, Modifiers::COMMAND);
         let sent = harness.app.backend.sent.len();
+        // The two Mod+R steps are the ones that need the gate in
+        // `keys::handle`: the tree has the arrows (here because the editor
+        // shows no grid, below because the tree was used last), so without
+        // the gate the key would refresh the tree.
         harness.press(Key::R, Modifiers::COMMAND);
-        harness.press(Key::F, Modifiers::COMMAND);
-        // Nor does the tree refresh when it has the arrows.
+        assert_eq!(harness.app.backend.sent.len(), sent, "no grid showing");
         harness.app.workspace_mut(tab).unwrap().pane = crate::model::Pane::Tree;
+        harness.press(Key::R, Modifiers::COMMAND);
+        assert_eq!(harness.app.backend.sent.len(), sent, "the tree pane");
+        // Mod+F shows nothing of the gate: the reducers ignore the filter
+        // bar on a SQL editor as well. So does Mod+R once a result's grid
+        // has the arrows (the reducer has nothing to refresh).
+        harness.press(Key::F, Modifiers::COMMAND);
+        with_sql_result(&mut harness, tab, 3);
+        let sent = harness.app.backend.sent.len();
         harness.press(Key::R, Modifiers::COMMAND);
         assert_eq!(harness.app.backend.sent.len(), sent);
         assert!(

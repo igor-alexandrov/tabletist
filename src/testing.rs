@@ -192,9 +192,11 @@ impl Harness {
         self.settle();
     }
 
+    /// Presses `key_` and lets it go. egui takes a key that goes down
+    /// again without having come up for a held key repeating.
     pub fn press(&mut self, key_: egui::Key, modifiers: egui::Modifiers) {
         self.settle();
-        self.frame(vec![key(key_, modifiers)]);
+        self.frame(vec![key(key_, modifiers), key_up(key_, modifiers)]);
         self.settle();
     }
 
@@ -300,6 +302,17 @@ pub fn key(key: egui::Key, modifiers: egui::Modifiers) -> egui::Event {
         key,
         physical_key: None,
         pressed: true,
+        repeat: false,
+        modifiers,
+    }
+}
+
+/// `key` coming up again.
+pub fn key_up(key: egui::Key, modifiers: egui::Modifiers) -> egui::Event {
+    egui::Event::Key {
+        key,
+        physical_key: None,
+        pressed: false,
         repeat: false,
         modifiers,
     }

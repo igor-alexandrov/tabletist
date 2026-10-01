@@ -88,44 +88,36 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
     });
     // Arrows go to the tree when the user last worked there (or no grid is
     // showing), else to the grid.
+    let any_grid = grid || sql_grid;
     let tree_arrows = !editing
-        && app.workspace(active).is_some_and(|workspace| {
-            workspace.pane == crate::model::Pane::Tree || !(grid || sql_grid)
-        });
+        && app
+            .workspace(active)
+            .is_some_and(|workspace| workspace.pane == crate::model::Pane::Tree || !any_grid);
     let mut actions = Vec::new();
     ctx.input_mut(|input| {
+        // Running works while typing: the editor never sees these. A held
+        // chord runs once, or each repeat would cancel the run before it.
+        // Shift variants first: egui ignores an extra Shift when matching.
+        if let Some((tab, sql_tab)) = sql {
+            for (modifiers, all) in [
+                (Modifiers::COMMAND | Modifiers::SHIFT, true),
+                (Modifiers::COMMAND, false),
+            ] {
+                if consume_press(input, modifiers, Key::Enter) {
+                    actions.push(Action::RunSql { tab, sql_tab, all });
+                }
+            }
+        }
         let mut key = |modifiers: Modifiers, key: Key, action: Action| {
             if input.consume_key(modifiers, key) {
                 actions.push(action);
             }
         };
-        // Shift variants first: egui ignores an extra Shift when matching.
         key(
             Modifiers::COMMAND | Modifiers::SHIFT,
             Key::W,
             Action::CloseConnTab(active),
         );
-        // Running works while typing: the editor never sees these.
-        if let Some((tab, sql_tab)) = sql {
-            key(
-                Modifiers::COMMAND | Modifiers::SHIFT,
-                Key::Enter,
-                Action::RunSql {
-                    tab,
-                    sql_tab,
-                    all: true,
-                },
-            );
-            key(
-                Modifiers::COMMAND,
-                Key::Enter,
-                Action::RunSql {
-                    tab,
-                    sql_tab,
-                    all: false,
-                },
-            );
-        }
         // A SQL editor has no row panel, and nothing to refresh or filter.
         let on_sql = sql.is_some();
         if !on_sql {
@@ -235,7 +227,7 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
                 );
             }
             key(Modifiers::COMMAND, Key::W, Action::CloseTab { tab, id });
-            if !editing && (grid || sql_grid) && !tree_arrows {
+            if !editing && any_grid && !tree_arrows {
                 let page = 20;
                 for (pressed, rows, cols) in [
                     (Key::ArrowUp, -1, 0),
@@ -295,6 +287,26 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
         actions.push(Action::ShowHelp);
     }
     app.actions.extend(actions);
+}
+
+/// Whether `key` with `modifiers` went down this frame. Consumes the
+/// repeats of a held key as well, which do not count as a press.
+fn consume_press(input: &mut egui::InputState, modifiers: Modifiers, key: Key) -> bool {
+    let mut fresh = false;
+    input.events.retain(|event| match event {
+        egui::Event::Key {
+            key: pressed,
+            modifiers: held,
+            pressed: true,
+            repeat,
+            ..
+        } if *pressed == key && held.matches_logically(modifiers) => {
+            fresh |= !repeat;
+            false
+        }
+        _ => true,
+    });
+    fresh
 }
 
 /// Whether `sql` shows a result grid for the keys to move in: its last
