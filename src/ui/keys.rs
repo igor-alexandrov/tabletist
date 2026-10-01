@@ -189,7 +189,10 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
             key(
                 Modifiers::COMMAND,
                 Key::W,
-                Action::CloseTab { tab, object_tab },
+                Action::CloseTab {
+                    tab,
+                    id: object_tab,
+                },
             );
             if !editing && grid && !tree_arrows {
                 let page = 20;
@@ -208,7 +211,7 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
                         pressed,
                         Action::MoveSelection {
                             tab,
-                            object_tab,
+                            id: object_tab,
                             rows,
                             cols,
                         },
@@ -346,15 +349,13 @@ fn letters(app: &mut App, ctx: &egui::Context, actions: &mut Vec<Action>) {
     let panel = workspace.row_panel;
     // The digits follow the strip, so they reach SQL editors too.
     let tabs: Vec<_> = workspace.tabs.iter().map(crate::model::Tab::id).collect();
-    let active = workspace.active_tab;
+    // The letters below act on an object tab: none of them on a SQL editor.
+    let active = workspace.active_object_tab().map(|object| object.id);
     for (index, number) in NUMBERS.into_iter().enumerate() {
         if pressed(number)
-            && let Some(object_tab) = tabs.get(index)
+            && let Some(id) = tabs.get(index)
         {
-            actions.push(Action::ActivateTab {
-                tab,
-                object_tab: *object_tab,
-            });
+            actions.push(Action::ActivateTab { tab, id: *id });
         }
     }
     if pressed(Key::T) {
@@ -380,7 +381,7 @@ fn letters(app: &mut App, ctx: &egui::Context, actions: &mut Vec<Action>) {
     };
     let step = |rows: isize, cols: isize| Action::MoveSelection {
         tab,
-        object_tab,
+        id: object_tab,
         rows,
         cols,
     };

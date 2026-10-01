@@ -782,6 +782,40 @@ mod tests {
         assert_eq!(harness.app.workspace(tab).unwrap().active_tab, users);
     }
 
+    #[test]
+    fn the_terminal_letters_for_an_object_do_nothing_on_a_sql_editor() {
+        let mut harness = Harness::new();
+        harness.set_look(crate::theme::Look::omarchy());
+        let tab = with_page(&mut harness);
+        focus_grid(&mut harness, tab);
+        let users = harness.app.workspace(tab).unwrap().active_tab.unwrap();
+        let query = harness.add_sql_tab(tab);
+        harness
+            .app
+            .apply(crate::model::Action::ActivateTab { tab, id: query });
+        let panel = harness.app.workspace(tab).unwrap().row_panel;
+        harness.settle();
+        // A real key press sends the key and its text.
+        harness.frame(vec![
+            crate::testing::key(Key::Slash, Modifiers::NONE),
+            egui::Event::Text("/".into()),
+        ]);
+        // Read before the next frame, which would take the flag.
+        assert!(
+            !harness.app.workspace(tab).unwrap().focus_where,
+            "a SQL editor has no WHERE line to focus"
+        );
+        harness.press(Key::I, Modifiers::NONE);
+        harness.press(Key::S, Modifiers::NONE);
+        let workspace = harness.app.workspace(tab).unwrap();
+        assert_eq!(workspace.row_panel, panel);
+        assert_eq!(
+            workspace.object_tab(users).unwrap().view,
+            crate::model::ObjectView::Data
+        );
+        assert_eq!(workspace.active_tab, Some(query));
+    }
+
     fn with_page(harness: &mut Harness) -> crate::model::ConnTabId {
         let tab = harness.connect_fake();
         harness.click("users");
@@ -2032,7 +2066,7 @@ mod tests {
         );
         harness.app.apply(crate::model::Action::SelectCell {
             tab,
-            object_tab,
+            id: object_tab,
             cell: crate::model::CellPos { row: 0, col: 0 },
         });
         harness.press(Key::ArrowDown, Modifiers::NONE);
@@ -2670,7 +2704,7 @@ mod tests {
         harness.answer_rows(crate::testing::page(3, true));
         harness.app.apply(crate::model::Action::SelectCell {
             tab: harness.app.active_tab_id(),
-            object_tab: harness
+            id: harness
                 .app
                 .workspace(harness.app.active_tab_id())
                 .unwrap()
@@ -2953,10 +2987,10 @@ mod tests {
         harness.answer_rows(page);
         let workspace = harness.app.workspace_mut(tab).unwrap();
         workspace.row_panel = true;
-        let object_tab = workspace.active_tab.unwrap();
+        let id = workspace.active_tab.unwrap();
         harness.app.apply(crate::model::Action::SelectCell {
             tab,
-            object_tab,
+            id,
             cell: crate::model::CellPos { row: 0, col: 1 },
         });
         let labels = crate::testing::labels(&harness.settle());
@@ -3006,10 +3040,10 @@ mod tests {
         harness.answer_rows(crate::testing::page(1, false));
         let workspace = harness.app.workspace_mut(tab).unwrap();
         workspace.row_panel = true;
-        let object_tab = workspace.active_tab.unwrap();
+        let id = workspace.active_tab.unwrap();
         harness.app.apply(crate::model::Action::SelectCell {
             tab,
-            object_tab,
+            id,
             cell: crate::model::CellPos { row: 0, col: 0 },
         });
         harness.settle();

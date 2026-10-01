@@ -307,7 +307,7 @@ pub fn key(key: egui::Key, modifiers: egui::Modifiers) -> egui::Event {
 
 use crate::backend::{Command, Event, RequestId, SessionId};
 use crate::connections::{ConnectionId, SavedConnection};
-use crate::model::{Action, ConnTabId, SqlTab, Tab, TabId, Workspace};
+use crate::model::{Action, ConnTabId, TabId, Workspace};
 use tabletist_db::{ConnectSpec, Driver, ObjectInfo, ObjectKind};
 
 pub fn last_sent(app: &App) -> &Command {
@@ -320,14 +320,7 @@ impl Harness {
     pub fn add_sql_tab(&mut self, tab: ConnTabId) -> TabId {
         let id = TabId(self.app.next_id());
         let workspace = self.app.workspace_mut(tab).expect("a workspace");
-        let number = workspace.next_query;
-        workspace.next_query += 1;
-        workspace.tabs.push(Tab::Sql(Box::new(SqlTab::new(
-            id,
-            number,
-            1_000,
-            Some(std::time::Duration::from_secs(30)),
-        ))));
+        workspace.push_sql_tab(id, 1_000, Some(std::time::Duration::from_secs(30)));
         id
     }
 }

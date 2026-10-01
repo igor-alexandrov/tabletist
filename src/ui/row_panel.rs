@@ -286,7 +286,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
                     if response.clicked() && enabled {
                         actions.push(Action::MoveSelection {
                             tab,
-                            object_tab,
+                            id: object_tab,
                             rows: step,
                             cols: 0,
                         });
@@ -332,7 +332,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
                         can_next,
                         Action::MoveSelection {
                             tab,
-                            object_tab,
+                            id: object_tab,
                             rows: 1,
                             cols: 0,
                         },
@@ -343,7 +343,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
                         can_prev,
                         Action::MoveSelection {
                             tab,
-                            object_tab,
+                            id: object_tab,
                             rows: -1,
                             cols: 0,
                         },

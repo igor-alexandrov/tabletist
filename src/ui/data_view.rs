@@ -1071,7 +1071,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
             if let Some(cell) = output.clicked {
                 actions.push(Action::SelectCell {
                     tab,
-                    object_tab,
+                    id: object_tab,
                     cell,
                 });
             }
@@ -1192,7 +1192,7 @@ mod tests {
             let object_tab = harness.app.workspace(tab).unwrap().active_tab.unwrap();
             harness.app.apply(Action::SelectCell {
                 tab,
-                object_tab,
+                id: object_tab,
                 cell: crate::model::CellPos { row: 4, col: 0 },
             });
             let tree = harness.settle();

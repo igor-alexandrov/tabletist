@@ -210,7 +210,7 @@ fn workspace(harness: &mut Harness) -> ConnTabId {
     let object_tab = harness.app.workspace(tab).unwrap().active_tab.unwrap();
     harness.app.apply(Action::SelectCell {
         tab,
-        object_tab,
+        id: object_tab,
         cell: CellPos { row: 4, col: 0 },
     });
     tab
@@ -440,7 +440,7 @@ mod mock {
                     harness.answer_rows(covers());
                     harness.app.apply(Action::SelectCell {
                         tab,
-                        object_tab,
+                        id: object_tab,
                         cell: CellPos { row: 0, col: 0 },
                     });
                 }
@@ -724,7 +724,7 @@ mod mock {
         workspace.tabs.reverse();
         harness.app.apply(Action::SelectCell {
             tab,
-            object_tab,
+            id: object_tab,
             cell: CellPos { row: 0, col: 0 },
         });
         tab

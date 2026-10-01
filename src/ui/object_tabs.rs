@@ -41,7 +41,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
     let tabs: Vec<(TabId, String, bool)> = workspace
         .tabs
         .iter()
-        .map(|tab| match tab {
+        .map(|open| match open {
             model::Tab::Object(object) => {
                 let shared = workspace.name_is_shared(&object.object);
                 let name = crate::ui::format::object_title(&object.object, shared);
@@ -135,16 +135,10 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                                         object_tab: *id,
                                     });
                                 } else if response.clicked() {
-                                    actions.push(Action::ActivateTab {
-                                        tab,
-                                        object_tab: *id,
-                                    });
+                                    actions.push(Action::ActivateTab { tab, id: *id });
                                 }
                                 if response.middle_clicked() {
-                                    actions.push(Action::CloseTab {
-                                        tab,
-                                        object_tab: *id,
-                                    });
+                                    actions.push(Action::CloseTab { tab, id: *id });
                                 }
                                 // The close button: on the active tab, or
                                 // where the pointer is (macOS).
@@ -165,10 +159,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                                     let close = format!("{} {name}", gettext(locale, "Close"));
                                     if small_close(&mut close_ui, &close, &look, &palette).clicked()
                                     {
-                                        actions.push(Action::CloseTab {
-                                            tab,
-                                            object_tab: *id,
-                                        });
+                                        actions.push(Action::CloseTab { tab, id: *id });
                                     }
                                 }
                             }
