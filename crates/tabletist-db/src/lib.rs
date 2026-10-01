@@ -12,6 +12,7 @@ mod mysql;
 mod pg;
 mod query;
 mod spec;
+pub mod sql;
 mod sqlite;
 mod ssh;
 pub mod ssh_config;
