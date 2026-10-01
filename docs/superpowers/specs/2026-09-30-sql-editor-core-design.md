@@ -191,9 +191,11 @@ Four layers, all in `tabletist-db`, so no caller can skip them.
    and MySQL `SELECT @@session.transaction_read_only` (falling back to
    `@@session.tx_read_only` on "unknown system variable", for MariaDB before
    11.1, as `server_identity` does). Only an explicit `off` (or `0`) is
-   `Error::LeftReadOnly`. On PostgreSQL the check is skipped when the last
-   statement ended in `Error` or `Cancelled`: the transaction is then
-   aborted, cannot write, and `ROLLBACK` ends it.
+   `Error::LeftReadOnly`. On PostgreSQL the check is skipped when the
+   transaction is known to be aborted (a statement failed or was cancelled
+   inside it): it cannot write, and `ROLLBACK` ends it. The driver tracks
+   that state itself (open, aborted or left) rather than reading it off the
+   last result, so a run stopped between statements is still checked.
 
 Cleanup after every script, on every path:
 
@@ -221,9 +223,12 @@ One that lands on the checks after the last statement or on the cleanup is
 ignored for the outcome, and the interrupted step runs once more (the driver
 marks the run as finishing first, so the backend stops repeating its
 cancel); a MySQL session is never left read-write after a reset because a
-`SET` was interrupted. On PostgreSQL a cancel aborts the transaction, so a
-check it interrupted cannot be run again and the session is closed instead:
-a safe failure in a narrow window. If `LeftReadOnly` is found, or a cleanup
+`SET` was interrupted. On PostgreSQL a cancel aborts the transaction; the
+driver then asks the server once more where it stands: still inside (a
+failed transaction, which cannot write) means a clean `ROLLBACK`, outside
+means `LeftReadOnly`. A `BEGIN` that fails for any reason but a cancel
+closes the session, since it would fail the same way on every later run.
+If `LeftReadOnly` is found, or a cleanup
 step fails (including a retried step that fails again), `run_script`
 returns the error and the backend closes the session, so its
 state cannot reach later queries; the error counts as a lost connection
