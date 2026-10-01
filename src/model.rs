@@ -389,11 +389,18 @@ pub struct ConnectionForm {
     /// The connection as saved, when editing one. Saved secrets belong to
     /// its servers and are never sent to another one.
     pub saved_spec: Option<ConnectSpec>,
-    /// Text in the "Paste URL" field.
+    /// Text in the URL field.
     pub url: String,
+    /// The URL field is showing: the dialog's URL tab, the terminal look's
+    /// `u`.
+    pub url_mode: bool,
     /// A validation or URL error shown under the fields.
     pub message: Option<String>,
     pub test: TestState,
+    /// When the running Test was sent to the server.
+    pub test_started: Option<std::time::Instant>,
+    /// How long the Test that passed took.
+    pub test_took: Option<std::time::Duration>,
     /// The file dialog request in flight, if any.
     pub pick_request: Option<RequestId>,
     /// Which field the file dialog fills.
@@ -486,8 +493,11 @@ impl Default for ConnectionForm {
             has_saved_password: false,
             saved_spec: None,
             url: String::new(),
+            url_mode: false,
             message: None,
             test: TestState::Idle,
+            test_started: None,
+            test_took: None,
             pick_request: None,
             pick_target: PickTarget::Sqlite,
             ssh: false,

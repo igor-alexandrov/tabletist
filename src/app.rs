@@ -982,6 +982,10 @@ impl App {
                 };
                 form.message = None;
                 form.test = TestState::Running(request);
+                // The clock starts when the Test is sent, not while a saved
+                // secret is read from the keyring.
+                form.test_started = None;
+                form.test_took = None;
                 // Typed secrets are used as they are; unchanged saved ones
                 // are read from the keyring first, and the test runs once
                 // the last one arrives.
@@ -1026,6 +1030,7 @@ impl App {
                 form.test_secrets = secrets.clone();
                 form.test_waiting = loads.len() as u8;
                 if loads.is_empty() {
+                    form.test_started = Some(std::time::Instant::now());
                     self.backend.send(Command::Test {
                         request,
                         spec,
@@ -1530,6 +1535,8 @@ impl App {
                 if let Some(Dialog::Connection(form)) = &mut self.dialog
                     && form.test == TestState::Running(request)
                 {
+                    let elapsed = form.test_started.take().map(|started| started.elapsed());
+                    form.test_took = if result.is_ok() { elapsed } else { None };
                     // The key belongs to the SSH host the test reached, which
                     // the error names (a Host alias's HostName), not whatever
                     // the fields say now.
@@ -1725,6 +1732,7 @@ impl App {
                                 if form.test_waiting == 0
                                     && let Some(spec) = form.test_spec.clone()
                                 {
+                                    form.test_started = Some(std::time::Instant::now());
                                     self.backend.send(Command::Test {
                                         request: test,
                                         spec,
@@ -2465,6 +2473,7 @@ fn apply_url(form: &mut ConnectionForm) {
             form.driver = Driver::Sqlite;
             form.sqlite_path = path;
             form.message = None;
+            form.url_mode = false;
         }
         Driver::Postgres | Driver::MySql => {
             if form.name.trim().is_empty() {
@@ -2493,6 +2502,7 @@ fn apply_url(form: &mut ConnectionForm) {
                 form.password_mode = PasswordMode::Keyring;
             }
             form.message = None;
+            form.url_mode = false;
         }
     }
 }
@@ -2968,6 +2978,88 @@ mod tests {
         assert_eq!(form(&mut app).database, "shop");
         assert_eq!(form(&mut app).tls, tabletist_db::TlsMode::Require);
         assert!(form(&mut app).message.is_none());
+    }
+
+    #[test]
+    fn a_url_that_fills_the_form_leaves_the_url_field() {
+        let (mut app, _dir) = app();
+        app.apply(Action::NewConnection);
+        form(&mut app).url_mode = true;
+        form(&mut app).url = "not a url".into();
+        app.apply(Action::ApplyUrl);
+        assert!(form(&mut app).message.is_some());
+        assert!(
+            form(&mut app).url_mode,
+            "a URL that does not parse stays to be fixed"
+        );
+        form(&mut app).url = "postgres://me@db.example.com/app".into();
+        app.apply(Action::ApplyUrl);
+        assert!(!form(&mut app).url_mode);
+        assert_eq!(form(&mut app).host, "db.example.com");
+        form(&mut app).url_mode = true;
+        form(&mut app).url = "sqlite:///srv/app.db".into();
+        app.apply(Action::ApplyUrl);
+        assert!(!form(&mut app).url_mode);
+        assert_eq!(form(&mut app).sqlite_path, "/srv/app.db");
+    }
+
+    #[test]
+    fn a_test_that_passes_says_how_long_it_took() {
+        let (mut app, _dir) = app();
+        app.apply(Action::NewConnection);
+        form(&mut app).url = "postgres://me@localhost/app".into();
+        app.apply(Action::ApplyUrl);
+        app.apply(Action::TestConnection);
+        let request = match form(&mut app).test {
+            TestState::Running(request) => request,
+            ref other => panic!("{other:?}"),
+        };
+        assert!(form(&mut app).test_started.is_some());
+        app.apply(Action::Backend(Event::Tested {
+            request,
+            result: Ok(()),
+        }));
+        assert_eq!(form(&mut app).test, TestState::Passed);
+        assert!(form(&mut app).test_took.is_some());
+        // The next Test forgets that time until it finishes itself.
+        app.apply(Action::TestConnection);
+        assert!(form(&mut app).test_took.is_none());
+        // A Test that fails has no time to show.
+        let request = match form(&mut app).test {
+            TestState::Running(request) => request,
+            ref other => panic!("{other:?}"),
+        };
+        app.apply(Action::Backend(Event::Tested {
+            request,
+            result: Err(Error::Connect("nope".into())),
+        }));
+        assert!(matches!(form(&mut app).test, TestState::Failed(_)));
+        assert!(form(&mut app).test_took.is_none());
+    }
+
+    #[test]
+    fn the_test_clock_starts_when_the_test_is_sent_not_while_the_keyring_is_read() {
+        let (mut app, _dir) = app();
+        let conn = postgres_saved(&mut app, PasswordMode::Keyring);
+        app.apply(Action::EditConnection(conn));
+        app.apply(Action::TestConnection);
+        let Some(Command::LoadSecret { request, .. }) = app.backend.sent.last() else {
+            panic!()
+        };
+        let request = *request;
+        assert!(
+            form(&mut app).test_started.is_none(),
+            "waiting for the keyring is not the Test"
+        );
+        app.apply(Action::Backend(Event::SecretLoaded {
+            request,
+            result: Ok(Some(SecretString("pw".into()))),
+        }));
+        assert!(matches!(
+            app.backend.sent.last(),
+            Some(Command::Test { .. })
+        ));
+        assert!(form(&mut app).test_started.is_some());
     }
 
     #[test]
