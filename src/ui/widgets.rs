@@ -946,11 +946,13 @@ pub fn filter_field(
         (false, _) => (10.0, 14.0, 8.0),
     };
     let lead = border + pad + mark + gap + 2.0;
-    // The text's line, centred in the box.
+    // The text's line, centred in the box as painted text is: level with
+    // the magnifier.
     let line = style.role.row_height(ui.ctx(), look.faces);
+    let top = rect.center().y - style.role.middle(ui.ctx(), look.faces);
     let inner = Rect::from_min_max(
-        egui::pos2(rect.left() + lead, rect.center().y - line / 2.0),
-        egui::pos2(rect.right() - 8.0, rect.center().y + line / 2.0),
+        egui::pos2(rect.left() + lead, top),
+        egui::pos2(rect.right() - 8.0, top + line),
     );
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(inner));
     let mut layouter = crate::typography::layouter(look, style.role, palette.text);
@@ -1111,7 +1113,7 @@ pub fn segmented(
         }
         if let Some(text) = text {
             let laid = label(text, color).layout(ui.ctx());
-            laid.paint(&painter, cell.center() - laid.size() / 2.0);
+            laid.paint_center(&painter, cell.center());
         }
         if response.hovered() {
             let _ = response.on_hover_text(name);

@@ -195,13 +195,13 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     let title_text = Text::one(&look, title_role, &title, palette.text).layout(ui.ctx());
     let count_text = Text::one(&look, count_role, &total.to_string(), palette.dim).layout(ui.ctx());
     let (title_base, count_base) = (baseline(&title_text), baseline(&count_text));
-    let (title_height, count_height) = (title_text.height(), count_text.height());
+    let (title_middle, count_middle) = (title_text.middle(), count_text.middle());
     title_text.paint_left(ui.painter(), x, y);
     x += title_text.width() + if look.terminal { 12.0 } else { 10.0 };
     let count_y = if look.terminal {
         y
     } else {
-        y - title_height / 2.0 + title_base - count_base + count_height / 2.0
+        y - title_middle + title_base - count_base + count_middle
     };
     x += count_text.paint_left(ui.painter(), x, count_y);
     // New connection, at the right.
@@ -883,10 +883,7 @@ fn terminal_row(
             .rect_filled(rect, CornerRadius::ZERO, palette.selection);
         // The cursor: an accent block centred in the 22 pt first column.
         let cursor = Text::one(look, TextRole::OGroup, "▌", palette.accent).layout(ui.ctx());
-        cursor.paint(
-            ui.painter(),
-            pos2(rect.left() + 11.0, center) - cursor.size() / 2.0,
-        );
+        cursor.paint_center(ui.painter(), pos2(rect.left() + 11.0, center));
     } else if response.hovered() {
         ui.painter()
             .rect_filled(rect, CornerRadius::ZERO, palette.text.gamma_multiply(0.05));

@@ -612,7 +612,7 @@ pub fn env_badge(
     );
     ui.painter()
         .rect_filled(rect, CornerRadius::same(corner), colors.badge_bg());
-    laid.paint(ui.painter(), pos2(x + pad, y - laid.height() / 2.0));
+    laid.paint_left(ui.painter(), x + pad, y);
     rect.width()
 }
 
