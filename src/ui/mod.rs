@@ -3824,6 +3824,55 @@ mod tests {
     }
 
     #[test]
+    fn the_connection_dialog_is_solid_from_the_first_frame_it_shows() {
+        for look in crate::theme::Look::ALL {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            let id = add_saved(&mut harness, "Shop");
+            harness.settle();
+            let palette = harness.app.palette;
+            let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, harness.size);
+            // The veil over the window, as the look's dialogs draw it.
+            let veil =
+                crate::ui::widgets::modal(egui::Id::new("veil"), &look, &palette).backdrop_color;
+            let title = look.label("Edit connection");
+            harness.app.apply(crate::model::Action::EditConnection(id));
+            // egui fades an area in, and a sheet this large is see-through
+            // while it does: the window shows through its fields. So the
+            // veil is whole on every frame it is drawn, and never drawn
+            // before the dialog.
+            let mut shown = false;
+            for frame in 0..8 {
+                harness.frame(Vec::new());
+                let veils: Vec<egui::Color32> = harness
+                    .fills
+                    .iter()
+                    .filter(|(rect, color)| rect.contains_rect(screen) && !color.is_opaque())
+                    .map(|(_, color)| *color)
+                    .collect();
+                let titled = harness.painted_color(&title).is_some();
+                if veils.is_empty() && !titled {
+                    assert!(!shown, "{}: the dialog went away", look.name);
+                    continue;
+                }
+                shown = true;
+                assert!(
+                    titled,
+                    "{}, frame {frame}: the window is veiled before the dialog shows",
+                    look.name
+                );
+                assert_eq!(
+                    veils,
+                    [veil],
+                    "{}, frame {frame}: the dialog is fading in",
+                    look.name
+                );
+            }
+            assert!(shown, "{}: the dialog never showed", look.name);
+        }
+    }
+
+    #[test]
     fn the_dialog_reaches_its_height_at_once() {
         for look in crate::theme::Look::ALL {
             let mut harness = Harness::new();

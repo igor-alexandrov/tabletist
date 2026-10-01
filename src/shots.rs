@@ -79,10 +79,6 @@ fn edit_production(harness: &mut Harness) {
         form.test = crate::model::TestState::Passed;
         form.test_took = Some(Duration::from_millis(42));
     }
-    // A dialog fades in over its first frames: the shot is of what stays.
-    for _ in 0..6 {
-        harness.settle();
-    }
 }
 
 const TABLES: [&str; 30] = [
