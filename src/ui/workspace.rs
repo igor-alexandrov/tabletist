@@ -82,7 +82,11 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                     super::row_panel::show(app, ui, tab, object_tab);
                 }
             }
+            let sql = app
+                .workspace(tab)
+                .is_some_and(|workspace| workspace.active_sql_tab().is_some());
             match active {
+                Some(sql_tab) if sql => super::sql_editor::show(app, ui, tab, sql_tab),
                 Some(object_tab) => {
                     super::data_view::header(app, ui, tab, object_tab);
                     if view == Some(ObjectView::Data) {
@@ -616,16 +620,20 @@ pub fn env_badge(
     rect.width()
 }
 
-/// Omarchy's bottom line: the keys that work here, and the page's range.
+/// Omarchy's bottom line: the keys that work here, and the page's range
+/// or, on a SQL editor, the cursor and what the last run did.
 fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
     let palette = app.palette;
     let look = app.look;
+    let locale = app.locale;
     let Some(workspace) = app.workspace(tab) else {
         return;
     };
-    let summary = workspace
-        .active_object_tab()
-        .and_then(|object| {
+    let editor = super::sql_editor::status_summary(app, tab);
+    let on_editor = editor.is_some();
+    let summary = editor
+        .or_else(|| {
+            let object = workspace.active_object_tab()?;
             let page = object.page()?;
             let first = object.query.offset + u64::from(!page.rows.is_empty());
             let last = object.query.offset + page.rows.len() as u64;
@@ -650,7 +658,7 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
             let rect = ui.max_rect();
             widgets::hline(ui, rect.x_range(), rect.top() + 0.5, palette.outline);
             let y = rect.top() + 1.0 + 15.0;
-            let hints = [
+            let table_hints = [
                 ("j/k", "row", true),
                 ("h/l", "col", true),
                 ("enter", "inspect", true),
@@ -660,25 +668,60 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                 ("y", "copy", true),
                 ("s", "structure", true),
             ];
+            // An editor's keys: a table's do nothing on it.
+            let words = ["run", "run all", "cancel", "leave editor", "tables"]
+                .map(|word| gettext(locale, word));
+            let editor_hints = [
+                ("ctrl+enter", &*words[0], true),
+                ("ctrl+shift+enter", &*words[1], true),
+                ("ctrl+.", &*words[2], true),
+                ("esc", &*words[3], true),
+                ("ctrl+b", &*words[4], true),
+            ];
+            let hints: &[widgets::Hint<'_>] = if on_editor {
+                &editor_hints
+            } else {
+                &table_hints
+            };
             let role = TextRole::OSecondary;
             let measure = |text: &str| widgets::measure(ui, label_copy(&look, role, text));
-            let tag = gettext(app.locale, "read-only");
-            let tag_width = measure(&tag) + 12.0 + 2.0;
             let summary_width = measure(&summary);
             // Everything 18 apart, 12 in from the ends. What does not fit
             // before the range gives way from the end.
             let gap = 18.0;
+            let fit = |limit: f32| {
+                (0..=hints.len())
+                    .rev()
+                    .find(|&count| {
+                        rect.left()
+                            + 12.0
+                            + widgets::key_hints_width(ui, &hints[..count], gap, &look, &palette)
+                            <= limit
+                    })
+                    .unwrap_or(0)
+            };
+            if on_editor {
+                // The toolbar says the transaction is read-only; the line
+                // has no editing keys to strike out.
+                let shown = fit(rect.right() - 12.0 - summary_width - gap);
+                let at = (rect.left() + 12.0, y);
+                widgets::key_hints(ui, at, &hints[..shown], gap, &look, &palette);
+                widgets::paint_text_right(
+                    ui,
+                    rect.right() - 12.0,
+                    y,
+                    Text::one(&look, role, &summary, palette.dim),
+                );
+                return;
+            }
+            let tag = gettext(locale, "read-only");
+            let tag_width = measure(&tag) + 12.0 + 2.0;
             let limit = rect.right() - 12.0 - summary_width - gap - tag_width - gap;
             let disabled = ["e edit", "o new row", "dd delete", ":w write"];
             let disabled_width = disabled.iter().map(|text| measure(text)).sum::<f32>()
                 + 14.0 * (disabled.len() - 1) as f32;
             let mut x = rect.left() + 12.0;
-            let shown = (0..=hints.len())
-                .rev()
-                .find(|&count| {
-                    x + widgets::key_hints_width(ui, &hints[..count], gap, &look, &palette) <= limit
-                })
-                .unwrap_or(0);
+            let shown = fit(limit);
             x += widgets::key_hints(ui, (x, y), &hints[..shown], gap, &look, &palette) + gap;
             let separator = measure("│");
             if shown == hints.len() && x + separator + gap + disabled_width <= limit {

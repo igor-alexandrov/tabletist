@@ -326,6 +326,51 @@ fn shots() {
         });
         harness.answer_structure(structure());
     });
+    both("sql", |harness| {
+        sql_editor(harness);
+    });
+    both("sql-menu", |harness| {
+        sql_editor(harness);
+        harness.click("Timeout");
+    });
+}
+
+/// A SQL editor beside the open tables, its script run and answered.
+fn sql_editor(harness: &mut Harness) -> ConnTabId {
+    let tab = workspace(harness);
+    harness.app.apply(Action::NewSqlTab(tab));
+    let workspace = harness.app.workspace_mut(tab).unwrap();
+    workspace.server_version.value = Some("PostgreSQL 17.2".into());
+    let id = workspace.active_tab.unwrap();
+    let sql = workspace.sql_tab_mut(id).unwrap();
+    sql.text = "-- Images of each kind\n\
+                SELECT kind, count(*) AS images\n  \
+                FROM book_images\n \
+                GROUP BY kind;\n\n\
+                SELECT * FROM book_images"
+        .into();
+    sql.cursor = sql.text.len();
+    harness.app.apply(Action::RunSql {
+        tab,
+        sql_tab: id,
+        all: false,
+    });
+    let page = page();
+    harness.answer_sql(
+        Ok(tabletist_db::ScriptOutcome {
+            results: vec![tabletist_db::StatementResult {
+                elapsed: Duration::from_millis(14),
+                outcome: tabletist_db::StatementOutcome::Rows {
+                    columns: page.columns,
+                    rows: page.rows,
+                    truncated: false,
+                },
+            }],
+            stopped: false,
+        }),
+        None,
+    );
+    tab
 }
 
 #[test]

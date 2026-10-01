@@ -1,4 +1,5 @@
-//! The object tab bar inside a connection tab. Preview tabs read fainter.
+//! The tab bar inside a connection tab: the open tables and views and the
+//! SQL editors. Preview tabs read fainter.
 
 use egui::{CornerRadius, Frame, Id, Rect, Sense, WidgetInfo, WidgetType, pos2, vec2};
 
@@ -7,7 +8,7 @@ use crate::i18n::gettext;
 use crate::model::{self, Action, ConnTabId, TabId};
 use crate::theme::{Icon, Look, Palette};
 use crate::typography::{Text, TextRole};
-use crate::ui::widgets::{self, icon_button};
+use crate::ui::widgets::{self, ButtonSpec, icon_button};
 
 /// The strip's height, per look.
 pub fn height(look: &Look) -> f32 {
@@ -37,19 +38,21 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
     let Some(workspace) = app.workspace(tab) else {
         return;
     };
-    // A SQL editor is never a preview, so it draws like a pinned tab.
-    let tabs: Vec<(TabId, String, bool)> = workspace
+    // Each tab's id, name, whether it is pinned and whether it is a SQL
+    // editor (never a preview, so it draws like a pinned tab).
+    let tabs: Vec<(TabId, String, bool, bool)> = workspace
         .tabs
         .iter()
         .map(|open| match open {
             model::Tab::Object(object) => {
                 let shared = workspace.name_is_shared(&object.object);
                 let name = crate::ui::format::object_title(&object.object, shared);
-                (object.id, name, object.pinned)
+                (object.id, name, object.pinned, false)
             }
             model::Tab::Sql(sql) => (
                 sql.id,
                 format!("{} {}", gettext(locale, "Query"), sql.number),
+                true,
                 true,
             ),
         })
@@ -107,13 +110,14 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                     .show(ui, |ui| {
                         ui.horizontal(|ui| {
                             ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
-                            for (index, (id, name, pinned)) in tabs.iter().enumerate() {
+                            for (index, (id, name, pinned, sql)) in tabs.iter().enumerate() {
                                 let is_active = Some(*id) == active;
                                 let one = Tab {
                                     index,
                                     name,
                                     pinned: *pinned,
                                     active: is_active,
+                                    sql: *sql,
                                 };
                                 let response = if look.terminal {
                                     terminal_tab(ui, &one, bar, &look, &palette)
@@ -163,6 +167,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                                     }
                                 }
                             }
+                            if look.terminal {
+                                new_sql(ui, bar, tab, locale, &look, &palette, &mut actions);
+                            }
                         });
                     });
             });
@@ -201,12 +208,50 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
     app.actions.extend(actions);
 }
 
+/// The terminal's `+ sql` after the last tab: 8 from it and 4 from the
+/// strip's edges, 10 at its sides inside a 1 pt border, then room to
+/// scroll it clear of the row panel's toggle.
+fn new_sql(
+    ui: &mut egui::Ui,
+    bar: Rect,
+    tab: ConnTabId,
+    locale: crate::i18n::Locale,
+    look: &Look,
+    palette: &Palette,
+    actions: &mut Vec<Action>,
+) {
+    let text = format!("+ {}", gettext(locale, "sql"));
+    let label = gettext(locale, "New SQL editor");
+    let button = ButtonSpec::new(&text)
+        .label(&label)
+        .primary()
+        .role(TextRole::OGroup)
+        .shortcut("ctrl+t")
+        .shortcut_role(TextRole::OBody)
+        .padding(11.0)
+        .gap(8.0);
+    let width = button.width(ui, look);
+    let (cell, _) = ui.allocate_exact_size(
+        vec2(8.0 + width + 8.0 + TOGGLE_CELL, bar.height()),
+        Sense::hover(),
+    );
+    let place = Rect::from_min_size(
+        pos2(cell.left() + 8.0, cell.top() + 4.0),
+        vec2(width, cell.height() - 8.0),
+    );
+    if button.show_at(ui, place, look, palette).clicked() {
+        actions.push(Action::NewSqlTab(tab));
+    }
+}
+
 /// One tab to draw.
 struct Tab<'a> {
     index: usize,
     name: &'a str,
     pinned: bool,
     active: bool,
+    /// A SQL editor, not a table or view.
+    sql: bool,
 }
 
 /// macOS: full-height tabs; the active one white with an accent line on
@@ -241,7 +286,8 @@ fn mac_tab(
     }
     widgets::vline(ui, rect.right() - 0.5, rect.y_range(), palette.border);
     let center = rect.center().y;
-    Icon::Table.image(palette.secondary, 14.0).paint_at(
+    let icon = if tab.sql { Icon::Code } else { Icon::Table };
+    icon.image(palette.secondary, 14.0).paint_at(
         ui,
         Rect::from_center_size(pos2(rect.left() + 21.0, center), vec2(14.0, 14.0)),
     );
@@ -275,13 +321,19 @@ fn terminal_tab(
     // takes the text colour; a preview tab's reads fainter still.
     let role = TextRole::OBody;
     let number = (tab.index + 1).to_string();
+    // The look's lower case for an editor's name; a table keeps its own.
+    let name = if tab.sql {
+        look.label(tab.name)
+    } else {
+        tab.name.to_owned()
+    };
     let name_color = match (tab.active, tab.pinned) {
         (true, _) => palette.text,
         (false, true) => palette.dim,
         (false, false) => palette.faint,
     };
     let measure = |text: &str| role.width(ui.ctx(), look.faces, text);
-    let (number_width, name_width) = (measure(&number), measure(tab.name));
+    let (number_width, name_width) = (measure(&number), measure(&name));
     let width = 12.0 + number_width + 8.0 + name_width + 12.0;
     let (rect, response) = ui.allocate_exact_size(vec2(width, bar.height()), Sense::click());
     let painter = ui.painter();
@@ -304,7 +356,7 @@ fn terminal_tab(
         ui,
         rect.left() + 12.0 + number_width + 8.0,
         y,
-        Text::one(look, role, tab.name, name_color),
+        Text::one(look, role, &name, name_color),
     );
     response
 }

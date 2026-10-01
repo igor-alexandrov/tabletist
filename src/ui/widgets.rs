@@ -1153,6 +1153,10 @@ pub struct ButtonSpec<'a> {
     role: Option<TextRole>,
     shortcut_role: Option<TextRole>,
     icon_size: f32,
+    /// The contents start at the left and the shortcut ends at the right.
+    justified: bool,
+    /// The text muted and the shortcut in the text colour.
+    hint: bool,
 }
 
 impl<'a> ButtonSpec<'a> {
@@ -1171,7 +1175,23 @@ impl<'a> ButtonSpec<'a> {
             role: None,
             shortcut_role: None,
             icon_size: 14.0,
+            justified: false,
+            hint: false,
         }
+    }
+
+    /// For a button as wide as its container: the icon and the text start
+    /// at its left, the shortcut ends at its right.
+    pub fn justified(mut self) -> Self {
+        self.justified = true;
+        self
+    }
+
+    /// A secondary button that reads as a key hint does: the text muted,
+    /// the shortcut in the text colour.
+    pub fn hint(mut self) -> Self {
+        self.hint = true;
+        self
     }
 
     /// The icon's size (14 by default).
@@ -1382,6 +1402,11 @@ impl<'a> ButtonSpec<'a> {
                 palette.faint,
             ),
         };
+        let (text, shortcut) = if self.hint && self.kind == ButtonKind::Secondary {
+            (palette.dim, palette.text)
+        } else {
+            (text, shortcut)
+        };
         let painter = ui.painter();
         painter.rect_filled(rect, corner, fill);
         if let Some(border) = border {
@@ -1396,7 +1421,11 @@ impl<'a> ButtonSpec<'a> {
             );
         }
         let content = self.width(ui, look) - 2.0 * self.padding;
-        let mut x = rect.center().x - content / 2.0;
+        let mut x = if self.justified {
+            rect.left() + self.padding
+        } else {
+            rect.center().x - content / 2.0
+        };
         let y = rect.center().y;
         if let Some(icon) = self.icon {
             let size = self.icon_size;
@@ -1408,12 +1437,12 @@ impl<'a> ButtonSpec<'a> {
         }
         x += paint_text(ui, x, y, self.label_text(look, text));
         if let Some(keys) = self.shortcut {
-            paint_text(
-                ui,
-                x + self.gap,
-                y,
-                self.shortcut_text(keys, look, shortcut),
-            );
+            let keys = self.shortcut_text(keys, look, shortcut);
+            if self.justified {
+                paint_text_right(ui, rect.right() - self.padding, y, keys);
+            } else {
+                paint_text(ui, x + self.gap, y, keys);
+            }
         }
         match self.reason {
             Some(reason) => response.on_hover_text(reason),
