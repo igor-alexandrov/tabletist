@@ -459,6 +459,10 @@ struct Running {
     /// The running SQL editor script's stop flag: a Cancel and a Close set
     /// it too, so the script also stops between statements.
     stop: Option<StopFlag>,
+    /// Cancels are being sent for the running script, again and again
+    /// (see `keep_cancelling`). Whoever stops the script first sends them:
+    /// a second Cancel, a timeout or a Close after it has nothing to add.
+    cancelling: bool,
     /// The worker closed the session: it starts no further command, not
     /// even one it has already taken off its queue.
     closed: bool,
@@ -480,17 +484,20 @@ impl Running {
         self.stop_script();
     }
 
-    /// Whether a cancel sent now can still reach what it is meant for. Not
-    /// once a script has begun its cleanup: there it would only interrupt
-    /// the rollback. Any other command takes a cancel while it runs.
-    fn takes_a_cancel(&self) -> bool {
-        !self.stop.as_ref().is_some_and(StopFlag::is_finishing)
-    }
-
     /// Whether a script is running and a cancel can still reach one of its
-    /// statements.
+    /// statements. Not once it has begun its cleanup: there a cancel would
+    /// only interrupt the rollback.
     fn script_takes_a_cancel(&self) -> bool {
         self.stop.as_ref().is_some_and(|stop| !stop.is_finishing())
+    }
+
+    /// Whether the caller is to keep cancelling the running script: when a
+    /// cancel can still reach it and nobody sends them yet. The caller
+    /// that hears yes sends them.
+    fn start_cancelling(&mut self) -> bool {
+        let first = !self.cancelling && self.script_takes_a_cancel();
+        self.cancelling |= first;
+        first
     }
 }
 
@@ -723,10 +730,18 @@ impl Worker {
                     // rest of its statements for a closed session. Nor may
                     // the session start a command it has already taken off
                     // its queue, which dropping the handle cannot prevent.
-                    let script = {
+                    let (script, again) = {
                         let mut running = lock(&handle.running);
                         running.close();
-                        running.stop.is_some()
+                        // Again and again: one cancel can reach the server
+                        // before its statement, and the script may have no
+                        // timeout to send another. Not beside the cancels
+                        // the user or the timeout already keeps sending.
+                        let again = running
+                            .start_cancelling()
+                            .then_some(running.request)
+                            .flatten();
+                        (running.stop.is_some(), again)
                     };
                     let cancel = handle.cancel.clone();
                     let running = Arc::clone(&handle.running);
@@ -735,12 +750,9 @@ impl Worker {
                     // see the stop then, not start a queued command.
                     drop(handle);
                     tokio::spawn(async move {
-                        if script {
-                            // Again and again: one cancel can reach
-                            // the server before its statement, and the
-                            // script may have no timeout to send another.
-                            keep_cancelling(cancel, running).await;
-                        } else {
+                        if let Some(request) = again {
+                            keep_cancelling(cancel, running, request).await;
+                        } else if !script {
                             let _ = cancel.cancel().await;
                         }
                     });
@@ -750,23 +762,8 @@ impl Worker {
             }
             Command::Cancel { session, request } => {
                 if let Some(handle) = self.sessions.get(&session) {
-                    let mut running = lock(&handle.running);
-                    if running.request == Some(request) {
-                        // Before the cancel is sent: a script it ends at
-                        // once must already see who stopped it.
-                        running.stop_script();
-                        if running.takes_a_cancel() {
-                            let cancel = handle.cancel.clone();
-                            running.cancels.retain(|task| !task.is_finished());
-                            running.cancels.push(tokio::spawn(async move {
-                                let _ = cancel.cancel().await;
-                            }));
-                        }
-                    } else {
-                        // Queued, or already answered: the session drops
-                        // the id once it passes it.
-                        running.skip.insert(request);
-                    }
+                    let cancel = handle.cancel.clone();
+                    cancel_request(&handle.running, request, move || send_cancel(&cancel));
                 }
             }
             Command::LoadSecret { request, account } => {
@@ -1117,6 +1114,7 @@ async fn run_session(
             } => {
                 let timer = timeout.map(|after| {
                     Timer::start(
+                        request,
                         after,
                         script_stop.clone(),
                         connection.cancel_handle(),
@@ -1165,6 +1163,7 @@ async fn run_session(
             let mut running = lock(&running);
             running.request = None;
             running.stop = None;
+            running.cancelling = false;
         }
         if let Some(error) = lost {
             fail_queued(&mut commands, &outbox, &error);
@@ -1187,29 +1186,67 @@ fn lost_error<T>(result: &Result<T, Error>) -> Option<Error> {
 const CANCEL_AGAIN: Duration = Duration::from_millis(500);
 const CANCEL_AGAIN_MAX: Duration = Duration::from_secs(5);
 
-/// Sends the session's cancel until the running script reaches its cleanup
-/// or is gone. A cancel can reach the server before the statement it is
-/// meant for, so one may not be enough; once the cleanup has begun, another
-/// would only interrupt the rollback.
+/// One cancel of a session, whatever comes of it.
+fn send_cancel(cancel: &CancelHandle) -> impl Future<Output = ()> + Send + 'static + use<> {
+    let cancel = cancel.clone();
+    async move {
+        let _ = cancel.cancel().await;
+    }
+}
+
+/// The user's cancel of `request`. For what the session runs now: a script
+/// is stopped and cancelled until it is finishing (see `keep_sending`),
+/// unless someone keeps cancelling it already; any other command takes one
+/// cancel. A request that is not running is skipped when its turn comes.
+fn cancel_request<C>(
+    running: &Arc<Mutex<Running>>,
+    request: RequestId,
+    send: impl Fn() -> C + Send + 'static,
+) where
+    C: Future<Output = ()> + Send + 'static,
+{
+    let mut state = lock(running);
+    if state.request != Some(request) {
+        // Queued, or already answered: the session drops the id once it
+        // passes it.
+        state.skip.insert(request);
+        return;
+    }
+    // Before a cancel is sent: a script it ends at once must already see
+    // who stopped it.
+    state.stop_script();
+    if state.stop.is_none() {
+        // Anything but a script takes one cancel while it runs.
+        state.cancels.retain(|task| !task.is_finished());
+        state.cancels.push(tokio::spawn(send()));
+    } else if state.start_cancelling() {
+        // More than one: a cancel that reaches the server in the gap
+        // between two of the script's queries is lost, and without a
+        // timeout the statement would run until the user cancels again.
+        tokio::spawn(keep_sending(send, Arc::clone(running), request));
+    }
+}
+
+/// Sends the session's cancel until the script `request` runs reaches its
+/// cleanup or is gone. A cancel can reach the server before the statement
+/// it is meant for, so one may not be enough; once the cleanup has begun,
+/// another would only interrupt the rollback.
 ///
 /// The next cancel waits for the one before it to finish, and a little
 /// longer each time: on MySQL every cancel is a new authenticated
 /// connection, and failing ones in quick succession can get this host
 /// blocked (`max_connect_errors`).
-async fn keep_cancelling(cancel: CancelHandle, running: Arc<Mutex<Running>>) {
-    let send = move || {
-        let cancel = cancel.clone();
-        async move {
-            let _ = cancel.cancel().await;
-        }
-    };
-    keep_sending(send, running).await;
+async fn keep_cancelling(cancel: CancelHandle, running: Arc<Mutex<Running>>, request: RequestId) {
+    keep_sending(move || send_cancel(&cancel), running, request).await;
 }
 
 /// `keep_cancelling` with any future as the cancel, so that a test can
 /// hold one back.
-async fn keep_sending<C>(send: impl Fn() -> C + Send, running: Arc<Mutex<Running>>)
-where
+async fn keep_sending<C>(
+    send: impl Fn() -> C + Send,
+    running: Arc<Mutex<Running>>,
+    request: RequestId,
+) where
     C: Future<Output = ()> + Send + 'static,
 {
     let mut pause = CANCEL_AGAIN;
@@ -1217,11 +1254,11 @@ where
         let (done, finished) = tokio::sync::oneshot::channel::<()>();
         {
             // Checked and sent under the lock the session takes to say its
-            // script is over, so no cancel is sent after that. Kept with
-            // the user's cancels: the session waits for all of them before
-            // its next command.
+            // script is over, so no cancel is sent after that, and none
+            // to what the session runs next. Kept with the other cancels:
+            // the session waits for all of them before its next command.
             let mut running = lock(&running);
-            if !running.script_takes_a_cancel() {
+            if running.request != Some(request) || !running.script_takes_a_cancel() {
                 return;
             }
             let cancel = send();
@@ -1255,7 +1292,9 @@ struct Timer {
 }
 
 impl Timer {
+    /// Stops the script `request` runs once `after` has passed.
     fn start(
+        request: RequestId,
         after: Duration,
         stop: StopFlag,
         cancel: CancelHandle,
@@ -1267,12 +1306,14 @@ impl Timer {
             async move {
                 tokio::time::sleep(after).await;
                 // A script the user stopped just before this did not time
-                // out. It is cancelled again all the same: the user's
-                // cancel is sent once and may have missed its statement.
+                // out, and the user's cancels are still being sent.
                 if stop.stop() {
                     fired.store(true, Ordering::SeqCst);
                 }
-                keep_cancelling(cancel, running).await;
+                let first = lock(&running).start_cancelling();
+                if first {
+                    keep_cancelling(cancel, running, request).await;
+                }
             }
         });
         Self { after, task, fired }
@@ -2011,6 +2052,34 @@ mod tests {
     }
 
     #[test]
+    fn a_users_cancel_keeps_cancelling_a_script() {
+        let (outbox, _received) = quiet_outbox();
+        one_thread().block_on(async {
+            let (_dir, connection) = sqlite_connection().await;
+            let session = SessionId(1);
+            let stop = StopFlag::new();
+            let (handle, _commands, _stopped) = session_handle(&connection, running_script(&stop));
+            let running = Arc::clone(&handle.running);
+            let (mut worker, _ready) = Worker::new(outbox, Keyring::memory());
+            worker.sessions.insert(session, handle);
+            worker.handle(Command::Cancel {
+                session,
+                request: RequestId(2),
+            });
+            assert!(stop.is_stopped());
+            // The first cancel, and another: the first may have reached
+            // the server between two statements, and a script without a
+            // timeout has nobody else to send the next.
+            cancels_sent(&running).await;
+            cancels_sent(&running).await;
+            // The driver begins its cleanup: a cancel would interrupt it.
+            stop.finish();
+            tokio::time::sleep(THIRD_CANCEL).await;
+            assert!(lock(&running).cancels.is_empty());
+        });
+    }
+
+    #[test]
     fn a_cancel_reaches_a_running_script_but_not_its_cleanup() {
         let (outbox, _received) = quiet_outbox();
         runtime().block_on(async {
@@ -2032,11 +2101,15 @@ mod tests {
                 });
                 // Stopped either way: that is what says the user did it.
                 assert!(stop.is_stopped(), "finishing: {finishing}");
-                assert_eq!(
-                    lock(&running).cancels.len(),
-                    usize::from(!finishing),
-                    "finishing: {finishing}"
-                );
+                // Cancels are sent to a script that still runs a statement,
+                // and none to one that is cleaning up.
+                assert_eq!(lock(&running).cancelling, !finishing);
+                if finishing {
+                    assert!(lock(&running).cancels.is_empty());
+                } else {
+                    cancels_sent(&running).await;
+                    stop.finish();
+                }
                 assert!(lock(&running).skip.is_empty());
             }
             // Anything but a script takes its cancel as it always did.
@@ -2052,6 +2125,7 @@ mod tests {
                 request: RequestId(2),
             });
             assert_eq!(lock(&running).cancels.len(), 1);
+            assert!(!lock(&running).cancelling);
             // A cancel for a request that is not running cancels nothing.
             worker.handle(Command::Cancel {
                 session,
@@ -2062,6 +2136,125 @@ mod tests {
         });
     }
 
+    /// A clock that stands still while a task runs and jumps to the next
+    /// wait when all of them wait: each wait is exactly as long as asked.
+    fn paused() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .start_paused(true)
+            .build()
+            .unwrap()
+    }
+
+    /// A cancel that is over at once and notes when it was sent, so that
+    /// only the waits separate one from the next.
+    fn noting(
+        sent: &Arc<Mutex<Vec<tokio::time::Instant>>>,
+    ) -> impl Fn() -> std::future::Ready<()> + Send + 'static + use<> {
+        let sent = Arc::clone(sent);
+        move || {
+            lock(&sent).push(tokio::time::Instant::now());
+            std::future::ready(())
+        }
+    }
+
+    /// When each of `sent` was, in milliseconds after `start`.
+    fn sent_at(sent: &Mutex<Vec<tokio::time::Instant>>, start: tokio::time::Instant) -> Vec<u128> {
+        let sent = lock(sent);
+        sent.iter().map(|at| (*at - start).as_millis()).collect()
+    }
+
+    #[test]
+    fn a_users_cancel_is_sent_until_the_script_is_finishing() {
+        paused().block_on(async {
+            let stop = StopFlag::new();
+            let running = Arc::new(Mutex::new(running_script(&stop)));
+            let sent = Arc::new(Mutex::new(Vec::new()));
+            let start = tokio::time::Instant::now();
+            cancel_request(&running, RequestId(2), noting(&sent));
+            assert!(stop.is_stopped());
+            // The first may reach the server between two of the script's
+            // queries, where it is lost: more follow, further apart.
+            tokio::time::sleep(Duration::from_millis(1_200)).await;
+            assert_eq!(sent_at(&sent, start), [0, 500]);
+            // Cancel pressed again: the cancels already go out, and no
+            // second row of them starts beside the first.
+            cancel_request(&running, RequestId(2), noting(&sent));
+            tokio::time::sleep(Duration::from_millis(2_800)).await;
+            assert_eq!(sent_at(&sent, start), [0, 500, 1_500, 3_500]);
+            // The driver begins its cleanup: a cancel would interrupt it.
+            stop.finish();
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            assert_eq!(sent_at(&sent, start).len(), 4);
+            // Each was kept for the session to wait for before its next
+            // command: the last is still there.
+            assert_eq!(lock(&running).cancels.len(), 1);
+            assert!(lock(&running).skip.is_empty());
+        });
+    }
+
+    #[test]
+    fn a_users_cancel_of_anything_but_a_script_is_sent_once() {
+        paused().block_on(async {
+            let other = Running {
+                request: Some(RequestId(2)),
+                ..Running::default()
+            };
+            let running = Arc::new(Mutex::new(other));
+            let sent = Arc::new(Mutex::new(Vec::new()));
+            let start = tokio::time::Instant::now();
+            cancel_request(&running, RequestId(2), noting(&sent));
+            assert_eq!(lock(&running).cancels.len(), 1);
+            assert!(!lock(&running).cancelling);
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            assert_eq!(sent_at(&sent, start), [0]);
+            // A request that is not running takes none: it is skipped.
+            cancel_request(&running, RequestId(3), noting(&sent));
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            assert_eq!(sent_at(&sent, start), [0]);
+            assert!(lock(&running).skip.contains(&RequestId(3)));
+        });
+    }
+
+    #[test]
+    fn a_users_cancels_end_with_their_script() {
+        paused().block_on(async {
+            let stop = StopFlag::new();
+            let running = Arc::new(Mutex::new(running_script(&stop)));
+            let sent = Arc::new(Mutex::new(Vec::new()));
+            let start = tokio::time::Instant::now();
+            cancel_request(&running, RequestId(2), noting(&sent));
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            assert_eq!(sent_at(&sent, start), [0]);
+            // The script ends and the session starts the next one, as
+            // `run_session` does, while the next cancel is still waiting.
+            let next = StopFlag::new();
+            {
+                let mut running = lock(&running);
+                running.cancelling = false;
+                running.request = Some(RequestId(3));
+                running.stop = Some(next.clone());
+            }
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            assert_eq!(sent_at(&sent, start), [0], "none for the next script");
+            assert!(!next.is_stopped());
+            assert!(!lock(&running).cancelling);
+        });
+    }
+
+    #[test]
+    fn only_the_first_to_stop_a_script_keeps_cancelling_it() {
+        let stop = StopFlag::new();
+        let mut script = running_script(&stop);
+        assert!(script.start_cancelling());
+        assert!(!script.start_cancelling());
+        // Nobody does for a script that is cleaning up, or without one.
+        let stop = StopFlag::new();
+        stop.finish();
+        assert!(!running_script(&stop).start_cancelling());
+        assert!(!Running::default().start_cancelling());
+    }
+
     #[test]
     fn a_timer_cancels_until_the_script_is_finishing() {
         one_thread().block_on(async {
@@ -2070,6 +2263,7 @@ mod tests {
             let running = Arc::new(Mutex::new(running_script(&stop)));
             let after = Duration::from_millis(50);
             let timer = Timer::start(
+                RequestId(2),
                 after,
                 stop.clone(),
                 connection.cancel_handle(),
@@ -2095,6 +2289,7 @@ mod tests {
             let stop = StopFlag::new();
             let running = Arc::new(Mutex::new(running_script(&stop)));
             let timer = Timer::start(
+                RequestId(2),
                 Duration::from_secs(3600),
                 stop.clone(),
                 connection.cancel_handle(),
@@ -2118,16 +2313,21 @@ mod tests {
             let (_dir, connection) = sqlite_connection().await;
             let stop = StopFlag::new();
             let running = Arc::new(Mutex::new(running_script(&stop)));
-            // The user cancels just before the time is up.
+            // The user cancels just before the time is up, and the user's
+            // cancels are being sent.
             assert!(stop.stop());
+            assert!(lock(&running).start_cancelling());
+            let after = Duration::from_millis(50);
             let timer = Timer::start(
-                Duration::from_millis(50),
+                RequestId(2),
+                after,
                 stop.clone(),
                 connection.cancel_handle(),
                 Arc::clone(&running),
             );
-            // The timer still cancels: the user's cancel is sent only once.
-            cancels_sent(&running).await;
+            // The timer adds none of its own to them.
+            tokio::time::sleep(after * 4).await;
+            assert!(lock(&running).cancels.is_empty());
             assert_eq!(timer.end().await, None);
             assert_eq!(
                 cancel_reason(&stop, None, &Ok(never_ran())),
@@ -2156,7 +2356,7 @@ mod tests {
                     }
                 }
             };
-            let cancelling = tokio::spawn(keep_sending(send, Arc::clone(&running)));
+            let cancelling = tokio::spawn(keep_sending(send, Arc::clone(&running), RequestId(2)));
             // However long the first takes, no second one is sent beside it.
             tokio::time::sleep(THIRD_CANCEL).await;
             assert_eq!(sent.load(Ordering::SeqCst), 1);
@@ -2192,12 +2392,7 @@ mod tests {
     fn the_waits_between_cancels_grow_while_they_are_sent() {
         // A paused clock: the waits pass at once, and each is exactly as
         // long as the loop asked for.
-        let paused = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .start_paused(true)
-            .build()
-            .unwrap();
-        paused.block_on(async {
+        paused().block_on(async {
             let stop = StopFlag::new();
             let running = Arc::new(Mutex::new(running_script(&stop)));
             let sent = Arc::new(Mutex::new(Vec::new()));
@@ -2210,7 +2405,7 @@ mod tests {
                     async {}
                 }
             };
-            let cancelling = tokio::spawn(keep_sending(send, Arc::clone(&running)));
+            let cancelling = tokio::spawn(keep_sending(send, Arc::clone(&running), RequestId(2)));
             // Long enough for six cancels, and into the wait after the last.
             tokio::time::sleep(Duration::from_millis(12_600)).await;
             // The script reaches its cleanup: no cancel follows.
@@ -2348,20 +2543,17 @@ mod tests {
 
     #[test]
     fn a_cancel_is_not_sent_to_a_script_that_is_cleaning_up() {
-        // Not a script: a cancel is sent, as it always was, and there is
-        // no script to keep cancelling.
+        // Not a script: there is none to keep cancelling.
         let other = Running::default();
         other.stop_script();
-        assert!(other.takes_a_cancel());
         assert!(!other.script_takes_a_cancel());
 
         let stop = StopFlag::new();
         let script = running_script(&stop);
-        assert!(script.takes_a_cancel());
+        assert!(script.script_takes_a_cancel());
         assert!(!stop.is_stopped());
         script.stop_script();
         assert!(stop.is_stopped());
-        assert!(script.takes_a_cancel());
         assert!(script.script_takes_a_cancel());
 
         // The driver has begun its cleanup: the flag is still set (it says
@@ -2371,7 +2563,6 @@ mod tests {
         stop.finish();
         finishing.stop_script();
         assert!(stop.is_stopped());
-        assert!(!finishing.takes_a_cancel());
         assert!(!finishing.script_takes_a_cancel());
     }
 
