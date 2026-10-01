@@ -185,8 +185,8 @@ mod tests {
                 // The connection dialog keeps its buttons on screen; the
                 // PostgreSQL form with the SSH tunnel open is the tallest.
                 harness.press(Key::N, Modifiers::COMMAND);
-                harness.click("PostgreSQL");
-                harness.click("SSH tunnel");
+                harness.click(&look.label("PostgreSQL"));
+                harness.click("Connect through SSH tunnel");
                 let tree = harness.settle();
                 let button =
                     crate::testing::bounds(&tree, "Save & Connect", egui::accesskit::Role::Button)
@@ -1459,7 +1459,7 @@ mod tests {
             modifiers,
         };
         let down = |modifiers: Modifiers| crate::testing::key(Key::Enter, modifiers);
-        let up = |modifiers: Modifiers| crate::testing::key_up(Key::Enter, modifiers);
+        let up = |modifiers: Modifiers| crate::testing::release(Key::Enter, modifiers);
         let command = Modifiers::COMMAND;
         let shift = Modifiers::COMMAND | Modifiers::SHIFT;
         harness.settle();
@@ -2786,7 +2786,7 @@ mod tests {
             .iter()
             .find(|(_, node)| node.role() == egui::accesskit::Role::ComboBox)
             .map(|(id, _)| *id)
-            .expect("the TLS list");
+            .expect("the SSL mode list");
         harness.frame(vec![egui::Event::AccessKitActionRequest(
             egui::accesskit::ActionRequest {
                 target_tree: egui::accesskit::TreeId::ROOT,
@@ -2864,20 +2864,25 @@ mod tests {
     fn choosing_an_environment_sets_the_connections() {
         let mut harness = Harness::new();
         harness.press(Key::N, Modifiers::COMMAND);
-        harness.click("production");
+        harness.click("Production");
         let form = form(&harness);
         assert_eq!(form.environment(), crate::env::Environment::Production);
         assert!(form.read_only(), "production is read-only by default");
+        // The environments are a radio group, named as the dialog names
+        // them: the one chosen is the one checked.
         let tree = harness.settle();
+        let names = ["Local", "Dev", "Staging", "Production", "None"];
         let selected: Vec<_> = crate::env::Environment::ALL
             .iter()
-            .filter(|env| {
-                let label = env.label(crate::env::Platform::Native);
-                let id = crate::testing::node(&tree, label, egui::accesskit::Role::Button);
+            .zip(names)
+            .filter(|(_, name)| {
+                let id = crate::testing::node(&tree, name, egui::accesskit::Role::RadioButton);
+                assert!(id.is_some(), "{name} is offered");
                 tree.nodes.iter().any(|(node, data)| {
                     Some(*node) == id && data.toggled() == Some(egui::accesskit::Toggled::True)
                 })
             })
+            .map(|(env, _)| env)
             .collect();
         assert_eq!(selected, [&crate::env::Environment::Production]);
     }
@@ -2890,7 +2895,7 @@ mod tests {
         assert_eq!(form(&harness).environment(), crate::env::Environment::Local);
         form_mut(&mut harness).host = "db.example.com".into();
         assert_eq!(form(&harness).environment(), crate::env::Environment::None);
-        harness.click("staging");
+        harness.click("Staging");
         form_mut(&mut harness).host = "localhost".into();
         assert_eq!(
             form(&harness).environment(),
@@ -2901,23 +2906,63 @@ mod tests {
 
     #[test]
     fn the_dialog_shows_every_connection_read_only() {
-        let mut harness = Harness::new();
-        harness.press(Key::N, Modifiers::COMMAND);
-        let tree = harness.settle();
-        let (_, node) = tree
-            .nodes
-            .iter()
-            .find(|(_, node)| {
-                node.role() == egui::accesskit::Role::CheckBox && node.label() == Some("Read-only")
-            })
-            .expect("the read-only box");
-        assert_eq!(node.toggled(), Some(egui::accesskit::Toggled::True));
-        assert!(node.is_disabled());
-        assert!(harness.has("Every connection is read-only in 0.1.0"));
+        // The sheet says it under the box; the terminal look after it.
+        for (look, said) in [
+            (
+                crate::theme::Look::standard(),
+                "Blocks every write from this app. Every connection is read-only in 0.1.0.",
+            ),
+            (
+                crate::theme::Look::macos(),
+                "Blocks every write from this app. Every connection is read-only in 0.1.0.",
+            ),
+            (crate::theme::Look::omarchy(), "· always on in 0.1.0"),
+        ] {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            harness.press(Key::N, Modifiers::COMMAND);
+            let tree = harness.settle();
+            let (_, node) = tree
+                .nodes
+                .iter()
+                .find(|(_, node)| {
+                    node.role() == egui::accesskit::Role::CheckBox
+                        && node.label() == Some("Open read-only")
+                })
+                .expect("the read-only box");
+            assert_eq!(
+                node.toggled(),
+                Some(egui::accesskit::Toggled::True),
+                "{}",
+                look.name
+            );
+            assert!(node.is_disabled(), "{}", look.name);
+            assert!(harness.has(said), "{}", look.name);
+            // The box is locked: a new connection has nothing set.
+            assert_eq!(form(&harness).read_only, None, "{}", look.name);
+            // And what a connection was saved with comes back as it was.
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            let id = add_saved(&mut harness, "Shop");
+            let mut saved = harness.app.connections.get(&id).unwrap().clone();
+            saved.read_only = Some(false);
+            harness.app.connections.upsert(saved);
+            harness
+                .app
+                .apply(crate::model::Action::EditConnection(id.clone()));
+            harness.click("Save");
+            assert!(harness.app.dialog.is_none(), "{}", look.name);
+            assert_eq!(
+                harness.app.connections.get(&id).unwrap().read_only,
+                Some(false),
+                "{}",
+                look.name
+            );
+        }
     }
 
     #[test]
-    fn paste_url_suggests_the_chosen_drivers_url() {
+    fn the_url_field_suggests_the_chosen_drivers_url() {
         let mut harness = Harness::new();
         harness.press(Key::N, Modifiers::COMMAND);
         let placeholders = |harness: &mut Harness| -> Vec<String> {
@@ -2928,8 +2973,11 @@ mod tests {
                 .filter_map(|(_, node)| node.placeholder().map(str::to_owned))
                 .collect()
         };
+        harness.click("URL");
         assert!(placeholders(&mut harness).contains(&"sqlite:///path/to/file.db".to_owned()));
+        harness.click("Parameters");
         harness.click("PostgreSQL");
+        harness.click("URL");
         assert!(placeholders(&mut harness).contains(&"postgres://user@host/db".to_owned()));
     }
 
@@ -2985,7 +3033,7 @@ mod tests {
         harness.press(Key::N, Modifiers::COMMAND);
         assert!(!harness.has("Host"));
         harness.click("PostgreSQL");
-        for label in ["Host", "Port", "User", "Password", "Database", "TLS"] {
+        for label in ["Host", "Port", "User", "Password", "Database", "SSL mode"] {
             assert!(harness.has(label), "{label}");
         }
         assert!(!harness.has("File"));
@@ -3001,20 +3049,40 @@ mod tests {
         assert!(!harness.has("Could not save the password in the keyring."));
     }
 
+    /// The field named by the "CA certificate" label beside it.
+    fn ca_field(tree: &egui::accesskit::TreeUpdate) -> &egui::accesskit::Node {
+        let (label, _) = tree
+            .nodes
+            .iter()
+            .find(|(_, node)| node.value() == Some("CA certificate"))
+            .expect("CA certificate label");
+        &tree
+            .nodes
+            .iter()
+            .find(|(_, node)| {
+                node.role() == egui::accesskit::Role::TextInput
+                    && node.labelled_by().contains(label)
+            })
+            .expect("CA certificate field")
+            .1
+    }
+
     #[test]
-    fn a_ca_file_used_by_require_stays_visible() {
+    fn the_ca_certificate_is_offered_where_it_is_checked() {
         let mut harness = Harness::new();
         harness.press(Key::N, Modifiers::COMMAND);
         harness.click("PostgreSQL");
-        let shows_ca = |harness: &mut Harness, tls| {
+        let offered = |harness: &mut Harness, tls| {
             if let Some(crate::model::Dialog::Connection(form)) = &mut harness.app.dialog {
                 form.tls = tls;
             }
-            harness.has("CA file")
+            let tree = harness.settle();
+            !ca_field(&tree).is_disabled()
         };
-        assert!(!shows_ca(&mut harness, tabletist_db::TlsMode::Prefer));
-        assert!(shows_ca(&mut harness, tabletist_db::TlsMode::Require));
-        assert!(shows_ca(&mut harness, tabletist_db::TlsMode::VerifyFull));
+        assert!(!offered(&mut harness, tabletist_db::TlsMode::Prefer));
+        // `require` checks against a CA file too, as libpq does.
+        assert!(offered(&mut harness, tabletist_db::TlsMode::Require));
+        assert!(offered(&mut harness, tabletist_db::TlsMode::VerifyFull));
     }
 
     #[test]
@@ -3078,7 +3146,7 @@ mod tests {
         let mut harness = Harness::new();
         harness.press(Key::N, Modifiers::COMMAND);
         harness.click("MySQL");
-        for label in ["Host", "Port", "User", "Password", "Database", "TLS"] {
+        for label in ["Host", "Port", "User", "Password", "Database", "SSL mode"] {
             assert!(harness.has(label), "{label}");
         }
         assert_eq!(
@@ -3143,12 +3211,12 @@ mod tests {
     }
 
     #[test]
-    fn the_ssh_section_shows_the_fields_for_each_method() {
+    fn the_ssh_tunnel_shows_the_fields_for_each_method() {
         let mut harness = Harness::new();
         harness.press(Key::N, Modifiers::COMMAND);
         harness.click("PostgreSQL");
-        harness.click("SSH tunnel");
-        harness.click("Connect through SSH");
+        assert!(!harness.has("SSH host"));
+        harness.click("Connect through SSH tunnel");
         for label in [
             "SSH host",
             "SSH port",
@@ -3169,6 +3237,998 @@ mod tests {
         assert!(harness.has("Key file"));
         assert!(harness.has("Passphrase"));
         assert!(!harness.has("SSH password"));
+    }
+
+    #[test]
+    fn the_dialog_draws_each_looks_own_form() {
+        // The terminal look: lower-case labels, a row each, keys for buttons.
+        let mut harness = Harness::new();
+        harness.set_look(crate::theme::Look::omarchy());
+        harness.press(Key::N, Modifiers::COMMAND);
+        harness.click("postgresql");
+        for label in [
+            "new connection",
+            "host : port",
+            "ssl mode",
+            "ca cert",
+            "read-only",
+        ] {
+            assert!(harness.has(label), "{label}");
+        }
+        // Screen readers still get each field and button by its name.
+        for label in ["Host", "Port", "Test", "Save", "Save & Connect", "Cancel"] {
+            assert!(harness.has(label), "{label}");
+        }
+        // Elsewhere: labelled fields in groups.
+        let mut harness = Harness::new();
+        harness.press(Key::N, Modifiers::COMMAND);
+        harness.click("PostgreSQL");
+        for label in ["Server", "Security", "SSL mode", "CA certificate"] {
+            assert!(harness.has(label), "{label}");
+        }
+    }
+
+    #[test]
+    fn the_dialog_says_the_connection_opens_read_only() {
+        for look in crate::theme::Look::ALL {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            harness.press(Key::N, Modifiers::COMMAND);
+            let tree = harness.settle();
+            assert!(
+                crate::testing::node(&tree, "Open read-only", egui::accesskit::Role::CheckBox)
+                    .is_some(),
+                "{}",
+                look.name
+            );
+        }
+    }
+
+    #[test]
+    fn an_edit_can_delete_its_connection_and_a_new_one_cannot() {
+        let mut harness = Harness::new();
+        let id = add_saved(&mut harness, "Shop");
+        harness
+            .app
+            .apply(crate::model::Action::EditConnection(id.clone()));
+        assert!(harness.has("Edit connection"));
+        harness.click("Delete Shop");
+        assert!(harness.app.dialog.is_none());
+        assert!(harness.app.connections.get(&id).is_none());
+        harness.press(Key::N, Modifiers::COMMAND);
+        let tree = harness.settle();
+        let deletes: Vec<String> = crate::testing::labels(&tree)
+            .into_iter()
+            .filter(|label| label.starts_with("Delete"))
+            .collect();
+        assert!(deletes.is_empty(), "{deletes:?}");
+    }
+
+    #[test]
+    fn a_test_that_passes_says_what_it_reached() {
+        let mut harness = Harness::new();
+        harness.press(Key::N, Modifiers::COMMAND);
+        harness.click("PostgreSQL");
+        if let Some(crate::model::Dialog::Connection(form)) = &mut harness.app.dialog {
+            form.user = "me".into();
+        }
+        harness.click("Test");
+        assert!(harness.has("Testing…"));
+        let request = match &form(&harness).test {
+            crate::model::TestState::Running(request) => *request,
+            other => panic!("{other:?}"),
+        };
+        harness.app.apply(crate::model::Action::Backend(
+            crate::backend::Event::Tested {
+                request,
+                result: Ok(()),
+            },
+        ));
+        let tree = harness.settle();
+        let said = crate::testing::labels(&tree);
+        assert!(
+            said.iter()
+                .any(|label| label.starts_with("Connected · PostgreSQL · ")),
+            "{said:?}"
+        );
+    }
+
+    #[test]
+    fn a_key_pressed_twice_is_two_presses() {
+        let mut harness = Harness::new();
+        harness.press(Key::N, Modifiers::COMMAND);
+        harness.click("PostgreSQL");
+        if let Some(crate::model::Dialog::Connection(form)) = &mut harness.app.dialog {
+            form.user = "me".into();
+        }
+        let tests = |harness: &Harness| {
+            harness
+                .app
+                .backend
+                .sent
+                .iter()
+                .filter(|command| matches!(command, Command::Test { .. }))
+                .count()
+        };
+        harness.press(Key::T, Modifiers::COMMAND);
+        assert_eq!(tests(&harness), 1);
+        let request = match &form(&harness).test {
+            crate::model::TestState::Running(request) => *request,
+            other => panic!("{other:?}"),
+        };
+        harness.app.apply(crate::model::Action::Backend(
+            crate::backend::Event::Tested {
+                request,
+                result: Err(tabletist_db::Error::Connect("nope".into())),
+            },
+        ));
+        harness.press(Key::T, Modifiers::COMMAND);
+        assert_eq!(tests(&harness), 2, "the second press is not a repeat");
+    }
+
+    #[test]
+    fn the_keyring_box_saves_the_password_or_asks_every_time() {
+        use crate::connections::PasswordMode;
+        let mut harness = Harness::new();
+        harness.press(Key::N, Modifiers::COMMAND);
+        harness.click("PostgreSQL");
+        assert_eq!(form(&harness).password_mode, PasswordMode::Keyring);
+        harness.click("Keyring");
+        assert_eq!(form(&harness).password_mode, PasswordMode::Ask);
+        harness.click("Keyring");
+        assert_eq!(form(&harness).password_mode, PasswordMode::Keyring);
+    }
+
+    #[test]
+    fn the_url_tab_fills_the_parameters_and_returns_to_them() {
+        let mut harness = Harness::new();
+        harness.press(Key::N, Modifiers::COMMAND);
+        harness.click("URL");
+        assert!(
+            !harness.has("Environment"),
+            "the URL tab shows the URL alone"
+        );
+        if let Some(crate::model::Dialog::Connection(form)) = &mut harness.app.dialog {
+            form.url = "postgres://me@db.example.com/app".into();
+        }
+        harness.click("Fill");
+        assert!(!form(&harness).url_mode);
+        assert_eq!(form(&harness).host, "db.example.com");
+        assert!(harness.has("Environment"));
+    }
+
+    #[test]
+    fn choose_asks_for_a_ca_certificate() {
+        let mut harness = Harness::new();
+        harness.press(Key::N, Modifiers::COMMAND);
+        harness.click("PostgreSQL");
+        if let Some(crate::model::Dialog::Connection(form)) = &mut harness.app.dialog {
+            form.tls = tabletist_db::TlsMode::VerifyFull;
+        }
+        harness.click("Choose a CA certificate");
+        assert_eq!(form(&harness).pick_target, crate::model::PickTarget::CaFile);
+        assert!(form(&harness).pick_request.is_some());
+    }
+
+    #[test]
+    fn choose_asks_for_a_database_file_and_a_key_file() {
+        use crate::model::PickTarget;
+        for look in crate::theme::Look::ALL {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            harness.press(Key::N, Modifiers::COMMAND);
+            harness.click("Choose a database file");
+            assert_eq!(form(&harness).pick_target, PickTarget::Sqlite);
+            let asked = form(&harness).pick_request;
+            assert!(asked.is_some(), "{}", look.name);
+            harness.click(&look.label("PostgreSQL"));
+            harness.click("Connect through SSH tunnel");
+            if let Some(crate::model::Dialog::Connection(form)) = &mut harness.app.dialog {
+                form.ssh_auth = crate::model::SshAuthKind::KeyFile;
+            }
+            harness.click("Choose a key file");
+            assert_eq!(
+                form(&harness).pick_target,
+                PickTarget::KeyFile,
+                "{}",
+                look.name
+            );
+            assert_ne!(form(&harness).pick_request, asked, "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn the_close_button_closes_the_dialog() {
+        let mut harness = Harness::new();
+        harness.press(Key::N, Modifiers::COMMAND);
+        harness.click("Close");
+        assert!(harness.app.dialog.is_none());
+    }
+
+    #[test]
+    fn the_dialogs_keys_test_and_save() {
+        let mut harness = Harness::new();
+        harness.press(Key::N, Modifiers::COMMAND);
+        harness.click("PostgreSQL");
+        if let Some(crate::model::Dialog::Connection(form)) = &mut harness.app.dialog {
+            form.name = "Shop".into();
+            form.user = "me".into();
+        }
+        let before = harness.app.backend.sent.len();
+        harness.press(Key::T, Modifiers::COMMAND);
+        assert!(
+            harness.app.backend.sent[before..]
+                .iter()
+                .any(|command| matches!(command, Command::Test { .. })),
+            "Mod+T tests"
+        );
+        assert_eq!(
+            harness.app.tabs.len(),
+            1,
+            "and opens no tab behind the dialog"
+        );
+        harness.press(Key::S, Modifiers::COMMAND);
+        assert!(harness.app.dialog.is_none(), "Mod+S saves");
+        assert_eq!(harness.app.connections.connections.len(), 1);
+    }
+
+    #[test]
+    fn u_shows_the_url_field_in_the_terminal_look() {
+        let mut harness = Harness::new();
+        harness.set_look(crate::theme::Look::omarchy());
+        let id = add_saved(&mut harness, "Shop");
+        harness.app.apply(crate::model::Action::EditConnection(id));
+        harness.press(Key::U, Modifiers::NONE);
+        assert!(form(&harness).url_mode);
+        assert!(harness.has("url"));
+        // A new connection opens with the keyboard in Name: there, u is a
+        // letter.
+        let mut harness = Harness::new();
+        harness.set_look(crate::theme::Look::omarchy());
+        harness.press(Key::N, Modifiers::COMMAND);
+        harness.press(Key::U, Modifiers::NONE);
+        assert!(!form(&harness).url_mode);
+    }
+
+    #[test]
+    fn the_terminal_footers_status_stays_clear_of_its_keys() {
+        // A footer too narrow for the status and every key drops keys, not
+        // the buttons they stand for.
+        // The smallest window, with a quick Test and with one whose time is
+        // long enough to reach the keys.
+        for took in [
+            std::time::Duration::from_millis(42),
+            std::time::Duration::from_secs(100_000),
+        ] {
+            let mut harness = Harness::with_size(egui::vec2(720.0, 480.0));
+            harness.set_look(crate::theme::Look::omarchy());
+            harness.press(Key::N, Modifiers::COMMAND);
+            harness.click("postgresql");
+            if let Some(crate::model::Dialog::Connection(form)) = &mut harness.app.dialog {
+                form.test = crate::model::TestState::Passed;
+                form.test_took = Some(took);
+            }
+            let tree = harness.settle();
+            let status = tree
+                .nodes
+                .iter()
+                .find(|(_, node)| {
+                    node.label()
+                        .or_else(|| node.value())
+                        .is_some_and(|text| text.starts_with("connected · "))
+                })
+                .and_then(|(_, node)| node.bounds())
+                .expect("the Test's status");
+            let status = egui::Rect::from_min_max(
+                egui::pos2(status.x0 as f32, status.y0 as f32),
+                egui::pos2(status.x1 as f32, status.y1 as f32),
+            );
+            for label in ["Test", "Save", "Save & Connect", "Cancel"] {
+                let button = crate::testing::bounds(&tree, label, egui::accesskit::Role::Button)
+                    .unwrap_or_else(|| panic!("{label} is gone after {took:?}"));
+                assert!(
+                    !status.intersects(button),
+                    "the status at {status:?} runs into {label} at {button:?} after {took:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn each_keyring_box_says_which_secret_it_keeps() {
+        use crate::connections::PasswordMode;
+        for look in crate::theme::Look::ALL {
+            let keyring = if look.faces == crate::theme::Faces::Plex {
+                "Keychain"
+            } else {
+                "Keyring"
+            };
+            let ssh = format!("{keyring} for the SSH secret");
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            harness.press(Key::N, Modifiers::COMMAND);
+            harness.click(&look.label("PostgreSQL"));
+            harness.click("Connect through SSH tunnel");
+            let tree = harness.settle();
+            for name in [keyring, ssh.as_str()] {
+                let boxes = tree
+                    .nodes
+                    .iter()
+                    .filter(|(_, node)| {
+                        node.role() == egui::accesskit::Role::CheckBox && node.label() == Some(name)
+                    })
+                    .count();
+                assert_eq!(boxes, 1, "{name} in {}", look.name);
+            }
+            harness.click(&ssh);
+            assert_eq!(
+                form(&harness).ssh_secret_mode,
+                PasswordMode::Ask,
+                "{}",
+                look.name
+            );
+            assert_eq!(
+                form(&harness).password_mode,
+                PasswordMode::Keyring,
+                "{}",
+                look.name
+            );
+        }
+    }
+
+    #[test]
+    fn the_dialogs_keys_are_not_a_press_of_the_focused_button() {
+        let mut harness = Harness::new();
+        harness.press(Key::N, Modifiers::COMMAND);
+        if let Some(crate::model::Dialog::Connection(form)) = &mut harness.app.dialog {
+            form.name = "Shop".into();
+            form.sqlite_path = "/tmp/shop.db".into();
+        }
+        // Cancel takes the keyboard, as a screen reader would give it.
+        let tree = harness.settle();
+        let cancel =
+            crate::testing::node(&tree, "Cancel", egui::accesskit::Role::Button).expect("Cancel");
+        harness.frame(vec![egui::Event::AccessKitActionRequest(
+            egui::accesskit::ActionRequest {
+                target_tree: egui::accesskit::TreeId::ROOT,
+                target_node: cancel,
+                action: egui::accesskit::Action::Focus,
+                data: None,
+            },
+        )]);
+        assert_eq!(focused_name(&harness.settle()), "Cancel");
+        harness.press(Key::Enter, Modifiers::COMMAND);
+        assert_eq!(
+            harness.app.connections.connections.len(),
+            1,
+            "Mod+Enter saves, whatever has the keyboard"
+        );
+    }
+
+    #[test]
+    fn the_choices_are_named_by_their_label() {
+        for look in crate::theme::Look::ALL {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            harness.press(Key::N, Modifiers::COMMAND);
+            harness.click(&look.label("PostgreSQL"));
+            harness.click("Connect through SSH tunnel");
+            let tree = harness.settle();
+            // A heading, and one of the choices under it.
+            let mut groups = vec![("Type", "MySQL"), ("Environment", "Production")];
+            if look.terminal {
+                groups.push(("SSL mode", "verify-full"));
+                groups.push(("Authentication", "Agent"));
+            }
+            for (heading, choice) in groups {
+                let heading = look.label(heading);
+                let choice = look.label(choice);
+                let (_, group) = tree
+                    .nodes
+                    .iter()
+                    .find(|(_, node)| {
+                        node.role() == egui::accesskit::Role::RadioGroup
+                            && node.label() == Some(heading.as_str())
+                    })
+                    .unwrap_or_else(|| panic!("no group named {heading} in {}", look.name));
+                let inside = tree.nodes.iter().any(|(id, node)| {
+                    group.children().contains(id)
+                        && node.role() == egui::accesskit::Role::RadioButton
+                        && node.label() == Some(choice.as_str())
+                });
+                assert!(inside, "{choice} is not in {heading} in {}", look.name);
+            }
+        }
+    }
+
+    #[test]
+    fn tab_reaches_the_dialogs_tabs_before_close() {
+        let mut harness = Harness::new();
+        let id = add_saved(&mut harness, "Shop");
+        // An edit opens with the keyboard nowhere.
+        harness.app.apply(crate::model::Action::EditConnection(id));
+        let mut reached = Vec::new();
+        for _ in 0..3 {
+            harness.press(Key::Tab, Modifiers::NONE);
+            reached.push(focused_name(&harness.settle()));
+        }
+        assert_eq!(reached, ["Parameters", "URL", "Close"]);
+    }
+
+    /// Where the first node `found` accepts sits, in points.
+    fn bounds_where(
+        tree: &egui::accesskit::TreeUpdate,
+        found: impl Fn(&egui::accesskit::Node) -> bool,
+    ) -> Option<egui::Rect> {
+        let (_, node) = tree.nodes.iter().find(|(_, node)| found(node))?;
+        let rect = node.bounds()?;
+        Some(egui::Rect::from_min_max(
+            egui::pos2(rect.x0 as f32, rect.y0 as f32),
+            egui::pos2(rect.x1 as f32, rect.y1 as f32),
+        ))
+    }
+
+    /// Where `text` is said, as a label or a widget's name.
+    fn said_at(tree: &egui::accesskit::TreeUpdate, text: &str) -> Option<egui::Rect> {
+        bounds_where(tree, |node| {
+            node.label().or_else(|| node.value()) == Some(text)
+        })
+    }
+
+    /// A saved PostgreSQL connection through an SSH tunnel with a key file:
+    /// the tallest form the dialog opens with.
+    fn add_saved_with_tunnel(harness: &mut Harness) -> crate::connections::ConnectionId {
+        let (mut spec, _) =
+            tabletist_db::ConnectSpec::from_url("postgres://me@db.example.com/app").unwrap();
+        spec.ssh = Some(tabletist_db::SshSpec {
+            host: "bastion".into(),
+            port: Some(22),
+            user: "ops".into(),
+            auth: tabletist_db::SshAuth::KeyFile {
+                path: "/home/me/.ssh/id_ed25519".into(),
+            },
+        });
+        let saved = crate::connections::SavedConnection {
+            id: crate::connections::ConnectionId::new(),
+            name: "Prod".into(),
+            environment: crate::env::Environment::Production,
+            read_only: None,
+            password: crate::connections::PasswordMode::None,
+            ssh_secret: crate::connections::PasswordMode::None,
+            spec,
+        };
+        let id = saved.id.clone();
+        harness.app.connections.upsert(saved);
+        id
+    }
+
+    #[test]
+    fn what_went_wrong_is_always_on_screen() {
+        use crate::model::TestState;
+        for look in crate::theme::Look::ALL {
+            // With the tunnel's fields the form is taller than the window
+            // and scrolls.
+            for (case, tunnel) in [
+                ("a save without a name", false),
+                ("a failed test", false),
+                ("an unknown host key", false),
+                ("a failed test", true),
+                ("an unknown host key", true),
+            ] {
+                let mut harness = Harness::new();
+                harness.set_look(look);
+                harness.press(Key::N, Modifiers::COMMAND);
+                harness.click(&look.label("PostgreSQL"));
+                if tunnel {
+                    harness.click("Connect through SSH tunnel");
+                }
+                let mut shown: Vec<String> = Vec::new();
+                match case {
+                    "a save without a name" => {
+                        harness.press(Key::S, Modifiers::COMMAND);
+                        shown.push(form(&harness).message.clone().expect("a message"));
+                    }
+                    "a failed test" => {
+                        if let Some(crate::model::Dialog::Connection(form)) =
+                            &mut harness.app.dialog
+                        {
+                            form.test = TestState::Failed("connection refused".into());
+                        }
+                        shown.push("connection refused".into());
+                    }
+                    _ => {
+                        if let Some(crate::model::Dialog::Connection(form)) =
+                            &mut harness.app.dialog
+                        {
+                            form.test = TestState::Untrusted {
+                                host: "bastion".into(),
+                                port: 22,
+                                fingerprint: "SHA256:abc".into(),
+                            };
+                        }
+                        shown.push("Unknown SSH host key for bastion: SHA256:abc".into());
+                        shown.push("Trust and test".into());
+                    }
+                }
+                let tree = harness.settle();
+                let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, harness.size);
+                let header = if look.terminal {
+                    crate::testing::bounds(&tree, "Paste URL", egui::accesskit::Role::Button)
+                } else {
+                    crate::testing::bounds(&tree, "Close", egui::accesskit::Role::Button)
+                }
+                .expect("the header");
+                let footer = crate::testing::bounds(&tree, "Test", egui::accesskit::Role::Button)
+                    .expect("Test");
+                assert!(
+                    screen.contains_rect(footer),
+                    "{case} in {}: the footer at {footer:?} is pushed off the window",
+                    look.name
+                );
+                for text in shown {
+                    let at = said_at(&tree, &text)
+                        .unwrap_or_else(|| panic!("{text:?} is not said in {}", look.name));
+                    assert!(
+                        screen.contains_rect(at)
+                            && at.top() >= header.bottom()
+                            && at.bottom() <= footer.top(),
+                        "{case} in {}: {text:?} at {at:?} is not between the header ({header:?}) \
+                         and the footer ({footer:?})",
+                        look.name
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_long_error_keeps_the_footer_on_screen_and_the_dialog_as_wide() {
+        use crate::model::TestState;
+        let long = "The server closed the connection before it answered. ".repeat(60);
+        assert!(long.len() > 3000, "{}", long.len());
+        for look in crate::theme::Look::ALL {
+            let mut save_right = Vec::new();
+            for message in ["connection refused", long.as_str()] {
+                let mut harness = Harness::new();
+                harness.set_look(look);
+                harness.press(Key::N, Modifiers::COMMAND);
+                harness.click(&look.label("PostgreSQL"));
+                if let Some(crate::model::Dialog::Connection(form)) = &mut harness.app.dialog {
+                    form.test = TestState::Failed(message.into());
+                }
+                let tree = harness.settle();
+                let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, harness.size);
+                for button in ["Test", "Save", "Cancel", "Save & Connect"] {
+                    let at = crate::testing::bounds(&tree, button, egui::accesskit::Role::Button)
+                        .unwrap_or_else(|| panic!("{button} in {}", look.name));
+                    assert!(
+                        screen.contains_rect(at),
+                        "{} characters of error in {}: {button} at {at:?} is pushed off the \
+                         window",
+                        message.len(),
+                        look.name
+                    );
+                }
+                let save = crate::testing::bounds(&tree, "Save", egui::accesskit::Role::Button)
+                    .expect("Save");
+                save_right.push(save.right());
+            }
+            assert!(
+                (save_right[0] - save_right[1]).abs() <= 0.5,
+                "{}: a long error moved the dialog's right edge from {} to {}",
+                look.name,
+                save_right[0],
+                save_right[1]
+            );
+        }
+    }
+
+    #[test]
+    fn the_dialog_reaches_its_height_at_once() {
+        for look in crate::theme::Look::ALL {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            harness.press(Key::N, Modifiers::COMMAND);
+            let footer = |harness: &mut Harness| {
+                let tree = harness.frame(Vec::new());
+                crate::testing::bounds(&tree, "Cancel", egui::accesskit::Role::Button)
+                    .expect("Cancel")
+            };
+            for step in [
+                look.label("PostgreSQL"),
+                "Connect through SSH tunnel".to_owned(),
+            ] {
+                harness.click(&step);
+                let at_once = footer(&mut harness);
+                for _ in 0..8 {
+                    harness.frame(Vec::new());
+                }
+                assert_eq!(
+                    footer(&mut harness),
+                    at_once,
+                    "the footer kept moving after {step} in {}",
+                    look.name
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_tall_form_that_fits_the_window_opens_whole() {
+        for look in crate::theme::Look::ALL {
+            let mut harness = Harness::with_size(egui::vec2(1280.0, 1100.0));
+            harness.set_look(look);
+            let id = add_saved_with_tunnel(&mut harness);
+            harness.settle();
+            let title = look.label("Edit connection");
+            let last = if look.terminal {
+                "· always on in 0.1.0"
+            } else {
+                "Blocks every write from this app. Every connection is read-only in 0.1.0."
+            };
+            // The first time, and again: egui remembers the dialog's size.
+            for opening in ["first", "second"] {
+                harness
+                    .app
+                    .apply(crate::model::Action::EditConnection(id.clone()));
+                // The first frame that paints the dialog.
+                let mut tree = harness.frame(Vec::new());
+                for _ in 0..5 {
+                    if harness.painted.iter().any(|(text, _)| *text == title) {
+                        break;
+                    }
+                    tree = harness.frame(Vec::new());
+                }
+                let shown_at = said_at(&tree, &title).expect("the title");
+                let end = said_at(&tree, last).expect("the form's last line");
+                let footer = crate::testing::bounds(&tree, "Test", egui::accesskit::Role::Button)
+                    .expect("Test");
+                assert!(
+                    end.bottom() <= footer.top(),
+                    "{}, {opening} opening: the form's end at {end:?} is under the footer at \
+                     {footer:?}",
+                    look.name
+                );
+                // It is first seen where it stays.
+                let tree = harness.settle();
+                assert_eq!(
+                    said_at(&tree, &title),
+                    Some(shown_at),
+                    "{}, {opening} opening",
+                    look.name
+                );
+                harness.press(Key::Escape, Modifiers::NONE);
+                assert!(harness.app.dialog.is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn the_terminal_dialog_keeps_one_width_in_the_smallest_window() {
+        for tunnel in [false, true] {
+            let mut harness = Harness::with_size(egui::vec2(720.0, 480.0));
+            harness.set_look(crate::theme::Look::omarchy());
+            harness.press(Key::N, Modifiers::COMMAND);
+            harness.click("postgresql");
+            if tunnel {
+                harness.click("Connect through SSH tunnel");
+            }
+            let tree = harness.settle();
+            // Both end the same distance before their part's right edge.
+            let header = crate::testing::bounds(&tree, "Paste URL", egui::accesskit::Role::Button)
+                .expect("the header's hint");
+            let footer = crate::testing::bounds(&tree, "Cancel", egui::accesskit::Role::Button)
+                .expect("Cancel");
+            assert!(
+                (header.right() - footer.right()).abs() < 0.5,
+                "the header ends at {} and the footer at {}",
+                header.right(),
+                footer.right()
+            );
+            assert!(footer.right() <= harness.size.x && header.left() >= 0.0);
+        }
+    }
+
+    #[test]
+    fn a_long_name_stays_clear_of_the_headers_controls() {
+        let name = "analytics@replica-eu-west-1.internal.example.com:5432/warehouse_reporting";
+        for look in crate::theme::Look::ALL {
+            for size in [egui::vec2(720.0, 480.0), egui::vec2(1280.0, 800.0)] {
+                let mut harness = Harness::with_size(size);
+                harness.set_look(look);
+                harness.press(Key::N, Modifiers::COMMAND);
+                if let Some(crate::model::Dialog::Connection(form)) = &mut harness.app.dialog {
+                    form.name = name.into();
+                }
+                let tree = harness.settle();
+                // What the header says of the name: it may end in "…".
+                let subtitle = bounds_where(&tree, |node| {
+                    node.role() == egui::accesskit::Role::Label
+                        && node
+                            .label()
+                            .or_else(|| node.value())
+                            .is_some_and(|text| text.starts_with(&name[..8]))
+                })
+                .expect("the header names the connection");
+                let control = if look.terminal {
+                    crate::testing::bounds(&tree, "Paste URL", egui::accesskit::Role::Button)
+                } else {
+                    bounds_where(&tree, |node| {
+                        node.role() == egui::accesskit::Role::RadioButton
+                            && node.label() == Some("Parameters")
+                    })
+                }
+                .expect("the header's control");
+                assert!(
+                    subtitle.right() <= control.left(),
+                    "{} at {size:?}: the name at {subtitle:?} runs into {control:?}",
+                    look.name
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_held_test_key_tests_once() {
+        let mut harness = Harness::new();
+        harness.press(Key::N, Modifiers::COMMAND);
+        harness.click("PostgreSQL");
+        if let Some(crate::model::Dialog::Connection(form)) = &mut harness.app.dialog {
+            form.name = "Shop".into();
+            form.user = "me".into();
+        }
+        harness.settle();
+        let tests = |harness: &Harness, from: usize| {
+            harness.app.backend.sent[from..]
+                .iter()
+                .filter(|command| matches!(command, Command::Test { .. }))
+                .count()
+        };
+        // The key goes down and the keyboard repeats it while it is held.
+        let key = |pressed: bool| egui::Event::Key {
+            key: Key::T,
+            physical_key: None,
+            pressed,
+            repeat: false,
+            modifiers: Modifiers::COMMAND,
+        };
+        let before = harness.app.backend.sent.len();
+        harness.frame(vec![key(true)]);
+        harness.frame(vec![key(true)]);
+        assert_eq!(tests(&harness, before), 1);
+        // The server refuses while the key is still held: the repeats that
+        // follow are not new presses, so they do not log in again.
+        let request = match &form(&harness).test {
+            crate::model::TestState::Running(request) => *request,
+            other => panic!("{other:?}"),
+        };
+        harness.app.apply(crate::model::Action::Backend(
+            crate::backend::Event::Tested {
+                request,
+                result: Err(tabletist_db::Error::Connect("refused".into())),
+            },
+        ));
+        for _ in 0..4 {
+            harness.frame(vec![key(true)]);
+        }
+        assert_eq!(tests(&harness, before), 1, "a repeat is not a press");
+        // Let go and pressed again: that is a press, and it tests.
+        harness.frame(vec![key(false)]);
+        harness.frame(vec![key(true)]);
+        assert_eq!(tests(&harness, before), 2);
+        // Pressed once more before that Test has answered: one at a time.
+        harness.frame(vec![key(false)]);
+        harness.frame(vec![key(true)]);
+        harness.settle();
+        assert!(matches!(
+            form(&harness).test,
+            crate::model::TestState::Running(_)
+        ));
+        assert_eq!(tests(&harness, before), 2, "one Test at a time");
+    }
+
+    #[test]
+    fn both_secrets_are_password_fields_to_screen_readers() {
+        for look in crate::theme::Look::ALL {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            harness.press(Key::N, Modifiers::COMMAND);
+            harness.click(&look.label("PostgreSQL"));
+            // The tunnel logs in with a password until told otherwise.
+            harness.click("Connect through SSH tunnel");
+            let tree = harness.settle();
+            let passwords = tree
+                .nodes
+                .iter()
+                .filter(|(_, node)| node.role() == egui::accesskit::Role::PasswordInput)
+                .count();
+            assert_eq!(passwords, 2, "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn a_url_typed_in_the_terminal_look_fills_the_form_when_the_keyboard_leaves_it() {
+        let mut harness = Harness::new();
+        harness.set_look(crate::theme::Look::omarchy());
+        let id = add_saved(&mut harness, "Shop");
+        harness
+            .app
+            .apply(crate::model::Action::EditConnection(id.clone()));
+        harness.press(Key::U, Modifiers::NONE);
+        harness.frame(vec![egui::Event::Text(
+            "postgres://me@db.example.com/app".into(),
+        )]);
+        harness.settle();
+        // No Enter: the keyboard moves on to the fields.
+        harness.press(Key::Tab, Modifiers::NONE);
+        assert_eq!(form(&harness).host, "db.example.com");
+        assert!(!form(&harness).url_mode);
+        // So an edit made after it is what is saved.
+        if let Some(crate::model::Dialog::Connection(form)) = &mut harness.app.dialog {
+            form.host = "replica.example.com".into();
+        }
+        harness.press(Key::S, Modifiers::COMMAND);
+        assert!(harness.app.dialog.is_none());
+        assert_eq!(
+            harness.app.connections.get(&id).unwrap().spec.host,
+            "replica.example.com"
+        );
+    }
+
+    #[test]
+    fn the_dialogs_keys_wait_for_an_open_list() {
+        let mut harness = Harness::new();
+        harness.press(Key::N, Modifiers::COMMAND);
+        harness.click("PostgreSQL");
+        if let Some(crate::model::Dialog::Connection(form)) = &mut harness.app.dialog {
+            form.name = "Shop".into();
+            form.user = "me".into();
+        }
+        let tree = harness.settle();
+        let combo = tree
+            .nodes
+            .iter()
+            .find(|(_, node)| node.role() == egui::accesskit::Role::ComboBox)
+            .map(|(id, _)| *id)
+            .expect("the SSL mode list");
+        harness.frame(vec![egui::Event::AccessKitActionRequest(
+            egui::accesskit::ActionRequest {
+                target_tree: egui::accesskit::TreeId::ROOT,
+                target_node: combo,
+                action: egui::accesskit::Action::Click,
+                data: None,
+            },
+        )]);
+        let before = harness.app.backend.sent.len();
+        harness.press(Key::T, Modifiers::COMMAND);
+        harness.press(Key::S, Modifiers::COMMAND);
+        assert!(
+            harness.app.dialog.is_some(),
+            "Mod+S saved under an open list"
+        );
+        assert!(harness.app.connections.connections.is_empty());
+        assert!(
+            !harness.app.backend.sent[before..]
+                .iter()
+                .any(|command| matches!(command, Command::Test { .. })),
+            "Mod+T tested under an open list"
+        );
+    }
+
+    #[test]
+    fn the_terminal_hint_shows_and_hides_the_url_field() {
+        let mut harness = Harness::new();
+        harness.set_look(crate::theme::Look::omarchy());
+        let id = add_saved(&mut harness, "Shop");
+        harness.app.apply(crate::model::Action::EditConnection(id));
+        assert!(!harness.has("url"));
+        harness.click("Paste URL");
+        assert!(form(&harness).url_mode);
+        assert!(harness.has("url"));
+        harness.click("Paste URL");
+        assert!(!form(&harness).url_mode);
+        assert!(!harness.has("url"));
+    }
+
+    #[test]
+    fn trusting_the_host_key_tests_again() {
+        for look in crate::theme::Look::ALL {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            harness.press(Key::N, Modifiers::COMMAND);
+            harness.click(&look.label("PostgreSQL"));
+            if let Some(crate::model::Dialog::Connection(form)) = &mut harness.app.dialog {
+                form.user = "me".into();
+                form.test = crate::model::TestState::Untrusted {
+                    host: "bastion".into(),
+                    port: 22,
+                    fingerprint: "SHA256:abc".into(),
+                };
+            }
+            let before = harness.app.backend.sent.len();
+            harness.click("Trust and test");
+            assert_eq!(
+                harness.app.host_keys.fingerprint("bastion", 22),
+                Some("SHA256:abc"),
+                "{}",
+                look.name
+            );
+            assert!(
+                harness.app.backend.sent[before..]
+                    .iter()
+                    .any(|command| matches!(command, Command::Test { .. })),
+                "{}",
+                look.name
+            );
+        }
+    }
+
+    #[test]
+    fn a_key_the_footer_has_no_room_to_show_still_has_its_button() {
+        let mut harness = Harness::with_size(egui::vec2(720.0, 480.0));
+        harness.set_look(crate::theme::Look::omarchy());
+        harness.press(Key::N, Modifiers::COMMAND);
+        harness.click("postgresql");
+        if let Some(crate::model::Dialog::Connection(form)) = &mut harness.app.dialog {
+            form.user = "me".into();
+            // A status long enough to leave no room for the Test key.
+            form.test = crate::model::TestState::Passed;
+            form.test_took = Some(std::time::Duration::from_secs(100_000));
+        }
+        let before = harness.app.backend.sent.len();
+        harness.click("Test");
+        assert!(
+            harness.app.backend.sent[before..]
+                .iter()
+                .any(|command| matches!(command, Command::Test { .. }))
+        );
+    }
+
+    #[test]
+    fn enter_in_the_url_field_fills_the_form() {
+        // The sheet's URL tab.
+        let mut harness = Harness::new();
+        harness.press(Key::N, Modifiers::COMMAND);
+        harness.click("URL");
+        harness.frame(vec![egui::Event::Text(
+            "postgres://me@db.example.com/app".into(),
+        )]);
+        harness.settle();
+        harness.press(Key::Enter, Modifiers::NONE);
+        assert_eq!(form(&harness).host, "db.example.com");
+        assert!(!form(&harness).url_mode);
+        // The terminal look's URL row.
+        let mut harness = Harness::new();
+        harness.set_look(crate::theme::Look::omarchy());
+        let id = add_saved(&mut harness, "Shop");
+        harness.app.apply(crate::model::Action::EditConnection(id));
+        harness.press(Key::U, Modifiers::NONE);
+        harness.frame(vec![egui::Event::Text(
+            "postgres://me@db.example.com/app".into(),
+        )]);
+        harness.settle();
+        harness.press(Key::Enter, Modifiers::NONE);
+        assert_eq!(form(&harness).host, "db.example.com");
+        assert!(!form(&harness).url_mode);
+    }
+
+    #[test]
+    fn mod_enter_saves_and_connects() {
+        let mut harness = Harness::new();
+        harness.press(Key::N, Modifiers::COMMAND);
+        if let Some(crate::model::Dialog::Connection(form)) = &mut harness.app.dialog {
+            form.name = "Shop".into();
+            form.sqlite_path = "/tmp/shop.db".into();
+        }
+        let before = harness.app.backend.sent.len();
+        harness.press(Key::Enter, Modifiers::COMMAND);
+        assert_eq!(harness.app.connections.connections.len(), 1);
+        assert!(
+            harness.app.backend.sent[before..]
+                .iter()
+                .any(|command| matches!(command, Command::Connect { .. })),
+            "saved, but not connected"
+        );
     }
 
     use tabletist_db::ssh_config::{AgentSocket, ConfigHost, HostConfig, Proxy};
@@ -3193,17 +4253,22 @@ mod tests {
         )
     }
 
-    /// A new PostgreSQL connection with the SSH section open and these
-    /// hosts from ~/.ssh/config.
-    fn ssh_dialog(hosts: Vec<ConfigHost>) -> Harness {
+    /// A new PostgreSQL connection through an SSH tunnel, with these hosts
+    /// from ~/.ssh/config, drawn with `look`.
+    fn ssh_dialog_in(look: crate::theme::Look, hosts: Vec<ConfigHost>) -> Harness {
         let mut harness = Harness::new();
+        harness.set_look(look);
         harness.press(Key::N, Modifiers::COMMAND);
-        harness.click("PostgreSQL");
-        harness.click("SSH tunnel");
-        harness.click("Connect through SSH");
+        harness.click(&look.label("PostgreSQL"));
+        harness.click("Connect through SSH tunnel");
         ssh_form(&mut harness).ssh_hosts = hosts;
         harness.settle();
         harness
+    }
+
+    /// [`ssh_dialog_in`] the standard look.
+    fn ssh_dialog(hosts: Vec<ConfigHost>) -> Harness {
+        ssh_dialog_in(crate::theme::Look::standard(), hosts)
     }
 
     fn ssh_form(harness: &mut Harness) -> &mut crate::model::ConnectionForm {
@@ -3213,21 +4278,23 @@ mod tests {
         }
     }
 
-    /// The placeholder of the field the `label` label names.
-    fn placeholder(harness: &mut Harness, label: &str) -> Option<String> {
+    /// The placeholder of the field named `name`: by its own name, where
+    /// the dialog has no label beside it, or by the label that says so.
+    fn placeholder(harness: &mut Harness, name: &str) -> Option<String> {
         let tree = harness.settle();
-        let (label, _) = tree
+        let label = tree
             .nodes
             .iter()
-            .find(|(_, node)| node.value() == Some(label))
-            .unwrap_or_else(|| panic!("no {label:?} label"));
+            .find(|(_, node)| node.value() == Some(name))
+            .map(|(id, _)| *id);
         tree.nodes
             .iter()
             .find(|(_, node)| {
                 node.role() == egui::accesskit::Role::TextInput
-                    && node.labelled_by().contains(label)
+                    && (node.label() == Some(name)
+                        || label.is_some_and(|label| node.labelled_by().contains(&label)))
             })
-            .expect("a field")
+            .unwrap_or_else(|| panic!("no field named {name:?}"))
             .1
             .placeholder()
             .map(str::to_owned)
@@ -3251,6 +4318,10 @@ mod tests {
         let form = ssh_form(&mut harness);
         assert_eq!(form.ssh_host, "bastion");
         assert_eq!(form.ssh_auth, crate::model::SshAuthKind::Agent);
+        // The list closes behind a pick made without the pointer too.
+        harness.settle();
+        assert!(!egui::Popup::is_any_open(&harness.ctx), "the list is open");
+        assert!(!harness.has("replica"));
     }
 
     #[test]
@@ -3284,6 +4355,159 @@ mod tests {
     }
 
     #[test]
+    fn the_terminal_look_offers_config_hosts_and_their_values() {
+        let look = crate::theme::Look::omarchy();
+        let mut harness = ssh_dialog_in(look, Vec::new());
+        assert!(!harness.has("Hosts from ~/.ssh/config"));
+        let replica = config_host("replica", HostConfig::default());
+        let mut harness = ssh_dialog_in(look, vec![bastion(), replica]);
+        assert_eq!(placeholder(&mut harness, "SSH port").as_deref(), Some("22"));
+        harness.click("Hosts from ~/.ssh/config");
+        assert!(harness.has("replica"));
+        harness.click("bastion");
+        let form = ssh_form(&mut harness);
+        assert_eq!(form.ssh_host, "bastion");
+        assert_eq!(form.ssh_auth, crate::model::SshAuthKind::Agent);
+        assert_eq!(
+            placeholder(&mut harness, "SSH port").as_deref(),
+            Some("2222")
+        );
+        // The row's label is in the look's case; the config's values are
+        // as the config has them.
+        assert_eq!(
+            placeholder(&mut harness, "ssh user").as_deref(),
+            Some("ops (from ~/.ssh/config)")
+        );
+        assert!(harness.has("10.0.0.5 from ~/.ssh/config"));
+    }
+
+    #[test]
+    fn a_config_hosts_key_file_and_proxy_command_show_in_every_look() {
+        for look in crate::theme::Look::ALL {
+            let vault = config_host(
+                "vault",
+                HostConfig {
+                    host_name: Some("10.0.0.9".into()),
+                    identity_file: Some("/home/me/.ssh/vault".into()),
+                    proxy: Some(Proxy::Command("ssh -W %h:%p gateway".into())),
+                    ..HostConfig::default()
+                },
+            );
+            let mut harness = ssh_dialog_in(look, vec![vault]);
+            harness.click("Hosts from ~/.ssh/config");
+            harness.click("vault");
+            // A host with a key file is logged in to with it.
+            assert_eq!(
+                ssh_form(&mut harness).ssh_auth,
+                crate::model::SshAuthKind::KeyFile,
+                "{}",
+                look.name
+            );
+            // The sheet names the field itself; the terminal look's row
+            // has a label, in its case.
+            let key_file = if look.terminal {
+                "key file"
+            } else {
+                "Key file"
+            };
+            assert_eq!(
+                placeholder(&mut harness, key_file).as_deref(),
+                Some("/home/me/.ssh/vault (from ~/.ssh/config)"),
+                "{}",
+                look.name
+            );
+            // The warning takes the place of the host name's line.
+            assert!(
+                harness.has("Uses ProxyCommand, which Tabletist does not support yet."),
+                "{}",
+                look.name
+            );
+            assert!(!harness.has("10.0.0.9 from ~/.ssh/config"), "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn a_long_placeholder_from_the_config_keeps_the_dialog_as_wide() {
+        // A user and a key file too long for their fields: a placeholder
+        // must be cut to its field, not widen it and the dialog with it.
+        let user = "deploy-automation-runner";
+        let key = "/home/deploy/.ssh/keys/bookshop-production-bastion_ed25519";
+        assert!(user.len() >= 24 && key.len() >= 50);
+        for look in crate::theme::Look::ALL {
+            for size in [egui::vec2(720.0, 480.0), egui::vec2(1280.0, 800.0)] {
+                let mut save_right = Vec::new();
+                for from_config in [false, true] {
+                    let mut harness = Harness::with_size(size);
+                    harness.set_look(look);
+                    harness.press(Key::N, Modifiers::COMMAND);
+                    harness.click(&look.label("PostgreSQL"));
+                    harness.click("Connect through SSH tunnel");
+                    let form = ssh_form(&mut harness);
+                    form.ssh_auth = crate::model::SshAuthKind::KeyFile;
+                    if from_config {
+                        form.ssh_hosts = vec![config_host(
+                            "runner",
+                            HostConfig {
+                                user: Some(user.into()),
+                                identity_file: Some(key.into()),
+                                ..HostConfig::default()
+                            },
+                        )];
+                        form.ssh_host = "runner".into();
+                    }
+                    let tree = harness.settle();
+                    let case = format!("{} at {size:?}", look.name);
+                    if from_config {
+                        // The placeholders are there, whole for whoever
+                        // hears them.
+                        let ssh_user = if look.terminal {
+                            "ssh user"
+                        } else {
+                            "SSH user"
+                        };
+                        assert_eq!(
+                            placeholder(&mut harness, ssh_user),
+                            Some(format!("{user} (from ~/.ssh/config)")),
+                            "{case}"
+                        );
+                        let key_file = if look.terminal {
+                            "key file"
+                        } else {
+                            "Key file"
+                        };
+                        assert_eq!(
+                            placeholder(&mut harness, key_file),
+                            Some(format!("{key} (from ~/.ssh/config)")),
+                            "{case}"
+                        );
+                    }
+                    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, harness.size);
+                    for button in ["Test", "Save", "Cancel", "Save & Connect"] {
+                        let at =
+                            crate::testing::bounds(&tree, button, egui::accesskit::Role::Button)
+                                .unwrap_or_else(|| panic!("{button}, {case}"));
+                        assert!(
+                            screen.contains_rect(at),
+                            "{case}: {button} at {at:?} is pushed off the window"
+                        );
+                    }
+                    let save = crate::testing::bounds(&tree, "Save", egui::accesskit::Role::Button)
+                        .expect("Save");
+                    save_right.push(save.right());
+                }
+                assert!(
+                    (save_right[0] - save_right[1]).abs() <= 0.5,
+                    "{} at {size:?}: the config's placeholders moved the dialog's right edge \
+                     from {} to {}",
+                    look.name,
+                    save_right[0],
+                    save_right[1]
+                );
+            }
+        }
+    }
+
+    #[test]
     fn only_verify_full_offers_the_system_certificates() {
         let ca_hint = |harness: &mut Harness, tls| {
             match &mut harness.app.dialog {
@@ -3291,22 +4515,7 @@ mod tests {
                 other => panic!("{other:?}"),
             }
             let tree = harness.settle();
-            // The field is named by the "CA file" label next to it.
-            let (label, _) = tree
-                .nodes
-                .iter()
-                .find(|(_, node)| node.value() == Some("CA file"))
-                .expect("CA file label");
-            tree.nodes
-                .iter()
-                .find(|(_, node)| {
-                    node.role() == egui::accesskit::Role::TextInput
-                        && node.labelled_by().contains(label)
-                })
-                .expect("CA file field")
-                .1
-                .placeholder()
-                .map(str::to_owned)
+            ca_field(&tree).placeholder().map(str::to_owned)
         };
         let mut harness = Harness::new();
         harness.press(Key::N, Modifiers::COMMAND);
@@ -3322,10 +4531,10 @@ mod tests {
     }
 
     #[test]
-    fn sqlite_has_no_ssh_section() {
+    fn sqlite_has_no_ssh_tunnel() {
         let mut harness = Harness::new();
         harness.press(Key::N, Modifiers::COMMAND);
-        assert!(!harness.has("SSH tunnel"));
+        assert!(!harness.has("Connect through SSH tunnel"));
     }
 
     #[test]
@@ -4292,9 +5501,11 @@ mod tests {
     }
 
     /// Interactive roles a screen reader announces; each needs a name.
-    const NAMED: [egui::accesskit::Role; 6] = [
+    const NAMED: [egui::accesskit::Role; 8] = [
         egui::accesskit::Role::Button,
         egui::accesskit::Role::TextInput,
+        egui::accesskit::Role::PasswordInput,
+        egui::accesskit::Role::RadioButton,
         egui::accesskit::Role::MultilineTextInput,
         egui::accesskit::Role::CheckBox,
         egui::accesskit::Role::ComboBox,
@@ -4369,12 +5580,23 @@ mod tests {
         with_database_picker(&mut harness, tab);
         scenes.push(("no schemas", harness.settle()));
 
-        let mut harness = Harness::new();
-        harness.press(Key::N, Modifiers::COMMAND);
-        harness.click("PostgreSQL");
-        harness.click("SSH tunnel");
-        harness.click("Connect through SSH");
-        scenes.push(("connection dialog", harness.settle()));
+        for (name, look) in [
+            ("connection dialog", crate::theme::Look::standard()),
+            ("connection dialog (macos)", crate::theme::Look::macos()),
+            (
+                "connection dialog (terminal)",
+                crate::theme::Look::omarchy(),
+            ),
+        ] {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            harness.press(Key::N, Modifiers::COMMAND);
+            harness.click(&look.label("PostgreSQL"));
+            harness.click("Connect through SSH tunnel");
+            // With hosts in ~/.ssh/config, the button that lists them.
+            ssh_form(&mut harness).ssh_hosts = vec![bastion()];
+            scenes.push((name, harness.settle()));
+        }
 
         let mut harness = Harness::new();
         let tab = harness.app.active_tab_id();

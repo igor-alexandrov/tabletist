@@ -3,9 +3,6 @@
 
 use egui::{Color32, CornerRadius, Stroke, Vec2};
 
-/// The edit connection dialog's title font (it keeps the pre-role helpers).
-pub use crate::typography::legacy::{TEXT_TITLE, semibold};
-
 /// A palette file from the themes directory.
 pub type CustomTheme = fastframe_theme::CustomTheme<Palette>;
 /// The palette files, the shared presets, and Omarchy's live palette.

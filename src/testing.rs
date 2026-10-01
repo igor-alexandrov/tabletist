@@ -21,7 +21,7 @@ pub struct Harness {
     pub fullscreen: bool,
     /// Every piece of text the last frame painted, with its color.
     pub painted: Vec<(String, egui::Color32)>,
-    /// Every rectangle and circle the last frame filled, and where.
+    /// Every rectangle, circle and outline the last frame filled, and where.
     pub fills: Vec<(egui::Rect, egui::Color32)>,
     /// The colour of every line and outline the last frame drew.
     pub strokes: Vec<egui::Color32>,
@@ -195,11 +195,13 @@ impl Harness {
         self.settle();
     }
 
-    /// Presses `key_` and lets it go. egui takes a key that goes down
-    /// again without having come up for a held key repeating.
+    /// Presses and releases a key: one frame with the key down, one with it
+    /// up, so a second `press` of the same key is a new press, not a repeat
+    /// of a held one.
     pub fn press(&mut self, key_: egui::Key, modifiers: egui::Modifiers) {
         self.settle();
-        self.frame(vec![key(key_, modifiers), key_up(key_, modifiers)]);
+        self.frame(vec![key(key_, modifiers)]);
+        self.frame(vec![release(key_, modifiers)]);
         self.settle();
     }
 
@@ -265,6 +267,12 @@ fn collect_paint(
             stroke(circle.stroke);
         }
         egui::Shape::LineSegment { stroke: line, .. } => stroke(*line),
+        // A filled outline (the connection dialog's stripe), by the
+        // rectangle round it.
+        egui::Shape::Path(path) if path.fill.a() > 0 => {
+            let bounds = egui::Rect::from_points(&path.points);
+            fills.push((bounds, path.fill));
+        }
         _ => {}
     }
 }
@@ -310,8 +318,8 @@ pub fn key(key: egui::Key, modifiers: egui::Modifiers) -> egui::Event {
     }
 }
 
-/// `key` coming up again.
-pub fn key_up(key: egui::Key, modifiers: egui::Modifiers) -> egui::Event {
+/// The key coming back up.
+pub fn release(key: egui::Key, modifiers: egui::Modifiers) -> egui::Event {
     egui::Event::Key {
         key,
         physical_key: None,
@@ -689,5 +697,21 @@ impl Harness {
             std::fs::create_dir_all(parent).expect("shots directory");
         }
         image.save(path).expect("PNG written");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Harness;
+
+    #[test]
+    fn a_pressed_key_is_released() {
+        let mut harness = Harness::new();
+        harness.press(egui::Key::J, egui::Modifiers::NONE);
+        // egui reads a press of a key that is still down as a repeat.
+        assert!(
+            !harness.ctx.input(|input| input.key_down(egui::Key::J)),
+            "a key left down makes its next press a repeat"
+        );
     }
 }

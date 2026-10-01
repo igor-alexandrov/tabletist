@@ -23,6 +23,10 @@ pub const SHORTCUTS: &[(&str, &str)] = &[
     ("Mod+Shift+W", "Close connection tab"),
     ("Mod+1…9, Ctrl+Tab, Ctrl+Shift+Tab", "Switch connection tab"),
     ("Mod+N", "New connection"),
+    (
+        "Mod+S, Mod+T, Mod+Enter",
+        "Save, test, or save and connect in the connection dialog",
+    ),
     ("Mod+T", "New SQL editor"),
     ("Mod+Return, Mod+Shift+Return", "Run statement / run all"),
     ("Mod+W", "Close tab"),
@@ -524,6 +528,15 @@ fn letters(app: &mut App, ctx: &egui::Context, actions: &mut Vec<Action>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_shortcut_table_lists_the_connection_dialogs_keys() {
+        assert!(
+            SHORTCUTS
+                .iter()
+                .any(|(keys, what)| keys.contains("Mod+S") && what.contains("connection dialog"))
+        );
+    }
 
     #[test]
     fn the_shortcut_table_covers_the_spec_map() {

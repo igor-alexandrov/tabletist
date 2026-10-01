@@ -87,6 +87,10 @@ pub enum TextRole {
     InspectorValue,
     /// The SQL editor's script and its line numbers.
     Code,
+    /// Labels over the connection dialog's own fields (name, type, environment, the URL).
+    FormLabel,
+    /// The connection dialog's group headings (Database, Server, Security).
+    Legend,
     // Omarchy, from the spec.
     OBody,
     OTableTitle,
@@ -108,7 +112,7 @@ pub enum TextRole {
 }
 
 impl TextRole {
-    pub const ALL: [TextRole; 36] = [
+    pub const ALL: [TextRole; 38] = [
         Self::UiBody,
         Self::UiBodyStrong,
         Self::TableTitle,
@@ -132,6 +136,8 @@ impl TextRole {
         Self::JsonChip,
         Self::InspectorValue,
         Self::Code,
+        Self::FormLabel,
+        Self::Legend,
         Self::OBody,
         Self::OTableTitle,
         Self::OScreenTitle,
@@ -173,6 +179,8 @@ impl TextRole {
             Self::JsonChip => "json-chip",
             Self::InspectorValue => "inspector-value",
             Self::Code => "code",
+            Self::FormLabel => "form-label",
+            Self::Legend => "legend",
             Self::OBody => "o-body",
             Self::OTableTitle => "o-table-title",
             Self::OScreenTitle => "o-screen-title",
@@ -246,6 +254,8 @@ impl TextRole {
             Self::InspectorValue => style(Mono, 400, 13.0),
             // 22 pt lines.
             Self::Code => lines(Mono, 400, 13.0, 22.0 / 13.0),
+            Self::FormLabel => style(Sans, 500, 12.0),
+            Self::Legend => style(Sans, 600, 12.0),
             Self::OBody => style(Mono, 400, 13.0),
             Self::OTableTitle => style(Mono, 700, 15.0),
             Self::OScreenTitle => style(Mono, 700, 14.0),
@@ -614,17 +624,4 @@ pub fn text_styles(faces: Faces) -> std::collections::BTreeMap<egui::TextStyle, 
         (TextStyle::Monospace, mono.font_id(faces)),
     ]
     .into()
-}
-
-/// The pre-role helpers, kept for the edit connection dialog until it
-/// moves to [`TextRole`] (it is out of 0.1.0's scope).
-pub mod legacy {
-    use egui::FontId;
-
-    /// Dialog titles.
-    pub const TEXT_TITLE: f32 = 17.0;
-
-    pub fn semibold(size: f32) -> FontId {
-        fastframe_fonts::Weight::SemiBold.font_id(size)
-    }
 }

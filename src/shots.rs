@@ -40,6 +40,51 @@ fn saved() -> SavedConnection {
     }
 }
 
+/// The Bookshop's production database behind a bastion, open in the
+/// connection dialog after a Test that passed: the scene the dialog's
+/// mockups show.
+fn edit_production(harness: &mut Harness) {
+    let (mut spec, _) = ConnectSpec::from_url(
+        "postgres://app_readonly@db.example.com:5432/bookshop_production?sslmode=verify-full",
+    )
+    .unwrap();
+    spec.ca_file = Some("ca-bundle.pem".into());
+    spec.ssh = Some(tabletist_db::SshSpec {
+        host: "bastion.example.com".into(),
+        port: Some(22),
+        user: "deploy".into(),
+        auth: tabletist_db::SshAuth::KeyFile {
+            path: "~/.ssh/id_ed25519".into(),
+        },
+    });
+    // The picker's scene has this connection already: edit that one.
+    let id = harness
+        .app
+        .connections
+        .connections
+        .iter()
+        .find(|connection| connection.spec.database == "bookshop_production")
+        .map_or_else(ConnectionId::new, |connection| connection.id.clone());
+    harness.app.connections.upsert(SavedConnection {
+        id: id.clone(),
+        name: "Bookshop".into(),
+        environment: Environment::Production,
+        read_only: None,
+        password: PasswordMode::Keyring,
+        ssh_secret: PasswordMode::None,
+        spec,
+    });
+    harness.app.apply(Action::EditConnection(id));
+    if let Some(crate::model::Dialog::Connection(form)) = &mut harness.app.dialog {
+        form.test = crate::model::TestState::Passed;
+        form.test_took = Some(Duration::from_millis(42));
+    }
+    // A dialog fades in over its first frames: the shot is of what stays.
+    for _ in 0..6 {
+        harness.settle();
+    }
+}
+
 const TABLES: [&str; 30] = [
     "addresses",
     "authors",
@@ -252,8 +297,12 @@ fn shots() {
         harness.press(egui::Key::F, egui::Modifiers::COMMAND);
     });
     both("dialog", |harness| {
+        edit_production(harness);
+    });
+    both("dialog-new", |harness| {
         harness.press(egui::Key::N, egui::Modifiers::COMMAND);
-        harness.click("PostgreSQL");
+        let postgres = harness.app.look.label("PostgreSQL");
+        harness.click(&postgres);
     });
     both("state-disconnected", |harness| {
         let tab = workspace(harness);
@@ -535,14 +584,18 @@ mod mock {
         OmarchyWorkspace,
         MacPicker,
         OmarchyPicker,
+        MacDialog,
+        OmarchyDialog,
     }
 
     impl Screen {
-        pub const ALL: [Screen; 4] = [
+        pub const ALL: [Screen; 6] = [
             Self::MacWorkspace,
             Self::OmarchyWorkspace,
             Self::MacPicker,
             Self::OmarchyPicker,
+            Self::MacDialog,
+            Self::OmarchyDialog,
         ];
 
         /// The screen's name (screenshot files).
@@ -552,13 +605,17 @@ mod mock {
                 Self::OmarchyWorkspace => "omarchy-workspace",
                 Self::MacPicker => "macos-connections",
                 Self::OmarchyPicker => "omarchy-connections",
+                Self::MacDialog => "macos-connection-edit",
+                Self::OmarchyDialog => "omarchy-connection-edit",
             }
         }
 
         pub fn look(self) -> Look {
             match self {
-                Self::MacWorkspace | Self::MacPicker => Look::macos(),
-                Self::OmarchyWorkspace | Self::OmarchyPicker => Look::omarchy(),
+                Self::MacWorkspace | Self::MacPicker | Self::MacDialog => Look::macos(),
+                Self::OmarchyWorkspace | Self::OmarchyPicker | Self::OmarchyDialog => {
+                    Look::omarchy()
+                }
             }
         }
 
@@ -566,9 +623,9 @@ mod mock {
         /// a 10 pt wallpaper margin and Hyprland's 2 pt border.
         pub fn size(self) -> egui::Vec2 {
             match self {
-                Self::MacWorkspace | Self::MacPicker => egui::vec2(1440.0, 900.0),
+                Self::MacWorkspace | Self::MacPicker | Self::MacDialog => egui::vec2(1440.0, 900.0),
                 Self::OmarchyWorkspace => egui::vec2(1896.0, 1056.0),
-                Self::OmarchyPicker => egui::vec2(936.0, 1016.0),
+                Self::OmarchyPicker | Self::OmarchyDialog => egui::vec2(936.0, 1016.0),
             }
         }
 
@@ -576,9 +633,9 @@ mod mock {
         /// line up with them.
         pub fn design_scale(self) -> f32 {
             match self {
-                Self::MacWorkspace | Self::MacPicker => 2000.0 / 1440.0,
+                Self::MacWorkspace | Self::MacPicker | Self::MacDialog => 2000.0 / 1440.0,
                 Self::OmarchyWorkspace => 2000.0 / 1920.0,
-                Self::OmarchyPicker => 1846.0 / 960.0,
+                Self::OmarchyPicker | Self::OmarchyDialog => 1846.0 / 960.0,
             }
         }
 
@@ -586,8 +643,8 @@ mod mock {
         /// Night, as the mockups.
         pub fn palette(self) -> Palette {
             match self {
-                Self::MacWorkspace | Self::MacPicker => Palette::light(),
-                Self::OmarchyWorkspace | Self::OmarchyPicker => tokyo_night(),
+                Self::MacWorkspace | Self::MacPicker | Self::MacDialog => Palette::light(),
+                Self::OmarchyWorkspace | Self::OmarchyPicker | Self::OmarchyDialog => tokyo_night(),
             }
         }
 
@@ -618,6 +675,10 @@ mod mock {
                     });
                 }
                 Self::MacPicker | Self::OmarchyPicker => pickers(harness),
+                Self::MacDialog | Self::OmarchyDialog => {
+                    pickers(harness);
+                    edit_production(harness);
+                }
             }
         }
     }

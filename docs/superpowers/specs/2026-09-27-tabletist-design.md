@@ -415,14 +415,18 @@ enum Dialog { Connection(..), Password(..), HostKey(..), QuickOpen(..), Help }
 - Picker: searchable list of saved connections showing color tag, driver icon,
   and `user@host/db` (or the file name for SQLite). Double-click or Enter
   connects in this tab. New, Edit, Duplicate, Delete.
-- Connection dialog: driver switch; name; color tag (none, red, orange, yellow,
-  green, blue, purple, gray); host, port, user, password, database, or SQLite
-  file picker; TLS mode, with a CA file for the verifying modes; collapsible
-  SSH section (host, port, user, auth method, password or key file +
-  passphrase);
-  "Paste URL" to fill fields; **Test**; **Save**; **Save & Connect**.
-- Password storage per secret: "Save in keyring" (default) or "Ask every
-  time". Secrets live only in the keyring, keyed by connection id.
+- Connection dialog: name; driver; environment (local, dev, staging,
+  production, none), which follows where the connection points until one is
+  chosen and decides its colour; host, port, database, user, password, or
+  SQLite file picker; SSL mode, with a CA certificate for the modes that
+  check one; SSH tunnel (host, with the Host aliases of `~/.ssh/config` to
+  pick from and their values as hints; port, user, auth method, password or
+  key file + passphrase); the read-only note; a URL that fills the fields;
+  **Test**; **Save**; **Save & Connect**. macOS draws it as a sheet of
+  grouped fields, with **Delete** when editing; the terminal look as a
+  two-column form with its keys in the footer.
+- Password storage per secret: saved in the keyring (default) or asked for
+  every time. Secrets live only in the keyring, keyed by connection id.
 
 ### 5.5 Sidebar tree
 
@@ -489,6 +493,7 @@ read-only table (structure data is small; the data grid is not needed).
 | Cmd/Ctrl+Shift+W | Close connection tab |
 | Cmd/Ctrl+1..9, Ctrl+Tab, Ctrl+Shift+Tab | Switch connection tab |
 | Cmd/Ctrl+N | New connection |
+| Cmd/Ctrl+S, Cmd/Ctrl+T, Cmd/Ctrl+Enter | In the connection dialog: save, test, save and connect |
 | Cmd/Ctrl+W | Close object tab |
 | Cmd/Ctrl+Shift+[ / ] | Previous / next object tab |
 | Cmd/Ctrl+R | Refresh current tab (or tree when it has focus) |
@@ -502,7 +507,9 @@ read-only table (structure data is small; the data grid is not needed).
 | Arrows, Page Up/Down, Home/End | Move in the grid |
 | ? | Shortcuts dialog |
 
-All handled in `ui/keys.rs`. Plain keys (arrows, Space, `?`) and copy are
+All handled in `ui/keys.rs`, apart from the connection dialog's own keys,
+which the dialog takes while it is open (no other shortcut acts behind it).
+Plain keys (arrows, Space, `?`) and copy are
 suppressed while a text field has focus; Cmd/Ctrl shortcuts are not.
 
 ### 5.11 Platform integration

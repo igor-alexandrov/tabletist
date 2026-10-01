@@ -115,6 +115,18 @@ tokio = { version = "1", features = ["test-util"] }
 [build-dependencies]
 fastframe-i18n = { git = "https://github.com/crmne/fastframe", tag = "v0.2.2", features = ["build"] }
 
+# A target-specific build dependency is chosen by the host, so only a build
+# on Windows compiles this; Linux and macOS builds never see it.
+[target.'cfg(windows)'.build-dependencies]
+# Embeds the icon and the version details into tabletist.exe (build.rs), for
+# Explorer, shortcuts and the Apps list. It writes the .rc file and runs the
+# Windows SDK's rc.exe, which it finds through the registry. With default
+# features off (no [package.metadata] reading through toml) it adds one
+# crate: its only dependency, version_check, is already in the tree.
+# embed-resource does the same through cc, toml, vswhom and winreg, and wants
+# a hand-written .rc file.
+winresource = { version = "0.1.31", default-features = false }
+
 [features]
 shots = ["dep:egui_kittest"]
 
