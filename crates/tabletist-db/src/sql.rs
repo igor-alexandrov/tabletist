@@ -390,8 +390,9 @@ fn number_end(bytes: &[u8], start: usize) -> usize {
     at
 }
 
-/// One statement of a script, as the editor shows it.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// One statement of a script, as the editor shows it. Its `Debug` output
+/// leaves the text out: what a user types into the editor is never logged.
+#[derive(Clone, PartialEq, Eq)]
 pub struct Statement {
     /// Byte range in the script, without surrounding whitespace or the `;`.
     pub range: Range<usize>,
@@ -406,6 +407,18 @@ pub struct Statement {
     pub first_line: usize,
     /// The script's text in `range`.
     pub text: String,
+}
+
+impl std::fmt::Debug for Statement {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Statement")
+            .field("range", &self.range)
+            .field("end", &self.end)
+            .field("start_line", &self.start_line)
+            .field("start_column", &self.start_column)
+            .field("first_line", &self.first_line)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Statement {
@@ -816,6 +829,21 @@ mod tests {
             .filter(|token| token.kind != TokenKind::Whitespace)
             .map(|token| (token.kind, &text[token.range]))
             .collect()
+    }
+
+    #[test]
+    fn a_statement_does_not_print_its_text() {
+        let script = statements(
+            Dialect::Postgres,
+            "SELECT 1;\nSELECT 'hunter2' FROM secrets",
+        );
+        let printed = format!("{script:?}");
+        assert!(!printed.contains("hunter2"), "{printed}");
+        assert!(!printed.contains("secrets"), "{printed}");
+        assert!(!printed.contains("SELECT"), "{printed}");
+        // Where each statement sits is still there.
+        assert!(printed.contains("first_line: 2"), "{printed}");
+        assert!(printed.contains("range: 10..39"), "{printed}");
     }
 
     #[test]

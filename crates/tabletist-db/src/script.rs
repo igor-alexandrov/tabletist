@@ -80,9 +80,11 @@ impl StopFlag {
         Self::default()
     }
 
-    /// Stops every run holding this flag or a clone of it.
-    pub fn stop(&self) {
-        self.0.stopped.store(true, Ordering::SeqCst);
+    /// Stops every run holding this flag or a clone of it. Says whether
+    /// this call was the first to stop it, so of a user's cancel and a
+    /// timeout only one is the reason the run stopped.
+    pub fn stop(&self) -> bool {
+        !self.0.stopped.swap(true, Ordering::SeqCst)
     }
 
     /// Whether [`StopFlag::stop`] was called.
@@ -149,5 +151,15 @@ mod tests {
         clone.stop();
         assert!(flag.is_stopped());
         assert!(flag.is_finishing());
+    }
+
+    #[test]
+    fn only_the_first_stop_says_it_stopped_the_run() {
+        let flag = StopFlag::new();
+        let clone = flag.clone();
+        assert!(clone.stop());
+        assert!(!flag.stop());
+        assert!(!clone.stop());
+        assert!(flag.is_stopped());
     }
 }
