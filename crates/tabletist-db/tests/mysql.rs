@@ -452,6 +452,48 @@ async fn a_bad_raw_where_is_a_query_error_and_the_session_survives() {
     assert!(connection.fetch_rows(&users(1)).await.is_ok());
 }
 
+/// The driver closes the connection when a statement runs without a value
+/// for each parameter, and it reads `:name` as one too, also in a quote
+/// right after a `-`.
+#[tokio::test]
+async fn a_raw_where_with_a_parameter_is_a_query_error_and_the_session_survives() {
+    let Some(connection) = connect().await else {
+        return;
+    };
+    for raw in [
+        "id = ?",
+        "name = :x",
+        "id = 1 -':abc'",
+        "id = ? AND name = :x",
+    ] {
+        // Alone, and after a filter with a value of its own.
+        for mut query in [users(50), filtered("name", FilterOp::Eq, "Ada Lovelace")] {
+            query.raw_where = Some(raw.into());
+            match connection.fetch_rows(&query).await {
+                Err(Error::Query { code: None, .. }) => {}
+                other => panic!("{raw}: {other:?}"),
+            }
+            assert!(connection.fetch_rows(&users(1)).await.is_ok(), "{raw}");
+            match connection.count_rows(&query).await {
+                Err(Error::Query { code: None, .. }) => {}
+                other => panic!("{raw}: {other:?}"),
+            }
+            assert!(connection.fetch_rows(&users(1)).await.is_ok(), "{raw}");
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_raw_where_can_spell_a_parameter_in_a_string_or_a_comment() {
+    let Some(connection) = connect().await else {
+        return;
+    };
+    let mut query = users(50);
+    query.raw_where = Some("name <> ':x' AND name <> '?' /* :y ? */ -- :z ?".into());
+    assert_eq!(connection.fetch_rows(&query).await.unwrap().rows.len(), 5);
+    assert_eq!(connection.count_rows(&query).await.unwrap(), 5);
+}
+
 #[tokio::test]
 async fn quoted_names_and_views_browse() {
     let Some(connection) = connect().await else {
