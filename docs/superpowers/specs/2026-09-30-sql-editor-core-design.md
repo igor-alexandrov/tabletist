@@ -128,7 +128,9 @@ Three layers, all in `tabletist-db`, so no caller can skip them.
      `RESET` naming `sql_mode`, `standard_conforming_strings`,
      `client_encoding`, a `character_set_*` variable, and `SET NAMES`,
      `SET CHARACTER SET`, `SET CHARSET` (a client character set such as GBK
-     can swallow a backslash the tokenizer saw);
+     can swallow a backslash the tokenizer saw); on PostgreSQL also any
+     `SET` or `RESET` with a `U&"..."` name (escapes can spell a guarded
+     name) and any statement calling `set_config`;
    - `RESET ALL`, `RESET` of the names above, `DISCARD ALL`;
    - PostgreSQL only: `COPY` (`COPY ... TO STDOUT` answers with a copy
      stream the simple-query protocol cannot read, and `TO 'file'` or

@@ -878,6 +878,8 @@ Append to the `sql.rs` tests:
             "RESET ALL",
             "reset default_transaction_read_only",
             "SET standard_conforming_strings = off",
+            r#"SET U&"default_transaction_read\005fonly" = off"#,
+            "SELECT set_config('standard_conforming_strings', 'off', false)",
             "SET client_encoding = 'SJIS'",
             "DISCARD ALL",
             "COPY users TO STDOUT",
@@ -1048,7 +1050,15 @@ pub fn refusal(dialect: Dialect, statement: &str) -> Option<String> {
         }
         "DISCARD" if word(1) == "ALL" => return Some("DISCARD ALL".into()),
         "COPY" if dialect == Dialect::Postgres => return Some("COPY".into()),
+        // A U&"..." name can spell a guarded setting in escapes.
+        "SET" | "RESET" if dialect == Dialect::Postgres && unicode_name(statement) => {
+            return Some(format!("{} with a U& name", word(0)));
+        }
         _ => {}
+    }
+    // set_config() changes the same settings as SET, from any statement.
+    if dialect == Dialect::Postgres && words.iter().any(|word| word == "SET_CONFIG") {
+        return Some("set_config".into());
     }
     if dialect != Dialect::MySql {
         return None;
@@ -1074,6 +1084,23 @@ pub fn refusal(dialect: Dialect, statement: &str) -> Option<String> {
         .windows(2)
         .find(|pair| pair[0] == "INTO" && (pair[1] == "OUTFILE" || pair[1] == "DUMPFILE"))
         .map(|pair| format!("INTO {}", pair[1]))
+}
+```
+
+and the helper (a `U&` name tokenizes as the identifier `U`, the operator `&`, then a quoted identifier):
+
+```rust
+/// Whether a PostgreSQL statement names something with `U&"..."`.
+fn unicode_name(statement: &str) -> bool {
+    let tokens: Vec<Token> = tokenize(Dialect::Postgres, statement)
+        .into_iter()
+        .filter(|token| token.kind != TokenKind::Whitespace)
+        .collect();
+    tokens.windows(3).any(|three| {
+        statement[three[0].range.clone()].eq_ignore_ascii_case("U")
+            && &statement[three[1].range.clone()] == "&"
+            && three[2].kind == TokenKind::QuotedIdentifier
+    })
 }
 ```
 
