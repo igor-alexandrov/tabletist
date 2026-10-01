@@ -31,21 +31,35 @@ pub fn single_in<'a>(
     look: &Look,
     role: TextRole,
 ) -> egui::TextEdit<'a> {
-    padded(ui, text, look, role.font_id(look.faces), [8, 8])
+    field(ui, text, look, role, look.control_height, 8)
 }
 
-/// A field `look.control_height` tall with `left` and `right` points of
-/// padding. egui ignores the height of `TextEdit::min_size`, so the height
-/// comes from padding the text above and below, measured for `font`.
-fn padded<'a>(
+/// A single-line field `height` tall in `role`, with `pad` points at each
+/// side of the text. The height is met to within half a point, and is
+/// never less than one line of text.
+pub fn field<'a>(
     ui: &Ui,
     text: &'a mut String,
     look: &Look,
+    role: TextRole,
+    height: f32,
+    pad: i8,
+) -> egui::TextEdit<'a> {
+    padded(ui, text, height, role.font_id(look.faces), [pad, pad])
+}
+
+/// A field `height` tall with `left` and `right` points of padding. egui
+/// ignores the height of `TextEdit::min_size`, so the height comes from
+/// padding the text above and below, measured for `font`.
+fn padded<'a>(
+    ui: &Ui,
+    text: &'a mut String,
+    height: f32,
     font: egui::FontId,
     [left, right]: [i8; 2],
 ) -> egui::TextEdit<'a> {
     let line = ui.fonts_mut(|fonts| fonts.row_height(&font)) + ui.spacing().extra_text_line_spacing;
-    let padding = (look.control_height - line).max(0.0);
+    let padding = (height - line).max(0.0);
     let top = (padding / 2.0).floor() as i8;
     let bottom = (padding - f32::from(top)).round() as i8;
     egui::TextEdit::singleline(text)
@@ -586,7 +600,7 @@ pub fn search_field<'t>(
     let font = body(look).font_id(look.faces);
     let right = search_icon_inset(look);
     let left = right + SEARCH_ICON as i8 + 6;
-    padded(ui, text, look, font, [left, right]).hint_text(hint)
+    padded(ui, text, look.control_height, font, [left, right]).hint_text(hint)
 }
 
 /// The magnifier's size in a search field.
@@ -1644,6 +1658,32 @@ mod tests {
                 "monospace field, {}: {mono}",
                 look.name
             );
+        }
+    }
+
+    #[test]
+    fn a_field_is_as_tall_as_it_is_asked_to_be() {
+        for look in crate::theme::Look::ALL {
+            let mut harness = crate::testing::Harness::new();
+            harness.set_look(look);
+            let mut text = String::new();
+            for height in [30.0, 34.0] {
+                let mut drawn = 0.0;
+                harness.frame_with(|ui| {
+                    let role = super::body(&look);
+                    drawn = ui
+                        .add(super::field(ui, &mut text, &look, role, height, 10))
+                        .rect
+                        .height();
+                });
+                // Margins are whole points; Plex and JetBrains Mono lines are
+                // not, so a field lands within half a point of the height.
+                assert!(
+                    (drawn - height).abs() <= 0.5,
+                    "{}: {drawn} for {height}",
+                    look.name
+                );
+            }
         }
     }
 
