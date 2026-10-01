@@ -658,10 +658,11 @@ async fn show_and_statements_without_rows() {
         outcome.results[0].outcome,
         StatementOutcome::Rows { .. }
     ));
-    assert!(matches!(
+    // SET has no row count; the driver's 0 for its command tag is not one.
+    assert_eq!(
         outcome.results[1].outcome,
-        StatementOutcome::Done { .. }
-    ));
+        StatementOutcome::Done { affected: None }
+    );
 }
 
 #[tokio::test]

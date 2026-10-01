@@ -237,6 +237,8 @@ impl Conn {
         // An error that is not a statement's own but still needs the
         // cleanup before it is returned.
         let mut failure = None;
+        // A statement ended the script's transaction (see `in_transaction`).
+        let mut left = false;
         // Take the snapshot first: PostgreSQL then refuses to make the
         // transaction read-write, whatever a statement tries.
         match client.batch_execute("SELECT 1").await.map_err(query_error) {
@@ -249,6 +251,24 @@ impl Conn {
                             outcome: StatementOutcome::Cancelled,
                         });
                         break;
+                    }
+                    match in_transaction(&client).await {
+                        Ok(true) => {}
+                        Ok(false) => {
+                            left = true;
+                            break;
+                        }
+                        // Like a stop between statements.
+                        Err(Error::Cancelled) => {
+                            outcome.stopped = true;
+                            outcome.results.push(StatementResult {
+                                elapsed: Duration::ZERO,
+                                outcome: StatementOutcome::Cancelled,
+                            });
+                            break;
+                        }
+                        // The session is gone; nothing to roll back.
+                        Err(error) => return Err(error),
                     }
                     let started = Instant::now();
                     let result = match run_statement(&client, text, limit as usize, stop).await {
@@ -283,11 +303,24 @@ impl Conn {
                 outcome.results.last().map(|result| &result.outcome),
                 Some(StatementOutcome::Error { .. } | StatementOutcome::Cancelled)
             );
-        let read_only = if aborted {
+        // `Ok(false)` is a session that is not where the script started.
+        let read_only = if left {
+            // Nothing ran outside the transaction, but it is gone.
+            Ok(false)
+        } else if aborted {
             Ok(true)
         } else {
-            retry_cancelled!(still_read_only(&client))
+            // The last statement succeeded, so the transaction should still
+            // be there. Were it that statement which ended it, nothing ran
+            // afterwards, but what a COMMIT kept (a setting) would reach
+            // later browsing: ask once more, then for the mode.
+            match retry_cancelled!(in_transaction(&client)) {
+                Ok(true) => retry_cancelled!(still_read_only(&client)),
+                other => other,
+            }
         };
+        // Whatever is open is rolled back as far as that works. After
+        // `Ok(false)` the error closes the session either way.
         let rolled_back = retry_cancelled!(rollback(&client));
         match (read_only, rolled_back) {
             (Ok(false), _) => Err(Error::LeftReadOnly),
@@ -637,6 +670,29 @@ fn first_text(messages: &[SimpleQueryMessage]) -> Option<String> {
     })
 }
 
+/// Whether the session is still inside the script's read-only transaction;
+/// asked before every statement and once after the last. A statement the
+/// refusal missed could end the transaction (`COMMIT`, `ROLLBACK`); the
+/// next one would then run on its own, where the snapshot no longer keeps
+/// it read-only. `SAVEPOINT` succeeds only inside a transaction block, so
+/// its failure says the transaction is gone before anything runs outside
+/// it. The name is reused: a later savepoint shadows the earlier one, and
+/// the script cannot name it, since the refusal stops `SAVEPOINT`,
+/// `RELEASE` and `ROLLBACK`.
+///
+/// `Err` is a cancel that landed on the check, or a lost session.
+async fn in_transaction(client: &tokio_postgres::Client) -> Result<bool> {
+    match client
+        .batch_execute("SAVEPOINT tabletist_guard")
+        .await
+        .map_err(query_error)
+    {
+        Ok(()) => Ok(true),
+        Err(error) if error == Error::Cancelled || error.is_connection_lost() => Err(error),
+        Err(_) => Ok(false),
+    }
+}
+
 async fn rollback(client: &tokio_postgres::Client) -> Result<()> {
     client.batch_execute("ROLLBACK").await.map_err(query_error)
 }
@@ -684,6 +740,14 @@ fn cursor_statement(text: &str) -> bool {
     })
 }
 
+/// Whether the statement's command tag carries a row count. tokio-postgres
+/// reports 0 for a tag without one (`SET`, `DO`), which is not "0 rows".
+fn counts_rows(text: &str) -> bool {
+    crate::sql::words(Dialect::Postgres, text)
+        .first()
+        .is_some_and(|word| matches!(word.as_str(), "INSERT" | "UPDATE" | "DELETE" | "MERGE"))
+}
+
 /// Runs one statement of a script inside its transaction.
 async fn run_statement(
     client: &tokio_postgres::Client,
@@ -702,10 +766,13 @@ async fn run_statement(
     if columns.is_empty() {
         return match client.simple_query(text).await {
             Ok(messages) => Ok(StatementOutcome::Done {
-                affected: messages.iter().find_map(|message| match message {
-                    SimpleQueryMessage::CommandComplete(count) => Some(*count),
-                    _ => None,
-                }),
+                affected: messages
+                    .iter()
+                    .find_map(|message| match message {
+                        SimpleQueryMessage::CommandComplete(count) => Some(*count),
+                        _ => None,
+                    })
+                    .filter(|_| counts_rows(text)),
             }),
             Err(error) => failed(error, Some(0)),
         };
@@ -828,6 +895,110 @@ mod tests {
         }
         for text in ["SHOW search_path", "EXPLAIN SELECT 1", "FETCH 1 FROM c", ""] {
             assert!(!cursor_statement(text), "{text}");
+        }
+    }
+
+    #[test]
+    fn only_data_changing_statements_report_a_count() {
+        for text in [
+            "INSERT INTO t VALUES (1)",
+            "update t SET n = 1",
+            "-- note\nDELETE FROM t",
+            "MERGE INTO t USING s ON true WHEN MATCHED THEN DO NOTHING",
+        ] {
+            assert!(counts_rows(text), "{text}");
+        }
+        for text in [
+            "SET LOCAL work_mem = '8MB'",
+            "DO $$ BEGIN END $$",
+            "LISTEN updates",
+            "",
+        ] {
+            assert!(!counts_rows(text), "{text}");
+        }
+    }
+
+    /// The test server's URL, or `None` (test skipped). See
+    /// `tests/postgres.rs`.
+    fn test_url() -> Option<String> {
+        let url = std::env::var("TABLETIST_TEST_PG_URL")
+            .ok()
+            .filter(|url| !url.trim().is_empty());
+        if url.is_none() {
+            eprintln!("skipped: TABLETIST_TEST_PG_URL is not set");
+        }
+        url
+    }
+
+    /// A fresh read-only session, as the app opens it.
+    async fn session(url: &str) -> Conn {
+        let (mut spec, secrets) = ConnectSpec::from_url(url).unwrap();
+        spec.tls = crate::TlsMode::Disable;
+        Conn::connect(&spec, &secrets, None).await.unwrap()
+    }
+
+    /// A writable session with an empty `probe` table.
+    async fn probe(url: &str) -> tokio_postgres::Client {
+        let mut config: tokio_postgres::Config = url.parse().unwrap();
+        config.ssl_mode(tokio_postgres::config::SslMode::Disable);
+        let (client, connection) = config.connect(tokio_postgres::NoTls).await.unwrap();
+        tokio::spawn(connection);
+        client
+            .batch_execute("CREATE TABLE IF NOT EXISTS probe (n int); TRUNCATE probe;")
+            .await
+            .unwrap();
+        client
+    }
+
+    /// Statements the refusal stops long before they get here. Run past
+    /// it, they end the script's transaction; the statement after them must
+    /// not run, because it would run outside any read-only transaction, and
+    /// the run must fail even when nothing follows them, so that the session
+    /// is closed.
+    #[tokio::test]
+    async fn a_script_that_left_its_transaction_runs_nothing_more_and_fails() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        let admin = probe(&url).await;
+        for script in [
+            &[
+                "ROLLBACK",
+                "SET default_transaction_read_only = off",
+                "INSERT INTO probe VALUES (1)",
+            ][..],
+            &["COMMIT", "INSERT INTO probe VALUES (1)"][..],
+            &["COMMIT", "BEGIN READ WRITE", "INSERT INTO probe VALUES (1)"][..],
+            // Last in the script, nothing would run after them, but a
+            // COMMIT keeps the settings made before it for later browsing.
+            &["SET search_path = pg_catalog", "COMMIT"][..],
+            &["COMMIT"][..],
+        ] {
+            // A session of its own, dropped with the loop's turn: whatever
+            // a failing guard let through cannot reach another test.
+            let conn = session(&url).await;
+            let texts: Vec<String> = script.iter().map(|&text| text.to_owned()).collect();
+            let stop = StopFlag::new();
+            let ran =
+                tokio::time::timeout(Duration::from_secs(10), conn.run_script(&texts, 10, &stop))
+                    .await
+                    .expect("the run hung");
+            assert_eq!(ran, Err(Error::LeftReadOnly), "{script:?}");
+            assert!(stop.is_finishing(), "{script:?}");
+            let count: i64 = admin
+                .query_one("SELECT count(*) FROM probe", &[])
+                .await
+                .unwrap()
+                .get(0);
+            assert_eq!(count, 0, "{script:?}");
+            // The statement after the one that left never ran: the session
+            // still defaults to read-only.
+            let client = conn.client.lock().await;
+            let messages = client
+                .simple_query("SHOW default_transaction_read_only")
+                .await
+                .unwrap();
+            assert_eq!(first_text(&messages).as_deref(), Some("on"), "{script:?}");
         }
     }
 
