@@ -1036,10 +1036,12 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: Object
                             style,
                         };
                     }
-                    if let (ValueKind::Json, tabletist_db::Value::Text(text)) = (kind, value)
-                        && text.len() <= 16 * 1024
-                        && let Some(doc) = crate::ui::json_view::parsed_in(&ctx, text)
-                    {
+                    if let Some(doc) = crate::ui::json_view::document(
+                        &ctx,
+                        kind,
+                        value,
+                        crate::ui::json_view::CELL_MAX,
+                    ) {
                         let (count, strings) = crate::ui::json_view::summary(&doc);
                         let shown = if look.terminal {
                             strings.join(" · ")
