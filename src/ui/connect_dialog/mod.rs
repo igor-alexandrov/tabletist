@@ -278,9 +278,17 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
     } else {
         frame(&skin)
     };
-    let modal = widgets::modal(id, &look, &palette)
-        .frame(frame)
-        .area(egui::Modal::default_area(id).anchor(egui::Align2::CENTER_TOP, vec2(0.0, top)));
+    // The dialog is whole on the first frame it paints. egui fades an area
+    // in by drawing everything in it see-through for a moment, and through
+    // a sheet this large the window shows in every field.
+    let area = egui::Modal::default_area(id)
+        .anchor(egui::Align2::CENTER_TOP, vec2(0.0, top))
+        .fade_in(false);
+    let mut modal = widgets::modal(id, &look, &palette).frame(frame).area(area);
+    if measuring {
+        // Nor is the window veiled before there is a dialog over it.
+        modal = modal.backdrop_color(Color32::TRANSPARENT);
+    }
     let modal = modal.show(ctx, |ui| {
         if measuring {
             ui.set_invisible();
