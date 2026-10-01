@@ -16,6 +16,14 @@ A fast, native database client for **PostgreSQL**, **MySQL** and
 **SQLite**. Written in Rust with egui; runs on
 Linux (Omarchy and Hyprland first), macOS and Windows.
 
+<p align="center">
+  <img src="assets/screenshots/macos.png" width="900" alt="Tabletist 0.1.0, the macOS look: a table's data grid with the sidebar of tables on the left and the row panel on the right">
+</p>
+
+<p align="center">
+  <img src="assets/screenshots/omarchy.png" width="900" alt="Tabletist 0.1.0, the Omarchy look: the same table in a dark, square, keyboard-first layout with key hints along the bottom">
+</p>
+
 ## What it does
 
 - Saved connections grouped in a picker, each tagged with its environment
