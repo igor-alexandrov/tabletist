@@ -12,13 +12,16 @@ use crate::{ColumnMeta, Error, Result, Value};
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ScriptOutcome {
     pub results: Vec<StatementResult>,
+    /// A stop or cancel ended the run.
+    pub stopped: bool,
 }
 
 impl ScriptOutcome {
-    /// Whether a stop ended the run: a statement was cancelled, or it was
-    /// stopped before any statement began.
+    /// Whether a stop or cancel ended the run: a statement was cancelled,
+    /// or the run was stopped before any statement began. A script with no
+    /// statements is not cancelled.
     pub fn was_cancelled(&self) -> bool {
-        self.results.is_empty()
+        self.stopped
             || self
                 .results
                 .iter()
@@ -26,12 +29,14 @@ impl ScriptOutcome {
     }
 }
 
+/// One statement's outcome and how long it took.
 #[derive(Debug, Clone, PartialEq)]
 pub struct StatementResult {
     pub elapsed: Duration,
     pub outcome: StatementOutcome,
 }
 
+/// What one statement of a script did.
 #[derive(Debug, Clone, PartialEq)]
 pub enum StatementOutcome {
     /// At most `limit` rows; `truncated` says more existed.
@@ -41,7 +46,7 @@ pub enum StatementOutcome {
         truncated: bool,
     },
     /// A statement without a result set, with the rows it affected when
-    /// the database says.
+    /// the database says (`None` when it has no meaningful count).
     Done { affected: Option<u64> },
     /// The statement failed. `position` is a 1-based character position in
     /// the statement's text (PostgreSQL reports one).
@@ -49,7 +54,9 @@ pub enum StatementOutcome {
         error: Error,
         position: Option<usize>,
     },
-    /// Stopped while this statement ran. Its rows are dropped.
+    /// Stopped while this statement ran, or before it began (a stop between
+    /// statements records the next statement as `Cancelled`). Its rows are
+    /// dropped.
     Cancelled,
 }
 
@@ -60,14 +67,17 @@ pub enum StatementOutcome {
 pub struct StopFlag(Arc<AtomicBool>);
 
 impl StopFlag {
+    /// A flag that is not stopped.
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Stops every run holding this flag or a clone of it.
     pub fn stop(&self) {
         self.0.store(true, Ordering::SeqCst);
     }
 
+    /// Whether [`StopFlag::stop`] was called.
     pub fn is_stopped(&self) -> bool {
         self.0.load(Ordering::SeqCst)
     }

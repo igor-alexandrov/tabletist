@@ -447,17 +447,34 @@ fn script(text: &str) -> Vec<tabletist_db::sql::Statement> {
     tabletist_db::sql::statements(Dialect::Sqlite, text)
 }
 
+const FOREVER: &str =
+    "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n) SELECT count(*) FROM n";
+
+/// Awaits `future`, failing the test instead of hanging it.
+async fn within<T>(future: impl std::future::Future<Output = T>) -> T {
+    tokio::time::timeout(Duration::from_secs(10), future)
+        .await
+        .expect("the run hung")
+}
+
+/// Runs `text` with a fresh stop flag and a generous limit.
+async fn run(
+    connection: &Connection,
+    text: &str,
+) -> tabletist_db::Result<tabletist_db::ScriptOutcome> {
+    within(connection.run_script(&script(text), 100, &StopFlag::new())).await
+}
+
 #[tokio::test]
 async fn a_script_returns_rows_with_types_and_truncates_at_the_limit() {
     let (connection, _dir) = fixture().await;
-    let outcome = connection
-        .run_script(
-            &script("SELECT id, email FROM users ORDER BY id"),
-            3,
-            &StopFlag::new(),
-        )
-        .await
-        .unwrap();
+    let outcome = within(connection.run_script(
+        &script("SELECT id, email FROM users ORDER BY id"),
+        3,
+        &StopFlag::new(),
+    ))
+    .await
+    .unwrap();
     let [result] = outcome.results.as_slice() else {
         panic!("one result");
     };
@@ -479,10 +496,10 @@ async fn a_script_returns_rows_with_types_and_truncates_at_the_limit() {
 async fn truncates_at_the_limit_without_reading_the_whole_table() {
     let (connection, _dir) = fixture().await;
     let started = std::time::Instant::now();
-    let outcome = connection
-        .run_script(&script("SELECT * FROM big a, big b"), 10, &StopFlag::new())
-        .await
-        .unwrap();
+    let outcome =
+        within(connection.run_script(&script("SELECT * FROM big a, big b"), 10, &StopFlag::new()))
+            .await
+            .unwrap();
     assert!(matches!(
         outcome.results[0].outcome,
         StatementOutcome::Rows {
@@ -490,18 +507,13 @@ async fn truncates_at_the_limit_without_reading_the_whole_table() {
             ..
         }
     ));
-    assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    assert!(started.elapsed() < Duration::from_secs(5));
 }
 
 #[tokio::test]
 async fn a_script_stops_at_the_first_error_and_keeps_earlier_results() {
     let (connection, _dir) = fixture().await;
-    let outcome = connection
-        .run_script(
-            &script("SELECT 1; SELECT nope FROM users; SELECT 3"),
-            100,
-            &StopFlag::new(),
-        )
+    let outcome = run(&connection, "SELECT 1; SELECT nope FROM users; SELECT 3")
         .await
         .unwrap();
     assert_eq!(outcome.results.len(), 2);
@@ -513,64 +525,58 @@ async fn a_script_stops_at_the_first_error_and_keeps_earlier_results() {
         outcome.results[1].outcome,
         StatementOutcome::Error { .. }
     ));
+    assert!(!outcome.was_cancelled());
 }
 
 #[tokio::test]
 async fn writes_fail_as_read_only_and_refusals_run_nothing() {
     let (connection, _dir) = fixture().await;
-    let outcome = connection
-        .run_script(&script("DELETE FROM users"), 100, &StopFlag::new())
-        .await
-        .unwrap();
+    let outcome = run(&connection, "DELETE FROM users").await.unwrap();
     assert!(matches!(
         outcome.results[0].outcome,
         StatementOutcome::Error { .. }
     ));
-    let refused = connection
-        .run_script(&script("SELECT 1;\nCOMMIT"), 100, &StopFlag::new())
-        .await;
+    let refused = run(&connection, "SELECT 1;\nCOMMIT").await;
     assert!(matches!(refused, Err(Error::Refused { line: 2, .. })));
     let count = connection.count_rows(&users(10)).await.unwrap();
     assert_eq!(count, 5);
 }
 
 #[tokio::test]
-async fn a_statement_without_rows_is_done() {
+async fn a_statement_without_rows_is_done_without_a_count() {
     let (connection, _dir) = fixture().await;
-    let outcome = connection
-        .run_script(&script("PRAGMA foreign_keys = ON"), 100, &StopFlag::new())
-        .await
-        .unwrap();
-    assert!(matches!(
+    // sqlite3_changes() would repeat an earlier statement's count here.
+    let outcome = run(&connection, "PRAGMA foreign_keys = ON").await.unwrap();
+    assert_eq!(
         outcome.results[0].outcome,
-        StatementOutcome::Done { .. }
-    ));
+        StatementOutcome::Done { affected: None }
+    );
 }
 
 #[tokio::test]
-async fn a_failing_statement_still_rolls_the_transaction_back() {
+async fn a_comment_only_statement_is_done() {
     let (connection, _dir) = fixture().await;
-    let failed = connection
-        .run_script(
-            &script("SELECT 1; SELECT nope FROM users"),
-            10,
-            &StopFlag::new(),
-        )
+    let piece = tabletist_db::sql::Statement {
+        text: "-- nothing to run\n/* really */".into(),
+        ..script("SELECT 1").remove(0)
+    };
+    let outcome = within(connection.run_script(&[piece], 100, &StopFlag::new()))
         .await
         .unwrap();
-    assert!(matches!(
-        failed.results[1].outcome,
-        StatementOutcome::Error { .. }
-    ));
-    // A transaction left open would make this BEGIN fail.
-    let after = connection
-        .run_script(&script("SELECT 1"), 10, &StopFlag::new())
-        .await
-        .unwrap();
-    assert!(matches!(
-        after.results[0].outcome,
-        StatementOutcome::Rows { .. }
-    ));
+    assert_eq!(
+        outcome.results[0].outcome,
+        StatementOutcome::Done { affected: None }
+    );
+}
+
+#[tokio::test]
+async fn a_trailing_comment_stays_out_of_the_column_name() {
+    let (connection, _dir) = fixture().await;
+    let outcome = run(&connection, "SELECT 1 -- the answer").await.unwrap();
+    let StatementOutcome::Rows { columns, .. } = &outcome.results[0].outcome else {
+        panic!("rows");
+    };
+    assert_eq!(columns[0].name, "1");
 }
 
 #[tokio::test]
@@ -581,8 +587,7 @@ async fn a_hidden_second_statement_is_the_statements_error_not_a_second_run() {
         text: "SELECT 1; SELECT 2".into(),
         ..script("SELECT 1").remove(0)
     };
-    let outcome = connection
-        .run_script(&[piece], 100, &StopFlag::new())
+    let outcome = within(connection.run_script(&[piece], 100, &StopFlag::new()))
         .await
         .unwrap();
     let [result] = outcome.results.as_slice() else {
@@ -595,26 +600,67 @@ async fn a_hidden_second_statement_is_the_statements_error_not_a_second_run() {
 }
 
 #[tokio::test]
-async fn a_stopped_flag_runs_nothing_and_the_session_keeps_working() {
+async fn a_failing_statement_still_rolls_the_transaction_back() {
     let (connection, _dir) = fixture().await;
+    let failed = run(&connection, "SELECT 1; SELECT nope FROM users")
+        .await
+        .unwrap();
+    assert!(matches!(
+        failed.results[1].outcome,
+        StatementOutcome::Error { .. }
+    ));
+    // A transaction left open would make this BEGIN fail.
+    let after = run(&connection, "SELECT 1").await.unwrap();
+    assert!(matches!(
+        after.results[0].outcome,
+        StatementOutcome::Rows { .. }
+    ));
+}
+
+#[tokio::test]
+async fn a_script_cannot_change_the_sessions_settings_for_later() {
+    let (connection, _dir) = fixture().await;
+    run(
+        &connection,
+        "PRAGMA query_only = OFF; PRAGMA trusted_schema = ON",
+    )
+    .await
+    .unwrap();
+    let outcome = run(&connection, "PRAGMA query_only; PRAGMA trusted_schema")
+        .await
+        .unwrap();
+    let value = |index: usize| match &outcome.results[index].outcome {
+        StatementOutcome::Rows { rows, .. } => rows[0][0].clone(),
+        other => panic!("{other:?}"),
+    };
+    // query_only back on, trusted_schema back off.
+    assert_eq!(value(0), Value::Int(1));
+    assert_eq!(value(1), Value::Int(0));
+}
+
+#[tokio::test]
+async fn an_empty_script_is_not_cancelled_but_a_stopped_one_is() {
+    let (connection, _dir) = fixture().await;
+    let empty = within(connection.run_script(&[], 10, &StopFlag::new()))
+        .await
+        .unwrap();
+    assert!(empty.results.is_empty());
+    assert!(!empty.was_cancelled());
+
     let stop = StopFlag::new();
     stop.stop();
-    let outcome = connection
-        .run_script(&script("SELECT 1"), 10, &stop)
+    let stopped = within(connection.run_script(&script("SELECT 1"), 10, &stop))
         .await
         .unwrap();
-    assert!(outcome.was_cancelled());
+    assert!(stopped.was_cancelled());
     assert!(
-        !outcome
+        !stopped
             .results
             .iter()
-            .any(|r| matches!(r.outcome, StatementOutcome::Rows { .. }))
+            .any(|result| matches!(result.outcome, StatementOutcome::Rows { .. }))
     );
-    // The transaction was rolled back and the handler removed.
-    let after = connection
-        .run_script(&script("SELECT 1"), 10, &StopFlag::new())
-        .await
-        .unwrap();
+    // Nothing was left open or registered.
+    let after = run(&connection, "SELECT 1").await.unwrap();
     assert!(matches!(
         after.results[0].outcome,
         StatementOutcome::Rows { .. }
@@ -622,42 +668,121 @@ async fn a_stopped_flag_runs_nothing_and_the_session_keeps_working() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_stopped_script_is_cancelled_and_keeps_earlier_results() {
+async fn a_stopped_script_is_cancelled_whatever_the_timing() {
     let (connection, _dir) = fixture().await;
     let connection = std::sync::Arc::new(connection);
     let stop = StopFlag::new();
     let running = {
         let connection = std::sync::Arc::clone(&connection);
         let stop = stop.clone();
+        tokio::spawn(async move { connection.run_script(&script(FOREVER), 10, &stop).await })
+    };
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    stop.stop();
+    let outcome = within(running).await.unwrap().unwrap();
+    assert!(outcome.was_cancelled());
+    assert!(
+        !outcome
+            .results
+            .iter()
+            .any(|result| matches!(result.outcome, StatementOutcome::Rows { .. }))
+    );
+    // The session still works.
+    run(&connection, "SELECT 1").await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_stopped_script_keeps_the_results_that_finished() {
+    let (connection, _dir) = fixture().await;
+    let connection = std::sync::Arc::new(connection);
+    let stop = StopFlag::new();
+    let running = {
+        let connection = std::sync::Arc::clone(&connection);
+        let stop = stop.clone();
+        let text = format!("SELECT 1; {FOREVER}");
+        tokio::spawn(async move { connection.run_script(&script(&text), 10, &stop).await })
+    };
+    // The first statement takes microseconds, so after this wait the second
+    // is the one running. There is no way to see which statement the job is
+    // in, so only what holds at any timing is asserted: a stop ends the run,
+    // the last result is the cancelled one, and every result before it is
+    // the first statement's rows.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    stop.stop();
+    let outcome = within(running).await.unwrap().unwrap();
+    assert!(outcome.was_cancelled());
+    if let Some((last, earlier)) = outcome.results.split_last() {
+        assert_eq!(last.outcome, StatementOutcome::Cancelled);
+        assert!(
+            earlier
+                .iter()
+                .all(|result| matches!(result.outcome, StatementOutcome::Rows { .. }))
+        );
+        assert!(earlier.len() <= 1);
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_session_cancel_ends_the_script_as_cancelled() {
+    let (connection, _dir) = fixture().await;
+    let cancel = connection.cancel_handle();
+    let connection = std::sync::Arc::new(connection);
+    let running = {
+        let connection = std::sync::Arc::clone(&connection);
         tokio::spawn(async move {
-            let statements = script(
-                "SELECT 1; WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n) SELECT count(*) FROM n",
-            );
-            connection.run_script(&statements, 10, &stop).await
+            connection
+                .run_script(&script(FOREVER), 10, &StopFlag::new())
+                .await
         })
     };
-    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-    stop.stop();
+    // SQLite ignores an interrupt when nothing runs yet, so keep cancelling
+    // until the script ends (the backend's timeout does the same).
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !running.is_finished() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "cancel must stop the script"
+        );
+        cancel.cancel().await.unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
     let outcome = running.await.unwrap().unwrap();
+    assert!(outcome.was_cancelled());
     assert!(matches!(
-        outcome.results[0].outcome,
+        outcome.results.last().map(|result| &result.outcome),
+        Some(StatementOutcome::Cancelled)
+    ));
+    // The session works, and the transaction was rolled back.
+    let after = run(&connection, "SELECT 1").await.unwrap();
+    assert!(matches!(
+        after.results[0].outcome,
         StatementOutcome::Rows { .. }
     ));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_dropped_run_stops_its_remaining_statements() {
+    let (connection, _dir) = fixture().await;
+    let stop = StopFlag::new();
+    let text = format!("SELECT 1; {FOREVER}; {FOREVER}");
+    let dropped = tokio::time::timeout(
+        Duration::from_millis(300),
+        connection.run_script(&script(&text), 10, &stop),
+    )
+    .await;
+    assert!(dropped.is_err(), "the script cannot finish");
+    assert!(stop.is_stopped(), "dropping the run stops it");
+    // The abandoned job ends soon, so the next run is not stuck behind it.
+    let after = run(&connection, "SELECT 1").await.unwrap();
     assert!(matches!(
-        outcome.results[1].outcome,
-        StatementOutcome::Cancelled
+        after.results[0].outcome,
+        StatementOutcome::Rows { .. }
     ));
-    assert!(outcome.was_cancelled());
-    // The session still works.
-    connection
-        .run_script(&script("SELECT 1"), 1, &StopFlag::new())
-        .await
-        .unwrap();
 }
 
 #[tokio::test]
 async fn the_server_version_names_sqlite() {
     let (connection, _dir) = fixture().await;
-    let version = connection.server_version().await.unwrap();
+    let version = within(connection.server_version()).await.unwrap();
     assert!(version.starts_with("SQLite 3."), "{version}");
 }
