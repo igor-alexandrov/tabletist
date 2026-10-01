@@ -153,7 +153,8 @@ Four layers, all in `tabletist-db`, so no caller can skip them.
      `@@persist.`), any `RESET` (`RESET MASTER`, `RESET REPLICA`,
      `RESET PERSIST`), `PURGE`, `CHANGE` (`CHANGE MASTER`,
      `CHANGE REPLICATION SOURCE`), `STOP` (`STOP REPLICA`), `SHUTDOWN`,
-     `RESTART`, `CLONE`, `ALTER INSTANCE`, `BACKUP`, `DROP PREPARE`;
+     `RESTART`, `CLONE`, `ALTER INSTANCE`, `BACKUP`, `DROP PREPARE`; `USE`
+     (the default database is session state the reset may not restore);
      MariaDB's `SET STATEMENT ... FOR <statement>`, which wraps any
      statement behind a leading `SET`; any statement with the tokens
      `INTO OUTFILE` or `INTO DUMPFILE` (they write files on the server); and
@@ -182,9 +183,16 @@ Four layers, all in `tabletist-db`, so no caller can skip them.
    (`RELEASE tabletist_guard; SAVEPOINT tabletist_guard`): that fails
    outside a transaction block and in a transaction the script chained to
    (`COMMIT AND CHAIN`), keeps every statement inside a subtransaction
-   (where read-write mode cannot be set), and never nests deeper than one; MySQL reads `@@session.transaction_read_only`. A
-   failed check ends the run with `Error::LeftReadOnly` before the statement
-   runs.
+   (where read-write mode cannot be set), and never nests deeper than one.
+   MySQL reads `@@session.transaction_read_only` (with `LIMIT 1`, since a
+   script can set `sql_select_limit` to 0) and the server's transaction
+   status flags from the answer. MySQL commits before it refuses DDL, so a
+   session found outside a transaction but still read-only gets a new
+   `START TRANSACTION READ ONLY` and the run goes on; a transaction not
+   marked read-only (`SET TRANSACTION READ WRITE` affects only the next
+   transaction and does not show in the variable) means the script left.
+   A failed check ends the run with `Error::LeftReadOnly` before the
+   statement runs.
    After the last statement the same check runs once more, so a statement
    that ended the transaction in last position closes the session rather
    than leaving a committed setting behind.
@@ -205,8 +213,11 @@ Cleanup after every script, on every path:
   settings changed by the script are transactional and roll back with it;
   session advisory locks are not, so they are released.
 - MySQL: `ROLLBACK`, then `Conn::reset()` (`COM_RESET_CONNECTION`, which
-  keeps the connection id the cancel uses), then the connect-time
-  `SET SESSION TRANSACTION READ ONLY` and `sql_mode` statements again. MySQL
+  keeps the connection id the cancel uses), then the connect-time session
+  statements again: `SET SESSION TRANSACTION READ ONLY`, the `sql_mode`
+  without `NO_BACKSLASH_ESCAPES`, `ANSI_QUOTES` and the combination modes
+  that imply it (`ANSI` and the like), and `SET NAMES utf8mb4` (the reset
+  drops the handshake's character set, which the tokenizer relies on). MySQL
   session state is not transactional; the reset makes sure nothing a script
   set (`sql_select_limit` below, a user's `SET time_zone`, `SET NAMES`)
   reaches table browsing or the next run. `reset()` answering `false` (the
@@ -298,7 +309,9 @@ pub enum StatementOutcome {
   - **MySQL.** Every statement runs through the prepared-statement protocol
     (`exec_iter`, as `fetch_rows` does), which cannot hold two statements;
     MySQL's "not supported in the prepared statement protocol" error is the
-    statement's `Error` outcome. The script sets `sql_select_limit` to
+    statement's `Error` outcome, and so is a statement with parameters
+    (`?`, or `:name` as the driver reads it): there are no values to bind,
+    and the driver would close the connection. The script sets `sql_select_limit` to
     `limit + 1` after starting the transaction, so the server stops
     producing rows; the cleanup's reset puts it back. Column types come from
     the result metadata, as in `fetch_rows`.
