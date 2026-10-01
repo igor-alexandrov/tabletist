@@ -4,10 +4,10 @@ name: Packaging
 # does, and installs them, whenever packaging changes. No signing here.
 on:
   pull_request:
-    paths: [packaging/**, .cargo/**, Cargo.toml, Cargo.lock, src/main.rs, src/macos.rs, crates/tabletist-appkit/**, .github/workflows/packaging.yml, .github/workflows/release.yml]
+    paths: [packaging/**, .cargo/**, Cargo.toml, Cargo.lock, build.rs, src/main.rs, src/macos.rs, crates/tabletist-appkit/**, .github/workflows/packaging.yml, .github/workflows/release.yml]
   push:
     branches: [main]
-    paths: [packaging/**, .cargo/**, Cargo.toml, Cargo.lock, src/main.rs, src/macos.rs, crates/tabletist-appkit/**, .github/workflows/packaging.yml, .github/workflows/release.yml]
+    paths: [packaging/**, .cargo/**, Cargo.toml, Cargo.lock, build.rs, src/main.rs, src/macos.rs, crates/tabletist-appkit/**, .github/workflows/packaging.yml, .github/workflows/release.yml]
   workflow_dispatch:
 
 permissions:
@@ -67,6 +67,47 @@ jobs:
           $imports = & dumpbin /dependents "target\${{ matrix.target }}\release\tabletist.exe" | Out-String
           $runtime = $imports | Select-String -Pattern 'MSVCP[0-9_]*\.dll|VCRUNTIME[0-9_]*\.dll'
           if ($runtime) { throw "tabletist.exe imports an MSVC runtime:`n$runtime" }
+      # build.rs embeds both. Explorer, the installer's shortcuts and the Apps
+      # list show the icon from the exe; Properties > Details shows the rest.
+      - name: Icon and version details are embedded
+        shell: pwsh
+        run: |
+          $exe = (Resolve-Path "target\${{ matrix.target }}\release\tabletist.exe").Path
+          $package = (cargo metadata --no-deps --format-version 1 | ConvertFrom-Json).packages |
+            Where-Object { $_.name -eq 'tabletist' }
+          $info = (Get-Item $exe).VersionInfo
+          $info | Format-List ProductName, FileDescription, LegalCopyright, FileVersion, ProductVersion
+          $strings = [ordered]@{
+            ProductName     = 'Tabletist'
+            FileDescription = $package.description
+            LegalCopyright  = 'Copyright (c) 2026 Igor Alexandrov'
+            FileVersion     = $package.version
+            ProductVersion  = $package.version
+          }
+          foreach ($field in $strings.Keys) {
+            if ($info.$field -ne $strings[$field]) {
+              throw "$field is '$($info.$field)', expected '$($strings[$field])'"
+            }
+          }
+          # The fixed version is numbers only: a pre-release's -rc1 comes off.
+          $numeric = ($package.version -split '[-+]')[0] + '.0'
+          $file = $info.FileMajorPart, $info.FileMinorPart, $info.FileBuildPart, $info.FilePrivatePart -join '.'
+          $product = $info.ProductMajorPart, $info.ProductMinorPart, $info.ProductBuildPart, $info.ProductPrivatePart -join '.'
+          if ($file -ne $numeric) { throw "the file version is $file, expected $numeric" }
+          if ($product -ne $numeric) { throw "the product version is $product, expected $numeric" }
+          # The program icon is icon group 1 (resource type 14, RT_GROUP_ICON).
+          # Opened as data, so the x64 runner reads the arm64 build too.
+          $kernel32 = Add-Type -Name Kernel32 -Namespace Tabletist -PassThru -MemberDefinition '
+            [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+            public static extern IntPtr LoadLibraryEx(string path, IntPtr file, uint flags);
+            [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+            public static extern IntPtr FindResource(IntPtr module, IntPtr name, IntPtr type);'
+          # LOAD_LIBRARY_AS_DATAFILE | LOAD_LIBRARY_AS_IMAGE_RESOURCE
+          $module = $kernel32::LoadLibraryEx($exe, [IntPtr]::Zero, 0x22)
+          if ($module -eq [IntPtr]::Zero) { throw "could not open $exe to read its resources" }
+          if ($kernel32::FindResource($module, [IntPtr]1, [IntPtr]14) -eq [IntPtr]::Zero) {
+            throw "tabletist.exe has no icon"
+          }
       - name: Installer
         shell: pwsh
         run: |
