@@ -900,9 +900,13 @@ async fn what_the_prepared_protocol_refuses_is_the_statements_error() {
     };
     // The server prepares neither: its error is the outcome, and the text
     // never runs another way.
-    let outcome = run(&connection, "SELECT 1; USE billing; SELECT 3", 10)
-        .await
-        .unwrap();
+    let outcome = run(
+        &connection,
+        "SELECT 1; GET DIAGNOSTICS @n = NUMBER; SELECT 3",
+        10,
+    )
+    .await
+    .unwrap();
     assert_eq!(outcome.results.len(), 2);
     let StatementOutcome::Error { error, .. } = &outcome.results[1].outcome else {
         panic!("{outcome:?}");
@@ -1142,6 +1146,7 @@ async fn bypasses_cannot_write() {
         "SET @a = 1, NAMES gbk",
         "SET sql_mode = 'ANSI_QUOTES'; SELECT \"; INSERT INTO probe VALUES (1); \"",
         "SET GLOBAL read_only = 0",
+        "USE billing; INSERT INTO probe VALUES (1)",
     ] {
         // Checked before it is run: an account or server statement the
         // guard let through must fail here, not reach the server.

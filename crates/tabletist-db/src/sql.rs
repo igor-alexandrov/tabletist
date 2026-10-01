@@ -618,6 +618,11 @@ pub fn refusal(dialect: Dialect, statement: &str) -> Option<String> {
     if dialect != Dialect::MySql {
         return None;
     }
+    // The session's default database is not reset by the cleanup; a server
+    // that prepares USE would carry it into browsing and the next run.
+    if word(0) == "USE" {
+        return Some("USE".into());
+    }
     if matches!(
         word(0),
         "XA" | "LOCK"
@@ -1629,5 +1634,29 @@ mod tests {
         }
         assert_eq!(refusal(Dialect::MySql, "SELECT backup FROM t"), None);
         assert_eq!(refusal(Dialect::Postgres, "DROP PREPARE s"), None);
+    }
+
+    #[test]
+    fn use_is_refused_on_mysql() {
+        for text in ["USE other", "use `other`", "-- note\n  Use other", "USE"] {
+            assert_eq!(
+                refusal(Dialect::MySql, text).as_deref(),
+                Some("USE"),
+                "{text}"
+            );
+        }
+        // A column or a table of that name is a name.
+        for text in [
+            "SELECT `use` FROM t",
+            "SELECT * FROM `use`",
+            "SELECT t.`use`, 'USE other' FROM `use` AS t",
+            "SELECT * FROM t USE INDEX (i)",
+            "EXPLAIN SELECT `use` FROM `use`",
+        ] {
+            assert_eq!(refusal(Dialect::MySql, text), None, "{text}");
+        }
+        // Not a statement of the others.
+        assert_eq!(refusal(Dialect::Postgres, "USE other"), None);
+        assert_eq!(refusal(Dialect::Sqlite, "USE other"), None);
     }
 }
