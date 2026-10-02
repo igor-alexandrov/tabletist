@@ -145,6 +145,26 @@ impl Dialect {
         }
     }
 
+    /// `name` as it is written into a statement the user reads: bare when
+    /// that is safe, quoted otherwise. Safe is a plain word the dialect
+    /// does not reserve. PostgreSQL folds a bare name to lower case, so
+    /// there a plain word is in lower case. The rule errs toward quoting:
+    /// a quoted name always works.
+    pub fn ident(self, name: &str) -> std::borrow::Cow<'_, str> {
+        let word = |byte: u8| match self {
+            Self::Postgres => byte.is_ascii_lowercase() || byte == b'_',
+            Self::MySql | Self::Sqlite => byte.is_ascii_alphabetic() || byte == b'_',
+        };
+        let mut bytes = name.bytes();
+        let plain =
+            bytes.next().is_some_and(word) && bytes.all(|byte| word(byte) || byte.is_ascii_digit());
+        if plain && !crate::reserved::is_reserved(self, name) {
+            std::borrow::Cow::Borrowed(name)
+        } else {
+            std::borrow::Cow::Owned(self.quote_ident(name))
+        }
+    }
+
     pub fn qualified(self, object: &ObjectRef) -> String {
         format!(
             "{}.{}",
@@ -796,5 +816,50 @@ mod tests {
             "{}",
             pg.text
         );
+    }
+
+    #[test]
+    fn a_plain_name_is_inserted_bare_and_any_other_quoted() {
+        let pg = Dialect::Postgres;
+        assert_eq!(pg.ident("books"), "books");
+        assert_eq!(pg.ident("book_reviews2"), "book_reviews2");
+        assert_eq!(pg.ident("_private"), "_private");
+        // PostgreSQL folds a bare name to lower case.
+        assert_eq!(pg.ident("Books"), "\"Books\"");
+        assert_eq!(pg.ident("BOOKS"), "\"BOOKS\"");
+        for dialect in [Dialect::MySql, Dialect::Sqlite] {
+            assert_eq!(dialect.ident("Books"), "Books", "{dialect:?}");
+        }
+        // Not a plain word.
+        assert_eq!(pg.ident("Order Items"), "\"Order Items\"");
+        assert_eq!(pg.ident("2fa"), "\"2fa\"");
+        assert_eq!(pg.ident("a\"b"), "\"a\"\"b\"");
+        assert_eq!(pg.ident("żółw"), "\"żółw\"");
+        assert_eq!(pg.ident(""), "\"\"");
+        assert_eq!(Dialect::MySql.ident("order-items"), "`order-items`");
+        assert_eq!(Dialect::MySql.ident("a`b"), "`a``b`");
+        assert_eq!(Dialect::Sqlite.ident("order items"), "\"order items\"");
+    }
+
+    #[test]
+    fn a_reserved_word_is_quoted() {
+        for word in [
+            "user", "order", "group", "table", "select", "end", "primary",
+        ] {
+            assert_eq!(
+                Dialect::Postgres.ident(word),
+                format!("\"{word}\""),
+                "{word}"
+            );
+        }
+        for word in ["order", "group", "key", "keys", "index", "rank", "SELECT"] {
+            assert_eq!(Dialect::MySql.ident(word), format!("`{word}`"), "{word}");
+        }
+        for word in ["order", "group", "key", "index", "transaction", "Values"] {
+            assert_eq!(Dialect::Sqlite.ident(word), format!("\"{word}\""), "{word}");
+        }
+        // Reserved elsewhere, not here.
+        assert_eq!(Dialect::Postgres.ident("key"), "key");
+        assert_eq!(Dialect::MySql.ident("user"), "user");
     }
 }

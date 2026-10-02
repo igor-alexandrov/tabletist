@@ -12,6 +12,7 @@ pub mod fixtures;
 mod mysql;
 mod pg;
 mod query;
+mod reserved;
 mod script;
 mod spec;
 pub mod sql;
