@@ -687,6 +687,7 @@ fastframe_icons::icons! {
         ListTree => "list-tree",
         LogIn => "log-in",
         PanelRight => "panel-right",
+        Server => "server",
         Table => "table-2",
     }
 }

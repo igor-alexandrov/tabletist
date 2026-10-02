@@ -274,8 +274,8 @@ fn top_bar(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
     app.actions.extend(actions);
 }
 
-/// macOS: a box with the name, host and database (a pop-up of the other
-/// databases), the read-only pill, and Disconnect.
+/// macOS: the Connections button, a box with the name, host and database
+/// (a pop-up of the other databases), the read-only pill, and Disconnect.
 #[allow(clippy::too_many_arguments)] // one call site; the pieces are unrelated
 fn mac_bar(
     ui: &mut egui::Ui,
@@ -299,8 +299,36 @@ fn mac_bar(
         }
     };
     let hair = Stroke::new(widgets::hairline(ui), rim);
-    // The crumb: name, host, "/", database, and the pop-up's chevrons, 8
-    // apart and 10 in from its edges.
+    let corner = CornerRadius::same(look.radius);
+    // Connections, 16 in: the way to the saved connections, a face of the
+    // bar's own under the server icon.
+    let connections =
+        Rect::from_min_size(pos2(rect.left() + 16.0, center - 16.0), vec2(34.0, 32.0));
+    {
+        let label = gettext(locale, "Connections");
+        let response = ui.interact(connections, ui.id().with("connections"), Sense::click());
+        response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &label));
+        let (fill, tint) = if response.hovered() {
+            (face(1.0), palette.text)
+        } else {
+            (face(0.7), palette.secondary)
+        };
+        ui.painter().rect_filled(connections, corner, fill);
+        ui.painter()
+            .rect_stroke(connections, corner, hair, StrokeKind::Inside);
+        Icon::Server.image(tint, 16.0).paint_at(
+            ui,
+            Rect::from_center_size(connections.center(), vec2(16.0, 16.0)),
+        );
+        if response
+            .on_hover_text(connections_hint(look, locale))
+            .clicked()
+        {
+            actions.push(Action::NewConnTab);
+        }
+    }
+    // The crumb, 12 on: name, host, "/", database, and the pop-up's
+    // chevrons, 8 apart and 10 in from its edges.
     let name = Text::one(look, TextRole::UiBodySemibold, &info.name, palette.text).layout(ui.ctx());
     let host = Text::one(look, TextRole::UiBody, &info.host, palette.dim).layout(ui.ctx());
     let slash = Text::one(
@@ -327,7 +355,10 @@ fn mac_bar(
         parts.push(12.0);
     }
     let width = 20.0 + parts.iter().sum::<f32>() + 8.0 * (parts.len() - 1) as f32;
-    let crumb = Rect::from_min_size(pos2(rect.left() + 16.0, center - 16.0), vec2(width, 32.0));
+    let crumb = Rect::from_min_size(
+        pos2(connections.right() + 12.0, center - 16.0),
+        vec2(width, 32.0),
+    );
     let response = ui.interact(crumb, ui.id().with("database"), Sense::click());
     response.widget_info(|| {
         let mut info_ = egui::WidgetInfo::labeled(
@@ -338,7 +369,6 @@ fn mac_bar(
         info_.current_text_value = Some(display_safe(&info.database).into_owned());
         info_
     });
-    let corner = CornerRadius::same(look.radius);
     ui.painter().rect_filled(crumb, corner, face(0.7));
     ui.painter()
         .rect_stroke(crumb, corner, hair, StrokeKind::Inside);
@@ -465,8 +495,8 @@ fn mac_bar(
     }
 }
 
-/// Omarchy: the environment badge, the name, where it points, read-only,
-/// and the key that closes the connection.
+/// Omarchy: the Connections button, the environment badge, the name, where
+/// it points, read-only, and the key that closes the connection.
 #[allow(clippy::too_many_arguments)] // one call site; the pieces are unrelated
 fn terminal_bar(
     ui: &mut egui::Ui,
@@ -483,6 +513,43 @@ fn terminal_bar(
     let connection_line = env.bar_border();
     // Twelve in and twelve apart, as the design's row.
     let mut x = rect.left() + 12.0;
+    // Connections first: a boxed word, eight in from its line, that opens
+    // the saved connections.
+    {
+        let label = gettext(locale, "Connections");
+        let text = Text::one(
+            look,
+            TextRole::OBody,
+            &format!("≡ {}", gettext(locale, "conn")),
+            palette.text,
+        )
+        .layout(ui.ctx());
+        let button = Rect::from_min_size(
+            pos2(x, center - 12.0),
+            vec2(text.width() + 16.0 + 2.0, 24.0),
+        );
+        let response = ui.interact(button, ui.id().with("connections"), Sense::click());
+        response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &label));
+        let line = if response.hovered() {
+            env.base()
+        } else {
+            connection_line
+        };
+        ui.painter().rect_stroke(
+            button,
+            CornerRadius::same(3),
+            Stroke::new(1.0, line),
+            StrokeKind::Inside,
+        );
+        text.paint_left(ui.painter(), button.left() + 9.0, center);
+        if response
+            .on_hover_text(connections_hint(look, locale))
+            .clicked()
+        {
+            actions.push(Action::NewConnTab);
+        }
+        x = button.right() + 12.0;
+    }
     x += env_badge(ui, x, center, info.env, env, Badge::Tracked, look) + 12.0;
     x += widgets::paint_label(
         ui,
@@ -565,6 +632,16 @@ fn terminal_bar(
 /// Text for measuring only: never painted, so never recorded.
 fn label_copy(look: &Look, role: TextRole, text: &str) -> Text {
     Text::one(look, role, text, egui::Color32::PLACEHOLDER)
+}
+
+/// The Connections button's tooltip: its name and the key that does the
+/// same, as the look spells both.
+fn connections_hint(look: &Look, locale: crate::i18n::Locale) -> String {
+    look.label(&format!(
+        "{} · {}O",
+        gettext(locale, "Connections"),
+        look.command_key()
+    ))
 }
 
 /// How an environment badge draws.
@@ -849,5 +926,24 @@ fn banner(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
     }
     if edit {
         app.actions.push(Action::EditConnection(conn));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_connections_hint_names_the_key_as_the_look_spells_it() {
+        let locale = crate::i18n::Locale::default();
+        assert_eq!(connections_hint(&Look::macos(), locale), "Connections · ⌘O");
+        assert_eq!(
+            connections_hint(&Look::standard(), locale),
+            "Connections · Ctrl+O"
+        );
+        assert_eq!(
+            connections_hint(&Look::omarchy(), locale),
+            "connections · ctrl+o"
+        );
     }
 }
