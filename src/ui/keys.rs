@@ -116,7 +116,7 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
         // Format is a SQL editor's. The press is taken on every tab, or
         // Mod+F, below, would take it for its own.
         let format = consume_press(input, Modifiers::COMMAND | Modifiers::SHIFT, Key::F);
-        if let (true, Some((tab, sql_tab))) = (format, sql) {
+        if format && let Some((tab, sql_tab)) = sql {
             actions.push(Action::FormatSql { tab, sql_tab });
         }
         let mut key = |modifiers: Modifiers, key: Key, action: Action| {

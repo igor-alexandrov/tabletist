@@ -711,9 +711,10 @@ impl App {
             Action::NewSqlTab(tab) => self.new_sql_tab(tab),
             Action::RunSql { tab, sql_tab, all } => self.run_sql(tab, sql_tab, all),
             Action::FormatSql { tab, sql_tab } => {
-                // The keys go back to the editor after a click on the button.
                 if let Some(sql) = self.sql_tab_mut(tab, sql_tab) {
                     sql.format = true;
+                    // The keys go back to the editor after a click on the
+                    // toolbar's button.
                     sql.focus_editor = true;
                 }
             }

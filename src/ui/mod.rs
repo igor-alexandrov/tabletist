@@ -1495,7 +1495,7 @@ mod tests {
         assert!(harness.app.workspace(tab).unwrap().row_panel);
     }
 
-    const FORMAT: Modifiers = Modifiers::COMMAND.plus(Modifiers::SHIFT);
+    const COMMAND_SHIFT: Modifiers = Modifiers::COMMAND.plus(Modifiers::SHIFT);
 
     #[test]
     fn command_shift_f_does_nothing_on_a_table_tab() {
@@ -1509,7 +1509,7 @@ mod tests {
         });
         harness.answer_rows(crate::testing::page(3, false));
         // Mod+F would take the press for its own were it not consumed.
-        harness.press(Key::F, FORMAT);
+        harness.press(Key::F, COMMAND_SHIFT);
         assert!(!harness.has("Apply"), "the filter bar stays shut");
         harness.press(Key::F, Modifiers::COMMAND);
         assert!(harness.has("Apply"));
