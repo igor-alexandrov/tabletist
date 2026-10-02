@@ -7151,10 +7151,27 @@ mod tests {
 
     #[test]
     fn a_lost_connection_can_be_left() {
-        let mut harness = Harness::new();
-        let tab = lost(&mut harness);
-        harness.click("Disconnect");
-        assert!(harness.app.workspace(tab).is_none());
+        use egui::accesskit;
+        for look in crate::theme::Look::ALL {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            let tab = lost(&mut harness);
+            // The connection bar has a Disconnect of its own: the strip's
+            // is the lower one.
+            let tree = harness.settle();
+            let buttons = buttons_named(&tree, "Disconnect");
+            assert_eq!(buttons.len(), 2, "{}", look.name);
+            harness.frame(vec![egui::Event::AccessKitActionRequest(
+                accesskit::ActionRequest {
+                    target_tree: accesskit::TreeId::ROOT,
+                    target_node: buttons[1].0,
+                    action: accesskit::Action::Click,
+                    data: None,
+                },
+            )]);
+            harness.settle();
+            assert!(harness.app.workspace(tab).is_none(), "{}", look.name);
+        }
     }
 
     #[test]
