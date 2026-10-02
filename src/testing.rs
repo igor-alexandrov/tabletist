@@ -106,8 +106,19 @@ impl Harness {
     /// Runs one frame that draws only `add` in a central panel, for
     /// testing a widget on its own.
     pub fn frame_with(&mut self, add: impl FnOnce(&mut egui::Ui)) -> TreeUpdate {
+        self.frame_with_events(Vec::new(), add)
+    }
+
+    /// [`Self::frame_with`], given `events`: for a widget on its own that
+    /// answers the pointer or the keyboard.
+    pub fn frame_with_events(
+        &mut self,
+        events: Vec<egui::Event>,
+        add: impl FnOnce(&mut egui::Ui),
+    ) -> TreeUpdate {
         let mut input = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, self.size)),
+            events,
             ..Default::default()
         };
         input

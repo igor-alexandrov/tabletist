@@ -25,7 +25,8 @@ const MEASURE: f32 = 340.0;
 /// From the edge of its area to a state's text.
 pub const INSET: f32 = 18.0;
 
-/// Whether a wait has gone on long enough to show.
+/// Whether a wait has gone on long enough to show. This schedules
+/// nothing: a caller that waits asks for a repaint after `DELAY - waited`.
 pub fn lasted(waited: Duration) -> bool {
     waited >= DELAY
 }
@@ -62,10 +63,53 @@ pub struct Notice<'a> {
     pub text: &'a str,
 }
 
+/// Which pieces of an empty state show beside its title and its buttons,
+/// which always do.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Shown {
+    tile: bool,
+    text: bool,
+}
+
+/// What `room` has the height for: everything, or all but the icon tile,
+/// or neither the tile nor the sentence. `tile` and `text` are the heights
+/// of those two with the gap each brings, `rest` that of the title and the
+/// buttons.
+fn fit(tile: f32, text: f32, rest: f32, room: f32) -> Shown {
+    let (tile, text) = if tile + text + rest <= room {
+        (true, true)
+    } else {
+        (false, text + rest <= room)
+    };
+    Shown { tile, text }
+}
+
 /// `notice` in `rect` with `buttons` under it: centred under an icon tile,
-/// or in the terminal look from the top left without one. Returns the
-/// index of the button that was clicked.
+/// or in the terminal look from the top left without one. An area too
+/// short for it all loses the tile, then the sentence, and nothing shows
+/// outside `rect`. Returns the place in `buttons` of the one clicked.
+/// A button's id comes from its name, so one with a name already used in
+/// the same `Ui` needs `.salt(...)`.
 pub fn empty(
+    ui: &mut Ui,
+    rect: Rect,
+    notice: &Notice<'_>,
+    buttons: Vec<ButtonSpec<'_>>,
+    look: &Look,
+    palette: &Palette,
+) -> Option<usize> {
+    // `ui` is cut to the area while the state is drawn, the buttons too:
+    // what the area has no room for never shows over its neighbours. A
+    // child `Ui` would cut the same, and give all it holds another id.
+    let clip = ui.clip_rect();
+    ui.set_clip_rect(rect.intersect(clip));
+    let clicked = place(ui, rect, notice, buttons, look, palette);
+    ui.set_clip_rect(clip);
+    clicked
+}
+
+/// The pieces of [`empty`] that fit, each where it goes.
+fn place(
     ui: &mut Ui,
     rect: Rect,
     notice: &Notice<'_>,
@@ -105,6 +149,7 @@ pub fn empty(
     } else {
         (44.0, 14.0, 8.0, 14.0, 8.0)
     };
+    let tile_height = tile + under_tile;
     let text_height = text
         .as_ref()
         .map_or(0.0, |text| under_title + text.height());
@@ -113,7 +158,16 @@ pub fn empty(
     } else {
         under_text + height
     };
-    let total = tile + under_tile + title.height() + text_height + buttons_height;
+    let rest = title.height() + buttons_height;
+    let shown = fit(tile_height, text_height, rest, rect.height() - 2.0 * INSET);
+    let text = text.filter(|_| shown.text);
+    let mut total = rest;
+    if shown.tile {
+        total += tile_height;
+    }
+    if shown.text {
+        total += text_height;
+    }
     // The line the pieces hang on, and where they start: the middle of the
     // area, or its top left in the terminal look. Kept under the area's
     // top when there is too little room to centre.
@@ -123,7 +177,7 @@ pub fn empty(
         let top = rect.center().y - total / 2.0;
         (rect.center().x, top.max(rect.top() + INSET))
     };
-    if !look.terminal {
+    if shown.tile && !look.terminal {
         let tile_rect = Rect::from_center_size(pos2(x, y + tile / 2.0), vec2(tile, tile));
         ui.painter().rect_filled(
             tile_rect,
@@ -134,7 +188,7 @@ pub fn empty(
             ui,
             Rect::from_center_size(tile_rect.center(), vec2(20.0, 20.0)),
         );
-        y += tile + under_tile;
+        y += tile_height;
     }
     // A galley aligned to the centre hangs on its middle, one aligned to
     // the left on its left edge: `x` is that line either way.
@@ -283,7 +337,8 @@ pub fn steps_height(count: usize, look: &Look) -> f32 {
     step_pitch(look) * count as f32
 }
 
-/// "2.4 s": how long something has been going.
+/// "2.4 s": how long something has been going. A running time keeps one
+/// unit so it does not jump: "0.3 s" where `format::elapsed` writes "300 ms".
 pub fn seconds(elapsed: Duration) -> String {
     format!("{:.1} s", elapsed.as_secs_f64())
 }
@@ -363,12 +418,20 @@ pub fn running(
     let height = if look.terminal { 24.0 } else { 28.0 };
     let gap = 12.0;
     let role = widgets::body(look);
-    let laid = Text::one(look, role, text, palette.text)
+    let time = seconds(elapsed);
+    // The time's room is that of a stand-in with every digit a 0: the box
+    // keeps its width and its place while the digits change.
+    let widest: String = time
+        .chars()
+        .map(|digit| if digit.is_ascii_digit() { '0' } else { digit })
+        .collect();
+    let line = Text::one(look, role, text, palette.text)
         .space(role, " ")
-        .add(role, &seconds(elapsed), palette.dim)
-        .layout(ui.ctx());
+        .add(role, &widest, palette.dim);
+    let width = widgets::measure(ui, line);
+    let reserved = widgets::measure(ui, Text::one(look, role, &widest, palette.dim));
     let button_width = cancel.as_ref().map(|button| button.width(ui, look));
-    let content = spinner + gap + laid.width() + button_width.map_or(0.0, |width| gap + width);
+    let content = spinner + gap + width + button_width.map_or(0.0, |width| gap + width);
     // 14 before the spinner, 10 round the button.
     let card = Rect::from_center_size(rect.center(), vec2(14.0 + content + 10.0, height + 20.0));
     if look.terminal {
@@ -399,6 +462,11 @@ pub fn running(
             StrokeKind::Inside,
         );
     }
+    // The box takes the clicks on its text and its padding, and drops
+    // them: it lies over a live page, which would get them otherwise.
+    // Registered before the button, so the button, which comes after it,
+    // still wins inside it. It does nothing, so the keyboard skips it.
+    ui.interact(card, ui.id().with("running"), Sense::CLICK);
     let (mut x, center) = (card.left() + 14.0, card.center().y);
     // The spinner asks for the frames that keep the time going.
     egui::Spinner::new()
@@ -409,7 +477,10 @@ pub fn running(
             Rect::from_center_size(pos2(x + spinner / 2.0, center), vec2(spinner, spinner)),
         );
     x += spinner + gap;
-    let width = laid.paint_left(ui.painter(), x, center);
+    widgets::paint_text(ui, x, center, Text::one(look, role, text, palette.text));
+    // The time is its own piece, from where its room starts.
+    let time = Text::one(look, role, &time, palette.dim);
+    widgets::paint_text(ui, x + width - reserved, center, time);
     // Named without the time, which changes every frame.
     let named = Rect::from_min_size(pos2(x, center - 8.0), vec2(width, 16.0));
     widgets::announce(ui, named, text);
@@ -513,10 +584,60 @@ mod tests {
             let tree = harness.frame_with(|ui| {
                 empty(ui, area, &notice(), Vec::new(), &look, &palette);
             });
-            let title = bounds(&tree, "No rows in fixture", Role::Label).unwrap();
-            assert!(title.top() >= area.top(), "{}", look.name);
-            assert!(title.left() >= area.left(), "{}", look.name);
-            assert!(title.right() <= area.right(), "{}", look.name);
+            // The title always shows; the sentence only where it fits.
+            let title = bounds(&tree, "No rows in fixture", Role::Label);
+            assert!(title.is_some(), "{}", look.name);
+            let text = bounds(&tree, "The table exists and is empty.", Role::Label);
+            for at in title.into_iter().chain(text) {
+                assert!(area.contains_rect(at), "{}: {at:?}", look.name);
+            }
+        }
+    }
+
+    #[test]
+    fn a_short_area_loses_the_tile_then_the_sentence() {
+        let shown = |tile, text| Shown { tile, text };
+        let (all, no_tile, title) = (shown(true, true), shown(false, true), shown(false, false));
+        // A tile of 50, a sentence of 30, a title and buttons of 60.
+        assert_eq!(fit(50.0, 30.0, 60.0, 140.0), all);
+        assert_eq!(fit(50.0, 30.0, 60.0, 139.0), no_tile);
+        assert_eq!(fit(50.0, 30.0, 60.0, 90.0), no_tile);
+        assert_eq!(fit(50.0, 30.0, 60.0, 89.0), title);
+        // The title and the buttons stay, however little room there is.
+        assert_eq!(fit(50.0, 30.0, 60.0, 0.0), title);
+        assert_eq!(fit(50.0, 30.0, 60.0, -36.0), title);
+        // The tile never comes back in place of the sentence.
+        assert_eq!(fit(20.0, 30.0, 60.0, 85.0), title);
+    }
+
+    #[test]
+    fn a_button_an_empty_state_has_no_room_for_takes_no_click() {
+        for look in Look::ALL {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            let palette = harness.app.palette;
+            // Too short for even the title and the button under it.
+            let area = Rect::from_min_size(pos2(40.0, 60.0), vec2(260.0, 30.0));
+            let mut frame = |events: Vec<egui::Event>| {
+                let mut clicked = None;
+                let tree = harness.frame_with_events(events, |ui| {
+                    let buttons = vec![button("Reload", &look)];
+                    clicked = empty(ui, area, &notice(), buttons, &look, &palette);
+                });
+                (tree, clicked)
+            };
+            let (tree, _) = frame(Vec::new());
+            let pos = bounds(&tree, "Reload", Role::Button).unwrap().center();
+            assert!(!area.contains(pos), "{}", look.name);
+            let press = |pressed| egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            };
+            for event in [egui::Event::PointerMoved(pos), press(true), press(false)] {
+                assert_eq!(frame(vec![event]).1, None, "{}", look.name);
+            }
         }
     }
 
@@ -545,51 +666,87 @@ mod tests {
     }
 
     #[test]
-    fn steps_are_named_with_what_they_act_on() {
-        let look = Look::macos();
-        let mut harness = Harness::new();
-        harness.set_look(look);
-        let palette = harness.app.palette;
-        let tree = harness.frame_with(|ui| {
-            let rect = ui.max_rect();
-            let list = [
-                Step {
-                    state: StepState::Running(Some(Duration::from_millis(2400))),
-                    text: "Connect to",
-                    detail: "db.example.com:5432",
-                },
-                Step {
-                    state: StepState::Waiting,
-                    text: "Load schema",
-                    detail: "",
-                },
-            ];
-            steps(ui, rect, &list, &look, &palette);
-        });
-        assert!(node(&tree, "Connect to db.example.com:5432", Role::Label).is_some());
-        assert!(node(&tree, "Load schema", Role::Label).is_some());
-    }
-
-    #[test]
-    fn a_wait_names_what_runs_and_its_button_cancels() {
+    fn steps_are_named_with_what_they_act_on_in_every_look() {
         for look in Look::ALL {
             let mut harness = Harness::new();
             harness.set_look(look);
             let palette = harness.app.palette;
             let tree = harness.frame_with(|ui| {
                 let rect = ui.max_rect();
-                let cancel = button("Cancel", &look).label("Cancel query");
-                let elapsed = Duration::from_millis(4200);
-                running(
-                    ui,
-                    rect,
-                    "Running query…",
-                    elapsed,
-                    Some(cancel),
-                    &look,
-                    &palette,
-                );
+                let list = [
+                    Step {
+                        state: StepState::Done,
+                        text: "Open tunnel",
+                        detail: "",
+                    },
+                    Step {
+                        state: StepState::Running(Some(Duration::from_millis(2400))),
+                        text: "Connect to",
+                        detail: "db.example.com:5432",
+                    },
+                    Step {
+                        state: StepState::Waiting,
+                        text: "Load schema",
+                        detail: "",
+                    },
+                ];
+                steps(ui, rect, &list, &look, &palette);
             });
+            for label in [
+                "Open tunnel",
+                "Connect to db.example.com:5432",
+                "Load schema",
+            ] {
+                assert!(node(&tree, label, Role::Label).is_some(), "{}", look.name);
+            }
+        }
+    }
+
+    /// One frame of a wait drawn over a page that takes clicks, given
+    /// `events`: the tree, whether the page was clicked, and whether the
+    /// wait's button was.
+    fn wait_over_a_page(
+        harness: &mut Harness,
+        look: &Look,
+        events: Vec<egui::Event>,
+    ) -> (egui::accesskit::TreeUpdate, bool, bool) {
+        let palette = harness.app.palette;
+        let mut clicked = (false, false);
+        let tree = harness.frame_with_events(events, |ui| {
+            let rect = ui.max_rect();
+            let page = ui.interact(rect, ui.id().with("page"), Sense::click());
+            let cancel = button("Cancel", look).label("Cancel query");
+            let (text, elapsed) = ("Running query…", Duration::from_millis(4200));
+            let cancelled = running(ui, rect, text, elapsed, Some(cancel), look, &palette);
+            clicked = (page.clicked(), cancelled);
+        });
+        (tree, clicked.0, clicked.1)
+    }
+
+    /// Clicks at `pos` over [`wait_over_a_page`]: whether the page took
+    /// the click, and whether the wait's button did.
+    fn click_over_a_page(harness: &mut Harness, look: &Look, pos: egui::Pos2) -> (bool, bool) {
+        let button = |pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        let mut clicked = (false, false);
+        let moved = egui::Event::PointerMoved(pos);
+        for event in [moved, button(true), button(false)] {
+            let (_, page, cancelled) = wait_over_a_page(harness, look, vec![event]);
+            clicked = (clicked.0 || page, clicked.1 || cancelled);
+        }
+        clicked
+    }
+
+    #[test]
+    fn a_wait_names_what_runs_and_its_button_in_every_look() {
+        for look in Look::ALL {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            let (tree, ..) = wait_over_a_page(&mut harness, &look, Vec::new());
             assert!(
                 node(&tree, "Running query…", Role::Label).is_some(),
                 "{}",
@@ -600,6 +757,47 @@ mod tests {
                 "{}",
                 look.name
             );
+        }
+    }
+
+    #[test]
+    fn a_wait_keeps_clicks_on_its_box_from_the_page_under_it() {
+        for look in Look::ALL {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            let (tree, ..) = wait_over_a_page(&mut harness, &look, Vec::new());
+            let text = bounds(&tree, "Running query…", Role::Label).unwrap();
+            let cancel = bounds(&tree, "Cancel query", Role::Button).unwrap();
+            // On the box's text: neither the page nor the button.
+            let on_text = click_over_a_page(&mut harness, &look, text.center());
+            assert_eq!(on_text, (false, false), "{}", look.name);
+            // On the button, which lies in the box and still cancels.
+            let on_button = click_over_a_page(&mut harness, &look, cancel.center());
+            assert_eq!(on_button, (false, true), "{}", look.name);
+            // Away from the box the page is as live as before.
+            let away = click_over_a_page(&mut harness, &look, pos2(30.0, 30.0));
+            assert_eq!(away, (true, false), "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn a_skeleton_and_a_progress_line_draw_in_no_room() {
+        for look in Look::ALL {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            let palette = harness.app.palette;
+            harness.frame_with(|ui| {
+                let at = ui.max_rect().min;
+                skeleton(ui, Rect::from_min_size(at, vec2(0.0, 0.0)), &look, &palette);
+                // Rows to draw, and no width to draw them in.
+                skeleton(
+                    ui,
+                    Rect::from_min_size(at, vec2(0.0, 200.0)),
+                    &look,
+                    &palette,
+                );
+                progress(ui, egui::Rangef::point(at.x), at.y, &palette);
+            });
         }
     }
 
