@@ -50,23 +50,13 @@ saying why the rule does not apply.
 
 ## Pull requests
 
-`.github/workflows/pr-review.md` is a GitHub Agentic Workflow (gh-aw): Copilot
-reviews each push to a pull request. `ci.yml`, and `packaging.yml` when
-packaging paths changed, start on the pull request themselves and run beside
-the review. A review that requests changes does not stop them. Pull requests
-from forks and from Dependabot get no review.
+`ci.yml`, and `packaging.yml` when packaging paths changed, start on the pull
+request themselves. No workflow reviews the change: Copilot's review comes
+from the repository ruleset "Copilot review for default branch", and nothing
+waits for it.
 
-- After editing `pr-review.md` run `gh aw compile pr-review --actionlint`
-  (`gh extension install github/gh-aw`) and commit `pr-review.lock.yml` with
-  it. Never edit the lock file by hand.
-- The review needs the `COPILOT_GITHUB_TOKEN` secret: a fine-grained PAT of a
-  user account with the Copilot Requests permission. Without it the review
-  fails and the checks still run.
 - The paths that start `packaging.yml` are listed twice: in its `pull_request`
   trigger and in its `push` trigger. Change them together.
-- An older request for changes is dismissed once a later commit gets a review
-  with no inline comments. Until then the pull request can still show "changes
-  requested": dismiss the old review by hand.
 
 ## Style
 
