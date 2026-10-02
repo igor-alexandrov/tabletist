@@ -2,9 +2,10 @@ name: Packaging
 
 # Builds the macOS app and DMG and the Windows installer the way the release
 # does, and installs them, whenever packaging changes. No signing here.
+# Pull requests reach these jobs through `pr-review.md`, after Copilot's review;
+# its gate watches the same paths, so keep the two lists the same.
 on:
-  pull_request:
-    paths: [packaging/**, .cargo/**, Cargo.toml, Cargo.lock, build.rs, src/main.rs, src/macos.rs, crates/tabletist-appkit/**, .github/workflows/packaging.yml, .github/workflows/release.yml]
+  workflow_call:
   push:
     branches: [main]
     paths: [packaging/**, .cargo/**, Cargo.toml, Cargo.lock, build.rs, src/main.rs, src/macos.rs, crates/tabletist-appkit/**, .github/workflows/packaging.yml, .github/workflows/release.yml]
