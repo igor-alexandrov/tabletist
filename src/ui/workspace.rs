@@ -245,8 +245,10 @@ fn connecting(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
             ),
         )
     } else {
-        // The design's 300 wide list with the button 14 under it.
-        let block = room.min(300.0);
+        // The design's 300 wide list with the button 14 under it. A step
+        // that needs more (a long host, a tunnel) widens it, up to the
+        // room there is.
+        let block = states::steps_width(ui, &list, &look).max(300.0).min(room);
         let total = height + 14.0 + button_height;
         let top = (body.center().y - total / 2.0).max(body.top() + states::INSET);
         let center = body.center().x;

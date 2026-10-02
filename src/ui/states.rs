@@ -2,6 +2,7 @@
 //! content, drawn the same wherever it appears. A view says what to say
 //! (an icon, a title, a sentence, the buttons); this module places it.
 
+use std::borrow::Cow;
 use std::time::Duration;
 
 use egui::{Align, Color32, CornerRadius, Frame, Margin, Rect, Sense, Stroke, StrokeKind, Ui};
@@ -343,15 +344,123 @@ pub fn seconds(elapsed: Duration) -> String {
     format!("{:.1} s", elapsed.as_secs_f64())
 }
 
+/// `time` with every digit a 0: a stand-in that keeps its width while the
+/// digits change.
+fn steady(time: &str) -> String {
+    time.chars()
+        .map(|digit| if digit.is_ascii_digit() { '0' } else { digit })
+        .collect()
+}
+
+/// The side of a step's mark.
+const MARK: f32 = 14.0;
+
+/// Between a step's mark and its line, and its line and its time.
+const STEP_GAP: f32 = 10.0;
+
+/// The roles of a step's text: of one that is done or still to come, and
+/// of the one under way.
+fn step_roles(look: &Look) -> [TextRole; 2] {
+    [
+        widgets::body(look),
+        TextRole::pick(look, TextRole::UiBodyStrong, TextRole::OBody),
+    ]
+}
+
+/// The role of a step's time.
+fn time_role(look: &Look) -> TextRole {
+    widgets::secondary(look)
+}
+
+/// A step's line: what it does in `role`, then `detail`, what it does it
+/// to, in the code face. [`steps`] paints it and [`steps_width`] measures
+/// it. `colors` are those of the two pieces.
+fn step_line(
+    step: &Step<'_>,
+    detail: &str,
+    role: TextRole,
+    look: &Look,
+    colors: [Color32; 2],
+) -> Text {
+    let line = Text::one(look, role, step.text, colors[0]);
+    if detail.is_empty() {
+        return line;
+    }
+    line.space(role, " ")
+        .add(widgets::code(look), detail, colors[1])
+}
+
+/// The room a row keeps at its end for a time: that of the longest time
+/// running, and of ten seconds at least, so a time that comes or grows
+/// moves nothing.
+fn time_room(ui: &Ui, steps: &[Step<'_>], look: &Look) -> f32 {
+    let running = steps.iter().filter_map(|step| match step.state {
+        StepState::Running(elapsed) => elapsed,
+        _ => None,
+    });
+    running
+        .chain([Duration::from_secs(10)])
+        .map(|elapsed| {
+            let time = steady(&seconds(elapsed));
+            widgets::measure(
+                ui,
+                Text::one(look, time_role(look), &time, Color32::PLACEHOLDER),
+            )
+        })
+        .fold(0.0, f32::max)
+}
+
+/// What sums of widths may be off by: a row as wide as [`steps_width`]
+/// asks for is not too narrow by a rounding error.
+const ROUNDING: f32 = 0.01;
+
+/// What a row `width` wide has for a step's line: the rest after its mark
+/// and the room of a time, `time`.
+fn line_room(width: f32, time: f32) -> f32 {
+    width - MARK - STEP_GAP - STEP_GAP - time
+}
+
+/// The width [`steps`] needs to show `steps` in full: the widest one's
+/// mark and line and, after a gap, the room for a time. Each line counts
+/// in both of its roles, so the width is the same whichever step is under
+/// way.
+pub fn steps_width(ui: &Ui, steps: &[Step<'_>], look: &Look) -> f32 {
+    let colors = [Color32::PLACEHOLDER; 2];
+    let line = steps
+        .iter()
+        .flat_map(|step| {
+            step_roles(look)
+                .map(|role| widgets::measure(ui, step_line(step, step.detail, role, look, colors)))
+        })
+        .fold(0.0, f32::max);
+    MARK + STEP_GAP + line + STEP_GAP + time_room(ui, steps, look)
+}
+
+/// `step`'s detail, cut with "…" where its line in `role` is wider than
+/// `room`: a long host runs neither under the time nor out of the row.
+fn fit_detail<'a>(
+    ui: &Ui,
+    step: &Step<'a>,
+    role: TextRole,
+    room: f32,
+    look: &Look,
+) -> Cow<'a, str> {
+    if step.detail.is_empty() {
+        return step.detail.into();
+    }
+    crate::ui::grid::ellipsize(step.detail, room + ROUNDING, false, |detail| {
+        let colors = [Color32::PLACEHOLDER; 2];
+        widgets::measure(ui, step_line(step, detail, role, look, colors))
+    })
+}
+
 /// `steps` from the top of `rect`, one per line: a tick for a step that is
 /// done, a spinner and the time for the one under way, a ring for those
-/// still to come.
+/// still to come. A row too narrow for its step cuts the step's detail.
 pub fn steps(ui: &mut Ui, rect: Rect, steps: &[Step<'_>], look: &Look, palette: &Palette) {
-    const MARK: f32 = 14.0;
     let pitch = step_pitch(look);
-    let body = widgets::body(look);
-    let strong = TextRole::pick(look, TextRole::UiBodyStrong, TextRole::OBody);
-    let small = widgets::secondary(look);
+    let [body, strong] = step_roles(look);
+    let room = line_room(rect.width(), time_room(ui, steps, look));
     for (index, step) in steps.iter().enumerate() {
         let row = Rect::from_min_size(
             pos2(rect.left(), rect.top() + pitch * index as f32),
@@ -381,15 +490,11 @@ pub fn steps(ui: &mut Ui, rect: Rect, steps: &[Step<'_>], look: &Look, palette: 
                     .circle_stroke(mark.center(), MARK / 2.0 - 1.0, ring);
             }
         }
-        let mut text = Text::one(look, role, step.text, color);
-        if !step.detail.is_empty() {
-            text = text
-                .space(role, " ")
-                .add(widgets::code(look), step.detail, detail);
-        }
-        widgets::paint_text(ui, row.left() + MARK + 10.0, center, text);
+        let shown = fit_detail(ui, step, role, room, look);
+        let line = step_line(step, &shown, role, look, [color, detail]);
+        widgets::paint_text(ui, row.left() + MARK + STEP_GAP, center, line);
         if let StepState::Running(Some(elapsed)) = step.state {
-            let time = Text::one(look, small, &seconds(elapsed), palette.dim);
+            let time = Text::one(look, time_role(look), &seconds(elapsed), palette.dim);
             widgets::paint_text_right(ui, row.right(), center, time);
         }
         let said = if step.detail.is_empty() {
@@ -421,10 +526,7 @@ pub fn running(
     let time = seconds(elapsed);
     // The time's room is that of a stand-in with every digit a 0: the box
     // keeps its width and its place while the digits change.
-    let widest: String = time
-        .chars()
-        .map(|digit| if digit.is_ascii_digit() { '0' } else { digit })
-        .collect();
+    let widest = steady(&time);
     let line = Text::one(look, role, text, palette.text)
         .space(role, " ")
         .add(role, &widest, palette.dim);
@@ -462,11 +564,12 @@ pub fn running(
             StrokeKind::Inside,
         );
     }
-    // The box takes the clicks on its text and its padding, and drops
-    // them: it lies over a live page, which would get them otherwise.
-    // Registered before the button, so the button, which comes after it,
-    // still wins inside it. It does nothing, so the keyboard skips it.
-    ui.interact(card, ui.id().with("running"), Sense::CLICK);
+    // The box takes the clicks and the drags on its text and its padding,
+    // and drops them: it lies over a live page, which would get them
+    // otherwise. Registered before the button, so the button, which comes
+    // after it, still wins inside it. It senses them without being
+    // focusable, so the keyboard skips it.
+    ui.interact(card, ui.id().with("running"), Sense::CLICK | Sense::DRAG);
     let (mut x, center) = (card.left() + 14.0, card.center().y);
     // The spinner asks for the frames that keep the time going.
     egui::Spinner::new()
@@ -702,6 +805,105 @@ mod tests {
         }
     }
 
+    /// A step under way on a host too long for a narrow row.
+    fn long_step() -> Step<'static> {
+        Step {
+            state: StepState::Running(Some(Duration::from_millis(2400))),
+            text: "Connect to",
+            detail: "an-uncommonly-long-host-name.internal.example.com:5432 via bastion",
+        }
+    }
+
+    #[test]
+    fn a_step_too_long_for_its_row_is_cut_before_the_room_of_its_time() {
+        for look in Look::ALL {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            harness.frame_with(|ui| {
+                let list = [long_step()];
+                let step = &list[0];
+                let [_, role] = step_roles(&look);
+                let time = time_room(ui, &list, &look);
+                // A row as wide as the steps ask for shows the step in full.
+                let asked = line_room(steps_width(ui, &list, &look), time);
+                let shown = fit_detail(ui, step, role, asked, &look);
+                assert_eq!(shown, step.detail, "{}", look.name);
+                // A narrower one cuts the detail, and the line ends where
+                // the room of the time starts.
+                let narrow = line_room(220.0, time);
+                let shown = fit_detail(ui, step, role, narrow, &look);
+                assert!(shown.ends_with('…'), "{}: {shown}", look.name);
+                assert!(step.detail.starts_with(shown.trim_end_matches('…')));
+                let colors = [Color32::PLACEHOLDER; 2];
+                let width = widgets::measure(ui, step_line(step, &shown, role, &look, colors));
+                assert!(
+                    width <= narrow + ROUNDING,
+                    "{}: {width} in {narrow}",
+                    look.name
+                );
+            });
+        }
+    }
+
+    #[test]
+    fn steps_ask_for_the_same_width_whichever_is_under_way() {
+        for look in Look::ALL {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            harness.frame_with(|ui| {
+                let width = |state| {
+                    let step = Step {
+                        state,
+                        ..long_step()
+                    };
+                    steps_width(ui, &[step], &look)
+                };
+                let waiting = width(StepState::Waiting);
+                for state in [
+                    // Before the connect is sent, as its time starts, and
+                    // once it is answered.
+                    StepState::Running(None),
+                    StepState::Running(Some(Duration::from_millis(300))),
+                    StepState::Running(Some(Duration::from_millis(9900))),
+                    StepState::Done,
+                ] {
+                    assert_eq!(width(state), waiting, "{}", look.name);
+                }
+            });
+        }
+    }
+
+    #[test]
+    fn a_step_with_nothing_to_cut_is_left_as_it_is() {
+        let mut harness = Harness::new();
+        harness.frame_with(|ui| {
+            let look = Look::standard();
+            let step = Step {
+                state: StepState::Waiting,
+                text: "Load schema",
+                detail: "",
+            };
+            let [role, _] = step_roles(&look);
+            assert_eq!(fit_detail(ui, &step, role, 0.0, &look), "");
+        });
+    }
+
+    /// A wait over a page that senses `sense`: the page's response, and
+    /// whether the wait's button was clicked.
+    fn wait_over(
+        ui: &mut Ui,
+        look: &Look,
+        palette: &Palette,
+        sense: Sense,
+    ) -> (egui::Response, bool) {
+        let rect = ui.max_rect();
+        let page = ui.interact(rect, ui.id().with("page"), sense);
+        let cancel = button("Cancel", look).label("Cancel query");
+        let (text, elapsed) = ("Running query…", Duration::from_millis(4200));
+        let cancelled = running(ui, rect, text, elapsed, Some(cancel), look, palette);
+        (page, cancelled)
+    }
+
     /// One frame of a wait drawn over a page that takes clicks, given
     /// `events`: the tree, whether the page was clicked, and whether the
     /// wait's button was.
@@ -713,14 +915,36 @@ mod tests {
         let palette = harness.app.palette;
         let mut clicked = (false, false);
         let tree = harness.frame_with_events(events, |ui| {
-            let rect = ui.max_rect();
-            let page = ui.interact(rect, ui.id().with("page"), Sense::click());
-            let cancel = button("Cancel", look).label("Cancel query");
-            let (text, elapsed) = ("Running query…", Duration::from_millis(4200));
-            let cancelled = running(ui, rect, text, elapsed, Some(cancel), look, &palette);
+            let (page, cancelled) = wait_over(ui, look, &palette, Sense::click());
             clicked = (page.clicked(), cancelled);
         });
         (tree, clicked.0, clicked.1)
+    }
+
+    /// Drags down from `from` over a wait on a page that takes drags:
+    /// whether the page was dragged.
+    fn drag_over_a_page(harness: &mut Harness, look: &Look, from: egui::Pos2) -> bool {
+        let palette = harness.app.palette;
+        let to = from + vec2(0.0, 40.0);
+        let button = |pos, pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        let mut dragged = false;
+        for event in [
+            egui::Event::PointerMoved(from),
+            button(from, true),
+            egui::Event::PointerMoved(to),
+            button(to, false),
+        ] {
+            harness.frame_with_events(vec![event], |ui| {
+                let (page, _) = wait_over(ui, look, &palette, Sense::drag());
+                dragged |= page.dragged();
+            });
+        }
+        dragged
     }
 
     /// Clicks at `pos` over [`wait_over_a_page`]: whether the page took
@@ -761,7 +985,7 @@ mod tests {
     }
 
     #[test]
-    fn a_wait_keeps_clicks_on_its_box_from_the_page_under_it() {
+    fn a_wait_keeps_clicks_and_drags_on_its_box_from_the_page_under_it() {
         for look in Look::ALL {
             let mut harness = Harness::new();
             harness.set_look(look);
@@ -777,11 +1001,18 @@ mod tests {
             // Away from the box the page is as live as before.
             let away = click_over_a_page(&mut harness, &look, pos2(30.0, 30.0));
             assert_eq!(away, (true, false), "{}", look.name);
+            // A drag is the box's or the page's by where it starts.
+            let on_text = drag_over_a_page(&mut harness, &look, text.center());
+            assert!(!on_text, "{}", look.name);
+            let away = drag_over_a_page(&mut harness, &look, pos2(30.0, 30.0));
+            assert!(away, "{}", look.name);
         }
     }
 
+    /// Asserts nothing: drawing in no room must not panic, and that is all
+    /// this guards.
     #[test]
-    fn a_skeleton_and_a_progress_line_draw_in_no_room() {
+    fn a_skeleton_and_a_progress_line_do_not_panic_in_no_room() {
         for look in Look::ALL {
             let mut harness = Harness::new();
             harness.set_look(look);

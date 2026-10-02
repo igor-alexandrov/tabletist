@@ -730,6 +730,50 @@ mod tests {
     }
 
     #[test]
+    fn a_tunnelled_connects_first_step_is_on_screen_in_full() {
+        for look in crate::theme::Look::ALL {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            add_saved_with_tunnel(&mut harness);
+            harness.click("Connect to Prod");
+            harness.settle();
+            // What is painted, not what the step is named: none of it cut.
+            let step = format!(
+                "{} db.example.com:5432 {} bastion",
+                look.label("Connect to"),
+                look.label("via")
+            );
+            assert!(
+                harness.painted.iter().any(|(text, _)| *text == step),
+                "{}: {:?}",
+                look.name,
+                harness.painted
+            );
+        }
+    }
+
+    #[test]
+    fn a_step_too_long_for_the_window_is_cut_short() {
+        for look in crate::theme::Look::ALL {
+            let mut harness = Harness::with_size(egui::vec2(420.0, 480.0));
+            harness.set_look(look);
+            let id = add_saved_with_tunnel(&mut harness);
+            let mut saved = harness.app.connections.get(&id).unwrap().clone();
+            saved.spec.host = "an-uncommonly-long-host-name.internal.example.com".into();
+            harness.app.connections.upsert(saved);
+            harness.click("Connect to Prod");
+            harness.settle();
+            let start = look.label("Connect to");
+            let painted = harness
+                .painted
+                .iter()
+                .find(|(text, _)| text.starts_with(&start))
+                .unwrap_or_else(|| panic!("{}: {:?}", look.name, harness.painted));
+            assert!(painted.0.ends_with('…'), "{}: {}", look.name, painted.0);
+        }
+    }
+
+    #[test]
     fn escape_cancels_a_connect_and_does_nothing_once_the_tab_opened() {
         let mut harness = Harness::new();
         add_saved(&mut harness, "Production");

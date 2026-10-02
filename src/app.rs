@@ -3252,17 +3252,22 @@ mod tests {
     fn sending_the_connect_starts_its_clock() {
         let (mut app, _dir) = app();
         let (tab, _, _) = connect(&mut app);
-        assert!(app.workspace(tab).unwrap().connect_started.is_some());
+        let first = app.workspace(tab).unwrap().connect_started;
+        let first = first.expect("the connect was sent");
         // A reconnect is a new attempt with a clock of its own.
         let sent = app.backend.sent.len();
         app.apply(Action::Reconnect(tab));
-        let restarted = app.backend.sent[sent..]
-            .iter()
-            .any(|command| matches!(command, Command::Connect { .. }));
-        assert_eq!(
-            app.workspace(tab).unwrap().connect_started.is_some(),
-            restarted,
-            "the clock runs only once the Connect is sent"
+        assert!(
+            app.backend.sent[sent..]
+                .iter()
+                .any(|command| matches!(command, Command::Connect { .. })),
+            "the reconnect sent a Connect"
+        );
+        let second = app.workspace(tab).unwrap().connect_started;
+        // A coarse clock can read the same for both.
+        assert!(
+            second.expect("the clock was restarted") >= first,
+            "the clock runs from the new Connect"
         );
     }
 
@@ -7502,7 +7507,7 @@ mod tests {
         }
     }
 
-    /// Batch 7: count, filters, quick open, tree keys.
+    /// Count, filters, quick open, tree keys.
     mod power {
         use super::*;
         use crate::model::{FilterRow, Pane, TabId, TreeKey, TreeNode};
