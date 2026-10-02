@@ -17,15 +17,11 @@ pub fn height(look: &Look) -> f32 {
 }
 
 /// A macOS tab's width for a title `text` points wide: 14 in, a 14 pt
-/// icon, 8, the title; the active tab adds 8, its 22 pt close button and 6
-/// (at least 180), the others 14 (at least 150).
-fn mac_width(text: f32, active: bool) -> f32 {
-    let base = 14.0 + 14.0 + 8.0 + text;
-    if active {
-        (base + 8.0 + 22.0 + 6.0).max(180.0)
-    } else {
-        (base + 14.0).max(150.0)
-    }
+/// icon, 8, the title, 8, the 22 pt close button and 6 (at least 150). A
+/// tab keeps the room for its close button while it shows none, so the
+/// strip stays put when another tab becomes the active one.
+fn mac_width(text: f32) -> f32 {
+    (14.0 + 14.0 + 8.0 + text + 8.0 + 22.0 + 6.0).max(150.0)
 }
 
 /// The terminal's toggle cells at each end of the strip.
@@ -274,7 +270,8 @@ fn mac_tab(
         (false, false) => (TextRole::UiBody, palette.dim),
     };
     let label = Text::one(look, role, tab.name, color).layout(ui.ctx());
-    let width = mac_width(label.width(), tab.active);
+    // Room for the title at its widest, the active tab's weight.
+    let width = mac_width(TextRole::UiBodyStrong.width(ui.ctx(), look.faces, tab.name));
     let (rect, response) = ui.allocate_exact_size(vec2(width, bar.height()), Sense::click());
     let painter = ui.painter();
     if tab.active {
@@ -293,14 +290,9 @@ fn mac_tab(
         ui,
         Rect::from_center_size(pos2(rect.left() + 21.0, center), vec2(14.0, 14.0)),
     );
-    let text_right = if tab.active {
-        rect.right() - 6.0 - 22.0 - 8.0
-    } else {
-        rect.right() - 14.0
-    };
     let text_rect = Rect::from_min_max(
         pos2(rect.left() + 36.0, rect.top()),
-        pos2(text_right, rect.bottom()),
+        pos2(rect.right() - 6.0 - 22.0 - 8.0, rect.bottom()),
     );
     label.paint_left(
         &ui.painter().with_clip_rect(text_rect),
@@ -378,4 +370,60 @@ fn small_close(ui: &mut egui::Ui, label: &str, look: &Look, palette: &Palette) -
         .image(palette.dim, 13.0)
         .paint_at(ui, Rect::from_center_size(rect.center(), vec2(13.0, 13.0)));
     response.on_hover_text(label)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::testing::Harness;
+
+    #[test]
+    fn a_mac_tab_is_as_wide_in_every_state() {
+        let mut harness = Harness::new();
+        let (look, palette) = (harness.app.look, harness.app.palette);
+        assert!(!look.terminal);
+        // One under the least width, one near it, one well over.
+        for name in ["accounts", "assignees_filters", "a_table_with_a_long_name"] {
+            let mut widths = Vec::new();
+            harness.frame_with(|ui| {
+                let bar = Rect::from_min_size(ui.max_rect().min, vec2(1_200.0, 36.0));
+                ui.horizontal(|ui| {
+                    for (active, pinned) in
+                        [(true, true), (true, false), (false, true), (false, false)]
+                    {
+                        let tab = Tab {
+                            index: 0,
+                            name,
+                            pinned,
+                            active,
+                            sql: false,
+                        };
+                        widths.push(mac_tab(ui, &tab, bar, &look, &palette).rect.width());
+                    }
+                });
+            });
+            assert!(
+                widths.iter().all(|width| *width == widths[0]),
+                "{name}: {widths:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn activating_another_tab_leaves_the_strip_in_place() {
+        let mut harness = Harness::new();
+        let tab = harness.connect_fake();
+        harness.click("users");
+        harness.add_sql_tab(tab);
+        let place = |harness: &mut Harness| {
+            let tree = harness.settle();
+            ["users tab", "Query 1 tab"].map(|label| {
+                crate::testing::bounds(&tree, label, egui::accesskit::Role::Button)
+                    .unwrap_or_else(|| panic!("{label} missing"))
+            })
+        };
+        let before = place(&mut harness);
+        harness.click("Query 1 tab");
+        assert_eq!(place(&mut harness), before);
+    }
 }
