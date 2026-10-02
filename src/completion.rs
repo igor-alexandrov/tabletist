@@ -51,13 +51,20 @@ pub struct Candidate {
 
 impl Candidate {
     /// Whether accepting this row would only repeat what is typed: a
-    /// keyword whatever its case (`From` is `FROM`), any other name as
-    /// spelled (`Users` and `users` can be two tables, and quotes change
-    /// the text).
+    /// keyword whatever its case (`From` is `FROM`), and so a name that
+    /// is inserted bare, as the row shows it (`USERS` is `users`). A name
+    /// [`Dialect::ident`] writes bare is a plain word, which a server
+    /// reads the same in any case. (A known limit: MySQL on a file system
+    /// that tells cases apart does not, for the names of tables and
+    /// databases.) A name inserted quoted, or with its schema, only as
+    /// spelled: on PostgreSQL `Users` typed bare is `users`, not the
+    /// table `"Users"`, and inserting the quoted name repairs it.
     pub fn is_typed(&self, typed: &str) -> bool {
-        match self.kind {
-            Kind::Keyword => self.insert.eq_ignore_ascii_case(typed),
-            _ => self.insert == typed,
+        let bare = self.insert == self.label;
+        if self.kind == Kind::Keyword || bare {
+            self.insert.eq_ignore_ascii_case(typed)
+        } else {
+            self.insert == typed
         }
     }
 }
@@ -1024,14 +1031,24 @@ mod tests {
     }
 
     #[test]
-    fn a_name_is_what_is_typed_only_as_spelled() {
-        // `Users` and `users` can be two tables, and quotes change the text.
-        let users = name_row(Kind::Table, "Users", 0..5);
-        assert!(!users.is_typed("users"));
-        assert!(users.is_typed("Users"));
-        assert!(name_row(Kind::Table, "users", 0..5).is_typed("users"));
+    fn a_bare_name_is_what_is_typed_whatever_its_case_and_a_quoted_one_is_not() {
+        // A name inserted bare is read whatever its case: typed whole in
+        // another case, it is already there.
+        let users = name_row(Kind::Table, "users", 0..5);
+        for typed in ["users", "USERS", "Users"] {
+            assert!(users.is_typed(typed), "{typed}");
+        }
+        assert!(!users.is_typed("user"));
+        assert!(!users.is_typed("users_"));
+        let column = name_row(Kind::Column, "email", 0..5);
+        assert!(column.is_typed("EMAIL"));
+        // A name spelled in mixed case that MySQL and SQLite write bare.
+        let mixed = name_row(Kind::Table, "Users", 0..5);
+        assert!(mixed.is_typed("users"));
+        assert!(mixed.is_typed("Users"));
+        // It leads the list, as a keyword that is typed does.
         let found = vec![
-            (1, users),
+            (1, mixed),
             (0, name_row(Kind::Table, "users_archive", 0..5)),
         ];
         let labels: Vec<String> = rank(found, "users")
@@ -1039,7 +1056,57 @@ mod tests {
             .into_iter()
             .map(|c| c.label)
             .collect();
-        assert_eq!(labels, ["users_archive", "Users"]);
+        assert_eq!(labels, ["Users", "users_archive"]);
+        // A name inserted quoted is not what is typed, in any case: the
+        // quotes change the text, and what they hold is read as spelled.
+        let quoted = Candidate {
+            insert: "\"Users\"".into(),
+            ..name_row(Kind::Table, "Users", 0..5)
+        };
+        assert!(!quoted.is_typed("Users"));
+        assert!(!quoted.is_typed("users"));
+        // Nor is one inserted with its schema.
+        let qualified = Candidate {
+            insert: "\"Billing\".users".into(),
+            ..name_row(Kind::Table, "Billing.users", 8..13)
+        };
+        assert!(!qualified.is_typed("users"));
+        assert!(!qualified.is_typed("USERS"));
+    }
+
+    #[test]
+    fn a_name_postgres_would_fold_is_not_what_is_typed() {
+        use ObjectKind::Table;
+        let tree = tree_of(&[("public", &[("Users", Table), ("orders", Table)])]);
+        let schemas = ["public".to_owned()];
+        let rows = |marked: &str| {
+            let (site, typed) = site_at(marked);
+            let catalog = catalog(Dialect::Postgres, &tree, Some("public"), &schemas);
+            let listed = list(&site, &typed, false, &catalog);
+            let only_repeats = listed.only_repeats(&typed);
+            let rows = listed.candidates.into_iter();
+            let rows = rows.map(|c| (c.is_typed(&typed), c.insert));
+            (rows.collect::<Vec<_>>(), only_repeats)
+        };
+        // `Users` typed bare names `users`, which is no table here: the
+        // row inserts the name that is one, quoted. A repair, not a
+        // repeat.
+        assert_eq!(
+            rows("SELECT * FROM Users|"),
+            (vec![(false, "\"Users\"".to_owned())], false)
+        );
+        assert_eq!(
+            rows("SELECT * FROM users|"),
+            (vec![(false, "\"Users\"".to_owned())], false)
+        );
+        // A table in lower case is written bare and read whatever the case.
+        for marked in ["SELECT * FROM orders|", "SELECT * FROM ORDERS|"] {
+            assert_eq!(
+                rows(marked),
+                (vec![(true, "orders".to_owned())], true),
+                "{marked}"
+            );
+        }
     }
 
     #[test]
@@ -1145,10 +1212,18 @@ mod tests {
         assert!(listed(vec![keyword_row("set")], 0).only_repeats("set"));
         // A keyword, whatever the case it is typed in.
         assert!(listed(vec![keyword_row("SET")], 0).only_repeats("Set"));
-        // A name only as spelled.
+        // A name inserted bare too, and one inserted quoted never.
         let users = || vec![name_row(Kind::Table, "Users", 0..5)];
         assert!(listed(users(), 0).only_repeats("Users"));
-        assert!(!listed(users(), 0).only_repeats("users"));
+        assert!(listed(users(), 0).only_repeats("users"));
+        let quoted = || {
+            vec![Candidate {
+                insert: "\"Users\"".into(),
+                ..name_row(Kind::Table, "Users", 0..5)
+            }]
+        };
+        assert!(!listed(quoted(), 0).only_repeats("Users"));
+        assert!(!listed(quoted(), 0).only_repeats("users"));
         // Two rows, the first of them what is typed.
         let two = vec![keyword_row("as"), keyword_row("asc")];
         assert!(!listed(two, 0).only_repeats("as"));

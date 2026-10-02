@@ -2650,6 +2650,66 @@ fn a_column_that_only_holds_the_typed_text_is_inserted_by_tab_or_once_chosen() {
     assert_eq!(sql(&harness, tab).text, "select * from users where email");
 }
 
+/// An editor on a PostgreSQL workspace whose `public` holds `tables`.
+fn postgres_editor(tables: &[&str]) -> (Harness, ConnTabId) {
+    let (mut harness, tab) = editor();
+    let workspace = harness.app.workspace_mut(tab).unwrap();
+    workspace.driver = tabletist_db::Driver::Postgres;
+    workspace.tree.schemas.value = Some(vec!["public".into()]);
+    workspace.tree.nodes.clear();
+    let node = workspace.tree.nodes.entry("public".into()).or_default();
+    node.objects.value = Some(tables.iter().map(|name| table(name)).collect());
+    workspace.catalog_changed();
+    harness.settle();
+    (harness, tab)
+}
+
+#[test]
+fn enter_after_a_column_typed_whole_in_another_case_is_a_line_break() {
+    let (mut harness, tab) = editor_knowing(&[("id", "INTEGER"), ("email", "TEXT")]);
+    let typed = "select * from users where EMAIL";
+    type_keys(&mut harness, typed);
+    assert_eq!(labels(&harness, tab), ["email"]);
+    harness.press(Key::Enter, Modifiers::NONE);
+    assert_eq!(sql(&harness, tab).text, format!("{typed}\n"));
+    assert!(list(&harness, tab).is_none());
+}
+
+#[test]
+fn enter_after_a_table_typed_whole_in_another_case_is_a_line_break() {
+    let (mut harness, tab) = editor();
+    let typed = "select * from USERS";
+    type_keys(&mut harness, typed);
+    // It leads the names that only hold what is typed.
+    assert_eq!(labels(&harness, tab), ["users", "active_users"]);
+    harness.press(Key::Enter, Modifiers::NONE);
+    assert_eq!(sql(&harness, tab).text, format!("{typed}\n"));
+    assert!(list(&harness, tab).is_none());
+}
+
+#[test]
+fn enter_after_a_table_typed_whole_in_upper_case_is_a_line_break_on_postgres() {
+    // PostgreSQL reads a bare name in lower case: `USERS` is `users`.
+    let (mut harness, tab) = postgres_editor(&["orders", "users"]);
+    let typed = "select * from USERS";
+    type_keys(&mut harness, typed);
+    assert_eq!(labels(&harness, tab), ["users"]);
+    harness.press(Key::Enter, Modifiers::NONE);
+    assert_eq!(sql(&harness, tab).text, format!("{typed}\n"));
+    assert!(list(&harness, tab).is_none());
+}
+
+#[test]
+fn enter_repairs_a_name_postgres_reads_in_another_case() {
+    // `Users` typed bare names `users`, and the table is `Users`: the row
+    // is not what is typed, and Enter inserts it with its quotes.
+    let (mut harness, tab) = postgres_editor(&["Users", "orders"]);
+    type_keys(&mut harness, "select * from Users");
+    assert_eq!(labels(&harness, tab), ["Users"]);
+    harness.press(Key::Enter, Modifiers::NONE);
+    assert_eq!(sql(&harness, tab).text, "select * from \"Users\"");
+}
+
 #[test]
 fn an_answer_for_columns_that_were_forgotten_is_dropped() {
     let (mut harness, tab) = editor();
