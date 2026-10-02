@@ -8509,6 +8509,68 @@ mod tests {
     }
 
     #[test]
+    fn f6_steps_through_the_parts_of_the_window() {
+        for look in crate::theme::Look::ALL {
+            let (mut harness, _tab) = tree_harness();
+            harness.set_look(look);
+            harness.click("orders");
+            harness.answer_rows(crate::testing::page(3, true));
+            let step = |harness: &mut Harness, modifiers| {
+                harness.press(Key::F6, modifiers);
+                focused_name(&harness.settle())
+            };
+            // From the tree, where opening the table left the arrows.
+            let forward: Vec<String> = (0..6)
+                .map(|_| step(&mut harness, Modifiers::NONE))
+                .collect();
+            assert_eq!(
+                forward,
+                [
+                    "orders tab",
+                    "Data",
+                    "Rows",
+                    "Connections",
+                    "Filter",
+                    "Objects"
+                ],
+                "{}",
+                look.name
+            );
+            // And back the way it came.
+            let back: Vec<String> = (0..3)
+                .map(|_| step(&mut harness, Modifiers::SHIFT))
+                .collect();
+            assert_eq!(back, ["Filter", "Connections", "Rows"], "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn the_terminal_steps_between_its_panes_with_ctrl_h_and_l() {
+        let (mut harness, tab) = tree_harness();
+        harness.set_look(crate::theme::Look::omarchy());
+        harness.click("orders");
+        harness.answer_rows(crate::testing::page(3, true));
+        let pane = |harness: &Harness| harness.app.workspace(tab).unwrap().pane;
+        harness.press(Key::L, Modifiers::CTRL);
+        assert_eq!(focused_name(&harness.settle()), "Rows");
+        assert_eq!(pane(&harness), crate::model::Pane::Grid);
+        harness.press(Key::H, Modifiers::CTRL);
+        assert_eq!(focused_name(&harness.settle()), "Objects");
+        assert_eq!(pane(&harness), crate::model::Pane::Tree);
+        // The other looks leave those keys alone.
+        let (mut harness, tab) = tree_harness();
+        harness.set_look(crate::theme::Look::macos());
+        harness.click("orders");
+        harness.answer_rows(crate::testing::page(3, true));
+        harness.press(Key::L, Modifiers::CTRL);
+        assert_eq!(focused_name(&harness.settle()), "");
+        assert_eq!(
+            harness.app.workspace(tab).unwrap().pane,
+            crate::model::Pane::Tree
+        );
+    }
+
+    #[test]
     fn the_terminal_marks_the_pane_the_keys_go_to() {
         // An accent line round something as tall as a pane.
         let marked = |harness: &Harness| {

@@ -9,6 +9,7 @@ use crate::i18n::gettext;
 use crate::model::{Action, ConnTabId, ObjectView, SessionStatus};
 use crate::theme::{Icon, Look, Palette};
 use crate::typography::{Text, TextRole};
+use crate::ui::focus::{self, Region};
 use crate::ui::format::display_safe;
 use crate::ui::states;
 use crate::ui::widgets::{self, ButtonSpec};
@@ -861,8 +862,10 @@ fn top_bar(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
         .frame(Frame::new().fill(tint))
         .show(ui, |ui| {
             let rect = ui.max_rect();
-            // The empty bar moves the window, as a title bar does.
-            let drag = ui.interact(rect, ui.id().with("drag"), Sense::click_and_drag());
+            // The empty bar moves the window, as a title bar does. Only
+            // the pointer can: it is no stop for the Tab key.
+            let drag = ui.interact(rect, ui.id().with("drag"), Sense::CLICK | Sense::DRAG);
+            focus::region(ui, Region::Header, rect);
             if drag.drag_started() {
                 ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
             }
@@ -941,6 +944,7 @@ fn mac_bar(
         let label = gettext(locale, "Connections");
         let response = ui.interact(connections, ui.id().with("connections"), Sense::click());
         response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &label));
+        focus::claim(ui, Region::Header, &response);
         let (fill, tint) = if response.hovered() {
             (face(1.0), palette.text)
         } else {
@@ -1204,6 +1208,7 @@ fn terminal_bar(
         );
         let response = ui.interact(button, ui.id().with("connections"), Sense::click());
         response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &label));
+        focus::claim(ui, Region::Header, &response);
         let line = if response.hovered() {
             env.base()
         } else {

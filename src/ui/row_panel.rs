@@ -13,6 +13,7 @@ use crate::i18n::gettext;
 use crate::model::{Action, CellPos, ConnTabId, RowFields, Tab, TabId, Workspace};
 use crate::theme::{Icon, Look, Palette};
 use crate::typography::{Text, TextRole};
+use crate::ui::focus::{self, Region};
 use crate::ui::format;
 use crate::ui::json_view;
 use crate::ui::widgets;
@@ -316,6 +317,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, id: TabId) {
                 });
                 return;
             };
+            // A part of the window to step to once it has a row to show.
+            focus::region(ui, Region::Panel, full);
             let structure = source.structure;
             let info = |name: &str| {
                 let key =
@@ -430,6 +433,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, id: TabId) {
                 let response = ui.interact(esc, ui.id().with("close"), Sense::click());
                 let close = gettext(locale, "Close the row panel");
                 response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, &close));
+                focus::claim(ui, Region::Panel, &response);
                 ui.painter().rect_stroke(
                     esc,
                     CornerRadius::same(3),
@@ -541,7 +545,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, id: TabId) {
                     right -= 34.0;
                     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(place));
                     child.add_enabled_ui(enabled, |ui| {
-                        if widgets::icon_button_sized(
+                        let button = widgets::icon_button_sized(
                             ui,
                             icon,
                             &gettext(locale, label),
@@ -549,9 +553,12 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, id: TabId) {
                             14.0,
                             &look,
                             &palette,
-                        )
-                        .clicked()
-                        {
+                        );
+                        // The panel starts with its first button.
+                        if icon == Icon::X {
+                            focus::claim(ui, Region::Panel, &button);
+                        }
+                        if button.clicked() {
                             actions.push(action);
                         }
                     });

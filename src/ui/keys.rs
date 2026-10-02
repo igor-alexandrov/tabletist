@@ -37,6 +37,7 @@ pub const SHORTCUTS: &[(&str, &str)] = &[
     ("Mod+F", "Filter bar"),
     ("Mod+P", "Quick open"),
     ("Mod+B", "Show or hide the sidebar"),
+    ("F6, Shift+F6", "Next / previous part of the window"),
     ("Mod+Alt+Left / Right", "Previous / next page"),
     ("Mod+.", "Cancel running query"),
     ("Esc", "Cancel connecting"),
@@ -49,7 +50,7 @@ pub const SHORTCUTS: &[(&str, &str)] = &[
     ("Arrows, Home/End, Enter", "Move in the tree"),
     ("Arrows, Page Up/Down, Home/End", "Move in the grid"),
     (
-        "j/k, h/l, [ ], i, Esc, /, y, s, d, gd, za, t, 1…9",
+        "j/k, h/l, Ctrl+H/L, [ ], i, Esc, /, y, s, d, gd, za, t, 1…9",
         "Omarchy: vim keys (shown in the status line)",
     ),
     ("?", "Shortcuts"),
@@ -312,6 +313,34 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
             }
         }
     });
+    // F6 steps through the parts of the window (the bar, the filter, the
+    // tree, the tabs, the table's header, the rows, the row panel), and
+    // Shift+F6 back. The terminal look steps through its panes alone with
+    // ctrl+l and ctrl+h.
+    if let Some(workspace) = app.workspace(active) {
+        use crate::ui::focus::{self, Region};
+        let from = match workspace.pane {
+            crate::model::Pane::Tree => Region::Tree,
+            crate::model::Pane::Grid => Region::Grid,
+        };
+        // The first that matches: egui ignores an extra Shift.
+        let pressed = |keys: [(Modifiers, Key); 2]| {
+            ctx.input_mut(|input| {
+                keys.into_iter()
+                    .position(|(modifiers, key)| input.consume_key(modifiers, key))
+            })
+        };
+        match pressed([(Modifiers::SHIFT, Key::F6), (Modifiers::NONE, Key::F6)]) {
+            Some(index) => focus::step(ctx, index == 1, None, Some(from)),
+            None if app.look.terminal && !editing => {
+                if let Some(index) = pressed([(Modifiers::CTRL, Key::H), (Modifiers::CTRL, Key::L)])
+                {
+                    focus::step(ctx, index == 1, Some(&Region::PANES), Some(from));
+                }
+            }
+            None => {}
+        }
+    }
     if !editing && grid {
         let (copy, shift) = ctx.input(|input| {
             (

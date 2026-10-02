@@ -126,6 +126,7 @@ pub fn header(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabI
         .frame(Frame::new().fill(palette.window))
         .show(ui, |ui| {
             let rect = ui.max_rect();
+            focus::region(ui, focus::Region::Toolbar, rect);
             let divider = if look.terminal {
                 palette.outline
             } else {
@@ -173,6 +174,9 @@ pub fn header(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabI
                     );
                     let response = ui.interact(hit, ui.id().with(("view", *key)), Sense::click());
                     let selected = view == *target;
+                    if selected {
+                        focus::claim(ui, focus::Region::Toolbar, &response);
+                    }
                     let name = views
                         .iter()
                         .find(|(v, ..)| v == target)
@@ -278,6 +282,9 @@ pub fn header(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabI
                 });
                 let radius = look.radius.saturating_sub(2);
                 focus::hint(ui, &response, cell, focus::Ring::Edge { radius });
+                if selected {
+                    focus::claim(ui, focus::Region::Toolbar, &response);
+                }
                 if let Some((chosen, _, _)) = arrow.and_then(|index| views.get(index)) {
                     actions.push(Action::SetView {
                         tab,

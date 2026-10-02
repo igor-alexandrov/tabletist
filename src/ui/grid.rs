@@ -429,6 +429,8 @@ pub fn show<'a>(
         focus::Ring::Inset { radius: 0 }
     };
     focus::hint(ui, &stop, visible, ring);
+    focus::region(ui, focus::Region::Grid, visible);
+    focus::claim(ui, focus::Region::Grid, &stop);
     output.focused = stop.gained_focus();
     // The cell is lit while the keyboard is in use and its keys come here:
     // not while a button or a field has them.
@@ -624,7 +626,8 @@ pub fn show<'a>(
                     pos2(rect.right() - HANDLE_WIDTH / 2.0, top),
                     pos2(rect.right() + HANDLE_WIDTH / 2.0, top + header_height),
                 );
-                let drag = ui.interact(handle, id.with(("resize", col)), Sense::drag());
+                // Only the pointer drags it: no stop for the Tab key.
+                let drag = ui.interact(handle, id.with(("resize", col)), Sense::DRAG);
                 if drag.hovered() || drag.dragged() {
                     ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeColumn);
                     painter.vline(

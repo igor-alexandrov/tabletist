@@ -177,7 +177,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                         boxed: true,
                         role: TextRole::pick(&look, TextRole::UiBody, TextRole::OField),
                     };
-                    widgets::filter_field(
+                    let field = widgets::filter_field(
                         ui,
                         &mut workspace.tree.filter,
                         &hint,
@@ -185,8 +185,10 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                         style,
                         &look,
                         &palette,
-                    )
-                    .widget_info(|| WidgetInfo::labeled(WidgetType::TextEdit, true, "Filter"));
+                    );
+                    field.widget_info(|| WidgetInfo::labeled(WidgetType::TextEdit, true, "Filter"));
+                    focus::region(ui, focus::Region::Search, field.rect.expand(8.0));
+                    focus::claim(ui, focus::Region::Search, &field);
                 }
             });
             ui.add_space(if look.terminal { 6.0 } else { 8.0 });
@@ -299,6 +301,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                 });
                 focus::pane(ui, &stop);
                 focus::hint(ui, &stop, area, focus::Ring::Own);
+                focus::region(ui, focus::Region::Tree, area);
+                focus::claim(ui, focus::Region::Tree, &stop);
                 // The cursor it had, the open object's row, or its first.
                 let start = cursor_start
                     .clone()

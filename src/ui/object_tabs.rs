@@ -72,6 +72,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
         .frame(Frame::new().fill(fill))
         .show(ui, |ui| {
             let full = ui.max_rect();
+            focus::region(ui, focus::Region::Tabs, full);
             let rule = if look.terminal {
                 palette.outline
             } else {
@@ -121,6 +122,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                                 } else {
                                     mac_tab(ui, &one, bar, &look, &palette)
                                 };
+                                if is_active {
+                                    focus::claim(ui, focus::Region::Tabs, &response);
+                                }
                                 let label = format!("{name} {}", gettext(locale, "tab"));
                                 response.widget_info(|| {
                                     WidgetInfo::selected(
