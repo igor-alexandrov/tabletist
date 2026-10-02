@@ -1,9 +1,10 @@
 name: CI
 
+# Pull requests reach these jobs through `pr-review.md`, after Copilot's review.
 on:
   push:
     branches: [main]
-  pull_request:
+  workflow_call:
   workflow_dispatch:
 
 permissions:
