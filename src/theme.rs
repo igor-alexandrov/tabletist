@@ -329,7 +329,7 @@ pub struct Look {
     pub name: &'static str,
     /// Controls, tree rows, object tabs, icon-button hover, cards.
     pub radius: u8,
-    /// Connection tabs.
+    /// Menus and the disconnected banner.
     pub tab_radius: u8,
     /// Dialogs and popups.
     pub dialog_radius: u8,

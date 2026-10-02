@@ -19,9 +19,9 @@ const NUMBERS: [Key; 9] = [
 
 /// Every shortcut, for the help dialog. `Mod` is Cmd on macOS, Ctrl elsewhere.
 pub const SHORTCUTS: &[(&str, &str)] = &[
-    ("Mod+O", "New connection tab"),
-    ("Mod+Shift+W", "Close connection tab"),
-    ("Mod+1…9, Ctrl+Tab, Ctrl+Shift+Tab", "Switch connection tab"),
+    ("Mod+O", "Connections"),
+    ("Mod+Shift+W", "Close connection"),
+    ("Mod+1…9, Ctrl+Tab, Ctrl+Shift+Tab", "Switch connection"),
     ("Mod+N", "New connection"),
     (
         "Mod+S, Mod+T, Mod+Enter",
@@ -156,13 +156,13 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
         if in_workspace {
             key(Modifiers::COMMAND, Key::T, Action::NewSqlTab(active));
         }
-        key(Modifiers::COMMAND, Key::O, Action::NewConnTab);
+        key(Modifiers::COMMAND, Key::O, Action::ShowConnections);
         key(Modifiers::COMMAND, Key::N, Action::NewConnection);
         for (index, number) in NUMBERS.into_iter().enumerate() {
             key(
                 Modifiers::COMMAND,
                 number,
-                Action::ActivateConnTabIndex(index),
+                Action::ActivateConnection(index),
             );
         }
         if !on_sql {
@@ -590,9 +590,9 @@ mod tests {
     fn the_shortcut_table_covers_the_spec_map() {
         let descriptions: Vec<&str> = SHORTCUTS.iter().map(|(_, what)| *what).collect();
         for expected in [
-            "New connection tab",
-            "Close connection tab",
-            "Switch connection tab",
+            "Connections",
+            "Close connection",
+            "Switch connection",
             "New connection",
             "New SQL editor",
             "Run statement / run all",
@@ -623,7 +623,7 @@ mod tests {
                 .map(|(keys, _)| *keys)
         };
         assert_eq!(keys("New SQL editor"), Some("Mod+T"));
-        assert_eq!(keys("New connection tab"), Some("Mod+O"));
+        assert_eq!(keys("Connections"), Some("Mod+O"));
         assert_eq!(
             keys("Run statement / run all"),
             Some("Mod+Return, Mod+Shift+Return")

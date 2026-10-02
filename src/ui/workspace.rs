@@ -22,15 +22,11 @@ pub fn bar_height(look: &Look) -> f32 {
 /// The macOS bar's stripe in the environment colour.
 const STRIPE: f32 = 3.0;
 
-/// The bar's height in the window. Alone, the bar is the macOS title bar
-/// and at least as tall as the window has it (window points, which egui's
-/// `zoom` scales away from its own).
+/// The bar's height in the window. The bar is the macOS title bar, and at
+/// least as tall as the window has it (window points, which egui's `zoom`
+/// scales away from its own).
 fn top_bar_height(app: &App, zoom: f32) -> f32 {
-    if app.tabs.len() == 1 {
-        bar_height(&app.look).max(app.titlebar.height / zoom)
-    } else {
-        bar_height(&app.look)
-    }
+    bar_height(&app.look).max(app.titlebar.height / zoom)
 }
 
 /// The line the bar's contents centre on, below its top: under the macOS
@@ -421,15 +417,9 @@ fn top_bar(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
     };
     let env = crate::env::env_colors(info.env, crate::env::Platform::of(&look), &palette);
     let (tint, border) = (env.bar_bg(), env.bar_border());
-    // macOS: with one connection the bar is the title bar, beside the
-    // window buttons.
+    // macOS: the bar is the title bar, beside the window buttons.
     let zoom = ui.ctx().zoom_factor();
-    let alone = app.tabs.len() == 1;
-    let inset = if alone {
-        app.titlebar.inset / zoom
-    } else {
-        0.0
-    };
+    let inset = app.titlebar.inset / zoom;
     let height = top_bar_height(app, zoom);
     let mut actions = Vec::new();
     egui::Panel::top(egui::Id::new(("workspace-top", tab.0)))
@@ -537,7 +527,7 @@ fn mac_bar(
             .on_hover_text(connections_hint(look, locale))
             .clicked()
         {
-            actions.push(Action::NewConnTab);
+            actions.push(Action::ShowConnections);
         }
     }
     // Disconnect, 12 in from the right: an icon and its label, 6 apart.
@@ -797,7 +787,7 @@ fn terminal_bar(
             .on_hover_text(connections_hint(look, locale))
             .clicked()
         {
-            actions.push(Action::NewConnTab);
+            actions.push(Action::ShowConnections);
         }
         x = button.right() + 12.0;
     }

@@ -152,13 +152,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     let total = app.connections.connections.len();
     let mut actions = Vec::new();
     let full = ui.max_rect();
-    // macOS: alone, the header is the title bar, beside the window buttons.
+    // macOS: the header is the title bar, beside the window buttons.
     let zoom = ui.ctx().zoom_factor();
-    let inset = if app.tabs.len() == 1 {
-        app.titlebar.inset / zoom
-    } else {
-        0.0
-    };
+    let inset = app.titlebar.inset / zoom;
     let backdrop = if look.terminal {
         palette.window
     } else {

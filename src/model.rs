@@ -12,8 +12,8 @@ use crate::connections::{ConnectionId, PasswordMode, SavedConnection};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ConnTabId(pub u64);
 
-/// One tab in the connection tab bar: one connection, or the picker that
-/// chooses one.
+/// One tab: one connection (a chip in the connection bar), or the picker
+/// that chooses one.
 #[derive(Debug)]
 pub struct ConnTab {
     pub id: ConnTabId,
@@ -44,12 +44,14 @@ pub struct PickerState {
 /// applies them after the frame is drawn.
 #[derive(Debug)]
 pub enum Action {
-    /// Open a new picker tab and make it active.
-    NewConnTab,
+    /// Cmd/Ctrl+O and the Connections button: show the saved connections,
+    /// in the picker tab there is, or in a new one at the end.
+    ShowConnections,
     CloseConnTab(ConnTabId),
     ActivateConnTab(ConnTabId),
-    /// Cmd/Ctrl+1..9: activate the tab at this position, if there is one.
-    ActivateConnTabIndex(usize),
+    /// Cmd/Ctrl+1..9: activate the open connection at this position, as the
+    /// header numbers them, if there is one.
+    ActivateConnection(usize),
     /// Ctrl+Tab (+1) and Ctrl+Shift+Tab (-1), wrapping around.
     CycleConnTab(isize),
     /// A result from the backend.

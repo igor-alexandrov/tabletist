@@ -71,26 +71,6 @@ fn the_connection_bar_takes_its_environments_colours() {
 }
 
 #[test]
-fn a_connected_tabs_dot_is_its_environments_colour() {
-    for (look, palette) in setups() {
-        for env in Environment::ALL {
-            let mut harness = harness(look, palette);
-            let tab = harness.connect_fake();
-            harness.app.workspace_mut(tab).unwrap().environment = env;
-            let dot = |rect: egui::Rect| rect.width() == 7.0;
-            let base = colors(&harness, env).base();
-            let case = format!("{} dark={} {env:?}", look.name, palette.dark);
-            // Inactive, behind a new tab; then active.
-            harness.press(Key::O, Modifiers::COMMAND);
-            assert!(filled(&harness, base, dot), "inactive, {case}");
-            harness.app.apply(Action::ActivateConnTab(tab));
-            harness.settle();
-            assert!(filled(&harness, base, dot), "active, {case}");
-        }
-    }
-}
-
-#[test]
 fn a_connections_chip_takes_its_environments_colour() {
     for (look, palette) in setups() {
         for env in Environment::ALL {
