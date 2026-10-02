@@ -61,7 +61,9 @@ impl FilterOp {
 pub struct Filter {
     pub column: String,
     pub op: FilterOp,
-    /// As typed. The database converts it to the column's type.
+    /// As typed. The database converts it to the column's type. In a binary
+    /// column, Eq, Ne and In also read a UUID or `0x` hex as the bytes it
+    /// stands for, the way the app shows them.
     pub value: String,
 }
 

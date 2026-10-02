@@ -7302,6 +7302,62 @@ mod tests {
         assert_eq!(harness.copied.as_deref(), Some(uuid));
     }
 
+    /// Following a sixteen-byte foreign key filters the target by the UUID
+    /// the grid shows. The database layer reads that text back as the bytes
+    /// (`tabletist_db::Dialect`), so the filter value has to stay this text.
+    #[test]
+    fn following_a_sixteen_byte_key_filters_by_the_uuid_it_shows() {
+        let (mut harness, tab) = tree_harness();
+        harness.click("users");
+        let mut page = crate::testing::page(1, false);
+        page.columns[0].type_name = "blob(16)".into();
+        page.columns[0].kind = tabletist_db::ValueKind::Binary;
+        page.rows[0][0] = tabletist_db::Value::Bytes(
+            vec![
+                0x01, 0x99, 0xa3, 0xf2, 0x7c, 0x1e, 0x7a, 0xbc, 0x8d, 0xef, 0x01, 0x23, 0x45, 0x67,
+                0x89, 0xab,
+            ]
+            .into(),
+        );
+        harness.answer_rows(page);
+        harness.answer_structure(tabletist_db::Structure {
+            foreign_keys: vec![tabletist_db::ForeignKeyInfo {
+                name: None,
+                columns: vec!["id".into()],
+                ref_schema: "main".into(),
+                ref_table: "orders".into(),
+                ref_columns: vec!["account_id".into()],
+                on_update: String::new(),
+                on_delete: String::new(),
+            }],
+            ..Default::default()
+        });
+        let id = harness.app.workspace(tab).unwrap().active_tab.unwrap();
+        harness.app.apply(crate::model::Action::SelectCell {
+            tab,
+            id,
+            cell: crate::model::CellPos { row: 0, col: 0 },
+        });
+        harness.app.apply(crate::model::Action::FollowSelectedKey {
+            tab,
+            object_tab: id,
+        });
+        match crate::testing::last_sent(&harness.app) {
+            Command::FetchRows { query, .. } => {
+                assert_eq!(query.object.name, "orders");
+                assert_eq!(
+                    query.filters,
+                    [tabletist_db::Filter {
+                        column: "account_id".into(),
+                        op: tabletist_db::FilterOp::Eq,
+                        value: "0199a3f2-7c1e-7abc-8def-0123456789ab".into(),
+                    }]
+                );
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
     /// Two schemas with a `users` table: the tab and the row panel name the
     /// schema, and a name only one schema has stays short.
     #[test]

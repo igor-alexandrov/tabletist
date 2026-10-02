@@ -1,5 +1,7 @@
 //! SQL for each database: identifier quoting, placeholders, filters, paging.
 
+use std::fmt::Write as _;
+
 use crate::{Filter, FilterOp, ObjectRef, RowQuery, SortDir, Value};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -88,6 +90,53 @@ pub fn sqlite_ends_in_block_comment(text: &str) -> bool {
     false
 }
 
+/// The bytes `text` stands for when it is written the way the app shows
+/// binary: `0x` hex, or a UUID (hyphenated, or its 32 hex digits) for the
+/// sixteen bytes of a `blob(16)` or `binary(16)` key.
+fn bytes_from_text(text: &str) -> Option<Vec<u8>> {
+    let text = text.trim();
+    let hex: String = if let Some(hex) = text.strip_prefix("0x").or(text.strip_prefix("0X")) {
+        hex.to_owned()
+    } else if text.len() == 36 {
+        let mut groups = text.split('-');
+        let hex: String = [8, 4, 4, 4, 12]
+            .into_iter()
+            .map(|len| groups.next().filter(|group| group.len() == len))
+            .collect::<Option<_>>()?;
+        groups.next().is_none().then_some(hex)?
+    } else if text.len() == 32 {
+        text.to_owned()
+    } else {
+        return None;
+    };
+    if !hex.len().is_multiple_of(2) || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return None;
+    }
+    (0..hex.len())
+        .step_by(2)
+        .map(|index| u8::from_str_radix(&hex[index..index + 2], 16).ok())
+        .collect()
+}
+
+/// The values of an In filter: split on commas, blanks dropped.
+fn in_values(value: &str) -> impl Iterator<Item = &str> {
+    value
+        .split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+}
+
+/// Whether a filter of `query` would compare bytes if its column held
+/// them. Only then does a driver need the table's binary columns, which
+/// costs it a catalog query.
+pub(crate) fn reads_bytes(query: &RowQuery) -> bool {
+    query.filters.iter().any(|filter| match filter.op {
+        FilterOp::Eq | FilterOp::Ne => bytes_from_text(&filter.value).is_some(),
+        FilterOp::In => in_values(&filter.value).any(|value| bytes_from_text(value).is_some()),
+        _ => false,
+    })
+}
+
 impl Dialect {
     pub fn quote_ident(self, ident: &str) -> String {
         match self {
@@ -145,15 +194,55 @@ impl Dialect {
         }
     }
 
-    fn filter(self, filter: &Filter, params: &mut Vec<Value>) -> String {
+    /// Bytes as a filter value: bound, or for PostgreSQL a `bytea` literal
+    /// in hex.
+    fn bind_bytes(self, params: &mut Vec<Value>, bytes: Vec<u8>) -> String {
+        match self {
+            Self::Postgres => {
+                let mut hex = String::from("\\x");
+                for byte in bytes {
+                    let _ = write!(hex, "{byte:02x}");
+                }
+                quote_literal(&hex)
+            }
+            Self::MySql | Self::Sqlite => {
+                params.push(Value::Bytes(bytes.into()));
+                self.placeholder().to_owned()
+            }
+        }
+    }
+
+    /// What an Eq, Ne or In filter compares its column with: the value as
+    /// typed, and in a binary column first the bytes it reads as. A UUID or
+    /// `0x` hex as text never equals the bytes the grid shows that way. The
+    /// text stays, since such a column may hold the text itself.
+    fn operands(self, value: &str, binary: bool, params: &mut Vec<Value>) -> Vec<String> {
+        let mut operands = Vec::with_capacity(2);
+        if binary && let Some(bytes) = bytes_from_text(value) {
+            operands.push(self.bind_bytes(params, bytes));
+        }
+        operands.push(self.bind(params, value.to_owned()));
+        operands
+    }
+
+    /// `binary` names the table's columns that hold bytes.
+    fn filter(self, filter: &Filter, binary: &[String], params: &mut Vec<Value>) -> String {
         let column = self.quote_ident(&filter.column);
         let compare = |op: &str, params: &mut Vec<Value>| {
             let placeholder = self.bind(params, filter.value.clone());
             format!("{column} {op} {placeholder}")
         };
+        let binary = binary.contains(&filter.column);
+        let equals = |op: &str, list: &str, params: &mut Vec<Value>| {
+            let operands = self.operands(&filter.value, binary, params);
+            match operands.as_slice() {
+                [operand] => format!("{column} {op} {operand}"),
+                _ => format!("{column} {list} ({})", operands.join(", ")),
+            }
+        };
         match filter.op {
-            FilterOp::Eq => compare("=", params),
-            FilterOp::Ne => compare("<>", params),
+            FilterOp::Eq => equals("=", "IN", params),
+            FilterOp::Ne => equals("<>", "NOT IN", params),
             FilterOp::Lt => compare("<", params),
             FilterOp::Gt => compare(">", params),
             FilterOp::Le => compare("<=", params),
@@ -176,29 +265,22 @@ impl Dialect {
                 )
             }
             FilterOp::In => {
-                let values: Vec<&str> = filter
-                    .value
-                    .split(',')
-                    .map(str::trim)
-                    .filter(|value| !value.is_empty())
+                let placeholders: Vec<String> = in_values(&filter.value)
+                    .flat_map(|value| self.operands(value, binary, params))
                     .collect();
-                if values.is_empty() {
+                if placeholders.is_empty() {
                     return "1 = 0".into();
                 }
-                let placeholders: Vec<String> = values
-                    .into_iter()
-                    .map(|value| self.bind(params, value.to_owned()))
-                    .collect();
                 format!("{column} IN ({})", placeholders.join(", "))
             }
         }
     }
 
-    fn where_clause(self, query: &RowQuery, params: &mut Vec<Value>) -> String {
+    fn where_clause(self, query: &RowQuery, binary: &[String], params: &mut Vec<Value>) -> String {
         let mut conditions: Vec<String> = query
             .filters
             .iter()
-            .map(|filter| self.filter(filter, params))
+            .map(|filter| self.filter(filter, binary, params))
             .collect();
         if let Some(raw) = query.raw_where.as_deref().map(str::trim)
             && !raw.is_empty()
@@ -219,11 +301,13 @@ impl Dialect {
 
     /// One page plus one row (to learn whether there is a next page).
     /// `key` is the primary key, used for a stable default order and as a
-    /// tiebreaker after the user's sort.
-    pub fn select_rows(self, query: &RowQuery, key: &[String]) -> Sql {
+    /// tiebreaker after the user's sort. `binary` names the columns that
+    /// hold bytes: a filter value written as a UUID or as `0x` hex is
+    /// compared with them as those bytes.
+    pub fn select_rows(self, query: &RowQuery, key: &[String], binary: &[String]) -> Sql {
         let mut params = Vec::new();
         let mut text = format!("SELECT * FROM {}", self.qualified(&query.object));
-        text.push_str(&self.where_clause(query, &mut params));
+        text.push_str(&self.where_clause(query, binary, &mut params));
         let mut order: Vec<String> = query
             .sort
             .iter()
@@ -252,10 +336,11 @@ impl Dialect {
         Sql { text, params }
     }
 
-    pub fn count_rows(self, query: &RowQuery) -> Sql {
+    /// `binary` as for [`Dialect::select_rows`].
+    pub fn count_rows(self, query: &RowQuery, binary: &[String]) -> Sql {
         let mut params = Vec::new();
         let mut text = format!("SELECT count(*) FROM {}", self.qualified(&query.object));
-        text.push_str(&self.where_clause(query, &mut params));
+        text.push_str(&self.where_clause(query, binary, &mut params));
         Sql { text, params }
     }
 }
@@ -289,7 +374,7 @@ mod tests {
 
     #[test]
     fn a_plain_page_orders_by_the_key_and_asks_for_one_extra_row() {
-        let sql = Dialect::Postgres.select_rows(&query(), &["id".into()]);
+        let sql = Dialect::Postgres.select_rows(&query(), &["id".into()], &[]);
         assert_eq!(
             sql.text,
             r#"SELECT * FROM "public"."users" ORDER BY "id" ASC LIMIT 301 OFFSET 0"#
@@ -301,7 +386,7 @@ mod tests {
     fn without_a_key_there_is_no_order() {
         let mut q = query();
         q.offset = 600;
-        let sql = Dialect::Sqlite.select_rows(&q, &[]);
+        let sql = Dialect::Sqlite.select_rows(&q, &[], &[]);
         assert_eq!(
             sql.text,
             r#"SELECT * FROM "public"."users" LIMIT 301 OFFSET 600"#
@@ -315,7 +400,7 @@ mod tests {
             column: "email".into(),
             dir: SortDir::Desc,
         }];
-        let sql = Dialect::MySql.select_rows(&q, &["id".into()]);
+        let sql = Dialect::MySql.select_rows(&q, &["id".into()], &[]);
         assert_eq!(
             sql.text,
             "SELECT * FROM `public`.`users` ORDER BY `email` DESC, `id` ASC LIMIT 301 OFFSET 0"
@@ -337,13 +422,13 @@ mod tests {
                 value: "bob".into(),
             },
         ];
-        let pg = Dialect::Postgres.select_rows(&q, &[]);
+        let pg = Dialect::Postgres.select_rows(&q, &[], &[]);
         assert_eq!(
             pg.text,
             r#"SELECT * FROM "public"."users" WHERE "age" >= E'18' AND "name" <> E'bob' LIMIT 301 OFFSET 0"#
         );
         assert!(pg.params.is_empty());
-        let my = Dialect::MySql.select_rows(&q, &[]);
+        let my = Dialect::MySql.select_rows(&q, &[], &[]);
         assert!(
             my.text.contains("WHERE `age` >= ? AND `name` <> ?"),
             "{}",
@@ -367,7 +452,7 @@ mod tests {
                 value: String::new(),
             },
         ];
-        let sql = Dialect::Sqlite.select_rows(&q, &[]);
+        let sql = Dialect::Sqlite.select_rows(&q, &[], &[]);
         assert!(
             sql.text
                 .contains(r#"WHERE "deleted_at" IS NULL AND "email" IS NOT NULL"#)
@@ -383,18 +468,206 @@ mod tests {
             op: FilterOp::In,
             value: " 1, 2 ,,3 ".into(),
         }];
-        let sql = Dialect::Postgres.select_rows(&q, &[]);
+        let sql = Dialect::Postgres.select_rows(&q, &[], &[]);
         assert!(
             sql.text.contains(r#""id" IN (E'1', E'2', E'3')"#),
             "{}",
             sql.text
         );
-        let lite = Dialect::Sqlite.select_rows(&q, &[]);
+        let lite = Dialect::Sqlite.select_rows(&q, &[], &[]);
         assert!(lite.text.contains(r#""id" IN (?, ?, ?)"#), "{}", lite.text);
         assert_eq!(lite.params, vec![text("1"), text("2"), text("3")]);
         q.filters[0].value = " , ".into();
-        let sql = Dialect::Postgres.select_rows(&q, &[]);
+        let sql = Dialect::Postgres.select_rows(&q, &[], &[]);
         assert!(sql.text.contains("WHERE 1 = 0"), "{}", sql.text);
+    }
+
+    const UUID: &str = "0199a3f2-7c1e-7abc-8def-0123456789ab";
+    const UUID_BYTES: [u8; 16] = [
+        0x01, 0x99, 0xa3, 0xf2, 0x7c, 0x1e, 0x7a, 0xbc, 0x8d, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89,
+        0xab,
+    ];
+
+    fn bytes(value: &[u8]) -> Value {
+        Value::Bytes(value.into())
+    }
+
+    fn filtered(column: &str, op: FilterOp, value: &str) -> RowQuery {
+        let mut q = query();
+        q.filters = vec![Filter {
+            column: column.into(),
+            op,
+            value: value.into(),
+        }];
+        q
+    }
+
+    #[test]
+    fn uuids_and_0x_hex_read_as_bytes() {
+        for text in [
+            UUID,
+            "0199A3F2-7C1E-7ABC-8DEF-0123456789AB",
+            "0199a3f27c1e7abc8def0123456789ab",
+            "0x0199a3f27c1e7abc8def0123456789ab",
+            "0X0199A3F27C1E7ABC8DEF0123456789AB",
+            "  0199a3f2-7c1e-7abc-8def-0123456789ab\n",
+        ] {
+            assert_eq!(
+                bytes_from_text(text).as_deref(),
+                Some(&UUID_BYTES[..]),
+                "{text}"
+            );
+        }
+        assert_eq!(bytes_from_text("0x00ff10"), Some(vec![0x00, 0xff, 0x10]));
+        // What the app copies for an empty value.
+        assert_eq!(bytes_from_text("0x"), Some(Vec::new()));
+        for text in [
+            "",
+            "bob",
+            "18",
+            // Hex without `0x` is bytes only at a UUID's length.
+            "cafe",
+            "0199a3f27c1e7abc8def0123456789a",
+            "0199a3f27c1e7abc8def0123456789abcd",
+            // Half a byte, and digits that are not hex.
+            "0xabc",
+            "0xzz",
+            "0199a3f27c1e7abc8def0123456789ag",
+            // Hyphens anywhere else.
+            "0199a3f27-c1e-7abc-8def-0123456789ab",
+            "0199a3f2-7c1e-7abc-8def-0123456789a-",
+            "0199a3f2-7c1e-7abc-8def-012345678-ab",
+            "-199a3f2-7c1e-7abc-8def-0123456789ab",
+            "0199a3f2-7c1e-7abc-8def-0123456789é",
+        ] {
+            assert_eq!(bytes_from_text(text), None, "{text}");
+        }
+    }
+
+    #[test]
+    fn a_binary_column_is_compared_with_the_bytes_and_the_text() {
+        let binary = ["id".to_owned()];
+        let q = filtered("id", FilterOp::Eq, UUID);
+        for dialect in [Dialect::Sqlite, Dialect::MySql] {
+            let sql = dialect.select_rows(&q, &[], &binary);
+            let id = dialect.quote_ident("id");
+            assert!(
+                sql.text.contains(&format!("WHERE {id} IN (?, ?) LIMIT")),
+                "{}",
+                sql.text
+            );
+            assert_eq!(sql.params, vec![bytes(&UUID_BYTES), text(UUID)]);
+            // The count asks the same.
+            let count = dialect.count_rows(&q, &binary);
+            assert!(count.text.ends_with(&format!("WHERE {id} IN (?, ?)")));
+            assert_eq!(count.params, sql.params);
+        }
+        let pg = Dialect::Postgres.select_rows(&q, &[], &binary);
+        assert!(
+            pg.text.contains(&format!(
+                r#"WHERE "id" IN (E'\\x0199a3f27c1e7abc8def0123456789ab', E'{UUID}') LIMIT"#
+            )),
+            "{}",
+            pg.text
+        );
+        assert!(pg.params.is_empty());
+
+        let q = filtered("id", FilterOp::Ne, "0x00FF");
+        let sql = Dialect::Sqlite.select_rows(&q, &[], &binary);
+        assert!(
+            sql.text.contains(r#"WHERE "id" NOT IN (?, ?) LIMIT"#),
+            "{}",
+            sql.text
+        );
+        assert_eq!(sql.params, vec![bytes(&[0x00, 0xff]), text("0x00FF")]);
+        let pg = Dialect::Postgres.select_rows(&q, &[], &binary);
+        assert!(
+            pg.text
+                .contains(r#"WHERE "id" NOT IN (E'\\x00ff', E'0x00FF') LIMIT"#),
+            "{}",
+            pg.text
+        );
+    }
+
+    #[test]
+    fn an_in_filter_on_a_binary_column_takes_each_value_both_ways() {
+        let q = filtered("id", FilterOp::In, &format!("{UUID}, 7, 0xcafe"));
+        let sql = Dialect::MySql.select_rows(&q, &[], &["id".to_owned()]);
+        assert!(
+            sql.text.contains("WHERE `id` IN (?, ?, ?, ?, ?) LIMIT"),
+            "{}",
+            sql.text
+        );
+        assert_eq!(
+            sql.params,
+            vec![
+                bytes(&UUID_BYTES),
+                text(UUID),
+                text("7"),
+                bytes(&[0xca, 0xfe]),
+                text("0xcafe"),
+            ]
+        );
+    }
+
+    #[test]
+    fn only_binary_columns_and_equality_bind_bytes() {
+        let binary = ["id".to_owned()];
+        // A text column holding the UUID as a string matches as text.
+        let q = filtered("token", FilterOp::Eq, UUID);
+        let sql = Dialect::Sqlite.select_rows(&q, &[], &binary);
+        assert!(
+            sql.text.contains(r#"WHERE "token" = ? LIMIT"#),
+            "{}",
+            sql.text
+        );
+        assert_eq!(sql.params, vec![text(UUID)]);
+        let pg = Dialect::Postgres.select_rows(&q, &[], &binary);
+        assert!(
+            pg.text
+                .contains(&format!(r#"WHERE "token" = E'{UUID}' LIMIT"#)),
+            "{}",
+            pg.text
+        );
+        // So does a binary column's value that is not bytes.
+        let q = filtered("id", FilterOp::Eq, "bob");
+        let sql = Dialect::Sqlite.select_rows(&q, &[], &binary);
+        assert!(sql.text.contains(r#"WHERE "id" = ? LIMIT"#), "{}", sql.text);
+        assert_eq!(sql.params, vec![text("bob")]);
+        // Ordering and LIKE compare the text as typed.
+        for op in [
+            FilterOp::Lt,
+            FilterOp::Gt,
+            FilterOp::Le,
+            FilterOp::Ge,
+            FilterOp::Contains,
+            FilterOp::StartsWith,
+        ] {
+            let sql = Dialect::Sqlite.select_rows(&filtered("id", op, UUID), &[], &binary);
+            assert_eq!(sql.params.len(), 1, "{op:?}");
+            assert!(matches!(sql.params[0], Value::Text(_)), "{op:?}");
+        }
+    }
+
+    #[test]
+    fn a_driver_asks_for_binary_columns_only_when_a_value_reads_as_bytes() {
+        for (op, value, expected) in [
+            (FilterOp::Eq, UUID, true),
+            (FilterOp::Ne, "0xcafe", true),
+            (FilterOp::In, "1, 0xcafe", true),
+            (FilterOp::Eq, "bob", false),
+            (FilterOp::In, "1, 2", false),
+            (FilterOp::Gt, UUID, false),
+            (FilterOp::Contains, "0xcafe", false),
+            (FilterOp::IsNull, UUID, false),
+        ] {
+            assert_eq!(
+                reads_bytes(&filtered("id", op, value)),
+                expected,
+                "{op:?} {value}"
+            );
+        }
+        assert!(!reads_bytes(&query()));
     }
 
     #[test]
@@ -410,13 +683,13 @@ mod tests {
             op: FilterOp::Contains,
             value: "5%".into(),
         }];
-        let pg = Dialect::Postgres.select_rows(&q, &[]);
+        let pg = Dialect::Postgres.select_rows(&q, &[], &[]);
         assert!(
             pg.text.contains(r#"CAST("id" AS TEXT) ILIKE E'%5\\%%'"#),
             "{}",
             pg.text
         );
-        let lite = Dialect::Sqlite.select_rows(&q, &[]);
+        let lite = Dialect::Sqlite.select_rows(&q, &[], &[]);
         assert!(
             lite.text
                 .contains(r#"CAST("id" AS TEXT) LIKE ? ESCAPE '\'"#),
@@ -424,12 +697,12 @@ mod tests {
             lite.text
         );
         assert_eq!(lite.params, vec![text(r"%5\%%")]);
-        let my = Dialect::MySql.select_rows(&q, &[]);
+        let my = Dialect::MySql.select_rows(&q, &[], &[]);
         assert!(my.text.contains("CAST(`id` AS CHAR) LIKE ?"), "{}", my.text);
         q.filters[0].op = FilterOp::StartsWith;
         assert!(
             Dialect::Postgres
-                .select_rows(&q, &[])
+                .select_rows(&q, &[], &[])
                 .text
                 .contains(r"ILIKE E'5\\%%'")
         );
@@ -444,7 +717,7 @@ mod tests {
             value: "1".into(),
         }];
         q.raw_where = Some("b = 2 OR c = 3".into());
-        let sql = Dialect::Postgres.select_rows(&q, &[]);
+        let sql = Dialect::Postgres.select_rows(&q, &[], &[]);
         assert!(
             sql.text
                 .contains("WHERE \"a\" = E'1' AND (\nb = 2 OR c = 3\n)"),
@@ -454,7 +727,7 @@ mod tests {
         q.raw_where = Some("   ".into());
         assert!(
             !Dialect::Postgres
-                .select_rows(&q, &[])
+                .select_rows(&q, &[], &[])
                 .text
                 .contains("AND (")
         );
@@ -473,7 +746,7 @@ mod tests {
             dir: SortDir::Asc,
         }];
         q.offset = 300;
-        let sql = Dialect::Sqlite.count_rows(&q);
+        let sql = Dialect::Sqlite.count_rows(&q, &[]);
         assert_eq!(
             sql.text,
             r#"SELECT count(*) FROM "public"."users" WHERE "a" = ?"#
@@ -517,7 +790,7 @@ mod tests {
             op: FilterOp::Eq,
             value: "x' OR '1'='1".into(),
         }];
-        let pg = Dialect::Postgres.select_rows(&q, &[]);
+        let pg = Dialect::Postgres.select_rows(&q, &[], &[]);
         assert!(
             pg.text.contains(r#""name" = E'x'' OR ''1''=''1'"#),
             "{}",

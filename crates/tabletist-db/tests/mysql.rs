@@ -389,6 +389,167 @@ async fn filters_work() {
     );
 }
 
+/// The first column of each row of `object` the filter keeps, in key
+/// order, after checking the count agrees.
+async fn kept(
+    connection: &Connection,
+    object: &str,
+    column: &str,
+    op: FilterOp,
+    value: &str,
+) -> Vec<i64> {
+    let mut query = RowQuery::new(ObjectRef::new("tabletist", object), 50);
+    query.filters = vec![Filter {
+        column: column.into(),
+        op,
+        value: value.into(),
+    }];
+    let page = connection.fetch_rows(&query).await.unwrap();
+    assert_eq!(
+        connection.count_rows(&query).await.unwrap(),
+        page.rows.len() as u64,
+        "{column} {op:?} {value}"
+    );
+    ids(&page)
+}
+
+/// MySQL has no UUID type: a UUID key is sixteen bytes in a `binary(16)`
+/// column, which the app shows as the UUID. Typed, pasted or followed from
+/// a foreign key, that text has to find the bytes.
+#[tokio::test]
+async fn a_uuid_or_hex_filter_matches_a_binary_key_and_its_foreign_key() {
+    let Some(connection) = connect().await else {
+        return;
+    };
+    let mut admin = admin().await;
+    for statement in [
+        "DROP TABLE IF EXISTS uuid_memberships, uuid_accounts",
+        "CREATE TABLE uuid_accounts (
+             n INT NOT NULL, id BINARY(16) PRIMARY KEY, slug CHAR(36), tag VARBINARY(36)
+         )",
+        "INSERT INTO uuid_accounts VALUES
+             (1, x'0199a3f27c1e7abc8def0123456789ab',
+              '0199a3f2-7c1e-7abc-8def-0123456789ab', x'cafe'),
+             (2, x'0199a3f27c1e7abc8def0123456789ac',
+              '0199a3f27c1e7abc8def0123456789ac', '0199a3f2-7c1e-7abc-8def-0123456789ac'),
+             (3, x'0199a3f27c1e7abc8def0123456789ad', '0xcafe', NULL)",
+        "CREATE TABLE uuid_memberships (
+             id INT PRIMARY KEY, account_id BINARY(16) NOT NULL,
+             FOREIGN KEY (account_id) REFERENCES uuid_accounts (id)
+         )",
+        "INSERT INTO uuid_memberships VALUES
+             (1, x'0199a3f27c1e7abc8def0123456789ab'),
+             (2, x'0199a3f27c1e7abc8def0123456789ac'),
+             (3, x'0199a3f27c1e7abc8def0123456789ab')",
+    ] {
+        admin.query_drop(statement).await.unwrap();
+    }
+    let ab = "0199a3f2-7c1e-7abc-8def-0123456789ab";
+    for (column, op, value, expected) in [
+        // The UUID the grid shows, with or without hyphens, and `0x` hex.
+        ("id", FilterOp::Eq, ab, vec![1]),
+        (
+            "id",
+            FilterOp::Eq,
+            " 0199A3F2-7C1E-7ABC-8DEF-0123456789AB ",
+            vec![1],
+        ),
+        (
+            "id",
+            FilterOp::Eq,
+            "0199a3f27c1e7abc8def0123456789ac",
+            vec![2],
+        ),
+        (
+            "id",
+            FilterOp::Eq,
+            "0x0199a3f27c1e7abc8def0123456789ab",
+            vec![1],
+        ),
+        ("id", FilterOp::Ne, ab, vec![2, 3]),
+        (
+            "id",
+            FilterOp::In,
+            "0199a3f2-7c1e-7abc-8def-0123456789ab, 0x0199a3f27c1e7abc8def0123456789ac, nothing",
+            vec![1, 2],
+        ),
+        // Text columns keep matching as text.
+        ("slug", FilterOp::Eq, ab, vec![1]),
+        (
+            "slug",
+            FilterOp::Eq,
+            "0199a3f27c1e7abc8def0123456789ac",
+            vec![2],
+        ),
+        ("slug", FilterOp::Eq, "0xcafe", vec![3]),
+        // Binary of another length, and a UUID kept as text in a binary
+        // column.
+        ("tag", FilterOp::Eq, "0xcafe", vec![1]),
+        (
+            "tag",
+            FilterOp::Eq,
+            "0199a3f2-7c1e-7abc-8def-0123456789ac",
+            vec![2],
+        ),
+    ] {
+        assert_eq!(
+            kept(&connection, "uuid_accounts", column, op, value).await,
+            expected,
+            "{column} {op:?} {value}"
+        );
+    }
+
+    // Following the foreign key: the value is what the app shows for it.
+    let memberships = ObjectRef::new("tabletist", "uuid_memberships");
+    let structure = connection.describe(&memberships).await.unwrap();
+    let foreign = &structure.foreign_keys[0];
+    assert_eq!(foreign.columns, ["account_id"]);
+    assert_eq!(foreign.ref_table, "uuid_accounts");
+    let page = connection
+        .fetch_rows(&RowQuery::new(memberships, 50))
+        .await
+        .unwrap();
+    assert_eq!(page.columns[1].kind, ValueKind::Binary);
+    let Value::Bytes(key) = &page.rows[1][1] else {
+        panic!("account_id is {:?}", page.rows[1][1]);
+    };
+    let hex: String = key.iter().map(|byte| format!("{byte:02x}")).collect();
+    let uuid = format!(
+        "{}-{}-{}-{}-{}",
+        &hex[..8],
+        &hex[8..12],
+        &hex[12..16],
+        &hex[16..20],
+        &hex[20..]
+    );
+    assert_eq!(
+        kept(
+            &connection,
+            "uuid_accounts",
+            &foreign.ref_columns[0],
+            FilterOp::Eq,
+            &uuid
+        )
+        .await,
+        vec![2]
+    );
+    assert_eq!(
+        kept(
+            &connection,
+            "uuid_memberships",
+            "account_id",
+            FilterOp::Eq,
+            ab
+        )
+        .await,
+        vec![1, 3]
+    );
+    admin
+        .query_drop("DROP TABLE uuid_memberships, uuid_accounts")
+        .await
+        .unwrap();
+}
+
 #[tokio::test]
 async fn quotes_backslashes_and_wildcards_are_just_text() {
     let Some(connection) = connect().await else {
