@@ -460,7 +460,9 @@ enum Dialog { Connection(..), Password(..), HostKey(..), QuickOpen(..), Help }
 ### 5.7 Row panel
 
 - Resizable right panel, toggled with Space (when the grid has focus) or
-  Cmd/Ctrl+Shift+R. Follows the grid selection.
+  Cmd/Ctrl+Shift+R. Follows the grid selection. It takes at most half the
+  width beside the sidebar; the width it was dragged to comes back when the
+  window has room again.
 - One entry per field: name, type, and the full value as selectable read-only
   text. JSON up to 256 KiB is a highlighted tree in monospace: keys keep
   their order, objects and arrays fold (all open up to 40 lines, else only

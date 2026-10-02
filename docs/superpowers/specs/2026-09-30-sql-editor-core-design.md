@@ -612,13 +612,13 @@ tab's result grid as on a table's.
   what was folded or expanded in one result's row is not carried to the
   next result's. A result may have two columns of one name: each is a
   field of its own, and a JSON document in each folds on its own.
-- Known limit: the panel is as wide on a SQL tab as on a table tab, so in
-  the smallest window (720 x 480) it can leave the editor and the results
-  no width (always on Omarchy, elsewhere with the widest sidebar) until it
-  is closed. A table tab has the same limit. The result grid sizes its
-  columns before the panel opens, so a JSON column may need a horizontal
-  scroll once it does. The Omarchy status line on a SQL tab does not list
-  the panel's keys.
+- The panel takes at most half the width beside the sidebar, on a SQL tab
+  as on a table tab, so the editor and the results keep at least as much as
+  the panel. In a narrow window that goes under the panel's usual least
+  width. The width it was dragged to comes back when there is room again.
+- Known limits: the result grid sizes its columns before the panel opens,
+  so a JSON column may need a horizontal scroll once it does. The Omarchy
+  status line on a SQL tab does not list the panel's keys.
 - Messages lists each statement: its line, then rows returned or affected
   and the time, or the error, or "Cancelled". Statements that did not start
   read "Not run": after an error, and after the one statement a stopped run

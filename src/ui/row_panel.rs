@@ -23,6 +23,27 @@ fn width(look: &Look) -> f32 {
     if look.terminal { 462.0 } else { 345.0 }
 }
 
+/// The least width the panel's edge can be dragged to, with room to spare.
+const NARROWEST: f32 = 260.0;
+/// The most it can be dragged to.
+const WIDEST: f32 = 560.0;
+
+/// The widths the panel may have when it shares `room` points with the
+/// grid or the editor beside it: never more than half, so what it sits
+/// beside keeps at least as much. In a narrow window that goes under the
+/// panel's least width, and the panel gives way too.
+fn width_range(room: f32) -> egui::Rangef {
+    let most = (room / 2.0).clamp(0.0, WIDEST);
+    egui::Rangef::new(NARROWEST.min(most), most)
+}
+
+/// The width egui last drew the panel `id` at, its edge included. egui
+/// does not update it while the edge is being dragged: it is the width
+/// from before the drag until the pointer lets go.
+fn drawn_width(ui: &egui::Ui, id: Id) -> Option<f32> {
+    egui::PanelState::load(ui.ctx(), id).map(|state| state.outer_rect.width())
+}
+
 /// The panel's edge: a 1 pt rule, the terminal's 2 pt accent.
 fn edge(look: &Look) -> f32 {
     if look.terminal { 2.0 } else { 1.0 }
@@ -165,10 +186,30 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, id: TabId) {
         return;
     };
     let mut actions = Vec::new();
-    egui::Panel::right(Id::new(("row-panel", tab.0)))
-        .resizable(true)
-        .default_size(width(&look))
-        .size_range(260.0..=560.0)
+    let panel = Id::new(("row-panel", tab.0));
+    let range = width_range(ui.available_width());
+    // egui remembers the width it last drew, which a small window cuts
+    // down. The width the user gave the panel (or its default) is kept
+    // beside it, to come back to when there is room again.
+    let drawn = drawn_width(ui, panel);
+    let wanted: f32 = ui.data_mut(|data| {
+        *data.get_persisted_mut_or_insert_with(panel.with("wanted"), || {
+            drawn.unwrap_or(width(&look))
+        })
+    });
+    let target = wanted.clamp(range.min, range.max);
+    // Only a drag makes egui's panel wider: with room again, its least
+    // width is the target until it is drawn that wide.
+    let least = if drawn.is_some_and(|drawn| drawn + 1.0 < target) {
+        target
+    } else {
+        range.min
+    };
+    egui::Panel::right(panel)
+        // With no width to choose from, the edge is no handle.
+        .resizable(range.min < range.max)
+        .default_size(target)
+        .size_range(least..=range.max)
         .show_separator_line(false)
         // The edge sits outside the content, as the design's border does.
         .frame(
@@ -281,17 +322,6 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, id: TabId) {
                         palette.text,
                     ),
                 ) + 10.0;
-                let mut name = Text::new(&look);
-                if let (Some(key), Some(value)) = (&key_column, &key_value) {
-                    name = name.add(role, key, palette.dim).space(role, " ").add(
-                        role,
-                        value,
-                        palette.warning,
-                    );
-                } else {
-                    name = name.add(role, &number.to_string(), palette.warning);
-                }
-                widgets::paint_text(ui, x, y, name);
                 // esc ×: 8 in from the right, 24 tall, 8 at its sides, 6
                 // before the ×; the prev/next hint 10 before it.
                 let small = TextRole::OSecondary;
@@ -301,6 +331,40 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, id: TabId) {
                     pos2(header.right() - 8.0 - esc_width, y - 12.0),
                     vec2(esc_width, 24.0),
                 );
+                // The row's name: its key and value, or its number.
+                let keyed = key_column.as_ref().zip(key_value.as_ref());
+                let whole = match keyed {
+                    Some((key, value)) => format!("{key} {value}"),
+                    None => number.to_string(),
+                };
+                let measure = |text: &str| role.width(ui.ctx(), look.faces, text);
+                // The hint gives way before the name does: its keys alone
+                // when the whole name does not fit before its words. The
+                // name is cut where the hint begins, 10 before it.
+                let mut hint = [("[ ]", "prev/next", true)];
+                let mut width = widgets::key_hints_width(ui, &hint, 0.0, &look, &palette);
+                let mut room = esc.left() - 10.0 - width - 10.0 - x;
+                if measure(&whole) > room {
+                    hint = [("[ ]", "", true)];
+                    width = widgets::key_hints_width(ui, &hint, 0.0, &look, &palette);
+                    room = esc.left() - 10.0 - width - 10.0 - x;
+                }
+                // A number keeps its last digits.
+                let shown = crate::ui::grid::ellipsize(&whole, room, keyed.is_none(), measure);
+                let name = match keyed {
+                    Some((key, _)) => {
+                        let value = shown.strip_prefix(key.as_str());
+                        match value.and_then(|value| value.strip_prefix(' ')) {
+                            Some(value) => Text::one(&look, role, key, palette.dim)
+                                .space(role, " ")
+                                .add(role, value, palette.warning),
+                            // Cut within the key.
+                            None => Text::one(&look, role, &shown, palette.dim),
+                        }
+                    }
+                    None => Text::one(&look, role, &shown, palette.warning),
+                };
+                widgets::paint_text(ui, x, y, name);
                 let response = ui.interact(esc, ui.id().with("close"), Sense::click());
                 let close = gettext(locale, "Close the row panel");
                 response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, &close));
@@ -323,8 +387,6 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, id: TabId) {
                 if response.clicked() {
                     actions.push(Action::ToggleRowPanel(tab));
                 }
-                let hint = [("[ ]", "prev/next", true)];
-                let width = widgets::key_hints_width(ui, &hint, 0.0, &look, &palette);
                 widgets::key_hints(
                     ui,
                     (esc.left() - 10.0 - width, y),
@@ -519,11 +581,13 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, id: TabId) {
                             ui.horizontal_top(|ui| {
                                 let wide =
                                     pair.len() == 1 && info(&pair[0].1.name).target.is_some();
+                                // A sliver of a panel has no room for them.
                                 let half = if wide {
                                     2.0 * column_width - 2.0 * side
                                 } else {
                                     column_width - 2.0 * side
-                                };
+                                }
+                                .max(0.0);
                                 ui.add_space(side);
                                 for (index, (col, column, value)) in
                                     pair.iter().copied().enumerate()
@@ -572,7 +636,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, id: TabId) {
                             ui.horizontal_top(|ui| {
                                 ui.add_space(side);
                                 ui.vertical(|ui| {
-                                    ui.set_width(ui.available_width() - side);
+                                    ui.set_width((ui.available_width() - side).max(0.0));
                                     let info = info(&column.name);
                                     field(
                                         ui,
@@ -602,7 +666,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, id: TabId) {
                             ui.horizontal_top(|ui| {
                                 ui.add_space(side);
                                 ui.vertical(|ui| {
-                                    ui.set_width(ui.available_width() - side);
+                                    ui.set_width((ui.available_width() - side).max(0.0));
                                     let info = info(&column.name);
                                     field(
                                         ui,
@@ -640,6 +704,15 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, id: TabId) {
                     }
                 });
         });
+    // The edge was dragged: that is the width wanted from now on. egui
+    // stores a width only when the drag is over, so a width that did not
+    // change this frame is not a drag's (a window resized mid-drag).
+    if let Some(after) = drawn_width(ui, panel)
+        && drawn.is_some_and(|before| before != after)
+        && (after - target).abs() > 1.0
+    {
+        ui.data_mut(|data| data.insert_persisted(panel.with("wanted"), after));
+    }
     app.actions.extend(actions);
 }
 
@@ -1098,17 +1171,17 @@ fn editing_footer(
             response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, false, &name));
             let _ = response.on_hover_text(reason.as_ref());
             dashed(ui, place, faded(palette.outline));
-            let total = measure(&format!("{key} {label}"));
+            // A cell too narrow for both shows its key alone.
+            let text = Text::one(look, role, key, faded(palette.text));
+            let total = measure(&name);
+            let (total, text) = if total > width {
+                (measure(key), text)
+            } else {
+                let text = text.space(role, " ");
+                (total, text.add(role, label, faded(palette.dim)))
+            };
             let x = place.center().x - total / 2.0;
-            widgets::paint_text(
-                ui,
-                x,
-                place.center().y,
-                Text::new(look)
-                    .add(role, key, faded(palette.text))
-                    .space(role, " ")
-                    .add(role, label, faded(palette.dim)),
-            );
+            widgets::paint_text(ui, x, place.center().y, text);
         }
         28.0
     } else {
@@ -1140,19 +1213,19 @@ fn editing_footer(
     let note_role = caption(look);
     let y = top + height + 8.0 + line_of(ui, note_role, look) / 2.0;
     if look.terminal {
+        let note = gettext(
+            locale,
+            "read-only in 0.1.0 · editing arrives in a later version",
+        );
+        // Cut at the panel's side, as a field's label is.
+        let shown = crate::ui::grid::ellipsize(&note, inner.width(), false, |text| {
+            note_role.width(ui.ctx(), look.faces, text)
+        });
         widgets::paint_text(
             ui,
             inner.left(),
             y,
-            Text::one(
-                look,
-                note_role,
-                &gettext(
-                    locale,
-                    "read-only in 0.1.0 · editing arrives in a later version",
-                ),
-                palette.dim,
-            ),
+            Text::one(look, note_role, &shown, palette.dim),
         );
     } else {
         Icon::Lock.image(palette.dim, 11.0).paint_at(
@@ -1186,4 +1259,24 @@ fn dashed(ui: &egui::Ui, rect: Rect, color: egui::Color32) {
 /// A value as a tree, when it holds a document that is small enough.
 fn json_doc(ctx: &egui::Context, value: &Value, kind: ValueKind) -> Option<Arc<json_view::Doc>> {
     json_view::document(ctx, kind, value, json_view::TREE_MAX)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_panel_takes_at_most_half_the_room() {
+        let range = |room: f32| {
+            let range = width_range(room);
+            (range.min, range.max)
+        };
+        // Room to spare: the widths the edge can be dragged to.
+        assert_eq!(range(1400.0), (NARROWEST, WIDEST));
+        // Half the room is the most the panel takes.
+        assert_eq!(range(700.0), (NARROWEST, 350.0));
+        // Under its least width the panel gives way too.
+        assert_eq!(range(400.0), (200.0, 200.0));
+        assert_eq!(range(0.0), (0.0, 0.0));
+    }
 }

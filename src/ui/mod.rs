@@ -2664,6 +2664,301 @@ mod tests {
         }
     }
 
+    #[test]
+    fn the_row_panel_leaves_the_editor_half_the_room() {
+        for look in crate::theme::Look::ALL {
+            let mut harness = Harness::with_size(egui::vec2(1000.0, 650.0));
+            harness.set_look(look);
+            let tab = harness.connect_fake();
+            with_sql_result(&mut harness, tab, 3);
+            let room = band(&mut harness).width();
+            harness.click("Row 2");
+            assert!(panel_shows(&mut harness), "{}", look.name);
+            let editor = band(&mut harness).width();
+            assert!(editor < room, "{}", look.name);
+            // A point of slack for rounding to the pixel.
+            assert!(
+                editor >= room / 2.0 - 1.0,
+                "{editor} of {room} in {}",
+                look.name
+            );
+        }
+    }
+
+    #[test]
+    fn the_row_panel_gets_its_width_back_when_the_window_grows() {
+        let mut harness = Harness::new();
+        harness.set_look(crate::theme::Look::omarchy());
+        let tab = harness.connect_fake();
+        with_sql_result(&mut harness, tab, 3);
+        let room = band(&mut harness).width();
+        harness.click("Row 2");
+        let wide = band(&mut harness).width();
+        // A narrower window: the panel gives way to the editor.
+        let narrower = 380.0;
+        harness.size.x -= narrower;
+        let editor = band(&mut harness).width();
+        assert!(editor >= (room - narrower) / 2.0 - 1.0, "{editor}");
+        // And back: the panel is as wide as it was.
+        harness.size.x += narrower;
+        harness.settle();
+        assert!((band(&mut harness).width() - wide).abs() < 1.0);
+    }
+
+    #[test]
+    fn a_tables_row_panel_gives_way_in_a_narrow_window_and_comes_back() {
+        let mut harness = Harness::new();
+        let tab = with_page(&mut harness);
+        focus_grid(&mut harness, tab);
+        harness.click("Row 1");
+        // A field's label is as wide as the panel lets it be.
+        let label = |harness: &mut Harness| {
+            let tree = harness.settle();
+            crate::testing::bounds(&tree, "id · INTEGER", egui::accesskit::Role::Label)
+                .expect("the id field")
+                .width()
+        };
+        let wide = label(&mut harness);
+        harness.size.x = 800.0;
+        assert!(label(&mut harness) < wide - 1.0, "the panel gave way");
+        harness.size.x = 1280.0;
+        harness.settle();
+        assert!((label(&mut harness) - wide).abs() < 1.0, "and came back");
+    }
+
+    #[test]
+    fn a_dragged_row_panel_width_is_the_one_that_comes_back() {
+        for look in crate::theme::Look::ALL {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            let tab = harness.connect_fake();
+            with_sql_result(&mut harness, tab, 3);
+            harness.click("Row 2");
+            let opened = band(&mut harness);
+            // The panel's edge is where the editor ends. It is caught just
+            // inside the panel (a press on the editor's last point is the
+            // editor's) and beside the editor, clear of the band, which is
+            // a handle of its own.
+            let grip = |band: egui::Rect| egui::pos2(band.right() + 2.0, band.top() - 30.0);
+            // Towards the editor: a wider panel, its edge under the pointer.
+            let to = grip(opened) - egui::vec2(30.0, 0.0);
+            drag(&mut harness, grip(opened), to);
+            let wider = band(&mut harness);
+            assert!(
+                (wider.right() - to.x).abs() <= 1.0,
+                "the edge follows the pointer in {}: {opened:?} to {wider:?}",
+                look.name
+            );
+            assert!(wider.width() < opened.width() - 1.0, "{}", look.name);
+            // And away from it, past where it was: a narrower one.
+            let to = grip(wider) + egui::vec2(70.0, 0.0);
+            drag(&mut harness, grip(wider), to);
+            let dragged = band(&mut harness);
+            assert!(
+                (dragged.right() - to.x).abs() <= 1.0,
+                "and back out in {}: {wider:?} to {dragged:?}",
+                look.name
+            );
+            assert!(dragged.width() > opened.width() + 1.0, "{}", look.name);
+            // It stays there.
+            harness.settle();
+            assert_eq!(band(&mut harness), dragged, "{}", look.name);
+            // A narrow window cuts the panel down: the editor loses less
+            // than the window does.
+            let narrower = 500.0;
+            harness.size.x -= narrower;
+            let cut = band(&mut harness).width();
+            assert!(
+                cut > dragged.width() - narrower + 1.0,
+                "{cut} in {}",
+                look.name
+            );
+            // With room again the panel is as wide as it was dragged to,
+            // not as it opened.
+            harness.size.x += narrower;
+            harness.settle();
+            let back = band(&mut harness).width();
+            assert!(
+                (back - dragged.width()).abs() < 1.0,
+                "{back} for {} in {}",
+                dragged.width(),
+                look.name
+            );
+        }
+    }
+
+    #[test]
+    fn a_window_resized_while_the_edge_is_held_keeps_the_wanted_width() {
+        let mut harness = Harness::new();
+        harness.set_look(crate::theme::Look::omarchy());
+        let tab = harness.connect_fake();
+        with_sql_result(&mut harness, tab, 3);
+        harness.click("Row 2");
+        let wide = band(&mut harness).width();
+        // A window that cuts the panel down.
+        harness.size.x = 1000.0;
+        let cut = band(&mut harness);
+        // The edge is held and pulled well into the editor: the panel is
+        // as wide as it may be already, and stays.
+        let grip = egui::pos2(cut.right() + 2.0, cut.top() - 30.0);
+        let button = |pressed| egui::Event::PointerButton {
+            pos: grip,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        };
+        harness.frame(vec![egui::Event::PointerMoved(grip)]);
+        harness.frame(vec![button(true)]);
+        let pulled = grip - egui::vec2(150.0, 0.0);
+        harness.frame(vec![egui::Event::PointerMoved(pulled)]);
+        // The window gets narrower still while it is held, the pointer
+        // still past where the edge may go.
+        harness.size.x = 900.0;
+        harness.frame(Vec::new());
+        harness.frame(vec![egui::Event::PointerButton {
+            pos: pulled,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: Modifiers::NONE,
+        }]);
+        harness.settle();
+        // With room again the panel is as wide as it opened: no width a
+        // small window cut it to was taken for a dragged one.
+        harness.size.x = 1280.0;
+        harness.settle();
+        let back = band(&mut harness).width();
+        assert!((back - wide).abs() < 1.0, "{back} for {wide}");
+    }
+
+    #[test]
+    fn the_row_panel_gives_way_in_the_smallest_window() {
+        for look in crate::theme::Look::ALL {
+            let mut harness = Harness::with_size(egui::vec2(720.0, 480.0));
+            harness.set_look(look);
+            let tab = harness.connect_fake();
+            with_sql_result(&mut harness, tab, 3);
+            let room = band(&mut harness).width();
+            harness.click("Row 2");
+            assert!(panel_shows(&mut harness), "{}", look.name);
+            // The panel is under its usual least width here, and the
+            // editor still has its half.
+            let editor = band(&mut harness).width();
+            assert!(editor < room, "{}", look.name);
+            assert!(
+                editor >= room / 2.0 - 1.0,
+                "{editor} of {room} in {}",
+                look.name
+            );
+        }
+    }
+
+    #[test]
+    fn a_sliver_of_a_row_panel_does_not_panic() {
+        for look in crate::theme::Look::ALL {
+            for sql in [false, true] {
+                let mut harness = Harness::new();
+                harness.set_look(look);
+                if sql {
+                    let tab = harness.connect_fake();
+                    with_sql_result(&mut harness, tab, 3);
+                } else {
+                    let tab = with_page(&mut harness);
+                    focus_grid(&mut harness, tab);
+                }
+                harness.click("Row 1");
+                assert!(panel_shows(&mut harness), "{}", look.name);
+                // Narrower and narrower, down to no room at all: drawing
+                // the panel only has to go on.
+                for width in [380.0, 300.0, 120.0, 40.0] {
+                    harness.size.x = width;
+                    harness.settle();
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_terminal_footer_fits_a_narrow_row_panel() {
+        let mut harness = Harness::new();
+        harness.set_look(crate::theme::Look::omarchy());
+        let tab = with_page(&mut harness);
+        focus_grid(&mut harness, tab);
+        harness.click("Row 1");
+        let note = "read-only in 0.1.0 · editing arrives in a later version";
+        let pieces = |harness: &mut Harness| -> Vec<String> {
+            harness.settle();
+            let painted = harness.painted.iter();
+            painted.map(|(text, _)| text.clone()).collect()
+        };
+        // With room for them, the note and each cell's words are whole (a
+        // cell's key and its word are one painted piece).
+        let wide = pieces(&mut harness);
+        assert!(wide.iter().any(|piece| piece == note));
+        assert!(wide.iter().any(|piece| piece == "yy p duplicate"));
+        // A narrower window cuts the panel: the note is cut to fit it.
+        harness.size.x = 1000.0;
+        let narrow = pieces(&mut harness);
+        assert!(!narrow.iter().any(|piece| piece == note), "{narrow:?}");
+        assert!(
+            narrow
+                .iter()
+                .any(|piece| piece.starts_with("read-only in 0.1.0") && piece.ends_with('…')),
+            "{narrow:?}"
+        );
+        // And a cell too narrow for its words keeps its key alone.
+        assert!(narrow.iter().any(|piece| piece == "yy p"), "{narrow:?}");
+        assert!(
+            !narrow.iter().any(|piece| piece.contains("duplicate")),
+            "{narrow:?}"
+        );
+    }
+
+    #[test]
+    fn the_terminal_header_names_its_row_in_the_smallest_window() {
+        // What the last frame painted. The header's hint is one piece, its
+        // keys and its words together.
+        let pieces = |harness: &mut Harness| -> Vec<String> {
+            harness.settle();
+            let painted = harness.painted.iter();
+            painted.map(|(text, _)| text.clone()).collect()
+        };
+        for sql in [false, true] {
+            let mut harness = Harness::new();
+            harness.set_look(crate::theme::Look::omarchy());
+            if sql {
+                let tab = harness.connect_fake();
+                with_sql_result(&mut harness, tab, 3);
+            } else {
+                let tab = with_page(&mut harness);
+                focus_grid(&mut harness, tab);
+            }
+            harness.click("Row 1");
+            // With room, the hint says what its keys do.
+            let wide = pieces(&mut harness);
+            assert!(
+                wide.iter().any(|piece| piece == "[ ] prev/next"),
+                "sql {sql}: {wide:?}"
+            );
+            // In the smallest window the hint gives way before the row's
+            // name: its keys alone, and the name is no bare ellipsis.
+            harness.size = egui::vec2(720.0, 480.0);
+            let small = pieces(&mut harness);
+            assert!(panel_shows(&mut harness), "sql {sql}");
+            assert!(
+                !small.iter().any(|piece| piece == "…"),
+                "sql {sql}: {small:?}"
+            );
+            assert!(
+                !small.iter().any(|piece| piece.contains("prev/next")),
+                "sql {sql}: {small:?}"
+            );
+            assert!(
+                small.iter().any(|piece| piece == "[ ]"),
+                "sql {sql}: {small:?}"
+            );
+        }
+    }
+
     /// Presses the pointer at `from`, moves it to `to` and lets go.
     fn drag(harness: &mut Harness, from: egui::Pos2, to: egui::Pos2) {
         let button = |pos, pressed| egui::Event::PointerButton {
@@ -3272,6 +3567,19 @@ mod tests {
             harness.copied.as_deref(),
             Some(r#"{"plan":"pro","seats":[3,4]}"#)
         );
+    }
+
+    #[test]
+    fn a_fold_toggle_keeps_the_keyboard_after_it_is_pressed() {
+        let mut harness = Harness::new();
+        with_json(&mut harness, r#"{"plan":"pro","seats":[3,4]}"#);
+        focus(&mut harness, "Collapse meta", egui::accesskit::Role::Button);
+        harness.press(Key::Enter, Modifiers::NONE);
+        assert!(harness.has("{ 2 keys }"));
+        assert_eq!(focused_name(&harness.settle()), "Expand meta");
+        harness.press(Key::Enter, Modifiers::NONE);
+        assert!(harness.has(r#""plan": "pro","#));
+        assert_eq!(focused_name(&harness.settle()), "Collapse meta");
     }
 
     #[test]
