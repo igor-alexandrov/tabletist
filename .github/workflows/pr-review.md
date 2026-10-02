@@ -13,6 +13,14 @@ permissions:
 
 engine: copilot
 
+# `cargo` on the runner is rustup: it fetches the toolchain `rust-toolchain.toml`
+# pins, then the crates. egui, winit and fastframe are git dependencies on GitHub.
+network:
+  allowed:
+    - defaults
+    - rust
+    - "github.com"
+
 safe-outputs:
   create-pull-request-review-comment:
     max: 10
