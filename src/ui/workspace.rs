@@ -1733,18 +1733,37 @@ fn banner(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
         .show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 12.0;
+                let height = if look.terminal { 24.0 } else { 28.0 };
+                let (out, back) = (say("Disconnect"), say("Reconnect"));
+                let leave = states::button(&out, &look)
+                    .label("Disconnect")
+                    .salt("lost")
+                    .quiet();
+                let again =
+                    (!reconnecting).then(|| states::button(&back, &look).label("Reconnect"));
+                // The buttons keep their room at the right, 8 apart and 12
+                // after the text.
+                let buttons = again
+                    .as_ref()
+                    .map_or(0.0, |again| again.width(ui, &look) + 8.0)
+                    + leave.width(ui, &look);
                 if reconnecting {
                     // The spinner asks for the frames that keep it turning.
                     ui.add(egui::Spinner::new().size(14.0).color(palette.warning));
                 }
+                // The text wraps in what is left: a long error must not
+                // push the buttons out of the window.
+                let room = (ui.available_width() - 12.0 - buttons).max(0.0);
                 ui.vertical(|ui| {
                     ui.spacing_mut().item_spacing.y = 2.0;
                     let strong = TextRole::pick(&look, TextRole::UiBodySemibold, TextRole::OGroup);
                     Text::one(&look, strong, &lead, palette.text)
+                        .wrap(room)
                         .layout(ui.ctx())
                         .label(ui);
                     if !sentence.is_empty() {
                         Text::one(&look, widgets::body(&look), &sentence, palette.secondary)
+                            .wrap(room)
                             .layout(ui.ctx())
                             .label(ui);
                     }
@@ -1752,25 +1771,16 @@ fn banner(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                     // keyboards and screen readers get it).
                     if !raw.is_empty() && raw != sentence {
                         Text::one(&look, widgets::secondary(&look), &raw, palette.secondary)
+                            .wrap(room)
                             .layout(ui.ctx())
                             .label(ui);
                     }
                 });
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.spacing_mut().item_spacing.x = 8.0;
-                    let height = if look.terminal { 24.0 } else { 28.0 };
-                    let (out, back) = (say("Disconnect"), say("Reconnect"));
-                    disconnect = states::button(&out, &look)
-                        .label("Disconnect")
-                        .salt("lost")
-                        .quiet()
-                        .show(ui, height, &look, &palette)
-                        .clicked();
-                    if !reconnecting {
-                        reconnect = states::button(&back, &look)
-                            .label("Reconnect")
-                            .show(ui, height, &look, &palette)
-                            .clicked();
+                    disconnect = leave.show(ui, height, &look, &palette).clicked();
+                    if let Some(again) = again {
+                        reconnect = again.show(ui, height, &look, &palette).clicked();
                     }
                 });
             });

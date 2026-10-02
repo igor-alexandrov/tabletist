@@ -196,24 +196,92 @@ mod tests {
         }
     }
 
+    /// Where the buttons named `label` are, from the top of the window down.
+    fn buttons_named(
+        tree: &egui::accesskit::TreeUpdate,
+        label: &str,
+    ) -> Vec<(egui::accesskit::NodeId, egui::Rect)> {
+        let mut buttons: Vec<_> = tree
+            .nodes
+            .iter()
+            .filter(|(_, node)| {
+                node.label() == Some(label) && node.role() == egui::accesskit::Role::Button
+            })
+            .filter_map(|(id, node)| {
+                let rect = node.bounds()?;
+                Some((
+                    *id,
+                    egui::Rect::from_min_max(
+                        egui::pos2(rect.x0 as f32, rect.y0 as f32),
+                        egui::pos2(rect.x1 as f32, rect.y1 as f32),
+                    ),
+                ))
+            })
+            .collect();
+        buttons.sort_by(|(_, a), (_, b)| a.top().total_cmp(&b.top()));
+        buttons
+    }
+
     #[test]
     fn the_lost_strip_keeps_its_buttons_inside_the_window() {
+        // What a server that is down answers a reconnect with: more than
+        // the strip has room for on one line.
+        let refused = "connection to server at \"db.internal.example.com\" (10.20.30.40), \
+                       port 5432 failed: Connection refused. Is the server running on that \
+                       host and accepting TCP/IP connections?";
         for look in crate::theme::Look::ALL {
-            let mut harness = Harness::with_size(egui::vec2(720.0, 480.0));
-            harness.set_look(look);
-            let tab = harness.connect_fake();
-            let session = harness.app.workspace(tab).unwrap().session;
-            harness.app.apply(crate::model::Action::Backend(
-                crate::backend::Event::Disconnected {
-                    session,
-                    error: tabletist_db::Error::ConnectionLost("server went away".into()),
-                },
-            ));
-            let tree = harness.settle();
-            let button =
-                crate::testing::bounds(&tree, "Reconnect", egui::accesskit::Role::Button).unwrap();
-            assert!(button.left() >= 0.0, "{}", look.name);
-            assert!(button.right() <= harness.size.x, "{}", look.name);
+            for long in [false, true] {
+                let mut harness = Harness::with_size(egui::vec2(720.0, 480.0));
+                harness.set_look(look);
+                let tab = harness.connect_fake();
+                let session = harness.app.workspace(tab).unwrap().session;
+                harness.app.apply(crate::model::Action::Backend(
+                    crate::backend::Event::Disconnected {
+                        session,
+                        error: tabletist_db::Error::ConnectionLost("server went away".into()),
+                    },
+                ));
+                let error = tabletist_db::Error::Connect(refused.into());
+                if long {
+                    harness.app.apply(crate::model::Action::Reconnect(tab));
+                    let Command::Connect {
+                        session, request, ..
+                    } = *crate::testing::last_sent(&harness.app)
+                    else {
+                        panic!("expected Connect");
+                    };
+                    harness.app.apply(crate::model::Action::Backend(
+                        crate::backend::Event::ConnectFailed {
+                            session,
+                            request,
+                            error: error.clone(),
+                        },
+                    ));
+                }
+                let tree = harness.settle();
+                let window = egui::Rect::from_min_size(egui::Pos2::ZERO, harness.size);
+                // The connection bar has a Disconnect of its own: the
+                // strip's is the lower one.
+                let reconnect = buttons_named(&tree, "Reconnect");
+                let disconnect = buttons_named(&tree, "Disconnect");
+                assert_eq!((reconnect.len(), disconnect.len()), (1, 2), "{}", look.name);
+                if long {
+                    // The error is there in full, before the buttons.
+                    let said = error.to_string();
+                    let text = crate::testing::bounds(&tree, &said, egui::accesskit::Role::Label);
+                    let text = text.expect("the exact error");
+                    assert!(text.right() <= reconnect[0].1.left(), "{}", look.name);
+                }
+                for (name, (_, button)) in
+                    [("Reconnect", reconnect[0]), ("Disconnect", disconnect[1])]
+                {
+                    assert!(
+                        window.contains_rect(button),
+                        "{name} at {button:?} in {} (long error: {long})",
+                        look.name
+                    );
+                }
+            }
         }
     }
 
