@@ -522,6 +522,15 @@ mod tests {
         }
     }
 
+    /// Opens another connection beside the open ones, named `name`: the
+    /// picker (Mod+O), then a connect in it. Returns its tab, which shows.
+    fn connect_another(harness: &mut Harness, name: &str) -> crate::model::ConnTabId {
+        harness.press(Key::O, Modifiers::COMMAND);
+        let tab = harness.connect_fake();
+        harness.app.workspace_mut(tab).unwrap().name = name.into();
+        tab
+    }
+
     fn add_saved(harness: &mut Harness, name: &str) -> crate::connections::ConnectionId {
         let saved = crate::connections::SavedConnection {
             id: crate::connections::ConnectionId::new(),
@@ -722,6 +731,95 @@ mod tests {
             // It leads the bar: before the connection's name, off Disconnect.
             assert!(button.right() < name.left(), "{}", look.name);
             assert!(!button.intersects(disconnect), "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn the_bar_has_a_chip_for_each_open_connection() {
+        for look in crate::theme::Look::ALL {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            let first = harness.connect_fake();
+            harness.app.workspace_mut(first).unwrap().name = "First".into();
+            let second = connect_another(&mut harness, "Second");
+            let env = crate::env::Environment::Dev.label(crate::env::Platform::of(&look));
+            // The second shows: its chip is the database switcher, and
+            // reads its name.
+            let tree = harness.settle();
+            for (label, role) in [
+                ("Database", egui::accesskit::Role::ComboBox),
+                ("Second", egui::accesskit::Role::Label),
+            ] {
+                assert!(
+                    crate::testing::node(&tree, label, role).is_some(),
+                    "{label} missing in {}",
+                    look.name
+                );
+            }
+            // The first's chip switches to it, and back.
+            harness.click(&format!("Switch to First · {env}"));
+            assert_eq!(harness.app.active_tab_id(), first, "{}", look.name);
+            harness.click(&format!("Switch to Second · {env}"));
+            assert_eq!(harness.app.active_tab_id(), second, "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn a_chip_says_how_its_session_stands_while_it_is_not_connected() {
+        for look in crate::theme::Look::ALL {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            let tab = harness.connect_fake();
+            // Connected, it says where it points: the fixture's file.
+            assert!(harness.has("fixture.db"), "{}", look.name);
+            let session = harness.app.workspace(tab).unwrap().session;
+            harness.app.apply(crate::model::Action::Backend(
+                crate::backend::Event::Disconnected {
+                    session,
+                    error: tabletist_db::Error::ConnectionLost("server went away".into()),
+                },
+            ));
+            assert!(harness.has(&look.label("Disconnected")), "{}", look.name);
+            assert!(!harness.has("fixture.db"), "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn many_chips_share_the_bar_and_the_one_showing_stays_whole() {
+        for look in crate::theme::Look::ALL {
+            let mut harness = Harness::with_size(egui::vec2(720.0, 480.0));
+            harness.set_look(look);
+            harness.connect_fake();
+            for number in 2..=8 {
+                connect_another(&mut harness, &format!("Connection number {number}"));
+            }
+            let tree = harness.settle();
+            let bounds = |label: &str, role| {
+                crate::testing::bounds(&tree, label, role)
+                    .unwrap_or_else(|| panic!("{label} missing in {}", look.name))
+            };
+            let connections = bounds("Connections", egui::accesskit::Role::Button);
+            let disconnect = bounds("Disconnect", egui::accesskit::Role::Button);
+            // The last one shows: its chip is whole, between the buttons.
+            let own = bounds("Database", egui::accesskit::Role::ComboBox);
+            assert!(own.left() > connections.right(), "{}", look.name);
+            assert!(own.right() < disconnect.left(), "{}", look.name);
+            assert!(own.width() > 60.0, "{}: {own:?}", look.name);
+            // No other chip reaches over either button.
+            let others: Vec<_> = tree
+                .nodes
+                .iter()
+                .filter(|(_, node)| {
+                    node.label()
+                        .is_some_and(|label| label.starts_with("Switch to"))
+                })
+                .filter_map(|(_, node)| node.bounds())
+                .collect();
+            assert!(!others.is_empty(), "{}", look.name);
+            for chip in others {
+                assert!(chip.x0 as f32 >= connections.right(), "{}", look.name);
+                assert!(chip.x1 as f32 <= disconnect.left(), "{}", look.name);
+            }
         }
     }
 
@@ -6405,7 +6503,7 @@ mod tests {
         // One connection: its bar, under the environment stripe.
         let first = harness.connect_fake();
         let tree = harness.settle();
-        let bar = middle_of(&tree, "Fixture");
+        let bar = middle_of(&tree, "Connections");
         assert!(
             (line(&harness) - bar).abs() < 1.0,
             "the connection bar at {bar}, the buttons at {}",

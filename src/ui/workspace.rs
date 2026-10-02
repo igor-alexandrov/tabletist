@@ -14,9 +14,9 @@ use crate::ui::widgets;
 
 /// The connection bar's height.
 pub fn bar_height(look: &Look) -> f32 {
-    // macOS: 48 and a 3 pt stripe above, a 1 pt rule below. Omarchy: 36
+    // macOS: 56 and a 3 pt stripe above, a 1 pt rule below. Omarchy: 48
     // and the rule.
-    if look.terminal { 37.0 } else { 52.0 }
+    if look.terminal { 49.0 } else { 60.0 }
 }
 
 /// The macOS bar's stripe in the environment colour.
@@ -148,15 +148,15 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
         });
 }
 
-/// What the connection bar says about one connection.
+/// What the connection bar says: the open connections, and more about the
+/// one the bar belongs to.
 struct BarInfo {
-    name: String,
     env: crate::env::Environment,
-    host: String,
     database: String,
     databases: Vec<String>,
     tls: Option<(&'static str, Tone)>,
     ssh_host: Option<String>,
+    chips: Vec<Chip>,
 }
 
 /// How a status reads: fine, or a warning.
@@ -166,15 +166,32 @@ enum Tone {
     Warn,
 }
 
+/// How a connection's session stands, as its chip shows it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Link {
+    Connected,
+    Connecting,
+    Disconnected,
+    Cancelled,
+}
+
+/// One open connection in the bar.
+struct Chip {
+    tab: ConnTabId,
+    /// Whether the bar is this connection's own.
+    own: bool,
+    name: String,
+    env: crate::env::Environment,
+    /// Under the name: the database (a file's name for SQLite), or how the
+    /// session stands while it is not connected.
+    line: String,
+    link: Link,
+}
+
 fn bar_info(app: &App, tab: ConnTabId) -> Option<BarInfo> {
     let workspace = app.workspace(tab)?;
     let spec = &workspace.spec;
     let sqlite = workspace.driver == tabletist_db::Driver::Sqlite;
-    let host = if sqlite {
-        spec.summary()
-    } else {
-        format!("{}:{}", spec.host, spec.port)
-    };
     // Local traffic never crosses a network, so its TLS says nothing; a
     // remote connection always says how far it can be trusted.
     let remote = !sqlite && !crate::model::is_local_host(&spec.host);
@@ -185,9 +202,7 @@ fn bar_info(app: &App, tab: ConnTabId) -> Option<BarInfo> {
         (text, if warn { Tone::Warn } else { Tone::Good })
     });
     Some(BarInfo {
-        name: workspace.name.clone(),
         env: workspace.environment,
-        host,
         database: if sqlite {
             String::new()
         } else {
@@ -196,11 +211,207 @@ fn bar_info(app: &App, tab: ConnTabId) -> Option<BarInfo> {
         databases: workspace.databases.value.clone().unwrap_or_default(),
         tls,
         ssh_host: spec.ssh.as_ref().map(|ssh| ssh.host.clone()),
+        chips: chips(app, tab),
     })
 }
 
-/// The connection bar: the connection's environment colour behind its
-/// name, where it points, and the way out.
+/// A chip for each open connection, in the header's order. `own` is the
+/// connection whose bar this is.
+fn chips(app: &App, own: ConnTabId) -> Vec<Chip> {
+    app.open_connections()
+        .map(|(tab, workspace)| {
+            let (link, state) = match &workspace.status {
+                SessionStatus::Connected => (Link::Connected, None),
+                SessionStatus::Connecting { .. } => (Link::Connecting, Some("Connecting…")),
+                SessionStatus::Disconnected(_) => (Link::Disconnected, Some("Disconnected")),
+                SessionStatus::Cancelled => (Link::Cancelled, Some("Cancelled")),
+            };
+            let line = match state {
+                Some(state) => app.look.label(&gettext(app.locale, state)),
+                None => target(workspace),
+            };
+            Chip {
+                tab,
+                own: tab == own,
+                name: workspace.name.clone(),
+                env: workspace.environment,
+                line,
+                link,
+            }
+        })
+        .collect()
+}
+
+/// Where a connection points, in a word: its database, or the file's name
+/// for SQLite.
+fn target(workspace: &crate::model::Workspace) -> String {
+    match &workspace.spec.sqlite_path {
+        Some(path) => crate::model::file_name(&path.display().to_string()),
+        None => workspace.spec.database.clone(),
+    }
+}
+
+/// The narrowest a chip's text gets. Chips that do not fit even so are
+/// clipped at the row's end.
+const FLOOR: f32 = 48.0;
+
+/// The widest a chip's text may be so that `columns` take `room` at most:
+/// the wider ones are cut to it, the others keep their width. Never under
+/// `FLOOR`.
+fn text_cap(columns: &[f32], room: f32) -> f32 {
+    let widest = columns.iter().copied().fold(0.0, f32::max);
+    let used = |cap: f32| columns.iter().map(|width| width.min(cap)).sum::<f32>();
+    if used(widest) <= room {
+        return widest;
+    }
+    let (mut fits, mut too_wide) = (FLOOR.min(widest), widest);
+    for _ in 0..24 {
+        let middle = (fits + too_wide) / 2.0;
+        if used(middle) <= room {
+            fits = middle;
+        } else {
+            too_wide = middle;
+        }
+    }
+    fits
+}
+
+/// How the bar's row is shared.
+#[derive(Debug, PartialEq)]
+struct Fit {
+    /// How many of the pills show.
+    pills: usize,
+    /// The widest a chip's text may be.
+    cap: f32,
+}
+
+/// Shares `room` between the chips and the pills after them, each `gap`
+/// from the last. A chip is `(fixed, column)`: what it draws around its
+/// text, and its text's own width. The pills give way first, from the
+/// last; then the widest texts are cut.
+fn fit(chips: &[(f32, f32)], pills: &[f32], gap: f32, room: f32) -> Fit {
+    let fixed = chips.iter().map(|(fixed, _)| fixed).sum::<f32>()
+        + gap * chips.len().saturating_sub(1) as f32;
+    let columns: Vec<f32> = chips.iter().map(|(_, column)| *column).collect();
+    let natural = fixed + columns.iter().sum::<f32>();
+    let after = |shown: usize| pills[..shown].iter().map(|pill| gap + pill).sum::<f32>();
+    let mut shown = pills.len();
+    while shown > 0 && natural + after(shown) > room {
+        shown -= 1;
+    }
+    Fit {
+        pills: shown,
+        cap: text_cap(&columns, room - fixed - after(shown)),
+    }
+}
+
+/// Where each chip goes in `row`: `widths` laid from its left, `gap`
+/// apart, slid left by as much as brings the bar's own chip (`own`) wholly
+/// into the row when they overflow it.
+fn place(
+    widths: &[f32],
+    own: Option<usize>,
+    gap: f32,
+    row: Rect,
+    y: f32,
+    height: f32,
+) -> Vec<Rect> {
+    let mut rects = Vec::with_capacity(widths.len());
+    let mut x = row.left();
+    for width in widths {
+        rects.push(Rect::from_min_size(
+            pos2(x, y - height / 2.0),
+            vec2(*width, height),
+        ));
+        x += width + gap;
+    }
+    let over = own
+        .and_then(|own| rects.get(own))
+        .map_or(0.0, |own| (own.right() - row.right()).max(0.0));
+    for rect in &mut rects {
+        *rect = rect.translate(vec2(-over, 0.0));
+    }
+    rects
+}
+
+/// The colour that says how a chip's session stands: its environment's
+/// while connected.
+fn link_color(link: Link, env: &crate::env::EnvColors, palette: &Palette) -> egui::Color32 {
+    match link {
+        Link::Connected => env.base(),
+        Link::Connecting => palette.warning,
+        Link::Disconnected => palette.danger,
+        Link::Cancelled => palette.dim,
+    }
+}
+
+/// What a click on another connection's chip is announced as.
+fn switch_label(chip: &Chip, look: &Look, locale: crate::i18n::Locale) -> String {
+    format!(
+        "{} {} · {}",
+        gettext(locale, "Switch to"),
+        chip.name,
+        chip.env.label(crate::env::Platform::of(look))
+    )
+}
+
+/// Announces the bar's own chip: the database switcher.
+fn announce_switcher(
+    response: &egui::Response,
+    info: &BarInfo,
+    switchable: bool,
+    locale: crate::i18n::Locale,
+) {
+    response.widget_info(|| {
+        let mut announced = egui::WidgetInfo::labeled(
+            egui::WidgetType::ComboBox,
+            switchable,
+            gettext(locale, "Database"),
+        );
+        announced.current_text_value = Some(display_safe(&info.database).into_owned());
+        announced
+    });
+}
+
+/// The pop-up of the server's other databases, under the bar's own chip.
+fn database_menu(
+    response: &egui::Response,
+    tab: ConnTabId,
+    info: &BarInfo,
+    look: &Look,
+    actions: &mut Vec<Action>,
+) {
+    let role = TextRole::pick(look, TextRole::MonoSecondary, TextRole::OSecondary);
+    egui::Popup::menu(response).show(|ui| {
+        ui.set_min_width(response.rect.width());
+        for database in &info.databases {
+            // Database names come from the server: nothing hidden.
+            let text = Text::one(
+                look,
+                role,
+                &display_safe(database),
+                egui::Color32::PLACEHOLDER,
+            )
+            .layout(ui.ctx());
+            if ui
+                .add(egui::Button::selectable(
+                    *database == info.database,
+                    text.galley,
+                ))
+                .clicked()
+                && *database != info.database
+            {
+                actions.push(Action::SwitchDatabase {
+                    tab,
+                    database: database.clone(),
+                });
+            }
+        }
+    });
+}
+
+/// The connection bar: the connection's environment colour behind the open
+/// connections, and the way out.
 fn top_bar(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
     let locale = app.locale;
     let palette = app.palette;
@@ -275,8 +486,9 @@ fn top_bar(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
     app.actions.extend(actions);
 }
 
-/// macOS: the Connections button, a box with the name, host and database
-/// (a pop-up of the other databases), the read-only pill, and Disconnect.
+/// macOS: the Connections button, a chip for each open connection (the
+/// bar's own is a pop-up of the server's other databases), the read-only
+/// pill, and Disconnect.
 #[allow(clippy::too_many_arguments)] // one call site; the pieces are unrelated
 fn mac_bar(
     ui: &mut egui::Ui,
@@ -328,150 +540,6 @@ fn mac_bar(
             actions.push(Action::NewConnTab);
         }
     }
-    // The crumb, 12 on: name, host, "/", database, and the pop-up's
-    // chevrons, 8 apart and 10 in from its edges.
-    let name = Text::one(look, TextRole::UiBodySemibold, &info.name, palette.text).layout(ui.ctx());
-    let host = Text::one(look, TextRole::UiBody, &info.host, palette.dim).layout(ui.ctx());
-    let slash = Text::one(
-        look,
-        TextRole::UiBody,
-        "/",
-        palette.border.lerp_to_gamma(palette.faint, 0.35),
-    )
-    .layout(ui.ctx());
-    let database = Text::one(
-        look,
-        TextRole::MonoSecondary,
-        &display_safe(&info.database),
-        palette.text,
-    )
-    .layout(ui.ctx());
-    let switchable = info.databases.len() > 1;
-    let mut parts = vec![name.width(), host.width()];
-    if !info.database.is_empty() {
-        parts.push(slash.width());
-        parts.push(database.width());
-    }
-    if switchable {
-        parts.push(12.0);
-    }
-    let width = 20.0 + parts.iter().sum::<f32>() + 8.0 * (parts.len() - 1) as f32;
-    let crumb = Rect::from_min_size(
-        pos2(connections.right() + 12.0, center - 16.0),
-        vec2(width, 32.0),
-    );
-    let response = ui.interact(crumb, ui.id().with("database"), Sense::click());
-    response.widget_info(|| {
-        let mut info_ = egui::WidgetInfo::labeled(
-            egui::WidgetType::ComboBox,
-            switchable,
-            gettext(locale, "Database"),
-        );
-        info_.current_text_value = Some(display_safe(&info.database).into_owned());
-        info_
-    });
-    ui.painter().rect_filled(crumb, corner, face(0.7));
-    ui.painter()
-        .rect_stroke(crumb, corner, hair, StrokeKind::Inside);
-    let mut x = crumb.left() + 10.0;
-    let mut place = |laid: &crate::typography::Laid, announced: bool| {
-        laid.paint_left(ui.painter(), x, center);
-        if announced {
-            widgets::announce(
-                ui,
-                Rect::from_min_size(pos2(x, center - 8.0), vec2(laid.width().max(1.0), 16.0)),
-                laid.galley.text(),
-            );
-        }
-        x += laid.width() + 8.0;
-    };
-    place(&name, true);
-    place(&host, true);
-    if !info.database.is_empty() {
-        place(&slash, false);
-        place(&database, true);
-    }
-    if switchable {
-        Icon::ChevronsUpDown.image(palette.dim, 12.0).paint_at(
-            ui,
-            Rect::from_center_size(pos2(x + 6.0, center), vec2(12.0, 12.0)),
-        );
-        egui::Popup::menu(&response).show(|ui| {
-            ui.set_min_width(crumb.width());
-            for database in &info.databases {
-                // Database names come from the server: nothing hidden.
-                let text = Text::one(
-                    look,
-                    TextRole::MonoSecondary,
-                    &display_safe(database),
-                    egui::Color32::PLACEHOLDER,
-                )
-                .layout(ui.ctx());
-                if ui
-                    .add(egui::Button::selectable(
-                        *database == info.database,
-                        text.galley,
-                    ))
-                    .clicked()
-                    && *database != info.database
-                {
-                    actions.push(Action::SwitchDatabase {
-                        tab,
-                        database: database.clone(),
-                    });
-                }
-            }
-        });
-    }
-    // Pills after the crumb, 12 on: read-only, then TLS and SSH when remote.
-    let mut left = crumb.right() + 12.0;
-    let mut pill = |icon: Option<Icon>, text: &str, color: egui::Color32| {
-        let label = Text::one(look, TextRole::Secondary, text, color);
-        let icon_width = if icon.is_some() { 12.0 + 6.0 } else { 0.0 };
-        let label = label.layout(ui.ctx());
-        let rect = Rect::from_min_size(
-            pos2(left, center - 13.0),
-            vec2(20.0 + icon_width + label.width(), 26.0),
-        );
-        let corner = CornerRadius::same(13);
-        ui.painter().rect_filled(rect, corner, face(0.8));
-        ui.painter()
-            .rect_stroke(rect, corner, hair, StrokeKind::Inside);
-        let mut x = rect.left() + 10.0;
-        if let Some(icon) = icon {
-            icon.image(color, 12.0).paint_at(
-                ui,
-                Rect::from_center_size(pos2(x + 6.0, center), vec2(12.0, 12.0)),
-            );
-            x += icon_width;
-        }
-        label.paint_left(ui.painter(), x, center);
-        widgets::announce(
-            ui,
-            Rect::from_min_size(pos2(x, center - 8.0), vec2(label.width(), 16.0)),
-            text,
-        );
-        left = rect.right() + 12.0;
-    };
-    pill(
-        Some(Icon::Lock),
-        &gettext(locale, "Read-only"),
-        palette.secondary,
-    );
-    if let Some((text, tone)) = info.tls {
-        let color = match tone {
-            Tone::Good => palette.success,
-            Tone::Warn => palette.warning,
-        };
-        pill(Some(Icon::Lock), &gettext(locale, text), color);
-    }
-    if let Some(host) = &info.ssh_host {
-        pill(
-            None,
-            &format!("{} {host}", gettext(locale, "via SSH")),
-            palette.secondary,
-        );
-    }
     // Disconnect, 12 in from the right: an icon and its label, 6 apart.
     let label = gettext(locale, "Disconnect");
     let text = Text::one(look, TextRole::UiBody, &label, palette.secondary).layout(ui.ctx());
@@ -494,10 +562,192 @@ fn mac_bar(
     if response.clicked() {
         actions.push(Action::Disconnect(tab));
     }
+
+    // The row between them, 12 from each: the chips, then the pills. What
+    // does not fit is cut at the row's end.
+    let left = connections.right() + 12.0;
+    let row = Rect::from_min_max(
+        pos2(left, rect.top()),
+        pos2((button.left() - 12.0).max(left), rect.bottom()),
+    );
+    let mut strip = ui.new_child(egui::UiBuilder::new().id_salt("chips").max_rect(row));
+    strip.shrink_clip_rect(row);
+    let ui = &mut strip;
+    let switchable = info.databases.len() > 1;
+    let platform = crate::env::Platform::of(look);
+    // A chip: 12, an 8 pt dot, 10, the name and its environment over the
+    // database, and 12 (the bar's own: 10, the pop-up's chevrons, 10).
+    let name_role = |chip: &Chip| {
+        if chip.own {
+            TextRole::UiBodySemibold
+        } else {
+            TextRole::UiBodyStrong
+        }
+    };
+    let line_role = |chip: &Chip| {
+        if chip.link == Link::Connected {
+            TextRole::MonoSecondary
+        } else {
+            TextRole::Secondary
+        }
+    };
+    let measured: Vec<(f32, f32)> = info
+        .chips
+        .iter()
+        .map(|chip| {
+            let name = name_role(chip).width(ui.ctx(), look.faces, &chip.name);
+            let badge = env_badge_width(ui, chip.env, Badge::Chip, look);
+            let line = line_role(chip).width(ui.ctx(), look.faces, &display_safe(&chip.line));
+            let tail = if chip.own && switchable {
+                10.0 + 12.0 + 10.0
+            } else {
+                12.0
+            };
+            (30.0 + tail, (name + 6.0 + badge).max(line))
+        })
+        .collect();
+    // Pills after the chips: read-only, then TLS and SSH when remote.
+    let mut pills = vec![(
+        Some(Icon::Lock),
+        gettext(locale, "Read-only").into_owned(),
+        palette.secondary,
+    )];
+    if let Some((text, tone)) = info.tls {
+        let color = match tone {
+            Tone::Good => palette.success,
+            Tone::Warn => palette.warning,
+        };
+        pills.push((Some(Icon::Lock), gettext(locale, text).into_owned(), color));
+    }
+    if let Some(host) = &info.ssh_host {
+        pills.push((
+            None,
+            format!("{} {host}", gettext(locale, "via SSH")),
+            palette.secondary,
+        ));
+    }
+    let pill_widths: Vec<f32> = pills
+        .iter()
+        .map(|(icon, text, _)| {
+            let icon = if icon.is_some() { 12.0 + 6.0 } else { 0.0 };
+            20.0 + icon + TextRole::Secondary.width(ui.ctx(), look.faces, text)
+        })
+        .collect();
+    let shared = fit(&measured, &pill_widths, 12.0, row.width());
+    let widths: Vec<f32> = measured
+        .iter()
+        .map(|(fixed, column)| fixed + column.min(shared.cap))
+        .collect();
+    let own = info.chips.iter().position(|chip| chip.own);
+    let rects = place(&widths, own, 12.0, row, center, 40.0);
+    for ((chip, rect), (fixed, _)) in info.chips.iter().zip(&rects).zip(&measured) {
+        let hit = rect.intersect(row);
+        if !hit.is_positive() {
+            continue;
+        }
+        let colors = crate::env::env_colors(chip.env, platform, palette);
+        let response = ui.interact(hit, ui.id().with(("chip", chip.tab.0)), Sense::click());
+        let (name_color, fill) = if chip.own {
+            announce_switcher(&response, info, switchable, locale);
+            (palette.text, Some(face(0.85)))
+        } else {
+            let label = switch_label(chip, look, locale);
+            response
+                .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &label));
+            (palette.secondary, response.hovered().then(|| face(0.5)))
+        };
+        if let Some(fill) = fill {
+            ui.painter().rect_filled(*rect, corner, fill);
+        }
+        ui.painter()
+            .rect_stroke(*rect, corner, hair, StrokeKind::Inside);
+        ui.painter().circle_filled(
+            pos2(rect.left() + 16.0, center),
+            4.0,
+            link_color(chip.link, &colors, palette),
+        );
+        // Two lines 2 apart, centred on the bar's line; what the chip has
+        // no room for is cut with an ellipsis.
+        let (top, bottom) = (center - 8.0, center + 9.0);
+        let x = rect.left() + 30.0;
+        let room = rect.width() - fixed;
+        let badge = env_badge_width(ui, chip.env, Badge::Chip, look);
+        let role = name_role(chip);
+        let name = crate::ui::grid::ellipsize(&chip.name, room - 6.0 - badge, false, |text| {
+            role.width(ui.ctx(), look.faces, text)
+        });
+        let name = Text::one(look, role, &name, name_color).layout(ui.ctx());
+        name.paint_left(ui.painter(), x, top);
+        env_badge(
+            ui,
+            x + name.width() + 6.0,
+            top,
+            chip.env,
+            &colors,
+            Badge::Chip,
+            look,
+        );
+        let role = line_role(chip);
+        let line_color = if chip.link == Link::Connected {
+            palette.dim
+        } else {
+            link_color(chip.link, &colors, palette)
+        };
+        let safe = display_safe(&chip.line);
+        let line = crate::ui::grid::ellipsize(&safe, room, false, |text| {
+            role.width(ui.ctx(), look.faces, text)
+        });
+        let line = Text::one(look, role, &line, line_color).layout(ui.ctx());
+        line.paint_left(ui.painter(), x, bottom);
+        if chip.own {
+            // The bar's own connection is read as text too.
+            for (laid, y) in [(&name, top), (&line, bottom)] {
+                widgets::announce(
+                    ui,
+                    Rect::from_min_size(pos2(x, y - 8.0), vec2(laid.width().max(1.0), 16.0)),
+                    laid.galley.text(),
+                );
+            }
+            if switchable {
+                Icon::ChevronsUpDown.image(palette.dim, 12.0).paint_at(
+                    ui,
+                    Rect::from_center_size(pos2(rect.right() - 16.0, center), vec2(12.0, 12.0)),
+                );
+                database_menu(&response, tab, info, look, actions);
+            }
+        } else if response.clicked() {
+            actions.push(Action::ActivateConnTab(chip.tab));
+        }
+    }
+    let mut left = rects.last().map_or(row.left(), |last| last.right() + 12.0);
+    for ((icon, text, color), width) in pills.iter().zip(&pill_widths).take(shared.pills) {
+        let rect = Rect::from_min_size(pos2(left, center - 13.0), vec2(*width, 26.0));
+        let corner = CornerRadius::same(13);
+        ui.painter().rect_filled(rect, corner, face(0.8));
+        ui.painter()
+            .rect_stroke(rect, corner, hair, StrokeKind::Inside);
+        let mut x = rect.left() + 10.0;
+        if let Some(icon) = icon {
+            icon.image(*color, 12.0).paint_at(
+                ui,
+                Rect::from_center_size(pos2(x + 6.0, center), vec2(12.0, 12.0)),
+            );
+            x += 12.0 + 6.0;
+        }
+        let label = Text::one(look, TextRole::Secondary, text, *color).layout(ui.ctx());
+        label.paint_left(ui.painter(), x, center);
+        widgets::announce(
+            ui,
+            Rect::from_min_size(pos2(x, center - 8.0), vec2(label.width(), 16.0)),
+            text,
+        );
+        left = rect.right() + 12.0;
+    }
 }
 
-/// Omarchy: the Connections button, the environment badge, the name, where
-/// it points, read-only, and the key that closes the connection.
+/// Omarchy: the Connections button, a chip for each open connection (the
+/// bar's own is a pop-up of the server's other databases), read-only, and
+/// the key that closes the connection.
 #[allow(clippy::too_many_arguments)] // one call site; the pieces are unrelated
 fn terminal_bar(
     ui: &mut egui::Ui,
@@ -551,58 +801,6 @@ fn terminal_bar(
         }
         x = button.right() + 12.0;
     }
-    x += env_badge(ui, x, center, info.env, env, Badge::Tracked, look) + 12.0;
-    x += widgets::paint_label(
-        ui,
-        x,
-        center,
-        Text::one(look, TextRole::OGroup, &info.name, palette.text),
-    ) + 12.0;
-    let target = if info.database.is_empty() {
-        info.host.clone()
-    } else {
-        format!("{}/{}", info.host, display_safe(&info.database))
-    };
-    x += widgets::paint_label(
-        ui,
-        x,
-        center,
-        Text::one(look, TextRole::OBody, &target, palette.dim),
-    ) + 12.0;
-    let mut tag = |text: &str, color: egui::Color32| {
-        let role = TextRole::OCaption;
-        let line = role.row_height(ui.ctx(), look.faces);
-        let label = Text::one(look, role, text, color);
-        let rect = Rect::from_min_size(
-            pos2(x, center - (line + 2.0) / 2.0),
-            vec2(
-                widgets::measure(ui, label_copy(look, role, text)) + 14.0 + 2.0,
-                line + 2.0,
-            ),
-        );
-        ui.painter().rect_stroke(
-            rect,
-            CornerRadius::same(3),
-            Stroke::new(1.0, connection_line),
-            StrokeKind::Inside,
-        );
-        widgets::paint_label(ui, x + 8.0, center, label);
-        x = rect.right() + 12.0;
-    };
-    tag(&gettext(locale, "read-only"), palette.text);
-    if let Some((text, tone)) = info.tls {
-        let color = match tone {
-            Tone::Good => palette.success,
-            Tone::Warn => palette.warning,
-        };
-        tag(&gettext(locale, text), color);
-    }
-    if let Some(host) = &info.ssh_host {
-        tag(
-            &format!("{} {host}", gettext(locale, "via SSH")),
-            palette.dim,
-        );
-    }
     // The way out, a muted note that also answers a click.
     let note = "ctrl+shift+w disconnect";
     let width = widgets::measure(ui, label_copy(look, TextRole::OSecondary, note));
@@ -628,6 +826,174 @@ fn terminal_bar(
     if response.clicked() {
         actions.push(Action::Disconnect(tab));
     }
+
+    // The row between them: the chips, then the tags. What does not fit is
+    // cut at the row's end, 12 before the note.
+    let row = Rect::from_min_max(
+        pos2(x, rect.top()),
+        pos2((hit.left() - 12.0).max(x), rect.bottom()),
+    );
+    let mut strip = ui.new_child(egui::UiBuilder::new().id_salt("chips").max_rect(row));
+    strip.shrink_clip_rect(row);
+    let ui = &mut strip;
+    let switchable = info.databases.len() > 1;
+    let platform = crate::env::Platform::of(look);
+    let arrow = widgets::measure(ui, label_copy(look, TextRole::OBody, "▾"));
+    // A chip: 5, the environment's tag, 8, the name over the database, and
+    // 8 (the bar's own: 8, the pop-up's arrow, 8).
+    let name_role = |chip: &Chip| {
+        if chip.own {
+            TextRole::OGroup
+        } else {
+            TextRole::OBody
+        }
+    };
+    let badge_style = |chip: &Chip| {
+        if chip.own {
+            Badge::Tracked
+        } else {
+            Badge::Outlined
+        }
+    };
+    let small = TextRole::OSecondary;
+    let measured: Vec<(f32, f32)> = info
+        .chips
+        .iter()
+        .map(|chip| {
+            let badge = env_badge_width(ui, chip.env, badge_style(chip), look);
+            let name = name_role(chip).width(ui.ctx(), look.faces, &chip.name);
+            let line = small.width(ui.ctx(), look.faces, &display_safe(&chip.line));
+            let tail = if chip.own && switchable {
+                8.0 + arrow + 8.0
+            } else {
+                8.0
+            };
+            (5.0 + badge + 8.0 + tail, name.max(line))
+        })
+        .collect();
+    // Tags after the chips: read-only, then TLS and SSH when remote.
+    let mut tags = vec![(gettext(locale, "read-only").into_owned(), palette.text)];
+    if let Some((text, tone)) = info.tls {
+        let color = match tone {
+            Tone::Good => palette.success,
+            Tone::Warn => palette.warning,
+        };
+        tags.push((gettext(locale, text).into_owned(), color));
+    }
+    if let Some(host) = &info.ssh_host {
+        tags.push((
+            format!("{} {host}", gettext(locale, "via SSH")),
+            palette.dim,
+        ));
+    }
+    let tag_role = TextRole::OCaption;
+    let tag_widths: Vec<f32> = tags
+        .iter()
+        .map(|(text, _)| widgets::measure(ui, label_copy(look, tag_role, text)) + 14.0 + 2.0)
+        .collect();
+    let shared = fit(&measured, &tag_widths, 12.0, row.width());
+    let widths: Vec<f32> = measured
+        .iter()
+        .map(|(fixed, column)| fixed + column.min(shared.cap))
+        .collect();
+    let own = info.chips.iter().position(|chip| chip.own);
+    let rects = place(&widths, own, 12.0, row, center, 38.0);
+    let corner = CornerRadius::same(3);
+    for ((chip, rect), (fixed, _)) in info.chips.iter().zip(&rects).zip(&measured) {
+        let hit = rect.intersect(row);
+        if !hit.is_positive() {
+            continue;
+        }
+        let colors = crate::env::env_colors(chip.env, platform, palette);
+        let response = ui.interact(hit, ui.id().with(("chip", chip.tab.0)), Sense::click());
+        // The bar's own chip: the panel's colour inside its environment's
+        // line. The others: the window's line, the text's when pointed at.
+        let line = if chip.own {
+            announce_switcher(&response, info, switchable, locale);
+            ui.painter().rect_filled(*rect, corner, palette.panel);
+            colors.base()
+        } else {
+            let label = switch_label(chip, look, locale);
+            response
+                .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &label));
+            if response.hovered() {
+                palette.dim
+            } else {
+                palette.outline
+            }
+        };
+        ui.painter()
+            .rect_stroke(*rect, corner, Stroke::new(1.0, line), StrokeKind::Inside);
+        let style = badge_style(chip);
+        let badge = env_badge(
+            ui,
+            rect.left() + 5.0,
+            center,
+            chip.env,
+            &colors,
+            style,
+            look,
+        );
+        // A 13 pt name over a 12 pt line, centred on the bar's line; what
+        // the chip has no room for is cut with an ellipsis.
+        let (top, bottom) = (center - 7.5, center + 8.0);
+        let x = rect.left() + 5.0 + badge + 8.0;
+        let room = rect.width() - fixed;
+        let role = name_role(chip);
+        let name = crate::ui::grid::ellipsize(&chip.name, room, false, |text| {
+            role.width(ui.ctx(), look.faces, text)
+        });
+        let name = Text::one(look, role, &name, palette.text).layout(ui.ctx());
+        name.paint_left(ui.painter(), x, top);
+        let line_color = if chip.link == Link::Connected {
+            palette.dim
+        } else {
+            link_color(chip.link, &colors, palette)
+        };
+        let safe = display_safe(&chip.line);
+        let line = crate::ui::grid::ellipsize(&safe, room, false, |text| {
+            small.width(ui.ctx(), look.faces, text)
+        });
+        let line = Text::one(look, small, &line, line_color).layout(ui.ctx());
+        line.paint_left(ui.painter(), x, bottom);
+        if chip.own {
+            // The bar's own connection is read as text too.
+            for (laid, y) in [(&name, top), (&line, bottom)] {
+                widgets::announce(
+                    ui,
+                    Rect::from_min_size(pos2(x, y - 8.0), vec2(laid.width().max(1.0), 16.0)),
+                    laid.galley.text(),
+                );
+            }
+            if switchable {
+                widgets::paint_text(
+                    ui,
+                    rect.right() - 8.0 - arrow,
+                    center,
+                    Text::one(look, TextRole::OBody, "▾", palette.dim),
+                );
+                database_menu(&response, tab, info, look, actions);
+            }
+        } else if response.clicked() {
+            actions.push(Action::ActivateConnTab(chip.tab));
+        }
+    }
+    let mut x = rects.last().map_or(row.left(), |last| last.right() + 12.0);
+    let line = tag_role.row_height(ui.ctx(), look.faces);
+    for ((text, color), width) in tags.iter().zip(&tag_widths).take(shared.pills) {
+        let rect = Rect::from_min_size(
+            pos2(x, center - (line + 2.0) / 2.0),
+            vec2(*width, line + 2.0),
+        );
+        ui.painter().rect_stroke(
+            rect,
+            CornerRadius::same(3),
+            Stroke::new(1.0, connection_line),
+            StrokeKind::Inside,
+        );
+        widgets::paint_label(ui, x + 8.0, center, Text::one(look, tag_role, text, *color));
+        x = rect.right() + 12.0;
+    }
 }
 
 /// Text for measuring only: never painted, so never recorded.
@@ -650,10 +1016,41 @@ fn connections_hint(look: &Look, locale: crate::i18n::Locale) -> String {
 pub enum Badge {
     /// macOS: a rounded tint, the label as it is.
     Mac,
-    /// The terminal's solid upper-case tag, letter-spaced (the top bar).
+    /// macOS, in the connection bar's chips: smaller, six at its sides.
+    Chip,
+    /// The terminal's solid upper-case tag, letter-spaced (the connection
+    /// bar's own chip).
     Tracked,
+    /// The same tag as an outline in the environment's colour (the bar's
+    /// other chips).
+    Outlined,
     /// The terminal's tag without letter spacing (the connections list).
     Plain,
+}
+
+impl Badge {
+    /// Whose label it shows, the label's role, the room at its sides, and
+    /// its corner.
+    fn shape(self) -> (crate::env::Platform, TextRole, f32, u8) {
+        use crate::env::Platform::{Native, Omarchy};
+        match self {
+            Self::Mac => (Native, TextRole::EnvTag, 7.0, 10),
+            Self::Chip => (Native, TextRole::ChipEnv, 6.0, 8),
+            Self::Tracked | Self::Outlined => (Omarchy, TextRole::OEnvLabel, 6.0, 2),
+            Self::Plain => (Omarchy, TextRole::OBadge, 7.0, 3),
+        }
+    }
+}
+
+/// The width [`env_badge`] takes.
+pub fn env_badge_width(
+    ui: &egui::Ui,
+    env: crate::env::Environment,
+    style: Badge,
+    look: &Look,
+) -> f32 {
+    let (platform, role, pad, _) = style.shape();
+    role.width(ui.ctx(), look.faces, env.label(platform)) + 2.0 * pad
 }
 
 /// An environment badge at `x`, centred on `y`. Returns its width.
@@ -667,33 +1064,31 @@ pub fn env_badge(
     style: Badge,
     look: &Look,
 ) -> f32 {
-    // One point above and below the text, seven at its sides.
-    let (text, role, corner) = match style {
-        Badge::Tracked => (
-            env.label(crate::env::Platform::Omarchy),
-            TextRole::OEnvLabel,
-            3,
-        ),
-        Badge::Plain => (
-            env.label(crate::env::Platform::Omarchy),
-            TextRole::OBadge,
-            3,
-        ),
-        Badge::Mac => (
-            env.label(crate::env::Platform::Native),
-            TextRole::EnvTag,
-            10,
-        ),
+    // One point above and below the text.
+    let (platform, role, pad, corner) = style.shape();
+    let outlined = style == Badge::Outlined;
+    let ink = if outlined {
+        colors.base()
+    } else {
+        colors.badge_fg()
     };
-    let pad = 7.0;
-    let laid = Text::one(look, role, text, colors.badge_fg()).layout(ui.ctx());
+    let laid = Text::one(look, role, env.label(platform), ink).layout(ui.ctx());
     let height = laid.height() + 2.0;
     let rect = Rect::from_min_size(
         pos2(x, y - height / 2.0),
         vec2(laid.width() + 2.0 * pad, height),
     );
-    ui.painter()
-        .rect_filled(rect, CornerRadius::same(corner), colors.badge_bg());
+    let corner = CornerRadius::same(corner);
+    if outlined {
+        ui.painter().rect_stroke(
+            rect,
+            corner,
+            Stroke::new(1.0, colors.base()),
+            StrokeKind::Inside,
+        );
+    } else {
+        ui.painter().rect_filled(rect, corner, colors.badge_bg());
+    }
     laid.paint_left(ui.painter(), x + pad, y);
     rect.width()
 }
@@ -933,6 +1328,52 @@ fn banner(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_rows_room_goes_to_the_chips_before_the_pills() {
+        // Two chips, 40 around texts of 100 and 60, and two pills, all 12
+        // apart: 252 for the chips, 406 with both pills.
+        let chips = [(40.0, 100.0), (40.0, 60.0)];
+        let pills = [80.0, 50.0];
+        assert_eq!(
+            fit(&chips, &pills, 12.0, 406.0),
+            Fit {
+                pills: 2,
+                cap: 100.0
+            }
+        );
+        // The last pill gives way first, then the other.
+        assert_eq!(fit(&chips, &pills, 12.0, 405.0).pills, 1);
+        assert_eq!(fit(&chips, &pills, 12.0, 300.0).pills, 0);
+        // Then the widest text is cut: 20 short leaves it 80.
+        let tight = fit(&chips, &pills, 12.0, 232.0);
+        assert_eq!(tight.pills, 0);
+        assert!((tight.cap - 80.0).abs() < 0.01, "{tight:?}");
+        // Under the narrower text, both are cut alike.
+        let tighter = fit(&chips, &pills, 12.0, 192.0);
+        assert!((tighter.cap - 50.0).abs() < 0.01, "{tighter:?}");
+        // Never under the floor.
+        assert_eq!(fit(&chips, &pills, 12.0, 10.0).cap, FLOOR);
+    }
+
+    #[test]
+    fn chips_that_overflow_slide_to_keep_the_bars_own_whole() {
+        // Three chips of 90, 12 apart, in a row of 200: the third ends at 394.
+        let row = Rect::from_min_max(pos2(100.0, 0.0), pos2(300.0, 40.0));
+        let widths = [90.0, 90.0, 90.0];
+        let first = place(&widths, Some(0), 12.0, row, 20.0, 40.0);
+        assert_eq!(first[0].left(), 100.0, "the first is whole where it is");
+        let last = place(&widths, Some(2), 12.0, row, 20.0, 40.0);
+        assert_eq!(last[2].right(), 300.0);
+        assert_eq!(last[0].left(), 6.0, "the others slide with it");
+        assert_eq!(last[2].center().y, 20.0);
+        // A row that holds them all slides nothing.
+        let wide = Rect::from_min_max(pos2(100.0, 0.0), pos2(500.0, 40.0));
+        assert_eq!(
+            place(&widths, Some(2), 12.0, wide, 20.0, 40.0)[0].left(),
+            100.0
+        );
+    }
 
     #[test]
     fn the_connections_hint_names_the_key_as_the_look_spells_it() {

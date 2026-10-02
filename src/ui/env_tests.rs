@@ -91,6 +91,57 @@ fn a_connected_tabs_dot_is_its_environments_colour() {
 }
 
 #[test]
+fn a_connections_chip_takes_its_environments_colour() {
+    for (look, palette) in setups() {
+        for env in Environment::ALL {
+            let mut harness = harness(look, palette);
+            let tab = harness.connect_fake();
+            harness.app.workspace_mut(tab).unwrap().environment = env;
+            // A second connection in another environment shows, so the
+            // colours found are the first chip's.
+            let other = if env == Environment::None {
+                Environment::Dev
+            } else {
+                Environment::None
+            };
+            harness.press(Key::O, Modifiers::COMMAND);
+            let second = harness.connect_fake();
+            harness.app.workspace_mut(second).unwrap().environment = other;
+            harness.settle();
+            let colors = colors(&harness, env);
+            let case = format!("{} dark={} {env:?}", look.name, palette.dark);
+            // The dot: small and square, where the stripe is neither.
+            let dot = |rect: egui::Rect| rect.width() == rect.height() && rect.width() < 16.0;
+            // Behind the other: a dot on macOS, an outlined tag in the
+            // terminal.
+            if look.terminal {
+                assert!(harness.strokes.contains(&colors.base()), "outline, {case}");
+                assert_eq!(
+                    harness.painted_color(label(&harness, env)),
+                    Some(colors.base()),
+                    "outlined tag, {case}"
+                );
+            } else {
+                assert!(filled(&harness, colors.base(), dot), "behind, {case}");
+            }
+            // Showing: the dot again, or the solid tag.
+            harness.app.apply(Action::ActivateConnTab(tab));
+            harness.settle();
+            if look.terminal {
+                assert!(filled(&harness, colors.badge_bg(), |_| true), "tag, {case}");
+                assert_eq!(
+                    harness.painted_color(label(&harness, env)),
+                    Some(colors.badge_fg()),
+                    "tag text, {case}"
+                );
+            } else {
+                assert!(filled(&harness, colors.base(), dot), "showing, {case}");
+            }
+        }
+    }
+}
+
+#[test]
 fn the_connections_list_shows_each_environment_in_its_colours() {
     for (look, palette) in setups() {
         let mut harness = harness(look, palette);

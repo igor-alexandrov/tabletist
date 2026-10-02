@@ -182,6 +182,15 @@ impl App {
         }
     }
 
+    /// The open connections with their tabs, in the order the header shows
+    /// them. The picker is not one of them.
+    pub fn open_connections(&self) -> impl Iterator<Item = (ConnTabId, &Workspace)> {
+        self.tabs.iter().filter_map(|tab| match &tab.content {
+            ConnTabContent::Workspace(workspace) => Some((tab.id, &**workspace)),
+            ConnTabContent::Picker(_) => None,
+        })
+    }
+
     pub fn tab_for_session(&self, session: SessionId) -> Option<ConnTabId> {
         self.tabs.iter().find_map(|tab| match &tab.content {
             ConnTabContent::Workspace(workspace) if workspace.session == session => Some(tab.id),
