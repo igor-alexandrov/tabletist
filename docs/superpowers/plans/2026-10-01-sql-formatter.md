@@ -29,7 +29,7 @@ Found while building the prototype; the spec was changed to say the same.
 - `STRAIGHT_JOIN` is not a head anywhere in the `SELECT` clause, not only before the list's first item.
 - A `,` that would follow a `--` comment goes on the next line, as `)` and `;` do.
 - `UPPERCASED` is public, so the MySQL integration test can ask the server about each word.
-- A word that touches a `@`, a `:`, a `$` or a number before it is a name: no head, its case kept. The tokenizer cuts `@from` in two where a server reads one token.
+- A word that touches a `@`, a `:`, a `$` or a number before it is a name: no head, its case kept. The tokenizer cuts `@from` in two where a server reads one token. The same for a word that a `$` or a number starting with `.` touches from the right (`limit$x`, `offset.1st`).
 - Queries nested more than 64 blocks deep stay on their line, and a join head has at most three leaders.
 - On MySQL a token that touches two touching minus signs stays on their line, whatever it is: a line break after `--` would make a comment of them.
 - A selected statement that does not start its line goes on from the column it stands at: its first head is not padded to the river, and columns on its first line count from there.
@@ -98,7 +98,7 @@ README.md, the spec                     docs
 - `Writer` keeps the output and the current column, counted in characters. `line(column)` starts a line, or uses the current one when it is still empty.
 - `cased` uppercases a keyword that is on `UPPERCASED` (or that `put` was told is structure) and does not stand beside a `.` (`named`).
 - `dashes` is the one MySQL rule: no line starts right after two touching minus signs.
-- `named` is what keeps a word from being read as structure: beside a `.`, or touching a sigil or a number before it (`Item::binds`). The tests' `sigils_hold` checks that such a word still touches its sigil, which the token check cannot see.
+- `named` is what keeps a word from being read as structure: beside a `.`, touching a sigil or a number before it (`Item::binds`), or touched from the right by what goes on with it (`Item::extends`). The tests' `sigils_hold` checks that such a word still touches its sigil, which the token check cannot see.
 - `moved` maps the cursor by counting token bytes before it.
 
 - [ ] **Step 1: Declare the module**
@@ -162,21 +162,31 @@ mod tests {
         let (old_tokens, new_tokens) = (visible(old_tokens), visible(new_tokens));
         let touching =
             |tokens: &[Token], at: usize| tokens[at - 1].range.end == tokens[at].range.start;
+        let word = |token: &Token| matches!(token.kind, TokenKind::Keyword | TokenKind::Identifier);
         (1..old_tokens.len()).all(|at| {
-            let (before, word) = (&old_tokens[at - 1], &old_tokens[at]);
-            let sigil = match before.kind {
-                TokenKind::Number => true,
-                TokenKind::Operator => matches!(&old[before.range.clone()], "@" | ":"),
-                TokenKind::Punctuation => old[before.range.clone()].starts_with('$'),
-                _ => false,
-            };
-            let bound = sigil
-                && matches!(word.kind, TokenKind::Keyword | TokenKind::Identifier)
-                && touching(&old_tokens, at);
-            // The word's case is as it was, too.
+            let (before, after) = (&old_tokens[at - 1], &old_tokens[at]);
+            let (first, second) = (&old[before.range.clone()], &old[after.range.clone()]);
+            // `@from`, `:limit`, `$offset`, `1st`: the word is the second.
+            let follows = word(after)
+                && match before.kind {
+                    TokenKind::Number => true,
+                    TokenKind::Operator => matches!(first, "@" | ":"),
+                    TokenKind::Punctuation => first.starts_with('$'),
+                    _ => false,
+                };
+            // `limit$x`, `offset.1st`: the word is the first.
+            let leads = word(before)
+                && match after.kind {
+                    TokenKind::Number => second.starts_with('.'),
+                    TokenKind::Punctuation => second.starts_with('$'),
+                    _ => false,
+                };
+            let bound = (follows || leads) && touching(&old_tokens, at);
+            // The words' case is as it was, too.
             !bound
                 || (touching(&new_tokens, at)
-                    && old[word.range.clone()] == new[new_tokens[at].range.clone()])
+                    && first == &new[new_tokens[at - 1].range.clone()]
+                    && second == &new[new_tokens[at].range.clone()])
         })
     }
 
@@ -604,6 +614,17 @@ mod tests {
             mysql("select 1from, 2 from t"),
             lines(&["SELECT 1from,", "       2", "  FROM t"])
         );
+        // A word may lead such a name as well: SQLite's `$` inside one,
+        // and a qualified name whose second part starts with a digit,
+        // which the tokenizer reads as a number with its `.`.
+        assert_eq!(
+            sqlite("select a from t where limit$x > 0"),
+            lines(&["SELECT a", "  FROM t", " WHERE limit$x > 0"])
+        );
+        assert_eq!(
+            mysql("select offset.1st, order.2nd from t"),
+            lines(&["SELECT offset.1st,", "       order.2nd", "  FROM t"])
+        );
         // Apart from the sigil it is the word it spells.
         assert_eq!(pg("select 1 from t"), lines(&["SELECT 1", "  FROM t"]));
         assert_eq!(
@@ -965,7 +986,7 @@ mod tests {
             as case when then else end union distinct limit offset in exists insert values \
             straight_join natural full cross inner having window fetch for intersect except \
             all recursive is not over a b.c t x. .y 's' \"q\" `q` $$d$$ E'e' $1 1 2.5 \
-            @from :limit $offset @end 1from @ : $ \
+            @from :limit $offset @end 1from limit$x offset.1st @ : $ .5 \
             ( ) [ ] , ; . * - / = : < > ! | # @ /*c*/ /*!e*/";
         let awkward = [
             "--x\n",
@@ -1386,6 +1407,17 @@ impl Item<'_> {
         match self.kind {
             TokenKind::Number => true,
             TokenKind::Operator => matches!(self.text, "@" | ":"),
+            TokenKind::Punctuation => self.text.starts_with('$'),
+            _ => false,
+        }
+    }
+
+    /// A `$`, and a number that starts with its `.`: what a server reads
+    /// as more of the word that touches it from the left (SQLite's
+    /// `limit$x`, the qualified name `offset.1st`).
+    fn extends(&self) -> bool {
+        match self.kind {
+            TokenKind::Number => self.text.starts_with('.'),
             TokenKind::Punctuation => self.text.starts_with('$'),
             _ => false,
         }
@@ -1866,16 +1898,21 @@ impl<'a> Layout<'a> {
     }
 
     /// Whether the item at `index` is a name, whatever it spells: it
-    /// stands beside a `.` (a qualified name), or it touches a sigil or a
-    /// number before it (`@from`, `:limit`, `1st`). Such a word is no
-    /// head and keeps its case, so the layout never parts it from what it
-    /// touches: the check at the end, which reads the two as the
-    /// tokenizer does, would not see that.
+    /// stands beside a `.` (a qualified name), it touches a sigil or a
+    /// number before it (`@from`, `:limit`, `1st`), or what touches it
+    /// from the right goes on with it (`limit$x`, `offset.1st`). Such a
+    /// word is no head and keeps its case, so the layout never parts it
+    /// from what it touches: the check at the end, which reads the two as
+    /// the tokenizer does, would not see that.
     fn named(&self, index: usize) -> bool {
         let dot = |index: usize| self.items.get(index).is_some_and(|item| item.is("."));
-        let bound =
+        let follows =
             index > 0 && self.items[index].space.is_empty() && self.items[index - 1].binds();
-        dot(index + 1) || (index > 0 && dot(index - 1)) || bound
+        let leads = self
+            .items
+            .get(index + 1)
+            .is_some_and(|next| next.space.is_empty() && next.extends());
+        dot(index + 1) || (index > 0 && dot(index - 1)) || follows || leads
     }
 
     /// Whether the item at `index` is one of `words` as a keyword, not a

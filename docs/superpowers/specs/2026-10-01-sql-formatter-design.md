@@ -153,9 +153,11 @@ A word is not a head in four cases where it would otherwise be one:
   `shop.order`), whatever it spells.
 - A word that touches a `@`, a `:`, a `$` or a number before it is a name
   too: a MySQL user variable (`@from`), a parameter (`:limit`,
-  `$offset`), a name that starts with digits (`1st`). The tokenizer cuts
-  these in two where a server reads one token, so the safety check cannot
-  tell when a layout parts them: the word stays where it is.
+  `$offset`), a name that starts with digits (`1st`). So is a word that
+  a `$`, or a number starting with its `.`, touches from the right:
+  SQLite's `limit$x`, and the qualified name `offset.1st`. The tokenizer
+  cuts these in two where a server reads one token, so the safety check
+  cannot tell when a layout parts them: the word stays where it is.
 - `FROM` right after `DISTINCT` (`a IS DISTINCT FROM b`).
 - `STRAIGHT_JOIN` in the `SELECT` clause (MySQL's modifier, as in
   `SELECT DISTINCT STRAIGHT_JOIN title`): a join starts only after
@@ -369,8 +371,8 @@ is in that text.
 - A `)` with no `(` and a `(` never closed do not stop the formatter: the
   first is inline punctuation, the second's block ends with its statement.
 - A name that spells a clause word (a column called `offset`) is laid out
-  as that clause, unless it stands beside a `.`. The query means the same;
-  quoting the name avoids it.
+  as that clause, unless it stands beside a `.` or touches a sigil. The
+  query means the same; quoting the name avoids it.
 - From whitespace the cursor goes before the next token, so a cursor on
   an empty line between two statements ends before the second: Run then
   runs that one, where before Format it ran the first.
@@ -403,7 +405,8 @@ is in that text.
   keeping its lines; `\r\n` input.
 - The words that are not heads: a word beside a `.` (`r.from`,
   `shop.order`, `order.id`), a word that touches a sigil or a number
-  (`@from`, `@end` in a `CASE`, `:limit`, `$offset`, `1from`),
+  (`@from`, `@end` in a `CASE`, `:limit`, `$offset`, `1from`, `limit$x`,
+  `offset.1st`),
   `IS DISTINCT FROM`, `WITH ORDINALITY`, `SELECT STRAIGHT_JOIN`; a run
   of join leaders as one head. Every test case and every script built at
   random also checks that a word that touched a sigil still touches it
