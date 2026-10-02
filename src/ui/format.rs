@@ -4,16 +4,17 @@ use std::borrow::Cow;
 use std::fmt::Write as _;
 use std::time::Duration;
 
-use tabletist_db::Value;
+use tabletist_db::{Value, ValueKind};
 
 /// Characters a grid cell shows before cutting the value off.
 pub const CELL_MAX_CHARS: usize = 256;
-/// Bytes of a binary value the row panel dumps as hex.
-pub const HEX_LIMIT: usize = 4096;
-/// Lines of a long value the row panel shows before "Show all".
+/// Bytes of a binary value the row panel shows as hex: two lines of twelve.
+pub const HEX_PREVIEW: usize = 24;
+/// Lines of a long value the row panel lays out before "Show all". It
+/// shows the first three of them (see `row_panel`); this bounds the layout.
 pub const COLLAPSE_LINES: usize = 20;
-/// Characters of a long value the row panel shows before "Show all", so a
-/// huge single-line value is never laid out whole.
+/// Characters of a long value the row panel lays out before "Show all", so
+/// a huge single-line value is never laid out whole.
 pub const COLLAPSE_CHARS: usize = 4_000;
 
 /// One short line for a grid cell.
@@ -47,10 +48,79 @@ pub fn uuid(bytes: &[u8]) -> Option<String> {
     Some(text)
 }
 
-/// Text on one line, as a grid cell shows it: line breaks and tabs become
-/// spaces, hidden characters are written out.
+/// Text on one line: line breaks and tabs become spaces, hidden characters
+/// are written out. For text that is a part of something else (a
+/// document's first string); a cell's own text keeps its breaks in sight
+/// (see [`cell_line`]).
 pub fn one_line(text: &str) -> Cow<'_, str> {
-    bounded_line(text, CELL_MAX_CHARS, true)
+    bounded_line(text, CELL_MAX_CHARS, Breaks::Space)
+}
+
+/// The marks a cell writes where text would show nothing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Marks {
+    /// One for each character of a value that is only whitespace.
+    pub space: char,
+    /// In place of a line break.
+    pub line: char,
+}
+
+impl Marks {
+    /// The design's marks. IBM Plex and JetBrains Mono have neither: they
+    /// come from a font of the system's, as they do in a browser.
+    pub const DESIGN: Self = Self {
+        space: '␣',
+        line: '↵',
+    };
+    /// Marks every bundled face draws, where no font has the design's.
+    pub const PLAIN: Self = Self {
+        space: '·',
+        line: '¶',
+    };
+
+    /// The design's marks when `has_glyph` finds both, else the plain ones.
+    pub fn pick(mut has_glyph: impl FnMut(char) -> bool) -> Self {
+        if has_glyph(Self::DESIGN.space) && has_glyph(Self::DESIGN.line) {
+            Self::DESIGN
+        } else {
+            Self::PLAIN
+        }
+    }
+}
+
+/// A cell's text on one line: a line break becomes `marks.line` (a Windows
+/// line end is one break), a tab a space, hidden characters are written out.
+pub fn cell_line(text: &str, marks: Marks) -> Cow<'_, str> {
+    bounded_line(text, CELL_MAX_CHARS, Breaks::Mark(marks.line))
+}
+
+/// What a cell shows for text with nothing to see: `''` for an empty
+/// string, a mark for each character of one that is only whitespace. `None`
+/// for text that shows as itself.
+pub fn blank_text(text: &str, marks: Marks) -> Option<String> {
+    if text.is_empty() {
+        return Some("''".to_owned());
+    }
+    let mut shown = String::new();
+    let mut characters = text.chars().peekable();
+    let mut count = 0;
+    while let Some(character) = characters.next() {
+        if !character.is_whitespace() {
+            return None;
+        }
+        // A cell's worth is all that is looked at, as for any text.
+        if count == CELL_MAX_CHARS {
+            shown.push('…');
+            break;
+        }
+        count += 1;
+        match character {
+            '\r' if characters.peek() == Some(&'\n') => count -= 1,
+            '\n' | '\r' => shown.push(marks.line),
+            _ => shown.push(marks.space),
+        }
+    }
+    Some(shown)
 }
 
 /// Characters of a name (schema, table, column, database) the UI lays out.
@@ -63,13 +133,13 @@ pub const NAME_MAX_CHARS: usize = 256;
 /// for `users_data`, nor `users\u{200B}` for `users`. Copying keeps the name
 /// as it is.
 pub fn display_safe(name: &str) -> Cow<'_, str> {
-    bounded_line(name, NAME_MAX_CHARS, false)
+    bounded_line(name, NAME_MAX_CHARS, Breaks::Escape)
 }
 
 /// `text` with every hidden character written out, as in `display_safe`,
 /// and not cut: for text already cut to a size.
 pub fn escape_hidden(text: &str) -> Cow<'_, str> {
-    bounded_line(text, usize::MAX, false)
+    bounded_line(text, usize::MAX, Breaks::Escape)
 }
 
 /// An object as its tab and the row panel name it: the name, or
@@ -83,10 +153,21 @@ pub fn object_title(object: &tabletist_db::ObjectRef, qualified: bool) -> String
     }
 }
 
+/// What [`bounded_line`] does with a line break.
+#[derive(Clone, Copy)]
+enum Breaks {
+    /// Written out, as any hidden character (a name has none of its own).
+    Escape,
+    /// A space, and a tab too.
+    Space,
+    /// This mark; a tab is a space.
+    Mark(char),
+}
+
 /// The first `max` characters of `text` with hidden characters written out
-/// and "…" when cut. `spaces` turns line breaks and tabs into spaces instead.
-/// Borrows when there is nothing to change.
-fn bounded_line(text: &str, max: usize, spaces: bool) -> Cow<'_, str> {
+/// and "…" when cut; line breaks and tabs as `breaks` says. Borrows when
+/// there is nothing to change.
+fn bounded_line(text: &str, max: usize, breaks: Breaks) -> Cow<'_, str> {
     // Only the first `max` characters are ever shown, so never look past
     // them: a cell may hold megabytes and is drawn every frame.
     let (end, too_long) = match text.char_indices().nth(max) {
@@ -98,13 +179,15 @@ fn bounded_line(text: &str, max: usize, spaces: bool) -> Cow<'_, str> {
         return Cow::Borrowed(text);
     }
     let mut line = String::with_capacity(head.len() + 16);
-    for character in head.chars() {
-        if spaces && matches!(character, '\n' | '\r' | '\t') {
-            line.push(' ');
-        } else if is_hidden(character) {
-            push_escaped(&mut line, character);
-        } else {
-            line.push(character);
+    let mut characters = head.chars().peekable();
+    while let Some(character) = characters.next() {
+        match (breaks, character) {
+            (Breaks::Space, '\n' | '\r' | '\t') | (Breaks::Mark(_), '\t') => line.push(' '),
+            // A Windows line end is one break: its LF writes the mark.
+            (Breaks::Mark(_), '\r') if characters.peek() == Some(&'\n') => {}
+            (Breaks::Mark(mark), '\n' | '\r') => line.push(mark),
+            _ if is_hidden(character) => push_escaped(&mut line, character),
+            _ => line.push(character),
         }
     }
     if too_long {
@@ -150,6 +233,129 @@ fn is_hidden(character: char) -> bool {
 
 fn push_escaped(out: &mut String, character: char) {
     let _ = write!(out, "<U+{:04X}>", u32::from(character));
+}
+
+/// Whether a column of this type and kind holds PostgreSQL arrays: a result
+/// names their type `_text`, the catalog `text[]`. No other database has
+/// them.
+pub fn is_array(type_name: &str, kind: ValueKind) -> bool {
+    kind == ValueKind::Other
+        && (type_name.ends_with("[]")
+            || type_name
+                .strip_prefix('_')
+                .is_some_and(|element| !element.is_empty()))
+}
+
+/// A column's type as people write it: an array's `_text` is `text[]`.
+pub fn type_label(type_name: &str, kind: ValueKind) -> Cow<'_, str> {
+    match type_name.strip_prefix('_') {
+        Some(element) if is_array(type_name, kind) => Cow::Owned(format!("{element}[]")),
+        _ => Cow::Borrowed(type_name),
+    }
+}
+
+/// A PostgreSQL array's elements.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ArrayItems<'a> {
+    /// Each element as its text: a quoted one without its quotes, an array
+    /// inside the array as it is written.
+    pub items: Vec<Cow<'a, str>>,
+    /// The text ended before the array did (a cell's text is cut): there
+    /// are more elements than these.
+    pub cut: bool,
+}
+
+/// The elements of an array as PostgreSQL writes one: `{en,fr}`,
+/// `{"two words",NULL}`, `{{1,2},{3,4}}`. `None` for text that is no array,
+/// one with its bounds written before it (`[0:1]={a,b}`) included.
+pub fn array_items(text: &str) -> Option<ArrayItems<'_>> {
+    let bytes = text.as_bytes();
+    if bytes.first() != Some(&b'{') {
+        return None;
+    }
+    let mut items = Vec::new();
+    if text == "{}" {
+        return Some(ArrayItems { items, cut: false });
+    }
+    // The delimiters are ASCII, so stepping by bytes never splits a
+    // character, and every slice below starts and ends on one.
+    let mut at = 1;
+    loop {
+        let start = at;
+        let item = match bytes.get(at) {
+            None => return Some(ArrayItems { items, cut: true }),
+            Some(b'"') => {
+                at += 1;
+                let from = at;
+                // Copied only when an escape makes it differ from the text.
+                let mut unescaped: Option<String> = None;
+                loop {
+                    let Some(character) = text[at..].chars().next() else {
+                        return Some(ArrayItems { items, cut: true });
+                    };
+                    at += character.len_utf8();
+                    match character {
+                        '"' => break,
+                        '\\' => {
+                            let Some(next) = text[at..].chars().next() else {
+                                return Some(ArrayItems { items, cut: true });
+                            };
+                            unescaped
+                                .get_or_insert_with(|| text[from..at - 1].to_owned())
+                                .push(next);
+                            at += next.len_utf8();
+                        }
+                        _ => {
+                            if let Some(copy) = &mut unescaped {
+                                copy.push(character);
+                            }
+                        }
+                    }
+                }
+                unescaped.map_or(Cow::Borrowed(&text[from..at - 1]), Cow::Owned)
+            }
+            Some(b'{') => {
+                let (mut depth, mut quoted) = (0, false);
+                loop {
+                    match bytes.get(at) {
+                        None => return Some(ArrayItems { items, cut: true }),
+                        Some(b'\\') if quoted => at += 1,
+                        Some(b'"') => quoted = !quoted,
+                        Some(b'{') if !quoted => depth += 1,
+                        Some(b'}') if !quoted => depth -= 1,
+                        Some(_) => {}
+                    }
+                    at += 1;
+                    if depth == 0 {
+                        break;
+                    }
+                }
+                Cow::Borrowed(&text[start..at.min(text.len())])
+            }
+            Some(_) => {
+                while bytes
+                    .get(at)
+                    .is_some_and(|byte| !matches!(byte, b',' | b'}'))
+                {
+                    at += 1;
+                }
+                if at == bytes.len() {
+                    return Some(ArrayItems { items, cut: true });
+                }
+                if at == start {
+                    return None;
+                }
+                Cow::Borrowed(&text[start..at])
+            }
+        };
+        items.push(item);
+        match bytes.get(at) {
+            Some(b',') => at += 1,
+            Some(b'}') if at + 1 == bytes.len() => return Some(ArrayItems { items, cut: false }),
+            None => return Some(ArrayItems { items, cut: true }),
+            Some(_) => return None,
+        }
+    }
 }
 
 /// The colour a `#rgb`, `#rgba`, `#rrggbb` or `#rrggbbaa` value names, as
@@ -258,25 +464,15 @@ thread_local! {
 }
 
 /// The whole value as the row panel shows it as text. JSON the panel can
-/// parse is drawn as a tree instead (`json_view`). Binary is its size and a
-/// hex dump, and sixteen bytes the UUID the grid shows. Text is borrowed,
-/// not copied.
+/// parse is drawn as a tree instead (`json_view`). Sixteen bytes are the
+/// UUID the grid shows; any other binary value is its first bytes
+/// ([`hex_preview`]). Text is borrowed, not copied.
 pub fn full_text(value: &Value) -> Cow<'_, str> {
     #[cfg(test)]
     FULL_TEXTS.with(|count| count.set(count.get() + 1));
     match value {
         Value::Text(text) => Cow::Borrowed(text),
-        Value::Bytes(bytes) => {
-            if let Some(uuid) = uuid(bytes) {
-                return Cow::Owned(uuid);
-            }
-            let shown = &bytes[..bytes.len().min(HEX_LIMIT)];
-            let mut text = format!("{}\n{}", human_size(bytes.len()), hex_dump(shown));
-            if bytes.len() > HEX_LIMIT {
-                text.push_str("\n…");
-            }
-            Cow::Owned(text)
-        }
+        Value::Bytes(bytes) => Cow::Owned(uuid(bytes).unwrap_or_else(|| hex_preview(bytes))),
         other => Cow::Owned(plain_text(other)),
     }
 }
@@ -290,19 +486,36 @@ pub struct FieldText {
     pub full: Option<String>,
     /// The value's size, for "Show all".
     pub size: String,
+    /// How many characters a text value has, for its label.
+    pub characters: Option<usize>,
 }
 
 /// Formats a value for the row panel. Slow for a big value (it reads all of
 /// it), so the app calls it once per selected row, not every frame.
 pub fn field_text(value: &Value) -> FieldText {
     let text = full_text(value);
+    // A binary value is its first bytes and nothing to unfold: the whole
+    // of it is a file's worth, and copying or saving gives it. Sixteen
+    // bytes read as the UUID they hold, as text does.
+    if let Value::Bytes(bytes) = value
+        && uuid(bytes).is_none()
+    {
+        return FieldText {
+            short: text.into_owned(),
+            full: None,
+            size: human_size(bytes.len()),
+            characters: None,
+        };
+    }
     let long = text.len() > COLLAPSE_CHARS || text.lines().nth(COLLAPSE_LINES).is_some();
     let size = human_size(text.len());
+    let characters = matches!(value, Value::Text(_)).then(|| text.chars().count());
     if !long {
         return FieldText {
             short: for_display(&text),
             full: None,
             size,
+            characters,
         };
     }
     let start: String = text
@@ -317,22 +530,66 @@ pub fn field_text(value: &Value) -> FieldText {
         short: for_display(&start),
         full: Some(for_display(&text)),
         size,
+        characters,
     }
 }
 
-/// `00000000  00 01 02 ...`, sixteen bytes a line.
-pub fn hex_dump(bytes: &[u8]) -> String {
+/// The first [`HEX_PREVIEW`] bytes as `ff d8 ff ...`, twelve to a line.
+pub fn hex_preview(bytes: &[u8]) -> String {
     let mut out = String::new();
-    for (line, chunk) in bytes.chunks(16).enumerate() {
-        if line > 0 {
-            out.push('\n');
+    for (index, byte) in bytes.iter().take(HEX_PREVIEW).enumerate() {
+        if index > 0 {
+            out.push(if index % 12 == 0 { '\n' } else { ' ' });
         }
-        let _ = write!(out, "{:08x} ", line * 16);
-        for byte in chunk {
-            let _ = write!(out, " {byte:02x}");
-        }
+        let _ = write!(out, "{byte:02x}");
     }
     out
+}
+
+/// What a binary value starts as, by the bytes files of that kind begin
+/// with. A guess, and said as one ("looks like JPEG").
+pub fn sniff(bytes: &[u8]) -> Option<&'static str> {
+    const SIGNS: [(&[u8], &str); 8] = [
+        (b"\xff\xd8\xff", "JPEG"),
+        (b"\x89PNG\r\n\x1a\n", "PNG"),
+        (b"GIF87a", "GIF"),
+        (b"GIF89a", "GIF"),
+        (b"%PDF-", "PDF"),
+        (b"PK\x03\x04", "ZIP"),
+        (b"\x1f\x8b", "gzip"),
+        (b"SQLite format 3\0", "SQLite"),
+    ];
+    if bytes.len() >= 12 && bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WEBP" {
+        return Some("WebP");
+    }
+    SIGNS
+        .iter()
+        .find(|(sign, _)| bytes.starts_with(sign))
+        .map(|(_, name)| *name)
+}
+
+/// What a grid cell says of a binary value: its type and its size, never
+/// its bytes. `bytea · 48.2 KB`, or the terminal's `bytea 48.2K`.
+pub fn binary_label(type_name: &str, bytes: usize, terminal: bool) -> String {
+    let name = if type_name.is_empty() {
+        "binary"
+    } else {
+        type_name
+    };
+    let name = display_safe(name);
+    if terminal {
+        format!("{name} {}", terse_size(bytes))
+    } else {
+        format!("{name} · {}", human_size(bytes))
+    }
+}
+
+/// [`human_size`] as the terminal writes it: `0B`, `48.2K`, `2.1M`.
+pub fn terse_size(bytes: usize) -> String {
+    human_size(bytes)
+        .replace(" KB", "K")
+        .replace(" MB", "M")
+        .replace(" B", "B")
 }
 
 pub fn human_size(bytes: usize) -> String {
@@ -669,6 +926,113 @@ mod tests {
     }
 
     #[test]
+    fn a_cell_keeps_its_line_breaks_in_sight() {
+        let marks = Marks::DESIGN;
+        assert_eq!(
+            cell_line("Night Train\nPart One", marks),
+            "Night Train↵Part One"
+        );
+        // A Windows line end is one break; a tab is a space.
+        assert_eq!(cell_line("a\r\nb\rc\td", marks), "a↵b↵c d");
+        assert_eq!(cell_line("a\nb", Marks::PLAIN), "a¶b");
+        // Other hidden characters are still written out, and plain text is
+        // not copied.
+        assert_eq!(cell_line("a\u{200B}b", marks), "a<U+200B>b");
+        assert!(matches!(cell_line("plain", marks), Cow::Borrowed(_)));
+        let long = "y".repeat(CELL_MAX_CHARS + 10);
+        assert!(cell_line(&long, marks).ends_with('…'));
+    }
+
+    #[test]
+    fn text_with_nothing_to_see_says_what_it_is() {
+        let marks = Marks::DESIGN;
+        assert_eq!(blank_text("", marks).as_deref(), Some("''"));
+        assert_eq!(blank_text("  ", marks).as_deref(), Some("␣␣"));
+        assert_eq!(blank_text(" \t\r\n", marks).as_deref(), Some("␣␣↵"));
+        assert_eq!(blank_text("  ", Marks::PLAIN).as_deref(), Some("··"));
+        // Leading spaces are the text's own: nothing stands in for them.
+        assert_eq!(blank_text("   Leading spaces kept", marks), None);
+        assert_eq!(blank_text("a", marks), None);
+        // A megabyte of spaces is cut like any text, without reading it all.
+        let spaces = " ".repeat(1_000_000);
+        let shown = blank_text(&spaces, marks).unwrap();
+        assert_eq!(shown.chars().count(), CELL_MAX_CHARS + 1);
+        assert!(shown.ends_with('…'));
+    }
+
+    #[test]
+    fn the_marks_fall_back_when_a_font_lacks_the_designs() {
+        assert_eq!(Marks::pick(|_| true), Marks::DESIGN);
+        assert_eq!(Marks::pick(|character| character != '↵'), Marks::PLAIN);
+        assert_eq!(Marks::pick(|_| false), Marks::PLAIN);
+    }
+
+    #[test]
+    fn arrays_are_told_by_their_type() {
+        assert!(is_array("_text", ValueKind::Other));
+        assert!(is_array("int4[]", ValueKind::Other));
+        // A type the app knows is never an array, whatever its name.
+        assert!(!is_array("_text", ValueKind::Text));
+        assert!(!is_array("_", ValueKind::Other));
+        assert!(!is_array("int4range", ValueKind::Other));
+        assert_eq!(type_label("_text", ValueKind::Other), "text[]");
+        assert_eq!(type_label("text[]", ValueKind::Other), "text[]");
+        assert_eq!(type_label("int8", ValueKind::Numeric), "int8");
+    }
+
+    fn items(text: &str) -> Option<(Vec<String>, bool)> {
+        array_items(text).map(|array| {
+            let items = array.items.iter().map(|item| item.to_string()).collect();
+            (items, array.cut)
+        })
+    }
+
+    #[test]
+    fn an_arrays_elements_are_read_as_postgres_writes_them() {
+        let some =
+            |list: &[&str], cut| Some((list.iter().map(|item| (*item).to_owned()).collect(), cut));
+        assert_eq!(items("{en,fr}"), some(&["en", "fr"], false));
+        assert_eq!(items("{}"), some(&[], false));
+        assert_eq!(items("{1}"), some(&["1"], false));
+        // Quotes go, and what they escape stays.
+        assert_eq!(
+            items(r#"{"two words",NULL,"a \"b\" c\\d","x,y}"}"#),
+            some(&["two words", "NULL", r#"a "b" c\d"#, "x,y}"], false)
+        );
+        assert_eq!(items("{\"Ærø\",東京}"), some(&["Ærø", "東京"], false));
+        // An array in an array stays as it is written.
+        assert_eq!(
+            items(r#"{{1,2},{"a}",b}}"#),
+            some(&["{1,2}", r#"{"a}",b}"#], false)
+        );
+    }
+
+    #[test]
+    fn a_cut_array_keeps_the_elements_that_are_whole() {
+        let some = |list: &[&str]| {
+            Some((
+                list.iter()
+                    .map(|item| (*item).to_owned())
+                    .collect::<Vec<_>>(),
+                true,
+            ))
+        };
+        assert_eq!(items("{en,fr,d…"), some(&["en", "fr"]));
+        assert_eq!(items("{en,fr,"), some(&["en", "fr"]));
+        assert_eq!(items("{en,fr"), some(&["en"]));
+        assert_eq!(items(r#"{en,"fr…"#), some(&["en"]));
+        assert_eq!(items("{{1,2},{3…"), some(&["{1,2}"]));
+        assert_eq!(items("{"), some(&[]));
+    }
+
+    #[test]
+    fn text_that_is_no_array_is_left_alone() {
+        for text in ["", "en,fr", "[0:1]={a,b}", "{a}b", "{,a}", "{a,,b}", "{a}}"] {
+            assert_eq!(items(text), None, "{text:?}");
+        }
+    }
+
+    #[test]
     fn short_text_is_not_copied() {
         let value = text("borrowed");
         assert!(matches!(cell_text(&value), std::borrow::Cow::Borrowed(_)));
@@ -702,8 +1066,14 @@ mod tests {
             let blob = Value::Bytes(vec![0xab; len].into());
             assert_eq!(cell_text(&blob), format!("BLOB · {len} B"));
             assert!(plain_text(&blob).starts_with("0xabab"));
-            assert!(full_text(&blob).starts_with(&format!("{len} B\n00000000  ab")));
+            assert!(full_text(&blob).starts_with("ab ab ab"));
         }
+        // The row panel shows the UUID as it shows text, with nothing to
+        // unfold.
+        let key = Value::Bytes(vec![0x01; 16].into());
+        let field = field_text(&key);
+        assert_eq!(field.short, "01010101-0101-0101-0101-010101010101");
+        assert_eq!(field.full, None);
     }
 
     #[test]
@@ -731,23 +1101,63 @@ mod tests {
             (short.short.as_str(), short.full, short.size.as_str()),
             ("hi", None, "2 B")
         );
+        assert_eq!(short.characters, Some(2));
+        assert_eq!(field_text(&Value::Int(42)).characters, None);
     }
 
     #[test]
-    fn hex_dumps_have_offsets_and_sixteen_bytes_a_line() {
-        let bytes: Vec<u8> = (0u8..20).collect();
+    fn a_long_line_is_long_too_and_counted_in_characters() {
+        let title = "é".repeat(5_000);
+        let field = field_text(&text(&title));
+        // Its start, broken into lines the panel can lay out.
+        let start = field.short.chars().filter(|c| *c != '\n').count();
+        assert_eq!(start, COLLAPSE_CHARS);
+        assert_eq!(field.characters, Some(5_000));
+        assert!(field.full.is_some());
+    }
+
+    #[test]
+    fn a_binary_field_is_its_first_bytes() {
+        let jpeg: Vec<u8> = [0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10]
+            .into_iter()
+            .chain(std::iter::repeat_n(0xab, 49_352))
+            .collect();
+        let field = field_text(&Value::Bytes(jpeg.clone().into()));
         assert_eq!(
-            hex_dump(&bytes),
-            "00000000  00 01 02 03 04 05 06 07 08 09 0a 0b 0c 0d 0e 0f\n00000010  10 11 12 13"
+            field.short,
+            "ff d8 ff e0 00 10 ab ab ab ab ab ab\nab ab ab ab ab ab ab ab ab ab ab ab"
         );
+        assert_eq!((field.full, field.size.as_str()), (None, "48.2 KB"));
+        assert_eq!(hex_preview(&[0x00, 0x0f]), "00 0f");
+        assert_eq!(hex_preview(&[]), "");
+        // A huge value is never read past its first bytes.
+        let started = std::time::Instant::now();
+        let huge = Value::Bytes(vec![0xab; 10 * 1024 * 1024].into());
+        assert_eq!(field_text(&huge).short.len(), HEX_PREVIEW * 3 - 1);
+        assert!(started.elapsed() < Duration::from_secs(1));
     }
 
     #[test]
-    fn hex_dumps_stop_at_the_limit() {
-        let full = full_text(&Value::Bytes(vec![0xab; 10 * 1024 * 1024].into())).into_owned();
-        assert!(full.starts_with("10.0 MB\n"));
-        assert!(full.ends_with('…'));
-        assert!(full.lines().count() <= HEX_LIMIT / 16 + 3);
+    fn a_binary_value_is_guessed_by_how_it_starts() {
+        assert_eq!(sniff(&[0xff, 0xd8, 0xff, 0xe0]), Some("JPEG"));
+        assert_eq!(sniff(b"\x89PNG\r\n\x1a\n...."), Some("PNG"));
+        assert_eq!(sniff(b"GIF89a.."), Some("GIF"));
+        assert_eq!(sniff(b"%PDF-1.7"), Some("PDF"));
+        assert_eq!(sniff(b"PK\x03\x04"), Some("ZIP"));
+        assert_eq!(sniff(b"RIFF\x10\0\0\0WEBPVP8 "), Some("WebP"));
+        assert_eq!(sniff(b"RIFF\x10\0\0\0WAVE"), None);
+        assert_eq!(sniff(b""), None);
+        assert_eq!(sniff(b"plain text"), None);
+    }
+
+    #[test]
+    fn a_binary_cell_says_its_type_and_size() {
+        assert_eq!(binary_label("bytea", 49_358, false), "bytea · 48.2 KB");
+        assert_eq!(binary_label("bytea", 49_358, true), "bytea 48.2K");
+        assert_eq!(binary_label("BLOB", 0, false), "BLOB · 0 B");
+        assert_eq!(binary_label("BLOB", 0, true), "BLOB 0B");
+        assert_eq!(binary_label("", 3, false), "binary · 3 B");
+        assert_eq!(terse_size(5 * 1024 * 1024), "5.0M");
     }
 
     #[test]
