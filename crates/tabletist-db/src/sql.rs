@@ -65,6 +65,7 @@ const KEYWORDS: &[&str] = &[
     "FETCH",
     "FILTER",
     "FIRST",
+    "FOLLOWING",
     "FOR",
     "FROM",
     "FULL",
@@ -78,13 +79,18 @@ const KEYWORDS: &[&str] = &[
     "INTO",
     "IS",
     "JOIN",
+    "LAST",
     "LEFT",
     "LIKE",
     "LIMIT",
+    "LOCKED",
     "NATURAL",
     "NO",
     "NOT",
+    "NOTHING",
+    "NOWAIT",
     "NULL",
+    "NULLS",
     "OFFSET",
     "ON",
     "ONLY",
@@ -93,17 +99,21 @@ const KEYWORDS: &[&str] = &[
     "OUTER",
     "OVER",
     "PARTITION",
+    "PRECEDING",
     "RECURSIVE",
     "RIGHT",
     "ROLLBACK",
+    "ROW",
     "ROWS",
     "SELECT",
     "SET",
     "SHOW",
+    "SKIP",
     "TABLE",
     "THEN",
     "TO",
     "TRUE",
+    "UNBOUNDED",
     "UNION",
     "UPDATE",
     "USING",
@@ -1769,5 +1779,64 @@ mod tests {
                 );
             }
         }
+        // Each list is kept in alphabetical order.
+        for words in [KEYWORDS, POSTGRES_KEYWORDS, MYSQL_KEYWORDS, SQLITE_KEYWORDS] {
+            assert!(words.is_sorted(), "{words:?}");
+        }
+    }
+
+    #[test]
+    fn the_words_that_end_a_clause_are_keywords() {
+        // A whole word the list does not know is completed to a name that
+        // only starts like it: `NULLS LAST` to `last_name`.
+        let words = [
+            "FOLLOWING",
+            "LAST",
+            "LOCKED",
+            "NOTHING",
+            "NOWAIT",
+            "NULLS",
+            "PRECEDING",
+            "ROW",
+            "SKIP",
+            "UNBOUNDED",
+        ];
+        for dialect in [Dialect::Postgres, Dialect::MySql, Dialect::Sqlite] {
+            for word in words {
+                assert!(is_keyword(dialect, word), "{dialect:?}: {word}");
+                assert!(
+                    is_keyword(dialect, &word.to_ascii_lowercase()),
+                    "{dialect:?}: {word}"
+                );
+            }
+        }
+        use TokenKind::{Identifier, Keyword};
+        assert_eq!(
+            kinds(
+                Dialect::Postgres,
+                "ORDER BY created_at DESC NULLS LAST FOR UPDATE SKIP LOCKED"
+            ),
+            vec![
+                (Keyword, "ORDER"),
+                (Keyword, "BY"),
+                (Identifier, "created_at"),
+                (Keyword, "DESC"),
+                (Keyword, "NULLS"),
+                (Keyword, "LAST"),
+                (Keyword, "FOR"),
+                (Keyword, "UPDATE"),
+                (Keyword, "SKIP"),
+                (Keyword, "LOCKED"),
+            ]
+        );
+        // A name that only starts like one is still a name.
+        assert_eq!(
+            kinds(Dialect::Postgres, "last_name locked_at rows_read"),
+            vec![
+                (Identifier, "last_name"),
+                (Identifier, "locked_at"),
+                (Identifier, "rows_read"),
+            ]
+        );
     }
 }

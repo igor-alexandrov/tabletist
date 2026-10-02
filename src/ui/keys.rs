@@ -371,7 +371,8 @@ struct Completing {
     /// It has a row to move to and to insert.
     has_row: bool,
     /// Enter stays the editor's line break: the highlighted row is what
-    /// is already typed.
+    /// is already typed, or only a guess at a word that may be whole (see
+    /// `Completion::enter_is_a_line_break`).
     enter_breaks: bool,
 }
 

@@ -1963,11 +1963,20 @@ impl Completion {
 
     /// Whether Enter is the editor's line break rather than an insertion:
     /// there is no row, or the highlighted one inserts what the script
-    /// `text` already reads there.
+    /// `text` already reads there, or the list only guesses at it. A list
+    /// that opened by typing, with its highlight where the list put it,
+    /// guesses unless its row goes on from the typed text: a row that
+    /// holds the text further in (`birthday` for `day`) is most likely no
+    /// completion of a word that is whole. Tab inserts such a row, and so
+    /// does Enter once the user moved the highlight or asked for the list
+    /// by hand.
     pub fn enter_is_a_line_break(&self, text: &str) -> bool {
         self.highlighted().is_none_or(|candidate| {
             let word = text.get(self.site.word.clone());
-            candidate.is_typed(&self.typed) || word.is_some_and(|word| candidate.is_typed(word))
+            let typed = candidate.is_typed(&self.typed)
+                || word.is_some_and(|word| candidate.is_typed(word));
+            let chosen = self.manual || self.moved;
+            typed || (!chosen && candidate.matched.start != 0)
         })
     }
 }
@@ -3761,6 +3770,78 @@ mod tests {
         assert!(!moved.enter_is_a_line_break("as"));
         // No row to insert: Enter is the editor's.
         assert!(completion_of(&[], "zz").enter_is_a_line_break("zz"));
+    }
+
+    /// A list of these columns, each with the part of its name that
+    /// matched `typed`, opened by hand (`manual`) or by typing.
+    fn completion_matching(
+        manual: bool,
+        rows: &[(&str, std::ops::Range<usize>)],
+        typed: &str,
+    ) -> Completion {
+        let mut listed = completion_rows(&[]);
+        listed.candidates = rows
+            .iter()
+            .map(|(label, matched)| crate::completion::Candidate {
+                kind: crate::completion::Kind::Column,
+                label: (*label).to_owned(),
+                insert: (*label).to_owned(),
+                matched: matched.clone(),
+                detail: String::new(),
+            })
+            .collect();
+        let of = (TextPrint::of(typed), typed.len(), 0);
+        let site = completion_site(typed);
+        Completion::new(manual, of, site, typed.to_owned(), listed, false)
+    }
+
+    #[test]
+    fn enter_inserts_a_row_the_typed_text_begins() {
+        let list = completion_matching(false, &[("email", 0..2)], "em");
+        assert!(!list.enter_is_a_line_break("em"));
+        // Nothing typed (right after a dot): every row goes on from it.
+        let after_dot = completion_matching(false, &[("email", 0..0)], "");
+        assert!(!after_dot.enter_is_a_line_break(""));
+    }
+
+    #[test]
+    fn enter_is_a_line_break_on_a_row_that_only_holds_the_typed_text() {
+        // `day` is most likely a whole word, not the start of `birthday`.
+        let rows = [("birthday", 5..8), ("holiday", 4..7)];
+        let list = completion_matching(false, &rows, "day");
+        assert!(list.enter_is_a_line_break("day"));
+        // A row that begins with it leads the list and is inserted.
+        let leading = [("day_of_week", 0..3), ("birthday", 5..8)];
+        let list = completion_matching(false, &leading, "day");
+        assert!(!list.enter_is_a_line_break("day"));
+    }
+
+    #[test]
+    fn enter_inserts_a_row_the_user_chose_or_asked_for() {
+        let rows = [("birthday", 5..8), ("holiday", 4..7)];
+        // The highlight moved to another row.
+        let mut moved = completion_matching(false, &rows, "day");
+        moved.move_by(1);
+        assert!(!moved.enter_is_a_line_break("day"));
+        // And back to the first one: the user's choice all the same.
+        moved.move_by(-1);
+        assert_eq!((moved.selected, moved.moved), (0, true));
+        assert!(!moved.enter_is_a_line_break("day"));
+        // The typed word changed since: the highlight is the list's again.
+        let of = (TextPrint::of("days"), 4, 0);
+        let mut listed = completion_rows(&["holidays"]);
+        listed.candidates[0].matched = 4..8;
+        moved.relist(of, completion_site("days"), "days".into(), listed, false);
+        assert!(moved.enter_is_a_line_break("days"));
+        // A list opened by hand was asked for: Enter inserts its row.
+        let manual = completion_matching(true, &rows, "day");
+        assert!(!manual.enter_is_a_line_break("day"));
+        // Whatever the list, a row that is what is typed is a line break.
+        let mut exact = completion_matching(true, &[("day", 0..3), ("birthday", 5..8)], "day");
+        assert!(exact.enter_is_a_line_break("day"));
+        exact.move_by(1);
+        exact.move_by(-1);
+        assert!(exact.enter_is_a_line_break("day"));
     }
 
     #[test]

@@ -9,8 +9,8 @@ use egui::{Key, Modifiers};
 use tabletist_db::{ColumnInfo, ObjectInfo, ObjectKind, ObjectRef, Structure};
 
 use crate::backend::{Command, Event};
-use crate::completion::{Candidate, Kind, LISTED};
-use crate::model::{Action, Completion, ConnTabId, SqlTab, TabId, TextPrint, Wanted};
+use crate::completion::{Candidate, KEPT, Kind, LISTED};
+use crate::model::{Action, Completion, ConnTabId, Fetch, SqlTab, TabId, TextPrint, Wanted};
 use crate::testing::{Harness, key, release};
 use crate::ui::sql_text::TOKENIZED;
 
@@ -169,7 +169,7 @@ fn a_list_asked_for_by_hand_opens_on_an_empty_word() {
     assert_eq!(open.candidates[0].label, "ALL");
     // It goes on as its word is typed, still by hand.
     type_text(&mut harness, "s");
-    assert_eq!(labels(&harness, tab), ["select", "set", "show"]);
+    assert_eq!(labels(&harness, tab), ["select", "set", "show", "skip"]);
     assert!(list(&harness, tab).unwrap().manual);
 }
 
@@ -316,7 +316,7 @@ fn a_list_opened_on_an_empty_word_stays_when_its_word_is_typed_and_deleted() {
     });
     harness.settle();
     type_text(&mut harness, "s");
-    assert_eq!(labels(&harness, tab), ["select", "set", "show"]);
+    assert_eq!(labels(&harness, tab), ["select", "set", "show", "skip"]);
     harness.press(Key::Backspace, Modifiers::NONE);
     assert_eq!(sql(&harness, tab).text, "");
     // The whole list again, still by hand.
@@ -520,7 +520,7 @@ fn left_and_right_stay_the_editors_while_the_list_is_open() {
     assert_eq!(sql(&harness, tab).cursor, 1);
     assert!(editor_has_keyboard(&harness, tab));
     // Still on its word, with less of it typed.
-    assert_eq!(labels(&harness, tab), ["select", "set", "show"]);
+    assert_eq!(labels(&harness, tab), ["select", "set", "show", "skip"]);
 }
 
 #[test]
@@ -2205,7 +2205,11 @@ fn a_large_schema_is_listed_once_per_change() {
     paste(&mut harness, "select * from ");
     type_text(&mut harness, "na");
     let open = list(&harness, tab).expect("a list");
-    assert_eq!((open.candidates.len(), open.more), (100, 9_900));
+    assert_eq!(
+        (open.candidates.len(), open.more),
+        (KEPT, 10_000 - KEPT),
+        "the best are kept and the rest counted"
+    );
     let listed = LISTED.with(|count| count.get());
     harness.settle();
     harness.press(Key::ArrowDown, Modifiers::NONE);
@@ -2515,6 +2519,135 @@ fn switching_the_database_takes_its_columns_off_the_list() {
     // The other database's tables are not known yet.
     assert!(list(&harness, tab).is_none());
     assert_eq!(asked_to_describe(&harness, "users"), 1);
+}
+
+/// An editor on the fixture, whose `users` is known to have `columns`.
+fn editor_knowing(columns: &[(&str, &str)]) -> (Harness, ConnTabId) {
+    let (mut harness, tab) = editor();
+    let workspace = harness.app.workspace_mut(tab).unwrap();
+    let known = Fetch {
+        value: Some(structure(columns).columns),
+        ..Default::default()
+    };
+    workspace
+        .columns
+        .insert(ObjectRef::new("main", "users"), known);
+    workspace.catalog_changed();
+    (harness, tab)
+}
+
+/// Types `text` key by key, a frame for each character.
+fn type_keys(harness: &mut Harness, text: &str) {
+    let mut key = [0; 4];
+    for character in text.chars() {
+        type_text(harness, character.encode_utf8(&mut key));
+    }
+}
+
+/// Columns named like whole SQL words, or holding one.
+const WORDY: [(&str, &str); 4] = [
+    ("last_name", "TEXT"),
+    ("locked_at", "TEXT"),
+    ("birthdate", "TEXT"),
+    ("birthday", "TEXT"),
+];
+
+#[test]
+fn enter_after_a_whole_word_a_column_only_resembles_is_a_line_break() {
+    let lines = [
+        // A keyword, though a column starts like it.
+        "select * from users order by created_at desc nulls last",
+        "select * from users for update skip locked",
+        // A type after a cast, though a column ends like it.
+        "select * from users group by created_at::date",
+        // A word the list does not know, though a column ends like it.
+        "select * from users where created_at > now() - interval 7 day",
+    ];
+    let entered = lines.map(|line| {
+        let (mut harness, tab) = editor_knowing(&WORDY);
+        type_keys(&mut harness, line);
+        harness.press(Key::Enter, Modifiers::NONE);
+        assert!(list(&harness, tab).is_none(), "{line}");
+        assert_eq!(asked_to_describe(&harness, "users"), 0, "known already");
+        sql(&harness, tab).text.clone()
+    });
+    // Each as it was typed, and the line break.
+    assert_eq!(entered, lines.map(|line| format!("{line}\n")));
+}
+
+#[test]
+fn a_whole_keyword_leads_the_columns_that_start_like_it() {
+    let (mut harness, tab) = editor_knowing(&WORDY);
+    type_keys(&mut harness, "select * from users order by id nulls la");
+    assert_eq!(labels(&harness, tab), ["last_name", "last"]);
+    type_keys(&mut harness, "st");
+    assert_eq!(labels(&harness, tab), ["last", "last_name"]);
+    assert_eq!(selected(&harness, tab), Some(0));
+}
+
+#[test]
+fn no_list_where_a_type_goes_after_a_cast() {
+    let (mut harness, tab) = editor_knowing(&WORDY);
+    type_keys(&mut harness, "select * from users group by created_at::");
+    assert!(list(&harness, tab).is_none());
+    type_keys(&mut harness, "da");
+    assert!(list(&harness, tab).is_none());
+    // Nor by hand: no column is a type.
+    harness.press(Key::Space, ctrl());
+    assert!(list(&harness, tab).is_none());
+    // After the type the columns are back.
+    type_keys(&mut harness, "te, birthd");
+    assert_eq!(labels(&harness, tab), ["birthdate", "birthday"]);
+}
+
+#[test]
+fn enter_inserts_a_column_the_typed_text_begins() {
+    let (mut harness, tab) = editor_knowing(&[("id", "INTEGER"), ("email", "TEXT")]);
+    type_keys(&mut harness, "select * from users where em");
+    assert_eq!(labels(&harness, tab), ["email"]);
+    harness.press(Key::Enter, Modifiers::NONE);
+    assert_eq!(sql(&harness, tab).text, "select * from users where email");
+}
+
+#[test]
+fn a_column_that_only_holds_the_typed_text_is_inserted_by_tab_or_once_chosen() {
+    let typed = "select * from users where mail";
+    let open = || {
+        let (mut harness, tab) = editor_knowing(&[("email", "TEXT"), ("gmail", "TEXT")]);
+        type_keys(&mut harness, typed);
+        assert_eq!(labels(&harness, tab), ["email", "gmail"]);
+        assert_eq!(selected(&harness, tab), Some(0));
+        (harness, tab)
+    };
+    // Enter on a list the user did not touch: `mail` may be the whole
+    // word, so it is a line break.
+    let (mut harness, tab) = open();
+    harness.press(Key::Enter, Modifiers::NONE);
+    assert_eq!(sql(&harness, tab).text, format!("{typed}\n"));
+    assert!(list(&harness, tab).is_none());
+    // Tab inserts the highlighted row.
+    let (mut harness, tab) = open();
+    harness.press(Key::Tab, Modifiers::NONE);
+    assert_eq!(sql(&harness, tab).text, "select * from users where email");
+    // So does Enter once the user moved the highlight: to another row,
+    let (mut harness, tab) = open();
+    harness.press(Key::ArrowDown, Modifiers::NONE);
+    harness.press(Key::Enter, Modifiers::NONE);
+    assert_eq!(sql(&harness, tab).text, "select * from users where gmail");
+    // or away and back to the first one.
+    let (mut harness, tab) = open();
+    harness.press(Key::ArrowDown, Modifiers::NONE);
+    harness.press(Key::ArrowUp, Modifiers::NONE);
+    harness.press(Key::Enter, Modifiers::NONE);
+    assert_eq!(sql(&harness, tab).text, "select * from users where email");
+    // And in a list opened by hand.
+    let (mut harness, tab) = open();
+    harness.press(Key::Escape, Modifiers::NONE);
+    assert!(list(&harness, tab).is_none());
+    harness.press(Key::Space, ctrl());
+    assert_eq!(labels(&harness, tab), ["email", "gmail"]);
+    harness.press(Key::Enter, Modifiers::NONE);
+    assert_eq!(sql(&harness, tab).text, "select * from users where email");
 }
 
 #[test]

@@ -9,8 +9,10 @@ use tabletist_db::{ColumnInfo, Dialect, ObjectInfo, ObjectKind, ObjectRef};
 
 use crate::model::{Fetch, Tree};
 
-/// How many candidates a list keeps; the rest are only counted.
-pub const KEPT: usize = 100;
+/// How many candidates a list keeps; the rest are only counted. Every
+/// keyword and phrase of a dialect fits, so a list opened by hand on an
+/// empty word is whole.
+pub const KEPT: usize = 120;
 
 /// How many of a statement's tables have their columns fetched.
 pub const TABLES: usize = 8;
@@ -981,11 +983,16 @@ mod tests {
         assert_eq!(all[0], "ALL");
         assert!(all.contains(&"GROUP BY".to_owned()));
         // Keywords and phrases must fit under KEPT, or the last ones fall
-        // out of the list.
+        // out of the list: in every dialect, each with its own words.
         let (site, typed) = site_at("|");
         let tree = Tree::default();
-        let catalog = catalog(Dialect::Sqlite, &tree, None, &[]);
-        assert_eq!(list(&site, &typed, true, &catalog).more, 0);
+        for dialect in [Dialect::Postgres, Dialect::MySql, Dialect::Sqlite] {
+            let catalog = catalog(dialect, &tree, None, &[]);
+            let listed = list(&site, &typed, true, &catalog);
+            assert_eq!(listed.more, 0, "{dialect:?}");
+            let last = listed.candidates.last().map(|c| c.label.as_str());
+            assert_eq!(last, Some("WITH"), "{dialect:?}");
+        }
     }
 
     #[test]
@@ -1170,9 +1177,10 @@ mod tests {
             .collect();
         let listed = rank(found, "na");
         assert_eq!(listed.candidates.len(), KEPT);
-        assert_eq!(listed.more, 50);
+        assert_eq!(listed.more, 150 - KEPT);
         assert_eq!(listed.candidates[0].label, "name_000");
-        assert_eq!(listed.candidates[99].label, "name_099");
+        let last = KEPT - 1;
+        assert_eq!(listed.candidates[last].label, format!("name_{last:03}"));
     }
 
     #[test]

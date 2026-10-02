@@ -135,7 +135,8 @@ impl Piece<'_> {
 
 /// The site at byte `cursor` of `text`, whose tokens are `tokens`. `None`
 /// where nothing is completed: in a string, a comment, a number or a quoted
-/// name, and after a dot that follows no name.
+/// name, after a dot that follows no name, and after a cast (`::`), where
+/// a type goes.
 pub fn site(tokens: &[Token], text: &str, cursor: usize) -> Option<Site> {
     // The statement: from the last `;` before the cursor to the first one
     // at or after it.
@@ -181,6 +182,11 @@ pub fn site(tokens: &[Token], text: &str, cursor: usize) -> Option<Site> {
     let table_words = table_words(&pieces);
     let before = pieces.partition_point(|piece| piece.range.start < word.start);
     let qualifier = qualifier(&pieces[..before], word.start)?;
+    // Each name of the qualifier is two pieces: the name and its dot.
+    let named = before.saturating_sub(2 * qualifier.len());
+    if follows_cast(&pieces[..named]) {
+        return None;
+    }
     let expects = if qualifier.is_empty() {
         expects(&pieces, &table_words, before)
     } else {
@@ -193,6 +199,17 @@ pub fn site(tokens: &[Token], text: &str, cursor: usize) -> Option<Site> {
         sources: sources(&pieces, &table_words),
         ctes: ctes(&pieces),
     })
+}
+
+/// Whether the pieces `before` a name end in PostgreSQL's cast, `::`: the
+/// name is a type then (`created_at::date`, `x::pg_catalog.text`), not a
+/// column. The tokenizer reads the cast as two `:` operators that touch.
+fn follows_cast(before: &[Piece<'_>]) -> bool {
+    matches!(
+        before,
+        [.., first, second]
+            if first.is(":") && second.is(":") && first.range.end == second.range.start
+    )
 }
 
 /// The functions whose parentheses may hold a FROM of their own:
@@ -1056,6 +1073,65 @@ mod tests {
         assert_eq!(pg("SELECT first.na|").expects, Expects::Columns);
         // After FROM it is not taken for a table: a known limit.
         assert!(pg("SELECT | FROM first").sources.is_empty());
+    }
+
+    #[test]
+    fn a_word_after_a_cast_is_a_type() {
+        // PostgreSQL's `::`: what follows is a type, never a column.
+        for marked in [
+            "SELECT created_at::da|",
+            "SELECT created_at::da| FROM users",
+            "SELECT * FROM users GROUP BY created_at::date|",
+            // Before anything is typed, and with spaces around the cast.
+            "SELECT created_at::|",
+            "SELECT created_at :: da|",
+            // A type named with its schema.
+            "SELECT created_at::pg_catalog.da|",
+            "SELECT created_at::pg_catalog.|",
+        ] {
+            assert_eq!(at(Dialect::Postgres, marked), None, "{marked}");
+        }
+        // Past the type the columns are back.
+        let next = pg("SELECT a::text, na| FROM users");
+        assert_eq!(next.expects, Expects::Columns);
+        assert_eq!(next.word, 16..18);
+        assert_eq!(next.sources, [source(None, "users", None)]);
+        assert_eq!(pg("SELECT a::text AS t, na|").expects, Expects::Columns);
+        // One colon is no cast: a named parameter, a slice's bound.
+        assert_eq!(pg("SELECT :na|").expects, Expects::Columns);
+        assert_eq!(pg("SELECT a[1:na|").expects, Expects::Columns);
+        // Nor are two colons apart.
+        assert_eq!(pg("SELECT a[1: :na|").expects, Expects::Columns);
+    }
+
+    #[test]
+    fn the_words_that_end_a_clause_name_no_table_and_no_alias() {
+        // They are keywords: none is taken for an alias of the table
+        // before it, and the statement's table is still found.
+        for marked in [
+            "SELECT * FROM users ORDER BY created_at DESC NULLS LAST, na|",
+            "SELECT * FROM users FOR UPDATE SKIP LOCKED na|",
+            "SELECT * FROM users FOR UPDATE NOWAIT na|",
+            "SELECT sum(a) OVER (ROWS BETWEEN UNBOUNDED PRECEDING AND 1 FOLLOWING), na| FROM users",
+        ] {
+            let site = pg(marked);
+            assert_eq!(site.expects, Expects::Columns, "{marked}");
+            assert_eq!(site.sources, [source(None, "users", None)], "{marked}");
+        }
+        assert_eq!(
+            pg("SELECT | FROM users NOWAIT").sources,
+            [source(None, "users", None)]
+        );
+        let upsert = pg("INSERT INTO users (id) VALUES (1) ON CONFLICT DO NOTHING na|");
+        assert_eq!(upsert.expects, Expects::Columns);
+        assert_eq!(upsert.sources, [source(None, "users", None)]);
+        // Like FIRST, a table called `row` or `last` is found only when it
+        // is quoted: a known limit.
+        assert!(pg("SELECT | FROM last").sources.is_empty());
+        assert_eq!(
+            pg("SELECT | FROM \"last\"").sources,
+            [source(None, "last", None)]
+        );
     }
 
     #[test]
