@@ -1048,7 +1048,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
 }
 
 /// What a page with no rows says under its column headers: that the table
-/// is empty, or which filters leave nothing, and the way out of each.
+/// is empty, that the page is past its last row, or which filters leave
+/// nothing, and the way out of each.
 fn empty_rows(
     ui: &mut egui::Ui,
     rect: Rect,
@@ -1062,8 +1063,20 @@ fn empty_rows(
     let object_tab = object.id;
     let filters = filter_texts(object);
     if filters.is_empty() {
-        let title = format!("{} {name}", say("No rows in"));
-        let text = if object.kind == tabletist_db::ObjectKind::Table {
+        // Past the first page the table is not empty: its rows end before
+        // this page, and the way out is the page before.
+        let past = object.query.offset > 0;
+        let title = format!(
+            "{} {name}",
+            say(if past {
+                "No more rows in"
+            } else {
+                "No rows in"
+            })
+        );
+        let text = if past {
+            say("This page is past the last row.")
+        } else if object.kind == tabletist_db::ObjectKind::Table {
             say("The table exists and is empty.")
         } else {
             say("It returned no rows.")
@@ -1073,17 +1086,25 @@ fn empty_rows(
             title: &title,
             text: &text,
         };
-        // No key beside it: Cmd/Ctrl+R refreshes the tree while the tree
-        // has the keys.
-        let reload = say("Reload");
-        let button = states::button(&reload, look).label("Reload");
-        let button = if look.terminal {
-            button
+        let (reload, previous) = (say("Reload"), say("Previous page"));
+        let button = if past {
+            states::button(&previous, look).label("Previous page")
         } else {
-            button.icon(Icon::RefreshCw)
+            // No key beside it: Cmd/Ctrl+R refreshes the tree while the
+            // tree has the keys.
+            let button = states::button(&reload, look).label("Reload");
+            if look.terminal {
+                button
+            } else {
+                button.icon(Icon::RefreshCw)
+            }
         };
         if states::empty(ui, rect, &notice, vec![button], look, palette).is_some() {
-            actions.push(Action::Refresh(tab));
+            actions.push(if past {
+                Action::PrevPage { tab, object_tab }
+            } else {
+                Action::Refresh(tab)
+            });
         }
         return;
     }
@@ -1102,8 +1123,9 @@ fn empty_rows(
         say("None matches"),
         filters.join(&format!(" {} ", say("and")))
     );
-    // The catalog's estimate of the whole table, when it has one.
-    let text = match object.estimated_rows {
+    // The catalog's estimate of the whole table, when it has one. None is
+    // an estimate of 0: older PostgreSQL says so of a table never analysed.
+    let text = match object.estimated_rows.filter(|rows| *rows > 0) {
         Some(rows) => format!(
             "{name} {} {} {}. {none}",
             say("has about"),
