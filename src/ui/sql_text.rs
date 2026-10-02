@@ -234,10 +234,14 @@ fn format(ui: &Ui, sql_tab: &mut SqlTab, field: &Field<'_>) {
     let cursor = CCursor::new(char_index(&formatted.text, formatted.cursor));
     let (before, after) = (typed.unwrap_or_default(), CCursorRange::one(cursor));
     // The text as typed and the text as formatted, both: undo gives the
-    // first back whole, and redo the second.
+    // first back whole, and redo the second. Between the two the formatted
+    // text is fed as an edit is, which empties what an earlier undo left
+    // to redo: adding an undo point alone would keep it.
+    let formatted_state = (after, formatted.text.clone());
     let mut undoer = state.undoer();
     undoer.add_undo(&(before, sql_tab.text.clone()));
-    undoer.add_undo(&(after, formatted.text.clone()));
+    undoer.feed_state(ui.input(|input| input.time), &formatted_state);
+    undoer.add_undo(&formatted_state);
     state.set_undoer(undoer);
     state.cursor.set_char_range(Some(after));
     egui::TextEdit::store_state(ui.ctx(), field.id, state);

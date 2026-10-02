@@ -1572,6 +1572,26 @@ mod tests {
     }
 
     #[test]
+    fn format_leaves_nothing_to_redo_as_an_edit_does() {
+        let mut harness = Harness::new();
+        let tab = harness.connect_fake();
+        harness.press(Key::T, Modifiers::COMMAND);
+        let typed = "select a,b from t";
+        let formatted = "SELECT a,\n       b\n  FROM t";
+        type_text(&mut harness, typed);
+        harness.press(Key::F, COMMAND_SHIFT);
+        harness.press(Key::Z, Modifiers::COMMAND);
+        assert_eq!(active_sql(&harness, tab).text, typed);
+        // Formatted again, what that undo left to redo is gone: a redo
+        // changes nothing, and one undo is still all it takes.
+        harness.press(Key::F, COMMAND_SHIFT);
+        harness.press(Key::Z, COMMAND_SHIFT);
+        assert_eq!(active_sql(&harness, tab).text, formatted);
+        harness.press(Key::Z, Modifiers::COMMAND);
+        assert_eq!(active_sql(&harness, tab).text, typed);
+    }
+
+    #[test]
     fn format_with_a_selection_formats_the_statements_it_touches() {
         let mut harness = Harness::new();
         let tab = harness.connect_fake();
