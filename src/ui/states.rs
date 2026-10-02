@@ -43,17 +43,25 @@ pub fn title_role(look: &Look) -> TextRole {
     TextRole::pick(look, TextRole::StateTitle, TextRole::OGroup)
 }
 
-/// A button of a state: a bordered one, or in the terminal look a hint
-/// (the text muted, its key in the text colour).
+/// A button of a state without a key beside it: a bordered one, its text
+/// in the text colour. The terminal look mutes only [`key_button`]'s text:
+/// muted and alone, it would read as a button that is off.
 pub fn button<'a>(text: &'a str, look: &Look) -> ButtonSpec<'a> {
     if look.terminal {
-        ButtonSpec::new(text)
-            .hint()
-            .shortcut_role(TextRole::OBody)
-            .padding(11.0)
-            .gap(8.0)
+        ButtonSpec::new(text).padding(11.0).gap(8.0)
     } else {
         ButtonSpec::new(text)
+    }
+}
+
+/// A button of a state that shows its key: `keys` after its text, and in
+/// the terminal look a hint (the text muted, the key in the text colour).
+pub fn key_button<'a>(text: &'a str, keys: &'a str, look: &Look) -> ButtonSpec<'a> {
+    let button = button(text, look).shortcut(keys);
+    if look.terminal {
+        button.hint().shortcut_role(TextRole::OBody)
+    } else {
+        button
     }
 }
 

@@ -394,17 +394,14 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             text: &text,
         };
         let name = look.label(&gettext(locale, "New connection"));
-        let add = states::button(&name, &look)
+        let keys = if look.terminal { "n" } else { &command_n };
+        let add = states::key_button(&name, keys, &look)
             .label("New connection")
             .salt("empty");
         let add = if look.terminal {
-            add.shortcut("n")
+            add
         } else {
-            add.primary()
-                .icon(Icon::Plus)
-                .shortcut(&command_n)
-                .padding(14.0)
-                .gap(8.0)
+            add.primary().icon(Icon::Plus).padding(14.0).gap(8.0)
         };
         if states::empty(&mut list, body, &notice, vec![add], &look, &palette).is_some() {
             actions.push(Action::NewConnection);

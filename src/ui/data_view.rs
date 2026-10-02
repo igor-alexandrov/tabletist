@@ -1055,9 +1055,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
                 look.label(&gettext(locale, "Cancel")),
                 cancel_keys(&look),
             );
-            let cancel = states::button(&name, &look)
-                .label("Cancel query")
-                .shortcut(&keys);
+            let cancel = states::key_button(&name, &keys, &look).label("Cancel query");
             if states::running(ui, area, &text, waited, Some(cancel), &look, &palette) {
                 actions.push(Action::CancelQuery(tab));
             }

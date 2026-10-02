@@ -7100,6 +7100,40 @@ mod tests {
         }
     }
 
+    /// A terminal button's text is muted only beside its key, which then
+    /// carries it: muted and alone, it would read as one that is off.
+    #[test]
+    fn a_terminal_button_without_a_key_reads_as_text_and_one_with_a_key_shows_it() {
+        let look = crate::theme::Look::omarchy();
+        let mut harness = Harness::new();
+        harness.set_look(look);
+        lost(&mut harness);
+        harness.settle();
+        let text = harness.app.palette.text;
+        // The strip's lead is ordinary text; Reconnect has no key.
+        let lead = format!(
+            "{} Fixture · dev {}",
+            look.label("Connection to"),
+            look.label("lost.")
+        );
+        assert_eq!(harness.painted_color(&lead), Some(text));
+        assert_eq!(harness.painted_color(&look.label("Reconnect")), Some(text));
+
+        // A connect's Cancel shows the key that gives up.
+        let mut harness = Harness::new();
+        harness.set_look(look);
+        add_saved(&mut harness, "Production");
+        harness.click("Connect to Production");
+        harness.settle();
+        for piece in [look.label("Cancel"), "esc".to_owned()] {
+            assert!(
+                harness.painted.iter().any(|(text, _)| *text == piece),
+                "{piece}: {:?}",
+                harness.painted
+            );
+        }
+    }
+
     /// Fails what a refresh of `tab` asked for (its rows and, when it had
     /// one, its structure) as a connection that is gone does, then reports
     /// the loss: the order the backend sends them in.

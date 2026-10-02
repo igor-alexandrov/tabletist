@@ -226,11 +226,9 @@ fn connecting(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
     // it has no button that would close them, and the bar's Disconnect is
     // the way out. Named apart from a password prompt's Cancel, which can
     // be open over it.
-    let cancel = workspace.can_give_up().then(|| {
-        states::button(&name, &look)
-            .label("Cancel connecting")
-            .shortcut("esc")
-    });
+    let cancel = workspace
+        .can_give_up()
+        .then(|| states::key_button(&name, "esc", &look).label("Cancel connecting"));
     let width = cancel
         .as_ref()
         .map_or(0.0, |cancel| cancel.width(ui, &look));
