@@ -2,6 +2,7 @@
 
 pub mod app;
 pub mod backend;
+pub mod completion;
 pub mod connections;
 pub mod entrypoint;
 pub mod env;

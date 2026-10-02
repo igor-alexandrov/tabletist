@@ -1532,6 +1532,13 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
     };
     let editor = super::sql_editor::status_summary(app, tab);
     let on_editor = editor.is_some();
+    // The completion list's own key, while it is open with a row to put
+    // in. One whose row is about to be inserted is not open any more: the
+    // mode line is drawn before the editor inserts it.
+    let completing = workspace
+        .active_sql_tab()
+        .and_then(|sql| sql.completion.as_ref())
+        .is_some_and(|list| !list.accept && !list.candidates.is_empty());
     let summary = editor
         .or_else(|| {
             let object = workspace.active_object_tab()?;
@@ -1570,15 +1577,26 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                 ("s", "structure", true),
             ];
             // An editor's keys: a table's do nothing on it.
-            let words = ["run", "run all", "cancel", "leave editor", "tables"]
-                .map(|word| gettext(locale, word));
-            let editor_hints = [
+            let words = [
+                "run",
+                "run all",
+                "cancel",
+                "leave editor",
+                "tables",
+                "complete",
+            ]
+            .map(|word| gettext(locale, word));
+            let mut editor_hints: Vec<widgets::Hint<'_>> = vec![
                 ("ctrl+enter", &*words[0], true),
                 ("ctrl+shift+enter", &*words[1], true),
                 ("ctrl+.", &*words[2], true),
                 ("esc", &*words[3], true),
                 ("ctrl+b", &*words[4], true),
             ];
+            // An open completion list: its key leads.
+            if completing {
+                editor_hints.insert(0, ("tab", &*words[5], true));
+            }
             let hints: &[widgets::Hint<'_>] = if on_editor {
                 &editor_hints
             } else {

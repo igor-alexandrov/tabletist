@@ -119,17 +119,21 @@ const POSTGRES_KEYWORDS: &[&str] = &["ILIKE", "LATERAL", "RETURNING", "SIMILAR"]
 const MYSQL_KEYWORDS: &[&str] = &["DESCRIBE", "REGEXP", "STRAIGHT_JOIN"];
 const SQLITE_KEYWORDS: &[&str] = &["GLOB", "PRAGMA", "RETURNING"];
 
-/// Whether `word` (any case) is highlighted as a keyword in `dialect`.
-pub fn is_keyword(dialect: Dialect, word: &str) -> bool {
+/// The keywords `dialect` highlights, in upper case: the words the editor
+/// completes too. A keyword worth completing is worth colouring, so there
+/// is one list.
+pub fn keywords(dialect: Dialect) -> impl Iterator<Item = &'static str> {
     let own = match dialect {
         Dialect::Postgres => POSTGRES_KEYWORDS,
         Dialect::MySql => MYSQL_KEYWORDS,
         Dialect::Sqlite => SQLITE_KEYWORDS,
     };
-    KEYWORDS
-        .iter()
-        .chain(own)
-        .any(|keyword| keyword.eq_ignore_ascii_case(word))
+    KEYWORDS.iter().chain(own).copied()
+}
+
+/// Whether `word` (any case) is highlighted as a keyword in `dialect`.
+pub fn is_keyword(dialect: Dialect, word: &str) -> bool {
+    keywords(dialect).any(|keyword| keyword.eq_ignore_ascii_case(word))
 }
 
 /// Splits `text` into tokens that cover it end to end.
@@ -441,7 +445,7 @@ impl Statement {
 
 /// Whether a token is SQL the server runs. An executable comment counts:
 /// MySQL and MariaDB run its contents.
-fn is_code(kind: TokenKind) -> bool {
+pub(crate) fn is_code(kind: TokenKind) -> bool {
     !matches!(kind, TokenKind::Whitespace | TokenKind::Comment)
 }
 
@@ -1738,5 +1742,32 @@ mod tests {
         // Not a statement of the others.
         assert_eq!(refusal(Dialect::Postgres, "USE other"), None);
         assert_eq!(refusal(Dialect::Sqlite, "USE other"), None);
+    }
+
+    #[test]
+    fn the_keywords_of_a_dialect_are_the_ones_it_highlights() {
+        let mysql: Vec<&str> = keywords(Dialect::MySql).collect();
+        assert!(mysql.contains(&"SELECT") && mysql.contains(&"REGEXP"));
+        assert!(!mysql.contains(&"ILIKE"));
+        // Shared words, each dialect's own, and no word twice.
+        for (dialect, own) in [
+            (Dialect::Postgres, "ILIKE"),
+            (Dialect::MySql, "REGEXP"),
+            (Dialect::Sqlite, "PRAGMA"),
+        ] {
+            let words: Vec<&str> = keywords(dialect).collect();
+            assert!(
+                words.contains(&"WHERE") && words.contains(&own),
+                "{dialect:?}"
+            );
+            for word in &words {
+                assert_eq!(*word, word.to_ascii_uppercase());
+                assert_eq!(
+                    words.iter().filter(|other| *other == word).count(),
+                    1,
+                    "{dialect:?}: {word}"
+                );
+            }
+        }
     }
 }

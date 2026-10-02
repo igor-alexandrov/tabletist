@@ -13,9 +13,10 @@ use crate::connections::{PasswordMode, SavedConnection};
 use crate::i18n::Locale;
 use crate::model::{Action, ConnTab, ConnTabContent, ConnTabId, PickerState};
 use crate::model::{
-    CellPos, ConnectionForm, Dialog, Fetch, FilterBar, FilterRow, HostKeyPrompt, ObjectTab,
-    ObjectView, Pane, PasswordPrompt, PickTarget, QuickOpen, ResultPane, SecretKind, SessionStatus,
-    SqlTab, Tab, TabId, TestState, Tree, TreeKey, TreeNode, Workspace,
+    CellPos, Completion, ConnectionForm, Dialog, Fetch, FilterBar, FilterRow, HostKeyPrompt,
+    ObjectTab, ObjectView, Pane, PasswordPrompt, PickTarget, QuickOpen, ResultPane, SecretKind,
+    SessionStatus, SqlTab, Tab, TabId, TestState, TextPrint, Tree, TreeKey, TreeNode, Wanted,
+    Workspace,
 };
 use crate::paths::AppDirs;
 use crate::secrets::{SecretString, password_account, ssh_account};
@@ -770,7 +771,49 @@ impl App {
                 }
             }
             Action::NewSqlTab(tab) => self.new_sql_tab(tab),
-            Action::RunSql { tab, sql_tab, all } => self.run_sql(tab, sql_tab, all),
+            Action::RunSql { tab, sql_tab, all } => {
+                if let Some(sql) = self.sql_tab_mut(tab, sql_tab) {
+                    sql.completion = None;
+                    sql.completion_wanted = None;
+                }
+                self.run_sql(tab, sql_tab, all);
+            }
+            Action::SqlTyped { tab, sql_tab } => {
+                if let Some(sql) = self.sql_tab_mut(tab, sql_tab) {
+                    // A list asked for by hand in the same frame stays so.
+                    if sql.completion_wanted.is_none() {
+                        sql.completion_wanted = Some(Wanted::Typed);
+                    }
+                }
+            }
+            Action::OpenCompletion { tab, sql_tab } => {
+                if let Some(sql) = self.sql_tab_mut(tab, sql_tab) {
+                    sql.completion_wanted = Some(Wanted::Manual);
+                }
+            }
+            Action::MoveCompletion { tab, sql_tab, step } => {
+                if let Some(list) = self
+                    .sql_tab_mut(tab, sql_tab)
+                    .and_then(|sql| sql.completion.as_mut())
+                {
+                    list.move_by(step);
+                }
+            }
+            Action::AcceptCompletion { tab, sql_tab, row } => {
+                if let Some(list) = self
+                    .sql_tab_mut(tab, sql_tab)
+                    .and_then(|sql| sql.completion.as_mut())
+                {
+                    // The editor's view inserts it on its next draw.
+                    list.accept(row);
+                }
+            }
+            Action::CloseCompletion { tab, sql_tab } => {
+                if let Some(sql) = self.sql_tab_mut(tab, sql_tab) {
+                    sql.completion = None;
+                    sql.completion_wanted = None;
+                }
+            }
             Action::FormatSql { tab, sql_tab } => {
                 if let Some(sql) = self.sql_tab_mut(tab, sql_tab) {
                     sql.format = true;
@@ -2345,6 +2388,112 @@ impl App {
         }
     }
 
+    /// Works out the completion list of the SQL editor on screen: opens
+    /// the one that was asked for, recomputes an open one whose script,
+    /// cursor or catalog changed, and closes one with nothing left to
+    /// offer. Lists of editors that are not on screen are dropped. A list
+    /// waiting for the view to insert its row is left as it is.
+    /// Returns whether a list changed, so the frame is drawn again.
+    ///
+    /// Called from `frame_ui`, which has the egui context: the script's
+    /// tokens come from the cache the editor's layouter fills, so a script
+    /// is tokenized once per change.
+    pub fn refresh_completion(&mut self, ctx: &egui::Context) -> bool {
+        let active = self.active_sql();
+        let mut changed = false;
+        for conn in &mut self.tabs {
+            let ConnTabContent::Workspace(workspace) = &mut conn.content else {
+                continue;
+            };
+            for sql in workspace.sql_tabs_mut() {
+                if active != Some((conn.id, sql.id)) {
+                    changed |= sql.completion.take().is_some();
+                    sql.completion_wanted = None;
+                }
+            }
+        }
+        let Some((tab, id)) = active else {
+            return changed;
+        };
+        let palette = self.palette;
+        let Some(workspace) = self.workspace_mut(tab) else {
+            return changed;
+        };
+        let dialect = workspace.driver.dialect();
+        let generation = workspace.catalog_generation;
+        let Some(sql) = workspace.sql_tab_mut(id) else {
+            return changed;
+        };
+        // The view is about to insert the highlighted row: the rows must
+        // not move under it. What was asked for meanwhile waits.
+        if sql.completion.as_ref().is_some_and(|list| list.accept) {
+            return changed;
+        }
+        let wanted = sql.completion_wanted.take();
+        let was_open = sql.completion.is_some();
+        if wanted.is_none() && !was_open {
+            return changed;
+        }
+        let of = (TextPrint::of(&sql.text), sql.cursor, generation);
+        if wanted.is_none() && sql.completion.as_ref().is_some_and(|list| list.is_of(of)) {
+            return changed;
+        }
+        let editor = crate::ui::sql_text::editor_id(tab, id);
+        let parsed = crate::ui::sql_text::parsed(ctx, editor, dialect, &palette, &sql.text);
+        let Some(site) = tabletist_db::complete::site(&parsed.tokens, &sql.text, sql.cursor) else {
+            sql.completion = None;
+            return changed | was_open;
+        };
+        // A cursor that is stale or inside a character has no word.
+        let Some(typed) = sql.text.get(site.word.start..sql.cursor).map(str::to_owned) else {
+            sql.completion = None;
+            return changed | was_open;
+        };
+        // An open list goes on only for the word it was opened on.
+        let going = sql
+            .completion
+            .as_ref()
+            .is_some_and(|list| list.is_on(&site, of.0));
+        let manual = match wanted {
+            Some(Wanted::Manual) => true,
+            _ if going => sql.completion.as_ref().is_some_and(|list| list.manual),
+            Some(Wanted::Typed) => false,
+            None => {
+                // The cursor left the word.
+                sql.completion = None;
+                return true;
+            }
+        };
+        // Opening, by typing: a word of two characters or more, or right
+        // after a dot, and not where a new name goes. Told before any row
+        // is looked for.
+        if !going && !crate::completion::may_open(&site, &typed, manual) {
+            sql.completion = None;
+            return changed | was_open;
+        }
+        let catalog = crate::completion::Catalog { dialect };
+        let listed = crate::completion::list(&site, &typed, manual, &catalog);
+        // Nothing is fetched for the list yet.
+        let loading = false;
+        let empty = listed.candidates.is_empty() && !loading;
+        if going {
+            match sql.completion.as_mut() {
+                Some(list) if !empty => {
+                    list.manual = manual;
+                    list.relist(of, site, typed, listed, loading);
+                }
+                _ => sql.completion = None,
+            }
+            return true;
+        }
+        // Opening: not with nothing to offer, and by typing not when the
+        // only row is what is already typed. Asked for by hand, that one
+        // row shows.
+        let opens = !empty && (manual || !listed.only_repeats(&typed));
+        sql.completion = opens.then(|| Completion::new(manual, of, site, typed, listed, loading));
+        changed | was_open | sql.completion.is_some()
+    }
+
     /// Runs the statement at the editor's cursor, or every statement. An
     /// editor holding no statement (empty, or only comments) runs nothing.
     /// Nor does one whose session is not connected: the backend would
@@ -2754,6 +2903,10 @@ impl App {
     pub fn frame_ui(&mut self, ui: &mut egui::Ui) {
         self.poll_backend();
         self.apply_actions();
+        // Before the keys and the view, which read the list: it is the one
+        // the last frame's actions left, after anything the backend
+        // delivered just now.
+        self.refresh_completion(ui.ctx());
         // A dialog takes the keyboard: no shortcut acts behind it.
         if self.dialog.is_none() {
             crate::ui::keys::handle(self, ui.ctx());
@@ -2761,6 +2914,10 @@ impl App {
         crate::ui::show(self, ui);
         crate::ui::keys::after_frame(ui.ctx());
         self.apply_actions();
+        // A list that opened or changed shows on the next frame.
+        if self.refresh_completion(ui.ctx()) {
+            ui.ctx().request_repaint();
+        }
         let title = self.window_title();
         if title != self.window_title {
             ui.ctx()

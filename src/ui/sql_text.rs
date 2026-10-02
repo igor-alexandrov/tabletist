@@ -14,8 +14,8 @@ use tabletist_db::Dialect;
 use tabletist_db::sql::{self, Statement, Token, TokenKind};
 
 use crate::app::App;
-use crate::i18n::gettext;
-use crate::model::{Action, ConnTabId, Pane, SqlTab, TabId, TextPrint};
+use crate::i18n::{Locale, gettext};
+use crate::model::{Action, Completion, ConnTabId, Pane, SqlTab, TabId, TextPrint};
 use crate::theme::{Look, Palette};
 use crate::typography::{Text, TextRole};
 use crate::ui::widgets;
@@ -77,18 +77,20 @@ thread_local! {
 
 /// What an editor works out from its script, tokenized once for both: the
 /// colours it is drawn in and the statements it holds.
-struct Parsed {
+pub(crate) struct Parsed {
     /// What it was worked out from: the script, the dialect that reads it
     /// and the colours.
     of: (TextPrint, Dialect, Palette),
     runs: Vec<(Range<usize>, Color32)>,
     statements: Vec<Statement>,
+    /// The script's tokens, for the completion list.
+    pub(crate) tokens: Vec<Token>,
 }
 
 /// `text` parsed, from egui's memory for the editor `id` when that is of
 /// the same text, dialect and colours: a frame that changes none of them
 /// tokenizes nothing.
-fn parsed(
+pub(crate) fn parsed(
     ctx: &egui::Context,
     id: Id,
     dialect: Dialect,
@@ -109,6 +111,7 @@ fn parsed(
         of,
         runs: runs(&tokens, text, palette),
         statements: sql::statements_from(text, &tokens),
+        tokens,
     });
     ctx.data_mut(|data| data.insert_temp(id, Arc::clone(&parsed)));
     parsed
@@ -126,7 +129,8 @@ struct ScrollId(Id);
 
 /// Drops what egui's memory keeps for a closed editor: its text field's
 /// cursor and undo history (which holds copies of the script), what was
-/// worked out from the script, and where it was scrolled to.
+/// worked out from the script, where it was scrolled to, and what its
+/// completion list kept.
 pub fn forget(ctx: &egui::Context, tab: ConnTabId, id: TabId) {
     let editor = editor_id(tab, id);
     ctx.data_mut(|data| {
@@ -137,6 +141,7 @@ pub fn forget(ctx: &egui::Context, tab: ConnTabId, id: TabId) {
         }
         data.remove::<ScrollId>(editor);
     });
+    super::sql_complete::forget(ctx, editor);
 }
 
 /// What egui's memory keeps for the editor `id`, by name.
@@ -154,6 +159,7 @@ pub fn remembered(ctx: &egui::Context, tab: ConnTabId, id: TabId) -> Vec<&'stati
         ),
         ("scroll id", area.is_some()),
         ("scroll", scrolled),
+        ("list", super::sql_complete::remembered(ctx, editor)),
     ]
     .into_iter()
     .filter_map(|(name, kept)| kept.then_some(name))
@@ -211,12 +217,89 @@ fn byte_offset(text: &str, chars: usize) -> usize {
         .map_or(text.len(), |(byte, _)| byte)
 }
 
-/// The character index, as egui counts a cursor, of the byte offset
-/// `bytes` in `text`.
-fn char_index(text: &str, bytes: usize) -> usize {
-    text.char_indices()
-        .take_while(|(byte, _)| *byte < bytes)
-        .count()
+/// The character index, as egui counts a cursor, of the byte offset `byte`
+/// of `text`.
+fn char_index(text: &str, byte: usize) -> usize {
+    text.get(..byte)
+        .map_or_else(|| text.chars().count(), |before| before.chars().count())
+}
+
+/// A field's cursor and script, as its undo history keeps them.
+type Edit = (CCursorRange, String);
+
+/// Puts an edit made from outside the field into its undo history as a
+/// step of its own, and the field's cursor where the edit left it:
+/// `before` and `after` are the cursor and the script on either side of
+/// the edit, and `time` is the frame's.
+///
+/// egui groups undo by time and would merge the edit with the typing
+/// around it, so both go in as undo points: undo gives the first back
+/// whole, and redo the second. Between the two the edited script is fed
+/// as an edit of the field's own is, which empties what an earlier undo
+/// left to redo: adding an undo point alone would keep it. (The time fed
+/// does not matter: the undo point after it settles the state.)
+fn outside_edit(
+    state: &mut egui::text_edit::TextEditState,
+    time: f64,
+    before: &Edit,
+    after: &Edit,
+) {
+    let mut undoer = state.undoer();
+    undoer.add_undo(before);
+    undoer.feed_state(time, after);
+    undoer.add_undo(after);
+    state.set_undoer(undoer);
+    state.cursor.set_char_range(Some(after.0));
+}
+
+/// Carries out an accepted completion before the field handles the
+/// frame's events: replaces the word with the highlighted row's text and
+/// puts the cursor after it. The list is taken off the tab either way.
+/// Returns whether a row went in.
+///
+/// The insertion is an undo step of its own (see `outside_edit`): undo
+/// takes back what was typed after the insertion, then the insertion
+/// alone, and redo puts each back. As after any edit, nothing an earlier
+/// undo took back is left to redo.
+fn insert_completion(ctx: &egui::Context, id: Id, sql_tab: &mut SqlTab) -> bool {
+    let Some(list) = sql_tab.completion.take_if(|list| list.accept) else {
+        return false;
+    };
+    let Some(candidate) = list.highlighted() else {
+        return false;
+    };
+    let word = list.site.word.clone();
+    // The list must be of this very script, and the row must change it.
+    let changes = sql_tab
+        .text
+        .get(word.clone())
+        .is_some_and(|old| old != candidate.insert);
+    if !list.is_of_text(&sql_tab.text) || !changes {
+        return false;
+    }
+    let mut state = egui::TextEdit::load_state(ctx, id).unwrap_or_default();
+    let before = state.cursor.char_range().unwrap_or_else(|| {
+        CCursorRange::one(CCursor::new(char_index(&sql_tab.text, sql_tab.cursor)))
+    });
+    let before = (before, sql_tab.text.clone());
+    sql_tab.text.replace_range(word.clone(), &candidate.insert);
+    sql_tab.cursor = word.start + candidate.insert.len();
+    let after = CCursorRange::one(CCursor::new(char_index(&sql_tab.text, sql_tab.cursor)));
+    let after = (after, sql_tab.text.clone());
+    outside_edit(&mut state, ctx.input(|input| input.time), &before, &after);
+    egui::TextEdit::store_state(ctx, id, state);
+    true
+}
+
+/// Whether `event` is text typed into the field, as it takes it: it
+/// ignores an empty text and a line ending (Enter is a key), and an empty
+/// commit of an input method.
+pub(crate) fn is_typed(event: &egui::Event) -> bool {
+    match event {
+        egui::Event::Text(text) => !text.is_empty() && text != "\n" && text != "\r",
+        egui::Event::Ime(egui::ImeEvent::Commit(text)) => !text.is_empty(),
+        _ => false,
+    }
 }
 
 /// Formats the script, or the statements the field's selection overlaps,
@@ -242,19 +325,12 @@ fn format_script(ui: &Ui, sql_tab: &mut SqlTab, field: &Field<'_>) -> bool {
     let before = typed.unwrap_or_else(|| at(&sql_tab.text, sql_tab.cursor));
     let after = at(&formatted.text, formatted.cursor);
     // The text as typed and the text as formatted, both: undo gives the
-    // first back whole, and redo the second. Between the two the formatted
-    // text is fed as an edit is, which empties what an earlier undo left
-    // to redo: adding an undo point alone would keep it. (The time fed
-    // does not matter: the next line settles the state.)
-    let formatted_state = (after, formatted.text.clone());
-    let mut undoer = state.undoer();
-    undoer.add_undo(&(before, sql_tab.text.clone()));
-    undoer.feed_state(ui.input(|input| input.time), &formatted_state);
-    undoer.add_undo(&formatted_state);
-    state.set_undoer(undoer);
-    state.cursor.set_char_range(Some(after));
+    // first back whole, and redo the second.
+    let before = (before, std::mem::take(&mut sql_tab.text));
+    let after = (after, formatted.text);
+    outside_edit(&mut state, ui.input(|input| input.time), &before, &after);
     egui::TextEdit::store_state(ui.ctx(), field.id, state);
-    sql_tab.text = formatted.text;
+    sql_tab.text = after.1;
     sql_tab.cursor = formatted.cursor;
     true
 }
@@ -316,7 +392,14 @@ struct Edited {
     galley: Arc<Galley>,
     /// Where the galley's top left corner is on screen.
     origin: egui::Pos2,
+    /// The caret on screen, as tall as its line. A field never focused
+    /// has none.
+    caret: Option<Rect>,
     focused: bool,
+    /// The field's text changed this frame by typing: not by a paste, an
+    /// undo, a deletion or an input method's text while it is composed.
+    /// Only text the field takes counts (see `edit`).
+    typed: bool,
 }
 
 impl Edited {
@@ -350,22 +433,25 @@ pub fn show(app: &mut App, ui: &mut Ui, tab: ConnTabId, id: TabId) {
     let backdrop = ui.painter().add(Shape::Noop);
     // The text scrolls both ways beside the gutter, which stays put.
     let text_pane = Rect::from_min_max(pos2(pane.left() + gutter.width, pane.top()), pane.max);
+    let name = gettext(locale, "SQL");
+    let field = Field {
+        id: editor,
+        name: &name,
+        left: gutter.text_left,
+        dialect,
+        look: &look,
+        palette: &palette,
+        // An open completion list takes Esc: the editor keeps the
+        // keyboard. Not one whose row this frame inserts: Esc is the
+        // editor's again.
+        hold_escape: sql_tab.completion.as_ref().is_some_and(|list| !list.accept),
+    };
     let mut child = ui.new_child(egui::UiBuilder::new().id_salt("text").max_rect(text_pane));
     child.set_clip_rect(text_pane.intersect(ui.clip_rect()));
     let scrolled = egui::ScrollArea::both()
         .id_salt("scroll")
         .auto_shrink([false, false])
-        .show(&mut child, |ui| {
-            let field = Field {
-                id: editor,
-                name: &gettext(locale, "SQL"),
-                left: gutter.text_left,
-                dialect,
-                look: &look,
-                palette: &palette,
-            };
-            edit(ui, sql_tab, &field)
-        });
+        .show(&mut child, |ui| edit(ui, sql_tab, &field));
     ui.data_mut(|data| data.insert_temp(editor, ScrollId(scrolled.id)));
     let mut edited = scrolled.inner;
     // The gutter is the editor's too: a press on it gives the editor the
@@ -390,6 +476,15 @@ pub fn show(app: &mut App, ui: &mut Ui, tab: ConnTabId, id: TabId) {
         ui.memory_mut(|memory| memory.request_focus(editor));
         edited.focused = true;
     }
+    // The open completion list, and the characters its word starts and
+    // ends at. (After the field drew: a list whose row was accepted went
+    // in there and is off the tab, so the one here is open.)
+    let completing = sql_tab.completion.as_ref().map(|list| {
+        let word = &list.site.word;
+        let start = char_index(&sql_tab.text, word.start);
+        let end = char_index(&sql_tab.text, word.end);
+        (list.clone(), start..end)
+    });
     let (cursor_line, _) = sql_tab.line_col();
     let error_line = sql_tab.error_mark().map(|(line, _)| line);
     // The statement Run executes, from the tokens the colours came from.
@@ -400,6 +495,17 @@ pub fn show(app: &mut App, ui: &mut Ui, tab: ConnTabId, id: TabId) {
         app.actions
             .push(Action::SqlEditorFocused { tab, sql_tab: id });
     }
+    if edited.typed {
+        app.actions.push(Action::SqlTyped { tab, sql_tab: id });
+    }
+    let spot = Spot {
+        tab,
+        sql_tab: id,
+        text_pane,
+        locale,
+    };
+    let asked = completion_list(ui, completing.as_ref(), &mut edited, &field, &spot);
+    app.actions.extend(asked);
     let across = |x: egui::Rangef, y| Rect::from_x_y_ranges(x, y);
     let fill = |rect, color| Shape::rect_filled(rect, CornerRadius::ZERO, color);
     let mut behind = Vec::new();
@@ -460,6 +566,83 @@ pub fn show(app: &mut App, ui: &mut Ui, tab: ConnTabId, id: TabId) {
     }
 }
 
+/// Where an editor's completion list is drawn, and whose it is.
+struct Spot {
+    tab: ConnTabId,
+    sql_tab: TabId,
+    /// The text's pane: the editor without its gutter.
+    text_pane: Rect,
+    locale: Locale,
+}
+
+/// Draws the open completion list of an editor under its word:
+/// `completing` is the list and the characters its word starts and ends
+/// at, or nothing when no list is open. Returns what the frame asks of
+/// the list: a row picked, or that it closes.
+///
+/// A press on the list hands the keyboard back to the editor, and
+/// `edited` says so.
+fn completion_list(
+    ui: &Ui,
+    completing: Option<&(Completion, Range<usize>)>,
+    edited: &mut Edited,
+    field: &Field<'_>,
+    spot: &Spot,
+) -> Option<Action> {
+    let (tab, sql_tab, pane) = (spot.tab, spot.sql_tab, spot.text_pane);
+    let Some((list, chars)) = completing else {
+        super::sql_complete::forget(ui.ctx(), field.id);
+        return None;
+    };
+    let close = Action::CloseCompletion { tab, sql_tab };
+    // A character's place on screen, as tall as its line.
+    let on_screen = |at: usize| {
+        let place = edited.galley.pos_from_cursor(CCursor::new(at));
+        place.translate(edited.origin.to_vec2())
+    };
+    let (word, end) = (on_screen(chars.start), on_screen(chars.end));
+    // The list hangs under its word while some of the word is in the
+    // pane: its line is, and across the word starts before the pane's
+    // right edge and ends after its left one.
+    let in_sight = pane.y_range().contains(word.center().y)
+        && word.left() <= pane.right()
+        && end.right() >= pane.left();
+    if !in_sight {
+        // Scrolled out of the pane, the list has nothing to hang under.
+        // One that has not drawn yet waits instead, while the editor
+        // scrolls its caret into view (see `edit`) and no longer: with the
+        // caret in the pane and still no place for the list, it closes,
+        // rather than stay open with its keys live and nothing to see.
+        let drawn = super::sql_complete::was_shown(ui.ctx(), field.id, list);
+        let caret_on_its_way = edited
+            .caret
+            .is_some_and(|caret| !pane.contains(caret.center()));
+        let waits = !drawn && caret_on_its_way && edited.focused;
+        return (!waits).then_some(close);
+    }
+    // A start left of the pane (the line is scrolled, and the pane shows
+    // the word from further along): the list is drawn from the pane's
+    // left edge.
+    let word = word.translate(vec2((pane.left() - word.left()).max(0.0), 0.0));
+    let (look, palette) = (field.look, field.palette);
+    let shown = super::sql_complete::show(ui, list, word, field.id, look, palette, spot.locale);
+    // A press on the list lands outside the field, which gives the keys
+    // up: they stay the editor's. Only once it lost them: asking for the
+    // keyboard again lets go of the keys the field holds (Tab, the arrows,
+    // Esc) for a frame.
+    if shown.pressed && !edited.focused {
+        ui.memory_mut(|memory| memory.request_focus(field.id));
+        edited.focused = true;
+    }
+    if let Some(row) = shown.picked {
+        let row = Some(row);
+        return Some(Action::AcceptCompletion { tab, sql_tab, row });
+    }
+    // Checked after the list drew, so a press on a row does not count as
+    // the editor losing the keyboard.
+    (!edited.focused).then_some(close)
+}
+
 /// What the text field is, and what it draws with.
 struct Field<'a> {
     id: Id,
@@ -470,10 +653,13 @@ struct Field<'a> {
     dialect: Dialect,
     look: &'a Look,
     palette: &'a Palette,
+    /// Keep the keyboard on Esc (a completion list is open and takes it).
+    hold_escape: bool,
 }
 
 /// The text field itself: edits the tab's text and reports its cursor.
 fn edit(ui: &mut Ui, sql_tab: &mut SqlTab, field: &Field<'_>) -> Edited {
+    let inserted = insert_completion(ui.ctx(), field.id, sql_tab);
     let focus = std::mem::take(&mut sql_tab.focus_editor);
     // Before the field is drawn, so this frame shows the formatted text.
     let formatted = std::mem::take(&mut sql_tab.format) && format_script(ui, sql_tab, field);
@@ -496,7 +682,7 @@ fn edit(ui: &mut Ui, sql_tab: &mut SqlTab, field: &Field<'_>) -> Edited {
     let output = egui::TextEdit::multiline(&mut sql_tab.text)
         .id(field.id)
         .font(font)
-        // Tab indents; Esc gives the keys up.
+        // Tab indents; Esc gives the keys up unless `hold_escape`.
         .lock_focus(true)
         .frame(egui::Frame::new().inner_margin(margin))
         .desired_width(f32::INFINITY)
@@ -513,16 +699,56 @@ fn edit(ui: &mut Ui, sql_tab: &mut SqlTab, field: &Field<'_>) -> Edited {
         // need follow the one that opened the tab.
         ui.ctx().request_repaint();
     }
-    if formatted {
+    // The caret on screen.
+    let caret = output.state.cursor.range(&output.galley).map(|range| {
+        let caret = output.galley.pos_from_cursor(range.primary);
+        caret.translate(output.galley_pos.to_vec2())
+    });
+    // The field scrolls to its caret when its own events move it. A row
+    // put in from outside moves it too, and so does Format. And a
+    // completion list that has not drawn yet hangs under a word that may
+    // be out of the pane (it was asked for after scrolling away): the
+    // caret comes into view, and the list with it. (The list here is an
+    // open one: `insert_completion` took one whose row was accepted. One
+    // that still has no place once the caret is in the pane is closed by
+    // `completion_list`, so this ends.)
+    let list_waits = sql_tab
+        .completion
+        .as_ref()
+        .is_some_and(|list| !super::sql_complete::was_shown(ui.ctx(), field.id, list));
+    if (inserted || list_waits)
+        && let Some(caret) = caret
+    {
+        ui.scroll_to_rect(caret.expand(1.5), None);
+    } else if formatted && let Some(caret) = caret {
         // The cursor's line moved with the layout. The field scrolls to
         // its cursor after an edit of its own, not after this one, so
-        // bring it into view here; and ask for the frame that shows the
-        // footer and the gutter the new text.
-        if let Some(range) = output.state.cursor.range(&output.galley) {
-            let cursor = output.galley.pos_from_cursor(range.primary);
-            ui.scroll_to_rect(cursor.translate(output.galley_pos.to_vec2()), None);
-        }
+        // bring it into view here.
+        ui.scroll_to_rect(caret, None);
+    }
+    if inserted || formatted {
+        // One more frame: what is drawn before the editor (the footer's
+        // line and column) and the gutter read the script and the cursor
+        // before the row went in or the script was formatted.
         ui.ctx().request_repaint();
+    }
+    if field.hold_escape && output.response.has_focus() {
+        // The field set its own filter while it drew (the arrows and Tab).
+        // egui replaces the whole filter, so those are named again. The
+        // filter is read at the start of the next pass, so holding Esc takes
+        // effect a frame after the flag is set and ends a frame after it is
+        // cleared.
+        ui.memory_mut(|memory| {
+            memory.set_focus_lock_filter(
+                field.id,
+                egui::EventFilter {
+                    tab: true,
+                    horizontal_arrows: true,
+                    vertical_arrows: true,
+                    escape: true,
+                },
+            );
+        });
     }
     // egui counts the cursor in characters; a field never focused has
     // none, and the tab keeps the one it has. The footer and the status
@@ -531,9 +757,12 @@ fn edit(ui: &mut Ui, sql_tab: &mut SqlTab, field: &Field<'_>) -> Edited {
     if let Some(range) = output.state.cursor.range(&output.galley) {
         sql_tab.cursor = byte_offset(&sql_tab.text, range.primary.index.0);
     }
+    let typed = output.response.changed() && ui.input(|input| input.events.iter().any(is_typed));
     Edited {
+        typed,
         focused: output.response.has_focus(),
         origin: output.galley_pos,
+        caret,
         galley: output.galley,
     }
 }
@@ -644,8 +873,9 @@ mod tests {
         for chars in 0..=6 {
             assert_eq!(char_index("żółw 1", byte_offset("żółw 1", chars)), chars);
         }
-        // Past the end: the end.
+        // Past the end, or inside a character: the end.
         assert_eq!(char_index("żółw", 99), 4);
+        assert_eq!(char_index("żółw", 1), 4);
     }
 
     #[test]
@@ -673,6 +903,78 @@ mod tests {
         assert_eq!(numbers(3, true), [2, 1, 3, 1, 2]);
         assert_eq!(numbers(1, true), [1, 1, 2, 3, 4]);
         assert_eq!(numbers(5, true), [4, 3, 2, 1, 5]);
+    }
+
+    /// One frame of an editor on its own, with `events`. Returns whether
+    /// it has the keyboard afterwards.
+    fn editor_frame(
+        harness: &mut crate::testing::Harness,
+        sql: &mut SqlTab,
+        hold_escape: bool,
+        events: Vec<egui::Event>,
+    ) -> bool {
+        let (look, palette) = (Look::standard(), Palette::light());
+        let input = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, harness.size)),
+            events,
+            ..Default::default()
+        };
+        let mut focused = false;
+        let mut output = harness.ctx.run_ui(input, |ui| {
+            egui::CentralPanel::default().show(ui, |ui| {
+                // A neighbour for the focus to move to, were the arrows
+                // not held by the editor.
+                let _ = ui.button("above");
+                let field = Field {
+                    id: Id::new("held editor"),
+                    name: "SQL",
+                    left: 14,
+                    dialect: Dialect::Sqlite,
+                    look: &look,
+                    palette: &palette,
+                    hold_escape,
+                };
+                focused = edit(ui, sql, &field).focused;
+            });
+        });
+        // As `Harness::frame_with` does: a delta dropped unapplied panics.
+        output.textures_delta.clear();
+        focused
+    }
+
+    #[test]
+    fn an_editor_told_to_hold_escape_keeps_the_keyboard() {
+        use crate::testing::{key, release};
+        use egui::{Key, Modifiers};
+        let mut harness = crate::testing::Harness::new();
+        let mut sql = SqlTab::new(TabId(1), 1, 1_000, None);
+        sql.text = "SELECT 1\nFROM users".into();
+        // A new editor asks for the keyboard and has it a frame later; the
+        // lock filter takes one frame more, since `set_focus_lock_filter`
+        // does nothing until the widget had focus on the previous frame.
+        editor_frame(&mut harness, &mut sql, true, Vec::new());
+        editor_frame(&mut harness, &mut sql, true, Vec::new());
+        assert!(editor_frame(&mut harness, &mut sql, true, Vec::new()));
+        // Esc is held: the editor still has the keyboard.
+        let esc = || vec![key(Key::Escape, Modifiers::NONE)];
+        assert!(editor_frame(&mut harness, &mut sql, true, esc()));
+        let up = vec![release(Key::Escape, Modifiers::NONE)];
+        assert!(editor_frame(&mut harness, &mut sql, true, up));
+        // The arrows are still the editor's: the cursor moves up a line
+        // and the keyboard stays.
+        assert_eq!(sql.cursor, sql.text.len());
+        let before = sql.cursor;
+        let arrow = vec![key(Key::ArrowUp, Modifiers::NONE)];
+        assert!(editor_frame(&mut harness, &mut sql, true, arrow));
+        assert!(editor_frame(&mut harness, &mut sql, true, Vec::new()));
+        assert!(sql.cursor < before, "{} then {}", before, sql.cursor);
+        // So is Tab: it indents.
+        let tab = vec![key(Key::Tab, Modifiers::NONE)];
+        assert!(editor_frame(&mut harness, &mut sql, true, tab));
+        assert!(sql.text.contains('\t'));
+        // Not told to hold it: Esc leaves the editor, as before.
+        assert!(editor_frame(&mut harness, &mut sql, false, Vec::new()));
+        assert!(!editor_frame(&mut harness, &mut sql, false, esc()));
     }
 
     #[test]

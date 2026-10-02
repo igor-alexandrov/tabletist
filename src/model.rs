@@ -1,5 +1,6 @@
 //! Application state types and the actions that change them.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use tabletist_db::ssh_config::{AgentSocket, ConfigHost, Proxy};
@@ -272,6 +273,35 @@ pub enum Action {
         tab: ConnTabId,
         sql_tab: TabId,
     },
+    /// A SQL editor's text changed by typing (the view tells): a
+    /// completion list may open.
+    SqlTyped {
+        tab: ConnTabId,
+        sql_tab: TabId,
+    },
+    /// Open the completion list at the editor's cursor (`Ctrl+Space`).
+    OpenCompletion {
+        tab: ConnTabId,
+        sql_tab: TabId,
+    },
+    /// Move the completion list's highlight by this many rows.
+    MoveCompletion {
+        tab: ConnTabId,
+        sql_tab: TabId,
+        step: isize,
+    },
+    /// Insert a row of the completion list: the one given (a click), or
+    /// the highlighted one.
+    AcceptCompletion {
+        tab: ConnTabId,
+        sql_tab: TabId,
+        row: Option<usize>,
+    },
+    /// Close the completion list.
+    CloseCompletion {
+        tab: ConnTabId,
+        sql_tab: TabId,
+    },
     /// A key for the sidebar tree.
     TreeKey {
         tab: ConnTabId,
@@ -364,6 +394,11 @@ pub struct Workspace {
     pub next_query: u32,
     /// "PostgreSQL 17.2", asked for when the first SQL editor opens.
     pub server_version: Fetch<String>,
+    /// Bumped whenever the names a completion list reads change (the
+    /// tree's objects, the columns), so an open list is worked out again.
+    /// Nothing bumps it yet: a list reads keywords only. The tasks that
+    /// load names for the list will.
+    pub catalog_generation: u64,
     /// The tab the workspace shows: an object tab or a SQL editor.
     pub active_tab: Option<TabId>,
     /// Whether the row panel is open.
@@ -1758,6 +1793,181 @@ pub struct RunInFlight {
     pub text: TextPrint,
 }
 
+/// How a completion list was asked for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Wanted {
+    /// By typing a word.
+    Typed,
+    /// By hand (`Ctrl+Space`).
+    Manual,
+}
+
+/// What a completion list was worked out from: the script, the cursor and
+/// the catalog's generation.
+pub type ListedOf = (TextPrint, usize, u64);
+
+/// The serial of the next completion list to open.
+static NEXT_COMPLETION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// A SQL editor's completion list, while it is open. Its site holds names
+/// read from the script, so it is never logged (it has no `Debug`).
+#[derive(Clone)]
+pub struct Completion {
+    /// Tells this list from any other that was ever open: its own from the
+    /// time it opens until it closes, whatever is typed meanwhile. What
+    /// the view keeps for a list between frames is kept for this serial.
+    pub serial: u64,
+    /// Opened with `Ctrl+Space`, not by typing.
+    pub manual: bool,
+    of: ListedOf,
+    /// Shared: the view clones the list every frame, and a site names
+    /// every table of its statement.
+    pub site: Arc<tabletist_db::complete::Site>,
+    /// It opened on an empty word (by hand, or right after a dot): it
+    /// stays open when the word typed since is deleted again.
+    on_empty: bool,
+    /// The part of the word before the cursor.
+    pub typed: String,
+    pub candidates: Arc<Vec<crate::completion::Candidate>>,
+    /// Matches beyond the ones kept.
+    pub more: usize,
+    /// The highlighted row.
+    pub selected: usize,
+    /// The user moved the highlight since the typed word last changed.
+    pub moved: bool,
+    /// Objects or columns this site needs are being fetched.
+    pub loading: bool,
+    /// Insert the highlighted row on the next draw. Set through
+    /// [`accept`](Self::accept()); the list is not worked out again while
+    /// it waits.
+    pub accept: bool,
+}
+
+impl Completion {
+    pub fn new(
+        manual: bool,
+        of: ListedOf,
+        site: tabletist_db::complete::Site,
+        typed: String,
+        listed: crate::completion::Listed,
+        loading: bool,
+    ) -> Self {
+        let serial = NEXT_COMPLETION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Self {
+            serial,
+            manual,
+            of,
+            on_empty: site.word.is_empty(),
+            site: Arc::new(site),
+            typed,
+            candidates: Arc::new(listed.candidates),
+            more: listed.more,
+            selected: 0,
+            moved: false,
+            loading,
+            accept: false,
+        }
+    }
+
+    /// Whether the list was worked out from `of`: nothing to recompute.
+    pub fn is_of(&self, of: ListedOf) -> bool {
+        self.of == of
+    }
+
+    /// Whether the list was worked out from the script `text`.
+    pub fn is_of_text(&self, text: &str) -> bool {
+        self.of.0.is_of(text)
+    }
+
+    /// Whether a cursor at `site` of the script `text` is still on the
+    /// word the list is on: the same start and qualifier, and the word has
+    /// not gone (the cursor at its start, or all of it deleted). A list
+    /// that opened on an empty word is on it again when its word is
+    /// deleted, but not when the script is the one it was last worked out
+    /// from: then the word is still there and the cursor went back to its
+    /// start, where a row would go in front of the word.
+    pub fn is_on(&self, site: &tabletist_db::complete::Site, text: TextPrint) -> bool {
+        if site.word.start != self.site.word.start || site.qualifier != self.site.qualifier {
+            return false;
+        }
+        if !site.word.is_empty() {
+            return true;
+        }
+        let before_its_word = !self.site.word.is_empty() && self.of.0 == text;
+        self.on_empty && !before_its_word
+    }
+
+    pub fn highlighted(&self) -> Option<&crate::completion::Candidate> {
+        self.candidates.get(self.selected)
+    }
+
+    /// Replaces the rows. The highlight is the first row, unless the user
+    /// moved it and the typed word is the same: then it stays on its row
+    /// while that row is still listed. How the list opened (by hand or
+    /// not, on an empty word or not) is not changed here.
+    pub fn relist(
+        &mut self,
+        of: ListedOf,
+        site: tabletist_db::complete::Site,
+        typed: String,
+        listed: crate::completion::Listed,
+        loading: bool,
+    ) {
+        let kept = (self.moved && typed == self.typed)
+            .then(|| self.highlighted())
+            .flatten()
+            .and_then(|old| {
+                listed
+                    .candidates
+                    .iter()
+                    .position(|new| new.kind == old.kind && new.insert == old.insert)
+            });
+        self.selected = kept.unwrap_or(0);
+        self.moved = kept.is_some();
+        self.of = of;
+        self.site = Arc::new(site);
+        self.typed = typed;
+        self.candidates = Arc::new(listed.candidates);
+        self.more = listed.more;
+        self.loading = loading;
+    }
+
+    /// Moves the highlight by `step` rows, stopping at the ends.
+    pub fn move_by(&mut self, step: isize) {
+        let Some(last) = self.candidates.len().checked_sub(1) else {
+            return;
+        };
+        let next = self.selected.saturating_add_signed(step).min(last);
+        if next != self.selected {
+            self.selected = next;
+            self.moved = true;
+        }
+    }
+
+    /// Asks for a row to be inserted, on the view's next draw: the `row`
+    /// given (a click), or the highlighted one. A row that is not listed
+    /// (the list changed since the click's frame was drawn) asks for
+    /// nothing, and so does a list with no row.
+    pub fn accept(&mut self, row: Option<usize>) {
+        match row {
+            Some(row) if row < self.candidates.len() => self.selected = row,
+            Some(_) => return,
+            None => {}
+        }
+        self.accept = self.highlighted().is_some();
+    }
+
+    /// Whether Enter is the editor's line break rather than an insertion:
+    /// there is no row, or the highlighted one inserts what the script
+    /// `text` already reads there.
+    pub fn enter_is_a_line_break(&self, text: &str) -> bool {
+        self.highlighted().is_none_or(|candidate| {
+            let word = text.get(self.site.word.clone());
+            candidate.is_typed(&self.typed) || word.is_some_and(|word| candidate.is_typed(word))
+        })
+    }
+}
+
 /// One SQL editor. Its text lives only in memory.
 pub struct SqlTab {
     pub id: TabId,
@@ -1782,6 +1992,11 @@ pub struct SqlTab {
     pub fields: Option<RowFields>,
     /// Focus the editor on the next frame.
     pub focus_editor: bool,
+    /// The completion list, while it is open.
+    pub completion: Option<Completion>,
+    /// A list was asked for and is not worked out yet:
+    /// `App::refresh_completion` takes this and decides.
+    pub completion_wanted: Option<Wanted>,
     /// Format the script on the next frame: the editor does it, where the
     /// selection and the undo history are.
     pub format: bool,
@@ -1830,6 +2045,8 @@ impl SqlTab {
             selection: None,
             fields: None,
             focus_editor: true,
+            completion: None,
+            completion_wanted: None,
             format: false,
             ran_text: None,
         }
@@ -2043,6 +2260,7 @@ impl Workspace {
             tabs: Vec::new(),
             next_query: 1,
             server_version: Fetch::default(),
+            catalog_generation: 0,
             active_tab: None,
             row_panel: true,
             pending_open: None,
@@ -3324,5 +3542,181 @@ mod tests {
             ..bar.clone()
         };
         assert_eq!(off.to_query().1, None);
+    }
+
+    fn completion_of(labels: &[&str], typed: &str) -> Completion {
+        Completion::new(
+            false,
+            (TextPrint::of(typed), typed.len(), 0),
+            completion_site(typed),
+            typed.to_owned(),
+            completion_rows(labels),
+            false,
+        )
+    }
+
+    fn completion_site(typed: &str) -> tabletist_db::complete::Site {
+        tabletist_db::complete::Site {
+            word: 0..typed.len(),
+            qualifier: Vec::new(),
+            expects: tabletist_db::complete::Expects::Columns,
+            sources: Vec::new(),
+            ctes: Vec::new(),
+        }
+    }
+
+    fn completion_rows(labels: &[&str]) -> crate::completion::Listed {
+        crate::completion::Listed {
+            candidates: labels
+                .iter()
+                .map(|label| crate::completion::Candidate {
+                    kind: crate::completion::Kind::Column,
+                    label: (*label).to_owned(),
+                    insert: (*label).to_owned(),
+                    matched: 0..0,
+                    detail: String::new(),
+                })
+                .collect(),
+            more: 0,
+        }
+    }
+
+    #[test]
+    fn a_completion_keeps_its_serial_and_no_other_list_has_it() {
+        let mut list = completion_of(&["desc"], "de");
+        let other = completion_of(&["desc"], "de");
+        assert_ne!(list.serial, other.serial);
+        // The same list after more of its word is typed, and as the view
+        // copies it.
+        let serial = list.serial;
+        let of = (TextPrint::of("des"), 3, 0);
+        let rows = completion_rows(&["desc"]);
+        list.relist(of, completion_site("des"), "des".into(), rows, false);
+        assert_eq!(list.serial, serial);
+        assert_eq!(list.clone().serial, serial);
+    }
+
+    #[test]
+    fn a_completions_highlight_moves_and_stops_at_the_ends() {
+        let mut list = completion_of(&["a", "b", "c"], "");
+        list.move_by(-1);
+        assert_eq!((list.selected, list.moved), (0, false));
+        list.move_by(1);
+        list.move_by(1);
+        list.move_by(1);
+        assert_eq!((list.selected, list.moved), (2, true));
+        // No rows: nothing to move to.
+        let mut empty = completion_of(&[], "");
+        empty.move_by(1);
+        assert_eq!(empty.selected, 0);
+        assert!(empty.highlighted().is_none());
+    }
+
+    #[test]
+    fn a_moved_highlight_stays_on_its_row_until_the_typed_word_changes() {
+        let relist = |list: &mut Completion, labels: &[&str], typed: &str| {
+            let of = (TextPrint::of(typed), typed.len(), 0);
+            let rows = completion_rows(labels);
+            list.relist(of, completion_site(typed), typed.to_owned(), rows, false);
+        };
+        let mut list = completion_of(&["description", "desc"], "des");
+        // Not moved: always the first row.
+        relist(&mut list, &["dest", "description", "desc"], "des");
+        assert_eq!(list.selected, 0);
+        // Moved: it follows its row when rows arrive around it.
+        list.move_by(2);
+        relist(&mut list, &["desc", "description"], "des");
+        assert_eq!(list.highlighted().map(|c| c.label.as_str()), Some("desc"));
+        assert!(list.moved);
+        // Its row went: the first row, and not moved.
+        relist(&mut list, &["description"], "des");
+        assert_eq!((list.selected, list.moved), (0, false));
+        // The typed word changed: the first row again, moved or not.
+        relist(&mut list, &["description", "desc"], "des");
+        list.move_by(1);
+        assert_eq!((list.selected, list.moved), (1, true));
+        relist(&mut list, &["desc", "description"], "desc");
+        assert_eq!((list.selected, list.moved), (0, false));
+    }
+
+    #[test]
+    fn enter_is_a_line_break_on_what_is_already_typed() {
+        let list = completion_of(&["as", "asc"], "as");
+        assert!(list.enter_is_a_line_break("as"));
+        let mut moved = completion_of(&["as", "asc"], "as");
+        moved.move_by(1);
+        assert!(!moved.enter_is_a_line_break("as"));
+        // No row to insert: Enter is the editor's.
+        assert!(completion_of(&[], "zz").enter_is_a_line_break("zz"));
+    }
+
+    #[test]
+    fn accepting_takes_the_row_given_or_the_highlighted_one() {
+        let mut list = completion_of(&["a", "b", "c"], "");
+        list.move_by(1);
+        list.accept(None);
+        assert_eq!((list.selected, list.accept), (1, true));
+        // A click names its row.
+        let mut list = completion_of(&["a", "b", "c"], "");
+        list.accept(Some(2));
+        assert_eq!((list.selected, list.accept), (2, true));
+        // A row that is gone (a click on a list that changed since it was
+        // drawn): nothing, not the highlighted row in its place.
+        let mut list = completion_of(&["a", "b", "c"], "");
+        list.accept(Some(3));
+        assert_eq!((list.selected, list.accept), (0, false));
+        // No row to insert.
+        let mut empty = completion_of(&[], "");
+        empty.accept(None);
+        assert!(!empty.accept);
+    }
+
+    #[test]
+    fn a_list_is_on_the_word_it_was_opened_on() {
+        let print = TextPrint::of;
+        let list = completion_of(&["select"], "se");
+        let mut site = completion_site("sel");
+        assert!(list.is_on(&site, print("sel")));
+        // The word is gone: the cursor is at its start, or it was deleted.
+        site.word = 0..0;
+        assert!(!list.is_on(&site, print("se")));
+        assert!(!list.is_on(&site, print("")));
+        // Another word.
+        site.word = 4..6;
+        assert!(!list.is_on(&site, print("sel sel")));
+        // A list opened on an empty word goes on as the word is typed.
+        let mut empty = completion_of(&["select"], "");
+        assert!(empty.is_on(&completion_site("s"), print("s")));
+        assert!(empty.is_on(&completion_site(""), print("")));
+        // Its word typed, it is still the list of an empty word: deleting
+        // the word does not close it.
+        let of = (print("s"), 1, 0);
+        let rows = completion_rows(&["select"]);
+        empty.relist(of, completion_site("s"), "s".to_owned(), rows, false);
+        assert!(empty.is_on(&completion_site(""), print("")));
+        assert!(!list.is_on(&completion_site(""), print("")));
+        // The cursor back at the start of the word, which is still there:
+        // a row would go in front of it.
+        assert!(!empty.is_on(&completion_site(""), print("s")));
+        // Another qualifier, or another start, is another word.
+        let mut other = completion_site("s");
+        other.qualifier = vec!["users".to_owned()];
+        assert!(!empty.is_on(&other, print("s")));
+        // Opened by hand right before a word (`|users`): on its empty word
+        // whatever follows the cursor, when the list is worked out again
+        // from the same script (names arrived).
+        let users = (print("users"), 0, 0);
+        let rows = completion_rows(&["select"]);
+        let mut before =
+            Completion::new(true, users, completion_site(""), String::new(), rows, false);
+        assert!(before.is_on(&completion_site(""), print("users")));
+        // A letter typed there (`s|users`) and deleted again: still on it.
+        let of = (print("susers"), 1, 0);
+        let rows = completion_rows(&["select"]);
+        let typed = completion_site("susers");
+        before.relist(of, typed, "s".to_owned(), rows, false);
+        assert!(before.is_on(&completion_site(""), print("users")));
+        // But not with the cursor moved back before the letter.
+        assert!(!before.is_on(&completion_site(""), print("susers")));
     }
 }

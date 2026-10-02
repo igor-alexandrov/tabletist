@@ -89,6 +89,10 @@ pub enum TextRole {
     InspectorValue,
     /// The SQL editor's script and its line numbers.
     Code,
+    /// A name in the SQL editor's completion list.
+    CompletionName,
+    /// The part of that name that matches what was typed.
+    CompletionMatch,
     /// Labels over the connection dialog's own fields (name, type, environment, the URL).
     FormLabel,
     /// The connection dialog's group headings (Database, Server, Security).
@@ -116,7 +120,7 @@ pub enum TextRole {
 }
 
 impl TextRole {
-    pub const ALL: [TextRole; 40] = [
+    pub const ALL: [TextRole; 42] = [
         Self::UiBody,
         Self::UiBodyStrong,
         Self::TableTitle,
@@ -141,6 +145,8 @@ impl TextRole {
         Self::JsonChip,
         Self::InspectorValue,
         Self::Code,
+        Self::CompletionName,
+        Self::CompletionMatch,
         Self::FormLabel,
         Self::Legend,
         Self::StateTitle,
@@ -186,6 +192,8 @@ impl TextRole {
             Self::JsonChip => "json-chip",
             Self::InspectorValue => "inspector-value",
             Self::Code => "code",
+            Self::CompletionName => "completion-name",
+            Self::CompletionMatch => "completion-match",
             Self::FormLabel => "form-label",
             Self::Legend => "legend",
             Self::StateTitle => "state-title",
@@ -263,6 +271,9 @@ impl TextRole {
             Self::InspectorValue => style(Mono, 400, 13.0),
             // 22 pt lines.
             Self::Code => lines(Mono, 400, 13.0, 22.0 / 13.0),
+            Self::CompletionName => style(Mono, 400, 12.5),
+            // Plex Mono is bundled at 400 and 500: the heaviest there is.
+            Self::CompletionMatch => style(Mono, 500, 12.5),
             Self::FormLabel => style(Sans, 500, 12.0),
             Self::Legend => style(Sans, 600, 12.0),
             Self::StateTitle => style(Sans, 600, 15.0),

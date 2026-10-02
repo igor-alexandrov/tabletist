@@ -2,6 +2,8 @@
 //! state directly.
 
 pub mod about;
+#[cfg(test)]
+mod complete_tests;
 pub mod connect_dialog;
 pub mod data_view;
 #[cfg(test)]
@@ -19,6 +21,7 @@ pub mod picker;
 pub mod quick_open;
 pub mod row_panel;
 pub mod sidebar;
+pub mod sql_complete;
 pub mod sql_editor;
 pub mod sql_results;
 pub mod sql_text;
