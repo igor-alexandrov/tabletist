@@ -224,16 +224,43 @@ fn char_index(text: &str, byte: usize) -> usize {
         .map_or_else(|| text.chars().count(), |before| before.chars().count())
 }
 
+/// A field's cursor and script, as its undo history keeps them.
+type Edit = (CCursorRange, String);
+
+/// Puts an edit made from outside the field into its undo history as a
+/// step of its own, and the field's cursor where the edit left it:
+/// `before` and `after` are the cursor and the script on either side of
+/// the edit, and `time` is the frame's.
+///
+/// egui groups undo by time and would merge the edit with the typing
+/// around it, so both go in as undo points: undo gives the first back
+/// whole, and redo the second. Between the two the edited script is fed
+/// as an edit of the field's own is, which empties what an earlier undo
+/// left to redo: adding an undo point alone would keep it. (The time fed
+/// does not matter: the undo point after it settles the state.)
+fn outside_edit(
+    state: &mut egui::text_edit::TextEditState,
+    time: f64,
+    before: &Edit,
+    after: &Edit,
+) {
+    let mut undoer = state.undoer();
+    undoer.add_undo(before);
+    undoer.feed_state(time, after);
+    undoer.add_undo(after);
+    state.set_undoer(undoer);
+    state.cursor.set_char_range(Some(after.0));
+}
+
 /// Carries out an accepted completion before the field handles the
 /// frame's events: replaces the word with the highlighted row's text and
 /// puts the cursor after it. The list is taken off the tab either way.
 /// Returns whether a row went in.
 ///
-/// egui groups undo by time and would merge the insertion with the typing
-/// around it, so two undo points go in: the script and the cursor as they
-/// were, and as they are after the insertion. Undo then takes back what
-/// was typed after the insertion, then the insertion alone, and redo puts
-/// each back.
+/// The insertion is an undo step of its own (see `outside_edit`): undo
+/// takes back what was typed after the insertion, then the insertion
+/// alone, and redo puts each back. As after any edit, nothing an earlier
+/// undo took back is left to redo.
 fn insert_completion(ctx: &egui::Context, id: Id, sql_tab: &mut SqlTab) -> bool {
     let Some(list) = sql_tab.completion.take_if(|list| list.accept) else {
         return false;
@@ -254,14 +281,12 @@ fn insert_completion(ctx: &egui::Context, id: Id, sql_tab: &mut SqlTab) -> bool 
     let before = state.cursor.char_range().unwrap_or_else(|| {
         CCursorRange::one(CCursor::new(char_index(&sql_tab.text, sql_tab.cursor)))
     });
-    let mut undoer = state.undoer();
-    undoer.add_undo(&(before, sql_tab.text.clone()));
+    let before = (before, sql_tab.text.clone());
     sql_tab.text.replace_range(word.clone(), &candidate.insert);
     sql_tab.cursor = word.start + candidate.insert.len();
     let after = CCursorRange::one(CCursor::new(char_index(&sql_tab.text, sql_tab.cursor)));
-    undoer.add_undo(&(after, sql_tab.text.clone()));
-    state.set_undoer(undoer);
-    state.cursor.set_char_range(Some(after));
+    let after = (after, sql_tab.text.clone());
+    outside_edit(&mut state, ctx.input(|input| input.time), &before, &after);
     egui::TextEdit::store_state(ctx, id, state);
     true
 }
@@ -300,19 +325,12 @@ fn format_script(ui: &Ui, sql_tab: &mut SqlTab, field: &Field<'_>) -> bool {
     let before = typed.unwrap_or_else(|| at(&sql_tab.text, sql_tab.cursor));
     let after = at(&formatted.text, formatted.cursor);
     // The text as typed and the text as formatted, both: undo gives the
-    // first back whole, and redo the second. Between the two the formatted
-    // text is fed as an edit is, which empties what an earlier undo left
-    // to redo: adding an undo point alone would keep it. (The time fed
-    // does not matter: the next line settles the state.)
-    let formatted_state = (after, formatted.text.clone());
-    let mut undoer = state.undoer();
-    undoer.add_undo(&(before, sql_tab.text.clone()));
-    undoer.feed_state(ui.input(|input| input.time), &formatted_state);
-    undoer.add_undo(&formatted_state);
-    state.set_undoer(undoer);
-    state.cursor.set_char_range(Some(after));
+    // first back whole, and redo the second.
+    let before = (before, std::mem::take(&mut sql_tab.text));
+    let after = (after, formatted.text);
+    outside_edit(&mut state, ui.input(|input| input.time), &before, &after);
     egui::TextEdit::store_state(ui.ctx(), field.id, state);
-    sql_tab.text = formatted.text;
+    sql_tab.text = after.1;
     sql_tab.cursor = formatted.cursor;
     true
 }

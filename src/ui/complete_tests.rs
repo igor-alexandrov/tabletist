@@ -784,6 +784,37 @@ fn an_insertion_is_an_undo_step_of_its_own() {
 }
 
 #[test]
+fn an_insertion_leaves_nothing_to_redo_as_an_edit_does() {
+    let (mut harness, tab) = editor();
+    paste(&mut harness, "select 1;\n");
+    paste(&mut harness, "select 2;\n");
+    // The undo leaves the script it took back to redo.
+    harness.press(Key::Z, Modifiers::COMMAND);
+    let undone = sql(&harness, tab).text.clone();
+    assert_ne!(undone, "select 1;\nselect 2;\n");
+    // A row put in from the list asked for by hand: nothing was typed
+    // since the undo.
+    harness.press(Key::Space, ctrl());
+    let row = list(&harness, tab)
+        .and_then(Completion::highlighted)
+        .expect("a row")
+        .insert
+        .clone();
+    harness.press(Key::Tab, Modifiers::NONE);
+    let inserted = format!("{undone}{row}");
+    assert_eq!(sql(&harness, tab).text, inserted);
+    // What the undo left is gone: neither redo key brings it back over
+    // the insertion.
+    harness.press(Key::Z, Modifiers::COMMAND | Modifiers::SHIFT);
+    assert_eq!(sql(&harness, tab).text, inserted);
+    harness.press(Key::Y, Modifiers::COMMAND);
+    assert_eq!(sql(&harness, tab).text, inserted);
+    // And one undo still takes the insertion back.
+    harness.press(Key::Z, Modifiers::COMMAND);
+    assert_eq!(sql(&harness, tab).text, undone);
+}
+
+#[test]
 fn every_press_of_a_frame_moves_the_highlight() {
     let (mut harness, tab) = editor();
     harness.press(Key::Space, ctrl());
