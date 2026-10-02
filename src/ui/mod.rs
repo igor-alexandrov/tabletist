@@ -1661,8 +1661,20 @@ mod tests {
     fn the_format_button_formats_and_gives_the_keys_back() {
         for look in [crate::theme::Look::standard(), crate::theme::Look::macos()] {
             let (mut harness, tab) = sql_harness(look);
+            // Wide enough for the buttons' keys.
+            harness.size.x = 1600.0;
             harness.settle();
             type_text(&mut harness, "select 1");
+            let keys = if look == crate::theme::Look::macos() {
+                "⇧⌘F"
+            } else {
+                "Ctrl+Shift+F"
+            };
+            assert!(painted(&harness, keys), "{keys} in {}", look.name);
+            // The editor gives the keys up (Esc); the button formats and
+            // gives them back.
+            harness.press(Key::Escape, Modifiers::NONE);
+            assert!(!harness.ctx.text_edit_focused(), "{}", look.name);
             harness.click("Format");
             assert_eq!(active_sql(&harness, tab).text, "SELECT 1", "{}", look.name);
             assert!(harness.ctx.text_edit_focused(), "{}", look.name);
