@@ -1060,13 +1060,22 @@ pub fn segmented(
             Segment::Icon(icon, name) => (*name, Some(*icon), None),
             Segment::Text(text) => (*text, None, Some(*text)),
         };
-        let response = ui.interact(cell, ui.id().with(("segment", name)), Sense::click());
+        // One Tab stop for the control; the arrows choose inside it.
+        let (response, arrow) = focus::segment(
+            ui,
+            cell,
+            ui.id().with(("segment", name)),
+            ui.id().with("segments"),
+            (index, segments.len()),
+            index == selected,
+        );
         response.widget_info(|| {
             WidgetInfo::selected(WidgetType::Button, true, index == selected, name)
         });
         if response.clicked() {
             clicked = Some(index);
         }
+        clicked = arrow.or(clicked);
         // On the segment's own edge: a ring further out would leave the
         // track.
         let ring = if look.terminal {

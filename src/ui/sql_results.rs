@@ -197,6 +197,8 @@ struct Place<'a> {
     full_precision: bool,
     /// Whose error codes the results read.
     driver: tabletist_db::Driver,
+    /// Whether the arrow keys move in the result's grid.
+    keys: bool,
 }
 
 fn draw(app: &App, ui: &mut Ui, tab: ConnTabId, id: TabId, actions: &mut Vec<Action>) {
@@ -217,6 +219,7 @@ fn draw(app: &App, ui: &mut Ui, tab: ConnTabId, id: TabId, actions: &mut Vec<Act
         sql,
         full_precision: workspace.full_precision,
         driver: workspace.driver,
+        keys: workspace.pane == crate::model::Pane::Grid,
     };
     let state = state(sql);
     let pane = ui.max_rect();
@@ -1043,6 +1046,7 @@ fn results(ui: &mut Ui, run: &SqlRun, place: &Place<'_>, env: &Env<'_>, actions:
         tab,
         sql,
         full_precision,
+        keys,
         ..
     } = *place;
     let Some((columns, rows, truncated)) = sql.shown_rows() else {
@@ -1144,6 +1148,7 @@ fn results(ui: &mut Ui, run: &SqlRun, place: &Place<'_>, env: &Env<'_>, actions:
         rows.len(),
         0,
         sql.selection,
+        keys,
         palette,
         look,
         |row, col| {
@@ -1163,6 +1168,10 @@ fn results(ui: &mut Ui, run: &SqlRun, place: &Place<'_>, env: &Env<'_>, actions:
             id: sql.id,
             cell,
         });
+    }
+    // The Tab key came to the grid: the arrows are its own now.
+    if output.focused {
+        actions.push(Action::GridKeys(tab));
     }
     if rows.is_empty() {
         let under = Rect::from_min_max(
@@ -2115,8 +2124,9 @@ mod tests {
                 harness.press(Key::Tab, Modifiers::NONE);
                 stops.push(focused(&mut harness));
             }
-            // It goes on to Messages and the rows, not the headers.
-            for stop in ["Results", "Messages", "Row 1", "Row 3"] {
+            // It goes on to Messages and the rows (one stop for all of
+            // them), not the headers.
+            for stop in ["Results", "Messages", "Rows"] {
                 assert!(stops.iter().any(|name| name == stop), "{stop}: {stops:?}");
             }
             for header in ["id", "email", "meta"] {

@@ -659,6 +659,11 @@ impl App {
                     self.fetch_rows(tab, object_tab);
                 }
             }
+            Action::GridKeys(tab) => {
+                if let Some(workspace) = self.workspace_mut(tab) {
+                    workspace.pane = Pane::Grid;
+                }
+            }
             Action::SelectCell { tab, id, cell } => {
                 if let Some(object) = self.object_tab_mut(tab, id) {
                     object.selection = Some(cell);

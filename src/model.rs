@@ -206,6 +206,9 @@ pub enum Action {
         object_tab: TabId,
         column: String,
     },
+    /// The keyboard came to a grid (the Tab key, a screen reader): the
+    /// arrows move in it from now on. Selects nothing.
+    GridKeys(ConnTabId),
     /// Select a cell of an object tab's page or a SQL editor's result.
     SelectCell {
         tab: ConnTabId,

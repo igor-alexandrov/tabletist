@@ -12,6 +12,7 @@ use tabletist_db::SortDir;
 use crate::model::CellPos;
 use crate::theme::{DataFont, Icon, Look, Palette};
 use crate::typography::{Text, TextRole};
+use crate::ui::focus;
 use crate::ui::format::{Marks, array_items, display_safe};
 use crate::ui::widgets::virtual_rows;
 
@@ -90,6 +91,9 @@ pub struct Cell<'a> {
 pub struct GridOutput {
     pub clicked: Option<CellPos>,
     pub sort_clicked: Option<usize>,
+    /// The keyboard came to the grid this frame (the Tab key, a screen
+    /// reader): the arrows should be the grid's.
+    pub focused: bool,
 }
 
 /// How wide `text` is in `role`, in points (laid out once, then cached).
@@ -361,6 +365,8 @@ pub fn show<'a>(
     row_count: usize,
     first_row_number: u64,
     selection: Option<CellPos>,
+    // Whether the arrow keys move in this grid.
+    keys: bool,
     palette: &Palette,
     look: &crate::theme::Look,
     mut cell: impl FnMut(usize, usize) -> Cell<'a>,
@@ -407,6 +413,26 @@ pub fn show<'a>(
     let total = gutter + widths.iter().sum::<f32>();
     let hairline = crate::ui::widgets::hairline(ui);
     let visible = ui.max_rect();
+    // The grid is one Tab stop, not one for each row: with the keyboard on
+    // it the arrows move the selected cell, which shows where they are.
+    let stop = ui.interact(visible, id.with("keys"), Sense::focusable_noninteractive());
+    stop.widget_info(|| WidgetInfo::labeled(WidgetType::Other, true, "Rows"));
+    ui.ctx().accesskit_node_builder(stop.id, |node| {
+        node.set_role(egui::accesskit::Role::Group);
+    });
+    focus::pane(ui, &stop);
+    // The selected cell shows where the keyboard is; with none selected
+    // yet the grid itself does, until an arrow picks one.
+    let ring = if selection.is_some() {
+        focus::Ring::Own
+    } else {
+        focus::Ring::Inset { radius: 0 }
+    };
+    focus::hint(ui, &stop, visible, ring);
+    output.focused = stop.gained_focus();
+    // The cell is lit while the keyboard is in use and its keys come here:
+    // not while a button or a field has them.
+    let lit = keys && focus::visible(ui.ctx()) && !focus::on_control(ui.ctx());
 
     let scroll = egui::ScrollArea::both()
         .id_salt(id)
@@ -434,8 +460,8 @@ pub fn show<'a>(
             }
 
             virtual_rows(ui, row_count, row_height, |ui, row| {
-                let (rect, response) =
-                    ui.allocate_exact_size(vec2(full, row_height), Sense::click());
+                // A row takes a click, not the Tab key: the grid is the stop.
+                let (rect, response) = ui.allocate_exact_size(vec2(full, row_height), Sense::CLICK);
                 let number = first_row_number + row as u64 + 1;
                 let label = format!("Row {number}");
                 response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, &label));
@@ -448,13 +474,21 @@ pub fn show<'a>(
                 }
                 let painter = ui.painter().clone();
                 let selected_row = selection.is_some_and(|cell| cell.row == row);
-                if let Some(fill) = row_fill(
-                    selected_row,
-                    response.hovered(),
-                    row % 2 == 1,
-                    look,
-                    palette,
-                ) {
+                // With the keyboard in the grid the cell takes the
+                // selection's colour and its row a lighter tint of it.
+                let lit_row = selected_row && lit && !look.terminal;
+                let fill = if lit_row {
+                    Some(palette.window.lerp_to_gamma(palette.selection, 0.6))
+                } else {
+                    row_fill(
+                        selected_row,
+                        response.hovered(),
+                        row % 2 == 1,
+                        look,
+                        palette,
+                    )
+                };
+                if let Some(fill) = fill {
                     painter.rect_filled(rect, CornerRadius::ZERO, fill);
                 }
                 if !look.terminal {
@@ -470,7 +504,7 @@ pub fn show<'a>(
                             &painter,
                             pos2(rect.left() + GUTTER / 2.0, rect.center().y),
                         );
-                    } else {
+                    } else if !lit_row {
                         let bar = Rect::from_min_size(rect.min, vec2(3.0, rect.height()));
                         painter.rect_filled(bar, CornerRadius::ZERO, palette.accent);
                     }
@@ -484,6 +518,36 @@ pub fn show<'a>(
                         continue;
                     }
                     let content = cell(row, col);
+                    let here = selection == Some(CellPos { row, col });
+                    if here && lit && look.terminal {
+                        // Reverse video, as a terminal marks its cursor:
+                        // the accent behind, the text in the window's tone.
+                        painter.rect_filled(cell_rect, CornerRadius::ZERO, palette.accent);
+                        let reversed = Palette {
+                            text: palette.window,
+                            secondary: palette.window,
+                            dim: palette.window,
+                            faint: palette.window,
+                            ..*palette
+                        };
+                        let plain = Cell {
+                            style: Style::Plain,
+                            ..content
+                        };
+                        draw_cell(
+                            ui,
+                            &painter,
+                            cell_rect,
+                            &columns[col],
+                            &plain,
+                            look,
+                            &reversed,
+                        );
+                        continue;
+                    }
+                    if here && lit {
+                        painter.rect_filled(cell_rect, CornerRadius::ZERO, palette.selection);
+                    }
                     draw_cell(
                         ui,
                         &painter,
@@ -493,9 +557,18 @@ pub fn show<'a>(
                         look,
                         palette,
                     );
-                    // The row is selected; a cell past the first is marked
-                    // too, for the keys that act on one cell.
-                    if selection == Some(CellPos { row, col }) && col > 0 {
+                    if here && lit {
+                        // Inside the cell: nothing the grid scrolls under
+                        // cuts it.
+                        painter.rect_stroke(
+                            cell_rect,
+                            CornerRadius::ZERO,
+                            Stroke::new(2.0, palette.accent),
+                            StrokeKind::Inside,
+                        );
+                    } else if here && col > 0 {
+                        // The row is selected; a cell past the first is
+                        // marked too, for the keys that act on one cell.
                         painter.rect_stroke(
                             cell_rect.shrink(1.0),
                             CornerRadius::same(look.radius.min(3)),
@@ -532,6 +605,7 @@ pub fn show<'a>(
                     (Sense::CLICK, WidgetType::Label)
                 };
                 let response = ui.interact(rect, id.with(("header", col)), sense);
+                focus::hint(ui, &response, rect, focus::Ring::Inset { radius: 0 });
                 // Column names come from the server: nothing hidden in them.
                 let name = display_safe(column.name);
                 response.widget_info(|| WidgetInfo::labeled(kind, true, &*name));
@@ -1259,6 +1333,7 @@ mod tests {
                     rows,
                     0,
                     None,
+                    false,
                     &palette,
                     &crate::theme::Look::standard(),
                     |row, col| Cell {
@@ -1284,6 +1359,91 @@ mod tests {
             action: egui::accesskit::Action::Click,
             data: None,
         })
+    }
+
+    /// What a frame of a three-row grid paints with cell (1, 1) selected:
+    /// its filled rectangles and its outlines.
+    fn painted(
+        ctx: &egui::Context,
+        look: &Look,
+        palette: &Palette,
+        keys: bool,
+        events: Vec<egui::Event>,
+    ) -> Vec<egui::epaint::RectShape> {
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(800.0, 400.0),
+            )),
+            events,
+            ..Default::default()
+        };
+        let mut output = ctx.run_ui(input, |ui| {
+            focus::begin_frame(ui.ctx());
+            show(
+                ui,
+                egui::Id::new("grid"),
+                &columns(),
+                3,
+                0,
+                Some(CellPos { row: 1, col: 1 }),
+                keys,
+                palette,
+                look,
+                |row, col| Cell {
+                    text: format!("r{row}c{col}").into(),
+                    null: false,
+                    style: Style::Plain,
+                },
+            );
+        });
+        output.textures_delta.clear();
+        output
+            .shapes
+            .into_iter()
+            .filter_map(|clipped| match clipped.shape {
+                egui::Shape::Rect(rect) => Some(rect),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_keyboard_lights_its_cell_and_the_pointer_only_the_row() {
+        for look in Look::ALL {
+            let palette = Palette::light();
+            let ctx = egui::Context::default();
+            crate::theme::install(&ctx, false, &look);
+            crate::theme::apply(&ctx, &palette, &look);
+            let key = crate::testing::key(egui::Key::ArrowDown, egui::Modifiers::NONE);
+            // The cell's mark: the selection's colour on the cell alone,
+            // or the terminal's accent block under its text.
+            let lit = |shapes: &[egui::epaint::RectShape]| {
+                shapes.iter().any(|rect| {
+                    let wide = rect.rect.width();
+                    let cell = rect.fill == palette.selection && wide > 20.0 && wide < 700.0;
+                    let block = rect.fill == palette.accent && wide > 20.0;
+                    if look.terminal { block } else { cell }
+                })
+            };
+            let whole_row = |shapes: &[egui::epaint::RectShape]| {
+                shapes
+                    .iter()
+                    .any(|rect| rect.fill == palette.selection && rect.rect.width() >= 700.0)
+            };
+            // No key yet: the row is selected, the cell is not lit.
+            let shapes = painted(&ctx, &look, &palette, true, Vec::new());
+            assert!(!lit(&shapes) && whole_row(&shapes), "{}", look.name);
+            // A key, and the arrows are the grid's: the cell is lit.
+            painted(&ctx, &look, &palette, true, vec![key.clone()]);
+            let shapes = painted(&ctx, &look, &palette, true, Vec::new());
+            assert!(lit(&shapes), "{}", look.name);
+            // The desktop looks move the selection's colour to the cell.
+            assert_eq!(whole_row(&shapes), look.terminal, "{}", look.name);
+            // The arrows are the tree's: the grid shows its row alone.
+            let shapes = painted(&ctx, &look, &palette, false, Vec::new());
+            assert!(!lit(&shapes) && whole_row(&shapes), "{}", look.name);
+        }
     }
 
     #[test]

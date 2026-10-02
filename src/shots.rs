@@ -511,6 +511,25 @@ fn shots() {
             }
         });
     }
+    // The arrows in the grid: the cell they are on, lit in its row.
+    both("focus-grid", |harness| {
+        workspace(harness);
+        for _ in 0..2 {
+            harness.press(egui::Key::ArrowRight, egui::Modifiers::NONE);
+        }
+    });
+    // The arrows in the tree: its cursor, apart from the open table's row.
+    both("focus-tree", |harness| {
+        let tab = workspace(harness);
+        harness.app.apply(Action::TreeKey {
+            tab,
+            key: crate::model::TreeKey::Home,
+        });
+        harness.app.workspace_mut(tab).unwrap().pane = crate::model::Pane::Tree;
+        for _ in 0..3 {
+            harness.press(egui::Key::ArrowDown, egui::Modifiers::NONE);
+        }
+    });
     both("structure", |harness| {
         let tab = workspace(harness);
         let object_tab = harness.app.workspace(tab).unwrap().active_tab.unwrap();

@@ -97,8 +97,10 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
             .and_then(|workspace| workspace.sql_tab(id))
             .is_some_and(|sql| sql.selected_row().is_some())
     });
-    // Space activates a focused button; it only toggles the panel otherwise.
-    let focused = ctx.memory(|memory| memory.focused().is_some());
+    // Space and Enter press a focused button, and the arrows move focus
+    // from it; with the keyboard on the tree, on a grid or nowhere they act
+    // on what those show.
+    let focused = crate::ui::focus::on_control(ctx);
     let filter_open = object.is_some_and(|(tab, id)| {
         app.workspace(tab)
             .and_then(|workspace| workspace.object_tab(id))
@@ -222,7 +224,7 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
         }
         key(Modifiers::COMMAND, Key::P, Action::OpenQuickOpen);
         key(Modifiers::COMMAND, Key::B, Action::ToggleSidebar(active));
-        if tree_arrows {
+        if tree_arrows && !focused {
             use crate::model::TreeKey;
             for (pressed, tree_key) in [
                 (Key::ArrowUp, TreeKey::Up),
@@ -241,17 +243,14 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
                     },
                 );
             }
-            // Enter belongs to a focused button.
-            if !focused {
-                key(
-                    Modifiers::NONE,
-                    Key::Enter,
-                    Action::TreeKey {
-                        tab: active,
-                        key: TreeKey::Enter,
-                    },
-                );
-            }
+            key(
+                Modifiers::NONE,
+                Key::Enter,
+                Action::TreeKey {
+                    tab: active,
+                    key: TreeKey::Enter,
+                },
+            );
         }
         // Paging is a table's: a SQL result has one page.
         if let Some((tab, object_tab)) = object {
@@ -282,7 +281,7 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
                 );
             }
             key(Modifiers::COMMAND, Key::W, Action::CloseTab { tab, id });
-            if !editing && any_grid && !tree_arrows {
+            if !editing && any_grid && !tree_arrows && !focused {
                 let page = 20;
                 for (pressed, rows, cols) in [
                     (Key::ArrowUp, -1, 0),
@@ -307,7 +306,7 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
                 }
                 // The row panel shows a table's row, or the selected row
                 // of a SQL result.
-                if (grid || sql_row) && !focused {
+                if grid || sql_row {
                     key(Modifiers::NONE, Key::Space, Action::ToggleRowPanel(tab));
                 }
             }
@@ -560,7 +559,7 @@ fn letters(app: &mut App, ctx: &egui::Context, actions: &mut Vec<Action>) {
             actions.push(Action::MovePickerSelection { tab, step: -1 });
         }
         if let Some(conn) = selected {
-            if ctx.memory(|memory| memory.focused().is_none()) {
+            if !crate::ui::focus::on_control(ctx) {
                 // Shift first: egui ignores an extra Shift when matching.
                 let again = ctx.input_mut(|input| input.consume_key(Modifiers::SHIFT, Key::Enter));
                 if again || pressed(Key::Enter) {
@@ -689,7 +688,7 @@ fn letters(app: &mut App, ctx: &egui::Context, actions: &mut Vec<Action>) {
     // of it is selected (with none its panel has nothing to show).
     if let Some(id) = active.or(sql_row) {
         // Enter belongs to a focused button.
-        let focused = ctx.memory(|memory| memory.focused().is_some());
+        let focused = crate::ui::focus::on_control(ctx);
         if !tree && !panel && !focused && pressed(Key::Enter) {
             actions.push(Action::ToggleRowPanel(tab));
         }

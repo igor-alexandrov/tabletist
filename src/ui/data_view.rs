@@ -13,6 +13,7 @@ use crate::i18n::gettext;
 use crate::model::{Action, ConnTabId, ObjectTab, ObjectView, TabId};
 use crate::theme::{Icon, Look, Palette};
 use crate::typography::{Text, TextRole};
+use crate::ui::focus;
 use crate::ui::format;
 use crate::ui::grid::{self, Cell, Column, Style};
 use crate::ui::states;
@@ -259,15 +260,31 @@ pub fn header(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabI
             ui.painter()
                 .rect_filled(track, CornerRadius::same(look.radius), palette.surface);
             x += 3.0;
-            for ((target, label, _), width) in views.iter().zip(widths) {
+            for (index, ((target, label, _), width)) in views.iter().zip(widths).enumerate() {
                 let cell = Rect::from_min_size(pos2(x, track.top() + 3.0), vec2(width, 28.0));
                 x += width;
-                let response =
-                    ui.interact(cell, ui.id().with(("view", label.as_ref())), Sense::click());
                 let selected = view == *target;
+                // One Tab stop for the switch; the arrows choose inside it.
+                let (response, arrow) = focus::segment(
+                    ui,
+                    cell,
+                    ui.id().with(("view", label.as_ref())),
+                    ui.id().with("views"),
+                    (index, views.len()),
+                    selected,
+                );
                 response.widget_info(|| {
                     WidgetInfo::selected(WidgetType::Button, true, selected, label.as_ref())
                 });
+                let radius = look.radius.saturating_sub(2);
+                focus::hint(ui, &response, cell, focus::Ring::Edge { radius });
+                if let Some((chosen, _, _)) = arrow.and_then(|index| views.get(index)) {
+                    actions.push(Action::SetView {
+                        tab,
+                        object_tab,
+                        view: *chosen,
+                    });
+                }
                 if selected {
                     let corner = CornerRadius::same(look.radius.saturating_sub(2));
                     ui.painter().add(
@@ -1015,6 +1032,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
             page.rows.len(),
             object.query.offset,
             object.selection,
+            // The arrows are the grid's once the user worked in it.
+            workspace.pane == crate::model::Pane::Grid,
             &palette,
             &look,
             |row, col| {
@@ -1034,6 +1053,10 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
                 id: object_tab,
                 cell,
             });
+        }
+        // The Tab key came to the grid: the arrows are its own now.
+        if output.focused {
+            actions.push(Action::GridKeys(tab));
         }
         if let Some(col) = output.sort_clicked {
             actions.push(Action::SortBy {

@@ -3623,16 +3623,21 @@ mod tests {
     }
 
     #[test]
-    fn opening_the_row_panel_keeps_the_keyboard_on_the_result_row() {
+    fn opening_the_row_panel_keeps_the_keyboard_on_the_results_rows() {
         for look in crate::theme::Look::ALL {
             let mut harness = Harness::new();
             harness.set_look(look);
             let tab = harness.connect_fake();
-            with_sql_result(&mut harness, tab, 3);
-            focus(&mut harness, "Row 2", egui::accesskit::Role::Button);
-            harness.press(Key::Enter, Modifiers::NONE);
+            let id = with_sql_result(&mut harness, tab, 3);
+            // The keyboard comes to the rows and selects nothing; an arrow
+            // picks a row, which opens the panel.
+            focus(&mut harness, "Rows", egui::accesskit::Role::Group);
+            assert!(!panel_shows(&mut harness), "{}", look.name);
+            harness.press(Key::ArrowDown, Modifiers::NONE);
+            let workspace = harness.app.workspace(tab).unwrap();
+            assert!(workspace.sql_tab(id).unwrap().selection.is_some());
             assert!(panel_shows(&mut harness), "{}", look.name);
-            assert_eq!(focused_name(&harness.settle()), "Row 2", "{}", look.name);
+            assert_eq!(focused_name(&harness.settle()), "Rows", "{}", look.name);
         }
     }
 
@@ -8366,7 +8371,15 @@ mod tests {
             harness.press(Key::Tab, Modifiers::NONE);
             reached.insert(focused_name(&harness.settle()));
         }
-        for expected in ["Filter", "orders", "Count", "Next page", "Refresh objects"] {
+        // The tree and the grid are one stop each: the arrows move in them.
+        for expected in [
+            "Filter",
+            "Objects",
+            "Rows",
+            "Count",
+            "Next page",
+            "Refresh objects",
+        ] {
             assert!(
                 reached.contains(expected),
                 "{expected} not reached: {reached:?}"
@@ -8405,6 +8418,94 @@ mod tests {
             }
             assert!(seen > 10, "{}: {seen} stops", look.name);
         }
+    }
+
+    #[test]
+    fn the_tab_key_gives_the_tree_and_the_grid_the_arrows() {
+        use crate::model::Pane;
+        for look in crate::theme::Look::ALL {
+            let (mut harness, tab) = tree_harness();
+            harness.set_look(look);
+            harness.click("orders");
+            harness.answer_rows(crate::testing::page(3, true));
+            let tab_to = |harness: &mut Harness, name: &str| {
+                for _ in 0..60 {
+                    harness.press(Key::Tab, Modifiers::NONE);
+                    if focused_name(&harness.settle()) == name {
+                        return;
+                    }
+                }
+                panic!("{name} is no Tab stop in {}", look.name);
+            };
+            // Onto the tree: its cursor is on the open table, and moves.
+            tab_to(&mut harness, "Objects");
+            let workspace = harness.app.workspace(tab).unwrap();
+            assert_eq!(workspace.pane, Pane::Tree, "{}", look.name);
+            let before = workspace.tree.cursor.clone();
+            assert!(before.is_some(), "{}", look.name);
+            harness.press(Key::ArrowDown, Modifiers::NONE);
+            let workspace = harness.app.workspace(tab).unwrap();
+            assert_ne!(workspace.tree.cursor, before, "{}", look.name);
+            assert_eq!(focused_name(&harness.settle()), "Objects", "{}", look.name);
+            // Onto the grid: its first cell, and the arrows are its own.
+            tab_to(&mut harness, "Rows");
+            let selection = |harness: &Harness| {
+                let workspace = harness.app.workspace(tab).unwrap();
+                workspace.active_object_tab().unwrap().selection
+            };
+            assert_eq!(harness.app.workspace(tab).unwrap().pane, Pane::Grid);
+            assert_eq!(selection(&harness), None, "coming to it selects nothing");
+            harness.press(Key::ArrowDown, Modifiers::NONE);
+            let first = selection(&harness);
+            assert!(first.is_some(), "{}", look.name);
+            harness.press(Key::ArrowDown, Modifiers::NONE);
+            assert_ne!(selection(&harness), first, "{}", look.name);
+            assert_eq!(focused_name(&harness.settle()), "Rows", "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn arrows_leave_the_grid_alone_while_a_button_has_the_keyboard() {
+        let (mut harness, tab) = tree_harness();
+        harness.click("orders");
+        harness.answer_rows(crate::testing::page(3, true));
+        harness.click("Row 1");
+        let selection = |harness: &Harness| {
+            let workspace = harness.app.workspace(tab).unwrap();
+            workspace.active_object_tab().unwrap().selection
+        };
+        let first = selection(&harness);
+        focus(&mut harness, "Add filter", egui::accesskit::Role::Button);
+        harness.press(Key::ArrowDown, Modifiers::NONE);
+        assert_eq!(selection(&harness), first, "the button had the keys");
+    }
+
+    #[test]
+    fn a_switch_is_one_stop_and_the_arrows_choose_in_it() {
+        let mut harness = Harness::new();
+        harness.set_look(crate::theme::Look::macos());
+        let tab = with_page(&mut harness);
+        let view = |harness: &Harness| {
+            let workspace = harness.app.workspace(tab).unwrap();
+            workspace.active_object_tab().unwrap().view
+        };
+        focus(&mut harness, "Data", egui::accesskit::Role::Button);
+        harness.press(Key::ArrowRight, Modifiers::NONE);
+        assert_eq!(view(&harness), crate::model::ObjectView::Structure);
+        assert_eq!(focused_name(&harness.settle()), "Structure");
+        harness.press(Key::ArrowLeft, Modifiers::NONE);
+        assert_eq!(view(&harness), crate::model::ObjectView::Data);
+        assert_eq!(focused_name(&harness.settle()), "Data");
+        // Tab passes the choice not made.
+        let mut stops = std::collections::HashSet::new();
+        for _ in 0..60 {
+            harness.press(Key::Tab, Modifiers::NONE);
+            stops.insert(focused_name(&harness.settle()));
+        }
+        assert!(
+            stops.contains("Data") && !stops.contains("Structure"),
+            "{stops:?}"
+        );
     }
 
     #[test]
