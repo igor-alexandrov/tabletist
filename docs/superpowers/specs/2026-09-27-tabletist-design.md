@@ -460,7 +460,9 @@ enum Dialog { Connection(..), Password(..), HostKey(..), QuickOpen(..), Help }
 ### 5.7 Row panel
 
 - Resizable right panel, toggled with Space (when the grid has focus) or
-  Cmd/Ctrl+Shift+R. Follows the grid selection.
+  Cmd/Ctrl+Shift+R. Follows the grid selection. It takes at most half the
+  width beside the sidebar; the width it was dragged to comes back when the
+  window has room again.
 - One entry per field: name, type, and the full value as selectable read-only
   text. JSON up to 256 KiB is a highlighted tree in monospace: keys keep
   their order, objects and arrays fold (all open up to 40 lines, else only
@@ -471,6 +473,13 @@ enum Dialog { Connection(..), Password(..), HostKey(..), QuickOpen(..), Help }
 - The reducer formats the selected row's text once, when the selection or
   the page changes; drawing only lays that text out.
 - A copy button per field and a filter field for wide tables.
+- On a SQL tab the panel shows the selected row of the result, and only while
+  one is selected (see the SQL editor spec).
+- What is folded or expanded belongs to a row of one page or one result:
+  another page, a refresh or a new result starts fresh.
+- On Omarchy an Esc that leaves a text field does only that (the next one
+  closes the panel), Enter opens the panel only when no widget has the
+  keyboard, and `za` folds only while the panel shows.
 
 ### 5.8 Structure view
 

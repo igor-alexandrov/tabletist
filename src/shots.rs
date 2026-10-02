@@ -490,6 +490,17 @@ fn shots() {
         };
         harness.answer_sql(Ok(crate::testing::script_outcome(vec![cut])), None);
     });
+    // A result row selected: its fields in the row panel, beside the editor
+    // and the results.
+    both("sql-row", |harness| {
+        let tab = sql_editor(harness);
+        let id = harness.app.workspace(tab).unwrap().active_tab.unwrap();
+        harness.app.apply(Action::SelectCell {
+            tab,
+            id,
+            cell: CellPos { row: 1, col: 0 },
+        });
+    });
 }
 
 /// Runs the active SQL editor's statement, or `all` of its script.

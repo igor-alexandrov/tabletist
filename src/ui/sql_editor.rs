@@ -70,7 +70,11 @@ pub fn show(app: &mut App, ui: &mut Ui, tab: ConnTabId, id: TabId) {
     let divider = Rect::from_min_size(editor.left_bottom(), vec2(room.width(), band));
     let results = Rect::from_min_max(divider.left_bottom(), room.max);
     let mut pane = |rect: Rect, salt: &str, add: fn(&mut App, &mut Ui, ConnTabId, TabId)| {
-        let mut child = ui.new_child(egui::UiBuilder::new().id_salt((salt, id.0)).max_rect(rect));
+        // An id of its own: one counted from the parent's widgets would
+        // change when the row panel appears beside the panes, and the
+        // widgets in them would lose the keyboard focus with it.
+        let pane_id = Id::new(("sql-pane", salt, tab.0, id.0));
+        let mut child = ui.new_child(egui::UiBuilder::new().id(pane_id).max_rect(rect));
         child.set_clip_rect(rect.intersect(ui.clip_rect()));
         add(app, &mut child, tab, id);
     };

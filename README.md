@@ -47,7 +47,8 @@ Linux (Omarchy and Hyprland first), macOS and Windows.
   `NO_BACKSLASH_ESCAPES` turned off: in a raw WHERE `"..."` is a string and
   names take backticks.
 - A SQL editor per connection (Cmd/Ctrl+T): run the statement at the cursor
-  (Cmd/Ctrl+Return) or the whole script, with a row limit and a timeout.
+  (Cmd/Ctrl+Return) or the whole script, with a row limit and a timeout, and
+  read a result row in full in the row panel.
   Every run happens in a read-only transaction that is rolled back, and
   statements that would leave it are refused.
 - Quick open (Cmd/Ctrl+P) and a full keyboard map: press `?` in the app.

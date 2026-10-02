@@ -140,7 +140,7 @@ pub enum Action {
     /// Fold (or unfold) every JSON document in the row panel (`za`).
     FoldDocuments {
         tab: ConnTabId,
-        object_tab: TabId,
+        id: TabId,
     },
     /// Follow the foreign key of the selected cell's column (`gd`).
     FollowSelectedKey {
@@ -1422,11 +1422,12 @@ pub struct ObjectTab {
 }
 
 /// The row panel's text for one row, formatted once when the selection or
-/// the page changes: a cell can hold megabytes, too much to format again
-/// every frame.
+/// the page (or the SQL result) changes: a cell can hold megabytes, too much
+/// to format again every frame.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RowFields {
-    /// The rows request whose page holds the row.
+    /// The request whose answer holds the row: a table's rows, or a SQL
+    /// editor's run.
     pub request: Option<RequestId>,
     pub row: usize,
     /// One per column.
@@ -1730,6 +1731,8 @@ pub struct SqlTab {
     /// to 1. Change it through `set_split`.
     pub split: f32,
     pub selection: Option<CellPos>,
+    /// The row panel's text for the selected row (see `App::format_rows`).
+    pub fields: Option<RowFields>,
     /// Focus the editor on the next frame.
     pub focus_editor: bool,
     /// The text the last run that finished started with. Its error mark
@@ -1774,6 +1777,7 @@ impl SqlTab {
             pane: ResultPane::default(),
             split: Self::DEFAULT_SPLIT,
             selection: None,
+            fields: None,
             focus_editor: true,
             ran_text: None,
         }
@@ -1885,6 +1889,22 @@ impl SqlTab {
     pub fn dims(&self) -> (usize, usize) {
         self.shown_rows()
             .map_or((0, 0), |(columns, rows, _)| (rows.len(), columns.len()))
+    }
+
+    /// The selected row of the result, while the Results pane shows it:
+    /// the row the row panel is for. None under the Messages pane, which
+    /// shows no rows.
+    pub fn selected_row(&self) -> Option<usize> {
+        let row = self.selection?.row;
+        (self.pane == ResultPane::Results && row < self.dims().0).then_some(row)
+    }
+
+    /// The row panel's text for the selected row, if it is up to date.
+    pub fn selected_fields(&self) -> Option<&RowFields> {
+        let row = self.selected_row()?;
+        self.fields
+            .as_ref()
+            .filter(|fields| fields.row == row && fields.request == self.run.loaded)
     }
 
     /// The cursor's 1-based line and column (in characters).
@@ -2011,6 +2031,20 @@ impl Workspace {
     /// The active tab, when it is a SQL editor.
     pub fn active_sql_tab(&self) -> Option<&SqlTab> {
         self.sql_tab(self.active_tab?)
+    }
+
+    /// The tab whose row the row panel shows: none while the panel is
+    /// closed. A table's Data view keeps the panel open with no row
+    /// selected; a SQL editor gives it room only while a row of its result
+    /// is selected.
+    pub fn row_panel_tab(&self) -> Option<TabId> {
+        if !self.row_panel {
+            return None;
+        }
+        match self.tab(self.active_tab?)? {
+            Tab::Object(object) => (object.view == ObjectView::Data).then_some(object.id),
+            Tab::Sql(sql) => sql.selected_row().map(|_| sql.id),
+        }
     }
 
     /// The object tabs, in strip order.
@@ -2425,6 +2459,76 @@ mod tests {
         assert_eq!(readings(&sql), (None, false, (0, 0), None));
         run_script(&mut sql, "SELECT 2", vec![rows_outcome(2)]);
         assert_eq!(readings(&sql), (Some(1), true, (2, 3), None));
+    }
+
+    #[test]
+    fn a_sql_tabs_selected_row_is_one_its_results_pane_shows() {
+        let mut sql = editor();
+        sql.selection = Some(CellPos { row: 0, col: 0 });
+        assert_eq!(sql.selected_row(), None, "nothing ran");
+        run_script(&mut sql, "SELECT 1", vec![rows_outcome(3)]);
+        sql.selection = None;
+        assert_eq!(sql.selected_row(), None);
+        sql.selection = Some(CellPos { row: 2, col: 1 });
+        assert_eq!(sql.selected_row(), Some(2));
+        sql.pane = ResultPane::Messages;
+        assert_eq!(sql.selected_row(), None, "the messages show no rows");
+        sql.pane = ResultPane::Results;
+        // A selection past the result's rows is no row of it.
+        sql.selection = Some(CellPos { row: 3, col: 0 });
+        assert_eq!(sql.selected_row(), None);
+    }
+
+    #[test]
+    fn a_sql_tabs_row_text_holds_for_its_row_and_its_run() {
+        let mut sql = editor();
+        run_script(&mut sql, "SELECT 1", vec![rows_outcome(3)]);
+        sql.selection = Some(CellPos { row: 1, col: 0 });
+        assert!(sql.selected_fields().is_none(), "not formatted yet");
+        sql.fields = Some(RowFields {
+            request: sql.run.loaded,
+            row: 1,
+            fields: Vec::new(),
+        });
+        assert!(sql.selected_fields().is_some());
+        sql.selection = Some(CellPos { row: 2, col: 0 });
+        assert!(sql.selected_fields().is_none(), "another row");
+        sql.selection = Some(CellPos { row: 1, col: 2 });
+        assert!(sql.selected_fields().is_some(), "another cell of the row");
+        sql.pane = ResultPane::Messages;
+        assert!(sql.selected_fields().is_none(), "no row shows");
+        sql.pane = ResultPane::Results;
+        assert!(sql.selected_fields().is_some());
+        // The same row of the next result is not the row that was formatted.
+        run_script(&mut sql, "SELECT 2", vec![rows_outcome(3)]);
+        assert!(sql.selected_fields().is_none());
+    }
+
+    #[test]
+    fn the_row_panel_shows_a_tables_data_view_or_a_selected_result_row() {
+        let mut workspace = crate::testing::workspace();
+        workspace.tabs.push(object_tab(1, "users", true));
+        workspace.tabs.push(sql_tab(2));
+        assert_eq!(workspace.row_panel_tab(), None, "no tab is active");
+        workspace.active_tab = Some(TabId(1));
+        assert_eq!(workspace.row_panel_tab(), Some(TabId(1)));
+        workspace.object_tab_mut(TabId(1)).unwrap().view = ObjectView::Structure;
+        assert_eq!(workspace.row_panel_tab(), None, "the Structure view");
+        workspace.active_tab = Some(TabId(2));
+        assert_eq!(workspace.row_panel_tab(), None, "nothing ran");
+        let sql = workspace.sql_tab_mut(TabId(2)).unwrap();
+        run_script(sql, "SELECT 1", vec![rows_outcome(3)]);
+        assert_eq!(workspace.row_panel_tab(), None, "no row is selected");
+        let sql = workspace.sql_tab_mut(TabId(2)).unwrap();
+        sql.selection = Some(CellPos { row: 0, col: 0 });
+        assert_eq!(workspace.row_panel_tab(), Some(TabId(2)));
+        workspace.row_panel = false;
+        assert_eq!(workspace.row_panel_tab(), None, "the panel is closed");
+        workspace.active_tab = Some(TabId(1));
+        workspace.object_tab_mut(TabId(1)).unwrap().view = ObjectView::Data;
+        assert_eq!(workspace.row_panel_tab(), None, "closed for a table too");
+        workspace.row_panel = true;
+        assert_eq!(workspace.row_panel_tab(), Some(TabId(1)));
     }
 
     #[test]

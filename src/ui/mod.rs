@@ -918,21 +918,31 @@ mod tests {
         tab: crate::model::ConnTabId,
         rows: usize,
     ) -> crate::model::TabId {
+        with_sql_outcome(harness, tab, crate::testing::rows_outcome(rows))
+    }
+
+    /// Opens a SQL editor in `tab`, runs `SELECT 1` in it and answers with
+    /// `outcome`.
+    fn with_sql_outcome(
+        harness: &mut Harness,
+        tab: crate::model::ConnTabId,
+        outcome: tabletist_db::StatementOutcome,
+    ) -> crate::model::TabId {
         harness.app.apply(crate::model::Action::NewSqlTab(tab));
         let id = harness.app.workspace(tab).unwrap().active_tab.unwrap();
         set_sql(harness, tab, "SELECT 1", 0);
+        run_sql(harness, tab, id);
+        harness.answer_sql(Ok(crate::testing::script_outcome(vec![outcome])), None);
+        id
+    }
+
+    /// Starts a run of the SQL editor `id` and leaves it in flight.
+    fn run_sql(harness: &mut Harness, tab: crate::model::ConnTabId, id: crate::model::TabId) {
         harness.app.apply(crate::model::Action::RunSql {
             tab,
             sql_tab: id,
             all: false,
         });
-        harness.answer_sql(
-            Ok(crate::testing::script_outcome(vec![
-                crate::testing::rows_outcome(rows),
-            ])),
-            None,
-        );
-        id
     }
 
     /// Puts `text` in the active SQL editor with the cursor at byte `cursor`.
@@ -1593,7 +1603,7 @@ mod tests {
     }
 
     #[test]
-    fn the_row_panel_and_paging_keys_do_nothing_on_a_sql_tab() {
+    fn the_paging_keys_do_nothing_on_a_sql_tab_nor_the_row_panels_with_no_row_selected() {
         let mut harness = Harness::new();
         let tab = harness.connect_fake();
         harness.app.apply(crate::model::Action::OpenObject {
@@ -1605,7 +1615,9 @@ mod tests {
         harness.answer_rows(crate::testing::page(300, true));
         let users = harness.app.workspace(tab).unwrap().active_tab.unwrap();
         let query = with_sql_result(&mut harness, tab, 3);
-        // With the keys out of the editor, where Space would be typed.
+        // With the keys out of the editor, where Space would be typed. No
+        // row of the result is selected, so its panel has nothing to show
+        // and the keys leave it as it is.
         harness.press(Key::Escape, Modifiers::NONE);
         let panel = harness.app.workspace(tab).unwrap().row_panel;
         let sent = harness.app.backend.sent.len();
@@ -2030,19 +2042,967 @@ mod tests {
     }
 
     #[test]
-    fn the_terminal_strip_has_no_row_panel_toggle_on_a_sql_tab() {
+    fn the_terminal_strip_keeps_its_row_panel_toggle_on_a_sql_tab() {
         let (mut harness, tab) = sql_harness(crate::theme::Look::omarchy());
         let toggle = "Show or hide the row panel";
-        assert!(!harness.has(toggle), "an editor has no row panel");
-        let panel = harness.app.workspace(tab).unwrap().row_panel;
-        // A table tab keeps it, and coming back to the editor loses it.
+        let open = |harness: &Harness| harness.app.workspace(tab).unwrap().row_panel;
+        assert!(harness.has(toggle), "a result has a row panel too");
+        assert!(open(&harness));
+        harness.click(toggle);
+        assert!(!open(&harness));
+        // The same toggle as a table tab's: one panel for the workspace.
         harness.click("users");
         harness.answer_rows(crate::testing::page(5, false));
         assert!(harness.has(toggle));
+        assert!(!harness.has("Select a row to see its fields"));
         harness.click(toggle);
-        assert_ne!(harness.app.workspace(tab).unwrap().row_panel, panel);
+        assert!(open(&harness));
         harness.click("Query 1 tab");
-        assert!(!harness.has(toggle));
+        assert!(harness.has(toggle));
+    }
+
+    #[test]
+    fn the_terminal_strips_toggle_hides_and_shows_a_result_rows_panel() {
+        let mut harness = Harness::new();
+        harness.set_look(crate::theme::Look::omarchy());
+        let tab = harness.connect_fake();
+        with_sql_result(&mut harness, tab, 3);
+        let toggle = "Show or hide the row panel";
+        harness.click("Row 2");
+        assert!(panel_shows(&mut harness));
+        harness.click(toggle);
+        assert!(!panel_shows(&mut harness));
+        harness.click(toggle);
+        assert!(panel_shows(&mut harness));
+    }
+
+    /// The fields of the row panel that shows, by their copy buttons.
+    fn panel_shows(harness: &mut Harness) -> bool {
+        harness.has("Copy email")
+    }
+
+    #[test]
+    fn selecting_a_result_row_opens_the_row_panel() {
+        for look in crate::theme::Look::ALL {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            let tab = harness.connect_fake();
+            let id = with_sql_result(&mut harness, tab, 3);
+            // Until a row is selected the editor and the results keep the
+            // whole width: no panel, and no placeholder for one.
+            assert!(!panel_shows(&mut harness), "{}", look.name);
+            assert!(!harness.has("Close the row panel"), "{}", look.name);
+            assert!(!harness.has("Select a row to see its fields"));
+            // The grid paints its cells: only the panel announces a value.
+            assert!(!harness.has("user2@example.com"), "{}", look.name);
+            // The band under the editor is as wide as the editor.
+            let wide = band(&mut harness).width();
+            harness.click("Row 2");
+            assert!(harness.has("user2@example.com"), "{}", look.name);
+            assert_eq!(
+                sql_selection(&harness, tab, id),
+                Some(crate::model::CellPos { row: 1, col: 0 })
+            );
+            for label in [
+                "Close the row panel",
+                "id · INTEGER",
+                "email · TEXT",
+                "Copy email",
+            ] {
+                assert!(harness.has(label), "{label} in {}", look.name);
+            }
+            // The panel stands beside the editor as well as the results.
+            assert!(band(&mut harness).width() < wide, "{}", look.name);
+            harness.click("Copy email");
+            assert_eq!(harness.copied.as_deref(), Some("user2@example.com"));
+        }
+    }
+
+    #[test]
+    fn a_result_rows_panel_is_titled_by_its_number_and_its_query() {
+        for look in [crate::theme::Look::standard(), crate::theme::Look::macos()] {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            let tab = harness.connect_fake();
+            with_sql_result(&mut harness, tab, 3);
+            let named = |harness: &Harness| {
+                harness
+                    .painted
+                    .iter()
+                    .filter(|(text, _)| text == "Query 1")
+                    .count()
+            };
+            harness.settle();
+            let before = named(&harness);
+            harness.click("Row 3");
+            let tree = harness.settle();
+            // A result has no key to name its row by: its number does.
+            assert!(
+                crate::testing::node(&tree, "Row 3", egui::accesskit::Role::Label).is_some(),
+                "{}: {:?}",
+                look.name,
+                crate::testing::labels(&tree)
+            );
+            assert_eq!(named(&harness), before + 1, "under it, the query's name");
+        }
+    }
+
+    #[test]
+    fn a_result_rows_panel_has_no_editing_controls() {
+        for look in crate::theme::Look::ALL {
+            let controls = if look.terminal {
+                "yy p duplicate"
+            } else {
+                "Duplicate"
+            };
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            let tab = with_page(&mut harness);
+            harness.click("Row 1");
+            assert!(harness.has(controls), "a table's row in {}", look.name);
+            with_sql_result(&mut harness, tab, 3);
+            harness.click("Row 1");
+            assert!(panel_shows(&mut harness), "{}", look.name);
+            assert!(!harness.has(controls), "a result's row in {}", look.name);
+        }
+    }
+
+    #[test]
+    fn the_terminal_panel_offers_a_result_row_no_copy_key() {
+        let hints = |harness: &Harness| -> Vec<String> {
+            let painted = harness.painted.iter();
+            painted
+                .map(|(text, _)| text.clone())
+                .filter(|text| text.starts_with("za fold"))
+                .collect()
+        };
+        let mut harness = Harness::new();
+        harness.set_look(crate::theme::Look::omarchy());
+        // The first row's `meta` is a document, with its keys beside it.
+        let tab = with_page(&mut harness);
+        harness.click("Row 1");
+        harness.settle();
+        assert_eq!(hints(&harness), ["za fold · y copy"]);
+        // `y` copies from a table's grid only: a result's row does not
+        // offer it.
+        with_sql_result(&mut harness, tab, 3);
+        harness.click("Row 1");
+        harness.settle();
+        assert_eq!(hints(&harness), ["za fold"]);
+    }
+
+    #[test]
+    fn the_panels_buttons_step_through_a_results_rows_and_close_it() {
+        for look in crate::theme::Look::ALL {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            let tab = harness.connect_fake();
+            let id = with_sql_result(&mut harness, tab, 3);
+            let at = |row, col| Some(crate::model::CellPos { row, col });
+            harness.click("Row 2");
+            harness.click("Next row");
+            assert_eq!(sql_selection(&harness, tab, id), at(2, 0), "{}", look.name);
+            assert!(harness.has("user3@example.com"), "{}", look.name);
+            harness.click("Previous row");
+            harness.click("Previous row");
+            assert_eq!(sql_selection(&harness, tab, id), at(0, 0), "{}", look.name);
+            assert!(harness.has("user1@example.com"), "{}", look.name);
+            harness.click("Close the row panel");
+            assert!(!harness.app.workspace(tab).unwrap().row_panel);
+            assert!(!panel_shows(&mut harness), "{}", look.name);
+            // Closed, it stays closed for the next row, as a table's does.
+            harness.click("Row 3");
+            assert_eq!(sql_selection(&harness, tab, id), at(2, 0));
+            assert!(!panel_shows(&mut harness), "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn the_messages_pane_hides_a_result_rows_panel() {
+        for look in crate::theme::Look::ALL {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            let tab = harness.connect_fake();
+            let id = with_sql_result(&mut harness, tab, 3);
+            harness.click("Row 2");
+            assert!(panel_shows(&mut harness), "{}", look.name);
+            harness.click("Messages");
+            assert!(!panel_shows(&mut harness), "{}", look.name);
+            assert!(!harness.has("Close the row panel"), "{}", look.name);
+            // The row stays selected, so the panel is back with its grid.
+            harness.click("Results");
+            assert_eq!(
+                sql_selection(&harness, tab, id),
+                Some(crate::model::CellPos { row: 1, col: 0 })
+            );
+            assert!(panel_shows(&mut harness), "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn a_new_result_closes_the_row_panel_until_a_row_of_it_is_selected() {
+        let mut harness = Harness::new();
+        let tab = harness.connect_fake();
+        let id = with_sql_result(&mut harness, tab, 3);
+        harness.click("Row 2");
+        assert!(panel_shows(&mut harness));
+        // The run in flight leaves the last result, and its row, in place.
+        run_sql(&mut harness, tab, id);
+        assert!(panel_shows(&mut harness));
+        // The second result differs from the first, so stale text shows.
+        let mut page = crate::testing::page(5, false);
+        page.rows[3][1] = tabletist_db::Value::Text("fourth@example.com".into());
+        let second = tabletist_db::StatementOutcome::Rows {
+            columns: page.columns,
+            rows: page.rows,
+            truncated: false,
+        };
+        harness.answer_sql(Ok(crate::testing::script_outcome(vec![second])), None);
+        assert_eq!(sql_selection(&harness, tab, id), None);
+        assert!(!panel_shows(&mut harness));
+        assert!(harness.app.workspace(tab).unwrap().row_panel, "still open");
+        harness.click("Row 4");
+        assert!(panel_shows(&mut harness));
+        assert!(harness.has("fourth@example.com"));
+        // A run that failed as a whole leaves no rows, and so no panel.
+        run_sql(&mut harness, tab, id);
+        let lost = tabletist_db::Error::ConnectionLost("the server went away".into());
+        harness.answer_sql(Err(lost), None);
+        // The failure opens the Messages pane, which hides the panel by
+        // itself: look at the results.
+        harness.click("Results");
+        assert!(!panel_shows(&mut harness));
+    }
+
+    #[test]
+    fn a_table_tab_keeps_its_row_panel_beside_a_sql_tab() {
+        let mut harness = Harness::new();
+        let tab = with_page(&mut harness);
+        with_sql_result(&mut harness, tab, 3);
+        assert!(!harness.has("Select a row to see its fields"));
+        harness.click("users tab");
+        assert!(harness.has("Select a row to see its fields"));
+        harness.click("Structure");
+        assert!(!harness.has("Select a row to see its fields"));
+    }
+
+    #[test]
+    fn a_result_rows_text_is_formatted_once_not_every_frame() {
+        use crate::ui::format::FULL_TEXTS;
+        let mut harness = Harness::new();
+        let tab = harness.connect_fake();
+        let mut page = crate::testing::page(2, false);
+        page.rows[0][1] = tabletist_db::Value::Text("x".repeat(1_000_000).into());
+        let columns = page.columns.len();
+        let outcome = tabletist_db::StatementOutcome::Rows {
+            columns: page.columns,
+            rows: page.rows,
+            truncated: false,
+        };
+        let id = with_sql_outcome(&mut harness, tab, outcome);
+        harness.settle();
+        let idle = FULL_TEXTS.with(std::cell::Cell::get);
+        harness.click("Row 1");
+        harness.settle();
+        let before = FULL_TEXTS.with(std::cell::Cell::get);
+        assert_eq!(before - idle, columns, "the selected row, once");
+        for step in 0..5 {
+            let at = egui::pos2(900.0 + step as f32 * 10.0, 300.0);
+            harness.frame(vec![egui::Event::PointerMoved(at)]);
+        }
+        assert_eq!(FULL_TEXTS.with(std::cell::Cell::get), before);
+        // Another row is formatted, once.
+        harness.click("Row 2");
+        let after = FULL_TEXTS.with(std::cell::Cell::get);
+        assert_eq!(after - before, columns);
+        harness.settle();
+        assert_eq!(FULL_TEXTS.with(std::cell::Cell::get), after);
+        // Nothing keeps the text of a row no panel shows.
+        let fields = |harness: &Harness| {
+            let workspace = harness.app.workspace(tab).unwrap();
+            workspace.sql_tab(id).unwrap().fields.is_some()
+        };
+        assert!(fields(&harness));
+        harness.click("Close the row panel");
+        assert!(!fields(&harness));
+    }
+
+    #[test]
+    fn a_tables_row_text_is_back_after_the_structure_view() {
+        let mut harness = Harness::new();
+        with_page(&mut harness);
+        harness.click("Row 1");
+        assert!(harness.has("user1@example.com"));
+        harness.click("Structure");
+        harness.click("Data");
+        assert!(harness.has("user1@example.com"));
+    }
+
+    #[test]
+    fn each_sql_tab_keeps_its_own_selected_row() {
+        let mut harness = Harness::new();
+        let tab = harness.connect_fake();
+        with_sql_result(&mut harness, tab, 3);
+        let second = with_sql_result(&mut harness, tab, 3);
+        harness.click("Row 3");
+        harness.click("Query 1 tab");
+        harness.click("Row 1");
+        assert!(harness.has("user1@example.com"));
+        assert!(!harness.has("user3@example.com"));
+        harness.click("Query 2 tab");
+        assert!(harness.has("user3@example.com"));
+        assert!(!harness.has("user1@example.com"));
+        harness
+            .app
+            .apply(crate::model::Action::CloseTab { tab, id: second });
+        assert!(harness.has("user1@example.com"));
+    }
+
+    #[test]
+    fn space_and_ctrl_shift_r_toggle_a_result_rows_panel() {
+        let mut harness = Harness::new();
+        let tab = harness.connect_fake();
+        let id = with_sql_result(&mut harness, tab, 3);
+        let open = |harness: &Harness| harness.app.workspace(tab).unwrap().row_panel;
+        // Out of the editor, where Space would be typed, and onto a row.
+        harness.press(Key::Escape, Modifiers::NONE);
+        harness.press(Key::ArrowDown, Modifiers::NONE);
+        assert!(panel_shows(&mut harness));
+        harness.press(Key::Space, Modifiers::NONE);
+        assert!(!open(&harness));
+        assert!(!panel_shows(&mut harness));
+        harness.press(Key::R, Modifiers::COMMAND | Modifiers::SHIFT);
+        assert!(open(&harness));
+        assert!(panel_shows(&mut harness));
+        // Mod+Shift+R works from the editor too; Space is typed there.
+        let workspace = harness.app.workspace_mut(tab).unwrap();
+        workspace.sql_tab_mut(id).unwrap().focus_editor = true;
+        harness.settle();
+        assert!(harness.ctx.text_edit_focused());
+        harness.press(Key::R, Modifiers::COMMAND | Modifiers::SHIFT);
+        assert!(!open(&harness));
+        harness.press(Key::Space, Modifiers::NONE);
+        assert!(!open(&harness));
+        // Under the messages no row shows, and the keys leave the panel be.
+        harness.click("Messages");
+        harness.press(Key::R, Modifiers::COMMAND | Modifiers::SHIFT);
+        assert!(!open(&harness));
+    }
+
+    /// A key that `keys::letters` reads as the character it types.
+    fn type_key(harness: &mut Harness, key: Key, text: &str) {
+        harness.settle();
+        harness.frame(vec![
+            crate::testing::key(key, Modifiers::NONE),
+            egui::Event::Text(text.into()),
+        ]);
+        harness.frame(vec![crate::testing::release(key, Modifiers::NONE)]);
+        harness.settle();
+    }
+
+    #[test]
+    fn the_terminal_keys_of_the_row_panel_work_on_a_result_row() {
+        let mut harness = Harness::new();
+        harness.set_look(crate::theme::Look::omarchy());
+        let tab = harness.connect_fake();
+        let id = with_sql_result(&mut harness, tab, 3);
+        let open = |harness: &Harness| harness.app.workspace(tab).unwrap().row_panel;
+        let at = |row, col| Some(crate::model::CellPos { row, col });
+        harness.press(Key::Escape, Modifiers::NONE);
+        // With no row selected the panel's keys have nothing to show.
+        for key in [Key::I, Key::Enter, Key::Escape] {
+            harness.press(key, Modifiers::NONE);
+            assert!(open(&harness), "{key:?} with no row");
+        }
+        // Nor with the panel closed, where Enter and `i` would open it.
+        harness.app.apply(crate::model::Action::ToggleRowPanel(tab));
+        for key in [Key::Enter, Key::I] {
+            harness.press(key, Modifiers::NONE);
+            assert!(!open(&harness), "{key:?} with no row");
+        }
+        harness.app.apply(crate::model::Action::ToggleRowPanel(tab));
+        // `]` and `[` step through the rows as `j` and `k` do.
+        type_key(&mut harness, Key::CloseBracket, "]");
+        assert_eq!(sql_selection(&harness, tab, id), at(0, 0));
+        assert!(panel_shows(&mut harness));
+        type_key(&mut harness, Key::CloseBracket, "]");
+        assert_eq!(sql_selection(&harness, tab, id), at(1, 0));
+        type_key(&mut harness, Key::OpenBracket, "[");
+        assert_eq!(sql_selection(&harness, tab, id), at(0, 0));
+        // Esc closes the panel, Enter opens it, `i` does either.
+        harness.press(Key::Escape, Modifiers::NONE);
+        assert!(!open(&harness));
+        assert!(!panel_shows(&mut harness));
+        // `za` with the panel closed leaves nothing folded for its next opening.
+        harness.press(Key::Z, Modifiers::NONE);
+        harness.press(Key::A, Modifiers::NONE);
+        assert!(harness.app.workspace(tab).unwrap().fold_documents.is_none());
+        harness.press(Key::Escape, Modifiers::NONE);
+        assert!(!open(&harness), "Esc only closes");
+        harness.press(Key::Enter, Modifiers::NONE);
+        assert!(open(&harness));
+        harness.press(Key::Enter, Modifiers::NONE);
+        assert!(open(&harness), "Enter only opens");
+        harness.press(Key::I, Modifiers::NONE);
+        assert!(!open(&harness));
+        harness.press(Key::I, Modifiers::NONE);
+        assert!(open(&harness));
+        assert!(panel_shows(&mut harness));
+        // `za` folds the row's documents: the first row's `meta`.
+        assert!(harness.has(r#""plan": "pro""#));
+        harness.press(Key::Z, Modifiers::NONE);
+        harness.press(Key::A, Modifiers::NONE);
+        assert!(harness.has("{ 1 key }"));
+        assert!(!harness.has(r#""plan": "pro""#));
+    }
+
+    #[test]
+    fn the_terminal_keys_of_the_row_panel_work_on_a_table_row() {
+        let mut harness = Harness::new();
+        harness.set_look(crate::theme::Look::omarchy());
+        let tab = with_page(&mut harness);
+        focus_grid(&mut harness, tab);
+        let open = |harness: &Harness| harness.app.workspace(tab).unwrap().row_panel;
+        let at = |row, col| Some(crate::model::CellPos { row, col });
+        // A table tab keeps its panel open with no row selected.
+        assert!(open(&harness));
+        assert!(harness.has("Select a row to see its fields"));
+        // `]` and `[` step through the rows as `j` and `k` do.
+        type_key(&mut harness, Key::CloseBracket, "]");
+        assert_eq!(selection(&harness, tab), at(0, 0));
+        assert!(panel_shows(&mut harness));
+        type_key(&mut harness, Key::CloseBracket, "]");
+        assert_eq!(selection(&harness, tab), at(1, 0));
+        type_key(&mut harness, Key::OpenBracket, "[");
+        assert_eq!(selection(&harness, tab), at(0, 0));
+        // Esc closes the panel, Enter opens it, `i` does either.
+        harness.press(Key::Escape, Modifiers::NONE);
+        assert!(!open(&harness));
+        assert!(!panel_shows(&mut harness));
+        // `za` with the panel closed leaves nothing folded for its next opening.
+        harness.press(Key::Z, Modifiers::NONE);
+        harness.press(Key::A, Modifiers::NONE);
+        assert!(harness.app.workspace(tab).unwrap().fold_documents.is_none());
+        harness.press(Key::Escape, Modifiers::NONE);
+        assert!(!open(&harness), "Esc only closes");
+        harness.press(Key::Enter, Modifiers::NONE);
+        assert!(open(&harness));
+        harness.press(Key::Enter, Modifiers::NONE);
+        assert!(open(&harness), "Enter only opens");
+        harness.press(Key::I, Modifiers::NONE);
+        assert!(!open(&harness));
+        harness.press(Key::I, Modifiers::NONE);
+        assert!(open(&harness));
+        assert!(panel_shows(&mut harness));
+        // `za` folds the row's documents: the first row's `meta`.
+        assert!(harness.has(r#""plan": "pro""#));
+        harness.press(Key::Z, Modifiers::NONE);
+        harness.press(Key::A, Modifiers::NONE);
+        assert!(harness.has("{ 1 key }"));
+        assert!(!harness.has(r#""plan": "pro""#));
+    }
+
+    #[test]
+    fn escape_out_of_the_editor_leaves_the_row_panel_open() {
+        let mut harness = Harness::new();
+        harness.set_look(crate::theme::Look::omarchy());
+        let tab = harness.connect_fake();
+        let id = with_sql_result(&mut harness, tab, 3);
+        let open = |harness: &Harness| harness.app.workspace(tab).unwrap().row_panel;
+        harness.click("Row 2");
+        let workspace = harness.app.workspace_mut(tab).unwrap();
+        workspace.sql_tab_mut(id).unwrap().focus_editor = true;
+        harness.settle();
+        assert!(harness.ctx.text_edit_focused());
+        // The first Esc only leaves the editor; the next one closes the panel.
+        harness.press(Key::Escape, Modifiers::NONE);
+        assert!(!harness.ctx.text_edit_focused());
+        assert!(open(&harness));
+        assert!(panel_shows(&mut harness));
+        harness.press(Key::Escape, Modifiers::NONE);
+        assert!(!open(&harness));
+    }
+
+    #[test]
+    fn escape_out_of_the_where_line_leaves_the_row_panel_open() {
+        let mut harness = Harness::new();
+        harness.set_look(crate::theme::Look::omarchy());
+        let tab = with_page(&mut harness);
+        focus_grid(&mut harness, tab);
+        let open = |harness: &Harness| harness.app.workspace(tab).unwrap().row_panel;
+        type_key(&mut harness, Key::Slash, "/");
+        assert!(
+            harness.ctx.text_edit_focused(),
+            "the WHERE line has the keys"
+        );
+        // The first Esc only leaves the field; the next one closes the panel.
+        harness.press(Key::Escape, Modifiers::NONE);
+        assert!(!harness.ctx.text_edit_focused());
+        assert!(open(&harness));
+        harness.press(Key::Escape, Modifiers::NONE);
+        assert!(!open(&harness));
+    }
+
+    #[test]
+    fn enter_on_a_focused_button_is_the_buttons_not_the_row_panels() {
+        let mut harness = Harness::new();
+        harness.set_look(crate::theme::Look::omarchy());
+        let tab = harness.connect_fake();
+        let id = with_sql_result(&mut harness, tab, 3);
+        harness.click("Row 2");
+        harness.app.apply(crate::model::Action::ToggleRowPanel(tab));
+        assert!(!harness.app.workspace(tab).unwrap().row_panel);
+        focus(&mut harness, "Messages", egui::accesskit::Role::Button);
+        harness.press(Key::Enter, Modifiers::NONE);
+        let workspace = harness.app.workspace(tab).unwrap();
+        assert_eq!(
+            workspace.sql_tab(id).unwrap().pane,
+            crate::model::ResultPane::Messages
+        );
+        assert!(!workspace.row_panel);
+    }
+
+    #[test]
+    fn enter_on_a_focused_button_is_the_buttons_on_a_table_tab() {
+        let mut harness = Harness::new();
+        harness.set_look(crate::theme::Look::omarchy());
+        let tab = with_page(&mut harness);
+        focus_grid(&mut harness, tab);
+        harness.app.apply(crate::model::Action::ToggleRowPanel(tab));
+        assert!(!harness.app.workspace(tab).unwrap().row_panel);
+        focus(&mut harness, "Structure", egui::accesskit::Role::Button);
+        assert_eq!(focused_name(&harness.settle()), "Structure");
+        harness.press(Key::Enter, Modifiers::NONE);
+        let workspace = harness.app.workspace(tab).unwrap();
+        assert_eq!(
+            workspace.active_object_tab().unwrap().view,
+            crate::model::ObjectView::Structure
+        );
+        assert!(!workspace.row_panel);
+    }
+
+    #[test]
+    fn opening_the_row_panel_keeps_the_keyboard_on_the_result_row() {
+        for look in crate::theme::Look::ALL {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            let tab = harness.connect_fake();
+            with_sql_result(&mut harness, tab, 3);
+            focus(&mut harness, "Row 2", egui::accesskit::Role::Button);
+            harness.press(Key::Enter, Modifiers::NONE);
+            assert!(panel_shows(&mut harness), "{}", look.name);
+            assert_eq!(focused_name(&harness.settle()), "Row 2", "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn a_new_result_does_not_inherit_an_expanded_value() {
+        let long_row_outcome = || {
+            let mut page = crate::testing::page(2, false);
+            page.rows[0][1] = tabletist_db::Value::Text("x".repeat(1_000_000).into());
+            tabletist_db::StatementOutcome::Rows {
+                columns: page.columns,
+                rows: page.rows,
+                truncated: false,
+            }
+        };
+        let show_all = |harness: &mut Harness| {
+            let tree = harness.settle();
+            crate::testing::labels(&tree)
+                .into_iter()
+                .find(|label| label.starts_with("Show all"))
+        };
+        let mut harness = Harness::new();
+        let tab = harness.connect_fake();
+        let id = with_sql_outcome(&mut harness, tab, long_row_outcome());
+        harness.click("Row 1");
+        let link = show_all(&mut harness).expect("a link to the whole value");
+        harness.click(&link);
+        assert!(harness.has("Show less"));
+        // The same row of another result keeps nothing expanded.
+        run_sql(&mut harness, tab, id);
+        harness.answer_sql(
+            Ok(crate::testing::script_outcome(vec![long_row_outcome()])),
+            None,
+        );
+        harness.click("Row 1");
+        assert!(!harness.has("Show less"));
+        assert!(show_all(&mut harness).is_some());
+    }
+
+    #[test]
+    fn a_refreshed_page_does_not_inherit_an_expanded_value() {
+        let long_row_page = || {
+            let mut page = crate::testing::page(2, false);
+            page.rows[0][1] = tabletist_db::Value::Text("x".repeat(1_000_000).into());
+            page
+        };
+        let show_all = |harness: &mut Harness| {
+            let tree = harness.settle();
+            crate::testing::labels(&tree)
+                .into_iter()
+                .find(|label| label.starts_with("Show all"))
+        };
+        let mut harness = Harness::new();
+        let tab = harness.connect_fake();
+        harness.click("users");
+        harness.answer_rows(long_row_page());
+        harness.click("Row 1");
+        let link = show_all(&mut harness).expect("a link to the whole value");
+        harness.click(&link);
+        assert!(harness.has("Show less"));
+        // The same row of the refreshed page keeps nothing expanded.
+        focus_grid(&mut harness, tab);
+        let sent = harness.app.backend.sent.len();
+        harness.press(Key::R, Modifiers::COMMAND);
+        assert!(harness.app.backend.sent.len() > sent, "a refresh was sent");
+        assert!(matches!(
+            crate::testing::last_sent(&harness.app),
+            Command::FetchRows { .. }
+        ));
+        harness.answer_rows(long_row_page());
+        assert_eq!(
+            selection(&harness, tab),
+            Some(crate::model::CellPos { row: 0, col: 0 })
+        );
+        assert!(!harness.has("Show less"));
+        assert!(show_all(&mut harness).is_some());
+    }
+
+    #[test]
+    fn two_result_columns_of_one_name_fold_apart() {
+        // `SELECT a.meta, b.meta ...`: the fixture's columns, twice.
+        let page = crate::testing::page(1, false);
+        let outcome = tabletist_db::StatementOutcome::Rows {
+            columns: [page.columns.clone(), page.columns].concat(),
+            rows: page
+                .rows
+                .into_iter()
+                .map(|row| [row.clone(), row].concat())
+                .collect(),
+            truncated: false,
+        };
+        let named = |harness: &mut Harness, name: &str| {
+            let tree = harness.settle();
+            let labels = crate::testing::labels(&tree);
+            labels.iter().filter(|label| *label == name).count()
+        };
+        for look in crate::theme::Look::ALL {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            let tab = harness.connect_fake();
+            with_sql_outcome(&mut harness, tab, outcome.clone());
+            harness.click("Row 1");
+            // Each document has its own toggle.
+            assert_eq!(named(&mut harness, "Collapse meta"), 2, "{}", look.name);
+            // Folding the first leaves the second open.
+            let open = named(&mut harness, r#""plan": "pro""#);
+            harness.click("Collapse meta");
+            assert_eq!(named(&mut harness, "Expand meta"), 1, "{}", look.name);
+            assert_eq!(named(&mut harness, "Collapse meta"), 1, "{}", look.name);
+            assert!(harness.has("{ 1 key }"), "{}", look.name);
+            assert_eq!(
+                named(&mut harness, r#""plan": "pro""#),
+                open / 2,
+                "{}",
+                look.name
+            );
+        }
+    }
+
+    #[test]
+    fn the_row_panel_leaves_the_editor_half_the_room() {
+        for look in crate::theme::Look::ALL {
+            let mut harness = Harness::with_size(egui::vec2(1000.0, 650.0));
+            harness.set_look(look);
+            let tab = harness.connect_fake();
+            with_sql_result(&mut harness, tab, 3);
+            let room = band(&mut harness).width();
+            harness.click("Row 2");
+            assert!(panel_shows(&mut harness), "{}", look.name);
+            let editor = band(&mut harness).width();
+            assert!(editor < room, "{}", look.name);
+            // A point of slack for rounding to the pixel.
+            assert!(
+                editor >= room / 2.0 - 1.0,
+                "{editor} of {room} in {}",
+                look.name
+            );
+        }
+    }
+
+    #[test]
+    fn the_row_panel_gets_its_width_back_when_the_window_grows() {
+        let mut harness = Harness::new();
+        harness.set_look(crate::theme::Look::omarchy());
+        let tab = harness.connect_fake();
+        with_sql_result(&mut harness, tab, 3);
+        let room = band(&mut harness).width();
+        harness.click("Row 2");
+        let wide = band(&mut harness).width();
+        // A narrower window: the panel gives way to the editor.
+        let narrower = 380.0;
+        harness.size.x -= narrower;
+        let editor = band(&mut harness).width();
+        assert!(editor >= (room - narrower) / 2.0 - 1.0, "{editor}");
+        // And back: the panel is as wide as it was.
+        harness.size.x += narrower;
+        harness.settle();
+        assert!((band(&mut harness).width() - wide).abs() < 1.0);
+    }
+
+    #[test]
+    fn a_tables_row_panel_gives_way_in_a_narrow_window_and_comes_back() {
+        let mut harness = Harness::new();
+        let tab = with_page(&mut harness);
+        focus_grid(&mut harness, tab);
+        harness.click("Row 1");
+        // A field's label is as wide as the panel lets it be.
+        let label = |harness: &mut Harness| {
+            let tree = harness.settle();
+            crate::testing::bounds(&tree, "id · INTEGER", egui::accesskit::Role::Label)
+                .expect("the id field")
+                .width()
+        };
+        let wide = label(&mut harness);
+        harness.size.x = 800.0;
+        assert!(label(&mut harness) < wide - 1.0, "the panel gave way");
+        harness.size.x = 1280.0;
+        harness.settle();
+        assert!((label(&mut harness) - wide).abs() < 1.0, "and came back");
+    }
+
+    #[test]
+    fn a_dragged_row_panel_width_is_the_one_that_comes_back() {
+        for look in crate::theme::Look::ALL {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            let tab = harness.connect_fake();
+            with_sql_result(&mut harness, tab, 3);
+            harness.click("Row 2");
+            let opened = band(&mut harness);
+            // The panel's edge is where the editor ends. It is caught just
+            // inside the panel (a press on the editor's last point is the
+            // editor's) and beside the editor, clear of the band, which is
+            // a handle of its own.
+            let grip = |band: egui::Rect| egui::pos2(band.right() + 2.0, band.top() - 30.0);
+            // Towards the editor: a wider panel, its edge under the pointer.
+            let to = grip(opened) - egui::vec2(30.0, 0.0);
+            drag(&mut harness, grip(opened), to);
+            let wider = band(&mut harness);
+            assert!(
+                (wider.right() - to.x).abs() <= 1.0,
+                "the edge follows the pointer in {}: {opened:?} to {wider:?}",
+                look.name
+            );
+            assert!(wider.width() < opened.width() - 1.0, "{}", look.name);
+            // And away from it, past where it was: a narrower one.
+            let to = grip(wider) + egui::vec2(70.0, 0.0);
+            drag(&mut harness, grip(wider), to);
+            let dragged = band(&mut harness);
+            assert!(
+                (dragged.right() - to.x).abs() <= 1.0,
+                "and back out in {}: {wider:?} to {dragged:?}",
+                look.name
+            );
+            assert!(dragged.width() > opened.width() + 1.0, "{}", look.name);
+            // It stays there.
+            harness.settle();
+            assert_eq!(band(&mut harness), dragged, "{}", look.name);
+            // A narrow window cuts the panel down: the editor loses less
+            // than the window does.
+            let narrower = 500.0;
+            harness.size.x -= narrower;
+            let cut = band(&mut harness).width();
+            assert!(
+                cut > dragged.width() - narrower + 1.0,
+                "{cut} in {}",
+                look.name
+            );
+            // With room again the panel is as wide as it was dragged to,
+            // not as it opened.
+            harness.size.x += narrower;
+            harness.settle();
+            let back = band(&mut harness).width();
+            assert!(
+                (back - dragged.width()).abs() < 1.0,
+                "{back} for {} in {}",
+                dragged.width(),
+                look.name
+            );
+        }
+    }
+
+    #[test]
+    fn a_window_resized_while_the_edge_is_held_keeps_the_wanted_width() {
+        let mut harness = Harness::new();
+        harness.set_look(crate::theme::Look::omarchy());
+        let tab = harness.connect_fake();
+        with_sql_result(&mut harness, tab, 3);
+        harness.click("Row 2");
+        let wide = band(&mut harness).width();
+        // A window that cuts the panel down.
+        harness.size.x = 1000.0;
+        let cut = band(&mut harness);
+        // The edge is held and pulled well into the editor: the panel is
+        // as wide as it may be already, and stays.
+        let grip = egui::pos2(cut.right() + 2.0, cut.top() - 30.0);
+        let button = |pressed| egui::Event::PointerButton {
+            pos: grip,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        };
+        harness.frame(vec![egui::Event::PointerMoved(grip)]);
+        harness.frame(vec![button(true)]);
+        let pulled = grip - egui::vec2(150.0, 0.0);
+        harness.frame(vec![egui::Event::PointerMoved(pulled)]);
+        // The window gets narrower still while it is held, the pointer
+        // still past where the edge may go.
+        harness.size.x = 900.0;
+        harness.frame(Vec::new());
+        harness.frame(vec![egui::Event::PointerButton {
+            pos: pulled,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: Modifiers::NONE,
+        }]);
+        harness.settle();
+        // With room again the panel is as wide as it opened: no width a
+        // small window cut it to was taken for a dragged one.
+        harness.size.x = 1280.0;
+        harness.settle();
+        let back = band(&mut harness).width();
+        assert!((back - wide).abs() < 1.0, "{back} for {wide}");
+    }
+
+    #[test]
+    fn the_row_panel_gives_way_in_the_smallest_window() {
+        for look in crate::theme::Look::ALL {
+            let mut harness = Harness::with_size(egui::vec2(720.0, 480.0));
+            harness.set_look(look);
+            let tab = harness.connect_fake();
+            with_sql_result(&mut harness, tab, 3);
+            let room = band(&mut harness).width();
+            harness.click("Row 2");
+            assert!(panel_shows(&mut harness), "{}", look.name);
+            // The panel is under its usual least width here, and the
+            // editor still has its half.
+            let editor = band(&mut harness).width();
+            assert!(editor < room, "{}", look.name);
+            assert!(
+                editor >= room / 2.0 - 1.0,
+                "{editor} of {room} in {}",
+                look.name
+            );
+        }
+    }
+
+    #[test]
+    fn a_sliver_of_a_row_panel_does_not_panic() {
+        for look in crate::theme::Look::ALL {
+            for sql in [false, true] {
+                let mut harness = Harness::new();
+                harness.set_look(look);
+                if sql {
+                    let tab = harness.connect_fake();
+                    with_sql_result(&mut harness, tab, 3);
+                } else {
+                    let tab = with_page(&mut harness);
+                    focus_grid(&mut harness, tab);
+                }
+                harness.click("Row 1");
+                assert!(panel_shows(&mut harness), "{}", look.name);
+                // Narrower and narrower, down to no room at all: drawing
+                // the panel only has to go on.
+                for width in [380.0, 300.0, 120.0, 40.0] {
+                    harness.size.x = width;
+                    harness.settle();
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_terminal_footer_fits_a_narrow_row_panel() {
+        let mut harness = Harness::new();
+        harness.set_look(crate::theme::Look::omarchy());
+        let tab = with_page(&mut harness);
+        focus_grid(&mut harness, tab);
+        harness.click("Row 1");
+        let note = "read-only in 0.1.0 · editing arrives in a later version";
+        let pieces = |harness: &mut Harness| -> Vec<String> {
+            harness.settle();
+            let painted = harness.painted.iter();
+            painted.map(|(text, _)| text.clone()).collect()
+        };
+        // With room for them, the note and each cell's words are whole (a
+        // cell's key and its word are one painted piece).
+        let wide = pieces(&mut harness);
+        assert!(wide.iter().any(|piece| piece == note));
+        assert!(wide.iter().any(|piece| piece == "yy p duplicate"));
+        // A narrower window cuts the panel: the note is cut to fit it.
+        harness.size.x = 1000.0;
+        let narrow = pieces(&mut harness);
+        assert!(!narrow.iter().any(|piece| piece == note), "{narrow:?}");
+        assert!(
+            narrow
+                .iter()
+                .any(|piece| piece.starts_with("read-only in 0.1.0") && piece.ends_with('…')),
+            "{narrow:?}"
+        );
+        // And a cell too narrow for its words keeps its key alone.
+        assert!(narrow.iter().any(|piece| piece == "yy p"), "{narrow:?}");
+        assert!(
+            !narrow.iter().any(|piece| piece.contains("duplicate")),
+            "{narrow:?}"
+        );
+    }
+
+    #[test]
+    fn the_terminal_header_names_its_row_in_the_smallest_window() {
+        // What the last frame painted. The header's hint is one piece, its
+        // keys and its words together.
+        let pieces = |harness: &mut Harness| -> Vec<String> {
+            harness.settle();
+            let painted = harness.painted.iter();
+            painted.map(|(text, _)| text.clone()).collect()
+        };
+        for sql in [false, true] {
+            let mut harness = Harness::new();
+            harness.set_look(crate::theme::Look::omarchy());
+            if sql {
+                let tab = harness.connect_fake();
+                with_sql_result(&mut harness, tab, 3);
+            } else {
+                let tab = with_page(&mut harness);
+                focus_grid(&mut harness, tab);
+            }
+            harness.click("Row 1");
+            // With room, the hint says what its keys do.
+            let wide = pieces(&mut harness);
+            assert!(
+                wide.iter().any(|piece| piece == "[ ] prev/next"),
+                "sql {sql}: {wide:?}"
+            );
+            // In the smallest window the hint gives way before the row's
+            // name: its keys alone, and the name is no bare ellipsis.
+            harness.size = egui::vec2(720.0, 480.0);
+            let small = pieces(&mut harness);
+            assert!(panel_shows(&mut harness), "sql {sql}");
+            assert!(
+                !small.iter().any(|piece| piece == "…"),
+                "sql {sql}: {small:?}"
+            );
+            assert!(
+                !small.iter().any(|piece| piece.contains("prev/next")),
+                "sql {sql}: {small:?}"
+            );
+            assert!(
+                small.iter().any(|piece| piece == "[ ]"),
+                "sql {sql}: {small:?}"
+            );
+        }
     }
 
     /// Presses the pointer at `from`, moves it to `to` and lets go.
@@ -2653,6 +3613,19 @@ mod tests {
             harness.copied.as_deref(),
             Some(r#"{"plan":"pro","seats":[3,4]}"#)
         );
+    }
+
+    #[test]
+    fn a_fold_toggle_keeps_the_keyboard_after_it_is_pressed() {
+        let mut harness = Harness::new();
+        with_json(&mut harness, r#"{"plan":"pro","seats":[3,4]}"#);
+        focus(&mut harness, "Collapse meta", egui::accesskit::Role::Button);
+        harness.press(Key::Enter, Modifiers::NONE);
+        assert!(harness.has("{ 2 keys }"));
+        assert_eq!(focused_name(&harness.settle()), "Expand meta");
+        harness.press(Key::Enter, Modifiers::NONE);
+        assert!(harness.has(r#""plan": "pro","#));
+        assert_eq!(focused_name(&harness.settle()), "Collapse meta");
     }
 
     #[test]
