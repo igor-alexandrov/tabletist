@@ -1254,6 +1254,25 @@ mod tests {
     }
 
     #[test]
+    fn the_footer_says_it_waits_while_the_first_page_is_on_its_way() {
+        // The terminal look has no footer.
+        for look in crate::theme::Look::ALL
+            .into_iter()
+            .filter(|look| !look.terminal)
+        {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            harness.connect_fake();
+            harness.click("users");
+            assert!(harness.has("Waiting for server"), "{}", look.name);
+            assert!(!harness.has("No rows"), "{}", look.name);
+            harness.answer_rows(crate::testing::page(5, false));
+            assert!(!harness.has("Waiting for server"), "{}", look.name);
+            assert!(harness.has("Rows 1–5 of 5"), "{}", look.name);
+        }
+    }
+
+    #[test]
     fn header_clicks_sort_and_the_next_page_button_pages() {
         let mut harness = Harness::new();
         harness.connect_fake();
