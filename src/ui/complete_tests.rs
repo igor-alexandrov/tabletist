@@ -2035,6 +2035,41 @@ fn enter_is_a_line_break_while_a_list_waits() {
 }
 
 #[test]
+fn a_waiting_list_closes_when_its_session_is_replaced() {
+    let (mut harness, tab) = editor_before_reports();
+    type_text(&mut harness, ".");
+    let open = list(&harness, tab).expect("a waiting list");
+    assert!(open.candidates.is_empty() && open.loading);
+    // The session that was asked is closed: its answer will never come.
+    harness.app.apply(Action::Reconnect(tab));
+    let Command::Connect {
+        session, request, ..
+    } = *crate::testing::last_sent(&harness.app)
+    else {
+        panic!("expected Connect");
+    };
+    harness.settle();
+    assert!(list(&harness, tab).is_none(), "while connecting");
+    // Nor when the new one fails to connect.
+    harness.app.apply(Action::Backend(Event::ConnectFailed {
+        session,
+        request,
+        error: tabletist_db::Error::Connect("refused".into()),
+    }));
+    harness.settle();
+    assert!(list(&harness, tab).is_none(), "after the failed connect");
+    assert_eq!(sql(&harness, tab).text, "select * from reports.");
+    // Asked for by hand on the session that is gone: nothing to wait for.
+    let (tab_id, sql_tab) = ids(&harness, tab);
+    harness.app.apply(Action::OpenCompletion {
+        tab: tab_id,
+        sql_tab,
+    });
+    harness.settle();
+    assert!(list(&harness, tab).is_none(), "by hand");
+}
+
+#[test]
 fn an_answer_that_leaves_the_list_empty_closes_it() {
     let (mut harness, tab) = editor_before_reports();
     type_text(&mut harness, ".");

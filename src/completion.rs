@@ -180,10 +180,15 @@ fn target<'a>(site: &Site, manual: bool, catalog: &Catalog<'a>) -> Target<'a> {
             let found = named
                 .find(alias)
                 .or_else(|| site.sources.iter().find(table));
-            let object =
-                found.and_then(|source| resolve(source.schema.as_deref(), &source.name, catalog));
+            let cte = found.is_some_and(|source| is_cte(site, source));
+            let object = found
+                .filter(|_| !cte)
+                .and_then(|source| resolve(source.schema.as_deref(), &source.name, catalog));
             match (object, schema_named(catalog, one)) {
                 (Some(object), _) => of(Some(object)),
+                // A CTE of the statement: what its columns are is not
+                // known, and it is no schema.
+                (None, _) if cte => of(None),
                 // A half-typed `FROM billing.` reads as a table called
                 // `billing`, which is none: a schema is what it is.
                 (None, Some(schema)) => Target::SchemaTables(schema),
@@ -223,11 +228,23 @@ fn resolve(schema: Option<&str>, name: &str, catalog: &Catalog<'_>) -> Option<Ob
     }
 }
 
+/// Whether `source` is one of the statement's common table expressions:
+/// a name without a schema that is spelled like one, whatever its case.
+/// A CTE hides the table of its name, and what its columns are is not
+/// known: the table's are not offered for it, since wrong columns are
+/// worse than none.
+fn is_cte(site: &Site, source: &Source) -> bool {
+    let named = |cte: &String| cte.eq_ignore_ascii_case(&source.name);
+    source.schema.is_none() && site.ctes.iter().any(named)
+}
+
 /// The statement's tables the workspace knows, each once, the first
-/// [`TABLES`] of them.
+/// [`TABLES`] of them. A CTE is none of them, whatever table is called
+/// like it.
 fn sources(site: &Site, catalog: &Catalog<'_>) -> Vec<ObjectRef> {
     let mut objects: Vec<ObjectRef> = Vec::new();
-    for source in &site.sources {
+    let tables = site.sources.iter().filter(|source| !is_cte(site, source));
+    for source in tables {
         if objects.len() == TABLES {
             break;
         }
@@ -827,6 +844,67 @@ mod tests {
         assert_eq!(
             labels_of(&offered_columns("SELECT u.na| FROM users u")),
             ["name"]
+        );
+    }
+
+    #[test]
+    fn a_cte_named_like_a_table_does_not_get_the_tables_columns() {
+        let with = "WITH users AS (SELECT 1 AS n)";
+        let offered = |rest: &str| {
+            let found = offered_columns(&format!("{with} {rest}"));
+            let labels = found.into_iter().map(|c| c.label);
+            labels.collect::<Vec<String>>()
+        };
+        // `users` is the CTE here, whose columns are not known: the
+        // table's would be wrong. The keywords are still there.
+        assert_eq!(offered("SELECT na| FROM users"), ["natural"]);
+        let all = offered_columns(&format!("{with} SELECT | FROM users"));
+        assert!(!all.is_empty() && all.iter().all(|c| c.kind == Kind::Keyword));
+        // Through the CTE's own name and through an alias of it.
+        assert!(offered("SELECT users.| FROM users").is_empty());
+        assert!(offered("SELECT u.| FROM users u").is_empty());
+        assert!(offered("SELECT u.na| FROM users AS u").is_empty());
+        // Whatever the case either is written in.
+        assert_eq!(offered("SELECT na| FROM USERS"), ["natural"]);
+        let upper = offered_columns("WITH USERS AS (SELECT 1 AS n) SELECT na| FROM users");
+        assert_eq!(labels_of(&upper), ["natural"]);
+        // Written with its schema, `users` is the table.
+        assert_eq!(offered("SELECT na| FROM public.users"), ["name", "natural"]);
+        assert_eq!(
+            offered("SELECT u.| FROM public.users u"),
+            ["Created At", "id", "name"]
+        );
+        assert_eq!(
+            offered("SELECT public.users.| FROM users"),
+            ["Created At", "id", "name"]
+        );
+        // The statement's other tables keep their columns.
+        assert_eq!(
+            offered("SELECT tot| FROM users JOIN billing.invoices i ON true"),
+            ["total"]
+        );
+        // A CTE of another name hides nothing.
+        let other = offered_columns("WITH recent AS (SELECT 1) SELECT na| FROM users, recent");
+        assert_eq!(labels_of(&other), ["name", "natural"]);
+
+        // Nor are the table's columns asked for.
+        let (tree, schemas) = shop();
+        let needed = |marked: &str| {
+            let (site, _) = site_at(marked);
+            needs(
+                &site,
+                &catalog(Dialect::Postgres, &tree, Some("public"), &schemas),
+            )
+        };
+        let objects = || Need::Objects("public".into());
+        assert_eq!(needed(&format!("{with} SELECT | FROM users")), [objects()]);
+        assert_eq!(
+            needed(&format!("{with} SELECT u.| FROM users u")),
+            [objects()]
+        );
+        assert_eq!(
+            needed(&format!("{with} SELECT | FROM public.users")),
+            [objects(), Need::Columns(ObjectRef::new("public", "users"))]
         );
     }
 

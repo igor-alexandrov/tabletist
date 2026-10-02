@@ -2419,8 +2419,14 @@ impl Workspace {
         self.catalog_generation = self.catalog_generation.wrapping_add(1);
     }
 
-    /// Whether what `need` names is being fetched.
+    /// Whether what `need` names is on its way: it was asked for, and the
+    /// session it was asked of is still there to answer. A fetch left
+    /// pending by a session that was replaced (a reconnect) or lost never
+    /// ends, and a list must not wait for it.
     pub fn is_loading(&self, need: &crate::completion::Need) -> bool {
+        if !matches!(self.status, SessionStatus::Connected) {
+            return false;
+        }
         match need {
             crate::completion::Need::Objects(schema) => {
                 let node = self.tree.nodes.get(schema);
@@ -2585,6 +2591,7 @@ mod tests {
     fn a_need_is_loading_while_its_names_are_asked_for() {
         use crate::completion::Need;
         let mut workspace = crate::testing::workspace();
+        workspace.status = SessionStatus::Connected;
         let need = Need::Objects("main".into());
         assert!(!workspace.is_loading(&need), "never asked for");
         let node = workspace.tree.nodes.entry("main".into()).or_default();
@@ -2607,6 +2614,33 @@ mod tests {
         let kept = workspace.columns.get_mut(&users).unwrap();
         assert!(kept.finish(RequestId(8), Err(Error::query("permission denied"))));
         assert!(!workspace.is_loading(&need), "answered");
+    }
+
+    #[test]
+    fn no_need_is_loading_unless_the_session_is_connected() {
+        use crate::completion::Need;
+        let mut workspace = crate::testing::workspace();
+        let node = workspace.tree.nodes.entry("reports".into()).or_default();
+        node.objects.start(RequestId(7));
+        let users = ObjectRef::new("main", "users");
+        let kept = workspace.columns.entry(users.clone()).or_default();
+        kept.start(RequestId(8));
+        let needs = [Need::Objects("reports".into()), Need::Columns(users)];
+        workspace.status = SessionStatus::Connected;
+        assert!(needs.iter().all(|need| workspace.is_loading(need)));
+        // A session that is being replaced, or is gone, answers nothing:
+        // what was asked of it is not on its way, pending or not.
+        for status in [
+            SessionStatus::Connecting {
+                request: RequestId(9),
+            },
+            SessionStatus::Disconnected(Error::query("gone")),
+            SessionStatus::Cancelled,
+        ] {
+            workspace.status = status;
+            let loading = needs.iter().any(|need| workspace.is_loading(need));
+            assert!(!loading, "{:?}", workspace.status);
+        }
     }
 
     #[test]
