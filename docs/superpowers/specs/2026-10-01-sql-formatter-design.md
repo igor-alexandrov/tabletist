@@ -317,7 +317,8 @@ is in that text.
   text) is added to the field's undo history, and the formatted state
   after it. A `Mod+Z` right after Format gives back the typed text and
   its selection; a `Mod+Shift+Z` formats it again. Once the cursor has
-  moved, egui undoes that move first, as after any edit.
+  moved, egui undoes that move first, as after any edit. Format empties
+  what an earlier undo left to redo, as an edit does.
 - The cursor goes where `Formatted::cursor` says, with nothing selected.
   `SqlTab.cursor` follows it in the same frame.
 - A field that never had the keys has no egui state: Format then uses
@@ -422,8 +423,9 @@ is in that text.
 - Headless UI tests through `src/testing.rs`: `Mod+Shift+F` formats the
   script, with the editor focused and not; the Format button does the
   same and gives the keys back to the editor; with a selection only the
-  statements it touches change; `Mod+Z` restores the text as typed;
-  Format on a formatted script leaves the undo history as it was; the key
+  statements it touches change; `Mod+Z` restores the text as typed; after
+  an undo and another Format a redo changes nothing; Format on a
+  formatted script leaves the undo history as it was; the key
   does nothing on a table tab; `Mod+F` still does nothing on a SQL tab;
   the Omarchy toolbar has no Format button and the key still formats; the
   shortcuts dialog names the key.

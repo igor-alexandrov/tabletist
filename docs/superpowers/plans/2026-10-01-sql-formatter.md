@@ -12,7 +12,7 @@
 
 ## How this plan was checked
 
-Every piece of code below was compiled and its tests were run in a scratch copy of the repository while planning: `cargo fmt --check`, `cargo clippy -D warnings`, `cargo doc -D warnings` and `cargo test --workspace --all-targets` (735 app tests, 200 `tabletist-db` unit tests) pass with all of it applied. The formatter was also run over more than a million scripts built at random, with the safety check out of the way. That and a review of the plan found three faults, each fixed and under test: a space added before a `--` comment fused two minus signs into a comment on MySQL; a line break after two touching minus signs did the same; and a `WITH` statement formatted through a selection, where it did not start its line, gained two spaces on every press.
+Every piece of code below was compiled and its tests were run in a scratch copy of the repository while planning: `cargo fmt --check`, `cargo clippy -D warnings`, `cargo doc -D warnings` and `cargo test --workspace --all-targets` (735 app tests, 200 `tabletist-db` unit tests) pass with all of it applied. The formatter was also run over more than a million scripts built at random, with the safety check out of the way. That and a review of the plan found three faults, each fixed and under test: a space added before a `--` comment fused two minus signs into a comment on MySQL; a line break after two touching minus signs did the same; and a `WITH` statement formatted through a selection, where it did not start its line, gained two spaces on every press. The reviews of the tasks as they were built added more, all folded back into this plan: a cap on how deep nested queries are followed (the layout recurses once for each), a bound on a quadratic scan of join leaders, and the redo stack that Format left in place.
 
 Not checked, so check it when you get there:
 
@@ -52,7 +52,7 @@ Found while building the prototype; the spec was changed to say the same.
 1. **No token changes.** The formatter's tests check the layout itself, before the safety check that would hide a fault (`formatted` in `sql/format.rs`'s tests calls `laid_out`), over every case, the awkward scripts and the scripts built at random.
 2. **Idempotent.** The same helper formats every result a second time and expects `None`.
 3. **Case on MySQL.** A word is uppercased only from `UPPERCASED`, never beside a `.`, and the structural words (`OFFSET`, `FULL`, ...) keep their case there. Task 2 asks the server.
-4. **One undo.** `one_undo_gives_back_the_script_as_typed` (Task 4): a `Mod+Z` right after Format restores the typed text, and formatting a formatted script adds no undo step.
+4. **One undo.** `one_undo_gives_back_the_script_as_typed` (Task 4): a `Mod+Z` right after Format restores the typed text, and formatting a formatted script adds no undo step. `format_leaves_nothing_to_redo_as_an_edit_does`: Format empties the redo stack.
 5. **Keys.** `Mod+Shift+F` is consumed on every tab, so it never reaches `Mod+F` (`command_shift_f_does_nothing_on_a_table_tab`, Task 3).
 6. **The toolbar gives way in order**: keys, note, Format, the menus' words, chevrons, menus (Task 5).
 
@@ -2163,7 +2163,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 ### Task 4: The editor formats
 
-The view takes the flag before it draws the `TextEdit`. It reads the field's selection (egui counts cursors in characters; the formatter in bytes), formats, and writes two states into the field's undo history: the text as typed with its selection, then the formatted text with its cursor. egui's `Undoer::undo` pops a state equal to the current one and returns the one under it, so one `Mod+Z` right after Format gives the typed text back, and `Mod+Shift+Z` formats again. `Undoer::add_undo` adds nothing when the state equals the last one.
+The view takes the flag before it draws the `TextEdit`. It reads the field's selection (egui counts cursors in characters; the formatter in bytes), formats, and writes two states into the field's undo history: the text as typed with its selection, then the formatted text with its cursor. egui's `Undoer::undo` pops a state equal to the current one and returns the one under it, so one `Mod+Z` right after Format gives the typed text back, and `Mod+Shift+Z` formats again. `Undoer::add_undo` adds nothing when the state equals the last one. It also never empties the redo stack (only `feed_state` does, when the state it is fed differs from the last undo point), so the formatted state is fed between the two: without that, "undo, Format, redo" brings back what the undo had put aside.
 
 **Files:**
 - Modify: `src/ui/sql_text.rs`
@@ -2272,6 +2272,26 @@ and after `const COMMAND_SHIFT`, the tests:
     }
 
     #[test]
+    fn format_leaves_nothing_to_redo_as_an_edit_does() {
+        let mut harness = Harness::new();
+        let tab = harness.connect_fake();
+        harness.press(Key::T, Modifiers::COMMAND);
+        let typed = "select a,b from t";
+        let formatted = "SELECT a,\n       b\n  FROM t";
+        type_text(&mut harness, typed);
+        harness.press(Key::F, COMMAND_SHIFT);
+        harness.press(Key::Z, Modifiers::COMMAND);
+        assert_eq!(active_sql(&harness, tab).text, typed);
+        // Formatted again, what that undo left to redo is gone: a redo
+        // changes nothing, and one undo is still all it takes.
+        harness.press(Key::F, COMMAND_SHIFT);
+        harness.press(Key::Z, COMMAND_SHIFT);
+        assert_eq!(active_sql(&harness, tab).text, formatted);
+        harness.press(Key::Z, Modifiers::COMMAND);
+        assert_eq!(active_sql(&harness, tab).text, typed);
+    }
+
+    #[test]
     fn format_with_a_selection_formats_the_statements_it_touches() {
         let mut harness = Harness::new();
         let tab = harness.connect_fake();
@@ -2343,10 +2363,14 @@ fn format(ui: &Ui, sql_tab: &mut SqlTab, field: &Field<'_>) {
     let cursor = CCursor::new(char_index(&formatted.text, formatted.cursor));
     let (before, after) = (typed.unwrap_or_default(), CCursorRange::one(cursor));
     // The text as typed and the text as formatted, both: undo gives the
-    // first back whole, and redo the second.
+    // first back whole, and redo the second. Between the two the formatted
+    // text is fed as an edit is, which empties what an earlier undo left
+    // to redo: adding an undo point alone would keep it.
+    let formatted_state = (after, formatted.text.clone());
     let mut undoer = state.undoer();
     undoer.add_undo(&(before, sql_tab.text.clone()));
-    undoer.add_undo(&(after, formatted.text.clone()));
+    undoer.feed_state(ui.input(|input| input.time), &formatted_state);
+    undoer.add_undo(&formatted_state);
     state.set_undoer(undoer);
     state.cursor.set_char_range(Some(after));
     egui::TextEdit::store_state(ui.ctx(), field.id, state);
@@ -2370,7 +2394,7 @@ In `fn edit`, right after its first line:
 - [ ] **Step 4: Run the tests**
 
 Run: `~/.cargo/bin/cargo test --locked -p tabletist --lib -- format undo character_index`
-Expected: all pass, among them `command_shift_f_formats_the_script_and_the_editor_keeps_the_keys`, `one_undo_gives_back_the_script_as_typed`, `format_with_a_selection_formats_the_statements_it_touches`, `a_byte_offset_becomes_a_character_index`.
+Expected: all pass, among them `command_shift_f_formats_the_script_and_the_editor_keeps_the_keys`, `one_undo_gives_back_the_script_as_typed`, `format_leaves_nothing_to_redo_as_an_edit_does`, `format_with_a_selection_formats_the_statements_it_touches`, `a_byte_offset_becomes_a_character_index`.
 
 - [ ] **Step 5: Format, lint, commit**
 
