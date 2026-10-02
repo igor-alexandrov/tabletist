@@ -76,7 +76,8 @@ text; where the two disagree, those sections and the code win.
   closing parenthesis) the next clause's keyword is what is typed, and no
   table is offered. Order there: columns, then tables that start with the
   typed text, then keywords, then tables that only hold it. A table is not
-  offered after a `*` (read as the star of a select list), and a table the
+  offered after a `*` by itself (read as the star of a select list; the one
+  that ends an operator such as `~*` is that operator's), and a table the
   statement names under an alias is offered by its own name.
   A one-part qualifier that is no source and no schema is a table the
   workspace knows, so `SELECT users.` offers its columns before the

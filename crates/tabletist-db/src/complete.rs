@@ -18,11 +18,11 @@ pub struct Site {
     /// What belongs at the word when it has no qualifier.
     pub expects: Expects,
     /// Whether a value goes at the word: it follows a comma, an open
-    /// parenthesis, an operator other than `*` (read as the star of a
-    /// select list) or a word that takes one (`SELECT`, `WHERE`, `AND`,
-    /// the FROM of `IS DISTINCT FROM`).
-    /// A column goes there, and so does the name of a table or a view that
-    /// qualifies one (`accounts.id`).
+    /// parenthesis, an operator other than a `*` by itself (read as the
+    /// star of a select list) or a word that takes one (`SELECT`, `WHERE`,
+    /// `AND`, the FROM of `IS DISTINCT FROM`). A column goes there, and so
+    /// does the name of a table or a view that qualifies one
+    /// (`accounts.id`).
     pub value: bool,
     /// The tables the statement names, in order.
     pub sources: Vec<Source>,
@@ -370,7 +370,9 @@ const VALUE_WORDS: [&str; 17] = [
 /// else (a name, a number, a string, a closing parenthesis) comes an
 /// operator, an alias or the next clause's keyword. A `*` counts as the
 /// star of a select list, which a FROM follows, so a table is not offered
-/// for the right side of a multiplication: a known limit.
+/// for the right side of a multiplication: a known limit. Unless it
+/// touches an operator before it: the tokenizer reads PostgreSQL's `~*`
+/// as two operators, and the star is the end of one.
 ///
 /// `IS [NOT] DISTINCT FROM` is one comparison: its DISTINCT takes the
 /// FROM, not a value, and its FROM takes the value.
@@ -380,7 +382,12 @@ fn starts_value(before: &[Piece<'_>]) -> bool {
     };
     match previous.kind {
         TokenKind::Punctuation => previous.is(",") || previous.is("("),
-        TokenKind::Operator => !previous.is("*"),
+        TokenKind::Operator => {
+            let ends_operator = earlier.last().is_some_and(|piece| {
+                piece.kind == TokenKind::Operator && piece.range.end == previous.range.start
+            });
+            !previous.is("*") || ends_operator
+        }
         _ if previous.is_keyword(&["DISTINCT"]) => !is_distinct_from(before),
         _ if previous.is_keyword(&["FROM"]) => is_distinct_from(earlier),
         _ => previous.is_keyword(&VALUE_WORDS),
@@ -711,6 +718,10 @@ mod tests {
             "SELECT CASE WHEN acc|",
             "UPDATE accounts SET acc|",
             "select acc|",
+            // PostgreSQL's operators that end in a star.
+            "SELECT * FROM accounts WHERE name ~* acc|",
+            "SELECT * FROM accounts WHERE name !~* acc|",
+            "SELECT * FROM accounts WHERE name ~~* acc|",
             // The right side of `IS [NOT] DISTINCT FROM`.
             "SELECT * FROM accounts a WHERE a.id IS DISTINCT FROM acc|",
             "SELECT * FROM accounts a WHERE a.id IS NOT DISTINCT FROM acc|",
@@ -727,6 +738,8 @@ mod tests {
             // The star of a select list.
             "SELECT * fr|",
             "SELECT count(*) fr|",
+            "SELECT a.* fr|",
+            "SELECT a.id, * fr|",
             // Words a keyword follows.
             "SELECT * FROM accounts WHERE id IS NOT nu|",
             "SELECT * FROM accounts ORDER BY id DESC li|",
