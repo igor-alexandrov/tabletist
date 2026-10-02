@@ -860,6 +860,13 @@ mod tests {
             labels_of(&offered_columns("WITH recent AS (SELECT 1) SELECT rec|")),
             ["recent", "recursive"]
         );
+        // The right side of a comparison spelled with FROM.
+        assert_eq!(
+            labels_of(&offered_columns(
+                "SELECT * FROM billing.invoices WHERE id IS DISTINCT FROM inv|"
+            )),
+            ["billing.invoices"]
+        );
         // Not after a value, where the next clause's keyword goes.
         assert_eq!(
             labels_of(&offered_columns("SELECT * FROM users u us|")),

@@ -19,7 +19,8 @@ pub struct Site {
     pub expects: Expects,
     /// Whether a value goes at the word: it follows a comma, an open
     /// parenthesis, an operator other than `*` (read as the star of a
-    /// select list) or a word that takes one (`SELECT`, `WHERE`, `AND`).
+    /// select list) or a word that takes one (`SELECT`, `WHERE`, `AND`,
+    /// the FROM of `IS DISTINCT FROM`).
     /// A column goes there, and so does the name of a table or a view that
     /// qualifies one (`accounts.id`).
     pub value: bool,
@@ -370,13 +371,18 @@ const VALUE_WORDS: [&str; 17] = [
 /// operator, an alias or the next clause's keyword. A `*` counts as the
 /// star of a select list, which a FROM follows, so a table is not offered
 /// for the right side of a multiplication: a known limit.
+///
+/// `IS [NOT] DISTINCT FROM` is one comparison: its DISTINCT takes the
+/// FROM, not a value, and its FROM takes the value.
 fn starts_value(before: &[Piece<'_>]) -> bool {
-    let Some(previous) = before.last() else {
+    let Some((previous, earlier)) = before.split_last() else {
         return false;
     };
     match previous.kind {
         TokenKind::Punctuation => previous.is(",") || previous.is("("),
         TokenKind::Operator => !previous.is("*"),
+        _ if previous.is_keyword(&["DISTINCT"]) => !is_distinct_from(before),
+        _ if previous.is_keyword(&["FROM"]) => is_distinct_from(earlier),
         _ => previous.is_keyword(&VALUE_WORDS),
     }
 }
@@ -705,6 +711,9 @@ mod tests {
             "SELECT CASE WHEN acc|",
             "UPDATE accounts SET acc|",
             "select acc|",
+            // The right side of `IS [NOT] DISTINCT FROM`.
+            "SELECT * FROM accounts a WHERE a.id IS DISTINCT FROM acc|",
+            "SELECT * FROM accounts a WHERE a.id IS NOT DISTINCT FROM acc|",
         ] {
             assert!(pg(marked).value, "{marked}");
         }
@@ -722,6 +731,11 @@ mod tests {
             "SELECT * FROM accounts WHERE id IS NOT nu|",
             "SELECT * FROM accounts ORDER BY id DESC li|",
             "SELECT 1 UNION ALL sel|",
+            // The DISTINCT of a comparison takes its FROM.
+            "SELECT * FROM accounts WHERE id IS DISTINCT fr|",
+            "SELECT * FROM accounts WHERE id IS NOT DISTINCT fr|",
+            // And a FROM that takes tables is no comparison's.
+            "SELECT DISTINCT FROM acc|",
             "SEL|",
             // After a dot the qualifier says what belongs.
             "SELECT accounts.i|",

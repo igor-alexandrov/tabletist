@@ -71,7 +71,8 @@ text; where the two disagree, those sections and the code win.
   open parenthesis, an operator other than `*`, or `SELECT`, `DISTINCT`,
   `WHERE`, `AND`, `OR`, `ON`, `HAVING`, `BY`, `CASE`, `WHEN`, `THEN`,
   `ELSE`, `SET`, `RETURNING`, `LIKE`, `ILIKE` or `BETWEEN`. Also before the
-  statement has its `FROM`. After anything else (a name, a number, a
+  statement has its `FROM`. In `IS [NOT] DISTINCT FROM` the value follows
+  the `FROM`, not the `DISTINCT`. After anything else (a name, a number, a
   closing parenthesis) the next clause's keyword is what is typed, and no
   table is offered. Order there: columns, then tables that start with the
   typed text, then keywords, then tables that only hold it. A table is not
