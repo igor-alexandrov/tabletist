@@ -475,6 +475,9 @@ enum Dialog { Connection(..), Password(..), HostKey(..), QuickOpen(..), Help }
   one is selected (see the SQL editor spec).
 - What is folded or expanded belongs to a row of one page or one result:
   another page, a refresh or a new result starts fresh.
+- On Omarchy an Esc that leaves a text field does only that (the next one
+  closes the panel), Enter opens the panel only when no widget has the
+  keyboard, and `za` folds only while the panel shows.
 
 ### 5.8 Structure view
 

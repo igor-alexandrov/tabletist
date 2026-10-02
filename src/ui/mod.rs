@@ -2411,6 +2411,52 @@ mod tests {
     }
 
     #[test]
+    fn the_terminal_keys_of_the_row_panel_work_on_a_table_row() {
+        let mut harness = Harness::new();
+        harness.set_look(crate::theme::Look::omarchy());
+        let tab = with_page(&mut harness);
+        focus_grid(&mut harness, tab);
+        let open = |harness: &Harness| harness.app.workspace(tab).unwrap().row_panel;
+        let at = |row, col| Some(crate::model::CellPos { row, col });
+        // A table tab keeps its panel open with no row selected.
+        assert!(open(&harness));
+        assert!(harness.has("Select a row to see its fields"));
+        // `]` and `[` step through the rows as `j` and `k` do.
+        type_key(&mut harness, Key::CloseBracket, "]");
+        assert_eq!(selection(&harness, tab), at(0, 0));
+        assert!(panel_shows(&mut harness));
+        type_key(&mut harness, Key::CloseBracket, "]");
+        assert_eq!(selection(&harness, tab), at(1, 0));
+        type_key(&mut harness, Key::OpenBracket, "[");
+        assert_eq!(selection(&harness, tab), at(0, 0));
+        // Esc closes the panel, Enter opens it, `i` does either.
+        harness.press(Key::Escape, Modifiers::NONE);
+        assert!(!open(&harness));
+        assert!(!panel_shows(&mut harness));
+        // `za` with the panel closed leaves nothing folded for its next opening.
+        harness.press(Key::Z, Modifiers::NONE);
+        harness.press(Key::A, Modifiers::NONE);
+        assert!(harness.app.workspace(tab).unwrap().fold_documents.is_none());
+        harness.press(Key::Escape, Modifiers::NONE);
+        assert!(!open(&harness), "Esc only closes");
+        harness.press(Key::Enter, Modifiers::NONE);
+        assert!(open(&harness));
+        harness.press(Key::Enter, Modifiers::NONE);
+        assert!(open(&harness), "Enter only opens");
+        harness.press(Key::I, Modifiers::NONE);
+        assert!(!open(&harness));
+        harness.press(Key::I, Modifiers::NONE);
+        assert!(open(&harness));
+        assert!(panel_shows(&mut harness));
+        // `za` folds the row's documents: the first row's `meta`.
+        assert!(harness.has(r#""plan": "pro""#));
+        harness.press(Key::Z, Modifiers::NONE);
+        harness.press(Key::A, Modifiers::NONE);
+        assert!(harness.has("{ 1 key }"));
+        assert!(!harness.has(r#""plan": "pro""#));
+    }
+
+    #[test]
     fn escape_out_of_the_editor_leaves_the_row_panel_open() {
         let mut harness = Harness::new();
         harness.set_look(crate::theme::Look::omarchy());
@@ -2471,6 +2517,25 @@ mod tests {
     }
 
     #[test]
+    fn enter_on_a_focused_button_is_the_buttons_on_a_table_tab() {
+        let mut harness = Harness::new();
+        harness.set_look(crate::theme::Look::omarchy());
+        let tab = with_page(&mut harness);
+        focus_grid(&mut harness, tab);
+        harness.app.apply(crate::model::Action::ToggleRowPanel(tab));
+        assert!(!harness.app.workspace(tab).unwrap().row_panel);
+        focus(&mut harness, "Structure", egui::accesskit::Role::Button);
+        assert_eq!(focused_name(&harness.settle()), "Structure");
+        harness.press(Key::Enter, Modifiers::NONE);
+        let workspace = harness.app.workspace(tab).unwrap();
+        assert_eq!(
+            workspace.active_object_tab().unwrap().view,
+            crate::model::ObjectView::Structure
+        );
+        assert!(!workspace.row_panel);
+    }
+
+    #[test]
     fn opening_the_row_panel_keeps_the_keyboard_on_the_result_row() {
         for look in crate::theme::Look::ALL {
             let mut harness = Harness::new();
@@ -2517,6 +2582,86 @@ mod tests {
         harness.click("Row 1");
         assert!(!harness.has("Show less"));
         assert!(show_all(&mut harness).is_some());
+    }
+
+    #[test]
+    fn a_refreshed_page_does_not_inherit_an_expanded_value() {
+        let long_row_page = || {
+            let mut page = crate::testing::page(2, false);
+            page.rows[0][1] = tabletist_db::Value::Text("x".repeat(1_000_000).into());
+            page
+        };
+        let show_all = |harness: &mut Harness| {
+            let tree = harness.settle();
+            crate::testing::labels(&tree)
+                .into_iter()
+                .find(|label| label.starts_with("Show all"))
+        };
+        let mut harness = Harness::new();
+        let tab = harness.connect_fake();
+        harness.click("users");
+        harness.answer_rows(long_row_page());
+        harness.click("Row 1");
+        let link = show_all(&mut harness).expect("a link to the whole value");
+        harness.click(&link);
+        assert!(harness.has("Show less"));
+        // The same row of the refreshed page keeps nothing expanded.
+        focus_grid(&mut harness, tab);
+        let sent = harness.app.backend.sent.len();
+        harness.press(Key::R, Modifiers::COMMAND);
+        assert!(harness.app.backend.sent.len() > sent, "a refresh was sent");
+        assert!(matches!(
+            crate::testing::last_sent(&harness.app),
+            Command::FetchRows { .. }
+        ));
+        harness.answer_rows(long_row_page());
+        assert_eq!(
+            selection(&harness, tab),
+            Some(crate::model::CellPos { row: 0, col: 0 })
+        );
+        assert!(!harness.has("Show less"));
+        assert!(show_all(&mut harness).is_some());
+    }
+
+    #[test]
+    fn two_result_columns_of_one_name_fold_apart() {
+        // `SELECT a.meta, b.meta ...`: the fixture's columns, twice.
+        let page = crate::testing::page(1, false);
+        let outcome = tabletist_db::StatementOutcome::Rows {
+            columns: [page.columns.clone(), page.columns].concat(),
+            rows: page
+                .rows
+                .into_iter()
+                .map(|row| [row.clone(), row].concat())
+                .collect(),
+            truncated: false,
+        };
+        let named = |harness: &mut Harness, name: &str| {
+            let tree = harness.settle();
+            let labels = crate::testing::labels(&tree);
+            labels.iter().filter(|label| *label == name).count()
+        };
+        for look in crate::theme::Look::ALL {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            let tab = harness.connect_fake();
+            with_sql_outcome(&mut harness, tab, outcome.clone());
+            harness.click("Row 1");
+            // Each document has its own toggle.
+            assert_eq!(named(&mut harness, "Collapse meta"), 2, "{}", look.name);
+            // Folding the first leaves the second open.
+            let open = named(&mut harness, r#""plan": "pro""#);
+            harness.click("Collapse meta");
+            assert_eq!(named(&mut harness, "Expand meta"), 1, "{}", look.name);
+            assert_eq!(named(&mut harness, "Collapse meta"), 1, "{}", look.name);
+            assert!(harness.has("{ 1 key }"), "{}", look.name);
+            assert_eq!(
+                named(&mut harness, r#""plan": "pro""#),
+                open / 2,
+                "{}",
+                look.name
+            );
+        }
     }
 
     /// Presses the pointer at `from`, moves it to `to` and lets go.

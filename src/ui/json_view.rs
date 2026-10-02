@@ -485,7 +485,7 @@ impl View<'_> {
         }
         let verb = if open { "Collapse" } else { "Expand" };
         let toggle = format!("{} {name}", gettext(self.locale, verb));
-        if self.row(ui, depth, Some((open, &toggle)), job) {
+        if self.row(ui, depth, Some((open, &toggle, id)), job) {
             ui.data_mut(|data| data.insert_temp(id, !open));
         }
         if !open {
@@ -544,10 +544,17 @@ impl View<'_> {
         }
     }
 
-    /// One line: indent, then `job`; a fold toggle sits in the indent to
+    /// One line: indent, then `job`; a fold toggle (whether its node is
+    /// open, its accessible name and its node's id) sits in the indent to
     /// its left, drawn while the pointer is over the line. Returns whether
     /// the toggle was clicked.
-    fn row(&mut self, ui: &mut Ui, depth: usize, toggle: Option<(bool, &str)>, job: Line) -> bool {
+    fn row(
+        &mut self,
+        ui: &mut Ui,
+        depth: usize,
+        toggle: Option<(bool, &str, Id)>,
+        job: Line,
+    ) -> bool {
         self.rows += 1;
         let height = self.role.row_height(ui.ctx(), self.look.faces);
         ui.with_layout(Layout::left_to_right(Align::Min), |ui| {
@@ -564,13 +571,13 @@ impl View<'_> {
             let laid = text.layout(ui.ctx());
             let label = ui.add(Label::new(laid.galley).selectable(true));
             match toggle {
-                Some((open, text)) => {
+                Some((open, text, id)) => {
                     let rect = egui::Rect::from_min_size(
                         egui::pos2(left - TOGGLE, label.rect.top()),
                         vec2(TOGGLE, height),
                     );
                     let near = ui.rect_contains_pointer(label.rect.union(rect));
-                    self.toggle(ui, rect, open, text, near)
+                    self.toggle(ui, rect, id, open, text, near)
                 }
                 None => false,
             }
@@ -578,8 +585,19 @@ impl View<'_> {
         .inner
     }
 
-    fn toggle(&self, ui: &mut Ui, rect: egui::Rect, open: bool, label: &str, shown: bool) -> bool {
-        let response = ui.interact(rect, ui.id().with(label), Sense::click());
+    /// The fold toggle of the node `id`. The id is the node's, not the
+    /// label's: two columns of a SQL result may share a name, and so the
+    /// paths of their documents.
+    fn toggle(
+        &self,
+        ui: &mut Ui,
+        rect: egui::Rect,
+        id: Id,
+        open: bool,
+        label: &str,
+        shown: bool,
+    ) -> bool {
+        let response = ui.interact(rect, id.with("toggle"), Sense::click());
         response.widget_info(|| WidgetInfo::labeled(egui::WidgetType::Button, true, label));
         if shown || response.hovered() || response.has_focus() {
             let icon = if open {
