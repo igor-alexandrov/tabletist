@@ -652,6 +652,7 @@ fastframe_icons::icons! {
     pub enum Icon {
         prefix: "tabletist-icon-",
         directory: "../assets/icons/",
+        Check => lucide "check",
         ChevronDown => lucide "chevron-down",
         ChevronLeft => lucide "chevron-left",
         ChevronRight => lucide "chevron-right",
@@ -680,6 +681,7 @@ fastframe_icons::icons! {
         ArrowUp => "arrow-up",
         ChevronsUpDown => "chevrons-up-down",
         Code => "code",
+        Database => "database",
         Funnel => "funnel",
         Image => "image",
         KeyRound => "key-round",
@@ -688,7 +690,9 @@ fastframe_icons::icons! {
         LogIn => "log-in",
         PanelRight => "panel-right",
         Server => "server",
+        ShieldAlert => "shield-alert",
         Table => "table-2",
+        WifiOff => "wifi-off",
     }
 }
 

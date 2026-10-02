@@ -22,6 +22,7 @@ pub mod sidebar;
 pub mod sql_editor;
 pub mod sql_results;
 pub mod sql_text;
+pub mod states;
 pub mod structure;
 pub mod value_tags;
 pub mod widgets;
