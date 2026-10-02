@@ -140,7 +140,7 @@ pub enum Action {
     /// Fold (or unfold) every JSON document in the row panel (`za`).
     FoldDocuments {
         tab: ConnTabId,
-        object_tab: TabId,
+        id: TabId,
     },
     /// Follow the foreign key of the selected cell's column (`gd`).
     FollowSelectedKey {

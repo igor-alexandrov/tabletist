@@ -1557,7 +1557,7 @@ mod tests {
     }
 
     #[test]
-    fn the_row_panel_and_paging_keys_do_nothing_on_a_sql_tab() {
+    fn the_paging_keys_do_nothing_on_a_sql_tab_nor_the_row_panels_with_no_row_selected() {
         let mut harness = Harness::new();
         let tab = harness.connect_fake();
         harness.app.apply(crate::model::Action::OpenObject {
@@ -1569,7 +1569,9 @@ mod tests {
         harness.answer_rows(crate::testing::page(300, true));
         let users = harness.app.workspace(tab).unwrap().active_tab.unwrap();
         let query = with_sql_result(&mut harness, tab, 3);
-        // With the keys out of the editor, where Space would be typed.
+        // With the keys out of the editor, where Space would be typed. No
+        // row of the result is selected, so its panel has nothing to show
+        // and the keys leave it as it is.
         harness.press(Key::Escape, Modifiers::NONE);
         let panel = harness.app.workspace(tab).unwrap().row_panel;
         let sent = harness.app.backend.sent.len();
@@ -2289,6 +2291,144 @@ mod tests {
             .app
             .apply(crate::model::Action::CloseTab { tab, id: second });
         assert!(harness.has("user1@example.com"));
+    }
+
+    #[test]
+    fn space_and_ctrl_shift_r_toggle_a_result_rows_panel() {
+        let mut harness = Harness::new();
+        let tab = harness.connect_fake();
+        let id = with_sql_result(&mut harness, tab, 3);
+        let open = |harness: &Harness| harness.app.workspace(tab).unwrap().row_panel;
+        // Out of the editor, where Space would be typed, and onto a row.
+        harness.press(Key::Escape, Modifiers::NONE);
+        harness.press(Key::ArrowDown, Modifiers::NONE);
+        assert!(panel_shows(&mut harness));
+        harness.press(Key::Space, Modifiers::NONE);
+        assert!(!open(&harness));
+        assert!(!panel_shows(&mut harness));
+        harness.press(Key::R, Modifiers::COMMAND | Modifiers::SHIFT);
+        assert!(open(&harness));
+        assert!(panel_shows(&mut harness));
+        // Mod+Shift+R works from the editor too; Space is typed there.
+        let workspace = harness.app.workspace_mut(tab).unwrap();
+        workspace.sql_tab_mut(id).unwrap().focus_editor = true;
+        harness.settle();
+        assert!(harness.ctx.text_edit_focused());
+        harness.press(Key::R, Modifiers::COMMAND | Modifiers::SHIFT);
+        assert!(!open(&harness));
+        harness.press(Key::Space, Modifiers::NONE);
+        assert!(!open(&harness));
+        // Under the messages no row shows, and the keys leave the panel be.
+        harness.click("Messages");
+        harness.press(Key::R, Modifiers::COMMAND | Modifiers::SHIFT);
+        assert!(!open(&harness));
+    }
+
+    /// A key that `keys::letters` reads as the character it types.
+    fn type_key(harness: &mut Harness, key: Key, text: &str) {
+        harness.settle();
+        harness.frame(vec![
+            crate::testing::key(key, Modifiers::NONE),
+            egui::Event::Text(text.into()),
+        ]);
+        harness.frame(vec![crate::testing::release(key, Modifiers::NONE)]);
+        harness.settle();
+    }
+
+    #[test]
+    fn the_terminal_keys_of_the_row_panel_work_on_a_result_row() {
+        let mut harness = Harness::new();
+        harness.set_look(crate::theme::Look::omarchy());
+        let tab = harness.connect_fake();
+        let id = with_sql_result(&mut harness, tab, 3);
+        let open = |harness: &Harness| harness.app.workspace(tab).unwrap().row_panel;
+        let at = |row, col| Some(crate::model::CellPos { row, col });
+        harness.press(Key::Escape, Modifiers::NONE);
+        // With no row selected the panel's keys have nothing to show.
+        for key in [Key::I, Key::Enter, Key::Escape] {
+            harness.press(key, Modifiers::NONE);
+            assert!(open(&harness), "{key:?} with no row");
+        }
+        // Nor with the panel closed, where Enter and `i` would open it.
+        harness.app.apply(crate::model::Action::ToggleRowPanel(tab));
+        for key in [Key::Enter, Key::I] {
+            harness.press(key, Modifiers::NONE);
+            assert!(!open(&harness), "{key:?} with no row");
+        }
+        harness.app.apply(crate::model::Action::ToggleRowPanel(tab));
+        // `]` and `[` step through the rows as `j` and `k` do.
+        type_key(&mut harness, Key::CloseBracket, "]");
+        assert_eq!(sql_selection(&harness, tab, id), at(0, 0));
+        assert!(panel_shows(&mut harness));
+        type_key(&mut harness, Key::CloseBracket, "]");
+        assert_eq!(sql_selection(&harness, tab, id), at(1, 0));
+        type_key(&mut harness, Key::OpenBracket, "[");
+        assert_eq!(sql_selection(&harness, tab, id), at(0, 0));
+        // Esc closes the panel, Enter opens it, `i` does either.
+        harness.press(Key::Escape, Modifiers::NONE);
+        assert!(!open(&harness));
+        assert!(!panel_shows(&mut harness));
+        // `za` with the panel closed leaves nothing folded for its next opening.
+        harness.press(Key::Z, Modifiers::NONE);
+        harness.press(Key::A, Modifiers::NONE);
+        assert!(harness.app.workspace(tab).unwrap().fold_documents.is_none());
+        harness.press(Key::Escape, Modifiers::NONE);
+        assert!(!open(&harness), "Esc only closes");
+        harness.press(Key::Enter, Modifiers::NONE);
+        assert!(open(&harness));
+        harness.press(Key::Enter, Modifiers::NONE);
+        assert!(open(&harness), "Enter only opens");
+        harness.press(Key::I, Modifiers::NONE);
+        assert!(!open(&harness));
+        harness.press(Key::I, Modifiers::NONE);
+        assert!(open(&harness));
+        assert!(panel_shows(&mut harness));
+        // `za` folds the row's documents: the first row's `meta`.
+        assert!(harness.has(r#""plan": "pro""#));
+        harness.press(Key::Z, Modifiers::NONE);
+        harness.press(Key::A, Modifiers::NONE);
+        assert!(harness.has("{ 1 key }"));
+        assert!(!harness.has(r#""plan": "pro""#));
+    }
+
+    #[test]
+    fn escape_out_of_the_editor_leaves_the_row_panel_open() {
+        let mut harness = Harness::new();
+        harness.set_look(crate::theme::Look::omarchy());
+        let tab = harness.connect_fake();
+        let id = with_sql_result(&mut harness, tab, 3);
+        let open = |harness: &Harness| harness.app.workspace(tab).unwrap().row_panel;
+        harness.click("Row 2");
+        let workspace = harness.app.workspace_mut(tab).unwrap();
+        workspace.sql_tab_mut(id).unwrap().focus_editor = true;
+        harness.settle();
+        assert!(harness.ctx.text_edit_focused());
+        // The first Esc only leaves the editor; the next one closes the panel.
+        harness.press(Key::Escape, Modifiers::NONE);
+        assert!(!harness.ctx.text_edit_focused());
+        assert!(open(&harness));
+        assert!(panel_shows(&mut harness));
+        harness.press(Key::Escape, Modifiers::NONE);
+        assert!(!open(&harness));
+    }
+
+    #[test]
+    fn enter_on_a_focused_button_is_the_buttons_not_the_row_panels() {
+        let mut harness = Harness::new();
+        harness.set_look(crate::theme::Look::omarchy());
+        let tab = harness.connect_fake();
+        let id = with_sql_result(&mut harness, tab, 3);
+        harness.click("Row 2");
+        harness.app.apply(crate::model::Action::ToggleRowPanel(tab));
+        assert!(!harness.app.workspace(tab).unwrap().row_panel);
+        focus(&mut harness, "Messages", egui::accesskit::Role::Button);
+        harness.press(Key::Enter, Modifiers::NONE);
+        let workspace = harness.app.workspace(tab).unwrap();
+        assert_eq!(
+            workspace.sql_tab(id).unwrap().pane,
+            crate::model::ResultPane::Messages
+        );
+        assert!(!workspace.row_panel);
     }
 
     #[test]

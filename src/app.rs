@@ -437,9 +437,9 @@ impl App {
                     picker.focus_search = true;
                 }
             }
-            Action::FoldDocuments { tab, object_tab } => {
+            Action::FoldDocuments { tab, id } => {
                 if let Some(workspace) = self.workspace_mut(tab) {
-                    workspace.fold_documents = Some(object_tab);
+                    workspace.fold_documents = Some(id);
                 }
             }
             Action::FollowSelectedKey { tab, object_tab } => {
@@ -2690,6 +2690,7 @@ impl App {
             crate::ui::keys::handle(self, ui.ctx());
         }
         crate::ui::show(self, ui);
+        crate::ui::keys::after_frame(ui.ctx());
         self.apply_actions();
         let title = self.window_title();
         if title != self.window_title {
