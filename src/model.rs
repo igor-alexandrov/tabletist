@@ -1822,14 +1822,22 @@ impl Completion {
         self.of.0.is_of(text)
     }
 
-    /// Whether a cursor at `site` is still on the word the list is on: the
-    /// same start and qualifier, and the word has not gone (the cursor at
-    /// its start, or all of it deleted). A list that opened on an empty
-    /// word is on it again when its word goes.
-    pub fn is_on(&self, site: &tabletist_db::complete::Site) -> bool {
-        site.word.start == self.site.word.start
-            && site.qualifier == self.site.qualifier
-            && (self.on_empty || !site.word.is_empty())
+    /// Whether a cursor at `site` of the script `text` is still on the
+    /// word the list is on: the same start and qualifier, and the word has
+    /// not gone (the cursor at its start, or all of it deleted). A list
+    /// that opened on an empty word is on it again when its word is
+    /// deleted, but not when the script is the one it was last worked out
+    /// from: then the word is still there and the cursor went back to its
+    /// start, where a row would go in front of the word.
+    pub fn is_on(&self, site: &tabletist_db::complete::Site, text: TextPrint) -> bool {
+        if site.word.start != self.site.word.start || site.qualifier != self.site.qualifier {
+            return false;
+        }
+        if !site.word.is_empty() {
+            return true;
+        }
+        let before_its_word = !self.site.word.is_empty() && self.of.0 == text;
+        self.on_empty && !before_its_word
     }
 
     pub fn highlighted(&self) -> Option<&crate::completion::Candidate> {
@@ -3405,25 +3413,50 @@ mod tests {
 
     #[test]
     fn a_list_is_on_the_word_it_was_opened_on() {
+        let print = TextPrint::of;
         let list = completion_of(&["select"], "se");
         let mut site = completion_site("sel");
-        assert!(list.is_on(&site));
+        assert!(list.is_on(&site, print("sel")));
         // The word is gone: the cursor is at its start, or it was deleted.
         site.word = 0..0;
-        assert!(!list.is_on(&site));
+        assert!(!list.is_on(&site, print("se")));
+        assert!(!list.is_on(&site, print("")));
         // Another word.
         site.word = 4..6;
-        assert!(!list.is_on(&site));
+        assert!(!list.is_on(&site, print("sel sel")));
         // A list opened on an empty word goes on as the word is typed.
         let mut empty = completion_of(&["select"], "");
-        assert!(empty.is_on(&completion_site("s")));
-        assert!(empty.is_on(&completion_site("")));
+        assert!(empty.is_on(&completion_site("s"), print("s")));
+        assert!(empty.is_on(&completion_site(""), print("")));
         // Its word typed, it is still the list of an empty word: deleting
         // the word does not close it.
-        let of = (TextPrint::of("s"), 1, 0);
+        let of = (print("s"), 1, 0);
         let rows = completion_rows(&["select"]);
         empty.relist(of, completion_site("s"), "s".to_owned(), rows, false);
-        assert!(empty.is_on(&completion_site("")));
-        assert!(!list.is_on(&completion_site("")));
+        assert!(empty.is_on(&completion_site(""), print("")));
+        assert!(!list.is_on(&completion_site(""), print("")));
+        // The cursor back at the start of the word, which is still there:
+        // a row would go in front of it.
+        assert!(!empty.is_on(&completion_site(""), print("s")));
+        // Another qualifier, or another start, is another word.
+        let mut other = completion_site("s");
+        other.qualifier = vec!["users".to_owned()];
+        assert!(!empty.is_on(&other, print("s")));
+        // Opened by hand right before a word (`|users`): on its empty word
+        // whatever follows the cursor, when the list is worked out again
+        // from the same script (names arrived).
+        let users = (print("users"), 0, 0);
+        let rows = completion_rows(&["select"]);
+        let mut before =
+            Completion::new(true, users, completion_site(""), String::new(), rows, false);
+        assert!(before.is_on(&completion_site(""), print("users")));
+        // A letter typed there (`s|users`) and deleted again: still on it.
+        let of = (print("susers"), 1, 0);
+        let rows = completion_rows(&["select"]);
+        let typed = completion_site("susers");
+        before.relist(of, typed, "s".to_owned(), rows, false);
+        assert!(before.is_on(&completion_site(""), print("users")));
+        // But not with the cursor moved back before the letter.
+        assert!(!before.is_on(&completion_site(""), print("susers")));
     }
 }

@@ -5,7 +5,7 @@
 use std::ops::{Range, RangeInclusive};
 use std::sync::Arc;
 
-use egui::text::CCursorRange;
+use egui::text::{CCursor, CCursorRange};
 use egui::{
     Color32, CornerRadius, Galley, Id, Margin, Rect, Sense, Shape, Ui, WidgetInfo, WidgetType,
     pos2, vec2,
@@ -163,6 +163,14 @@ pub fn remembered(ctx: &egui::Context, tab: ConnTabId, id: TabId) -> Vec<&'stati
     .collect()
 }
 
+/// How far the editor `id` is scrolled.
+#[cfg(test)]
+pub fn scrolled_to(ctx: &egui::Context, tab: ConnTabId, id: TabId) -> Option<egui::Vec2> {
+    let area: Option<ScrollId> = ctx.data(|data| data.get_temp(editor_id(tab, id)));
+    let ScrollId(area) = area?;
+    egui::scroll_area::State::load(ctx, area).map(|state| state.offset)
+}
+
 /// A text edit layouter for the editor `id` that colours `dialect`'s
 /// tokens and never wraps: one galley row per line, so the gutter can
 /// number the rows.
@@ -205,6 +213,66 @@ fn byte_offset(text: &str, chars: usize) -> usize {
     text.char_indices()
         .nth(chars)
         .map_or(text.len(), |(byte, _)| byte)
+}
+
+/// The character index, as egui counts a cursor, of the byte offset `byte`
+/// of `text`.
+fn char_index(text: &str, byte: usize) -> usize {
+    text.get(..byte)
+        .map_or_else(|| text.chars().count(), |before| before.chars().count())
+}
+
+/// Carries out an accepted completion before the field handles the
+/// frame's events: replaces the word with the highlighted row's text and
+/// puts the cursor after it. The list is taken off the tab either way.
+/// Returns whether a row went in.
+///
+/// egui groups undo by time and would merge the insertion with the typing
+/// around it, so two undo points go in: the script and the cursor as they
+/// were, and as they are after the insertion. Undo then takes back what
+/// was typed after the insertion, then the insertion alone, and redo puts
+/// each back.
+fn insert_completion(ctx: &egui::Context, id: Id, sql_tab: &mut SqlTab) -> bool {
+    let Some(list) = sql_tab.completion.take_if(|list| list.accept) else {
+        return false;
+    };
+    let Some(candidate) = list.highlighted() else {
+        return false;
+    };
+    let word = list.site.word.clone();
+    // The list must be of this very script, and the row must change it.
+    let changes = sql_tab
+        .text
+        .get(word.clone())
+        .is_some_and(|old| old != candidate.insert);
+    if !list.is_of_text(&sql_tab.text) || !changes {
+        return false;
+    }
+    let mut state = egui::TextEdit::load_state(ctx, id).unwrap_or_default();
+    let before = state.cursor.char_range().unwrap_or_else(|| {
+        CCursorRange::one(CCursor::new(char_index(&sql_tab.text, sql_tab.cursor)))
+    });
+    let mut undoer = state.undoer();
+    undoer.add_undo(&(before, sql_tab.text.clone()));
+    sql_tab.text.replace_range(word.clone(), &candidate.insert);
+    sql_tab.cursor = word.start + candidate.insert.len();
+    let after = CCursorRange::one(CCursor::new(char_index(&sql_tab.text, sql_tab.cursor)));
+    undoer.add_undo(&(after, sql_tab.text.clone()));
+    state.set_undoer(undoer);
+    state.cursor.set_char_range(Some(after));
+    egui::TextEdit::store_state(ctx, id, state);
+    true
+}
+
+/// Whether `event` is text typed into the field, as it takes it: it
+/// ignores an empty text and a line ending (Enter is a key), and an empty
+/// commit of an input method.
+pub(crate) fn is_typed(event: &egui::Event) -> bool {
+    match event {
+        egui::Event::Text(text) => !text.is_empty() && text != "\n" && text != "\r",
+        egui::Event::Ime(egui::ImeEvent::Commit(text)) => !text.is_empty(),
+        _ => false,
+    }
 }
 
 /// The number the gutter shows for `line`: its own, or (the terminal's
@@ -302,6 +370,9 @@ pub fn show(app: &mut App, ui: &mut Ui, tab: ConnTabId, id: TabId) {
     let backdrop = ui.painter().add(Shape::Noop);
     // The text scrolls both ways beside the gutter, which stays put.
     let text_pane = Rect::from_min_max(pos2(pane.left() + gutter.width, pane.top()), pane.max);
+    // An open completion list takes Esc: the editor keeps the keyboard.
+    // Not one whose row this frame inserts: Esc is the editor's again.
+    let holds_escape = sql_tab.completion.as_ref().is_some_and(|list| !list.accept);
     let mut child = ui.new_child(egui::UiBuilder::new().id_salt("text").max_rect(text_pane));
     child.set_clip_rect(text_pane.intersect(ui.clip_rect()));
     let scrolled = egui::ScrollArea::both()
@@ -315,7 +386,7 @@ pub fn show(app: &mut App, ui: &mut Ui, tab: ConnTabId, id: TabId) {
                 dialect,
                 look: &look,
                 palette: &palette,
-                hold_escape: false,
+                hold_escape: holds_escape,
             };
             edit(ui, sql_tab, &field)
         });
@@ -432,6 +503,7 @@ struct Field<'a> {
 
 /// The text field itself: edits the tab's text and reports its cursor.
 fn edit(ui: &mut Ui, sql_tab: &mut SqlTab, field: &Field<'_>) -> Edited {
+    let inserted = insert_completion(ui.ctx(), field.id, sql_tab);
     let focus = std::mem::take(&mut sql_tab.focus_editor);
     // The field fills the pane, so a click under the last line lands in
     // it: whole lines, and the rest as bottom padding. (egui sizes a text
@@ -469,6 +541,18 @@ fn edit(ui: &mut Ui, sql_tab: &mut SqlTab, field: &Field<'_>) -> Edited {
         // need follow the one that opened the tab.
         ui.ctx().request_repaint();
     }
+    if inserted {
+        // The field scrolls to its caret when its own events move it; a
+        // row put in from outside moves it too. And one more frame: what
+        // is drawn before the editor (the footer's line and column) read
+        // the cursor before the row went in.
+        if let Some(range) = output.state.cursor.range(&output.galley) {
+            let caret = output.galley.pos_from_cursor(range.primary);
+            let on_screen = caret.translate(output.galley_pos.to_vec2());
+            ui.scroll_to_rect(on_screen.expand(1.5), None);
+        }
+        ui.ctx().request_repaint();
+    }
     if field.hold_escape && output.response.has_focus() {
         // The field set its own filter while it drew (the arrows and Tab).
         // egui replaces the whole filter, so those are named again. The
@@ -494,16 +578,7 @@ fn edit(ui: &mut Ui, sql_tab: &mut SqlTab, field: &Field<'_>) -> Edited {
     if let Some(range) = output.state.cursor.range(&output.galley) {
         sql_tab.cursor = byte_offset(&sql_tab.text, range.primary.index.0);
     }
-    // Typed text, as the field takes it: it ignores an empty text and a
-    // line ending (Enter is a key), and an empty commit.
-    let typed = output.response.changed()
-        && ui.input(|input| {
-            input.events.iter().any(|event| match event {
-                egui::Event::Text(text) => !text.is_empty() && text != "\n" && text != "\r",
-                egui::Event::Ime(egui::ImeEvent::Commit(text)) => !text.is_empty(),
-                _ => false,
-            })
-        });
+    let typed = output.response.changed() && ui.input(|input| input.events.iter().any(is_typed));
     Edited {
         typed,
         focused: output.response.has_focus(),
@@ -619,6 +694,15 @@ mod tests {
         // Past the end (the text shrank under the cursor): the end.
         assert_eq!(byte_offset("żółw", 9), 7);
         assert_eq!(byte_offset("", 3), 0);
+    }
+
+    #[test]
+    fn a_byte_offset_becomes_a_character_index() {
+        assert_eq!(char_index("SELECT 1", 8), 8);
+        assert_eq!(char_index("żółw 1", 7), 4);
+        // Past the end, or inside a character: the end.
+        assert_eq!(char_index("żółw", 99), 4);
+        assert_eq!(char_index("żółw", 1), 4);
     }
 
     #[test]

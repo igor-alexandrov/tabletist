@@ -3,7 +3,7 @@
 use egui::{Key, Modifiers};
 
 use crate::app::App;
-use crate::model::Action;
+use crate::model::{Action, ConnTabId, TabId};
 
 const NUMBERS: [Key; 9] = [
     Key::Num1,
@@ -97,8 +97,31 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
         && app
             .workspace(active)
             .is_some_and(|workspace| workspace.pane == crate::model::Pane::Tree || !any_grid);
+    // The SQL editor on screen, while it has the keyboard: the completion
+    // list's keys are its keys, and no other pane's. (A text field then
+    // has the keyboard: no need to ask `editing` as well.)
+    let in_editor = sql.filter(|(tab, id)| {
+        let editor = crate::ui::sql_text::editor_id(*tab, *id);
+        ctx.memory(|memory| memory.has_focus(editor))
+    });
+    // Its open list. One whose row is about to be inserted is not open any
+    // more: the keys of that frame are the editor's.
+    let completing = in_editor.and_then(|(tab, id)| {
+        let sql = app.workspace(tab)?.sql_tab(id)?;
+        let list = sql.completion.as_ref().filter(|list| !list.accept)?;
+        Some(Completing {
+            has_row: !list.candidates.is_empty(),
+            enter_breaks: list.enter_is_a_line_break(&sql.text),
+        })
+    });
+    let terminal = app.look.terminal;
     let mut actions = Vec::new();
     ctx.input_mut(|input| {
+        // The completion list's keys come first: the editor never sees
+        // them, nor do the shortcuts below (Ctrl+N, Ctrl+P).
+        if let Some(editor) = in_editor {
+            completion_keys(input, editor, completing, terminal, &mut actions);
+        }
         // Running works while typing: the editor never sees these. A held
         // chord runs once, or each repeat would cancel the run before it.
         // Shift variants first: egui ignores an extra Shift when matching.
@@ -311,6 +334,118 @@ fn consume_press(input: &mut egui::InputState, modifiers: Modifiers, key: Key) -
         _ => true,
     });
     fresh
+}
+
+/// The open completion list of the editor that has the keyboard, as its
+/// keys read it.
+struct Completing {
+    /// It has a row to move to and to insert.
+    has_row: bool,
+    /// Enter stays the editor's line break: the highlighted row is what
+    /// is already typed.
+    enter_breaks: bool,
+}
+
+/// The keys of the completion list of `editor`, which has the keyboard:
+/// `Ctrl+Space` asks for a list, and an open one (`completing`) takes the
+/// keys that move in it, insert from it and close it.
+fn completion_keys(
+    input: &mut egui::InputState,
+    (tab, sql_tab): (ConnTabId, TabId),
+    completing: Option<Completing>,
+    terminal: bool,
+    actions: &mut Vec<Action>,
+) {
+    if take_press(input, Modifiers::CTRL, Key::Space) > 0 {
+        actions.push(Action::OpenCompletion { tab, sql_tab });
+    }
+    let Some(list) = completing else {
+        return;
+    };
+    // The arrows are the list's once it has a row to move to. The
+    // terminal's Ctrl+N and Ctrl+P are its own as long as it is open, rows
+    // or not: they never reach New connection and Quick open.
+    for (modifiers, key, step, taken) in [
+        (Modifiers::NONE, Key::ArrowDown, 1, list.has_row),
+        (Modifiers::NONE, Key::ArrowUp, -1, list.has_row),
+        (Modifiers::CTRL, Key::N, 1, terminal),
+        (Modifiers::CTRL, Key::P, -1, terminal),
+    ] {
+        if taken {
+            // One row for each press: a frame may hold several.
+            let presses = take_press(input, modifiers, key);
+            actions.extend((0..presses).map(|_| Action::MoveCompletion { tab, sql_tab, step }));
+        }
+    }
+    let accept = Action::AcceptCompletion {
+        tab,
+        sql_tab,
+        row: None,
+    };
+    let close = Action::CloseCompletion { tab, sql_tab };
+    let pressed = |input: &egui::InputState, key: Key| {
+        let is_it = |event: &egui::Event| is_press(event, Modifiers::NONE, key);
+        input.events.iter().any(is_it)
+    };
+    if list.has_row {
+        if input.events.iter().any(inserts_text) {
+            // What this frame types is not what the list was worked out
+            // from: Tab and Enter stay the editor's, and the list is done.
+            if pressed(input, Key::Tab) || pressed(input, Key::Enter) {
+                actions.push(close);
+            }
+        } else if take_press(input, Modifiers::NONE, Key::Tab) > 0 {
+            actions.push(accept);
+        } else if list.enter_breaks {
+            // The editor gets its line break; the list is done.
+            if pressed(input, Key::Enter) {
+                actions.push(close);
+            }
+        } else if take_press(input, Modifiers::NONE, Key::Enter) > 0 {
+            actions.push(accept);
+        }
+    }
+    if take_press(input, Modifiers::NONE, Key::Escape) > 0 {
+        actions.push(Action::CloseCompletion { tab, sql_tab });
+    }
+}
+
+/// Whether `event` puts text into the field that has the keyboard: typed
+/// text, as the SQL editor takes it, or a paste.
+fn inserts_text(event: &egui::Event) -> bool {
+    crate::ui::sql_text::is_typed(event)
+        || matches!(event, egui::Event::Paste(text) if !text.is_empty())
+}
+
+/// Whether `event` is `key` going down with exactly `modifiers`: Shift and
+/// Alt as named (`consume_key` and `matches_logically` let an extra Shift
+/// through), and no Ctrl or Cmd that is not named. Ctrl is named by
+/// `CTRL` and matches as every platform reports it: alone on macOS, with
+/// `command` set elsewhere. Ctrl held with Cmd on macOS is not Ctrl.
+fn is_press(event: &egui::Event, modifiers: Modifiers, key: Key) -> bool {
+    matches!(
+        event,
+        egui::Event::Key {
+            key: pressed,
+            modifiers: held,
+            pressed: true,
+            ..
+        } if *pressed == key
+            && held.matches_exact(modifiers)
+            // egui lets the pattern's Ctrl match Ctrl+Cmd.
+            && (modifiers.mac_cmd || !held.mac_cmd)
+    )
+}
+
+/// How many times `key` went down this frame with exactly `modifiers` (see
+/// [`is_press`]; a held key's repeats count). Takes the presses, so
+/// neither the editor nor a shortcut after this sees them.
+fn take_press(input: &mut egui::InputState, modifiers: Modifiers, key: Key) -> usize {
+    let before = input.events.len();
+    input
+        .events
+        .retain(|event| !is_press(event, modifiers, key));
+    before - input.events.len()
 }
 
 /// Whether `sql` shows a result grid for the keys to move in: its last

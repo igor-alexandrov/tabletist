@@ -2369,7 +2369,7 @@ impl App {
         let going = sql
             .completion
             .as_ref()
-            .is_some_and(|list| list.is_on(&site));
+            .is_some_and(|list| list.is_on(&site, of.0));
         let manual = match wanted {
             Some(Wanted::Manual) => true,
             _ if going => sql.completion.as_ref().is_some_and(|list| list.manual),
@@ -2402,9 +2402,10 @@ impl App {
             }
             return true;
         }
-        // Opening: not with nothing to offer, and not when the only row is
-        // what is already typed.
-        let opens = !empty && !listed.only_repeats(&typed);
+        // Opening: not with nothing to offer, and by typing not when the
+        // only row is what is already typed. Asked for by hand, that one
+        // row shows.
+        let opens = !empty && (manual || !listed.only_repeats(&typed));
         sql.completion = opens.then(|| Completion::new(manual, of, site, typed, listed, loading));
         changed | was_open | sql.completion.is_some()
     }
