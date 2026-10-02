@@ -288,7 +288,9 @@ fn no_list_inside_a_string_or_a_comment() {
         let (mut harness, tab) = editor();
         paste(&mut harness, above);
         type_text(&mut harness, "se");
-        assert_eq!(labels(&harness, tab), ["select", "set"], "{above:?}");
+        // After the string's comma a value goes: the tables that hold `se`
+        // come after the keywords.
+        assert_eq!(labels(&harness, tab)[..2], ["select", "set"], "{above:?}");
         put_cursor(&mut harness, tab, 2);
         assert_eq!(sql(&harness, tab).cursor, 2);
         assert!(list(&harness, tab).is_none(), "{above:?}");
@@ -2360,6 +2362,45 @@ fn columns_come_before_keywords_and_keywords_show_while_columns_load() {
     // The keyword that is typed, then the column, then the other keywords.
     assert_eq!(labels(&harness, tab)[..3], ["in", "invited_by", "inner"]);
     assert!(!list(&harness, tab).unwrap().loading);
+}
+
+#[test]
+fn a_table_is_offered_where_a_column_is_chosen() {
+    let (mut harness, tab) = editor();
+    paste(&mut harness, "select users.id, \n  from users");
+    put_cursor(&mut harness, tab, "select users.id, ".len());
+    type_text(&mut harness, "us");
+    answer_describe(&mut harness, "users", Ok(users()));
+    // No column of `users` holds `us`. The table that starts with it, the
+    // keyword, then the view that only holds it.
+    assert_eq!(labels(&harness, tab), ["users", "using", "active_users"]);
+    assert_eq!(list(&harness, tab).unwrap().candidates[0].kind, Kind::Table);
+    harness.press(Key::Tab, Modifiers::NONE);
+    assert_eq!(
+        sql(&harness, tab).text,
+        "select users.id, users\n  from users"
+    );
+    // And its dot offers its columns.
+    type_text(&mut harness, ".");
+    assert_eq!(labels(&harness, tab), ["email", "id", "meta"]);
+}
+
+#[test]
+fn a_table_accepted_before_the_from_offers_its_columns_after_a_dot() {
+    let (mut harness, tab) = editor();
+    type_text(&mut harness, "select us");
+    assert_eq!(labels(&harness, tab), ["users", "using", "active_users"]);
+    harness.press(Key::Tab, Modifiers::NONE);
+    assert_eq!(sql(&harness, tab).text, "select users");
+    // The statement names no table yet: the one before the dot is asked
+    // for.
+    type_text(&mut harness, ".");
+    assert!(list(&harness, tab).is_some_and(|list| list.loading));
+    assert_eq!(asked_to_describe(&harness, "users"), 1);
+    answer_describe(&mut harness, "users", Ok(users()));
+    assert_eq!(labels(&harness, tab), ["email", "id", "meta"]);
+    harness.press(Key::Tab, Modifiers::NONE);
+    assert_eq!(sql(&harness, tab).text, "select users.email");
 }
 
 #[test]

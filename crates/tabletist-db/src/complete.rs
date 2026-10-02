@@ -17,6 +17,13 @@ pub struct Site {
     pub qualifier: Vec<String>,
     /// What belongs at the word when it has no qualifier.
     pub expects: Expects,
+    /// Whether a value goes at the word: it follows a comma, an open
+    /// parenthesis, an operator other than a `*` by itself (read as the
+    /// star of a select list) or a word that takes one (`SELECT`, `WHERE`,
+    /// `AND`, the FROM of `IS DISTINCT FROM`). A column goes there, and so
+    /// does the name of a table or a view that qualifies one
+    /// (`accounts.id`).
+    pub value: bool,
     /// The tables the statement names, in order.
     pub sources: Vec<Source>,
     /// The names of the statement's common table expressions.
@@ -196,6 +203,7 @@ pub fn site(tokens: &[Token], text: &str, cursor: usize) -> Option<Site> {
         word,
         qualifier,
         expects,
+        value: starts_value(&pieces[..before]),
         sources: sources(&pieces, &table_words),
         ctes: ctes(&pieces),
     })
@@ -333,6 +341,57 @@ fn expects(pieces: &[Piece<'_>], table_words: &[bool], before: usize) -> Expects
         }
     }
     Expects::Columns
+}
+
+/// The keywords a value follows. Not the ones a keyword follows as often:
+/// after NOT comes `NULL`, `IN` or `LIKE`, after ALL a `SELECT`.
+const VALUE_WORDS: [&str; 17] = [
+    "SELECT",
+    "DISTINCT",
+    "WHERE",
+    "AND",
+    "OR",
+    "ON",
+    "HAVING",
+    "BY",
+    "CASE",
+    "WHEN",
+    "THEN",
+    "ELSE",
+    "SET",
+    "RETURNING",
+    "LIKE",
+    "ILIKE",
+    "BETWEEN",
+];
+
+/// Whether a value goes after the pieces `before`: they end in a comma, an
+/// open parenthesis, an operator or one of `VALUE_WORDS`. After anything
+/// else (a name, a number, a string, a closing parenthesis) comes an
+/// operator, an alias or the next clause's keyword. A `*` counts as the
+/// star of a select list, which a FROM follows, so a table is not offered
+/// for the right side of a multiplication: a known limit. Unless it
+/// touches an operator before it: the tokenizer reads PostgreSQL's `~*`
+/// as two operators, and the star is the end of one.
+///
+/// `IS [NOT] DISTINCT FROM` is one comparison: its DISTINCT takes the
+/// FROM, not a value, and its FROM takes the value.
+fn starts_value(before: &[Piece<'_>]) -> bool {
+    let Some((previous, earlier)) = before.split_last() else {
+        return false;
+    };
+    match previous.kind {
+        TokenKind::Punctuation => previous.is(",") || previous.is("("),
+        TokenKind::Operator => {
+            let ends_operator = earlier.last().is_some_and(|piece| {
+                piece.kind == TokenKind::Operator && piece.range.end == previous.range.start
+            });
+            !previous.is("*") || ends_operator
+        }
+        _ if previous.is_keyword(&["DISTINCT"]) => !is_distinct_from(before),
+        _ if previous.is_keyword(&["FROM"]) => is_distinct_from(earlier),
+        _ => previous.is_keyword(&VALUE_WORDS),
+    }
 }
 
 /// Whether a table's name belongs after the first `before` of `pieces`:
@@ -642,6 +701,60 @@ mod tests {
             at(Dialect::MySql, "SELECT * FROM a STRAIGHT_JOIN us|").map(|site| site.expects),
             Some(Expects::Tables)
         );
+    }
+
+    #[test]
+    fn a_value_goes_after_a_comma_an_operator_and_the_words_that_take_one() {
+        for marked in [
+            "SELECT acc|",
+            "SELECT accounts.id, acc|\n  FROM accounts",
+            "SELECT DISTINCT acc|",
+            "SELECT lower(acc|",
+            "SELECT * FROM accounts WHERE acc|",
+            "SELECT * FROM accounts WHERE id = acc|",
+            "SELECT * FROM accounts WHERE id = 1 AND acc|",
+            "SELECT * FROM accounts a JOIN users u ON acc|",
+            "SELECT * FROM accounts ORDER BY acc|",
+            "SELECT CASE WHEN acc|",
+            "UPDATE accounts SET acc|",
+            "select acc|",
+            // PostgreSQL's operators that end in a star.
+            "SELECT * FROM accounts WHERE name ~* acc|",
+            "SELECT * FROM accounts WHERE name !~* acc|",
+            "SELECT * FROM accounts WHERE name ~~* acc|",
+            // The right side of `IS [NOT] DISTINCT FROM`.
+            "SELECT * FROM accounts a WHERE a.id IS DISTINCT FROM acc|",
+            "SELECT * FROM accounts a WHERE a.id IS NOT DISTINCT FROM acc|",
+        ] {
+            assert!(pg(marked).value, "{marked}");
+        }
+        // After a value comes an operator, an alias or the next clause.
+        for marked in [
+            "SELECT * FROM accounts a ord|",
+            "SELECT * FROM accounts WHERE id = 1 ord|",
+            "SELECT * FROM accounts WHERE name = 'a' ord|",
+            "SELECT * FROM accounts WHERE id IN (1) ord|",
+            "SELECT * FROM accounts WHERE \"Name\" li|",
+            // The star of a select list.
+            "SELECT * fr|",
+            "SELECT count(*) fr|",
+            "SELECT a.* fr|",
+            "SELECT a.id, * fr|",
+            // Words a keyword follows.
+            "SELECT * FROM accounts WHERE id IS NOT nu|",
+            "SELECT * FROM accounts ORDER BY id DESC li|",
+            "SELECT 1 UNION ALL sel|",
+            // The DISTINCT of a comparison takes its FROM.
+            "SELECT * FROM accounts WHERE id IS DISTINCT fr|",
+            "SELECT * FROM accounts WHERE id IS NOT DISTINCT fr|",
+            // And a FROM that takes tables is no comparison's.
+            "SELECT DISTINCT FROM acc|",
+            "SEL|",
+            // After a dot the qualifier says what belongs.
+            "SELECT accounts.i|",
+        ] {
+            assert!(!pg(marked).value, "{marked}");
+        }
     }
 
     #[test]
