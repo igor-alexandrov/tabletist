@@ -704,6 +704,47 @@ mod tests {
     }
 
     #[test]
+    fn a_connecting_tab_shows_its_steps_and_cancel_returns_to_the_picker() {
+        for look in crate::theme::Look::ALL {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            add_saved(&mut harness, "Production");
+            harness.click("Connect to Production");
+            let tab = harness.app.active_tab_id();
+            // A SQLite file is opened; a server is connected to.
+            let open = format!("{} Production.db", look.label("Open"));
+            assert!(harness.has(&open), "{open} in {}", look.name);
+            assert!(harness.has(&look.label("Load schema")), "{}", look.name);
+            harness.click("Cancel connecting");
+            assert!(harness.app.workspace(tab).is_none(), "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn the_first_step_names_the_server_and_its_tunnel() {
+        let mut harness = Harness::new();
+        harness.set_look(crate::theme::Look::macos());
+        add_saved_with_tunnel(&mut harness);
+        harness.click("Connect to Prod");
+        assert!(harness.has("Connect to db.example.com:5432 via bastion"));
+    }
+
+    #[test]
+    fn escape_cancels_a_connect_and_does_nothing_once_the_tab_opened() {
+        let mut harness = Harness::new();
+        add_saved(&mut harness, "Production");
+        harness.click("Connect to Production");
+        let tab = harness.app.active_tab_id();
+        harness.press(Key::Escape, Modifiers::NONE);
+        assert!(harness.app.workspace(tab).is_none());
+
+        let mut harness = Harness::new();
+        let tab = harness.connect_fake();
+        harness.press(Key::Escape, Modifiers::NONE);
+        assert!(harness.app.workspace(tab).is_some());
+    }
+
+    #[test]
     fn the_top_bar_connections_button_opens_the_picker_in_a_new_tab() {
         for look in crate::theme::Look::ALL {
             let mut harness = Harness::new();

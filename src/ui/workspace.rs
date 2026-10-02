@@ -10,6 +10,7 @@ use crate::model::{Action, ConnTabId, ObjectView, SessionStatus};
 use crate::theme::{Icon, Look, Palette};
 use crate::typography::{Text, TextRole};
 use crate::ui::format::display_safe;
+use crate::ui::states;
 use crate::ui::widgets;
 
 /// The connection bar's height.
@@ -46,19 +47,31 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
     let Some(workspace) = app.workspace(tab) else {
         return;
     };
-    let connected =
-        workspace.tree.schemas.value.is_some() || workspace.tree.schemas.error.is_some();
-    if look.terminal && connected {
+    let opened = workspace.opened();
+    // Never opened and no connect on its way: the connect failed, or its
+    // prompt was closed.
+    let failed = matches!(
+        workspace.status,
+        SessionStatus::Disconnected(_) | SessionStatus::Cancelled
+    );
+    if look.terminal && opened {
         super::object_tabs::show(app, ui, tab);
         status_line(app, ui, tab);
+    }
+    if !opened {
+        if failed {
+            // The banner says why, as before. (Task 5 gives it a card.)
+            banner(app, ui, tab);
+        } else {
+            // Nothing of the database to show yet: how connecting goes.
+            opening(app, ui, tab);
+        }
+        return;
     }
     banner(app, ui, tab);
     let Some(workspace) = app.workspace(tab) else {
         return;
     };
-    if !connected {
-        return; // still connecting; the banner shows progress
-    }
     let active = workspace.active_tab;
     let view = workspace.active_object_tab().map(|object| object.view);
     // The tab the row panel shows a row of: a table's Data view, or a SQL
@@ -142,6 +155,99 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                 }
             }
         });
+}
+
+/// A tab that has not shown its content yet: how connecting goes. (Task 5
+/// adds why it failed.)
+fn opening(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
+    let fill = app.palette.window;
+    egui::CentralPanel::default()
+        .frame(Frame::new().fill(fill))
+        .show(ui, |ui| connecting(app, ui, tab));
+}
+
+/// The steps of a connect, the one under way with its time, and the
+/// button that gives up: in the middle of the tab, or in the terminal
+/// look from its top left.
+fn connecting(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
+    let (locale, palette, look) = (app.locale, app.palette, app.look);
+    let Some(workspace) = app.workspace(tab) else {
+        return;
+    };
+    let say = |text: &'static str| look.label(&gettext(locale, text));
+    let spec = &workspace.spec;
+    let sqlite = spec.driver == tabletist_db::Driver::Sqlite;
+    let target = if sqlite {
+        spec.summary()
+    } else {
+        format!("{}:{}", spec.host, spec.port)
+    };
+    let target = match spec.ssh.as_ref().filter(|_| !sqlite) {
+        Some(ssh) => format!("{target} {} {}", say("via"), ssh.host),
+        None => target,
+    };
+    let connected = matches!(workspace.status, SessionStatus::Connected);
+    let (reach, load) = (
+        say(if sqlite { "Open" } else { "Connect to" }),
+        say("Load schema"),
+    );
+    let list = [
+        states::Step {
+            state: if connected {
+                states::StepState::Done
+            } else {
+                states::StepState::Running(workspace.connecting_for())
+            },
+            text: &reach,
+            detail: &target,
+        },
+        states::Step {
+            state: if connected {
+                states::StepState::Running(workspace.tree.schemas.running_for())
+            } else {
+                states::StepState::Waiting
+            },
+            text: &load,
+            detail: "",
+        },
+    ];
+    let body = ui.max_rect();
+    let height = states::steps_height(list.len(), &look);
+    let button_height = states::button_height(&look);
+    let name = say("Cancel");
+    // Named apart from a password prompt's Cancel, which can be open over it.
+    let cancel = states::button(&name, &look)
+        .label("Cancel connecting")
+        .shortcut("esc");
+    let width = cancel.width(ui, &look);
+    let room = (body.width() - 2.0 * states::INSET).max(0.0);
+    let (steps, button) = if look.terminal {
+        let top = body.left_top() + vec2(states::INSET, states::INSET);
+        (
+            Rect::from_min_size(top, vec2(room, height)),
+            Rect::from_min_size(
+                pos2(top.x, top.y + height + 8.0),
+                vec2(width, button_height),
+            ),
+        )
+    } else {
+        // The design's 300 wide list with the button 14 under it.
+        let block = room.min(300.0);
+        let total = height + 14.0 + button_height;
+        let top = (body.center().y - total / 2.0).max(body.top() + states::INSET);
+        let center = body.center().x;
+        (
+            Rect::from_min_size(pos2(center - block / 2.0, top), vec2(block, height)),
+            Rect::from_min_size(
+                pos2(center - width / 2.0, top + height + 14.0),
+                vec2(width, button_height),
+            ),
+        )
+    };
+    states::steps(ui, steps, &list, &look, &palette);
+    if cancel.show_at(ui, button, &look, &palette).clicked() {
+        app.actions.push(Action::Disconnect(tab));
+    }
 }
 
 /// What the connection bar says: the open connections, and more about the

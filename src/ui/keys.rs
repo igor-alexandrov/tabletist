@@ -38,6 +38,7 @@ pub const SHORTCUTS: &[(&str, &str)] = &[
     ("Mod+B", "Show or hide the sidebar"),
     ("Mod+Alt+Left / Right", "Previous / next page"),
     ("Mod+.", "Cancel running query"),
+    ("Esc", "Cancel connecting"),
     ("Space, Mod+Shift+R", "Toggle row panel"),
     ("Mod+C, Mod+Shift+C", "Copy cell / copy row"),
     (
@@ -69,6 +70,15 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
     let sql = app.active_sql();
     let any_tab = app.active_workspace_tab();
     let in_workspace = app.workspace(active).is_some();
+    // A tab that is still connecting: Esc gives up, as its Cancel does.
+    let opening = app.workspace(active).is_some_and(|workspace| {
+        !workspace.opened()
+            && matches!(
+                workspace.status,
+                crate::model::SessionStatus::Connecting { .. }
+                    | crate::model::SessionStatus::Connected
+            )
+    });
     let editing = ctx.text_edit_focused();
     // Grid keys act only on a visible grid: the Data view of the active tab.
     let grid = object.is_some_and(|(tab, id)| {
@@ -136,6 +146,9 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
             Key::W,
             Action::CloseConnTab(active),
         );
+        if opening {
+            key(Modifiers::NONE, Key::Escape, Action::Disconnect(active));
+        }
         // A SQL editor has nothing to refresh or filter, and a row panel
         // only for a selected row of its result.
         let on_sql = sql.is_some();
