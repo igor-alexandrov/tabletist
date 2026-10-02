@@ -1297,7 +1297,12 @@ pub fn error_box(
     mut retry: impl FnMut(),
 ) {
     let say = |text: &'static str| look.label(&gettext(locale, text));
-    let text = error.to_string();
+    // What the card shows, cut without a copy of all of it first: a
+    // database's message can hold megabytes.
+    let shown = match error {
+        tabletist_db::Error::Query { message, .. } => format::capped(message),
+        other => format::capped(&other.to_string()).into_owned().into(),
+    };
     // What else the database said, each under its name.
     let mut more = Vec::new();
     if let tabletist_db::Error::Query {
@@ -1325,7 +1330,7 @@ pub fn error_box(
                 let card = states::Card {
                     tone: states::Tone::Danger,
                     icon: Icon::CircleAlert,
-                    title: &format::capped(&text),
+                    title: &shown,
                     text: "",
                 };
                 states::card(ui, &card, look, palette);
@@ -1346,8 +1351,9 @@ pub fn error_box(
             }
             let copy = states::button(&copy, look).label("Copy details").quiet();
             if copy.show(ui, height, look, palette).clicked() {
-                // All of it: only what the card shows is cut.
-                let mut details = text.clone();
+                // All of it, put together only now: only what the card
+                // shows is cut.
+                let mut details = error.to_string();
                 for (label, said) in &more {
                     details.push_str(&format!("\n{label}: {said}"));
                 }
