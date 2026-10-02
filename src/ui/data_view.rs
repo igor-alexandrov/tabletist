@@ -730,8 +730,7 @@ pub fn footer(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabI
         return;
     };
     let view = object.view;
-    let loading =
-        object.rows.is_loading() || object.structure.is_loading() || object.count.is_loading();
+    let fetching = object.rows.is_loading();
     let counting = object.count.is_loading();
     let count_error = object.count.error.as_ref().map(ToString::to_string);
     // Counting helps only when the page is not the whole result.
@@ -780,8 +779,8 @@ pub fn footer(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabI
                         .clone()
                         .map(|range| format!("{} {range}", gettext(locale, "Rows")))
                         .unwrap_or_else(|| {
-                            if loading {
-                                gettext(locale, "Loading…")
+                            if fetching {
+                                gettext(locale, "Waiting for server")
                             } else {
                                 gettext(locale, "No rows")
                             }
@@ -848,7 +847,7 @@ pub fn footer(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabI
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.spacing_mut().item_spacing.x = 16.0;
-                    if loading {
+                    if counting {
                         if widgets::icon_button(
                             ui,
                             Icon::CircleX,
@@ -1039,12 +1038,41 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
                 &mut actions,
             );
         }
-    } else {
-        ui.centered_and_justified(|ui| {
-            ui.spinner();
-        });
+    } else if object.rows.running_for().is_some_and(states::lasted) {
+        // Rows on their way and none to show yet: the shape of a grid.
+        if !look.terminal {
+            states::progress(ui, area.x_range(), area.top(), &palette);
+        }
+        let rows = Rect::from_min_max(pos2(area.left(), area.top() + 2.0), area.max);
+        states::skeleton(ui, rows, &look, &palette);
+    }
+    // A fetch that has lasted, over whatever is up: a refresh and the next
+    // page keep the page they replace on screen.
+    if let Some(waited) = object.rows.running_for() {
+        if states::lasted(waited) {
+            let (text, name, keys) = (
+                look.label(&gettext(locale, "Running query…")),
+                look.label(&gettext(locale, "Cancel")),
+                cancel_keys(&look),
+            );
+            let cancel = states::button(&name, &look)
+                .label("Cancel query")
+                .shortcut(&keys);
+            if states::running(ui, area, &text, waited, Some(cancel), &look, &palette) {
+                actions.push(Action::CancelQuery(tab));
+            }
+        } else {
+            // Come back when the wait is long enough to show.
+            ui.ctx().request_repaint_after(states::DELAY - waited);
+        }
     }
     app.actions.extend(actions);
+}
+
+/// The keys that cancel a query, as the look writes them: `⌘.`, `Ctrl+.`
+/// or the terminal's `ctrl+.`.
+pub fn cancel_keys(look: &Look) -> String {
+    format!("{}.", look.label(look.command_key()))
 }
 
 /// What a page with no rows says under its column headers: that the table
@@ -1247,7 +1275,8 @@ pub fn shown_error<T>(fetch: &crate::model::Fetch<T>) -> Option<&tabletist_db::E
     fetch.error.as_ref().filter(|error| !kept(error))
 }
 
-/// An error with its code, detail and hint, and a Retry button.
+/// An error as a card with its code, detail and hint, and Retry and
+/// Copy details buttons.
 pub fn error_box(
     ui: &mut egui::Ui,
     error: &tabletist_db::Error,
@@ -1256,37 +1285,48 @@ pub fn error_box(
     locale: crate::i18n::Locale,
     mut retry: impl FnMut(),
 ) {
-    Frame::new()
-        .fill(palette.danger.gamma_multiply(0.12))
-        .inner_margin(Margin::same(12))
-        .corner_radius(egui::CornerRadius::same(look.tab_radius))
-        .show(ui, |ui| {
-            let width = ui.available_width();
-            let line = |ui: &mut egui::Ui, text: &str, color| {
-                Text::one(look, widgets::body(look), text, color)
-                    .wrap(width)
-                    .layout(ui.ctx())
-                    .label(ui);
-            };
-            line(ui, &error.to_string(), palette.text);
-            if let tabletist_db::Error::Query {
-                code, detail, hint, ..
-            } = error
-            {
-                for (label, text) in [("Code", code), ("Detail", detail), ("Hint", hint)] {
-                    if let Some(text) = text {
-                        line(
-                            ui,
-                            &format!("{}: {text}", gettext(locale, label)),
-                            palette.secondary,
-                        );
-                    }
+    let say = |text: &'static str| look.label(&gettext(locale, text));
+    let text = error.to_string();
+    ui.scope(|ui| {
+        ui.spacing_mut().item_spacing = vec2(8.0, 10.0);
+        let card = states::Card {
+            tone: states::Tone::Danger,
+            icon: Icon::CircleAlert,
+            title: &text,
+            text: "",
+        };
+        states::card(ui, &card, look, palette);
+        let width = ui.available_width();
+        let mut details = text.clone();
+        if let tabletist_db::Error::Query {
+            code, detail, hint, ..
+        } = error
+        {
+            for (label, more) in [("Code", code), ("Detail", detail), ("Hint", hint)] {
+                if let Some(more) = more {
+                    let line = format!("{}: {more}", gettext(locale, label));
+                    Text::one(look, widgets::body(look), &line, palette.secondary)
+                        .wrap(width)
+                        .layout(ui.ctx())
+                        .label(ui);
+                    details.push('\n');
+                    details.push_str(&line);
                 }
             }
-            if widgets::button(ui, &gettext(locale, "Retry"), look).clicked() {
+        }
+        ui.horizontal(|ui| {
+            let height = states::button_height(look);
+            let (again, copy) = (say("Retry"), say("Copy details"));
+            let again = states::button(&again, look).label("Retry");
+            if again.show(ui, height, look, palette).clicked() {
                 retry();
             }
+            let copy = states::button(&copy, look).label("Copy details").quiet();
+            if copy.show(ui, height, look, palette).clicked() {
+                ui.ctx().copy_text(details.clone());
+            }
         });
+    });
 }
 
 #[cfg(test)]

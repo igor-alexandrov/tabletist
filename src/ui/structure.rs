@@ -179,10 +179,24 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
                         }
                     });
             });
-    } else {
-        ui.centered_and_justified(|ui| {
-            ui.spinner();
-        });
+    } else if let Some(waited) = object.structure.running_for() {
+        if super::states::lasted(waited) {
+            let (text, name, keys) = (
+                look.label(&gettext(locale, "Loading structure…")),
+                look.label(&gettext(locale, "Cancel")),
+                super::data_view::cancel_keys(&look),
+            );
+            let cancel = super::states::button(&name, &look)
+                .label("Cancel query")
+                .shortcut(&keys);
+            let area = ui.max_rect();
+            if super::states::running(ui, area, &text, waited, Some(cancel), &look, &palette) {
+                actions.push(Action::CancelQuery(tab));
+            }
+        } else {
+            ui.ctx()
+                .request_repaint_after(super::states::DELAY - waited);
+        }
     }
     app.actions.extend(actions);
 }

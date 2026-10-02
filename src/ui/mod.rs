@@ -1296,16 +1296,77 @@ mod tests {
         assert_eq!(fetches(&harness), before + 1);
     }
 
+    /// Makes the active object tab's fetch look a second old.
+    fn age_fetch(harness: &mut Harness, tab: crate::model::ConnTabId) {
+        let workspace = harness.app.workspace_mut(tab).unwrap();
+        let id = workspace.active_tab.unwrap();
+        let object = workspace.object_tab_mut(id).unwrap();
+        let earlier = std::time::Instant::now().checked_sub(std::time::Duration::from_secs(1));
+        object.rows.started = earlier;
+        object.structure.started = earlier;
+    }
+
     #[test]
-    fn a_running_query_shows_a_cancel_button() {
+    fn a_query_that_lasts_says_so_and_can_be_cancelled() {
+        for look in crate::theme::Look::ALL {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            let tab = harness.connect_fake();
+            harness.click("users");
+            // A query that has only just been sent shows nothing of a wait.
+            assert!(!harness.has(&look.label("Running query…")), "{}", look.name);
+            age_fetch(&mut harness, tab);
+            assert!(harness.has(&look.label("Running query…")), "{}", look.name);
+            harness.click("Cancel query");
+            assert!(
+                matches!(
+                    crate::testing::last_sent(&harness.app),
+                    Command::Cancel { .. }
+                ),
+                "{}",
+                look.name
+            );
+        }
+    }
+
+    #[test]
+    fn a_refresh_keeps_the_page_under_the_running_card() {
         let mut harness = Harness::new();
-        harness.connect_fake();
+        let tab = with_page(&mut harness);
+        // Opening from the sidebar leaves the keys with the tree, where
+        // Mod+R refreshes the tree: give them to the grid.
+        focus_grid(&mut harness, tab);
+        harness.press(Key::R, Modifiers::COMMAND);
+        age_fetch(&mut harness, tab);
+        let running = harness.app.look.label("Running query…");
+        assert!(harness.has(&running));
+        assert!(harness.has("Row 1"));
+    }
+
+    #[test]
+    fn the_running_card_takes_the_clicks_the_page_under_it_would_get() {
+        let mut harness = Harness::new();
+        let tab = harness.connect_fake();
         harness.click("users");
-        harness.click("Cancel query");
-        assert!(matches!(
-            crate::testing::last_sent(&harness.app),
-            Command::Cancel { .. }
-        ));
+        // Enough rows that the middle of the area is over one.
+        harness.answer_rows(crate::testing::page(60, false));
+        focus_grid(&mut harness, tab);
+        harness.press(Key::R, Modifiers::COMMAND);
+        age_fetch(&mut harness, tab);
+        let tree = harness.settle();
+        let text = crate::testing::bounds(
+            &tree,
+            &harness.app.look.label("Running query…"),
+            egui::accesskit::Role::Label,
+        )
+        .expect("the running text");
+        let under = crate::testing::bounds(&tree, "Row 1", egui::accesskit::Role::Button)
+            .expect("the first row");
+        // The text is over the grid's rows: a click there would select.
+        assert!(text.center().y > under.top(), "{text:?} {under:?}");
+        assert_eq!(selection(&harness, tab), None);
+        click_at(&mut harness, text.center());
+        assert_eq!(selection(&harness, tab), None);
     }
 
     #[test]
