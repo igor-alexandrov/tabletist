@@ -320,9 +320,12 @@ is in that text.
   moved, egui undoes that move first, as after any edit. Format empties
   what an earlier undo left to redo, as an edit does.
 - The cursor goes where `Formatted::cursor` says, with nothing selected.
-  `SqlTab.cursor` follows it in the same frame.
-- A field that never had the keys has no egui state: Format then uses
-  `SqlTab.cursor` and no selection.
+  `SqlTab.cursor` follows it in the same frame, and the editor scrolls
+  the cursor into view: the layout may have moved its line out of the
+  pane.
+- A field that never had the keys has no cursor in egui's state: Format
+  then uses `SqlTab.cursor` and no selection, and undo restores that
+  cursor.
 - `None` changes nothing and adds nothing to the undo history.
 - Format works while a run is in flight (the run has its own copy of the
   text). As after any edit, an error mark from the last run goes away:
@@ -423,12 +426,13 @@ is in that text.
 - Headless UI tests through `src/testing.rs`: `Mod+Shift+F` formats the
   script, with the editor focused and not; the Format button does the
   same and gives the keys back to the editor; with a selection only the
-  statements it touches change; `Mod+Z` restores the text as typed; after
-  an undo and another Format a redo changes nothing; Format on a
-  formatted script leaves the undo history as it was; the key
-  does nothing on a table tab; `Mod+F` still does nothing on a SQL tab;
-  the Omarchy toolbar has no Format button and the key still formats; the
-  shortcuts dialog names the key.
+  statements it touches change; `Mod+Z` restores the text as typed and
+  its selection; after an undo and another Format a redo changes nothing;
+  a statement laid out over more lines than the pane shows leaves the
+  cursor in view; Format on a formatted script leaves the undo history
+  as it was; the key does nothing on a table tab; `Mod+F` still does
+  nothing on a SQL tab; the Omarchy toolbar has no Format button and the
+  key still formats; the shortcuts dialog names the key.
 - The toolbar's give-way order, as widths: the Format button is there at
   full width, gone before the menus shorten, and the run buttons stay.
 - No design or pixel conformance checks. Screenshots for review use the

@@ -12,7 +12,7 @@
 
 ## How this plan was checked
 
-Every piece of code below was compiled and its tests were run in a scratch copy of the repository while planning: `cargo fmt --check`, `cargo clippy -D warnings`, `cargo doc -D warnings` and `cargo test --workspace --all-targets` (735 app tests, 200 `tabletist-db` unit tests) pass with all of it applied. The formatter was also run over more than a million scripts built at random, with the safety check out of the way. That and a review of the plan found three faults, each fixed and under test: a space added before a `--` comment fused two minus signs into a comment on MySQL; a line break after two touching minus signs did the same; and a `WITH` statement formatted through a selection, where it did not start its line, gained two spaces on every press. The reviews of the tasks as they were built added more, all folded back into this plan: a cap on how deep nested queries are followed (the layout recurses once for each), a bound on a quadratic scan of join leaders, and the redo stack that Format left in place.
+Every piece of code below was compiled and its tests were run in a scratch copy of the repository while planning: `cargo fmt --check`, `cargo clippy -D warnings`, `cargo doc -D warnings` and `cargo test --workspace --all-targets` (735 app tests, 200 `tabletist-db` unit tests) pass with all of it applied. The formatter was also run over more than a million scripts built at random, with the safety check out of the way. That and a review of the plan found three faults, each fixed and under test: a space added before a `--` comment fused two minus signs into a comment on MySQL; a line break after two touching minus signs did the same; and a `WITH` statement formatted through a selection, where it did not start its line, gained two spaces on every press. The reviews of the tasks as they were built added more, all folded back into this plan: a cap on how deep nested queries are followed (the layout recurses once for each), a bound on a quadratic scan of join leaders, the redo stack that Format left in place, and scrolling the cursor into view after Format.
 
 Not checked, so check it when you get there:
 
@@ -2200,6 +2200,8 @@ In `src/ui/mod.rs`, in the tests module, before `const COMMAND_SHIFT` (added in 
         tab: crate::model::ConnTabId,
         range: std::ops::Range<usize>,
     ) {
+        // A field without the keys drops its selection when it is drawn.
+        assert!(harness.ctx.text_edit_focused());
         let sql = active_sql(harness, tab);
         let chars = |byte: usize| sql.text[..byte].chars().count();
         let selection = egui::text::CCursorRange::two(
@@ -2292,27 +2294,66 @@ and after `const COMMAND_SHIFT`, the tests:
     }
 
     #[test]
+    fn format_brings_the_cursor_into_view() {
+        let mut harness = Harness::new();
+        let tab = harness.connect_fake();
+        harness.press(Key::T, Modifiers::COMMAND);
+        // One line that Format lays out as more lines than the pane shows.
+        let columns: Vec<String> = (0..80).map(|n| format!("c{n}")).collect();
+        type_text(
+            &mut harness,
+            &format!("select {} from t", columns.join(",")),
+        );
+        let id = active_sql(&harness, tab).id;
+        let scrolled = |harness: &Harness| {
+            crate::ui::sql_text::scroll_offset(&harness.ctx, tab, id).expect("a scroll area")
+        };
+        assert_eq!(scrolled(&harness).y, 0.0);
+        harness.press(Key::F, COMMAND_SHIFT);
+        harness.finish_animations();
+        let sql = active_sql(&harness, tab);
+        assert_eq!(sql.text.lines().count(), 81);
+        assert_eq!(sql.cursor, sql.text.len(), "the cursor is on the last line");
+        assert!(scrolled(&harness).y > 0.0, "and that line is in view");
+    }
+
+    #[test]
     fn format_with_a_selection_formats_the_statements_it_touches() {
         let mut harness = Harness::new();
         let tab = harness.connect_fake();
         harness.press(Key::T, Modifiers::COMMAND);
-        let typed = "select 1 ;\nselect a,b from t ;\nselect 3 ;";
+        // Letters of two bytes each before the selection: egui counts a
+        // cursor in characters, Format in bytes.
+        let typed = "select 'żółw' ;\nselect a,b from t ;\nselect 3 ;";
+        let formatted = "select 'żółw' ;\nSELECT a,\n       b\n  FROM t;\nselect 3 ;";
         type_text(&mut harness, typed);
         let list = typed.find("a,b").unwrap();
         select_sql(&mut harness, tab, list..list + 3);
+        let id = crate::ui::sql_text::editor_id(tab, active_sql(&harness, tab).id);
+        let selection = |harness: &Harness| {
+            let state = egui::TextEdit::load_state(&harness.ctx, id).unwrap();
+            state.cursor.char_range().unwrap()
+        };
+        let selected = selection(&harness);
+        assert!(!selected.is_empty());
         harness.press(Key::F, COMMAND_SHIFT);
         let sql = active_sql(&harness, tab);
-        assert_eq!(
-            sql.text,
-            "select 1 ;\nSELECT a,\n       b\n  FROM t;\nselect 3 ;"
-        );
+        assert_eq!(sql.text, formatted);
         // The cursor is where the selection ended, after the `b`, and
-        // nothing is selected: typing adds to the text.
-        assert_eq!(&sql.text[..sql.cursor], "select 1 ;\nSELECT a,\n       b");
+        // nothing is selected.
+        let cursor = "select 'żółw' ;\nSELECT a,\n       b";
+        assert_eq!(&sql.text[..sql.cursor], cursor);
+        assert!(selection(&harness).is_empty());
+        // Undo gives the selection back with the text.
+        harness.press(Key::Z, Modifiers::COMMAND);
+        assert_eq!(active_sql(&harness, tab).text, typed);
+        assert_eq!(selection(&harness), selected);
+        // Formatted again (redo), typing adds to the text at the cursor.
+        harness.press(Key::Z, COMMAND_SHIFT);
         type_text(&mut harness, "2");
         assert_eq!(
             active_sql(&harness, tab).text,
-            "select 1 ;\nSELECT a,\n       b2\n  FROM t;\nselect 3 ;"
+            formatted.replace("       b\n", "       b2\n")
         );
     }
 ```
@@ -2320,7 +2361,7 @@ and after `const COMMAND_SHIFT`, the tests:
 - [ ] **Step 2: Run the tests to see them fail**
 
 Run: `~/.cargo/bin/cargo test --locked -p tabletist --lib -- format undo character_index`
-Expected: does not compile. The compiler cannot find `char_index`. (With the unit test left out, the three UI tests fail on their first `assert_eq!`: the text is still as typed.)
+Expected: does not compile. The compiler cannot find `char_index`. (With the unit test left out, the UI tests fail on their first `assert_eq!`: the text is still as typed.)
 
 - [ ] **Step 3: The editor's format step**
 
@@ -2342,9 +2383,9 @@ fn char_index(text: &str, bytes: usize) -> usize {
 }
 
 /// Formats the script, or the statements the field's selection overlaps,
-/// as one step of the field's undo history. Changes nothing when Format
-/// has nothing to change.
-fn format(ui: &Ui, sql_tab: &mut SqlTab, field: &Field<'_>) {
+/// as one step of the field's undo history. Returns whether it changed
+/// the text: it does not when Format has nothing to change.
+fn format_script(ui: &Ui, sql_tab: &mut SqlTab, field: &Field<'_>) -> bool {
     let mut state = egui::TextEdit::load_state(ui.ctx(), field.id).unwrap_or_default();
     // A field that never had the keys has no cursor of its own.
     let typed = state.cursor.char_range();
@@ -2358,14 +2399,16 @@ fn format(ui: &Ui, sql_tab: &mut SqlTab, field: &Field<'_>) {
     };
     let Some(formatted) = sql::format::format(field.dialect, &sql_tab.text, selection, cursor)
     else {
-        return;
+        return false;
     };
-    let cursor = CCursor::new(char_index(&formatted.text, formatted.cursor));
-    let (before, after) = (typed.unwrap_or_default(), CCursorRange::one(cursor));
+    let at = |text: &str, byte: usize| CCursorRange::one(CCursor::new(char_index(text, byte)));
+    let before = typed.unwrap_or_else(|| at(&sql_tab.text, sql_tab.cursor));
+    let after = at(&formatted.text, formatted.cursor);
     // The text as typed and the text as formatted, both: undo gives the
     // first back whole, and redo the second. Between the two the formatted
     // text is fed as an edit is, which empties what an earlier undo left
-    // to redo: adding an undo point alone would keep it.
+    // to redo: adding an undo point alone would keep it. (The time fed
+    // does not matter: the next line settles the state.)
     let formatted_state = (after, formatted.text.clone());
     let mut undoer = state.undoer();
     undoer.add_undo(&(before, sql_tab.text.clone()));
@@ -2376,6 +2419,7 @@ fn format(ui: &Ui, sql_tab: &mut SqlTab, field: &Field<'_>) {
     egui::TextEdit::store_state(ui.ctx(), field.id, state);
     sql_tab.text = formatted.text;
     sql_tab.cursor = formatted.cursor;
+    true
 }
 ```
 
@@ -2384,17 +2428,44 @@ In `fn edit`, right after its first line:
 ```rust
     let focus = std::mem::take(&mut sql_tab.focus_editor);
     // Before the field is drawn, so this frame shows the formatted text.
-    if std::mem::take(&mut sql_tab.format) {
-        format(ui, sql_tab, field);
+    let formatted = std::mem::take(&mut sql_tab.format) && format_script(ui, sql_tab, field);
+```
+
+and after the `if focus Ellipsis` block that follows the `TextEdit`:
+
+```rust
+    if formatted {
+        // The cursor's line moved with the layout. The field scrolls to
+        // its cursor after an edit of its own, not after this one, so
+        // bring it into view here; and ask for the frame that shows the
+        // footer and the gutter the new text.
+        if let Some(range) = output.state.cursor.range(&output.galley) {
+            let cursor = output.galley.pos_from_cursor(range.primary);
+            ui.scroll_to_rect(cursor.translate(output.galley_pos.to_vec2()), None);
+        }
+        ui.ctx().request_repaint();
     }
 ```
 
-`sql` here is `tabletist_db::sql`, already imported in this file. `typed.unwrap_or_default()` is a cursor at the start, for a field that never had the keys.
+The field scrolls to its cursor after an edit of its own (`response.changed()`), not after a change made for it, so without this a statement that Format lays out over many lines can leave the cursor below the pane.
+
+Before `pub fn layouter`, a helper the scroll test reads:
+
+```rust
+/// How far the editor `id` is scrolled.
+#[cfg(test)]
+pub fn scroll_offset(ctx: &egui::Context, tab: ConnTabId, id: TabId) -> Option<egui::Vec2> {
+    let ScrollId(area) = ctx.data(|data| data.get_temp(editor_id(tab, id)))?;
+    egui::scroll_area::State::load(ctx, area).map(|state| state.offset)
+}
+```
+
+`sql` here is `tabletist_db::sql`, already imported in this file. A field that never had the keys has no cursor in egui's state: `SqlTab.cursor` stands in for it, for Format and for the state undo restores.
 
 - [ ] **Step 4: Run the tests**
 
 Run: `~/.cargo/bin/cargo test --locked -p tabletist --lib -- format undo character_index`
-Expected: all pass, among them `command_shift_f_formats_the_script_and_the_editor_keeps_the_keys`, `one_undo_gives_back_the_script_as_typed`, `format_leaves_nothing_to_redo_as_an_edit_does`, `format_with_a_selection_formats_the_statements_it_touches`, `a_byte_offset_becomes_a_character_index`.
+Expected: all pass, among them `command_shift_f_formats_the_script_and_the_editor_keeps_the_keys`, `one_undo_gives_back_the_script_as_typed`, `format_leaves_nothing_to_redo_as_an_edit_does`, `format_brings_the_cursor_into_view`, `format_with_a_selection_formats_the_statements_it_touches`, `a_byte_offset_becomes_a_character_index`.
 
 - [ ] **Step 5: Format, lint, commit**
 
