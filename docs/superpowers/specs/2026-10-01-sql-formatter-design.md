@@ -101,8 +101,9 @@ is to the tokenizer, not a comment: a statement that starts with one is
 not a query.
 
 Every other statement (`SHOW`, `PRAGMA`, `EXPLAIN ...`, `VALUES`, DML,
-DDL) keeps its line breaks and its spacing as typed. Only its reserved
-words change case and the whitespace at the ends of its lines is removed.
+DDL) keeps its line breaks and its spacing as typed, the whitespace
+before its `;` included. Only its reserved words change case and the
+whitespace at the ends of its lines is removed.
 
 ### The river
 
@@ -241,7 +242,7 @@ from their own column.
 
 ### Between statements
 
-- A `;` follows its statement's last token on the same line.
+- A query's `;` follows its last token on the same line.
 - Two statements are one blank line apart.
 - Around a comment that stands between statements, blank lines stay as
   typed, at most one in a row.
@@ -295,10 +296,12 @@ cases no rule foresaw, such as two operators that would fuse into `--`.
 
 ### The cursor
 
-The cursor keeps its place among the tokens. Counting the bytes of
-tokens that are not whitespace before it: if it stood right after such a
-byte, it stands right after the same byte; otherwise it stands before the
-next token, or at the end of the text when there is none.
+Inside the formatted part the cursor keeps its place among the tokens.
+Counting the bytes of tokens that are not whitespace before it: if it
+stood right after such a byte, it stands right after the same byte;
+otherwise it stands before the next token. Outside the formatted part
+(before it or after it, in text Format did not touch) it stays where it
+is in that text.
 
 ## The editor
 
