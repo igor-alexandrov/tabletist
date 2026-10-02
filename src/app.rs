@@ -48,8 +48,8 @@ struct PendingStore {
     adopt: bool,
 }
 
-/// The native title bar the tab bar shares: its height, and how far the
-/// window's own buttons (the macOS traffic lights) reach from the left.
+/// The native title bar the connection bar shares: its height, and how far
+/// the window's own buttons (the macOS traffic lights) reach from the left.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct TitleBar {
     pub height: f32,
@@ -82,8 +82,8 @@ pub struct App {
     pub host_keys: HostKeys,
     /// Why known_hosts.json could not be read; no new host is trusted then.
     pub host_keys_error: Option<String>,
-    /// The window's own title bar the tab bar shares (macOS), measured from
-    /// the window every frame; zero elsewhere.
+    /// The window's own title bar the connection bar shares (macOS),
+    /// measured from the window every frame; zero elsewhere.
     pub titlebar: TitleBar,
     /// The OS theme seen last frame, to notice light/dark switches.
     system_theme: Option<egui::Theme>,
@@ -182,6 +182,22 @@ impl App {
         }
     }
 
+    /// The open connections with their tabs, in the order the header shows
+    /// them. The picker is not one of them.
+    pub fn open_connections(&self) -> impl Iterator<Item = (ConnTabId, &Workspace)> {
+        self.tabs.iter().filter_map(|tab| match &tab.content {
+            ConnTabContent::Workspace(workspace) => Some((tab.id, &**workspace)),
+            ConnTabContent::Picker(_) => None,
+        })
+    }
+
+    /// The first tab that has the saved connection `conn` open.
+    pub fn tab_showing(&self, conn: &crate::connections::ConnectionId) -> Option<ConnTabId> {
+        self.open_connections()
+            .find(|(_, workspace)| workspace.conn_id == *conn)
+            .map(|(tab, _)| tab)
+    }
+
     pub fn tab_for_session(&self, session: SessionId) -> Option<ConnTabId> {
         self.tabs.iter().find_map(|tab| match &tab.content {
             ConnTabContent::Workspace(workspace) if workspace.session == session => Some(tab.id),
@@ -220,6 +236,14 @@ impl App {
 
     fn tab_index(&self, id: ConnTabId) -> Option<usize> {
         self.tabs.iter().position(|tab| tab.id == id)
+    }
+
+    /// Where the picker tab is, when one is open. There is never more than
+    /// one: the saved connections are one screen.
+    fn picker_index(&self) -> Option<usize> {
+        self.tabs
+            .iter()
+            .position(|tab| matches!(tab.content, ConnTabContent::Picker(_)))
     }
 
     /// Applies queued actions until none are left (an action may queue more).
@@ -279,19 +303,23 @@ impl App {
 
     pub fn apply(&mut self, action: Action) {
         match action {
-            Action::NewConnTab => {
-                let tab = self.picker_tab();
-                self.tabs.push(tab);
-                self.active = self.tabs.len() - 1;
-            }
+            Action::ShowConnections => match self.picker_index() {
+                Some(index) => self.active = index,
+                None => {
+                    let tab = self.picker_tab();
+                    self.tabs.push(tab);
+                    self.active = self.tabs.len() - 1;
+                }
+            },
             Action::CloseConnTab(id) => self.close_tab(id),
             Action::ActivateConnTab(id) => {
                 if let Some(index) = self.tab_index(id) {
                     self.active = index;
                 }
             }
-            Action::ActivateConnTabIndex(index) => {
-                if index < self.tabs.len() {
+            Action::ActivateConnection(position) => {
+                let tab = self.open_connections().nth(position).map(|(tab, _)| tab);
+                if let Some(index) = tab.and_then(|tab| self.tab_index(tab)) {
                     self.active = index;
                 }
             }
@@ -308,10 +336,17 @@ impl App {
             Action::Disconnect(tab) => {
                 if let Some(workspace) = self.workspace(tab) {
                     let session = workspace.session;
-                    self.backend.send(Command::Close { session });
-                    self.close_editors(tab);
-                    if let Some(entry) = self.tabs.iter_mut().find(|t| t.id == tab) {
-                        entry.content = ConnTabContent::Picker(PickerState::default());
+                    if self.picker_index().is_some() {
+                        // The saved connections have a tab already: this
+                        // one closes, and that one shows.
+                        self.close_tab(tab);
+                        self.apply(Action::ShowConnections);
+                    } else {
+                        self.backend.send(Command::Close { session });
+                        self.close_editors(tab);
+                        if let Some(entry) = self.tabs.iter_mut().find(|t| t.id == tab) {
+                            entry.content = ConnTabContent::Picker(PickerState::default());
+                        }
                     }
                 }
             }
@@ -1543,6 +1578,7 @@ impl App {
                             workspace.status = SessionStatus::Connected;
                             workspace.driver = driver;
                             workspace.encrypted = encrypted;
+                            workspace.connected_at = Some(crate::util::now_secs());
                             Some(tab)
                         }
                         _ => None,
@@ -2076,7 +2112,7 @@ impl App {
         }
         if connect {
             if !matches!(self.active_tab().content, ConnTabContent::Picker(_)) {
-                self.apply(Action::NewConnTab);
+                self.apply(Action::ShowConnections);
             }
             let tab = self.active_tab_id();
             let mut secrets = Secrets {
@@ -2892,15 +2928,82 @@ mod tests {
         assert!(matches!(app.tabs[0].content, ConnTabContent::Picker(_)));
     }
 
+    /// Opens another connection: the picker, then a connect in it.
+    fn connect_another(app: &mut App) -> ConnTabId {
+        app.apply(Action::ShowConnections);
+        connect(app).0
+    }
+
     #[test]
-    fn new_tabs_open_at_the_end_and_become_active() {
+    fn showing_the_connections_opens_one_picker_tab_and_returns_to_it() {
         let (mut app, _dir) = app();
-        app.apply(Action::NewConnTab);
-        app.apply(Action::NewConnTab);
-        assert_eq!(app.tabs.len(), 3);
-        assert_eq!(app.active, 2);
+        // The app starts on the picker: nothing to open.
+        app.apply(Action::ShowConnections);
+        assert_eq!(app.tabs.len(), 1);
+        let (first, _, _) = connect(&mut app);
+        app.apply(Action::ShowConnections);
+        assert_eq!(app.tabs.len(), 2);
+        assert_eq!(app.active, 1, "a new tab opens at the end and shows");
+        assert!(matches!(
+            app.active_tab().content,
+            ConnTabContent::Picker(_)
+        ));
+        let picker = app.active_tab_id();
+        // From the connection again, the same picker tab shows.
+        app.apply(Action::ActivateConnTab(first));
+        app.apply(Action::ShowConnections);
+        assert_eq!(app.tabs.len(), 2);
+        assert_eq!(app.active_tab_id(), picker);
         let unique: std::collections::HashSet<_> = ids(&app).into_iter().collect();
-        assert_eq!(unique.len(), 3, "tab ids must be unique");
+        assert_eq!(unique.len(), 2, "tab ids must be unique");
+    }
+
+    #[test]
+    fn a_saved_connection_knows_the_tab_that_has_it_open() {
+        let (mut app, _dir) = app();
+        let (tab, _, _) = connect(&mut app);
+        let conn = app.workspace(tab).unwrap().conn_id.clone();
+        assert_eq!(app.tab_showing(&conn), Some(tab));
+        assert_eq!(app.tab_showing(&ConnectionId::new()), None);
+        // Open twice, the first tab is the one that shows.
+        app.apply(Action::ShowConnections);
+        let second = app.active_tab_id();
+        app.apply(Action::Connect {
+            tab: second,
+            conn: conn.clone(),
+        });
+        assert_eq!(app.tab_showing(&conn), Some(tab));
+    }
+
+    #[test]
+    fn disconnecting_shows_the_one_picker() {
+        let (mut app, _dir) = app();
+        // Alone, the connection's tab becomes the picker.
+        let (only, session, _) = connect(&mut app);
+        app.apply(Action::Disconnect(only));
+        assert_eq!(ids(&app), [only.0]);
+        assert!(matches!(
+            app.active_tab().content,
+            ConnTabContent::Picker(_)
+        ));
+        assert!(
+            matches!(app.backend.sent.last(), Some(Command::Close { session: s }) if *s == session)
+        );
+        // With the picker open in a tab of its own, the connection's tab
+        // closes and the picker shows.
+        let (first, session, _) = connect(&mut app);
+        let second = connect_another(&mut app);
+        app.apply(Action::ShowConnections);
+        let picker = app.active_tab_id();
+        app.apply(Action::Disconnect(first));
+        assert_eq!(ids(&app), [second.0, picker.0]);
+        assert_eq!(app.active_tab_id(), picker);
+        assert!(
+            app.backend
+                .sent
+                .iter()
+                .any(|command| matches!(command, Command::Close { session: s } if *s == session))
+        );
     }
 
     #[test]
@@ -2916,10 +3019,9 @@ mod tests {
     #[test]
     fn closing_a_tab_before_the_active_one_keeps_the_active_tab() {
         let (mut app, _dir) = app();
-        app.apply(Action::NewConnTab);
-        app.apply(Action::NewConnTab);
-        let active = app.active_tab_id();
-        let first = app.tabs[0].id;
+        let (first, _, _) = connect(&mut app);
+        connect_another(&mut app);
+        let active = connect_another(&mut app);
         app.apply(Action::CloseConnTab(first));
         assert_eq!(app.active_tab_id(), active);
     }
@@ -2927,9 +3029,9 @@ mod tests {
     #[test]
     fn closing_the_active_tab_activates_its_right_neighbour_or_the_new_last() {
         let (mut app, _dir) = app();
-        app.apply(Action::NewConnTab);
-        app.apply(Action::NewConnTab);
-        let [a, b, c] = [app.tabs[0].id, app.tabs[1].id, app.tabs[2].id];
+        let (a, _, _) = connect(&mut app);
+        let b = connect_another(&mut app);
+        let c = connect_another(&mut app);
         app.apply(Action::ActivateConnTab(b));
         app.apply(Action::CloseConnTab(b));
         assert_eq!(app.active_tab_id(), c);
@@ -2946,29 +3048,42 @@ mod tests {
     }
 
     #[test]
-    fn tabs_activate_by_index_and_cycle_with_wrapping() {
+    fn connections_activate_by_position_and_tabs_cycle_with_wrapping() {
         let (mut app, _dir) = app();
-        app.apply(Action::NewConnTab);
-        app.apply(Action::NewConnTab);
-        app.apply(Action::ActivateConnTabIndex(0));
-        assert_eq!(app.active, 0);
-        app.apply(Action::ActivateConnTabIndex(7));
-        assert_eq!(app.active, 0, "an index past the end is ignored");
-        app.apply(Action::CycleConnTab(-1));
-        assert_eq!(app.active, 2);
+        let (first, _, _) = connect(&mut app);
+        let second = connect_another(&mut app);
+        // The picker, last, is a tab but not a connection.
+        app.apply(Action::ShowConnections);
+        app.apply(Action::ActivateConnection(0));
+        assert_eq!(app.active_tab_id(), first);
+        app.apply(Action::ActivateConnection(1));
+        assert_eq!(app.active_tab_id(), second);
+        app.apply(Action::ActivateConnection(2));
+        assert_eq!(app.active_tab_id(), second, "the picker has no number");
+        app.apply(Action::ActivateConnection(7));
+        assert_eq!(
+            app.active_tab_id(),
+            second,
+            "a position past the end is ignored"
+        );
+        app.apply(Action::CycleConnTab(1));
+        assert_eq!(app.active, 2, "cycling reaches the picker");
         app.apply(Action::CycleConnTab(1));
         assert_eq!(app.active, 0);
+        app.apply(Action::CycleConnTab(-1));
+        assert_eq!(app.active, 2);
     }
 
     #[test]
     fn queued_actions_are_drained_in_order() {
         let (mut app, _dir) = app();
-        app.actions.push(Action::NewConnTab);
-        app.actions.push(Action::ActivateConnTabIndex(0));
+        let (first, _, _) = connect(&mut app);
+        app.actions.push(Action::ShowConnections);
+        app.actions.push(Action::ActivateConnection(0));
         app.apply_actions();
         assert!(app.actions.is_empty());
         assert_eq!(app.tabs.len(), 2);
-        assert_eq!(app.active, 0);
+        assert_eq!(app.active_tab_id(), first);
     }
 
     use crate::backend::{Command, Event, RequestId, SessionId};
@@ -3028,6 +3143,7 @@ mod tests {
             app.workspace(tab).unwrap().status,
             SessionStatus::Connected
         ));
+        assert!(app.workspace(tab).unwrap().connected_at.is_some());
     }
 
     #[test]
@@ -4287,7 +4403,7 @@ mod tests {
         }));
         assert_eq!(asked(&app), 1);
         // On a picker there is no workspace to open an editor in.
-        app.apply(Action::NewConnTab);
+        app.apply(Action::ShowConnections);
         let picker = app.active_tab_id();
         app.apply(Action::NewSqlTab(picker));
         assert!(app.workspace(picker).is_none());

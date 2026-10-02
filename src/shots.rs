@@ -262,6 +262,23 @@ fn workspace(harness: &mut Harness) -> ConnTabId {
     tab
 }
 
+/// Bookshop's production database open beside the scene's `own`
+/// connection: the header's second chip, as the mockups show it.
+fn production_beside(harness: &mut Harness, own: ConnTabId) {
+    harness.app.apply(Action::ShowConnections);
+    let tab = harness.connect_fake();
+    let (spec, _) = ConnectSpec::from_url(
+        "postgres://app_readonly@db.example.com:5432/bookshop_production?sslmode=verify-full",
+    )
+    .unwrap();
+    let workspace = harness.app.workspace_mut(tab).unwrap();
+    workspace.name = "Bookshop".into();
+    workspace.environment = Environment::Production;
+    workspace.spec = spec;
+    workspace.driver = Driver::Postgres;
+    harness.app.apply(Action::ActivateConnTab(own));
+}
+
 fn both(name: &str, scene: impl Fn(&mut Harness)) {
     for look in crate::theme::Look::ALL {
         for (light, suffix) in [(true, "light"), (false, "dark")] {
@@ -287,6 +304,15 @@ fn shots() {
     });
     both("workspace", |harness| {
         workspace(harness);
+    });
+    both("workspace-two", |harness| {
+        let tab = workspace(harness);
+        production_beside(harness, tab);
+    });
+    both("picker-open", |harness| {
+        harness.app.connections.upsert(saved());
+        workspace(harness);
+        harness.app.apply(Action::ShowConnections);
     });
     both("filter", |harness| {
         workspace(harness);
@@ -660,10 +686,12 @@ mod mock {
             crate::util::pin_now(Some(NOW));
             match self {
                 Self::MacWorkspace => {
-                    workspace(harness);
+                    let tab = workspace(harness);
+                    production_beside(harness, tab);
                 }
                 Self::OmarchyWorkspace => {
                     let tab = workspace(harness);
+                    production_beside(harness, tab);
                     let object_tab = harness.app.workspace(tab).unwrap().active_tab.unwrap();
                     let object = harness
                         .app

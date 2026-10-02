@@ -609,7 +609,6 @@ mod tests {
             OWNER,
             "src/ui/workspace.rs",
             "src/ui/picker.rs",
-            "src/ui/conn_tabs.rs",
             "src/ui/connect_dialog/mod.rs",
             "src/ui/env_tests.rs",
         ];

@@ -1,10 +1,11 @@
-//! macOS: the tabs share a unified title bar with the window buttons.
+//! macOS: the connection bar shares a unified title bar with the window
+//! buttons.
 //!
 //! The window gets an empty toolbar in the compact style, so AppKit makes
-//! the title bar tall enough for the tab bar (the look of Safari's compact
-//! tabs and Xcode). Every frame reads back the title bar's height and where
-//! the buttons end, so the layout follows the running system (the buttons
-//! grew in macOS 26) and fullscreen, where AppKit hides them.
+//! the title bar tall enough for a bar of its own (the look of Safari's
+//! compact tabs and Xcode). Every frame reads back the title bar's height
+//! and where the buttons end, so the layout follows the running system (the
+//! buttons grew in macOS 26) and fullscreen, where AppKit hides them.
 //!
 //! AppKit centres the buttons in its own title bar, but the bar that leads
 //! the window (the connection bar, the picker's header) can be taller, so

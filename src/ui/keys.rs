@@ -19,9 +19,9 @@ const NUMBERS: [Key; 9] = [
 
 /// Every shortcut, for the help dialog. `Mod` is Cmd on macOS, Ctrl elsewhere.
 pub const SHORTCUTS: &[(&str, &str)] = &[
-    ("Mod+O", "New connection tab"),
-    ("Mod+Shift+W", "Close connection tab"),
-    ("Mod+1…9, Ctrl+Tab, Ctrl+Shift+Tab", "Switch connection tab"),
+    ("Mod+O", "Connections"),
+    ("Mod+Shift+W", "Close connection"),
+    ("Mod+1…9, Ctrl+Tab, Ctrl+Shift+Tab", "Switch connection"),
     ("Mod+N", "New connection"),
     (
         "Mod+S, Mod+T, Mod+Enter",
@@ -41,8 +41,8 @@ pub const SHORTCUTS: &[(&str, &str)] = &[
     ("Space, Mod+Shift+R", "Toggle row panel"),
     ("Mod+C, Mod+Shift+C", "Copy cell / copy row"),
     (
-        "Arrows, Enter, Mod+E, Mod+D, Mod+Backspace",
-        "Pick, edit, duplicate or delete a connection",
+        "Arrows, Enter, Shift+Enter, Mod+E, Mod+D, Mod+Backspace",
+        "Pick, open again, edit, duplicate or delete a connection",
     ),
     ("Arrows, Home/End, Enter", "Move in the tree"),
     ("Arrows, Page Up/Down, Home/End", "Move in the grid"),
@@ -156,13 +156,13 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
         if in_workspace {
             key(Modifiers::COMMAND, Key::T, Action::NewSqlTab(active));
         }
-        key(Modifiers::COMMAND, Key::O, Action::NewConnTab);
+        key(Modifiers::COMMAND, Key::O, Action::ShowConnections);
         key(Modifiers::COMMAND, Key::N, Action::NewConnection);
         for (index, number) in NUMBERS.into_iter().enumerate() {
             key(
                 Modifiers::COMMAND,
                 number,
-                Action::ActivateConnTabIndex(index),
+                Action::ActivateConnection(index),
             );
         }
         if !on_sql {
@@ -397,11 +397,20 @@ fn letters(app: &mut App, ctx: &egui::Context, actions: &mut Vec<Action>) {
             actions.push(Action::MovePickerSelection { tab, step: -1 });
         }
         if let Some(conn) = selected {
-            if ctx.memory(|memory| memory.focused().is_none()) && pressed(Key::Enter) {
-                actions.push(Action::Connect {
-                    tab,
-                    conn: conn.clone(),
-                });
+            if ctx.memory(|memory| memory.focused().is_none()) {
+                // Shift first: egui ignores an extra Shift when matching.
+                let again = ctx.input_mut(|input| input.consume_key(Modifiers::SHIFT, Key::Enter));
+                if again || pressed(Key::Enter) {
+                    // Enter shows a connection that is open already; with
+                    // Shift it opens once more.
+                    actions.push(match app.tab_showing(&conn).filter(|_| !again) {
+                        Some(open) => Action::ActivateConnTab(open),
+                        None => Action::Connect {
+                            tab,
+                            conn: conn.clone(),
+                        },
+                    });
+                }
             }
             if command(Key::E) || (terminal && pressed(Key::E)) {
                 actions.push(Action::EditConnection(conn.clone()));
@@ -590,9 +599,9 @@ mod tests {
     fn the_shortcut_table_covers_the_spec_map() {
         let descriptions: Vec<&str> = SHORTCUTS.iter().map(|(_, what)| *what).collect();
         for expected in [
-            "New connection tab",
-            "Close connection tab",
-            "Switch connection tab",
+            "Connections",
+            "Close connection",
+            "Switch connection",
             "New connection",
             "New SQL editor",
             "Run statement / run all",
@@ -623,7 +632,7 @@ mod tests {
                 .map(|(keys, _)| *keys)
         };
         assert_eq!(keys("New SQL editor"), Some("Mod+T"));
-        assert_eq!(keys("New connection tab"), Some("Mod+O"));
+        assert_eq!(keys("Connections"), Some("Mod+O"));
         assert_eq!(
             keys("Run statement / run all"),
             Some("Mod+Return, Mod+Shift+Return")

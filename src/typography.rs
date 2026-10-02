@@ -73,6 +73,8 @@ pub enum TextRole {
     GroupLabel,
     /// The picker's environment tags.
     EnvTag,
+    /// The environment tag in the connection bar's chips.
+    ChipEnv,
     /// View and trigger tags in the object tree.
     TagSmall,
     /// The database name, the sort chip's column, a connection's database.
@@ -112,7 +114,7 @@ pub enum TextRole {
 }
 
 impl TextRole {
-    pub const ALL: [TextRole; 38] = [
+    pub const ALL: [TextRole; 39] = [
         Self::UiBody,
         Self::UiBodyStrong,
         Self::TableTitle,
@@ -129,6 +131,7 @@ impl TextRole {
         Self::UiBodySemibold,
         Self::GroupLabel,
         Self::EnvTag,
+        Self::ChipEnv,
         Self::TagSmall,
         Self::MonoSecondary,
         Self::MonoGroup,
@@ -172,6 +175,7 @@ impl TextRole {
             Self::UiBodySemibold => "ui-body-semibold",
             Self::GroupLabel => "group-label",
             Self::EnvTag => "env-tag",
+            Self::ChipEnv => "chip-env",
             Self::TagSmall => "tag-small",
             Self::MonoSecondary => "mono-secondary",
             Self::MonoGroup => "mono-group",
@@ -246,6 +250,7 @@ impl TextRole {
             Self::UiBodySemibold => style(Sans, 600, 13.0),
             Self::GroupLabel => capitals(Sans, 600, 12.0, 0.06),
             Self::EnvTag => style(Sans, 500, 11.0),
+            Self::ChipEnv => style(Sans, 500, 10.5),
             Self::TagSmall => style(Sans, 400, 10.5),
             Self::MonoSecondary => style(Mono, 400, 12.0),
             Self::MonoGroup => style(Mono, 500, 12.0),

@@ -273,9 +273,8 @@ pub fn selection_text(selected: bool, look: &Look, palette: &Palette) -> Color32
 /// How far a raised tab sits inside its track.
 const TRACK_INSET: f32 = 2.0;
 
-/// A tab's background: connection tabs (`radius` = `look.tab_radius`) and
-/// object tabs (`look.radius`). Raised tabs sit in a [`TabTrack`], which
-/// fills the inactive ones.
+/// A tab's background: the object tabs, with `radius` = `look.radius`.
+/// Raised tabs sit in a [`TabTrack`], which fills the inactive ones.
 pub fn tab(
     ui: &Ui,
     rect: Rect,

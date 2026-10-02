@@ -2,7 +2,6 @@
 //! state directly.
 
 pub mod about;
-pub mod conn_tabs;
 pub mod connect_dialog;
 pub mod data_view;
 #[cfg(test)]
@@ -34,10 +33,6 @@ use crate::app::App;
 use crate::model::ConnTabContent;
 
 pub fn show(app: &mut App, ui: &mut egui::Ui) {
-    // One connection needs no tab bar: its own bar leads the window.
-    if app.tabs.len() > 1 {
-        conn_tabs::show(app, ui);
-    }
     notice(app, ui);
     let fill = app.palette.window;
     egui::CentralPanel::default()
@@ -96,9 +91,7 @@ fn notice(app: &mut App, ui: &mut egui::Ui) {
 /// points below the window's top: on the line of the bar that leads the
 /// window, so the buttons and that bar's contents share one line.
 pub fn window_buttons_line(app: &App, zoom: f32) -> f32 {
-    if app.tabs.len() > 1 {
-        conn_tabs::line(app, zoom)
-    } else if matches!(app.active_tab().content, ConnTabContent::Picker(_)) {
+    if matches!(app.active_tab().content, ConnTabContent::Picker(_)) {
         picker::header_line(&app.look)
     } else {
         workspace::bar_line(app, zoom)
@@ -222,38 +215,6 @@ mod tests {
             let expected = if look.tab_radius == 0 { 12.0 } else { 20.0 };
             assert_eq!(harness.size.x - button.right(), expected, "{}", look.name);
         }
-    }
-
-    #[test]
-    fn one_connection_needs_no_tab_bar() {
-        let mut harness = Harness::new();
-        assert!(!harness.has("New tab"));
-        assert!(!harness.has("New connection tab"));
-        harness.press(Key::O, Modifiers::COMMAND);
-        assert!(harness.has("New tab"));
-        assert!(harness.has("New connection tab"));
-    }
-
-    #[test]
-    fn the_plus_button_opens_a_tab() {
-        let mut harness = Harness::new();
-        harness.app.apply(crate::model::Action::NewConnTab);
-        harness.click("New connection tab");
-        assert_eq!(harness.app.tabs.len(), 3);
-        assert_eq!(harness.app.active, 2);
-    }
-
-    #[test]
-    fn the_close_button_closes_its_tab() {
-        let mut harness = Harness::new();
-        let closing = harness.app.active_tab_id();
-        let first = harness.connect_fake();
-        // Named apart from the saved connection the new tab's picker lists.
-        harness.app.workspace_mut(first).unwrap().name = "Tab one".into();
-        harness.app.apply(crate::model::Action::NewConnTab);
-        harness.click("Close Tab one");
-        assert_eq!(harness.app.tabs.len(), 1);
-        assert_ne!(harness.app.tabs[0].id, closing);
     }
 
     #[test]
@@ -445,8 +406,22 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_o_opens_a_tab() {
+    fn ctrl_o_shows_the_connections() {
         let mut harness = Harness::new();
+        // Already on the picker: nothing to open.
+        harness.press(Key::O, Modifiers::COMMAND);
+        assert_eq!(harness.app.tabs.len(), 1);
+        let tab = harness.connect_fake();
+        harness.press(Key::O, Modifiers::COMMAND);
+        assert_eq!(harness.app.tabs.len(), 2);
+        assert!(matches!(
+            harness.app.active_tab().content,
+            crate::model::ConnTabContent::Picker(_)
+        ));
+        // From the connection again, the same picker.
+        harness
+            .app
+            .apply(crate::model::Action::ActivateConnTab(tab));
         harness.press(Key::O, Modifiers::COMMAND);
         assert_eq!(harness.app.tabs.len(), 2);
     }
@@ -454,7 +429,8 @@ mod tests {
     #[test]
     fn ctrl_shift_w_closes_the_connection_tab() {
         let mut harness = Harness::new();
-        harness.app.apply(crate::model::Action::NewConnTab);
+        harness.connect_fake();
+        harness.app.apply(crate::model::Action::ShowConnections);
         let active = harness.app.active_tab_id();
         harness.press(Key::W, Modifiers::COMMAND | Modifiers::SHIFT);
         assert_eq!(harness.app.tabs.len(), 1);
@@ -464,22 +440,29 @@ mod tests {
     #[test]
     fn plain_ctrl_w_does_not_close_the_connection_tab() {
         let mut harness = Harness::new();
-        harness.app.apply(crate::model::Action::NewConnTab);
+        harness.connect_fake();
+        harness.app.apply(crate::model::Action::ShowConnections);
         harness.press(Key::W, Modifiers::COMMAND);
         assert_eq!(harness.app.tabs.len(), 2);
     }
 
     #[test]
-    fn number_shortcuts_and_ctrl_tab_switch_tabs() {
+    fn number_shortcuts_switch_connections_and_ctrl_tab_every_tab() {
         let mut harness = Harness::new();
-        harness.app.apply(crate::model::Action::NewConnTab);
-        harness.app.apply(crate::model::Action::NewConnTab);
+        let first = harness.connect_fake();
+        let second = connect_another(&mut harness, "Second");
+        harness.app.apply(crate::model::Action::ShowConnections);
         harness.press(Key::Num1, Modifiers::COMMAND);
-        assert_eq!(harness.app.active, 0);
+        assert_eq!(harness.app.active_tab_id(), first);
+        harness.press(Key::Num2, Modifiers::COMMAND);
+        assert_eq!(harness.app.active_tab_id(), second);
+        // The picker has no number, and is one of the tabs Ctrl+Tab visits.
+        harness.press(Key::Num3, Modifiers::COMMAND);
+        assert_eq!(harness.app.active_tab_id(), second);
         harness.press(Key::Tab, Modifiers::CTRL);
-        assert_eq!(harness.app.active, 1);
+        assert_eq!(harness.app.active, 2);
         harness.press(Key::Tab, Modifiers::CTRL | Modifiers::SHIFT);
-        assert_eq!(harness.app.active, 0);
+        assert_eq!(harness.app.active, 1);
     }
 
     #[test]
@@ -520,6 +503,15 @@ mod tests {
             harness.press(Key::Escape, Modifiers::NONE);
             assert!(harness.app.dialog.is_none(), "{}", look.name);
         }
+    }
+
+    /// Opens another connection beside the open ones, named `name`: the
+    /// picker (Mod+O), then a connect in it. Returns its tab, which shows.
+    fn connect_another(harness: &mut Harness, name: &str) -> crate::model::ConnTabId {
+        harness.press(Key::O, Modifiers::COMMAND);
+        let tab = harness.connect_fake();
+        harness.app.workspace_mut(tab).unwrap().name = name.into();
+        tab
     }
 
     fn add_saved(harness: &mut Harness, name: &str) -> crate::connections::ConnectionId {
@@ -723,6 +715,138 @@ mod tests {
             assert!(button.right() < name.left(), "{}", look.name);
             assert!(!button.intersects(disconnect), "{}", look.name);
         }
+    }
+
+    #[test]
+    fn the_bar_has_a_chip_for_each_open_connection() {
+        for look in crate::theme::Look::ALL {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            let first = harness.connect_fake();
+            harness.app.workspace_mut(first).unwrap().name = "First".into();
+            let second = connect_another(&mut harness, "Second");
+            let env = crate::env::Environment::Dev.label(crate::env::Platform::of(&look));
+            // The second shows: its chip is the database switcher, and
+            // reads its name.
+            let tree = harness.settle();
+            for (label, role) in [
+                ("Database", egui::accesskit::Role::ComboBox),
+                ("Second", egui::accesskit::Role::Label),
+            ] {
+                assert!(
+                    crate::testing::node(&tree, label, role).is_some(),
+                    "{label} missing in {}",
+                    look.name
+                );
+            }
+            // The first's chip switches to it, and back.
+            harness.click(&format!("Switch to First · {env}"));
+            assert_eq!(harness.app.active_tab_id(), first, "{}", look.name);
+            harness.click(&format!("Switch to Second · {env}"));
+            assert_eq!(harness.app.active_tab_id(), second, "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn a_chip_says_how_its_session_stands_while_it_is_not_connected() {
+        for look in crate::theme::Look::ALL {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            let tab = harness.connect_fake();
+            // Connected, it says where it points: the fixture's file.
+            assert!(harness.has("fixture.db"), "{}", look.name);
+            let session = harness.app.workspace(tab).unwrap().session;
+            harness.app.apply(crate::model::Action::Backend(
+                crate::backend::Event::Disconnected {
+                    session,
+                    error: tabletist_db::Error::ConnectionLost("server went away".into()),
+                },
+            ));
+            assert!(harness.has(&look.label("Disconnected")), "{}", look.name);
+            assert!(!harness.has("fixture.db"), "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn many_chips_share_the_bar_and_the_one_showing_stays_whole() {
+        for look in crate::theme::Look::ALL {
+            let mut harness = Harness::with_size(egui::vec2(720.0, 480.0));
+            harness.set_look(look);
+            harness.connect_fake();
+            for number in 2..=8 {
+                connect_another(&mut harness, &format!("Connection number {number}"));
+            }
+            let tree = harness.settle();
+            let bounds = |label: &str, role| {
+                crate::testing::bounds(&tree, label, role)
+                    .unwrap_or_else(|| panic!("{label} missing in {}", look.name))
+            };
+            let connections = bounds("Connections", egui::accesskit::Role::Button);
+            let disconnect = bounds("Disconnect", egui::accesskit::Role::Button);
+            // The last one shows: its chip is whole, between the buttons.
+            let own = bounds("Database", egui::accesskit::Role::ComboBox);
+            assert!(own.left() > connections.right(), "{}", look.name);
+            assert!(own.right() < disconnect.left(), "{}", look.name);
+            assert!(own.width() > 60.0, "{}: {own:?}", look.name);
+            // No other chip reaches over either button.
+            let others: Vec<_> = tree
+                .nodes
+                .iter()
+                .filter(|(_, node)| {
+                    node.label()
+                        .is_some_and(|label| label.starts_with("Switch to"))
+                })
+                .filter_map(|(_, node)| node.bounds())
+                .collect();
+            assert!(!others.is_empty(), "{}", look.name);
+            for chip in others {
+                assert!(chip.x0 as f32 >= connections.right(), "{}", look.name);
+                assert!(chip.x1 as f32 <= disconnect.left(), "{}", look.name);
+            }
+        }
+    }
+
+    #[test]
+    fn the_picker_shows_an_open_connection_instead_of_connecting_again() {
+        for look in crate::theme::Look::ALL {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            assert!(!harness.has("open"), "{}", look.name);
+            let tab = harness.connect_fake();
+            harness.app.apply(crate::model::Action::ShowConnections);
+            // The saved connection is marked, and its button shows it.
+            assert!(harness.has("open"), "{}", look.name);
+            assert!(!harness.has("Connect to Fixture"), "{}", look.name);
+            let sent = harness.app.backend.sent.len();
+            harness.click("Show Fixture");
+            assert_eq!(harness.app.active_tab_id(), tab, "{}", look.name);
+            assert_eq!(harness.app.backend.sent.len(), sent, "{}", look.name);
+            assert_eq!(harness.app.tabs.len(), 2, "the picker stays for next time");
+        }
+    }
+
+    #[test]
+    fn enter_shows_an_open_connection_and_shift_enter_opens_it_again() {
+        let mut harness = Harness::new();
+        let tab = harness.connect_fake();
+        let conn = harness.app.workspace(tab).unwrap().conn_id.clone();
+        harness.app.apply(crate::model::Action::ShowConnections);
+        let picker = harness.app.active_tab_id();
+        harness.app.apply(crate::model::Action::SelectConnection {
+            tab: picker,
+            conn: Some(conn),
+        });
+        harness.press(Key::Enter, Modifiers::NONE);
+        assert_eq!(harness.app.active_tab_id(), tab);
+        assert_eq!(harness.app.open_connections().count(), 1);
+        harness.app.apply(crate::model::Action::ShowConnections);
+        harness.press(Key::Enter, Modifiers::SHIFT);
+        assert_eq!(
+            harness.app.open_connections().count(),
+            2,
+            "a second session of the same connection"
+        );
+        assert_eq!(harness.app.active_tab_id(), picker, "in the picker's tab");
     }
 
     #[test]
@@ -1883,13 +2007,13 @@ mod tests {
     #[test]
     fn the_shortcuts_of_any_tab_work_on_a_sql_tab() {
         let (mut harness, tab) = tree_harness();
-        harness.app.apply(crate::model::Action::NewConnTab);
+        harness.app.apply(crate::model::Action::ShowConnections);
         harness.press(Key::Num1, Modifiers::COMMAND);
         assert_eq!(harness.app.active_tab_id(), tab);
         harness.press(Key::T, Modifiers::COMMAND);
         let workspace = harness.app.workspace(tab).unwrap();
         assert!(workspace.active_sql_tab().is_some());
-        harness.press(Key::Num2, Modifiers::COMMAND);
+        harness.press(Key::Tab, Modifiers::CTRL);
         assert_eq!(harness.app.active, 1);
         harness.press(Key::Num1, Modifiers::COMMAND);
         assert_eq!(harness.app.active, 0);
@@ -4003,7 +4127,8 @@ mod tests {
     #[test]
     fn shortcuts_are_ignored_while_the_dialog_is_open() {
         let mut harness = Harness::new();
-        harness.app.apply(crate::model::Action::NewConnTab);
+        harness.connect_fake();
+        harness.app.apply(crate::model::Action::ShowConnections);
         harness.press(Key::N, Modifiers::COMMAND);
         if let Some(crate::model::Dialog::Connection(form)) = &mut harness.app.dialog {
             form.name = "typed".into();
@@ -6358,21 +6483,19 @@ mod tests {
     }
 
     #[test]
-    fn tabs_share_the_title_bar_with_the_mac_window_buttons() {
+    fn several_connections_share_the_title_bar_with_the_mac_window_buttons() {
         let mut harness = Harness::new();
         mac_title_bar(&mut harness);
-        let first = harness.connect_fake();
-        // Named apart from the saved connection the new tab's picker lists.
-        harness.app.workspace_mut(first).unwrap().name = "Tab one".into();
-        harness.app.apply(crate::model::Action::NewConnTab);
+        harness.connect_fake();
+        connect_another(&mut harness, "Second");
         let tree = harness.settle();
-        let tab = bounds_of(&tree, "Tab one");
-        assert!(tab.x0 >= 80.0, "tabs start after the buttons: {tab:?}");
-        let middle = (tab.y0 + tab.y1) / 2.0;
+        let button = bounds_of(&tree, "Connections");
         assert!(
-            (middle - 20.0).abs() < 1.0,
-            "centred on the buttons' line: {tab:?}"
+            button.x0 >= 80.0,
+            "the bar starts after the buttons: {button:?}"
         );
+        let chip = bounds_of(&tree, "Switch to Fixture · dev");
+        assert!(chip.x0 > button.x1, "the chips follow: {chip:?}");
     }
 
     /// The middle of the node labelled (or valued) `label`.
@@ -6403,9 +6526,9 @@ mod tests {
         );
 
         // One connection: its bar, under the environment stripe.
-        let first = harness.connect_fake();
+        harness.connect_fake();
         let tree = harness.settle();
-        let bar = middle_of(&tree, "Fixture");
+        let bar = middle_of(&tree, "Connections");
         assert!(
             (line(&harness) - bar).abs() < 1.0,
             "the connection bar at {bar}, the buttons at {}",
@@ -6413,15 +6536,23 @@ mod tests {
         );
         assert!(line(&harness) > 20.0, "below the title bar's own middle");
 
-        // Several: the tab bar.
-        harness.app.workspace_mut(first).unwrap().name = "Tab one".into();
-        harness.app.apply(crate::model::Action::NewConnTab);
+        // Several: the same bar, a chip for each.
+        connect_another(&mut harness, "Second");
         let tree = harness.settle();
-        let tab = bounds_of(&tree, "Tab one");
-        let tabs = (tab.y0 + tab.y1) / 2.0;
+        let bar = middle_of(&tree, "Connections");
         assert!(
-            (line(&harness) - tabs).abs() < 1.0,
-            "the tabs at {tabs}, the buttons at {}",
+            (line(&harness) - bar).abs() < 1.0,
+            "the connection bar at {bar}, the buttons at {}",
+            line(&harness)
+        );
+
+        // The picker again, with the connections open behind it: its header.
+        harness.press(Key::O, Modifiers::COMMAND);
+        let tree = harness.settle();
+        let header = middle_of(&tree, "New connection");
+        assert!(
+            (line(&harness) - header).abs() < 1.0,
+            "the picker's header at {header}, the buttons at {}",
             line(&harness)
         );
     }
@@ -6430,17 +6561,15 @@ mod tests {
     fn the_mac_title_bar_is_measured_in_window_points_not_zoomed_ones() {
         let mut harness = Harness::new();
         mac_title_bar(&mut harness);
-        let first = harness.connect_fake();
-        // Named apart from the saved connection the new tab's picker lists.
-        harness.app.workspace_mut(first).unwrap().name = "Tab one".into();
-        harness.app.apply(crate::model::Action::NewConnTab);
+        harness.connect_fake();
         harness.ctx.set_zoom_factor(2.0);
         let tree = harness.settle();
-        let tab = bounds_of(&tree, "Tab one");
-        // 80 window points are 40 egui points at 2x zoom.
+        let button = bounds_of(&tree, "Connections");
+        // 80 window points are 40 egui points at 2x zoom: the bar starts
+        // past those, well short of 80.
         assert!(
-            (tab.x0 - 40.0).abs() < 1.0,
-            "tabs start after the buttons: {tab:?}"
+            button.x0 >= 40.0 && button.x0 < 80.0,
+            "the bar starts after the buttons: {button:?}"
         );
     }
 
@@ -6458,48 +6587,6 @@ mod tests {
             .expect("the connection's name");
         assert!(name.x0 >= 80.0, "after the buttons: {name:?}");
         assert!(name.y1 < 40.0, "in the title bar: {name:?}");
-    }
-
-    #[test]
-    fn the_space_beside_the_mac_window_buttons_stays_when_the_tabs_scroll() {
-        let mut harness = Harness::new();
-        mac_title_bar(&mut harness);
-        for _ in 0..12 {
-            harness.app.apply(crate::model::Action::NewConnTab);
-        }
-        let before = bounds_of(&harness.settle(), "New tab");
-        let over = egui::pos2(400.0, 20.0);
-        harness.frame(vec![egui::Event::PointerMoved(over)]);
-        harness.frame(vec![
-            egui::Event::PointerMoved(over),
-            egui::Event::MouseWheel {
-                unit: egui::MouseWheelUnit::Point,
-                delta: egui::vec2(-400.0, 0.0),
-                modifiers: Modifiers::NONE,
-                phase: egui::TouchPhase::Move,
-            },
-        ]);
-        for _ in 0..60 {
-            harness.frame(vec![]);
-        }
-        let after = bounds_of(&harness.settle(), "New tab");
-        assert!(after.x0 < before.x0 - 100.0, "the tabs scrolled: {after:?}");
-
-        // The corner by the buttons still moves the window.
-        let at = egui::pos2(76.0, 20.0);
-        harness.frame(vec![egui::Event::PointerMoved(at)]);
-        harness.frame(vec![egui::Event::PointerButton {
-            pos: at,
-            button: egui::PointerButton::Primary,
-            pressed: true,
-            modifiers: Modifiers::NONE,
-        }]);
-        harness.frame(vec![egui::Event::PointerMoved(at + egui::vec2(30.0, 0.0))]);
-        assert!(
-            harness
-                .viewport_commands
-                .contains(&egui::ViewportCommand::StartDrag)
-        );
     }
 
     #[test]

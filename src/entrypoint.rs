@@ -228,8 +228,8 @@ pub fn native_options(size: Option<[f32; 2]>, persist: bool) -> eframe::NativeOp
             viewport
         }
     };
-    // macOS: no separate title strip. The connection tabs sit in the title
-    // bar next to the window buttons, as in Safari.
+    // macOS: no separate title strip. The connection bar sits in the title
+    // bar next to the window buttons, as Safari's tabs do.
     let viewport = if cfg!(target_os = "macos") {
         viewport
             .with_fullsize_content_view(true)
