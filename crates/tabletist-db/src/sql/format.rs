@@ -125,6 +125,16 @@ const JOIN_LEADERS: &[&str] = &[
 /// The width of the river: `SELECT`.
 const RIVER: usize = 6;
 
+/// How far a `WHEN`, an `ELSE` and what follows them stand in from their
+/// `CASE`.
+const CASE_INDENT: usize = 4;
+
+/// How deep queries in parentheses are laid out as blocks. The layout
+/// recurses once for each, so a script nested without end (a generated
+/// one, a hostile paste) must not be followed all the way down: past
+/// this depth a parenthesis stays on its line, whatever it holds.
+const MAX_DEPTH: usize = 64;
+
 /// `script` with the statements `selection` overlaps formatted, or all of
 /// them when it is `None` or empty, and where `cursor` went. All three are
 /// byte offsets. `None` when there is nothing to change.
@@ -148,7 +158,7 @@ pub fn format(
     let cursor = if cursor <= region.start {
         cursor
     } else if cursor >= region.end {
-        region.start + laid.len() + (cursor - region.end)
+        region.start + laid.len() + (cursor.min(script.len()) - region.end)
     } else {
         moved(&tokens, &after, cursor).unwrap_or(text.len())
     };
@@ -245,7 +255,10 @@ fn items<'a>(script: &'a str, tokens: &[Token], region: &Range<usize>) -> Vec<It
     for token in inside {
         let text = &script[token.range.clone()];
         if token.kind == TokenKind::Whitespace {
-            space = text;
+            // What stands before the first item is not between two.
+            if !items.is_empty() {
+                space = text;
+            }
         } else {
             items.push(Item {
                 kind: token.kind,
@@ -336,8 +349,9 @@ enum Place {
 struct Block {
     /// The column its river starts at.
     base: usize,
-    /// A statement's own block: no `)` ends it.
-    top: bool,
+    /// How many blocks it is inside of. A statement's own block is
+    /// inside none, and no `)` ends it.
+    depth: usize,
     clause: Clause,
     /// `AND` and `OR` start lines: in a `WHERE`, a `HAVING`, a join's `ON`.
     conditions: bool,
@@ -353,10 +367,10 @@ struct Block {
 }
 
 impl Block {
-    fn new(base: usize, top: bool) -> Self {
+    fn new(base: usize, depth: usize) -> Self {
         Self {
             base,
-            top,
+            depth,
             clause: Clause::Other,
             conditions: false,
             between: false,
@@ -447,7 +461,7 @@ impl<'a> Layout<'a> {
 
     /// A query statement and its `;`.
     fn query(&mut self) {
-        self.block(0, true);
+        self.block(0, 0);
         if self.items.get(self.at).is_some() {
             // The block stopped at the statement's `;`.
             if self.ended {
@@ -461,8 +475,8 @@ impl<'a> Layout<'a> {
 
     /// Lays out a block from its first token to the `)` that ends it (left
     /// for the caller), the statement's `;` (left too) or the end.
-    fn block(&mut self, base: usize, top: bool) {
-        let mut block = Block::new(base, top);
+    fn block(&mut self, base: usize, depth: usize) {
+        let mut block = Block::new(base, depth);
         while let Some(item) = self.items.get(self.at).copied() {
             match item.kind {
                 TokenKind::Semicolon => return,
@@ -487,7 +501,7 @@ impl<'a> Layout<'a> {
                             };
                             self.put(&mut block, place, false);
                         }
-                        None if block.top => self.put(&mut block, Place::Inline, false),
+                        None if block.depth == 0 => self.put(&mut block, Place::Inline, false),
                         None => return,
                     }
                 }
@@ -504,14 +518,14 @@ impl<'a> Layout<'a> {
 
     /// A `(`: a block of its own, or a parenthesis on its line.
     fn open(&mut self, block: &mut Block) {
-        let nested = self.opens_block(self.at);
+        let nested = block.depth < MAX_DEPTH && self.opens_block(self.at);
         self.put(block, Place::Inline, false);
         let column = self.writer.column;
         if !nested {
             block.frames.push(Frame::Paren(column - 1));
             return;
         }
-        self.block(column, false);
+        self.block(column, block.depth + 1);
         if self.items.get(self.at).is_some_and(|item| item.is(")")) {
             if self.ended {
                 self.writer.line(column - 1);
@@ -536,7 +550,7 @@ impl<'a> Layout<'a> {
         }
         if let Some(Frame::Case(column)) = block.frames.last().copied() {
             if is("WHEN") || is("ELSE") {
-                return self.put(block, Place::Line(column + 4), false);
+                return self.put(block, Place::Line(column + CASE_INDENT), false);
             }
             if is("END") {
                 block.frames.pop();
@@ -607,8 +621,10 @@ impl<'a> Layout<'a> {
 
     /// How many words the join head at `at` has: leaders, then `JOIN`.
     fn join(&self, at: usize) -> Option<usize> {
+        // No join has more leaders than `NATURAL LEFT OUTER`: a longer run
+        // of them is not read to its end for every word of it.
         let mut end = at;
-        while self.word(end, JOIN_LEADERS) {
+        while end - at < 3 && self.word(end, JOIN_LEADERS) {
             end += 1;
         }
         self.word(end, &["JOIN"]).then_some(end - at + 1)
@@ -657,6 +673,7 @@ impl<'a> Layout<'a> {
                 // PostgreSQL joins two strings only across a line break.
                 self.writer.push(item.space);
             } else if item.is(",") || item.is(")") || before.is("(") {
+                // Nothing stands before a `,` or a `)`, nor after a `(`.
             } else if block.headed || before.is(",") || !item.space.is_empty() {
                 self.writer.push(" ");
             }
@@ -812,25 +829,37 @@ mod tests {
 
     const DIALECTS: [Dialect; 3] = [Dialect::Postgres, Dialect::MySql, Dialect::Sqlite];
 
-    /// The whole of `script` formatted, or the script itself when Format
-    /// has nothing to change. Checks what every result owes: the same
-    /// tokens, and nothing left for a second pass.
-    fn formatted(dialect: Dialect, script: &str) -> String {
+    /// `script` with the statements `selection` overlaps laid out (all of
+    /// them for `None`), and where the laid out part is in the result. The
+    /// layout itself, before the check that would hide a fault: the tokens
+    /// are compared here.
+    fn laid(
+        dialect: Dialect,
+        script: &str,
+        selection: Option<Range<usize>>,
+    ) -> (String, Range<usize>) {
         let old = tokenize(dialect, script);
-        // The layout itself, before the check that would hide a fault.
-        let result = match laid_out(dialect, script, &old, None) {
-            Some((region, laid)) => {
-                [&script[..region.start], &laid, &script[region.end..]].concat()
-            }
-            None => script.to_owned(),
+        let Some((region, laid)) = laid_out(dialect, script, &old, selection) else {
+            return (script.to_owned(), 0..0);
         };
+        let result = [&script[..region.start], &laid, &script[region.end..]].concat();
         assert!(
             same_tokens(script, &old, &result, &tokenize(dialect, &result)),
             "{script:?}"
         );
+        (result, region.start..region.start + laid.len())
+    }
+
+    /// The whole of `script` formatted, or the script itself when Format
+    /// has nothing to change. Checks what every result owes: the same
+    /// tokens, and nothing left for a second pass.
+    fn formatted(dialect: Dialect, script: &str) -> String {
+        let (result, _) = laid(dialect, script, None);
         let checked = format(dialect, script, None, 0).map(|formatted| formatted.text);
         assert_eq!(checked.as_deref().unwrap_or(script), result, "{script:?}");
-        assert!(format(dialect, &result, None, 0).is_none(), "{result:?}");
+        // The second pass is the layout's too: `format` returns `None` as
+        // well for a layout its check refused.
+        assert_eq!(laid(dialect, &result, None).0, result, "{script:?}");
         result
     }
 
@@ -1055,6 +1084,23 @@ mod tests {
                 "                 FROM u)",
             ])
         );
+    }
+
+    #[test]
+    fn nesting_without_end_stops_being_laid_out_as_blocks() {
+        // Deeper than any stack could follow: the layout must not recurse
+        // for each.
+        let deep = 100_000;
+        let script = "(select 1 from ".repeat(deep) + "t" + &")".repeat(deep);
+        let formatted = format(Dialect::Postgres, &script, None, 0).unwrap();
+        // Each block puts its FROM on a line; past the depth it is all on
+        // the last one.
+        assert_eq!(formatted.text.lines().count(), MAX_DEPTH + 1);
+        let last = "(SELECT 1 FROM ".repeat(deep - MAX_DEPTH) + "t" + &")".repeat(deep);
+        assert!(formatted.text.ends_with(&last));
+        // Nor is a long run of join leaders read to its end for each word.
+        let script = "select ".to_owned() + &"left ".repeat(deep) + "join t";
+        assert!(format(Dialect::Postgres, &script, None, 0).is_some());
     }
 
     #[test]
@@ -1571,8 +1617,17 @@ mod tests {
                     script.push(' ');
                 }
             }
+            // The pieces are ASCII, so every offset is a character's.
+            let (from, to) = (next(script.len() + 1), next(script.len() + 1));
+            let selection = from.min(to)..from.max(to);
             for dialect in DIALECTS {
                 formatted(dialect, &script);
+                // A selection's statements: the same tokens, and laid out
+                // again they stay as they are.
+                let (result, part) = laid(dialect, &script, Some(selection.clone()));
+                if !part.is_empty() {
+                    assert_eq!(laid(dialect, &result, Some(part)).0, result, "{script:?}");
+                }
             }
         }
     }
