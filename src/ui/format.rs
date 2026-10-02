@@ -411,6 +411,40 @@ pub fn describe_error(locale: impl fastframe_i18n::Locale, error: &tabletist_db:
     sentence.into_owned()
 }
 
+/// The most characters of what a database said that a message or an error
+/// card shows.
+pub const MESSAGE_MAX_CHARS: usize = 2_000;
+
+/// What a database said, cut to what a message shows and ending in "…"
+/// when cut. A message can hold megabytes (PostgreSQL repeats a literal it
+/// cannot read) and is written and laid out every frame, so nothing here
+/// looks past the cut. The start says what went wrong.
+pub fn capped(text: &str) -> Cow<'_, str> {
+    match text.char_indices().nth(MESSAGE_MAX_CHARS) {
+        Some((end, _)) => format!("{}…", &text[..end]).into(),
+        None => text.into(),
+    }
+}
+
+/// Whether `error` is the read-only session refusing a write: Tabletist's
+/// own guard, or the server's refusal. PostgreSQL and MySQL say SQLSTATE
+/// 25006; SQLite says SQLITE_READONLY (8) and no more. Its extended codes
+/// keep the 8 in their low byte and are not a refused write: a journal to
+/// recover, a lock or a directory it cannot have, which a SELECT can meet.
+pub fn refuses_writes(error: &tabletist_db::Error, driver: tabletist_db::Driver) -> bool {
+    use tabletist_db::{Driver, Error};
+    match error {
+        Error::Refused { .. } => true,
+        Error::Query {
+            code: Some(code), ..
+        } => match driver {
+            Driver::Sqlite => code == "8",
+            Driver::Postgres | Driver::MySql => code == "25006",
+        },
+        _ => false,
+    }
+}
+
 /// A row as tab-separated values on one line.
 pub fn tsv_row(row: &[Value]) -> String {
     row.iter()
@@ -483,6 +517,55 @@ pub fn for_display(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_refused_write_is_told_from_other_errors() {
+        use super::refuses_writes;
+        use tabletist_db::{Driver, Error};
+        let coded = |code: &str| Error::Query {
+            code: Some(code.into()),
+            message: "no".into(),
+            detail: None,
+            hint: None,
+        };
+        let refused = Error::Refused {
+            line: 1,
+            what: "COMMIT".into(),
+        };
+        for driver in [Driver::Postgres, Driver::MySql, Driver::Sqlite] {
+            assert!(refuses_writes(&refused, driver));
+            assert!(!refuses_writes(&Error::Timeout, driver));
+        }
+        // SQLSTATE 25006: read_only_sql_transaction.
+        assert!(refuses_writes(&coded("25006"), Driver::Postgres));
+        assert!(refuses_writes(&coded("25006"), Driver::MySql));
+        assert!(!refuses_writes(&coded("42703"), Driver::Postgres));
+        // SQLITE_READONLY is 8: what a write on the read-only session gets.
+        assert!(refuses_writes(&coded("8"), Driver::Sqlite));
+        assert!(!refuses_writes(&coded("1"), Driver::Sqlite));
+        // Its extended codes keep the 8 in their low byte and are other
+        // troubles, which a SELECT can meet: RECOVERY, CANTLOCK, ROLLBACK,
+        // DBMOVED, CANTINIT and DIRECTORY.
+        for extended in ["264", "520", "776", "1032", "1288", "1544"] {
+            assert!(
+                !refuses_writes(&coded(extended), Driver::Sqlite),
+                "{extended}"
+            );
+        }
+        // A SQLSTATE whose number ends in the same byte is not SQLite's code.
+        assert!(!refuses_writes(&coded("23048"), Driver::Postgres));
+    }
+
+    #[test]
+    fn a_message_is_cut_where_a_database_says_too_much() {
+        use super::{MESSAGE_MAX_CHARS, capped};
+        assert_eq!(capped("no such column: x"), "no such column: x");
+        let exact = "é".repeat(MESSAGE_MAX_CHARS);
+        assert_eq!(capped(&exact), exact.as_str());
+        // Cut between characters, never inside one.
+        let long = "é".repeat(MESSAGE_MAX_CHARS + 1);
+        assert_eq!(capped(&long), format!("{exact}…"));
+    }
+
     #[test]
     fn timestamps_drop_their_fraction_and_keep_their_zone() {
         use super::to_the_second;

@@ -733,6 +733,17 @@ impl App {
                 match active {
                     Some((id, described)) => {
                         self.reset_count(tab, id);
+                        // Over an error box a refresh is a retry: what the
+                        // error replaced is not what comes back if it is
+                        // given up.
+                        if let Some(object) = self.object_tab_mut(tab, id) {
+                            if object.rows.shown_error().is_some() {
+                                object.drop_page();
+                            }
+                            if object.structure.shown_error().is_some() {
+                                object.structure.value = None;
+                            }
+                        }
                         self.fetch_rows(tab, id);
                         if described {
                             self.describe(tab, id);
@@ -951,10 +962,21 @@ impl App {
                 if bar_changed {
                     self.apply_filters(tab, object_tab);
                 } else {
+                    // A retry answers an error: no older page is on screen
+                    // for a cancelled one to go back to.
+                    if let Some(object) = self.object_tab_mut(tab, object_tab) {
+                        object.drop_page();
+                    }
                     self.fetch_rows(tab, object_tab);
                 }
             }
-            Action::RetryStructure { tab, object_tab } => self.describe(tab, object_tab),
+            Action::RetryStructure { tab, object_tab } => {
+                // As a retry of the rows: the structure under the error goes.
+                if let Some(object) = self.object_tab_mut(tab, object_tab) {
+                    object.structure.value = None;
+                }
+                self.describe(tab, object_tab);
+            }
             Action::SetDriver(driver) => {
                 if let Some(Dialog::Connection(form)) = &mut self.dialog {
                     // A port left at the old driver's default follows the driver.
@@ -1334,6 +1356,7 @@ impl App {
             return;
         };
         workspace.secrets = secrets.clone();
+        workspace.connect_started = Some(std::time::Instant::now());
         let (session, spec) = (workspace.session, workspace.spec.clone());
         // A blank answer means "no password" to the server.
         let mut secrets = secrets;
@@ -1409,6 +1432,7 @@ impl App {
         if let Some(workspace) = self.workspace_mut(tab) {
             let old = std::mem::replace(&mut workspace.session, session);
             workspace.status = SessionStatus::Connecting { request };
+            workspace.connect_started = None;
             workspace.forget_session_requests();
             self.backend.send(Command::Close { session: old });
         }
@@ -1557,6 +1581,7 @@ impl App {
         };
         let old = std::mem::replace(&mut workspace.session, session);
         workspace.status = SessionStatus::Connecting { request };
+        workspace.connect_started = None;
         workspace.forget_session_requests();
         self.backend.send(Command::Close { session: old });
         // Reuses the secrets this tab already has; asks only for missing ones.
@@ -3243,6 +3268,70 @@ mod tests {
             app.backend.sent.last(),
             Some(Command::Connect { session: s, .. }) if *s == new_session
         ));
+    }
+
+    #[test]
+    fn sending_the_connect_starts_its_clock() {
+        let (mut app, _dir) = app();
+        let (tab, _, _) = connect(&mut app);
+        let first = app.workspace(tab).unwrap().connect_started;
+        let first = first.expect("the connect was sent");
+        // The clock a second behind: a reconnect that left it alone would
+        // still read that.
+        let earlier = std::time::Instant::now().checked_sub(std::time::Duration::from_secs(1));
+        if earlier.is_some() {
+            app.workspace_mut(tab).unwrap().connect_started = earlier;
+        }
+        // A reconnect is a new attempt with a clock of its own.
+        let sent = app.backend.sent.len();
+        app.apply(Action::Reconnect(tab));
+        assert!(
+            app.backend.sent[sent..]
+                .iter()
+                .any(|command| matches!(command, Command::Connect { .. })),
+            "the reconnect sent a Connect"
+        );
+        let second = app.workspace(tab).unwrap().connect_started;
+        let second = second.expect("the clock was restarted");
+        match earlier {
+            Some(earlier) => assert!(second > earlier, "the clock runs from the new Connect"),
+            // A clock too young to set back: a coarse one can read the same
+            // for both.
+            None => assert!(second >= first, "the clock runs from the new Connect"),
+        }
+    }
+
+    #[test]
+    fn a_reconnect_waiting_at_the_password_prompt_has_no_clock() {
+        let (mut app, _dir) = app();
+        let conn = postgres_saved(&mut app, PasswordMode::Ask);
+        let tab = app.active_tab_id();
+        app.apply(Action::Connect { tab, conn });
+        prompt(&mut app).password = "wrong".into();
+        app.apply(Action::SubmitPassword);
+        assert!(app.workspace(tab).unwrap().connect_started.is_some());
+        let (session, request, _) = last_connect(&app);
+        app.apply(Action::Backend(Event::ConnectFailed {
+            session,
+            request,
+            error: rejected(),
+        }));
+        app.apply(Action::CloseDialog);
+        let sent = app.backend.sent.len();
+        app.apply(Action::Reconnect(tab));
+        assert!(matches!(app.dialog, Some(Dialog::Password(_))));
+        assert!(
+            !app.backend.sent[sent..]
+                .iter()
+                .any(|command| matches!(command, Command::Connect { .. })),
+            "no Connect is sent while the prompt is open"
+        );
+        let workspace = app.workspace(tab).unwrap();
+        assert!(matches!(workspace.status, SessionStatus::Connecting { .. }));
+        assert!(
+            workspace.connect_started.is_none(),
+            "the time of the attempt before is not shown"
+        );
     }
 
     #[test]
@@ -7448,7 +7537,7 @@ mod tests {
         }
     }
 
-    /// Batch 7: count, filters, quick open, tree keys.
+    /// Count, filters, quick open, tree keys.
     mod power {
         use super::*;
         use crate::model::{FilterRow, Pane, TabId, TreeKey, TreeNode};
@@ -8010,6 +8099,41 @@ mod tests {
                 Some(Command::FetchRows { query, .. }) => assert_eq!(query.offset, offset),
                 other => panic!("{other:?}"),
             }
+        }
+
+        #[test]
+        fn retry_drops_the_page_under_the_error_but_keeps_the_columns() {
+            let mut harness = Harness::new();
+            let (tab, id) = open_users(&mut harness);
+            harness.app.apply(Action::SelectCell {
+                tab,
+                id,
+                cell: CellPos { row: 1, col: 0 },
+            });
+            harness.app.apply(Action::Refresh(tab));
+            let (session, request) = match harness.app.backend.sent.last() {
+                Some(Command::FetchRows {
+                    session, request, ..
+                }) => (*session, *request),
+                other => panic!("{other:?}"),
+            };
+            harness.app.apply(Action::Backend(Event::Rows {
+                session,
+                request,
+                result: Err(Error::query("connection reset")),
+            }));
+            assert!(object(&harness, tab, id).page().is_some(), "held");
+            harness.app.apply(Action::RetryRows {
+                tab,
+                object_tab: id,
+            });
+            let object = object(&harness, tab, id);
+            assert!(object.page().is_none(), "no page older than the error");
+            assert_eq!(object.selection, None, "nor a cell of it");
+            assert!(
+                !object.filter.columns.is_empty(),
+                "the bar still lists columns"
+            );
         }
 
         #[test]

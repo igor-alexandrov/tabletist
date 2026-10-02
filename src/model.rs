@@ -354,6 +354,9 @@ pub struct Workspace {
     /// session connects; `prefer` may have fallen back to plain text.
     pub encrypted: bool,
     pub status: SessionStatus,
+    /// When the connect in flight was sent to the backend (after any
+    /// password prompt), for the time the tab shows.
+    pub connect_started: Option<std::time::Instant>,
     pub tree: Tree,
     /// Open tabs, in strip order.
     pub tabs: Vec<Tab>,
@@ -1055,6 +1058,8 @@ pub struct Fetch<T> {
     pub error: Option<Error>,
     /// The request whose answer `value` holds.
     pub loaded: Option<RequestId>,
+    /// When the pending request was sent, for the time a wait shows.
+    pub started: Option<std::time::Instant>,
 }
 
 impl<T> Default for Fetch<T> {
@@ -1064,6 +1069,7 @@ impl<T> Default for Fetch<T> {
             pending: None,
             error: None,
             loaded: None,
+            started: None,
         }
     }
 }
@@ -1072,6 +1078,7 @@ impl<T> Fetch<T> {
     pub fn start(&mut self, request: RequestId) {
         self.pending = Some(request);
         self.error = None;
+        self.started = Some(std::time::Instant::now());
     }
 
     /// Applies a result if it answers the pending request. Returns whether it did.
@@ -1080,6 +1087,7 @@ impl<T> Fetch<T> {
             return false;
         }
         self.pending = None;
+        self.started = None;
         match result {
             Ok(value) => {
                 self.value = Some(value);
@@ -1093,6 +1101,24 @@ impl<T> Fetch<T> {
 
     pub fn is_loading(&self) -> bool {
         self.pending.is_some()
+    }
+
+    /// How long the request in flight has been going.
+    pub fn running_for(&self) -> Option<Duration> {
+        self.pending
+            .and(self.started)
+            .map(|started| started.elapsed())
+    }
+
+    /// The error shown in place of the value. Two are not shown while a
+    /// value is held, and what was on screen stays: a lost connection,
+    /// which the strip over the tab says, and a cancelled refresh, which
+    /// failed at nothing.
+    pub fn shown_error(&self) -> Option<&Error> {
+        let keeps_value = |error: &Error| {
+            self.value.is_some() && (error.is_connection_lost() || *error == Error::Cancelled)
+        };
+        self.error.as_ref().filter(|error| !keeps_value(error))
     }
 
     /// Never loaded and not loading.
@@ -1542,6 +1568,16 @@ impl ObjectTab {
         self.rows.value.as_ref()
     }
 
+    /// Forgets the page and the selection in it, before a fetch that
+    /// answers an error. The filter bar keeps the columns it offered.
+    pub fn drop_page(&mut self) {
+        if let Some(page) = self.page() {
+            self.filter.columns = page.columns.iter().map(|c| c.name.clone()).collect();
+        }
+        self.selection = None;
+        self.rows.value = None;
+    }
+
     /// The row panel's text for the selected row, if it is up to date.
     pub fn selected_fields(&self) -> Option<&RowFields> {
         let cell = self.selection?;
@@ -1956,6 +1992,35 @@ impl SqlTab {
 }
 
 impl Workspace {
+    /// Whether the tab has content to show now: its schemas are listed, or
+    /// could not be. Until then the tab shows how connecting goes. A switch
+    /// of database starts the tree over, so a tab in use can go back to
+    /// not opened.
+    pub fn opened(&self) -> bool {
+        self.tree.schemas.value.is_some() || self.tree.schemas.error.is_some()
+    }
+
+    /// Whether giving up the connect loses nothing: the tab has not opened,
+    /// a connect or its schema listing is under way, and no tab is open in
+    /// it. Giving up closes the workspace, and with it the SQL editors a
+    /// switch of database keeps.
+    pub fn can_give_up(&self) -> bool {
+        !self.opened()
+            && matches!(
+                self.status,
+                SessionStatus::Connecting { .. } | SessionStatus::Connected
+            )
+            && self.tabs.is_empty()
+    }
+
+    /// How long the connect in flight has been going, once it was sent.
+    pub fn connecting_for(&self) -> Option<Duration> {
+        matches!(self.status, SessionStatus::Connecting { .. })
+            .then_some(self.connect_started)
+            .flatten()
+            .map(|started| started.elapsed())
+    }
+
     /// A workspace for `saved` that is connecting as `session`; `request`
     /// is the connect it waits for, and `secrets` are the ones typed so far.
     pub fn new(
@@ -1973,6 +2038,7 @@ impl Workspace {
             encrypted: false,
             spec: saved.spec,
             status: SessionStatus::Connecting { request },
+            connect_started: None,
             tree: Tree::default(),
             tabs: Vec::new(),
             next_query: 1,
@@ -2192,6 +2258,55 @@ mod tests {
             100,
             None,
         )))
+    }
+
+    #[test]
+    fn a_fetch_times_the_request_in_flight() {
+        let mut fetch: Fetch<u32> = Fetch::default();
+        assert_eq!(fetch.running_for(), None);
+        fetch.start(RequestId(1));
+        assert!(fetch.running_for().is_some());
+        assert!(fetch.finish(RequestId(1), Ok(7)));
+        assert_eq!(fetch.running_for(), None, "nothing is in flight");
+    }
+
+    #[test]
+    fn a_fetch_dropped_without_an_answer_is_not_timed() {
+        let mut fetch: Fetch<u32> = Fetch::default();
+        fetch.start(RequestId(1));
+        // Dropped without an answer: nothing is in flight any more.
+        fetch.pending = None;
+        assert_eq!(fetch.running_for(), None);
+    }
+
+    #[test]
+    fn a_workspace_opens_once_its_schemas_were_listed() {
+        let mut workspace = crate::testing::workspace();
+        assert!(!workspace.opened());
+        assert_eq!(workspace.connecting_for(), None, "nothing was sent yet");
+        workspace.connect_started = Some(std::time::Instant::now());
+        assert!(workspace.connecting_for().is_some());
+        workspace.status = SessionStatus::Connected;
+        assert_eq!(workspace.connecting_for(), None, "the connect was answered");
+        workspace.tree.schemas.value = Some(Vec::new());
+        assert!(workspace.opened());
+    }
+
+    #[test]
+    fn a_connect_is_given_up_only_with_nothing_to_lose() {
+        let mut workspace = crate::testing::workspace();
+        assert!(workspace.can_give_up(), "a first connect");
+        workspace.status = SessionStatus::Connected;
+        assert!(workspace.can_give_up(), "its schemas are being listed");
+        // A SQL editor is the user's work: a switch of database keeps it.
+        workspace.tabs.push(sql_tab(1));
+        assert!(!workspace.can_give_up(), "an editor is open");
+        workspace.tabs.clear();
+        workspace.status = SessionStatus::Cancelled;
+        assert!(!workspace.can_give_up(), "nothing is under way");
+        workspace.status = SessionStatus::Connected;
+        workspace.tree.schemas.value = Some(Vec::new());
+        assert!(!workspace.can_give_up(), "the tab opened");
     }
 
     #[test]

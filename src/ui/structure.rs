@@ -40,7 +40,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
         return;
     };
     let mut actions = Vec::new();
-    if let Some(error) = &object.structure.error {
+    let area = ui.max_rect();
+    if let Some(error) = super::data_view::shown_error(&object.structure) {
         egui::Frame::new()
             .inner_margin(egui::Margin::same(theme::PAD))
             .show(ui, |ui| {
@@ -179,10 +180,25 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
                         }
                     });
             });
-    } else {
-        ui.centered_and_justified(|ui| {
-            ui.spinner();
-        });
+    }
+    // A fetch that has lasted, over whatever is up: a refresh keeps the
+    // structure it replaces on screen.
+    if let Some(waited) = object.structure.running_for() {
+        if super::states::lasted(waited) {
+            let (text, name, keys) = (
+                look.label(&gettext(locale, "Loading structure…")),
+                look.label(&gettext(locale, "Cancel")),
+                super::data_view::cancel_keys(&look),
+            );
+            let cancel = super::states::key_button(&name, &keys, &look).label("Cancel query");
+            if super::states::running(ui, area, &text, waited, Some(cancel), &look, &palette) {
+                actions.push(Action::CancelQuery(tab));
+            }
+        } else {
+            // Come back when the wait is long enough to show.
+            ui.ctx()
+                .request_repaint_after(super::states::DELAY - waited);
+        }
     }
     app.actions.extend(actions);
 }

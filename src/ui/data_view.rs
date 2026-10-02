@@ -15,6 +15,7 @@ use crate::theme::{Icon, Look, Palette};
 use crate::typography::{Text, TextRole};
 use crate::ui::format;
 use crate::ui::grid::{self, Cell, Column, Style};
+use crate::ui::states;
 use crate::ui::widgets;
 
 /// Left and right padding of the header, toolbar and footer.
@@ -381,20 +382,10 @@ fn sort_chip(
     (chip, response.clicked())
 }
 
-/// Above the grid: Add filter and the filters in use (macOS), or the
-/// terminal's WHERE line; the sort; and how timestamps are shown.
-pub fn toolbar(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId) {
-    let locale = app.locale;
-    let palette = app.palette;
-    let look = app.look;
-    let Some(workspace) = app.workspace(tab) else {
-        return;
-    };
-    let full_precision = workspace.full_precision;
-    let Some(object) = workspace.object_tab(object_tab) else {
-        return;
-    };
-    let filters: Vec<String> = object
+/// The applied filters as the toolbar's chips write them, the raw WHERE
+/// last.
+fn filter_texts(object: &ObjectTab) -> Vec<String> {
+    object
         .query
         .filters
         .iter()
@@ -410,7 +401,23 @@ pub fn toolbar(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: Tab
             }
         })
         .chain(object.query.raw_where.clone())
-        .collect();
+        .collect()
+}
+
+/// Above the grid: Add filter and the filters in use (macOS), or the
+/// terminal's WHERE line; the sort; and how timestamps are shown.
+pub fn toolbar(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId) {
+    let locale = app.locale;
+    let palette = app.palette;
+    let look = app.look;
+    let Some(workspace) = app.workspace(tab) else {
+        return;
+    };
+    let full_precision = workspace.full_precision;
+    let Some(object) = workspace.object_tab(object_tab) else {
+        return;
+    };
+    let filters = filter_texts(object);
     let sort = object
         .query
         .sort
@@ -723,8 +730,7 @@ pub fn footer(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabI
         return;
     };
     let view = object.view;
-    let loading =
-        object.rows.is_loading() || object.structure.is_loading() || object.count.is_loading();
+    let fetching = object.rows.is_loading();
     let counting = object.count.is_loading();
     let count_error = object.count.error.as_ref().map(ToString::to_string);
     // Counting helps only when the page is not the whole result.
@@ -773,8 +779,8 @@ pub fn footer(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabI
                         .clone()
                         .map(|range| format!("{} {range}", gettext(locale, "Rows")))
                         .unwrap_or_else(|| {
-                            if loading {
-                                gettext(locale, "Loading…")
+                            if fetching {
+                                gettext(locale, "Waiting for server")
                             } else {
                                 gettext(locale, "No rows")
                             }
@@ -841,7 +847,7 @@ pub fn footer(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabI
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.spacing_mut().item_spacing.x = 16.0;
-                    if loading {
+                    if counting {
                         if widgets::icon_button(
                             ui,
                             Icon::CircleX,
@@ -949,104 +955,241 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
         return;
     };
     let mut actions = Vec::new();
-    if let Some(error) = &object.rows.error {
+    let area = ui.max_rect();
+    // How long the fetch in flight has been going, read once: every piece
+    // below sees the same wait.
+    let waited = object.rows.running_for();
+    let lasted = waited.is_some_and(states::lasted);
+    if let Some(error) = shown_error(&object.rows) {
         Frame::new().inner_margin(Margin::same(12)).show(ui, |ui| {
             error_box(ui, error, &look, &palette, locale, || {
                 actions.push(Action::RetryRows { tab, object_tab })
             });
         });
     } else if let Some(page) = object.page() {
-        if page.rows.is_empty() {
-            let filtered = !object.query.filters.is_empty() || object.query.raw_where.is_some();
-            let table = object.kind == tabletist_db::ObjectKind::Table;
-            ui.vertical_centered(|ui| {
-                ui.add_space(ui.available_height() / 3.0);
-                let text = if filtered {
-                    gettext(locale, "No rows match the filter")
-                } else if table {
-                    gettext(locale, "This table is empty")
-                } else {
-                    gettext(locale, "No rows")
-                };
-                Text::one(&look, widgets::body(&look), &text, palette.secondary)
-                    .layout(ui.ctx())
-                    .label(ui);
-                if filtered {
-                    ui.add_space(8.0);
-                    let label = gettext(locale, "Clear filter");
-                    if widgets::button(ui, &label, &look).clicked() {
-                        actions.push(Action::ClearFilters { tab, object_tab });
-                    }
+        let structure = object.structure.value.as_ref();
+        let columns: Vec<Column<'_>> = page
+            .columns
+            .iter()
+            .map(|column| {
+                let (type_line, key) = type_line(
+                    &column.name,
+                    &column.type_name,
+                    column.kind,
+                    structure,
+                    &look,
+                );
+                Column {
+                    name: &column.name,
+                    type_line,
+                    numeric: column.kind == ValueKind::Numeric,
+                    sort: object.sort_of(&column.name),
+                    key,
+                    flexible: column.kind == ValueKind::Json,
+                    sortable: true,
                 }
+            })
+            .collect();
+        let ctx = ui.ctx().clone();
+        let tags = crate::ui::value_tags::Tags::of_page(page, structure);
+        let output = grid::show(
+            ui,
+            // Full precision widens timestamps: the columns fit again.
+            Id::new(("grid", tab.0, object_tab.0, full_precision)),
+            &columns,
+            page.rows.len(),
+            object.query.offset,
+            object.selection,
+            &palette,
+            &look,
+            |row, col| {
+                cell(
+                    &ctx,
+                    &page.rows[row][col],
+                    page.columns[col].kind,
+                    &tags[col],
+                    &look,
+                    full_precision,
+                )
+            },
+        );
+        if let Some(cell) = output.clicked {
+            actions.push(Action::SelectCell {
+                tab,
+                id: object_tab,
+                cell,
             });
-        } else {
-            let structure = object.structure.value.as_ref();
-            let columns: Vec<Column<'_>> = page
-                .columns
-                .iter()
-                .map(|column| {
-                    let (type_line, key) = type_line(
-                        &column.name,
-                        &column.type_name,
-                        column.kind,
-                        structure,
-                        &look,
-                    );
-                    Column {
-                        name: &column.name,
-                        type_line,
-                        numeric: column.kind == ValueKind::Numeric,
-                        sort: object.sort_of(&column.name),
-                        key,
-                        flexible: column.kind == ValueKind::Json,
-                        sortable: true,
-                    }
-                })
-                .collect();
-            let ctx = ui.ctx().clone();
-            let tags = crate::ui::value_tags::Tags::of_page(page, structure);
-            let output = grid::show(
-                ui,
-                // Full precision widens timestamps: the columns fit again.
-                Id::new(("grid", tab.0, object_tab.0, full_precision)),
-                &columns,
-                page.rows.len(),
-                object.query.offset,
-                object.selection,
-                &palette,
-                &look,
-                |row, col| {
-                    cell(
-                        &ctx,
-                        &page.rows[row][col],
-                        page.columns[col].kind,
-                        &tags[col],
-                        &look,
-                        full_precision,
-                    )
-                },
-            );
-            if let Some(cell) = output.clicked {
-                actions.push(Action::SelectCell {
-                    tab,
-                    id: object_tab,
-                    cell,
-                });
-            }
-            if let Some(col) = output.sort_clicked {
-                actions.push(Action::SortBy {
-                    tab,
-                    object_tab,
-                    column: page.columns[col].name.clone(),
-                });
-            }
         }
-    } else {
-        ui.centered_and_justified(|ui| {
-            ui.spinner();
-        });
+        if let Some(col) = output.sort_clicked {
+            actions.push(Action::SortBy {
+                tab,
+                object_tab,
+                column: page.columns[col].name.clone(),
+            });
+        }
+        // Not while a fetch has lasted: its box would sit on the state's
+        // title or its button, and says what is happening by itself.
+        if page.rows.is_empty() && !lasted {
+            // The headers stay: the columns are still worth reading.
+            let under = Rect::from_min_max(
+                pos2(area.left(), area.top() + grid::header_height(&look)),
+                area.max,
+            );
+            empty_rows(
+                ui,
+                under,
+                object,
+                tab,
+                (&look, &palette, locale),
+                &mut actions,
+            );
+        }
+    } else if lasted {
+        // Rows on their way and none to show yet: the shape of a grid.
+        if !look.terminal {
+            states::progress(ui, area.x_range(), area.top(), &palette);
+        }
+        let rows = Rect::from_min_max(pos2(area.left(), area.top() + 2.0), area.max);
+        states::skeleton(ui, rows, &look, &palette);
+    }
+    // A fetch that has lasted, over whatever is up: a refresh and the next
+    // page keep the page they replace on screen.
+    if let Some(waited) = waited {
+        if lasted {
+            let (text, name, keys) = (
+                look.label(&gettext(locale, "Running query…")),
+                look.label(&gettext(locale, "Cancel")),
+                cancel_keys(&look),
+            );
+            let cancel = states::key_button(&name, &keys, &look).label("Cancel query");
+            if states::running(ui, area, &text, waited, Some(cancel), &look, &palette) {
+                actions.push(Action::CancelQuery(tab));
+            }
+        } else {
+            // Come back when the wait is long enough to show.
+            ui.ctx().request_repaint_after(states::DELAY - waited);
+        }
     }
     app.actions.extend(actions);
+}
+
+/// The keys that cancel a query, as the look writes them: `⌘.`, `Ctrl+.`
+/// or the terminal's `ctrl+.`.
+pub fn cancel_keys(look: &Look) -> String {
+    format!("{}.", look.label(look.command_key()))
+}
+
+/// What a page with no rows says under its column headers: that the table
+/// is empty, that the page is past its last row, or which filters leave
+/// nothing, and the way out of each.
+fn empty_rows(
+    ui: &mut egui::Ui,
+    rect: Rect,
+    object: &ObjectTab,
+    tab: ConnTabId,
+    (look, palette, locale): (&Look, &Palette, crate::i18n::Locale),
+    actions: &mut Vec<Action>,
+) {
+    let say = |text: &'static str| look.label(&gettext(locale, text));
+    let name = format::display_safe(&object.object.name);
+    let object_tab = object.id;
+    let filters = filter_texts(object);
+    // Past the first page there are rows, whatever the filters: they end
+    // before this page, and the way out is the page before.
+    let past = object.query.offset > 0;
+    if past || filters.is_empty() {
+        let title = format!(
+            "{} {name}",
+            say(if past {
+                "No more rows in"
+            } else {
+                "No rows in"
+            })
+        );
+        let text = if past {
+            say("This page is past the last row.")
+        } else if object.kind == tabletist_db::ObjectKind::Table {
+            say("The table exists and is empty.")
+        } else {
+            say("It returned no rows.")
+        };
+        let notice = states::Notice {
+            icon: Icon::Table,
+            title: &title,
+            text: &text,
+        };
+        let (reload, previous) = (say("Reload"), say("Previous page"));
+        let button = if past {
+            states::button(&previous, look).label("Previous page")
+        } else {
+            // No key beside it: Cmd/Ctrl+R refreshes the tree while the
+            // tree has the keys.
+            let button = states::button(&reload, look).label("Reload");
+            if look.terminal {
+                button
+            } else {
+                button.icon(Icon::RefreshCw)
+            }
+        };
+        if states::empty(ui, rect, &notice, vec![button], look, palette).is_some() {
+            actions.push(if past {
+                Action::PrevPage { tab, object_tab }
+            } else {
+                Action::Refresh(tab)
+            });
+        }
+        return;
+    }
+    let title = if filters.len() == 1 {
+        say("No rows match the filter")
+    } else {
+        format!(
+            "{} {} {}",
+            say("No rows match"),
+            filters.len(),
+            say("filters")
+        )
+    };
+    let none = format!(
+        "{} {}.",
+        say("None matches"),
+        filters.join(&format!(" {} ", say("and")))
+    );
+    // The catalog's estimate of the whole table, when it has one. None is
+    // an estimate of 0: older PostgreSQL says so of a table never analysed.
+    let text = match object.estimated_rows.filter(|rows| *rows > 0) {
+        Some(rows) => format!(
+            "{name} {} {} {}. {none}",
+            say("has about"),
+            format::group_digits(rows),
+            say(if rows == 1 { "row" } else { "rows" })
+        ),
+        None => none,
+    };
+    let notice = states::Notice {
+        icon: Icon::Funnel,
+        title: &title,
+        text: &text,
+    };
+    let (clear, last) = (say("Clear filters"), say("Remove last filter"));
+    let mut buttons = vec![states::button(&clear, look).label("Clear filters")];
+    if filters.len() > 1 {
+        buttons.push(
+            states::button(&last, look)
+                .label("Remove last filter")
+                .quiet(),
+        );
+    }
+    match states::empty(ui, rect, &notice, buttons, look, palette) {
+        Some(0) => actions.push(Action::ClearFilters { tab, object_tab }),
+        // `DropFilter` counts the raw WHERE last, as `filter_texts` does.
+        Some(_) => actions.push(Action::DropFilter {
+            tab,
+            object_tab,
+            index: filters.len() - 1,
+        }),
+        None => {}
+    }
 }
 
 /// A cell of a result grid, a table's or a SQL editor's: a value from its
@@ -1128,7 +1271,17 @@ pub fn plain_cell<'a>(
     }
 }
 
-/// An error with its code, detail and hint, and a Retry button.
+/// The error a view shows in place of what `fetch` holds: see
+/// [`crate::model::Fetch::shown_error`].
+pub fn shown_error<T>(fetch: &crate::model::Fetch<T>) -> Option<&tabletist_db::Error> {
+    fetch.shown_error()
+}
+
+/// An error as a card with its code, detail and hint, and Retry and
+/// Copy details buttons. The card shows what a database said as
+/// [`format::capped`] cuts it, and scrolls in the room over the buttons,
+/// which stay in reach under an error of any length. Copy details copies
+/// all of it.
 pub fn error_box(
     ui: &mut egui::Ui,
     error: &tabletist_db::Error,
@@ -1137,37 +1290,71 @@ pub fn error_box(
     locale: crate::i18n::Locale,
     mut retry: impl FnMut(),
 ) {
-    Frame::new()
-        .fill(palette.danger.gamma_multiply(0.12))
-        .inner_margin(Margin::same(12))
-        .corner_radius(egui::CornerRadius::same(look.tab_radius))
-        .show(ui, |ui| {
-            let width = ui.available_width();
-            let line = |ui: &mut egui::Ui, text: &str, color| {
-                Text::one(look, widgets::body(look), text, color)
-                    .wrap(width)
-                    .layout(ui.ctx())
-                    .label(ui);
-            };
-            line(ui, &error.to_string(), palette.text);
-            if let tabletist_db::Error::Query {
-                code, detail, hint, ..
-            } = error
-            {
-                for (label, text) in [("Code", code), ("Detail", detail), ("Hint", hint)] {
-                    if let Some(text) = text {
-                        line(
-                            ui,
-                            &format!("{}: {text}", gettext(locale, label)),
-                            palette.secondary,
-                        );
-                    }
-                }
+    let say = |text: &'static str| look.label(&gettext(locale, text));
+    // What the card shows, cut without a copy of all of it first: a
+    // database's message can hold megabytes.
+    let shown = match error {
+        tabletist_db::Error::Query { message, .. } => format::capped(message),
+        other => format::capped(&other.to_string()).into_owned().into(),
+    };
+    // What else the database said, each under its name.
+    let mut more = Vec::new();
+    if let tabletist_db::Error::Query {
+        code, detail, hint, ..
+    } = error
+    {
+        for (label, said) in [("Code", code), ("Detail", detail), ("Hint", hint)] {
+            if let Some(said) = said {
+                more.push((gettext(locale, label), said.as_str()));
             }
-            if widgets::button(ui, &gettext(locale, "Retry"), look).clicked() {
+        }
+    }
+    ui.scope(|ui| {
+        ui.spacing_mut().item_spacing = vec2(8.0, 10.0);
+        let height = states::button_height(look);
+        // The room the buttons leave, and no more: a scroll area keeps
+        // 64 pt by itself, which would push them out of a short view.
+        let room = (ui.available_height() - height - ui.spacing().item_spacing.y).max(0.0);
+        egui::ScrollArea::vertical()
+            .id_salt("error")
+            .max_height(room)
+            .min_scrolled_height(0.0)
+            .auto_shrink([false, true])
+            .show(ui, |ui| {
+                let card = states::Card {
+                    tone: states::Tone::Danger,
+                    icon: Icon::CircleAlert,
+                    title: &shown,
+                    text: "",
+                };
+                states::card(ui, &card, look, palette);
+                let width = ui.available_width();
+                for (label, said) in &more {
+                    let line = format!("{label}: {}", format::capped(said));
+                    Text::one(look, widgets::body(look), &line, palette.secondary)
+                        .wrap(width)
+                        .layout(ui.ctx())
+                        .label(ui);
+                }
+            });
+        ui.horizontal(|ui| {
+            let (again, copy) = (say("Retry"), say("Copy details"));
+            let again = states::button(&again, look).label("Retry");
+            if again.show(ui, height, look, palette).clicked() {
                 retry();
             }
+            let copy = states::button(&copy, look).label("Copy details").quiet();
+            if copy.show(ui, height, look, palette).clicked() {
+                // All of it, put together only now: only what the card
+                // shows is cut.
+                let mut details = error.to_string();
+                for (label, said) in &more {
+                    details.push_str(&format!("\n{label}: {said}"));
+                }
+                ui.ctx().copy_text(details);
+            }
         });
+    });
 }
 
 #[cfg(test)]

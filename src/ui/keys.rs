@@ -38,6 +38,7 @@ pub const SHORTCUTS: &[(&str, &str)] = &[
     ("Mod+B", "Show or hide the sidebar"),
     ("Mod+Alt+Left / Right", "Previous / next page"),
     ("Mod+.", "Cancel running query"),
+    ("Esc", "Cancel connecting"),
     ("Space, Mod+Shift+R", "Toggle row panel"),
     ("Mod+C, Mod+Shift+C", "Copy cell / copy row"),
     (
@@ -69,6 +70,12 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
     let sql = app.active_sql();
     let any_tab = app.active_workspace_tab();
     let in_workspace = app.workspace(active).is_some();
+    // A connect with nothing to lose: Esc gives up, as its Cancel does. An
+    // open popup keeps its Esc: this runs before the popup is drawn.
+    let give_up = !egui::Popup::is_any_open(ctx)
+        && app
+            .workspace(active)
+            .is_some_and(|workspace| workspace.can_give_up());
     let editing = ctx.text_edit_focused();
     // Grid keys act only on a visible grid: the Data view of the active tab.
     let grid = object.is_some_and(|(tab, id)| {
@@ -125,6 +132,11 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
         let format = consume_press(input, Modifiers::COMMAND | Modifiers::SHIFT, Key::F);
         if format && let Some((tab, sql_tab)) = sql {
             actions.push(Action::FormatSql { tab, sql_tab });
+        }
+        // A fresh press only: an Esc held to close a dialog over the tab
+        // repeats after the dialog is gone.
+        if give_up && consume_press(input, Modifiers::NONE, Key::Escape) {
+            actions.push(Action::Disconnect(active));
         }
         let mut key = |modifiers: Modifiers, key: Key, action: Action| {
             if input.consume_key(modifiers, key) {

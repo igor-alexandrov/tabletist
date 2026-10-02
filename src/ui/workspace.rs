@@ -1,5 +1,5 @@
-//! A connection tab: the connection bar, the disconnected banner, the
-//! sidebar, the object tabs and the open object.
+//! A connection tab: the connection bar, what connecting shows, the strip
+//! of a lost connection, the sidebar, the object tabs and the open object.
 
 use egui::{CornerRadius, Frame, Margin, Rect, Sense, Stroke, StrokeKind, pos2, vec2};
 use tabletist_db::TlsMode;
@@ -10,7 +10,8 @@ use crate::model::{Action, ConnTabId, ObjectView, SessionStatus};
 use crate::theme::{Icon, Look, Palette};
 use crate::typography::{Text, TextRole};
 use crate::ui::format::display_safe;
-use crate::ui::widgets;
+use crate::ui::states;
+use crate::ui::widgets::{self, ButtonSpec};
 
 /// The connection bar's height.
 pub fn bar_height(look: &Look) -> f32 {
@@ -46,20 +47,24 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
     let Some(workspace) = app.workspace(tab) else {
         return;
     };
-    let connected =
-        workspace.tree.schemas.value.is_some() || workspace.tree.schemas.error.is_some();
-    if look.terminal && connected {
+    let opened = workspace.opened();
+    if look.terminal && opened {
         super::object_tabs::show(app, ui, tab);
         status_line(app, ui, tab);
+    }
+    if !opened {
+        // Nothing of the database to show yet: how connecting goes, or
+        // why it failed.
+        opening(app, ui, tab);
+        return;
     }
     banner(app, ui, tab);
     let Some(workspace) = app.workspace(tab) else {
         return;
     };
-    if !connected {
-        return; // still connecting; the banner shows progress
-    }
     let active = workspace.active_tab;
+    // What a lost connection left on screen reads as old.
+    let stale = !matches!(workspace.status, SessionStatus::Connected);
     let view = workspace.active_object_tab().map(|object| object.view);
     // The tab the row panel shows a row of: a table's Data view, or a SQL
     // editor with a row of its result selected.
@@ -73,6 +78,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
     egui::CentralPanel::default()
         .frame(Frame::new().fill(app.palette.window))
         .show(ui, |ui| {
+            if stale {
+                ui.multiply_opacity(states::STALE);
+            }
             if !look.terminal {
                 super::object_tabs::show(app, ui, tab);
                 if let Some(shown) = row_panel {
@@ -142,6 +150,283 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                 }
             }
         });
+}
+
+/// A tab that has not shown its content yet: how connecting goes, or why
+/// it failed.
+fn opening(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
+    let fill = app.palette.window;
+    let failed = app.workspace(tab).is_some_and(|workspace| {
+        matches!(
+            workspace.status,
+            SessionStatus::Disconnected(_) | SessionStatus::Cancelled
+        )
+    });
+    egui::CentralPanel::default()
+        .frame(Frame::new().fill(fill))
+        .show(ui, |ui| {
+            if failed {
+                failure(app, ui, tab);
+            } else {
+                connecting(app, ui, tab);
+            }
+        });
+}
+
+/// The steps of a connect, the one under way with its time, and, for a
+/// connect with nothing to lose, the button that gives up: in the middle
+/// of the tab, or in the terminal look from its top left.
+fn connecting(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
+    let (locale, palette, look) = (app.locale, app.palette, app.look);
+    let Some(workspace) = app.workspace(tab) else {
+        return;
+    };
+    let say = |text: &'static str| look.label(&gettext(locale, text));
+    let spec = &workspace.spec;
+    let sqlite = spec.driver == tabletist_db::Driver::Sqlite;
+    let target = if sqlite {
+        spec.summary()
+    } else {
+        format!("{}:{}", spec.host, spec.port)
+    };
+    let target = match spec.ssh.as_ref().filter(|_| !sqlite) {
+        Some(ssh) => format!("{target} {} {}", say("via"), ssh.host),
+        None => target,
+    };
+    let connected = matches!(workspace.status, SessionStatus::Connected);
+    let (reach, load) = (
+        say(if sqlite { "Open" } else { "Connect to" }),
+        say("Load schema"),
+    );
+    let list = [
+        states::Step {
+            state: if connected {
+                states::StepState::Done
+            } else {
+                states::StepState::Running(workspace.connecting_for())
+            },
+            text: &reach,
+            detail: &target,
+        },
+        states::Step {
+            state: if connected {
+                states::StepState::Running(workspace.tree.schemas.running_for())
+            } else {
+                states::StepState::Waiting
+            },
+            text: &load,
+            detail: "",
+        },
+    ];
+    let body = ui.max_rect();
+    let height = states::steps_height(list.len(), &look);
+    let button_height = states::button_height(&look);
+    let name = say("Cancel");
+    // A tab with SQL editors open keeps them through a switch of database:
+    // it has no button that would close them, and the bar's Disconnect is
+    // the way out. Named apart from a password prompt's Cancel, which can
+    // be open over it.
+    let cancel = workspace
+        .can_give_up()
+        .then(|| states::key_button(&name, "esc", &look).label("Cancel connecting"));
+    let width = cancel
+        .as_ref()
+        .map_or(0.0, |cancel| cancel.width(ui, &look));
+    let room = (body.width() - 2.0 * states::INSET).max(0.0);
+    let (steps, button) = if look.terminal {
+        let top = body.left_top() + vec2(states::INSET, states::INSET);
+        (
+            Rect::from_min_size(top, vec2(room, height)),
+            Rect::from_min_size(
+                pos2(top.x, top.y + height + 8.0),
+                vec2(width, button_height),
+            ),
+        )
+    } else {
+        // The design's 300 wide list with the button 14 under it. A step
+        // that needs more (a long host, a tunnel) widens it, up to the
+        // room there is.
+        let block = states::steps_width(ui, &list, &look).max(300.0).min(room);
+        let total = height + 14.0 + button_height;
+        let top = (body.center().y - total / 2.0).max(body.top() + states::INSET);
+        let center = body.center().x;
+        (
+            Rect::from_min_size(pos2(center - block / 2.0, top), vec2(block, height)),
+            Rect::from_min_size(
+                pos2(center - width / 2.0, top + height + 14.0),
+                vec2(width, button_height),
+            ),
+        )
+    };
+    states::steps(ui, steps, &list, &look, &palette);
+    if let Some(cancel) = cancel
+        && cancel.show_at(ui, button, &look, &palette).clicked()
+    {
+        app.actions.push(Action::Disconnect(tab));
+    }
+}
+
+/// What a connect that failed says first and the sign beside it; `None`
+/// is a prompt the user closed. `say` writes our words as the look does.
+fn failure_title(
+    error: Option<&tabletist_db::Error>,
+    spec: &tabletist_db::ConnectSpec,
+    say: impl Fn(&'static str) -> String,
+) -> (Icon, String) {
+    use tabletist_db::{Driver, Error, SshStage};
+    let Some(error) = error else {
+        return (Icon::CircleAlert, say("Connection cancelled"));
+    };
+    match error {
+        Error::Auth(_) if spec.user.is_empty() => (Icon::Lock, say("Login refused")),
+        Error::Auth(_) => (
+            Icon::Lock,
+            format!("{} {}", say("Password rejected for"), spec.user),
+        ),
+        Error::Connect(_) | Error::Timeout if spec.driver == Driver::Sqlite => (
+            Icon::CircleAlert,
+            format!("{} {}", say("Can't open"), spec.summary()),
+        ),
+        Error::Connect(_) | Error::Timeout => (
+            Icon::WifiOff,
+            format!("{} {}:{}", say("Can't reach"), spec.host, spec.port),
+        ),
+        Error::Tls(_) => (Icon::ShieldAlert, say("TLS or certificate problem")),
+        Error::Ssh {
+            stage: SshStage::HostKeyUnknown { .. } | SshStage::HostKeyMismatch { .. },
+            ..
+        } => (Icon::ShieldAlert, say("SSH host key not trusted")),
+        Error::Ssh { .. } => {
+            let host = spec.ssh.as_ref().map_or("", |ssh| ssh.host.as_str());
+            (
+                Icon::WifiOff,
+                format!("{} {host} {}", say("SSH tunnel to"), say("failed")),
+            )
+        }
+        Error::InvalidSpec(_) => (
+            Icon::CircleAlert,
+            say("The connection's settings are not valid"),
+        ),
+        _ => (Icon::CircleAlert, say("Could not connect")),
+    }
+}
+
+/// A connect that failed before the tab showed anything: what failed in
+/// plain words, the exact error under it, and the buttons, the one that
+/// fixes the cause first.
+fn failure(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
+    use tabletist_db::Error;
+    let (locale, palette, look) = (app.locale, app.palette, app.look);
+    let Some(workspace) = app.workspace(tab) else {
+        return;
+    };
+    let say = |text: &'static str| look.label(&gettext(locale, text));
+    let error = match &workspace.status {
+        SessionStatus::Disconnected(error) => Some(error),
+        _ => None,
+    };
+    let (icon, title) = failure_title(error, &workspace.spec, say);
+    let sentence = error
+        .map(|error| crate::ui::format::describe_error(locale, error))
+        .unwrap_or_default();
+    let raw = error.map(ToString::to_string).unwrap_or_default();
+    // The settings are what is wrong: changing them comes first.
+    let edit_first = matches!(
+        error,
+        Some(Error::Auth(_) | Error::Tls(_) | Error::InvalidSpec(_))
+    );
+    let tls = matches!(error, Some(Error::Tls(_)));
+    let conn = workspace.conn_id.clone();
+    let body = ui.max_rect();
+    // The design's 28 at the sides; the card is no wider than 520.
+    let side = if look.terminal { states::INSET } else { 28.0 };
+    let width = (body.width() - 2.0 * side).clamp(0.0, 520.0);
+    let (left, top) = if look.terminal {
+        (body.left() + side, body.top() + states::INSET)
+    } else {
+        (
+            body.center().x - width / 2.0,
+            body.top() + (body.height() * 0.2).max(24.0),
+        )
+    };
+    let column = Rect::from_min_max(pos2(left, top), pos2(left + width, body.bottom()));
+    let mut ui = ui.new_child(
+        egui::UiBuilder::new()
+            .id_salt("failure")
+            .max_rect(column)
+            .layout(egui::Layout::top_down(egui::Align::Min)),
+    );
+    ui.spacing_mut().item_spacing = vec2(8.0, 10.0);
+    let card = states::Card {
+        tone: states::Tone::Danger,
+        icon,
+        title: &title,
+        text: &sentence,
+    };
+    states::card(&mut ui, &card, &look, &palette);
+    // The exact error when it says more than the sentence: always on
+    // screen, so keyboards and screen readers get it.
+    if !raw.is_empty() && raw != sentence {
+        Text::one(
+            &look,
+            widgets::secondary(&look),
+            &say("Details"),
+            palette.dim,
+        )
+        .layout(ui.ctx())
+        .label(&mut ui);
+        Text::one(&look, widgets::code(&look), &raw, palette.secondary)
+            .wrap(width)
+            .layout(ui.ctx())
+            .label(&mut ui);
+    }
+    let (mut retry, mut edit) = (false, false);
+    let details = format!("{title}\n{raw}");
+    ui.horizontal(|ui| {
+        let height = states::button_height(&look);
+        let (again, change, copy) = (say("Retry"), say("Edit connection"), say("Copy details"));
+        // The button that fixes the cause is the primary one.
+        fn lead(button: ButtonSpec<'_>, first: bool) -> ButtonSpec<'_> {
+            if first { button.primary() } else { button }
+        }
+        let retry_button = lead(states::button(&again, &look).label("Retry"), !edit_first);
+        let edit_button = lead(
+            states::button(&change, &look).label("Edit connection"),
+            edit_first,
+        );
+        if edit_first {
+            edit = edit_button.show(ui, height, &look, &palette).clicked();
+            retry = retry_button.show(ui, height, &look, &palette).clicked();
+        } else {
+            retry = retry_button.show(ui, height, &look, &palette).clicked();
+            edit = edit_button.show(ui, height, &look, &palette).clicked();
+        }
+        // A prompt the user closed has no error, so nothing to copy.
+        if error.is_none() {
+            return;
+        }
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let copy = states::button(&copy, &look).label("Copy details").quiet();
+            if copy.show(ui, height, &look, &palette).clicked() {
+                ui.ctx().copy_text(details.clone());
+            }
+        });
+    });
+    if tls {
+        let note = say(
+            "There is no \"connect anyway\". Change the TLS mode or the host in the connection.",
+        );
+        Text::one(&look, widgets::secondary(&look), &note, palette.secondary)
+            .wrap(width)
+            .layout(ui.ctx())
+            .label(&mut ui);
+    }
+    if retry {
+        app.actions.push(Action::Reconnect(tab));
+    }
+    if edit {
+        app.actions.push(Action::EditConnection(conn));
+    }
 }
 
 /// What the connection bar says: the open connections, and more about the
@@ -1389,6 +1674,9 @@ fn tls_status(mode: TlsMode, encrypted: Option<bool>) -> (&'static str, bool) {
     }
 }
 
+/// The strip over a tab whose connection was lost: what happened, the way
+/// back (Reconnect) and the way out (Disconnect). What was on screen stays
+/// under it. While a reconnect is on its way the strip says so.
 fn banner(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
     let locale = app.locale;
     let palette = app.palette;
@@ -1396,75 +1684,122 @@ fn banner(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
     let Some(workspace) = app.workspace(tab) else {
         return;
     };
-    let message = match &workspace.status {
-        SessionStatus::Connecting { .. } => {
-            ui.horizontal(|ui| {
-                ui.add_space(12.0);
-                ui.spinner();
-                Text::one(
-                    &look,
-                    widgets::body(&look),
-                    &gettext(locale, "Connecting…"),
-                    palette.text,
-                )
-                .layout(ui.ctx())
-                .label(ui);
-            });
-            return;
-        }
+    let say = |text: &'static str| look.label(&gettext(locale, text));
+    let name = display_safe(&workspace.name).into_owned();
+    // What happened, the plain sentence when it says more, the exact error.
+    let (lead, sentence, raw, reconnecting) = match &workspace.status {
         SessionStatus::Connected => return,
-        SessionStatus::Disconnected(error) => (
-            crate::ui::format::describe_error(locale, error),
-            error.to_string(),
-        ),
-        SessionStatus::Cancelled => (
-            gettext(locale, "Connection cancelled.").into_owned(),
+        SessionStatus::Connecting { .. } => (
+            format!("{} {name}…", say("Reconnecting to")),
             String::new(),
+            String::new(),
+            true,
+        ),
+        SessionStatus::Disconnected(error) => {
+            // The environment, when the connection has one (matching it is
+            // env.rs's alone).
+            let env = if workspace.environment == crate::env::Environment::None {
+                String::new()
+            } else {
+                format!(
+                    " · {}",
+                    workspace.environment.label(crate::env::Platform::Native)
+                )
+            };
+            // A plain loss is what the lead says already.
+            let sentence = if matches!(error, tabletist_db::Error::ConnectionLost(_)) {
+                String::new()
+            } else {
+                crate::ui::format::describe_error(locale, error)
+            };
+            (
+                format!("{} {name}{env} {}", say("Connection to"), say("lost.")),
+                sentence,
+                error.to_string(),
+                false,
+            )
+        }
+        SessionStatus::Cancelled => (
+            say("Connection cancelled."),
+            String::new(),
+            String::new(),
+            false,
         ),
     };
-    let (described, raw) = message;
-    let conn = workspace.conn_id.clone();
+    let tone = states::Tone::Warning;
     let mut reconnect = false;
-    let mut edit = false;
-    // Rounded corners sit inside the window; Omarchy's square banner spans it.
-    let inset = if look.tab_radius == 0 { 0 } else { 8 };
-    Frame::new()
-        .fill(palette.danger.gamma_multiply(0.12))
-        .corner_radius(egui::CornerRadius::same(look.tab_radius))
-        .inner_margin(Margin::symmetric(12, 10))
-        .outer_margin(Margin::same(inset))
+    let mut disconnect = false;
+    let shown = Frame::new()
+        .fill(tone.fill(&look, &palette))
+        .inner_margin(Margin::symmetric(12, 8))
         .show(ui, |ui| {
             ui.horizontal(|ui| {
-                // The plain sentence, and under it the exact error when it
-                // says more (visible, so keyboards and screen readers get it).
+                ui.spacing_mut().item_spacing.x = 12.0;
+                let height = if look.terminal { 24.0 } else { 28.0 };
+                let (out, back) = (say("Disconnect"), say("Reconnect"));
+                let leave = states::button(&out, &look)
+                    .label("Disconnect")
+                    .salt("lost")
+                    .quiet();
+                let again =
+                    (!reconnecting).then(|| states::button(&back, &look).label("Reconnect"));
+                // The buttons keep their room at the right, 8 apart and 12
+                // after the text.
+                let buttons = again
+                    .as_ref()
+                    .map_or(0.0, |again| again.width(ui, &look) + 8.0)
+                    + leave.width(ui, &look);
+                if reconnecting {
+                    // The spinner asks for the frames that keep it turning.
+                    let (at, _) = ui.allocate_exact_size(vec2(14.0, 14.0), Sense::hover());
+                    states::spinner(ui, at, palette.warning, &palette);
+                }
+                // The text wraps in what is left: a long error must not
+                // push the buttons out of the window.
+                let room = (ui.available_width() - 12.0 - buttons).max(0.0);
                 ui.vertical(|ui| {
-                    Text::one(&look, widgets::body(&look), &described, palette.text)
+                    ui.spacing_mut().item_spacing.y = 2.0;
+                    let strong = TextRole::pick(&look, TextRole::UiBodySemibold, TextRole::OGroup);
+                    Text::one(&look, strong, &lead, palette.text)
+                        .wrap(room)
                         .layout(ui.ctx())
                         .label(ui);
-                    if !raw.is_empty() && raw != described {
+                    if !sentence.is_empty() {
+                        Text::one(&look, widgets::body(&look), &sentence, palette.secondary)
+                            .wrap(room)
+                            .layout(ui.ctx())
+                            .label(ui);
+                    }
+                    // The exact error when it says more (visible, so
+                    // keyboards and screen readers get it).
+                    if !raw.is_empty() && raw != sentence {
                         Text::one(&look, widgets::secondary(&look), &raw, palette.secondary)
+                            .wrap(room)
                             .layout(ui.ctx())
                             .label(ui);
                     }
                 });
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    reconnect = crate::ui::widgets::primary_button(
-                        ui,
-                        &gettext(locale, "Reconnect"),
-                        &look,
-                        &palette,
-                    )
-                    .clicked();
-                    edit =
-                        widgets::button(ui, &gettext(locale, "Edit connection"), &look).clicked();
+                    ui.spacing_mut().item_spacing.x = 8.0;
+                    disconnect = leave.show(ui, height, &look, &palette).clicked();
+                    if let Some(again) = again {
+                        reconnect = again.show(ui, height, &look, &palette).clicked();
+                    }
                 });
             });
         });
+    let strip = shown.response.rect;
+    widgets::hline(
+        ui,
+        strip.x_range(),
+        strip.bottom() - 0.5,
+        tone.line(&look, &palette),
+    );
     if reconnect {
         app.actions.push(Action::Reconnect(tab));
     }
-    if edit {
-        app.actions.push(Action::EditConnection(conn));
+    if disconnect {
+        app.actions.push(Action::Disconnect(tab));
     }
 }
 
@@ -1615,6 +1950,54 @@ mod tests {
         assert_eq!(
             connections_hint(&Look::omarchy(), locale),
             "connections · ctrl+o"
+        );
+    }
+
+    #[test]
+    fn a_failed_connects_title_names_what_was_tried() {
+        use tabletist_db::{ConnectSpec, Error, SshStage};
+        let (mut spec, _) = ConnectSpec::from_url("postgres://reader@db.example.com/app").unwrap();
+        let say = |text: &str| text.to_owned();
+        let title = |error: Option<&Error>, spec: &ConnectSpec| failure_title(error, spec, say).1;
+        assert_eq!(title(None, &spec), "Connection cancelled");
+        assert_eq!(
+            title(Some(&Error::Auth("no".into())), &spec),
+            "Password rejected for reader"
+        );
+        assert_eq!(
+            title(Some(&Error::Connect("refused".into())), &spec),
+            "Can't reach db.example.com:5432"
+        );
+        assert_eq!(
+            title(Some(&Error::Timeout), &spec),
+            "Can't reach db.example.com:5432"
+        );
+        assert_eq!(
+            title(Some(&Error::Tls("bad certificate".into())), &spec),
+            "TLS or certificate problem"
+        );
+        spec.user.clear();
+        assert_eq!(
+            title(Some(&Error::Auth("no".into())), &spec),
+            "Login refused"
+        );
+        spec.ssh = Some(tabletist_db::SshSpec {
+            host: "bastion".into(),
+            port: None,
+            user: String::new(),
+            auth: tabletist_db::SshAuth::KeyFile {
+                path: "~/.ssh/id_ed25519".into(),
+            },
+        });
+        let tunnel = Error::Ssh {
+            stage: SshStage::Connect,
+            message: "timed out".into(),
+        };
+        assert_eq!(title(Some(&tunnel), &spec), "SSH tunnel to bastion failed");
+        let file = ConnectSpec::sqlite("/tmp/shop.db");
+        assert_eq!(
+            title(Some(&Error::Connect("unable to open".into())), &file),
+            "Can't open shop.db"
         );
     }
 }
