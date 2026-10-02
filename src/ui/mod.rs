@@ -1502,6 +1502,8 @@ mod tests {
         tab: crate::model::ConnTabId,
         range: std::ops::Range<usize>,
     ) {
+        // A field without the keys drops its selection when it is drawn.
+        assert!(harness.ctx.text_edit_focused());
         let sql = active_sql(harness, tab);
         let chars = |byte: usize| sql.text[..byte].chars().count();
         let selection = egui::text::CCursorRange::two(
@@ -1592,27 +1594,66 @@ mod tests {
     }
 
     #[test]
+    fn format_brings_the_cursor_into_view() {
+        let mut harness = Harness::new();
+        let tab = harness.connect_fake();
+        harness.press(Key::T, Modifiers::COMMAND);
+        // One line that Format lays out as more lines than the pane shows.
+        let columns: Vec<String> = (0..80).map(|n| format!("c{n}")).collect();
+        type_text(
+            &mut harness,
+            &format!("select {} from t", columns.join(",")),
+        );
+        let id = active_sql(&harness, tab).id;
+        let scrolled = |harness: &Harness| {
+            crate::ui::sql_text::scroll_offset(&harness.ctx, tab, id).expect("a scroll area")
+        };
+        assert_eq!(scrolled(&harness).y, 0.0);
+        harness.press(Key::F, COMMAND_SHIFT);
+        harness.finish_animations();
+        let sql = active_sql(&harness, tab);
+        assert_eq!(sql.text.lines().count(), 81);
+        assert_eq!(sql.cursor, sql.text.len(), "the cursor is on the last line");
+        assert!(scrolled(&harness).y > 0.0, "and that line is in view");
+    }
+
+    #[test]
     fn format_with_a_selection_formats_the_statements_it_touches() {
         let mut harness = Harness::new();
         let tab = harness.connect_fake();
         harness.press(Key::T, Modifiers::COMMAND);
-        let typed = "select 1 ;\nselect a,b from t ;\nselect 3 ;";
+        // Letters of two bytes each before the selection: egui counts a
+        // cursor in characters, Format in bytes.
+        let typed = "select 'żółw' ;\nselect a,b from t ;\nselect 3 ;";
+        let formatted = "select 'żółw' ;\nSELECT a,\n       b\n  FROM t;\nselect 3 ;";
         type_text(&mut harness, typed);
         let list = typed.find("a,b").unwrap();
         select_sql(&mut harness, tab, list..list + 3);
+        let id = crate::ui::sql_text::editor_id(tab, active_sql(&harness, tab).id);
+        let selection = |harness: &Harness| {
+            let state = egui::TextEdit::load_state(&harness.ctx, id).unwrap();
+            state.cursor.char_range().unwrap()
+        };
+        let selected = selection(&harness);
+        assert!(!selected.is_empty());
         harness.press(Key::F, COMMAND_SHIFT);
         let sql = active_sql(&harness, tab);
-        assert_eq!(
-            sql.text,
-            "select 1 ;\nSELECT a,\n       b\n  FROM t;\nselect 3 ;"
-        );
+        assert_eq!(sql.text, formatted);
         // The cursor is where the selection ended, after the `b`, and
-        // nothing is selected: typing adds to the text.
-        assert_eq!(&sql.text[..sql.cursor], "select 1 ;\nSELECT a,\n       b");
+        // nothing is selected.
+        let cursor = "select 'żółw' ;\nSELECT a,\n       b";
+        assert_eq!(&sql.text[..sql.cursor], cursor);
+        assert!(selection(&harness).is_empty());
+        // Undo gives the selection back with the text.
+        harness.press(Key::Z, Modifiers::COMMAND);
+        assert_eq!(active_sql(&harness, tab).text, typed);
+        assert_eq!(selection(&harness), selected);
+        // Formatted again (redo), typing adds to the text at the cursor.
+        harness.press(Key::Z, COMMAND_SHIFT);
         type_text(&mut harness, "2");
         assert_eq!(
             active_sql(&harness, tab).text,
-            "select 1 ;\nSELECT a,\n       b2\n  FROM t;\nselect 3 ;"
+            formatted.replace("       b\n", "       b2\n")
         );
     }
 
