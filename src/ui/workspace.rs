@@ -9,6 +9,7 @@ use crate::i18n::gettext;
 use crate::model::{Action, ConnTabId, ObjectView, SessionStatus};
 use crate::theme::{Icon, Look, Palette};
 use crate::typography::{Text, TextRole};
+use crate::ui::focus::{self, Region};
 use crate::ui::format::display_safe;
 use crate::ui::states;
 use crate::ui::widgets::{self, ButtonSpec};
@@ -861,8 +862,10 @@ fn top_bar(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
         .frame(Frame::new().fill(tint))
         .show(ui, |ui| {
             let rect = ui.max_rect();
-            // The empty bar moves the window, as a title bar does.
-            let drag = ui.interact(rect, ui.id().with("drag"), Sense::click_and_drag());
+            // The empty bar moves the window, as a title bar does. Only
+            // the pointer can: it is no stop for the Tab key.
+            let drag = ui.interact(rect, ui.id().with("drag"), Sense::CLICK | Sense::DRAG);
+            focus::region(ui, Region::Header, rect);
             if drag.drag_started() {
                 ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
             }
@@ -924,14 +927,12 @@ fn mac_bar(
     locale: crate::i18n::Locale,
 ) {
     let center = rect.center().y;
-    // The bar's own rule, and white faces over its tint.
+    // The bar's own rule, and faces over its tint: nearly white on a light
+    // bar, a thin wash of white on a dark one.
     let rim = env.bar_border();
     let face = |alpha: f32| {
-        if palette.dark {
-            palette.window.gamma_multiply(alpha)
-        } else {
-            egui::Color32::WHITE.gamma_multiply(alpha)
-        }
+        let alpha = if palette.dark { alpha * 0.09 } else { alpha };
+        egui::Color32::WHITE.gamma_multiply(alpha)
     };
     let hair = Stroke::new(widgets::hairline(ui), rim);
     let corner = CornerRadius::same(look.radius);
@@ -943,6 +944,7 @@ fn mac_bar(
         let label = gettext(locale, "Connections");
         let response = ui.interact(connections, ui.id().with("connections"), Sense::click());
         response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &label));
+        focus::claim(ui, Region::Header, &response);
         let (fill, tint) = if response.hovered() {
             (face(1.0), palette.text)
         } else {
@@ -1206,6 +1208,7 @@ fn terminal_bar(
         );
         let response = ui.interact(button, ui.id().with("connections"), Sense::click());
         response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &label));
+        focus::claim(ui, Region::Header, &response);
         let line = if response.hovered() {
             env.base()
         } else {
@@ -1551,10 +1554,20 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                 .map(|count| count.to_string())
                 .or_else(|| (!page.has_more).then(|| last.to_string()))
                 .unwrap_or_else(|| "?".into());
-            Some(format!(
+            let rows = format!(
                 "{first}–{last}/{total} · {}",
                 crate::ui::format::elapsed(page.elapsed)
-            ))
+            );
+            // The columns in view first, while some are out of it.
+            let columns = (object.view == ObjectView::Data)
+                .then(|| {
+                    super::data_view::columns_note(ui.ctx(), workspace, tab, object, &look, locale)
+                })
+                .flatten();
+            Some(match columns {
+                Some(columns) => format!("{columns} · {rows}"),
+                None => rows,
+            })
         })
         .unwrap_or_default();
     egui::Panel::bottom(egui::Id::new(("status-line", tab.0)))

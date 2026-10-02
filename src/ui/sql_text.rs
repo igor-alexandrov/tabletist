@@ -689,6 +689,15 @@ fn edit(ui: &mut Ui, sql_tab: &mut SqlTab, field: &Field<'_>) -> Edited {
         .desired_rows(rows as usize)
         .layouter(&mut layouter)
         .show(ui);
+    crate::ui::focus::region(ui, crate::ui::focus::Region::Editor, output.response.rect);
+    crate::ui::focus::claim(ui, crate::ui::focus::Region::Editor, &output.response);
+    // The script fills its pane: the caret says where the keyboard is.
+    crate::ui::focus::hint(
+        ui,
+        &output.response,
+        output.response.rect,
+        crate::ui::focus::Ring::Own,
+    );
     // The name only: the field keeps the role and the value egui gave it.
     ui.ctx().accesskit_node_builder(field.id, |node| {
         node.set_label(field.name);

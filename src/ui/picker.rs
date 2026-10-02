@@ -166,7 +166,11 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
 
     // Header.
     let header = Rect::from_min_size(full.min, vec2(full.width(), header_height(&look)));
-    let drag = ui.interact(header, ui.id().with("picker-drag"), Sense::click_and_drag());
+    let drag = ui.interact(
+        header,
+        ui.id().with("picker-drag"),
+        Sense::CLICK | Sense::DRAG,
+    );
     if drag.drag_started() {
         ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
     }
@@ -636,6 +640,15 @@ fn row_response(
         Sense::click(),
     );
     response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, &connection.name));
+    // A row of a list that scrolls: the ring inside it.
+    crate::ui::focus::hint(
+        ui,
+        &response,
+        rect,
+        crate::ui::focus::Ring::Inset {
+            radius: look.radius.saturating_sub(2),
+        },
+    );
     let activated = response.double_clicked()
         || (response.clicked() && !response.clicked_by(egui::PointerButton::Primary));
     if activated {

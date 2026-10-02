@@ -9,6 +9,7 @@ pub mod data_view;
 #[cfg(test)]
 mod env_tests;
 pub mod filter_bar;
+pub mod focus;
 pub mod format;
 pub mod grid;
 pub mod help;
@@ -3622,16 +3623,21 @@ mod tests {
     }
 
     #[test]
-    fn opening_the_row_panel_keeps_the_keyboard_on_the_result_row() {
+    fn opening_the_row_panel_keeps_the_keyboard_on_the_results_rows() {
         for look in crate::theme::Look::ALL {
             let mut harness = Harness::new();
             harness.set_look(look);
             let tab = harness.connect_fake();
-            with_sql_result(&mut harness, tab, 3);
-            focus(&mut harness, "Row 2", egui::accesskit::Role::Button);
-            harness.press(Key::Enter, Modifiers::NONE);
+            let id = with_sql_result(&mut harness, tab, 3);
+            // The keyboard comes to the rows and selects nothing; an arrow
+            // picks a row, which opens the panel.
+            focus(&mut harness, "Rows", egui::accesskit::Role::Group);
+            assert!(!panel_shows(&mut harness), "{}", look.name);
+            harness.press(Key::ArrowDown, Modifiers::NONE);
+            let workspace = harness.app.workspace(tab).unwrap();
+            assert!(workspace.sql_tab(id).unwrap().selection.is_some());
             assert!(panel_shows(&mut harness), "{}", look.name);
-            assert_eq!(focused_name(&harness.settle()), "Row 2", "{}", look.name);
+            assert_eq!(focused_name(&harness.settle()), "Rows", "{}", look.name);
         }
     }
 
@@ -8365,12 +8371,375 @@ mod tests {
             harness.press(Key::Tab, Modifiers::NONE);
             reached.insert(focused_name(&harness.settle()));
         }
-        for expected in ["Filter", "orders", "Count", "Next page", "Refresh objects"] {
+        // The tree and the grid are one stop each: the arrows move in them.
+        for expected in [
+            "Filter",
+            "Objects",
+            "Rows",
+            "Count",
+            "Next page",
+            "Refresh objects",
+        ] {
             assert!(
                 reached.contains(expected),
                 "{expected} not reached: {reached:?}"
             );
         }
+    }
+
+    #[test]
+    fn every_tab_stop_shows_where_the_keyboard_is() {
+        for look in crate::theme::Look::ALL {
+            let (mut harness, _tab) = tree_harness();
+            harness.set_look(look);
+            harness.click("orders");
+            harness.answer_rows(crate::testing::page(3, true));
+            let accent = harness.app.palette.accent;
+            let mut seen = 0;
+            for _ in 0..60 {
+                harness.press(Key::Tab, Modifiers::NONE);
+                let name = focused_name(&harness.settle());
+                // A text field shows its caret, in a box or not.
+                if harness.ctx.memory(|memory| memory.focused().is_none())
+                    || harness.ctx.text_edit_focused()
+                {
+                    continue;
+                }
+                seen += 1;
+                // A ring, a field's border, or the terminal's reversed
+                // button: something is drawn in the accent for it.
+                let ringed = harness
+                    .outlines
+                    .iter()
+                    .any(|(_, stroke)| stroke.color == accent && stroke.width >= 1.0);
+                let reversed =
+                    look.terminal && harness.fills.iter().any(|(_, fill)| *fill == accent);
+                assert!(ringed || reversed, "{name} in {}", look.name);
+            }
+            assert!(seen > 10, "{}: {seen} stops", look.name);
+        }
+    }
+
+    #[test]
+    fn the_tab_key_gives_the_tree_and_the_grid_the_arrows() {
+        use crate::model::Pane;
+        for look in crate::theme::Look::ALL {
+            let (mut harness, tab) = tree_harness();
+            harness.set_look(look);
+            harness.click("orders");
+            harness.answer_rows(crate::testing::page(3, true));
+            let tab_to = |harness: &mut Harness, name: &str| {
+                for _ in 0..60 {
+                    harness.press(Key::Tab, Modifiers::NONE);
+                    if focused_name(&harness.settle()) == name {
+                        return;
+                    }
+                }
+                panic!("{name} is no Tab stop in {}", look.name);
+            };
+            // Onto the tree: its cursor is on the open table, and moves.
+            tab_to(&mut harness, "Objects");
+            let workspace = harness.app.workspace(tab).unwrap();
+            assert_eq!(workspace.pane, Pane::Tree, "{}", look.name);
+            let before = workspace.tree.cursor.clone();
+            assert!(before.is_some(), "{}", look.name);
+            harness.press(Key::ArrowDown, Modifiers::NONE);
+            let workspace = harness.app.workspace(tab).unwrap();
+            assert_ne!(workspace.tree.cursor, before, "{}", look.name);
+            assert_eq!(focused_name(&harness.settle()), "Objects", "{}", look.name);
+            // Onto the grid: its first cell, and the arrows are its own.
+            tab_to(&mut harness, "Rows");
+            let selection = |harness: &Harness| {
+                let workspace = harness.app.workspace(tab).unwrap();
+                workspace.active_object_tab().unwrap().selection
+            };
+            assert_eq!(harness.app.workspace(tab).unwrap().pane, Pane::Grid);
+            assert_eq!(selection(&harness), None, "coming to it selects nothing");
+            harness.press(Key::ArrowDown, Modifiers::NONE);
+            let first = selection(&harness);
+            assert!(first.is_some(), "{}", look.name);
+            harness.press(Key::ArrowDown, Modifiers::NONE);
+            assert_ne!(selection(&harness), first, "{}", look.name);
+            assert_eq!(focused_name(&harness.settle()), "Rows", "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn arrows_leave_the_grid_alone_while_a_button_has_the_keyboard() {
+        let (mut harness, tab) = tree_harness();
+        harness.click("orders");
+        harness.answer_rows(crate::testing::page(3, true));
+        harness.click("Row 1");
+        let selection = |harness: &Harness| {
+            let workspace = harness.app.workspace(tab).unwrap();
+            workspace.active_object_tab().unwrap().selection
+        };
+        let first = selection(&harness);
+        focus(&mut harness, "Add filter", egui::accesskit::Role::Button);
+        harness.press(Key::ArrowDown, Modifiers::NONE);
+        assert_eq!(selection(&harness), first, "the button had the keys");
+    }
+
+    #[test]
+    fn a_switch_is_one_stop_and_the_arrows_choose_in_it() {
+        let mut harness = Harness::new();
+        harness.set_look(crate::theme::Look::macos());
+        let tab = with_page(&mut harness);
+        let view = |harness: &Harness| {
+            let workspace = harness.app.workspace(tab).unwrap();
+            workspace.active_object_tab().unwrap().view
+        };
+        focus(&mut harness, "Data", egui::accesskit::Role::Button);
+        harness.press(Key::ArrowRight, Modifiers::NONE);
+        assert_eq!(view(&harness), crate::model::ObjectView::Structure);
+        assert_eq!(focused_name(&harness.settle()), "Structure");
+        harness.press(Key::ArrowLeft, Modifiers::NONE);
+        assert_eq!(view(&harness), crate::model::ObjectView::Data);
+        assert_eq!(focused_name(&harness.settle()), "Data");
+        // Tab passes the choice not made.
+        let mut stops = std::collections::HashSet::new();
+        for _ in 0..60 {
+            harness.press(Key::Tab, Modifiers::NONE);
+            stops.insert(focused_name(&harness.settle()));
+        }
+        assert!(
+            stops.contains("Data") && !stops.contains("Structure"),
+            "{stops:?}"
+        );
+    }
+
+    #[test]
+    fn f6_steps_through_the_parts_of_the_window() {
+        for look in crate::theme::Look::ALL {
+            let (mut harness, _tab) = tree_harness();
+            harness.set_look(look);
+            harness.click("orders");
+            harness.answer_rows(crate::testing::page(3, true));
+            let step = |harness: &mut Harness, modifiers| {
+                harness.press(Key::F6, modifiers);
+                focused_name(&harness.settle())
+            };
+            // From the tree, where opening the table left the arrows.
+            let forward: Vec<String> = (0..6)
+                .map(|_| step(&mut harness, Modifiers::NONE))
+                .collect();
+            assert_eq!(
+                forward,
+                [
+                    "orders tab",
+                    "Data",
+                    "Rows",
+                    "Connections",
+                    "Filter",
+                    "Objects"
+                ],
+                "{}",
+                look.name
+            );
+            // And back the way it came.
+            let back: Vec<String> = (0..3)
+                .map(|_| step(&mut harness, Modifiers::SHIFT))
+                .collect();
+            assert_eq!(back, ["Filter", "Connections", "Rows"], "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn the_terminal_steps_between_its_panes_with_ctrl_h_and_l() {
+        let (mut harness, tab) = tree_harness();
+        harness.set_look(crate::theme::Look::omarchy());
+        harness.click("orders");
+        harness.answer_rows(crate::testing::page(3, true));
+        let pane = |harness: &Harness| harness.app.workspace(tab).unwrap().pane;
+        harness.press(Key::L, Modifiers::CTRL);
+        assert_eq!(focused_name(&harness.settle()), "Rows");
+        assert_eq!(pane(&harness), crate::model::Pane::Grid);
+        harness.press(Key::H, Modifiers::CTRL);
+        assert_eq!(focused_name(&harness.settle()), "Objects");
+        assert_eq!(pane(&harness), crate::model::Pane::Tree);
+        // The other looks leave those keys alone.
+        let (mut harness, tab) = tree_harness();
+        harness.set_look(crate::theme::Look::macos());
+        harness.click("orders");
+        harness.answer_rows(crate::testing::page(3, true));
+        harness.press(Key::L, Modifiers::CTRL);
+        assert_eq!(focused_name(&harness.settle()), "");
+        assert_eq!(
+            harness.app.workspace(tab).unwrap().pane,
+            crate::model::Pane::Tree
+        );
+    }
+
+    #[test]
+    fn a_button_that_cannot_be_pressed_still_says_why_to_the_keyboard() {
+        let mut harness = Harness::new();
+        harness.set_look(crate::theme::Look::macos());
+        let tab = with_page(&mut harness);
+        let mut reached = false;
+        for _ in 0..60 {
+            harness.press(Key::Tab, Modifiers::NONE);
+            let tree = harness.settle();
+            if focused_name(&tree) == "Add row" {
+                reached = true;
+                // Why not, where a screen reader finds it and on screen.
+                let (_, node) = tree.nodes.iter().find(|(id, _)| *id == tree.focus).unwrap();
+                assert_eq!(
+                    node.description(),
+                    Some("Editing arrives in a later version")
+                );
+                assert!(node.is_disabled());
+                assert!(
+                    harness
+                        .painted
+                        .iter()
+                        .any(|(text, _)| text == "Editing arrives in a later version"),
+                    "{:?}",
+                    harness.painted
+                );
+                break;
+            }
+        }
+        assert!(reached, "Add row is a Tab stop");
+        // Enter does not press it.
+        let sent = harness.app.backend.sent.len();
+        harness.press(Key::Enter, Modifiers::NONE);
+        assert_eq!(harness.app.backend.sent.len(), sent);
+        assert!(harness.app.workspace(tab).is_some());
+    }
+
+    /// A table of twelve text columns behind a key, open in `harness`.
+    fn wide_table(harness: &mut Harness) {
+        use tabletist_db::{ColumnInfo, ColumnMeta, RowPage, Structure, Value, ValueKind};
+        let tab = harness.connect_fake();
+        harness.app.apply(crate::model::Action::OpenObject {
+            tab,
+            object: tabletist_db::ObjectRef::new("main", "wide"),
+            kind: tabletist_db::ObjectKind::Table,
+            pin: true,
+        });
+        let names: Vec<String> = std::iter::once("id".to_owned())
+            .chain((1..12).map(|index| format!("a_rather_long_column_{index}")))
+            .collect();
+        harness.answer_structure(Structure {
+            columns: names
+                .iter()
+                .map(|name| ColumnInfo {
+                    name: name.clone(),
+                    type_name: "text".into(),
+                    nullable: true,
+                    default: None,
+                    comment: None,
+                    allowed_values: None,
+                })
+                .collect(),
+            primary_key: vec!["id".into()],
+            indexes: Vec::new(),
+            foreign_keys: Vec::new(),
+        });
+        harness.answer_rows(RowPage {
+            columns: names
+                .iter()
+                .map(|name| ColumnMeta {
+                    name: name.clone(),
+                    type_name: "text".into(),
+                    kind: ValueKind::Text,
+                })
+                .collect(),
+            rows: vec![vec![Value::Text("value".into()); 12]; 3],
+            has_more: false,
+            ordered_by_key: true,
+            elapsed: std::time::Duration::ZERO,
+        });
+        harness.settle();
+        harness.settle();
+    }
+
+    #[test]
+    fn the_status_line_says_which_columns_are_in_view_while_some_are_not() {
+        for look in crate::theme::Look::ALL {
+            let said = |harness: &Harness| {
+                harness
+                    .painted
+                    .iter()
+                    .any(|(text, _)| text.contains("of 12 · id pinned"))
+            };
+            let mut harness = Harness::with_size(egui::vec2(1600.0, 600.0));
+            harness.set_look(look);
+            wide_table(&mut harness);
+            assert!(said(&harness), "{}: {:?}", look.name, harness.painted);
+            // With room for every column there is nothing to say.
+            let mut harness = Harness::with_size(egui::vec2(6000.0, 600.0));
+            harness.set_look(look);
+            wide_table(&mut harness);
+            assert!(!said(&harness), "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn the_terminal_marks_the_pane_the_keys_go_to() {
+        // An accent line round something as tall as a pane.
+        let marked = |harness: &Harness| {
+            let accent = harness.app.palette.accent;
+            harness
+                .outlines
+                .iter()
+                .any(|(rect, stroke)| stroke.color == accent && rect.height() > 200.0)
+        };
+        for look in crate::theme::Look::ALL {
+            let (mut harness, _tab) = tree_harness();
+            harness.set_look(look);
+            harness.click("orders");
+            harness.answer_rows(crate::testing::page(3, true));
+            // The pointer alone marks nothing.
+            harness.settle();
+            assert!(!marked(&harness), "{}", look.name);
+            // A key: the tree has the arrows, where opening left them.
+            harness.press(Key::ArrowDown, Modifiers::NONE);
+            harness.settle();
+            assert_eq!(marked(&harness), look.terminal, "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn the_terminals_open_table_is_marked_quietly_while_the_keys_are_elsewhere() {
+        let (mut harness, _tab) = tree_harness();
+        harness.set_look(crate::theme::Look::omarchy());
+        harness.click("orders");
+        harness.answer_rows(crate::testing::page(3, true));
+        // The bar at the left of the open table's row, in `color`.
+        let bar = |harness: &Harness, color: egui::Color32| {
+            harness
+                .fills
+                .iter()
+                .any(|(rect, fill)| *fill == color && rect.width() < 4.0 && rect.height() > 10.0)
+        };
+        let (accent, muted) = (harness.app.palette.accent, harness.app.palette.dim);
+        // Opening left the arrows with the tree.
+        harness.settle();
+        assert!(bar(&harness, accent) && !bar(&harness, muted));
+        // A click in the grid takes them there.
+        harness.click("Row 1");
+        harness.settle();
+        assert!(bar(&harness, muted));
+    }
+
+    #[test]
+    fn the_pointer_takes_the_ring_away() {
+        let (mut harness, _tab) = tree_harness();
+        harness.set_look(crate::theme::Look::macos());
+        harness.press(Key::Tab, Modifiers::NONE);
+        assert!(crate::ui::focus::visible(&harness.ctx));
+        let at = egui::pos2(900.0, 500.0);
+        harness.frame(vec![
+            egui::Event::PointerMoved(at),
+            egui::Event::PointerButton {
+                pos: at,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: Modifiers::NONE,
+            },
+        ]);
+        assert!(!crate::ui::focus::visible(&harness.ctx));
     }
 
     #[test]

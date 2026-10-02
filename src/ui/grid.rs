@@ -12,7 +12,8 @@ use tabletist_db::SortDir;
 use crate::model::CellPos;
 use crate::theme::{DataFont, Icon, Look, Palette};
 use crate::typography::{Text, TextRole};
-use crate::ui::format::display_safe;
+use crate::ui::focus;
+use crate::ui::format::{Marks, array_items, display_safe};
 use crate::ui::widgets::virtual_rows;
 
 /// The header's height, per look.
@@ -64,14 +65,20 @@ pub enum Style {
     /// A value from a column's allowed list, in that palette slot (see
     /// [`crate::ui::value_tags`]).
     Tag(usize),
-    /// A true boolean: a neutral tag.
-    True,
-    /// A false boolean: muted text.
-    False,
     /// A JSON document with this many keys: a `{ n }` chip, then the text.
     Json(usize),
     /// A colour (`#3a7bd5`): a swatch of it, then the text.
     Color(egui::Color32),
+    /// Text that stands for what the cell holds rather than being it (`''`
+    /// for an empty string, a mark for each space of a blank one, `{}` for
+    /// an empty array): faint.
+    Quiet,
+    /// What is known of a value the cell does not show (a binary value's
+    /// type and size): one outlined chip.
+    Chip,
+    /// A PostgreSQL array, its text as the database writes it: a chip for
+    /// each element that fits, then `+n` for the rest.
+    Array,
 }
 
 pub struct Cell<'a> {
@@ -84,6 +91,36 @@ pub struct Cell<'a> {
 pub struct GridOutput {
     pub clicked: Option<CellPos>,
     pub sort_clicked: Option<usize>,
+    /// The keyboard came to the grid this frame (the Tab key, a screen
+    /// reader): the arrows should be the grid's.
+    pub focused: bool,
+}
+
+/// Which of a grid's columns were in view when it was last drawn.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ColumnsShown {
+    /// The first and the last column in view, counted from 0. A pinned
+    /// column counts among them while the column after it is in view; past
+    /// that it is in sight but not of the range.
+    pub first: usize,
+    pub last: usize,
+    pub total: usize,
+    /// The grid's first column stays in sight while the others scroll.
+    pub pinned: bool,
+}
+
+impl ColumnsShown {
+    /// Whether some columns are out of view.
+    pub fn partial(&self) -> bool {
+        let apart = usize::from(self.pinned && self.first > 0);
+        self.last + 1 - self.first + apart < self.total
+    }
+}
+
+/// The columns the grid `id` showed when it was last drawn: what a status
+/// line says of them, a frame later.
+pub fn columns_shown(ctx: &egui::Context, id: Id) -> Option<ColumnsShown> {
+    ctx.data(|data| data.get_temp(id.with("columns-shown")))
 }
 
 /// How wide `text` is in `role`, in points (laid out once, then cached).
@@ -98,6 +135,20 @@ pub fn data_role(look: &Look) -> TextRole {
         DataFont::Proportional => TextRole::UiBody,
         DataFont::Monospace => TextRole::pick(look, TextRole::GridCell, TextRole::OBody),
     }
+}
+
+/// The marks `look`'s data face writes where text would show nothing: the
+/// design's when the fonts at hand have them (see [`Marks::pick`]). Found
+/// once for each set of faces, not for every cell.
+pub fn marks(ctx: &egui::Context, look: &Look) -> Marks {
+    let id = Id::new(("cell-marks", look.faces));
+    if let Some(marks) = ctx.data(|data| data.get_temp::<Marks>(id)) {
+        return marks;
+    }
+    let font = data_role(look).font_id(look.faces);
+    let marks = ctx.fonts_mut(|fonts| Marks::pick(|character| fonts.has_glyph(&font, character)));
+    ctx.data_mut(|data| data.insert_temp(id, marks));
+    marks
 }
 
 /// Paints `text` in `role` at `x` (its left edge, or its right with
@@ -273,10 +324,18 @@ pub fn initial_widths<'a>(
                 .map(|row| {
                     let cell = cell(row, col);
                     let chip = match cell.style {
-                        Style::Plain | Style::False => 0.0,
-                        Style::Tag(_) | Style::True => 16.0,
+                        Style::Plain | Style::Quiet => 0.0,
+                        Style::Tag(_) => 16.0,
+                        Style::Chip => 2.0 * CHIP_PAD + 2.0,
                         Style::Json(_) => 44.0,
                         Style::Color(_) => SWATCH + SWATCH_GAP,
+                        // Each element's chip adds its sides and the gap
+                        // to the next.
+                        Style::Array => {
+                            let elements =
+                                array_items(&cell.text).map_or(0, |array| array.items.len());
+                            (2.0 * CHIP_PAD + CHIP_GAP) * elements as f32
+                        }
                     };
                     width(&cell.text) + chip
                 })
@@ -310,6 +369,7 @@ pub fn forget(ctx: &egui::Context, id: Id) {
             data.remove::<egui::scroll_area::State>(scroll);
         }
         data.remove::<Option<CellPos>>(id.with("last-selection"));
+        data.remove::<ColumnsShown>(id.with("columns-shown"));
         data.remove::<Kept>(id);
     });
 }
@@ -333,6 +393,8 @@ pub fn show<'a>(
     row_count: usize,
     first_row_number: u64,
     selection: Option<CellPos>,
+    // Whether the arrow keys move in this grid.
+    keys: bool,
     palette: &Palette,
     look: &crate::theme::Look,
     mut cell: impl FnMut(usize, usize) -> Cell<'a>,
@@ -379,6 +441,46 @@ pub fn show<'a>(
     let total = gutter + widths.iter().sum::<f32>();
     let hairline = crate::ui::widgets::hairline(ui);
     let visible = ui.max_rect();
+    // A key column that leads the grid stays in sight: the others scroll
+    // under it, so a row is never read without knowing whose it is.
+    let pinned = columns.len() > 1 && columns[0].key;
+    // Drawn last, over what scrolled under it; the others in their order.
+    let order: Vec<usize> = (usize::from(pinned)..columns.len())
+        .chain(pinned.then_some(0))
+        .collect();
+    // Each column's left edge, from the first one's: found once a frame,
+    // not once a cell. A width dragged this frame moves its neighbours the
+    // next.
+    let lefts: Vec<f32> = widths
+        .iter()
+        .scan(0.0, |edge, width| {
+            let left = *edge;
+            *edge += width;
+            Some(left)
+        })
+        .collect();
+    // The grid is one Tab stop, not one for each row: with the keyboard on
+    // it the arrows move the selected cell, which shows where they are.
+    let stop = ui.interact(visible, id.with("keys"), Sense::focusable_noninteractive());
+    stop.widget_info(|| WidgetInfo::labeled(WidgetType::Other, true, "Rows"));
+    ui.ctx().accesskit_node_builder(stop.id, |node| {
+        node.set_role(egui::accesskit::Role::Group);
+    });
+    focus::pane(ui, &stop);
+    // The selected cell shows where the keyboard is; with none selected
+    // yet the grid itself does, until an arrow picks one.
+    let ring = if selection.is_some() {
+        focus::Ring::Own
+    } else {
+        focus::Ring::Inset { radius: 0 }
+    };
+    focus::hint(ui, &stop, visible, ring);
+    focus::region(ui, focus::Region::Grid, visible);
+    focus::claim(ui, focus::Region::Grid, &stop);
+    output.focused = stop.gained_focus();
+    // The cell is lit while the keyboard is in use and its keys come here:
+    // not while a button or a field has them.
+    let lit = keys && focus::visible(ui.ctx()) && !focus::on_control(ui.ctx());
 
     let scroll = egui::ScrollArea::both()
         .id_salt(id)
@@ -389,16 +491,32 @@ pub fn show<'a>(
             let full = total.max(ui.available_width());
             ui.allocate_space(vec2(total, header_height));
 
+            // How far the pinned column stands off its place: as far as
+            // the grid is scrolled sideways.
+            let shift = if pinned {
+                // Under a point it is the clip's own margin, not a scroll.
+                Some(ui.clip_rect().left() - origin.x)
+                    .filter(|shift| *shift >= 1.0)
+                    .unwrap_or(0.0)
+            } else {
+                0.0
+            };
             if let Some(target) = reveal {
                 let col = target.col.min(widths.len().saturating_sub(1));
                 let x = origin.x + gutter + widths[..col].iter().sum::<f32>();
                 let y = origin.y + header_height + target.row as f32 * row_height;
                 // Include the header's height above the row so the sticky
-                // header never covers it.
+                // header never covers it, and the pinned column's width
+                // before a cell that scrolls so that never does either.
+                let cover = if pinned && col > 0 {
+                    gutter + widths[0]
+                } else {
+                    0.0
+                };
                 let rect = Rect::from_min_size(
-                    pos2(x, y - header_height),
+                    pos2(x - cover, y - header_height),
                     vec2(
-                        widths.get(col).copied().unwrap_or(0.0),
+                        widths.get(col).copied().unwrap_or(0.0) + cover,
                         row_height + header_height,
                     ),
                 );
@@ -406,56 +524,132 @@ pub fn show<'a>(
             }
 
             virtual_rows(ui, row_count, row_height, |ui, row| {
-                let (rect, response) =
-                    ui.allocate_exact_size(vec2(full, row_height), Sense::click());
+                // A row takes a click, not the Tab key: the grid is the stop.
+                let (rect, response) = ui.allocate_exact_size(vec2(full, row_height), Sense::CLICK);
                 let number = first_row_number + row as u64 + 1;
                 let label = format!("Row {number}");
                 response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, &label));
                 if response.clicked() {
                     let col = response
                         .interact_pointer_pos()
-                        .map(|pointer| column_at(&widths, pointer.x - rect.left() - gutter))
+                        .map(|pointer| {
+                            let x = pointer.x - rect.left() - gutter;
+                            // Over the pinned column, whatever is under it.
+                            if pinned && x - shift < widths[0] {
+                                0
+                            } else {
+                                column_at(&widths, x)
+                            }
+                        })
                         .unwrap_or(0);
                     output.clicked = Some(CellPos { row, col });
                 }
                 let painter = ui.painter().clone();
                 let selected_row = selection.is_some_and(|cell| cell.row == row);
-                if let Some(fill) = row_fill(
-                    selected_row,
-                    response.hovered(),
-                    row % 2 == 1,
-                    look,
-                    palette,
-                ) {
+                // With the keyboard in the grid the cell takes the
+                // selection's colour and its row a lighter tint of it.
+                let lit_row = selected_row && lit && !look.terminal;
+                let fill = if lit_row {
+                    Some(palette.window.lerp_to_gamma(palette.selection, 0.6))
+                } else {
+                    row_fill(
+                        selected_row,
+                        response.hovered(),
+                        row % 2 == 1,
+                        look,
+                        palette,
+                    )
+                };
+                if let Some(fill) = fill {
                     painter.rect_filled(rect, CornerRadius::ZERO, fill);
                 }
                 if !look.terminal {
                     let y = painter.round_to_pixel_center(rect.bottom() - hairline / 2.0);
                     painter.hline(rect.x_range(), y, Stroke::new(hairline, palette.surface));
                 }
-                if selected_row {
-                    if look.terminal {
-                        // The cursor: a bold accent block in the gutter.
-                        let cursor =
-                            Text::one(look, TextRole::OGroup, "▌", palette.accent).layout(ui.ctx());
-                        cursor.paint_center(
-                            &painter,
-                            pos2(rect.left() + GUTTER / 2.0, rect.center().y),
-                        );
-                    } else {
-                        let bar = Rect::from_min_size(rect.min, vec2(3.0, rect.height()));
-                        painter.rect_filled(bar, CornerRadius::ZERO, palette.accent);
-                    }
-                }
-                let mut x = rect.left() + gutter;
-                for (col, width) in widths.iter().enumerate() {
+                for &col in &order {
+                    let left = rect.left() + gutter + lefts[col];
                     let cell_rect =
-                        Rect::from_min_size(pos2(x, rect.top()), vec2(*width, row_height));
-                    x += width;
+                        Rect::from_min_size(pos2(left, rect.top()), vec2(widths[col], row_height));
+                    // The first column, and the row's mark before it, stand
+                    // where the view begins while it is pinned.
+                    let cell_rect = if col == 0 {
+                        let lead = Rect::from_min_max(
+                            pos2(rect.left() + shift, rect.top()),
+                            pos2(cell_rect.right() + shift, rect.bottom()),
+                        );
+                        if shift > 0.0 {
+                            // Over what scrolled under: the row's own fill.
+                            let under = fill.unwrap_or(palette.window);
+                            painter.rect_filled(lead, CornerRadius::ZERO, under);
+                            if !look.terminal {
+                                let y =
+                                    painter.round_to_pixel_center(rect.bottom() - hairline / 2.0);
+                                painter.hline(
+                                    lead.x_range(),
+                                    y,
+                                    Stroke::new(hairline, palette.surface),
+                                );
+                            }
+                            painter.vline(
+                                lead.right() - hairline / 2.0,
+                                lead.y_range(),
+                                Stroke::new(hairline, palette.outline),
+                            );
+                        }
+                        if selected_row {
+                            if look.terminal {
+                                // The cursor: a bold accent block in the
+                                // gutter.
+                                let cursor = Text::one(look, TextRole::OGroup, "▌", palette.accent)
+                                    .layout(ui.ctx());
+                                cursor.paint_center(
+                                    &painter,
+                                    pos2(lead.left() + GUTTER / 2.0, rect.center().y),
+                                );
+                            } else if !lit_row {
+                                let bar = Rect::from_min_size(lead.min, vec2(3.0, rect.height()));
+                                painter.rect_filled(bar, CornerRadius::ZERO, palette.accent);
+                            }
+                        }
+                        cell_rect.translate(vec2(shift, 0.0))
+                    } else {
+                        cell_rect
+                    };
                     if !ui.is_rect_visible(cell_rect) {
                         continue;
                     }
                     let content = cell(row, col);
+                    let here = selection == Some(CellPos { row, col });
+                    if here && lit && look.terminal {
+                        // Reverse video, as a terminal marks its cursor:
+                        // the accent behind, the text in the window's tone.
+                        painter.rect_filled(cell_rect, CornerRadius::ZERO, palette.accent);
+                        let reversed = Palette {
+                            text: palette.window,
+                            secondary: palette.window,
+                            dim: palette.window,
+                            faint: palette.window,
+                            ..*palette
+                        };
+                        let plain = Cell {
+                            style: Style::Plain,
+                            ..content
+                        };
+                        draw_cell(
+                            ui,
+                            &painter,
+                            cell_rect,
+                            &columns[col],
+                            &plain,
+                            look,
+                            &reversed,
+                        );
+                        continue;
+                    }
+                    if here && lit {
+                        painter.rect_filled(cell_rect, CornerRadius::ZERO, palette.selection);
+                    }
                     draw_cell(
                         ui,
                         &painter,
@@ -465,9 +659,18 @@ pub fn show<'a>(
                         look,
                         palette,
                     );
-                    // The row is selected; a cell past the first is marked
-                    // too, for the keys that act on one cell.
-                    if selection == Some(CellPos { row, col }) && col > 0 {
+                    if here && lit {
+                        // Inside the cell: nothing the grid scrolls under
+                        // cuts it.
+                        painter.rect_stroke(
+                            cell_rect,
+                            CornerRadius::ZERO,
+                            Stroke::new(2.0, palette.accent),
+                            StrokeKind::Inside,
+                        );
+                    } else if here && col > 0 {
+                        // The row is selected; a cell past the first is
+                        // marked too, for the keys that act on one cell.
                         painter.rect_stroke(
                             cell_rect.shrink(1.0),
                             CornerRadius::same(look.radius.min(3)),
@@ -492,9 +695,28 @@ pub fn show<'a>(
             painter.rect_filled(header, CornerRadius::ZERO, header_fill);
             let y = painter.round_to_pixel_center(header.bottom() - hairline / 2.0);
             painter.hline(header.x_range(), y, Stroke::new(hairline, palette.outline));
-            let mut x = origin.x + gutter;
-            for (col, column) in columns.iter().enumerate() {
-                let rect = Rect::from_min_size(pos2(x, top), vec2(widths[col], header_height));
+            for &col in &order {
+                let column = &columns[col];
+                let left = origin.x + gutter + lefts[col];
+                let rect = Rect::from_min_size(pos2(left, top), vec2(widths[col], header_height));
+                // The pinned column's header stands with its cells, over
+                // the headers that scrolled under it.
+                let rect = if col == 0 && shift > 0.0 {
+                    let lead = Rect::from_min_max(
+                        pos2(origin.x + shift, top),
+                        pos2(rect.right() + shift, header.bottom()),
+                    );
+                    painter.rect_filled(lead, CornerRadius::ZERO, header_fill);
+                    painter.hline(lead.x_range(), y, Stroke::new(hairline, palette.outline));
+                    painter.vline(
+                        lead.right() - hairline / 2.0,
+                        lead.y_range(),
+                        Stroke::new(hairline, palette.outline),
+                    );
+                    rect.translate(vec2(shift, 0.0))
+                } else {
+                    rect
+                };
                 // A header that sorts nothing still takes the pointer's
                 // clicks, and drops them: a hover-only header would let
                 // them through to a row scrolled under it.
@@ -504,6 +726,7 @@ pub fn show<'a>(
                     (Sense::CLICK, WidgetType::Label)
                 };
                 let response = ui.interact(rect, id.with(("header", col)), sense);
+                focus::hint(ui, &response, rect, focus::Ring::Inset { radius: 0 });
                 // Column names come from the server: nothing hidden in them.
                 let name = display_safe(column.name);
                 response.widget_info(|| WidgetInfo::labeled(kind, true, &*name));
@@ -522,7 +745,8 @@ pub fn show<'a>(
                     pos2(rect.right() - HANDLE_WIDTH / 2.0, top),
                     pos2(rect.right() + HANDLE_WIDTH / 2.0, top + header_height),
                 );
-                let drag = ui.interact(handle, id.with(("resize", col)), Sense::drag());
+                // Only the pointer drags it: no stop for the Tab key.
+                let drag = ui.interact(handle, id.with(("resize", col)), Sense::DRAG);
                 if drag.hovered() || drag.dragged() {
                     ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeColumn);
                     painter.vline(
@@ -535,10 +759,41 @@ pub fn show<'a>(
                     widths[col] = (widths[col] + drag.drag_delta().x).max(MIN_WIDTH);
                     keep = true;
                 }
-                x += widths[col];
             }
             origin
         });
+
+    // The columns in view, for the status line to say: the ones that show
+    // any of themselves past the pinned one.
+    {
+        let offset = scroll.state.offset.x;
+        let from = offset + if pinned { gutter + widths[0] } else { 0.0 };
+        let to = offset + scroll.inner_rect.width();
+        let mut edge = gutter;
+        let mut seen: Option<(usize, usize)> = None;
+        for (col, width) in widths.iter().enumerate() {
+            let scrolls = !(pinned && col == 0);
+            if scrolls && edge < to && edge + width > from {
+                seen = Some((seen.map_or(col, |(first, _)| first), col));
+            }
+            edge += width;
+        }
+        // The pinned column leads the range while its neighbour shows.
+        let seen = match seen {
+            Some((1, last)) if pinned => Some((0, last)),
+            None if pinned => Some((0, 0)),
+            seen => seen,
+        };
+        if let Some((first, last)) = seen {
+            let shown = ColumnsShown {
+                first,
+                last,
+                total: widths.len(),
+                pinned,
+            };
+            ui.data_mut(|data| data.insert_temp(id.with("columns-shown"), shown));
+        }
+    }
 
     // Columns the viewport cuts off entirely: a pill at the header's right
     // edge says how many, and scrolls to them.
@@ -629,6 +884,9 @@ pub fn show<'a>(
         }
     }
 
+    if lit {
+        focus::pane_border(ui, visible, look, palette);
+    }
     ui.data_mut(|data| {
         if keep {
             data.insert_temp(widths_id, widths);
@@ -756,7 +1014,114 @@ fn draw_header(
     );
 }
 
-/// One cell: its text, tag, JSON chip or colour swatch, cut to fit.
+/// Space inside a chip, at each side of its text.
+const CHIP_PAD: f32 = 5.0;
+/// Space between two chips.
+const CHIP_GAP: f32 = 4.0;
+
+/// How a chip draws: NULL is filled, an array's element and a binary
+/// value's size are outlined.
+#[derive(Clone, Copy)]
+struct ChipSkin {
+    role: TextRole,
+    text: egui::Color32,
+    fill: Option<egui::Color32>,
+    border: Option<egui::Color32>,
+}
+
+impl ChipSkin {
+    /// NULL: quieter than any value.
+    fn null(palette: &Palette) -> Self {
+        Self {
+            role: TextRole::JsonChip,
+            text: palette.faint,
+            fill: Some(palette.surface),
+            border: None,
+        }
+    }
+
+    /// A piece of a value, or a note about one, in `role`.
+    fn outlined(role: TextRole, palette: &Palette) -> Self {
+        Self {
+            role,
+            text: palette.secondary,
+            fill: None,
+            border: Some(palette.outline),
+        }
+    }
+}
+
+/// The width of a chip holding `text`.
+fn chip_width(ui: &Ui, text: &str, role: TextRole, look: &Look) -> f32 {
+    text_width(ui, text, role, look) + 2.0 * CHIP_PAD
+}
+
+/// Paints a chip holding `text`, its left edge at `left`, centred on
+/// `center`.
+fn paint_chip(
+    painter: &egui::Painter,
+    ui: &Ui,
+    text: &str,
+    left: f32,
+    center: f32,
+    skin: ChipSkin,
+    look: &Look,
+) {
+    // The text's line, and room for an outline round it.
+    let line = skin.role.row_height(ui.ctx(), look.faces);
+    let height = line + if skin.border.is_some() { 4.0 } else { 2.0 };
+    let rect = Rect::from_min_size(
+        pos2(left, center - height / 2.0),
+        vec2(chip_width(ui, text, skin.role, look), height),
+    );
+    let corner = CornerRadius::same(4);
+    if let Some(fill) = skin.fill {
+        painter.rect_filled(rect, corner, fill);
+    }
+    if let Some(border) = skin.border {
+        painter.rect_stroke(
+            rect,
+            corner,
+            Stroke::new(crate::ui::widgets::hairline(ui), border),
+            StrokeKind::Inside,
+        );
+    }
+    Text::one(look, skin.role, text, skin.text)
+        .layout(ui.ctx())
+        .paint_center(painter, rect.center());
+}
+
+/// NULL where a value would be, laid out in `ui`: the grid's chip, or the
+/// terminal's faint word. The row panel's fields use it.
+pub fn null_label(ui: &mut Ui, look: &Look, palette: &Palette) -> egui::Response {
+    let role = data_role(look);
+    if look.terminal {
+        return Text::one(look, role, "NULL", palette.faint)
+            .layout(ui.ctx())
+            .label(ui);
+    }
+    let skin = ChipSkin::null(palette);
+    let size = vec2(
+        chip_width(ui, "NULL", skin.role, look),
+        role.row_height(ui.ctx(), look.faces),
+    );
+    let (rect, response) = ui.allocate_exact_size(size, Sense::hover());
+    response.widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, "NULL"));
+    if ui.is_rect_visible(rect) {
+        paint_chip(
+            ui.painter(),
+            ui,
+            "NULL",
+            rect.left(),
+            rect.center().y,
+            skin,
+            look,
+        );
+    }
+    response
+}
+
+/// One cell: its text, tag, chips or colour swatch, cut to fit.
 fn draw_cell(
     ui: &Ui,
     painter: &egui::Painter,
@@ -773,25 +1138,125 @@ fn draw_cell(
     let center = rect.center().y;
     let room = rect.width() - 2.0 * pad;
     if content.null {
-        paint(
-            &clip,
-            ui,
-            role,
-            "NULL",
-            palette.faint,
-            rect.left() + pad,
-            center,
-            false,
-            look,
-        );
+        // With the numbers in a numeric column, as a value would be.
+        let numeric = column.numeric;
+        if look.terminal {
+            let x = if numeric {
+                rect.right() - pad
+            } else {
+                rect.left() + pad
+            };
+            paint(
+                &clip,
+                ui,
+                role,
+                "NULL",
+                palette.faint,
+                x,
+                center,
+                numeric,
+                look,
+            );
+        } else {
+            let skin = ChipSkin::null(palette);
+            let left = if numeric {
+                rect.right() - pad - chip_width(ui, "NULL", skin.role, look)
+            } else {
+                rect.left() + pad
+            };
+            paint_chip(&clip, ui, "NULL", left, center, skin, look);
+        }
         return;
     }
     match content.style {
-        Style::Tag(_) | Style::True | Style::False => {
+        Style::Quiet => {
+            let shown = ellipsize(&content.text, room, false, |text| width(text, role));
+            paint(
+                &clip,
+                ui,
+                role,
+                &shown,
+                palette.faint,
+                rect.left() + pad,
+                center,
+                false,
+                look,
+            );
+        }
+        Style::Chip => {
+            let skin = ChipSkin::outlined(TextRole::FieldLabel, palette);
+            let shown = ellipsize(&content.text, room - 2.0 * CHIP_PAD, false, |text| {
+                width(text, skin.role)
+            });
+            paint_chip(&clip, ui, &shown, rect.left() + pad, center, skin, look);
+        }
+        Style::Array => {
+            // The terminal writes an array as the database does.
+            let Some(array) = array_items(&content.text).filter(|_| !look.terminal) else {
+                let shown = ellipsize(&content.text, room, false, |text| width(text, role));
+                paint(
+                    &clip,
+                    ui,
+                    role,
+                    &shown,
+                    palette.text,
+                    rect.left() + pad,
+                    center,
+                    false,
+                    look,
+                );
+                return;
+            };
+            let skin = ChipSkin::outlined(TextRole::ValueTag, palette);
+            // What stands for the elements that do not fit: how many, or
+            // "…" when the text was cut and nobody counted.
+            let more = |rest: usize| {
+                if array.cut {
+                    "…".to_owned()
+                } else {
+                    format!("+{rest}")
+                }
+            };
+            let right = rect.right() - pad;
+            let mut left = rect.left() + pad;
+            let mut shown = 0;
+            for (index, item) in array.items.iter().enumerate() {
+                let after = array.items.len() - index - 1;
+                let reserve = if after > 0 || array.cut {
+                    CHIP_GAP + chip_width(ui, &more(after), skin.role, look)
+                } else {
+                    0.0
+                };
+                let room = right - left - reserve;
+                let wide = chip_width(ui, item, skin.role, look);
+                if wide <= room {
+                    paint_chip(&clip, ui, item, left, center, skin, look);
+                    left += wide + CHIP_GAP;
+                } else if index == 0 {
+                    // The first element always shows, cut to its room.
+                    let cut = ellipsize(item, (room - 2.0 * CHIP_PAD).max(0.0), false, |text| {
+                        width(text, skin.role)
+                    });
+                    paint_chip(&clip, ui, &cut, left, center, skin, look);
+                    left += chip_width(ui, &cut, skin.role, look) + CHIP_GAP;
+                } else {
+                    break;
+                }
+                shown += 1;
+                if wide > room {
+                    break;
+                }
+            }
+            let rest = array.items.len() - shown;
+            if rest > 0 || array.cut {
+                paint_chip(&clip, ui, &more(rest), left, center, skin, look);
+            }
+        }
+        Style::Tag(_) => {
             let (color, fill) = crate::ui::value_tags::style_colors(content.style, look, palette);
             // macOS and Windows: a chip in the value-tag face, 2 above and
-            // below, 6 at the sides. Terminal (and false): the text alone,
-            // in the tag's colour.
+            // below, 6 at the sides. Terminal: the text alone, in the
+            // tag's colour.
             let Some(fill) = fill else {
                 let shown = ellipsize(&content.text, room, false, |text| width(text, role));
                 paint(
@@ -1024,6 +1489,7 @@ mod tests {
                     rows,
                     0,
                     None,
+                    false,
                     &palette,
                     &crate::theme::Look::standard(),
                     |row, col| Cell {
@@ -1049,6 +1515,218 @@ mod tests {
             action: egui::accesskit::Action::Click,
             data: None,
         })
+    }
+
+    /// What a frame of a three-row grid paints with cell (1, 1) selected:
+    /// its filled rectangles and its outlines.
+    fn painted(
+        ctx: &egui::Context,
+        look: &Look,
+        palette: &Palette,
+        keys: bool,
+        events: Vec<egui::Event>,
+    ) -> Vec<egui::epaint::RectShape> {
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(800.0, 400.0),
+            )),
+            events,
+            ..Default::default()
+        };
+        let mut output = ctx.run_ui(input, |ui| {
+            focus::begin_frame(ui.ctx());
+            show(
+                ui,
+                egui::Id::new("grid"),
+                &columns(),
+                3,
+                0,
+                Some(CellPos { row: 1, col: 1 }),
+                keys,
+                palette,
+                look,
+                |row, col| Cell {
+                    text: format!("r{row}c{col}").into(),
+                    null: false,
+                    style: Style::Plain,
+                },
+            );
+        });
+        output.textures_delta.clear();
+        output
+            .shapes
+            .into_iter()
+            .filter_map(|clipped| match clipped.shape {
+                egui::Shape::Rect(rect) => Some(rect),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_keyboard_lights_its_cell_and_the_pointer_only_the_row() {
+        for look in Look::ALL {
+            let palette = Palette::light();
+            let ctx = egui::Context::default();
+            crate::theme::install(&ctx, false, &look);
+            crate::theme::apply(&ctx, &palette, &look);
+            let key = crate::testing::key(egui::Key::ArrowDown, egui::Modifiers::NONE);
+            // The cell's mark: the selection's colour on the cell alone,
+            // or the terminal's accent block under its text.
+            let lit = |shapes: &[egui::epaint::RectShape]| {
+                shapes.iter().any(|rect| {
+                    let wide = rect.rect.width();
+                    let cell = rect.fill == palette.selection && wide > 20.0 && wide < 700.0;
+                    let block = rect.fill == palette.accent && wide > 20.0;
+                    if look.terminal { block } else { cell }
+                })
+            };
+            let whole_row = |shapes: &[egui::epaint::RectShape]| {
+                shapes
+                    .iter()
+                    .any(|rect| rect.fill == palette.selection && rect.rect.width() >= 700.0)
+            };
+            // No key yet: the row is selected, the cell is not lit.
+            let shapes = painted(&ctx, &look, &palette, true, Vec::new());
+            assert!(!lit(&shapes) && whole_row(&shapes), "{}", look.name);
+            // A key, and the arrows are the grid's: the cell is lit.
+            painted(&ctx, &look, &palette, true, vec![key.clone()]);
+            let shapes = painted(&ctx, &look, &palette, true, Vec::new());
+            assert!(lit(&shapes), "{}", look.name);
+            // The desktop looks move the selection's colour to the cell.
+            assert_eq!(whole_row(&shapes), look.terminal, "{}", look.name);
+            // The arrows are the tree's: the grid shows its row alone.
+            let shapes = painted(&ctx, &look, &palette, false, Vec::new());
+            assert!(!lit(&shapes) && whole_row(&shapes), "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn a_leading_key_column_stays_in_sight_while_the_others_scroll() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx, false, &Look::standard());
+        ctx.enable_accesskit();
+        let id = egui::Id::new("grid");
+        let names: Vec<String> = (0..8).map(|col| format!("column_{col}")).collect();
+        let columns: Vec<Column<'_>> = names
+            .iter()
+            .enumerate()
+            .map(|(col, name)| Column {
+                name,
+                type_line: "int8".into(),
+                numeric: false,
+                sort: None,
+                key: col == 0,
+                flexible: false,
+                sortable: true,
+            })
+            .collect();
+        // One frame of a 320 pt wide grid: its output, where each cell's
+        // text was painted, and the AccessKit tree.
+        let frame = |events: Vec<egui::Event>| {
+            let mut result = GridOutput::default();
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(320.0, 300.0),
+                )),
+                events,
+                ..Default::default()
+            };
+            let mut output = ctx.run_ui(input, |ui| {
+                result = show(
+                    ui,
+                    id,
+                    &columns,
+                    3,
+                    0,
+                    None,
+                    false,
+                    &Palette::light(),
+                    &Look::standard(),
+                    |row, col| Cell {
+                        text: format!("r{row}c{col}").into(),
+                        null: false,
+                        style: Style::Plain,
+                    },
+                );
+            });
+            output.textures_delta.clear();
+            let texts: Vec<(String, f32)> = output
+                .shapes
+                .iter()
+                .filter_map(|clipped| match &clipped.shape {
+                    egui::Shape::Text(text) if clipped.clip_rect.contains(text.pos) => {
+                        Some((text.galley.text().to_owned(), text.pos.x))
+                    }
+                    _ => None,
+                })
+                .collect();
+            let tree = output.platform_output.accesskit_update.expect("accesskit");
+            (result, texts, tree)
+        };
+        let at = |texts: &[(String, f32)], cell: &str| {
+            texts
+                .iter()
+                .rev()
+                .find(|(text, _)| text == cell)
+                .map(|(_, x)| *x)
+        };
+        frame(Vec::new());
+        let (_, texts, tree) = frame(Vec::new());
+        let shown = columns_shown(&ctx, id).expect("the columns in view");
+        assert_eq!((shown.first, shown.total, shown.pinned), (0, 8, true));
+        assert!(shown.partial(), "{shown:?}");
+        let before = at(&texts, "r0c0").expect("the key");
+        // To the columns out of view: the pill at the header's end.
+        let more = tree
+            .nodes
+            .iter()
+            .find(|(_, node)| {
+                node.label()
+                    .is_some_and(|name| name.ends_with("more columns"))
+            })
+            .map(|(id, _)| *id)
+            .expect("the pill");
+        frame(vec![click(more)]);
+        frame(Vec::new());
+        let (_, texts, _) = frame(Vec::new());
+        let scrolled = columns_shown(&ctx, id).unwrap();
+        assert!(scrolled.last > shown.last, "{scrolled:?}");
+        // The range is of the columns that scrolled into view: the key is
+        // in sight beside it, and some are still out of it.
+        assert!(scrolled.first > 1 && scrolled.pinned, "{scrolled:?}");
+        assert!(scrolled.partial(), "{scrolled:?}");
+        // The key is where it was; the column after it went under it.
+        assert_eq!(at(&texts, "r0c0"), Some(before));
+        assert!(at(&texts, "r0c1").is_none_or(|x| x < before));
+        // A click over the key picks the key's cell, not one under it.
+        let over_key = egui::pos2(before + 4.0, 45.0 + 26.0 * 1.5);
+        let press = |pressed| egui::Event::PointerButton {
+            pos: over_key,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        frame(vec![egui::Event::PointerMoved(over_key), press(true)]);
+        let (output, _, _) = frame(vec![press(false)]);
+        assert_eq!(output.clicked, Some(CellPos { row: 1, col: 0 }));
+    }
+
+    #[test]
+    fn a_grid_without_a_leading_key_pins_nothing() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx, false, &Look::standard());
+        ctx.enable_accesskit();
+        // A result's columns: none is a key.
+        let mut columns = columns_that(false);
+        columns[0].key = false;
+        frame_of(&ctx, &columns, 3, Vec::new());
+        frame_of(&ctx, &columns, 3, Vec::new());
+        let shown = columns_shown(&ctx, egui::Id::new("grid")).expect("the columns in view");
+        assert!(!shown.pinned);
+        assert!(!shown.partial(), "every column fits: {shown:?}");
     }
 
     #[test]

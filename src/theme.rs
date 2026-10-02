@@ -81,37 +81,63 @@ pub const EXTRA_COLORS: [&str; 10] = [
 ];
 
 impl Palette {
+    /// The macOS design's dark colours. The content is a step lighter than
+    /// the bars round it, as the light content is whiter than its bars.
     pub fn dark() -> Self {
         Self {
             dark: true,
-            window: Color32::from_rgb(0x1f, 0x1e, 0x1d),
-            panel: Color32::from_rgb(0x26, 0x25, 0x23),
-            surface: Color32::from_rgb(0x30, 0x2e, 0x2c),
-            surface_hover: Color32::from_rgb(0x39, 0x37, 0x34),
-            surface_active: Color32::from_rgb(0x43, 0x40, 0x3d),
-            outline: Color32::from_rgb(0x3a, 0x38, 0x35),
-            text: Color32::from_rgb(0xec, 0xeb, 0xe8),
-            secondary: Color32::from_rgb(0xb0, 0xad, 0xa7),
-            dim: Color32::from_rgb(0x9a, 0x97, 0x91),
-            accent: Color32::from_rgb(0x5a, 0x9f, 0xf8),
-            accent_hover: Color32::from_rgb(0x7a, 0xb2, 0xf9),
-            on_accent: Color32::from_rgb(0x0b, 0x13, 0x20),
-            danger: Color32::from_rgb(0xf2, 0x70, 0x7a),
-            warning: Color32::from_rgb(0xea, 0xb3, 0x5a),
-            // The panel tone: fields and buttons (surface) must stand off
-            // a dialog as they do off the sidebar.
-            overlay: Color32::from_rgb(0x26, 0x25, 0x23),
+            window: Color32::from_rgb(0x26, 0x26, 0x24),
+            panel: Color32::from_rgb(0x22, 0x22, 0x20),
+            surface: Color32::from_rgb(0x30, 0x2f, 0x2c),
+            surface_hover: Color32::from_rgb(0x2d, 0x2c, 0x29),
+            // Lighter than the surface: what is raised or pressed comes
+            // forward in the dark.
+            surface_active: Color32::from_rgb(0x3a, 0x39, 0x36),
+            outline: Color32::from_rgb(0x3a, 0x39, 0x36),
+            text: Color32::from_rgb(0xec, 0xeb, 0xe6),
+            secondary: Color32::from_rgb(0xc4, 0xc2, 0xbc),
+            dim: Color32::from_rgb(0xa3, 0xa1, 0x9b),
+            // Accent, danger and warning are read as text: 4.5:1 or better.
+            accent: Color32::from_rgb(0x7a, 0x9d, 0xf5),
+            accent_hover: Color32::from_rgb(0xa9, 0xc1, 0xfa),
+            on_accent: Color32::from_rgb(0x1c, 0x1c, 0x1a),
+            danger: Color32::from_rgb(0xf0, 0x8a, 0x82),
+            warning: Color32::from_rgb(0xe0, 0xb2, 0x5a),
+            // The content's tone, as in the light palette: a dialog is a
+            // piece of content over a dimmed window.
+            overlay: Color32::from_rgb(0x26, 0x26, 0x24),
             shadow: Color32::from_black_alpha(150),
-            faint: Color32::from_rgb(0x85, 0x81, 0x7b),
-            border: Color32::from_rgb(0x48, 0x45, 0x41),
-            selection: Color32::from_rgb(0x28, 0x34, 0x57),
-            success: Color32::from_rgb(0x9e, 0xce, 0x6a),
-            info: Color32::from_rgb(0x7d, 0xcf, 0xff),
-            orange: Color32::from_rgb(0xff, 0x9e, 0x64),
-            magenta: Color32::from_rgb(0xbb, 0x9a, 0xf7),
-            blue: Color32::from_rgb(0x7a, 0xa2, 0xf7),
-            rose: Color32::from_rgb(0xff, 0x7e, 0xb6),
-            olive: Color32::from_rgb(0xb5, 0xbd, 0x68),
+            faint: Color32::from_rgb(0x8a, 0x88, 0x82),
+            border: Color32::from_rgb(0x44, 0x43, 0x3f),
+            selection: Color32::from_rgb(0x2b, 0x35, 0x50),
+            success: Color32::from_rgb(0x8f, 0xd1, 0x9e),
+            info: Color32::from_rgb(0x9f, 0xbd, 0xf0),
+            orange: Color32::from_rgb(0xf0, 0xa8, 0x68),
+            magenta: Color32::from_rgb(0xb9, 0xa0, 0xf5),
+            blue: Color32::from_rgb(0x9f, 0xbd, 0xf0),
+            rose: Color32::from_rgb(0xed, 0xa6, 0xc6),
+            olive: Color32::from_rgb(0xbc, 0xcb, 0x88),
+        }
+    }
+
+    /// The fill of a control under the pointer: a step further from the
+    /// window than the control at rest, so darker on a light palette and
+    /// lighter on a dark one.
+    pub fn hover_fill(&self) -> Color32 {
+        if self.dark {
+            self.surface_active
+        } else {
+            self.surface_hover
+        }
+    }
+
+    /// The fill of a control while it is pressed: a step past
+    /// [`Palette::hover_fill`].
+    pub fn pressed_fill(&self) -> Color32 {
+        if self.dark {
+            self.surface_active.lerp_to_gamma(self.text, 0.08)
+        } else {
+            self.surface_active
         }
     }
 
@@ -600,12 +626,12 @@ fn apply_to_style(style: &mut egui::Style, palette: &Palette, look: &Look) {
     visuals.widgets.noninteractive.fg_stroke = Stroke::new(1.0, palette.text);
     visuals.widgets.inactive.bg_fill = palette.surface;
     visuals.widgets.inactive.weak_bg_fill = palette.surface;
-    visuals.widgets.hovered.bg_fill = palette.surface_hover;
-    visuals.widgets.hovered.weak_bg_fill = palette.surface_hover;
-    visuals.widgets.active.bg_fill = palette.surface_active;
-    visuals.widgets.active.weak_bg_fill = palette.surface_active;
-    visuals.widgets.open.bg_fill = palette.surface_hover;
-    visuals.widgets.open.weak_bg_fill = palette.surface_hover;
+    visuals.widgets.hovered.bg_fill = palette.hover_fill();
+    visuals.widgets.hovered.weak_bg_fill = palette.hover_fill();
+    visuals.widgets.active.bg_fill = palette.pressed_fill();
+    visuals.widgets.active.weak_bg_fill = palette.pressed_fill();
+    visuals.widgets.open.bg_fill = palette.hover_fill();
+    visuals.widgets.open.weak_bg_fill = palette.hover_fill();
     if look.bordered_controls {
         // Omarchy's shell: foreground alpha over the background, 1 px borders.
         let fg = palette.text;
@@ -948,6 +974,18 @@ mod tests {
             }
         }
         assert!(failures.is_empty(), "{failures:#?}");
+    }
+
+    #[test]
+    fn a_control_under_the_pointer_stands_further_off_the_window() {
+        for (theme, palette) in [("light", Palette::light()), ("dark", Palette::dark())] {
+            let off = |color| contrast(color, palette.window);
+            assert!(off(palette.hover_fill()) > off(palette.surface), "{theme}");
+            assert!(
+                off(palette.pressed_fill()) > off(palette.hover_fill()),
+                "{theme}"
+            );
+        }
     }
 
     #[test]

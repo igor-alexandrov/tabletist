@@ -9,7 +9,7 @@ use egui::Color32;
 use serde::{Deserialize, Serialize};
 use tabletist_db::{ConnectSpec, Driver};
 
-use crate::theme::{Look, Palette, contrast, mix};
+use crate::theme::{Look, Palette, mix};
 
 /// What a connection is. It decides the connection's colour everywhere and
 /// whether it is read-only by default.
@@ -139,7 +139,7 @@ impl EnvColors {
 }
 
 /// An environment's colours on `platform` with `palette`. macOS and Windows
-/// take fixed colours (softened into the panel in dark mode); Linux takes
+/// take fixed colours (mixed into the content in dark mode); Linux takes
 /// the theme's red, yellow, green, magenta and muted, so it follows a
 /// theme change.
 pub fn env_colors(env: Environment, platform: Platform, palette: &Palette) -> EnvColors {
@@ -201,6 +201,19 @@ fn native_table(env: Environment) -> (Color32, Color32, Color32) {
     }
 }
 
+/// The badge's fill and text on a dark palette, as the dark design draws
+/// them: the base colour sunk into the content, its text a light tone of it.
+fn native_dark_badge(env: Environment) -> (Color32, Color32) {
+    let rgb = Color32::from_rgb;
+    match env {
+        Environment::Local => (rgb(0x37, 0x2e, 0x49), rgb(0xb9, 0xa0, 0xf5)),
+        Environment::Dev => (rgb(0x27, 0x37, 0x2c), rgb(0x7f, 0xcf, 0x9a)),
+        Environment::Staging => (rgb(0x48, 0x3a, 0x20), rgb(0xe0, 0xb2, 0x5a)),
+        Environment::Production => (rgb(0x45, 0x26, 0x23), rgb(0xf0, 0x8a, 0x82)),
+        Environment::None => (rgb(0x2f, 0x2e, 0x2b), rgb(0xc4, 0xc2, 0xbc)),
+    }
+}
+
 fn native(env: Environment, palette: &Palette) -> EnvColors {
     let (base, badge_bg, badge_fg) = native_table(env);
     if !palette.dark {
@@ -212,27 +225,16 @@ fn native(env: Environment, palette: &Palette) -> EnvColors {
             bar_border: mix(Color32::WHITE, base, 0.28),
         };
     }
-    // Dark mode keeps the colour but mixes it into the panel, and lightens
-    // the badge text until it reads on its fill.
-    let badge_bg = mix(palette.panel, base, 0.2);
+    // Dark mode keeps the colour and mixes it into the content, a little
+    // stronger than on white: a dark tint needs more of it to show.
+    let (badge_bg, badge_fg) = native_dark_badge(env);
     EnvColors {
         base,
         badge_bg,
-        badge_fg: readable(base, badge_bg),
-        bar_bg: mix(palette.panel, base, 0.12),
-        bar_border: mix(palette.panel, base, 0.28),
+        badge_fg,
+        bar_bg: mix(palette.window, base, 0.18),
+        bar_border: mix(palette.window, base, 0.34),
     }
-}
-
-/// `color` lightened towards white until it has 4.5:1 against `background`.
-fn readable(color: Color32, background: Color32) -> Color32 {
-    let mut color = color;
-    let mut step = 0;
-    while contrast(color, background) < 4.5 && step < 50 {
-        color = color.lerp_to_gamma(Color32::WHITE, 0.04);
-        step += 1;
-    }
-    color
 }
 
 /// The theme key each environment takes, as the Omarchy template maps it
@@ -260,6 +262,7 @@ fn omarchy(env: Environment, palette: &Palette) -> EnvColors {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::theme::contrast;
 
     fn hex(value: u32) -> Color32 {
         let [_, r, g, b] = value.to_be_bytes();
@@ -286,19 +289,26 @@ mod tests {
     }
 
     #[test]
-    fn macos_dark_mode_keeps_the_colour_and_mixes_it_into_the_panel() {
+    fn macos_dark_mode_keeps_the_colour_and_mixes_it_into_the_content() {
         let dark = Palette::dark();
         for env in Environment::ALL {
             let light = env_colors(env, Platform::Native, &Palette::light());
             let colors = env_colors(env, Platform::Native, &dark);
             assert_eq!(colors.base(), light.base(), "{env:?}");
-            assert_eq!(colors.bar_bg(), mix(dark.panel, colors.base(), 0.12));
-            assert_eq!(colors.bar_border(), mix(dark.panel, colors.base(), 0.28));
-            assert_eq!(colors.badge_bg(), mix(dark.panel, colors.base(), 0.2));
+            // The bar is the content tinted, and its line stands off the
+            // content more than the bar does.
+            let off = |color| contrast(color, dark.window);
+            assert_ne!(colors.bar_bg(), dark.window, "{env:?}");
+            assert_ne!(colors.bar_bg(), dark.panel, "{env:?}");
+            assert!(off(colors.bar_border()) > off(colors.bar_bg()), "{env:?}");
             assert!(
                 contrast(colors.badge_fg(), colors.badge_bg()) >= 4.5,
                 "{env:?}"
             );
+            // What the bar says is read on its tint.
+            for text in [dark.text, dark.secondary] {
+                assert!(contrast(text, colors.bar_bg()) >= 4.5, "{env:?}");
+            }
         }
     }
 

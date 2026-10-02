@@ -92,6 +92,14 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                             &look,
                             &palette,
                         );
+                        crate::ui::focus::hint(
+                            ui,
+                            &response,
+                            crate::ui::widgets::selection_rect(rect, &look),
+                            crate::ui::focus::Ring::Inset {
+                                radius: look.radius.saturating_sub(2),
+                            },
+                        );
                         // Long names end in "…" and show in full on hover.
                         let role = widgets::body(&look);
                         let color = crate::ui::widgets::selection_text(selected, &look, &palette);

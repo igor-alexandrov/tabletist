@@ -799,14 +799,13 @@ fn menu(
             );
         }
     }
-    if response.has_focus() {
-        ui.painter().rect_stroke(
-            rect.expand(1.0),
-            CornerRadius::same(if look.terminal { 0 } else { look.radius }),
-            widgets::primary_focus_ring(palette),
-            StrokeKind::Outside,
-        );
-    }
+    let radius = if look.terminal { 0 } else { look.radius };
+    crate::ui::focus::hint(
+        ui,
+        &response,
+        rect,
+        crate::ui::focus::Ring::Outer { radius },
+    );
     // Where its button reads short, the menu says what it sets on hover.
     let response = if shape.short {
         response.on_hover_text(label.value.as_str())

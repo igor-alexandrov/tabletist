@@ -13,6 +13,7 @@ use crate::i18n::gettext;
 use crate::model::{Action, ConnTabId, ObjectTab, ObjectView, TabId};
 use crate::theme::{Icon, Look, Palette};
 use crate::typography::{Text, TextRole};
+use crate::ui::focus;
 use crate::ui::format;
 use crate::ui::grid::{self, Cell, Column, Style};
 use crate::ui::states;
@@ -125,6 +126,7 @@ pub fn header(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabI
         .frame(Frame::new().fill(palette.window))
         .show(ui, |ui| {
             let rect = ui.max_rect();
+            focus::region(ui, focus::Region::Toolbar, rect);
             let divider = if look.terminal {
                 palette.outline
             } else {
@@ -172,6 +174,9 @@ pub fn header(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabI
                     );
                     let response = ui.interact(hit, ui.id().with(("view", *key)), Sense::click());
                     let selected = view == *target;
+                    if selected {
+                        focus::claim(ui, focus::Region::Toolbar, &response);
+                    }
                     let name = views
                         .iter()
                         .find(|(v, ..)| v == target)
@@ -259,15 +264,34 @@ pub fn header(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabI
             ui.painter()
                 .rect_filled(track, CornerRadius::same(look.radius), palette.surface);
             x += 3.0;
-            for ((target, label, _), width) in views.iter().zip(widths) {
+            for (index, ((target, label, _), width)) in views.iter().zip(widths).enumerate() {
                 let cell = Rect::from_min_size(pos2(x, track.top() + 3.0), vec2(width, 28.0));
                 x += width;
-                let response =
-                    ui.interact(cell, ui.id().with(("view", label.as_ref())), Sense::click());
                 let selected = view == *target;
+                // One Tab stop for the switch; the arrows choose inside it.
+                let (response, arrow) = focus::segment(
+                    ui,
+                    cell,
+                    ui.id().with(("view", label.as_ref())),
+                    ui.id().with("views"),
+                    (index, views.len()),
+                    selected,
+                );
                 response.widget_info(|| {
                     WidgetInfo::selected(WidgetType::Button, true, selected, label.as_ref())
                 });
+                let radius = look.radius.saturating_sub(2);
+                focus::hint(ui, &response, cell, focus::Ring::Edge { radius });
+                if selected {
+                    focus::claim(ui, focus::Region::Toolbar, &response);
+                }
+                if let Some((chosen, _, _)) = arrow.and_then(|index| views.get(index)) {
+                    actions.push(Action::SetView {
+                        tab,
+                        object_tab,
+                        view: *chosen,
+                    });
+                }
                 if selected {
                     let corner = CornerRadius::same(look.radius.saturating_sub(2));
                     ui.painter().add(
@@ -673,6 +697,8 @@ fn where_line(
             .layouter(&mut layouter),
     );
     response.widget_info(|| WidgetInfo::labeled(WidgetType::TextEdit, true, "WHERE"));
+    // A line of the bar, not a box: its caret says where the keyboard is.
+    crate::ui::focus::hint(ui, &response, field, crate::ui::focus::Ring::Own);
     if focus {
         response.request_focus();
     }
@@ -733,6 +759,47 @@ fn dashed_rect(ui: &egui::Ui, rect: Rect, radius: f32, color: egui::Color32) {
     }
 }
 
+/// The id of a table's grid. Full precision widens timestamps: the columns
+/// are fitted again, as a grid of its own.
+fn grid_id(tab: ConnTabId, object_tab: TabId, full_precision: bool) -> Id {
+    Id::new(("grid", tab.0, object_tab.0, full_precision))
+}
+
+/// What a status line says of the columns while some are out of view:
+/// `Columns 1–10 of 40 · id pinned`, or the terminal's `cols 1–7 of 40`.
+/// Nothing while every column shows. It reads what the grid drew last, so
+/// it is a frame behind a scroll.
+pub fn columns_note(
+    ctx: &egui::Context,
+    workspace: &crate::model::Workspace,
+    tab: ConnTabId,
+    object: &ObjectTab,
+    look: &Look,
+    locale: crate::i18n::Locale,
+) -> Option<String> {
+    let id = grid_id(tab, object.id, workspace.full_precision);
+    let shown = grid::columns_shown(ctx, id).filter(grid::ColumnsShown::partial)?;
+    let say = |text: &'static str| look.label(&gettext(locale, text));
+    let noun = if look.terminal { "cols" } else { "Columns" };
+    let mut note = format!(
+        "{} {}–{} {} {}",
+        say(noun),
+        shown.first + 1,
+        shown.last + 1,
+        say("of"),
+        shown.total
+    );
+    let first = object.page().and_then(|page| page.columns.first());
+    if let (true, Some(column)) = (shown.pinned, first) {
+        note.push_str(&format!(
+            " · {} {}",
+            format::display_safe(&column.name),
+            say("pinned")
+        ));
+    }
+    Some(note)
+}
+
 /// The status footer: the page's range and paging, then what is selected
 /// and how long the query took.
 pub fn footer(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId) {
@@ -768,6 +835,10 @@ pub fn footer(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabI
     let timing = page.map(|page| format::elapsed(page.elapsed));
     let unordered = page.is_some_and(|page| !page.ordered_by_key) && object.query.sort.is_empty();
     let selected = object.selection.is_some();
+    let columns = app
+        .workspace(tab)
+        .filter(|_| view == ObjectView::Data)
+        .and_then(|workspace| columns_note(ui.ctx(), workspace, tab, object, &look, locale));
     let mut actions = Vec::new();
     egui::Panel::bottom(Id::new(("object-footer", tab.0, object_tab.0)))
         .exact_size(33.0)
@@ -824,6 +895,31 @@ pub fn footer(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabI
                     }
                     ui.spacing_mut().item_spacing.x = 16.0;
                     ui.add_space(14.0);
+                    // The columns in view, where the footer has the room: what
+                    // its right end says comes first.
+                    if let Some(columns) = &columns {
+                        let width = |text: &str| {
+                            widgets::secondary(&look).width(ui.ctx(), look.faces, text)
+                        };
+                        let state = if selected {
+                            format!(
+                                "{} · {}",
+                                gettext(locale, "1 row selected"),
+                                gettext(locale, "read-only")
+                            )
+                        } else {
+                            gettext(locale, "read-only").into_owned()
+                        };
+                        let query = timing
+                            .as_ref()
+                            .map(|timing| format!("{} {timing}", gettext(locale, "Query")));
+                        let taken = width(&state)
+                            + query.as_deref().map_or(0.0, |query| 16.0 + width(query))
+                            + 16.0;
+                        if ui.available_width() >= width(columns) + 16.0 + taken {
+                            note(ui, columns, status, &look);
+                        }
+                    }
                     if filtered {
                         note(ui, &gettext(locale, "Filtered"), palette.accent, &look)
                             .on_hover_text(gettext(locale, "Cmd/Ctrl+F edits the filter"));
@@ -945,7 +1041,7 @@ pub fn type_line(
     let base = match (kind, type_name) {
         (ValueKind::Temporal, "timestamp") => "timestamp · no tz".to_owned(),
         (ValueKind::Temporal, "timestamptz") => "timestamp · tz".to_owned(),
-        _ => type_name.to_owned(),
+        _ => format::type_label(type_name, kind).into_owned(),
     };
     let line = match (look.terminal, key, target) {
         (true, true, _) => "pk".to_owned(),
@@ -1007,19 +1103,20 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
         let tags = crate::ui::value_tags::Tags::of_page(page, structure);
         let output = grid::show(
             ui,
-            // Full precision widens timestamps: the columns fit again.
-            Id::new(("grid", tab.0, object_tab.0, full_precision)),
+            grid_id(tab, object_tab, full_precision),
             &columns,
             page.rows.len(),
             object.query.offset,
             object.selection,
+            // The arrows are the grid's once the user worked in it.
+            workspace.pane == crate::model::Pane::Grid,
             &palette,
             &look,
             |row, col| {
                 cell(
                     &ctx,
                     &page.rows[row][col],
-                    page.columns[col].kind,
+                    &page.columns[col],
                     &tags[col],
                     &look,
                     full_precision,
@@ -1032,6 +1129,10 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
                 id: object_tab,
                 cell,
             });
+        }
+        // The Tab key came to the grid: the arrows are its own now.
+        if output.focused {
+            actions.push(Action::GridKeys(tab));
         }
         if let Some(col) = output.sort_clicked {
             actions.push(Action::SortBy {
@@ -1212,7 +1313,7 @@ fn empty_rows(
 pub fn cell<'a>(
     ctx: &egui::Context,
     value: &'a tabletist_db::Value,
-    kind: ValueKind,
+    column: &tabletist_db::ColumnMeta,
     tags: &crate::ui::value_tags::Tags<'_>,
     look: &Look,
     full_precision: bool,
@@ -1226,19 +1327,26 @@ pub fn cell<'a>(
             style,
         };
     }
-    plain_cell(ctx, value, kind, look, full_precision)
+    plain_cell(ctx, value, column, look, full_precision)
 }
 
-/// A cell's text and style when it is no tag: NULL, a colour's swatch, a
-/// document at a glance, a timestamp to the second unless `full_precision`,
-/// and anything else as it reads.
+/// A cell's text and style when it is no tag: NULL, a binary value's type
+/// and size, a colour's swatch, a document at a glance, what stands for
+/// text with nothing to see, an array's elements, a timestamp to the second
+/// unless `full_precision`, and anything else as it reads.
 pub fn plain_cell<'a>(
     ctx: &egui::Context,
     value: &'a tabletist_db::Value,
-    kind: ValueKind,
+    column: &tabletist_db::ColumnMeta,
     look: &Look,
     full_precision: bool,
 ) -> Cell<'a> {
+    let kind = column.kind;
+    let styled = |text: std::borrow::Cow<'a, str>, style| Cell {
+        text,
+        null: false,
+        style,
+    };
     if value.is_null() {
         return Cell {
             text: "NULL".into(),
@@ -1246,12 +1354,23 @@ pub fn plain_cell<'a>(
             style: Style::Plain,
         };
     }
-    if let Some(color) = format::color(value) {
-        return Cell {
-            text: format::cell_text(value),
-            null: false,
-            style: Style::Color(color),
+    if let tabletist_db::Value::Bytes(bytes) = value {
+        // Sixteen bytes read as the UUID they hold, as a value does.
+        if format::uuid(bytes).is_some() {
+            return styled(format::cell_text(value), Style::Plain);
+        }
+        // Its type and size, never its bytes: a chip, or the terminal's
+        // muted words.
+        let label = format::binary_label(&column.type_name, bytes.len(), look.terminal);
+        let style = if look.terminal {
+            Style::Quiet
+        } else {
+            Style::Chip
         };
+        return styled(label.into(), style);
+    }
+    if let Some(color) = format::color(value) {
+        return styled(format::cell_text(value), Style::Color(color));
     }
     if let Some(doc) =
         crate::ui::json_view::document(ctx, kind, value, crate::ui::json_view::CELL_MAX)
@@ -1262,13 +1381,31 @@ pub fn plain_cell<'a>(
         } else {
             strings.into_iter().next().unwrap_or_default()
         };
-        return Cell {
-            text: format::one_line(&shown).into_owned().into(),
-            null: false,
-            style: Style::Json(count),
-        };
+        return styled(
+            format::one_line(&shown).into_owned().into(),
+            Style::Json(count),
+        );
     }
-    let text = format::cell_text(value);
+    let text = match value {
+        tabletist_db::Value::Text(text) => {
+            let marks = grid::marks(ctx, look);
+            // An empty string and a blank one say what they are.
+            if let Some(blank) = format::blank_text(text, marks) {
+                return styled(blank.into(), Style::Quiet);
+            }
+            let line = format::cell_line(text, marks);
+            if format::is_array(&column.type_name, kind) {
+                if line == "{}" {
+                    return styled(line, Style::Quiet);
+                }
+                if format::array_items(&line).is_some() {
+                    return styled(line, Style::Array);
+                }
+            }
+            line
+        }
+        other => format::cell_text(other),
+    };
     let text = if kind == ValueKind::Temporal && !full_precision {
         match format::to_the_second(&text) {
             std::borrow::Cow::Borrowed(_) => text,
@@ -1277,11 +1414,7 @@ pub fn plain_cell<'a>(
     } else {
         text
     };
-    Cell {
-        text,
-        null: false,
-        style: Style::Plain,
-    }
+    styled(text, Style::Plain)
 }
 
 /// The error a view shows in place of what `fetch` holds: see
@@ -1465,12 +1598,109 @@ mod tests {
         }
     }
 
+    /// A context with every look's faces that has drawn a frame: its fonts
+    /// are there to ask for the marks. No system fonts, as in every test.
+    fn context() -> egui::Context {
+        let ctx = egui::Context::default();
+        let mut fonts = fastframe_fonts::FontSetup::default()
+            .system_fallbacks(false)
+            .definitions();
+        for look in Look::ALL {
+            crate::typography::configure(&mut fonts, &look, false);
+        }
+        ctx.set_fonts(fonts);
+        let mut output = ctx.run_ui(egui::RawInput::default(), |_| {});
+        output.textures_delta.clear();
+        ctx
+    }
+
+    /// A result column of `kind`, its type named `type_name`.
+    fn meta(type_name: &str, kind: ValueKind) -> tabletist_db::ColumnMeta {
+        tabletist_db::ColumnMeta {
+            name: "column".into(),
+            type_name: type_name.into(),
+            kind,
+        }
+    }
+
+    #[test]
+    fn a_cell_says_what_a_value_with_nothing_to_show_is() {
+        // Without the system's fonts the marks are the plain ones.
+        let ctx = context();
+        let cell = |value: &Value, column: &tabletist_db::ColumnMeta, look: &Look| {
+            let cell = plain_cell(&ctx, value, column, look, false);
+            (cell.text.into_owned(), cell.style)
+        };
+        let text = |text: &str| Value::Text(text.into());
+        let words = meta("text", ValueKind::Text);
+        for look in Look::ALL {
+            let marks = grid::marks(&ctx, &look);
+            let (space, line) = (marks.space, marks.line);
+            assert_eq!(cell(&text(""), &words, &look), ("''".into(), Style::Quiet));
+            assert_eq!(
+                cell(&text("  "), &words, &look),
+                (format!("{space}{space}"), Style::Quiet)
+            );
+            // Text with a line break stays text, the break in sight.
+            assert_eq!(
+                cell(&text("Night Train\nPart One"), &words, &look),
+                (format!("Night Train{line}Part One"), Style::Plain)
+            );
+            assert_eq!(
+                cell(&text("   Leading spaces kept"), &words, &look),
+                ("   Leading spaces kept".into(), Style::Plain)
+            );
+        }
+    }
+
+    #[test]
+    fn an_array_and_a_binary_value_are_told_by_their_column() {
+        let ctx = context();
+        let cell = |value: &Value, column: &tabletist_db::ColumnMeta, look: &Look| {
+            let cell = plain_cell(&ctx, value, column, look, false);
+            (cell.text.into_owned(), cell.style)
+        };
+        let text = |text: &str| Value::Text(text.into());
+        let (mac, terminal) = (Look::macos(), Look::omarchy());
+        let languages = meta("_text", ValueKind::Other);
+        for look in [mac, terminal] {
+            assert_eq!(
+                cell(&text("{en,fr}"), &languages, &look),
+                ("{en,fr}".into(), Style::Array)
+            );
+            assert_eq!(
+                cell(&text("{}"), &languages, &look),
+                ("{}".into(), Style::Quiet)
+            );
+            // What is no array in an array's column is the text it is.
+            assert_eq!(
+                cell(&text("[0:1]={a,b}"), &languages, &look),
+                ("[0:1]={a,b}".into(), Style::Plain)
+            );
+        }
+        // The same text in a column of another type is only text.
+        assert_eq!(
+            cell(&text("{en,fr}"), &meta("int4range", ValueKind::Other), &mac),
+            ("{en,fr}".into(), Style::Plain)
+        );
+        let cover = Value::Bytes(vec![0; 49_358].into());
+        let bytea = meta("bytea", ValueKind::Binary);
+        assert_eq!(
+            cell(&cover, &bytea, &mac),
+            ("bytea · 48.2 KB".into(), Style::Chip)
+        );
+        assert_eq!(
+            cell(&cover, &bytea, &terminal),
+            ("bytea 48.2K".into(), Style::Quiet)
+        );
+    }
+
     #[test]
     fn a_plain_cell_reads_as_its_value_does_in_any_grid() {
-        let ctx = egui::Context::default();
+        let ctx = context();
         let mac = Look::macos();
         let cell = |value: &Value, kind, look: &Look, full| {
-            let cell = plain_cell(&ctx, value, kind, look, full);
+            let cell = plain_cell(&ctx, value, &meta("", kind), look, full);
             (cell.text.into_owned(), cell.null, cell.style)
         };
         assert_eq!(
@@ -1524,12 +1754,12 @@ mod tests {
     #[test]
     fn a_tag_comes_after_null_and_a_colour_and_before_the_rest() {
         use crate::ui::value_tags::Tags;
-        let ctx = egui::Context::default();
+        let ctx = context();
         let look = Look::macos();
         let allowed = ["#fff".to_owned(), "cover".to_owned(), "{}".to_owned()];
         let tags = Tags::Values(&allowed);
         let style = |value: &Value, kind, tags: &Tags<'_>| {
-            let cell = cell(&ctx, value, kind, tags, &look, false);
+            let cell = cell(&ctx, value, &meta("", kind), tags, &look, false);
             (cell.null, cell.style)
         };
         let text = |text: &str| Value::Text(text.into());
@@ -1561,7 +1791,7 @@ mod tests {
         );
         assert_eq!(
             style(&Value::Bool(true), ValueKind::Bool, &Tags::Bool),
-            (false, Style::True)
+            (false, Style::Tag(0))
         );
     }
 

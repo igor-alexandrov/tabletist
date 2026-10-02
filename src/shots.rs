@@ -501,6 +501,60 @@ fn shots() {
                 }),
             }));
     });
+    // Where the keyboard is, a few Tab stops in: the ring each control
+    // takes (a button, a chip, the search field, a row, a tab, a segment).
+    for stop in [1, 2, 4, 6, 9, 12, 16, 20] {
+        both(&format!("focus-{stop:02}"), |harness| {
+            workspace(harness);
+            for _ in 0..stop {
+                harness.press(egui::Key::Tab, egui::Modifiers::NONE);
+            }
+        });
+    }
+    // The arrows in the grid: the cell they are on, lit in its row.
+    both("focus-grid", |harness| {
+        workspace(harness);
+        for _ in 0..2 {
+            harness.press(egui::Key::ArrowRight, egui::Modifiers::NONE);
+        }
+    });
+    // The arrows in the tree: its cursor, apart from the open table's row.
+    both("focus-tree", |harness| {
+        let tab = workspace(harness);
+        harness.app.apply(Action::TreeKey {
+            tab,
+            key: crate::model::TreeKey::Home,
+        });
+        harness.app.workspace_mut(tab).unwrap().pane = crate::model::Pane::Tree;
+        for _ in 0..3 {
+            harness.press(egui::Key::ArrowDown, egui::Modifiers::NONE);
+        }
+    });
+    // A wide table scrolled to its last columns: the key stays in sight.
+    both("values-scrolled", |harness| {
+        let tab = harness.connect_fake();
+        let workspace = harness.app.workspace_mut(tab).unwrap();
+        workspace.name = "Bookshop".into();
+        workspace.driver = Driver::Postgres;
+        harness.app.apply(Action::OpenObject {
+            tab,
+            object: ObjectRef::new("public", "book_images"),
+            kind: ObjectKind::Table,
+            pin: true,
+        });
+        harness.answer_structure(structure());
+        harness.answer_rows(page());
+        // The last column's cell: the grid scrolls to show it.
+        let object_tab = harness.app.workspace(tab).unwrap().active_tab.unwrap();
+        harness.app.apply(Action::SelectCell {
+            tab,
+            id: object_tab,
+            cell: CellPos { row: 4, col: 5 },
+        });
+        harness.app.apply(Action::ToggleRowPanel(tab));
+        // The scroll glides: let it arrive.
+        harness.finish_animations();
+    });
     both("structure", |harness| {
         let tab = workspace(harness);
         let object_tab = harness.app.workspace(tab).unwrap().active_tab.unwrap();
@@ -733,6 +787,11 @@ mod mock {
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     pub enum Screen {
         MacWorkspace,
+        /// The same workspace in the dark palette.
+        MacWorkspaceDark,
+        /// `book_editions`: values that are awkward to show.
+        MacValues,
+        OmarchyValues,
         OmarchyWorkspace,
         MacPicker,
         OmarchyPicker,
@@ -741,8 +800,11 @@ mod mock {
     }
 
     impl Screen {
-        pub const ALL: [Screen; 6] = [
+        pub const ALL: [Screen; 9] = [
             Self::MacWorkspace,
+            Self::MacWorkspaceDark,
+            Self::MacValues,
+            Self::OmarchyValues,
             Self::OmarchyWorkspace,
             Self::MacPicker,
             Self::OmarchyPicker,
@@ -754,6 +816,9 @@ mod mock {
         pub fn name(self) -> &'static str {
             match self {
                 Self::MacWorkspace => "macos-workspace",
+                Self::MacWorkspaceDark => "macos-workspace-dark",
+                Self::MacValues => "macos-values",
+                Self::OmarchyValues => "omarchy-values",
                 Self::OmarchyWorkspace => "omarchy-workspace",
                 Self::MacPicker => "macos-connections",
                 Self::OmarchyPicker => "omarchy-connections",
@@ -764,10 +829,15 @@ mod mock {
 
         pub fn look(self) -> Look {
             match self {
-                Self::MacWorkspace | Self::MacPicker | Self::MacDialog => Look::macos(),
-                Self::OmarchyWorkspace | Self::OmarchyPicker | Self::OmarchyDialog => {
-                    Look::omarchy()
-                }
+                Self::MacWorkspace
+                | Self::MacWorkspaceDark
+                | Self::MacValues
+                | Self::MacPicker
+                | Self::MacDialog => Look::macos(),
+                Self::OmarchyWorkspace
+                | Self::OmarchyValues
+                | Self::OmarchyPicker
+                | Self::OmarchyDialog => Look::omarchy(),
             }
         }
 
@@ -775,8 +845,12 @@ mod mock {
         /// a 10 pt wallpaper margin and Hyprland's 2 pt border.
         pub fn size(self) -> egui::Vec2 {
             match self {
-                Self::MacWorkspace | Self::MacPicker | Self::MacDialog => egui::vec2(1440.0, 900.0),
-                Self::OmarchyWorkspace => egui::vec2(1896.0, 1056.0),
+                Self::MacWorkspace
+                | Self::MacWorkspaceDark
+                | Self::MacValues
+                | Self::MacPicker
+                | Self::MacDialog => egui::vec2(1440.0, 900.0),
+                Self::OmarchyWorkspace | Self::OmarchyValues => egui::vec2(1896.0, 1056.0),
                 Self::OmarchyPicker | Self::OmarchyDialog => egui::vec2(936.0, 1016.0),
             }
         }
@@ -785,8 +859,12 @@ mod mock {
         /// line up with them.
         pub fn design_scale(self) -> f32 {
             match self {
-                Self::MacWorkspace | Self::MacPicker | Self::MacDialog => 2000.0 / 1440.0,
-                Self::OmarchyWorkspace => 2000.0 / 1920.0,
+                Self::MacWorkspace
+                | Self::MacWorkspaceDark
+                | Self::MacValues
+                | Self::MacPicker
+                | Self::MacDialog => 2000.0 / 1440.0,
+                Self::OmarchyWorkspace | Self::OmarchyValues => 2000.0 / 1920.0,
                 Self::OmarchyPicker | Self::OmarchyDialog => 1846.0 / 960.0,
             }
         }
@@ -795,8 +873,14 @@ mod mock {
         /// Night, as the mockups.
         pub fn palette(self) -> Palette {
             match self {
-                Self::MacWorkspace | Self::MacPicker | Self::MacDialog => Palette::light(),
-                Self::OmarchyWorkspace | Self::OmarchyPicker | Self::OmarchyDialog => tokyo_night(),
+                Self::MacWorkspace | Self::MacValues | Self::MacPicker | Self::MacDialog => {
+                    Palette::light()
+                }
+                Self::MacWorkspaceDark => Palette::dark(),
+                Self::OmarchyWorkspace
+                | Self::OmarchyValues
+                | Self::OmarchyPicker
+                | Self::OmarchyDialog => tokyo_night(),
             }
         }
 
@@ -804,7 +888,7 @@ mod mock {
         pub fn stage(self, harness: &mut Harness) {
             crate::util::pin_now(Some(NOW));
             match self {
-                Self::MacWorkspace => {
+                Self::MacWorkspace | Self::MacWorkspaceDark => {
                     let tab = workspace(harness);
                     production_beside(harness, tab);
                 }
@@ -822,6 +906,23 @@ mod mock {
                     object.filter.raw_text = "kind = 'front'".into();
                     harness.app.apply(Action::ApplyFilters { tab, object_tab });
                     harness.answer_rows(covers());
+                    harness.app.apply(Action::SelectCell {
+                        tab,
+                        id: object_tab,
+                        cell: CellPos { row: 0, col: 0 },
+                    });
+                }
+                Self::MacValues | Self::OmarchyValues => {
+                    let tab = workspace(harness);
+                    harness.app.apply(Action::OpenObject {
+                        tab,
+                        object: ObjectRef::new("public", "book_editions"),
+                        kind: ObjectKind::Table,
+                        pin: true,
+                    });
+                    harness.answer_structure(editions_structure());
+                    harness.answer_rows(editions());
+                    let object_tab = harness.app.workspace(tab).unwrap().active_tab.unwrap();
                     harness.app.apply(Action::SelectCell {
                         tab,
                         id: object_tab,
@@ -1039,6 +1140,188 @@ mod mock {
             has_more: false,
             ordered_by_key: true,
             elapsed: Duration::from_millis(2),
+        }
+    }
+
+    /// A document of `keys` keys: an ISBN, a page count, a list and an
+    /// object, then plain numbered ones.
+    fn metadata(keys: usize) -> Value {
+        let mut parts = vec![
+            r#""isbn": "978-1-4028-9462-6""#.to_owned(),
+            r#""pages": 612"#.to_owned(),
+            r#""awards": ["a", "b", "c", "d", "e", "f", "g"]"#.to_owned(),
+            r#""print_runs": {"first": 1200, "second": 800}"#.to_owned(),
+        ];
+        parts.truncate(keys);
+        for index in parts.len()..keys {
+            parts.push(format!(r#""note_{index}": "{index}""#));
+        }
+        Value::Text(format!("{{{}}}", parts.join(", ")).into())
+    }
+
+    /// `bytes` bytes that start as a JPEG does.
+    fn cover(bytes: usize) -> Value {
+        let head = [
+            0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0x00, 0x01, 0x01, 0x00,
+            0x00, 0x48, 0x00, 0x48, 0x00, 0x00, 0xff, 0xdb, 0x00, 0x43,
+        ];
+        let data: Vec<u8> = head
+            .into_iter()
+            .chain(std::iter::repeat(0))
+            .take(bytes)
+            .collect();
+        Value::Bytes(data.into())
+    }
+
+    /// `book_editions`: the values the mockups call awkward.
+    fn editions() -> RowPage {
+        let column = |name: &str, type_name: &str, kind| ColumnMeta {
+            name: name.into(),
+            type_name: type_name.into(),
+            kind,
+        };
+        let text = |value: &str| Value::Text(value.into());
+        let long = "The Lighthouse Keeper's Daughter: A Novel in Three Tides, with an Afterword \
+                    by the Translator. First published in a small run by Harbor Press, later \
+                    reissued with the restored third part and the letters. "
+            .repeat(10);
+        let rows = vec![
+            vec![
+                Value::Int(101),
+                text(&long),
+                text("A novel"),
+                text("hardcover"),
+                Value::Bool(true),
+                text("24.00"),
+                text("{en,fr}"),
+                cover(49_358),
+                metadata(46),
+                text("2025-11-04"),
+            ],
+            vec![
+                Value::Int(102),
+                text("Small Rooms"),
+                text(""),
+                text("paperback"),
+                Value::Bool(true),
+                text("12.50"),
+                text("{en}"),
+                cover(31_744),
+                metadata(12),
+                text("2024-03-19"),
+            ],
+            vec![
+                Value::Int(103),
+                text("Notes from the Night Train\nPart One"),
+                Value::Null,
+                text("ebook"),
+                Value::Bool(false),
+                text("0.00"),
+                text("{}"),
+                Value::Null,
+                Value::Null,
+                text("2023-09-01"),
+            ],
+            vec![
+                Value::Int(104),
+                text("A Field Guide to Paper"),
+                Value::Null,
+                Value::Null,
+                Value::Null,
+                Value::Null,
+                Value::Null,
+                Value::Null,
+                Value::Null,
+                Value::Null,
+            ],
+            vec![
+                Value::Int(105),
+                text("Maps of Imaginary Coasts"),
+                text("Atlas edition"),
+                text("hardcover"),
+                Value::Bool(true),
+                text("1240.00"),
+                text("{en,de,it,fr,es,pt,nl}"),
+                cover(2_202_010),
+                metadata(103),
+                text("2026-01-15"),
+            ],
+            vec![
+                Value::Int(106),
+                text("   Leading spaces kept"),
+                text("  "),
+                text("paperback"),
+                Value::Bool(false),
+                text("9.99"),
+                text("{es}"),
+                cover(0),
+                metadata(0),
+                text("2022-06-30"),
+            ],
+            vec![
+                Value::Int(107),
+                text("Unicode: Ærøskøbing"),
+                text("Translated"),
+                text("ebook"),
+                Value::Bool(true),
+                text("7.00"),
+                text("{da,ja,ar}"),
+                cover(13_005),
+                metadata(8),
+                text("2025-02-14"),
+            ],
+        ];
+        RowPage {
+            columns: vec![
+                column("id", "int8", ValueKind::Numeric),
+                column("title", "text", ValueKind::Text),
+                column("subtitle", "text", ValueKind::Text),
+                column("format", "edition_format", ValueKind::Other),
+                column("in_print", "bool", ValueKind::Bool),
+                column("price", "numeric", ValueKind::Numeric),
+                column("languages", "_text", ValueKind::Other),
+                column("cover", "bytea", ValueKind::Binary),
+                column("metadata", "jsonb", ValueKind::Json),
+                column("published_on", "date", ValueKind::Temporal),
+            ],
+            rows,
+            has_more: false,
+            ordered_by_key: true,
+            elapsed: Duration::from_millis(2),
+        }
+    }
+
+    fn editions_structure() -> Structure {
+        let column = |name: &str, type_name: &str, nullable| ColumnInfo {
+            name: name.into(),
+            type_name: type_name.into(),
+            nullable,
+            default: None,
+            comment: None,
+            allowed_values: None,
+        };
+        let mut format = column("format", "edition_format", true);
+        format.allowed_values = Some(
+            ["hardcover", "paperback", "audiobook", "ebook"]
+                .map(str::to_owned)
+                .to_vec(),
+        );
+        Structure {
+            columns: vec![
+                column("id", "bigint", false),
+                column("title", "text", false),
+                column("subtitle", "text", true),
+                format,
+                column("in_print", "boolean", true),
+                column("price", "numeric(10,2)", true),
+                column("languages", "text[]", true),
+                column("cover", "bytea", true),
+                column("metadata", "jsonb", true),
+                column("published_on", "date", true),
+            ],
+            primary_key: vec!["id".into()],
+            indexes: Vec::new(),
+            foreign_keys: Vec::new(),
         }
     }
 

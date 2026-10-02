@@ -1,7 +1,8 @@
 //! Value tags: the colours of values from a closed set. Only three kinds of
 //! column get them: a PostgreSQL enum, a text column whose CHECK constraint
 //! is a plain value list (both from the catalog, never from the rows), and
-//! booleans. Everything else is plain text, however its values repeat.
+//! booleans (true in the first slot, false in the second). Everything else
+//! is plain text, however its values repeat.
 
 use egui::Color32;
 use tabletist_db::{ColumnMeta, Structure, Value, ValueKind};
@@ -60,8 +61,9 @@ impl<'a> Tags<'a> {
     }
 }
 
+/// A boolean's tag: the two values of a closed set, true first.
 fn bool_style(flag: bool) -> Style {
-    if flag { Style::True } else { Style::False }
+    Style::Tag(usize::from(!flag))
 }
 
 /// The desktop looks' fixed slots, (fill, text) on a light palette. They
@@ -77,6 +79,19 @@ const FIXED: [(u32, u32); SLOTS] = [
     (0xEEF3E0, 0x4C5A1E), // olive
 ];
 
+/// The same slots on a dark palette: a deep tone of each hue under a light
+/// one.
+const FIXED_DARK: [(u32, u32); SLOTS] = [
+    (0x3B3026, 0xE3B88C), // tan
+    (0x26324A, 0x9FBDF0), // blue
+    (0x332B4A, 0xC3ACF2), // violet
+    (0x1F3A38, 0x8FD3CD), // teal
+    (0x42361C, 0xE6C274), // amber
+    (0x30343A, 0xB9C1CC), // slate
+    (0x45283A, 0xEDA6C6), // rose
+    (0x30381F, 0xBCCB88), // olive
+];
+
 fn hex(rgb: u32) -> Color32 {
     let [_, r, g, b] = rgb.to_be_bytes();
     Color32::from_rgb(r, g, b)
@@ -88,15 +103,9 @@ pub fn slot_colors(slot: usize, look: &Look, palette: &Palette) -> (Color32, Opt
     if look.terminal {
         return (terminal_slots(palette)[slot % SLOTS], None);
     }
-    let (fill, text) = FIXED[slot % SLOTS];
-    let (fill, text) = (hex(fill), hex(text));
-    if palette.dark {
-        // The same hues on a dark window: the light tone as text over a
-        // deep fill of the ink.
-        (fill, Some(palette.window.lerp_to_gamma(text, 0.45)))
-    } else {
-        (text, Some(fill))
-    }
+    let table = if palette.dark { &FIXED_DARK } else { &FIXED };
+    let (fill, text) = table[slot % SLOTS];
+    (hex(text), Some(hex(fill)))
 }
 
 /// The colours a cell styled `style` draws in: its text, and its chip's
@@ -104,10 +113,9 @@ pub fn slot_colors(slot: usize, look: &Look, palette: &Palette) -> (Color32, Opt
 pub fn style_colors(style: Style, look: &Look, palette: &Palette) -> (Color32, Option<Color32>) {
     match style {
         Style::Tag(slot) => slot_colors(slot, look, palette),
-        Style::True if look.terminal => (palette.text, None),
-        Style::True => (palette.text, Some(palette.surface)),
-        Style::False => (palette.dim, None),
-        Style::Plain | Style::Json(_) | Style::Color(_) => (palette.text, None),
+        Style::Quiet => (palette.faint, None),
+        Style::Chip => (palette.secondary, None),
+        Style::Plain | Style::Json(_) | Style::Color(_) | Style::Array => (palette.text, None),
     }
 }
 
@@ -277,25 +285,25 @@ mod tests {
     }
 
     #[test]
-    fn booleans_are_a_neutral_tag_or_muted() {
+    fn booleans_are_the_first_two_tags() {
         let tags = Tags::of(&meta("done", ValueKind::Bool), None);
         assert_eq!(tags, Tags::Bool);
-        assert_eq!(tags.style(&Value::Bool(true)), Some(Style::True));
-        assert_eq!(tags.style(&Value::Bool(false)), Some(Style::False));
-        assert_eq!(tags.style(&Value::Int(1)), Some(Style::True), "SQLite");
+        assert_eq!(tags.style(&Value::Bool(true)), Some(Style::Tag(0)));
+        assert_eq!(tags.style(&Value::Bool(false)), Some(Style::Tag(1)));
+        assert_eq!(tags.style(&Value::Int(1)), Some(Style::Tag(0)), "SQLite");
+        assert_eq!(tags.style(&Value::Int(0)), Some(Style::Tag(1)), "SQLite");
         assert_eq!(tags.style(&Value::Int(2)), None);
+        // Neither reads as an environment: no red, no green.
         for look in Look::ALL {
             for palette in [Palette::light(), Palette::dark()] {
-                let (text, fill) = style_colors(Style::True, &look, &palette);
-                assert_eq!(text, palette.text);
-                assert_eq!(fill.is_some(), !look.terminal);
-                assert_eq!(
-                    style_colors(Style::False, &look, &palette),
-                    (palette.dim, None)
-                );
-                for color in [text, fill.unwrap_or(text)] {
-                    assert_ne!(color, palette.danger, "no red");
-                    assert_ne!(color, palette.success, "no green");
+                for flag in [true, false] {
+                    let style = tags.style(&Value::Bool(flag)).unwrap();
+                    let (text, fill) = style_colors(style, &look, &palette);
+                    assert_eq!(fill.is_some(), !look.terminal);
+                    for color in [text, fill.unwrap_or(text)] {
+                        assert_ne!(color, palette.danger, "no red");
+                        assert_ne!(color, palette.success, "no green");
+                    }
                 }
             }
         }
@@ -313,6 +321,30 @@ mod tests {
                 slot_colors(7, &look, &light),
                 (hex(0x4C5A1E), Some(hex(0xEEF3E0)))
             );
+        }
+    }
+
+    #[test]
+    fn a_tag_reads_on_its_fill_and_no_two_slots_look_alike() {
+        for look in [Look::macos(), Look::standard()] {
+            for (theme, palette) in [("light", Palette::light()), ("dark", Palette::dark())] {
+                let slots: Vec<_> = (0..SLOTS)
+                    .map(|slot| slot_colors(slot, &look, &palette))
+                    .collect();
+                for (slot, (text, fill)) in slots.iter().enumerate() {
+                    let fill = fill.expect("a desktop tag is a chip");
+                    let ratio = crate::theme::contrast(*text, fill);
+                    assert!(ratio >= 4.5, "{theme} slot {slot}: {ratio:.2}");
+                    // The chip shows on the content and on a selected row.
+                    for under in [palette.window, palette.selection] {
+                        assert_ne!(fill, under, "{theme} slot {slot}");
+                    }
+                    assert!(
+                        slots[..slot].iter().all(|other| other != &slots[slot]),
+                        "{theme} slot {slot} repeats"
+                    );
+                }
+            }
         }
     }
 

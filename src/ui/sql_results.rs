@@ -6,7 +6,7 @@
 
 use std::time::Duration;
 
-use egui::{CornerRadius, Id, Rect, Sense, StrokeKind, Ui, WidgetInfo, WidgetType, pos2, vec2};
+use egui::{CornerRadius, Id, Rect, Sense, Ui, WidgetInfo, WidgetType, pos2, vec2};
 use tabletist_db::{Error, StatementOutcome, ValueKind};
 
 use crate::app::App;
@@ -197,6 +197,8 @@ struct Place<'a> {
     full_precision: bool,
     /// Whose error codes the results read.
     driver: tabletist_db::Driver,
+    /// Whether the arrow keys move in the result's grid.
+    keys: bool,
 }
 
 fn draw(app: &App, ui: &mut Ui, tab: ConnTabId, id: TabId, actions: &mut Vec<Action>) {
@@ -217,6 +219,7 @@ fn draw(app: &App, ui: &mut Ui, tab: ConnTabId, id: TabId, actions: &mut Vec<Act
         sql,
         full_precision: workspace.full_precision,
         driver: workspace.driver,
+        keys: workspace.pane == crate::model::Pane::Grid,
     };
     let state = state(sql);
     let pane = ui.max_rect();
@@ -486,14 +489,8 @@ fn pane_tabs(
                 palette.accent,
             );
         }
-        if response.has_focus() {
-            ui.painter().rect_stroke(
-                hit.expand(1.0),
-                CornerRadius::same(if look.terminal { 0 } else { look.radius }),
-                widgets::primary_focus_ring(palette),
-                StrokeKind::Outside,
-            );
-        }
+        let radius = if look.terminal { 0 } else { look.radius };
+        crate::ui::focus::hint(ui, &response, hit, crate::ui::focus::Ring::Outer { radius });
         if response.clicked() && !selected {
             actions.push(Action::SetResultPane {
                 tab: place.tab,
@@ -1049,6 +1046,7 @@ fn results(ui: &mut Ui, run: &SqlRun, place: &Place<'_>, env: &Env<'_>, actions:
         tab,
         sql,
         full_precision,
+        keys,
         ..
     } = *place;
     let Some((columns, rows, truncated)) = sql.shown_rows() else {
@@ -1150,13 +1148,14 @@ fn results(ui: &mut Ui, run: &SqlRun, place: &Place<'_>, env: &Env<'_>, actions:
         rows.len(),
         0,
         sql.selection,
+        keys,
         palette,
         look,
         |row, col| {
             data_view::cell(
                 &ctx,
                 &rows[row][col],
-                columns[col].kind,
+                &columns[col],
                 &tags[col],
                 look,
                 full_precision,
@@ -1169,6 +1168,10 @@ fn results(ui: &mut Ui, run: &SqlRun, place: &Place<'_>, env: &Env<'_>, actions:
             id: sql.id,
             cell,
         });
+    }
+    // The Tab key came to the grid: the arrows are its own now.
+    if output.focused {
+        actions.push(Action::GridKeys(tab));
     }
     if rows.is_empty() {
         let under = Rect::from_min_max(
@@ -1344,7 +1347,7 @@ mod tests {
         };
         harness.answer_sql(Ok(script_outcome(vec![flags])), None);
         harness.settle();
-        // A false flag is muted; the same word as text is not a flag.
+        // A false flag is the second tag; the same word as text is no flag.
         let palette = harness.app.palette;
         let colors: Vec<egui::Color32> = harness
             .painted
@@ -1352,7 +1355,8 @@ mod tests {
             .filter(|(piece, _)| piece == "false")
             .map(|(_, color)| *color)
             .collect();
-        assert_eq!(colors, [palette.dim, palette.text]);
+        let (tag, _) = crate::ui::value_tags::slot_colors(1, &harness.app.look, &palette);
+        assert_eq!(colors, [tag, palette.text]);
     }
 
     #[test]
@@ -2120,8 +2124,9 @@ mod tests {
                 harness.press(Key::Tab, Modifiers::NONE);
                 stops.push(focused(&mut harness));
             }
-            // It goes on to Messages and the rows, not the headers.
-            for stop in ["Results", "Messages", "Row 1", "Row 3"] {
+            // It goes on to Messages and the rows (one stop for all of
+            // them), not the headers.
+            for stop in ["Results", "Messages", "Rows"] {
                 assert!(stops.iter().any(|name| name == stop), "{stop}: {stops:?}");
             }
             for header in ["id", "email", "meta"] {

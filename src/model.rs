@@ -206,6 +206,17 @@ pub enum Action {
         object_tab: TabId,
         column: String,
     },
+    /// The keyboard came to a grid (the Tab key, a screen reader): the
+    /// arrows move in it from now on. Selects nothing.
+    GridKeys(ConnTabId),
+    /// Save the binary value in column `col` of row `row`, of an object
+    /// tab's page or a SQL editor's result, to a file the user names.
+    SaveValue {
+        tab: ConnTabId,
+        id: TabId,
+        row: usize,
+        col: usize,
+    },
     /// Select a cell of an object tab's page or a SQL editor's result.
     SelectCell {
         tab: ConnTabId,

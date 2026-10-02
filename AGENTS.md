@@ -43,6 +43,11 @@ The native keyring test is `#[ignore]`d; run it by hand on a desktop session.
 Views draw text only through `TextRole`s (`src/typography.rs`); a view never
 names a font, a family or a size.
 
+Keyboard focus is drawn in one place, `src/ui/focus.rs`, for whatever has the
+keyboard. A view never paints a control's focus ring: a widget that needs
+another form than the default says so with `focus::hint`. Only a pane (the
+tree, a grid) marks where its arrows are by itself: its cursor, its cell.
+
 Add a focused regression test for every behaviour change. UI behaviour is
 tested headlessly through `src/testing.rs` (AccessKit tree + events). Do not
 weaken a lint, delete a test, or add an `allow` to make CI green without

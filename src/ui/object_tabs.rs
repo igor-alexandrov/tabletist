@@ -8,6 +8,7 @@ use crate::i18n::gettext;
 use crate::model::{self, Action, ConnTabId, TabId};
 use crate::theme::{Icon, Look, Palette};
 use crate::typography::{Text, TextRole};
+use crate::ui::focus::{self, Ring};
 use crate::ui::widgets::{self, ButtonSpec, icon_button};
 
 /// The strip's height, per look.
@@ -71,6 +72,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
         .frame(Frame::new().fill(fill))
         .show(ui, |ui| {
             let full = ui.max_rect();
+            focus::region(ui, focus::Region::Tabs, full);
             let rule = if look.terminal {
                 palette.outline
             } else {
@@ -120,6 +122,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                                 } else {
                                     mac_tab(ui, &one, bar, &look, &palette)
                                 };
+                                if is_active {
+                                    focus::claim(ui, focus::Region::Tabs, &response);
+                                }
                                 let label = format!("{name} {}", gettext(locale, "tab"));
                                 response.widget_info(|| {
                                     WidgetInfo::selected(
@@ -273,6 +278,8 @@ fn mac_tab(
     // Room for the title at its widest, the active tab's weight.
     let width = mac_width(TextRole::UiBodyStrong.width(ui.ctx(), look.faces, tab.name));
     let (rect, response) = ui.allocate_exact_size(vec2(width, bar.height()), Sense::click());
+    // Inside the tab: the strip scrolls, and a ring outside would be cut.
+    focus::hint(ui, &response, rect, Ring::Inset { radius: 4 });
     let painter = ui.painter();
     if tab.active {
         // White down to the content, over the strip's rule.
@@ -330,6 +337,7 @@ fn terminal_tab(
     let (number_width, name_width) = (measure(&number), measure(&name));
     let width = 12.0 + number_width + 8.0 + name_width + 12.0;
     let (rect, response) = ui.allocate_exact_size(vec2(width, bar.height()), Sense::click());
+    focus::hint(ui, &response, rect, Ring::Inset { radius: 0 });
     let painter = ui.painter();
     if tab.active {
         painter.rect_filled(rect, CornerRadius::ZERO, palette.window);

@@ -10,6 +10,7 @@ use crate::i18n::{Locale, gettext};
 use crate::model::{Action, ConnTabId, TreeNode, TreeRow};
 use crate::theme::{Icon, Look, Palette};
 use crate::typography::{Text, TextRole};
+use crate::ui::focus;
 use crate::ui::format::display_safe;
 use crate::ui::widgets::{self, ButtonSpec, icon_button};
 
@@ -115,6 +116,15 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
         .cursor
         .clone()
         .filter(|_| workspace.pane == crate::model::Pane::Tree);
+    // Where the cursor starts when the Tab key comes to the tree: where it
+    // was, else on the open object's row.
+    let cursor_start = workspace.tree.cursor.clone().or_else(|| {
+        let open = active.as_ref()?;
+        rows.iter()
+            .map(|row| &row.node)
+            .find(|node| matches!(node, TreeNode::Object(object, _) if object == open))
+            .cloned()
+    });
     // After a key moved the cursor, scroll its row into view.
     let reveal = workspace
         .tree
@@ -126,6 +136,10 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
         .flatten();
     let reveal_pending = workspace.tree.reveal_cursor;
     let mut actions = Vec::new();
+    // Whether the keys come to the tree and the keyboard is in use: then
+    // its cursor shows, and the terminal look marks the pane.
+    let keys = workspace.pane == crate::model::Pane::Tree;
+    let lit = keys && focus::visible(ui.ctx()) && !focus::on_control(ui.ctx());
 
     // The terminal's sidebar takes the theme's dark background too.
     let fill = if look.sidebar_tinted || look.terminal {
@@ -163,7 +177,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                         boxed: true,
                         role: TextRole::pick(&look, TextRole::UiBody, TextRole::OField),
                     };
-                    widgets::filter_field(
+                    let field = widgets::filter_field(
                         ui,
                         &mut workspace.tree.filter,
                         &hint,
@@ -171,8 +185,10 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                         style,
                         &look,
                         &palette,
-                    )
-                    .widget_info(|| WidgetInfo::labeled(WidgetType::TextEdit, true, "Filter"));
+                    );
+                    field.widget_info(|| WidgetInfo::labeled(WidgetType::TextEdit, true, "Filter"));
+                    focus::region(ui, focus::Region::Search, field.rect.expand(8.0));
+                    focus::claim(ui, focus::Region::Search, &field);
                 }
             });
             ui.add_space(if look.terminal { 6.0 } else { 8.0 });
@@ -269,6 +285,33 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
             let footer = if look.terminal { FOOTER } else { SQL_FOOTER };
             let body = ui.available_height() - footer;
             ui.allocate_ui(vec2(full.width(), body.max(0.0)), |ui| {
+                // The tree is one Tab stop, not one for each row: with the
+                // keyboard on it the arrows move its cursor.
+                let area = Rect::from_min_size(ui.cursor().min, vec2(full.width(), body.max(0.0)));
+                let stop = ui.interact(
+                    area,
+                    Id::new(("tree-keys", tab.0)),
+                    Sense::focusable_noninteractive(),
+                );
+                stop.widget_info(|| {
+                    WidgetInfo::labeled(WidgetType::Other, true, gettext(locale, "Objects"))
+                });
+                ui.ctx().accesskit_node_builder(stop.id, |node| {
+                    node.set_role(egui::accesskit::Role::Group);
+                });
+                focus::pane(ui, &stop);
+                focus::hint(ui, &stop, area, focus::Ring::Own);
+                focus::region(ui, focus::Region::Tree, area);
+                focus::claim(ui, focus::Region::Tree, &stop);
+                // The cursor it had, the open object's row, or its first.
+                let start = cursor_start
+                    .clone()
+                    .or_else(|| rows.first().map(|row| row.node.clone()));
+                if stop.gained_focus()
+                    && let Some(node) = start
+                {
+                    actions.push(Action::SetTreeCursor { tab, node });
+                }
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
@@ -297,6 +340,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                                 Marks {
                                     active: active.as_ref(),
                                     cursor: cursor.as_ref(),
+                                    keys,
+                                    lit,
                                 },
                                 locale,
                                 Skin {
@@ -313,6 +358,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                 terminal_footer(ui, full, &look, &palette);
             } else {
                 sql_button(ui, full, tab, locale, &look, &palette, &mut actions);
+            }
+            if lit {
+                focus::pane_border(ui, full, &look, &palette);
             }
         });
     if reveal_pending && let Some(workspace) = app.workspace_mut(tab) {
@@ -426,6 +474,7 @@ fn recent_section(
         });
         let selected = Some(object) == active;
         widgets::selection(ui, row, selected, response.hovered(), look, palette);
+        row_ring(ui, &response, widgets::selection_rect(row, look), look);
         let (role, color) = if selected {
             (TextRole::UiBodyStrong, palette.accent_hover)
         } else {
@@ -616,6 +665,17 @@ fn schema_header(
 struct Marks<'a> {
     active: Option<&'a ObjectRef>,
     cursor: Option<&'a TreeNode>,
+    /// The arrows are the tree's.
+    keys: bool,
+    /// And the keyboard is in use: the cursor shows.
+    lit: bool,
+}
+
+/// A row with the keyboard is ringed inside its highlight: a ring outside
+/// it would be cut by the list it scrolls in.
+fn row_ring(ui: &egui::Ui, response: &egui::Response, highlight: Rect, look: &Look) {
+    let radius = look.radius.saturating_sub(2);
+    focus::hint(ui, response, highlight, focus::Ring::Inset { radius });
 }
 
 /// How rows are drawn: the platform look and the colour palette.
@@ -692,9 +752,10 @@ fn tree_row(
         });
         return;
     }
+    // A row takes a click, not the Tab key: the tree is the stop.
     let (rect, response) = ui.allocate_exact_size(
         vec2(ui.available_width(), row_height(row, look)),
-        Sense::click(),
+        Sense::CLICK,
     );
     // Names come from the server: nothing hidden in them.
     let full_name = match &row.node {
@@ -713,11 +774,21 @@ fn tree_row(
     };
     widgets::selection(ui, band, selected, response.hovered(), look, palette);
     let highlight = widgets::selection_rect(band, look);
-    if marks.cursor == Some(&row.node) {
+    // The terminal's bar on the open object's row is muted while the keys
+    // are elsewhere: selected, not focused.
+    if selected && !marks.keys && look.selection == crate::theme::Selection::Bar {
+        let edge = Rect::from_min_size(band.min, vec2(2.0, band.height()));
+        ui.painter()
+            .rect_filled(edge, CornerRadius::ZERO, palette.dim);
+    }
+    // The row the arrows are on, while the keyboard is in use and its keys
+    // come to the tree: the ring a focused row takes. Apart from the open
+    // object's fill: one says where the keys are, the other what is open.
+    if marks.cursor == Some(&row.node) && marks.lit {
         ui.painter().rect_stroke(
-            highlight.shrink(0.5),
+            highlight,
             CornerRadius::same(look.radius.saturating_sub(2)),
-            egui::Stroke::new(1.0, palette.accent),
+            egui::Stroke::new(2.0, palette.accent),
             egui::StrokeKind::Inside,
         );
     }

@@ -27,6 +27,8 @@ pub struct Harness {
     pub fills: Vec<(egui::Rect, egui::Color32)>,
     /// The colour of every line and outline the last frame drew.
     pub strokes: Vec<egui::Color32>,
+    /// Every rectangle the last frame outlined, and with what.
+    pub outlines: Vec<(egui::Rect, egui::Stroke)>,
     /// How soon the last frame asked to be drawn again: at once is zero.
     pub repaint_after: std::time::Duration,
     #[cfg(feature = "shots")]
@@ -81,9 +83,11 @@ impl Harness {
         self.text_rects.clear();
         self.fills.clear();
         self.strokes.clear();
+        self.outlines.clear();
         for clipped in &output.shapes {
             collect_text(&clipped.shape, &mut self.painted, &mut self.text_rects);
             collect_paint(&clipped.shape, &mut self.fills, &mut self.strokes);
+            collect_outlines(&clipped.shape, &mut self.outlines);
         }
         let viewport = output.viewport_output.get(&egui::ViewportId::ROOT);
         self.viewport_commands = viewport
@@ -263,6 +267,18 @@ fn collect_text(
                 text.galley.text().to_owned(),
                 egui::Rect::from_min_size(text.pos, text.galley.size()),
             ));
+        }
+        _ => {}
+    }
+}
+
+fn collect_outlines(shape: &egui::Shape, into: &mut Vec<(egui::Rect, egui::Stroke)>) {
+    match shape {
+        egui::Shape::Vec(shapes) => shapes
+            .iter()
+            .for_each(|shape| collect_outlines(shape, into)),
+        egui::Shape::Rect(rect) if rect.stroke.width > 0.0 && rect.stroke.color.a() > 0 => {
+            into.push((rect.rect, rect.stroke));
         }
         _ => {}
     }
@@ -665,6 +681,7 @@ impl Harness {
             text_rects: Vec::new(),
             fills: Vec::new(),
             strokes: Vec::new(),
+            outlines: Vec::new(),
             repaint_after: std::time::Duration::MAX,
             #[cfg(feature = "shots")]
             renderer: None,
