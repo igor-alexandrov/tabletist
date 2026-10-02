@@ -94,7 +94,9 @@ copied byte for byte.
 
 A statement is a query when its first token that is not a comment is
 `SELECT` or `WITH`, or a `(` that opens a block (see below). Only queries
-get the river.
+get the river. A MySQL executable comment (`/*! */`) is code here, as it
+is to the tokenizer, not a comment: a statement that starts with one is
+not a query.
 
 Every other statement (`SHOW`, `PRAGMA`, `EXPLAIN ...`, `VALUES`, DML,
 DDL) keeps its line breaks and its spacing as typed. Only its reserved
@@ -109,7 +111,7 @@ nested block. Its river is the 6 columns from the base (the width of
 
 A clause head starts a new line. Its first word is right-aligned to the
 river; a first word longer than 6 letters starts at the base column. One
-space follows the head.
+space follows the head. Columns are counted in characters, not bytes.
 
     SELECT a.name AS author,
            b.genre,
@@ -127,15 +129,28 @@ parenthesis that is not a block, and outside every `CASE`):
 
 - `SELECT` (a following `DISTINCT` or `ALL` stays on its line), `FROM`,
   `WHERE`, `GROUP BY`, `HAVING`, `WINDOW`, `ORDER BY`, `LIMIT`, `OFFSET`,
-  `FETCH`, `FOR`, `WITH` (with `RECURSIVE`).
-- `JOIN` and `STRAIGHT_JOIN`, with what leads a join: `INNER`, `LEFT`,
-  `RIGHT`, `FULL`, `CROSS`, `NATURAL`, each with an optional `OUTER`.
-  These words are a head only when `JOIN` follows them, so `left(title,
-  2)` is a function call. `ON` and `USING` stay on the join's line.
+  `FETCH`, `FOR`.
+- `WITH` (with `RECURSIVE`), only as its block's first token that is not
+  a comment: `WITH ORDINALITY`, `WITH ROLLUP` and `WITH TIES` stay on
+  their lines.
+- `JOIN` and `STRAIGHT_JOIN`, with the words that lead a join: any run of
+  `INNER`, `LEFT`, `RIGHT`, `FULL`, `CROSS`, `NATURAL` and `OUTER` that
+  ends in `JOIN` is one head with it (`NATURAL LEFT OUTER JOIN`), aligned
+  by its first word. These words are a head only in such a run, so
+  `left(title, 2)` is a function call. `ON` and `USING` stay on the
+  join's line.
 - `UNION`, `EXCEPT`, `INTERSECT`, with a following `ALL` or `DISTINCT`.
 - `AND` and `OR` in a `WHERE`, a `HAVING` or a join's `ON`. The `AND` of
   a `BETWEEN ... AND ...` is not a head.
 - `GROUP` and `ORDER` only when `BY` follows.
+
+A word is not a head in three cases where it would otherwise be one:
+
+- A word that touches a `.` on either side is a name (`r.from`,
+  `shop.order`), whatever it spells.
+- `FROM` right after `DISTINCT` (`a IS DISTINCT FROM b`).
+- `STRAIGHT_JOIN` before the `SELECT` list's first item (MySQL's
+  modifier, as in `SELECT DISTINCT STRAIGHT_JOIN title`).
 
 Because heads count only at the top level, `extract(year FROM added)`,
 `count(*) OVER (PARTITION BY genre ORDER BY title)` and `id IN (1, 2)`
@@ -187,6 +202,10 @@ from their own column.
 
 - One space between two tokens that had whitespace between them, and
   after every comma.
+- Between two strings the whitespace is copied as typed: PostgreSQL
+  joins `'a'` and `'b'` into one string only across a line break. This is
+  the one place a `\r\n` between tokens, or whitespace before a line's
+  end, stays.
 - None before `,`, `;` and `)`, and none after `(`.
 - Where two tokens touched, they still touch (`count(*)`, `a.id`,
   `price::text`, `-1`); the formatter adds a space only where a rule
@@ -205,7 +224,11 @@ from their own column.
   apart.
 - A block comment is copied whole; the lines inside it are not
   re-indented.
-- A `)` or `;` that would follow a `--` comment goes on the next line.
+- A `)` or `;` that would follow a `--` comment goes on the next line:
+  the `)` under its `(`, the `;` at the statement's base column.
+- The tokenizer counts the `\r` of a `\r\n` as part of a MySQL or SQLite
+  line comment. It is copied with the comment, so those lines keep their
+  `\r\n`.
 
 ### Between statements
 
@@ -217,7 +240,8 @@ from their own column.
 ### Case
 
 A token the tokenizer reads as a keyword in this dialect is uppercased
-when it is on this list, of words no dialect lets be an unquoted name:
+when it is on this list, unless it touches a `.` on either side (after a
+`.`, and before one, a word is a name even when it is reserved):
 
 `ALL ALTER AND AS ASC BETWEEN BY CASE CREATE CROSS DEFAULT DELETE DESC
 DESCRIBE DISTINCT DROP ELSE EXISTS EXPLAIN FALSE FETCH FOR FROM GLOB GROUP
@@ -226,18 +250,29 @@ NATURAL NOT NULL ON OR ORDER OUTER PARTITION PRAGMA REGEXP RETURNING RIGHT
 SELECT SET SHOW SIMILAR STRAIGHT_JOIN TABLE THEN TO TRUE UNION UPDATE
 USING VALUES WHEN WHERE WITH`
 
+Case can change what a query means only on MySQL, which compares table
+names and aliases by case on Linux; PostgreSQL and SQLite read an unquoted
+name the same in any case. So the rule for the list is MySQL's: a word
+the MySQL dialect reads as a keyword (the shared keywords and MySQL's
+own) is on it only if MySQL 5.7, MySQL 8 and MariaDB all reserve it, so
+that it cannot be an unquoted table name or alias there. A word in doubt
+stays off. The words only PostgreSQL or SQLite read as keywords (`GLOB
+ILIKE LATERAL PRAGMA RETURNING SIMILAR`) are on it because case cannot
+matter where they are keywords.
+
 The highlighter's other keywords can be names (`ANY BEGIN CAST COMMIT
 CURRENT END EXCEPT FILTER FIRST FULL INTERSECT NO OFFSET ONLY OVER
-RECURSIVE ROLLBACK ROWS VIEW WINDOW`) and keep their case, with one
-exception: on PostgreSQL and SQLite, where an unquoted name means the
-same in any case, a word the layout read as structure is uppercased too
-(`OFFSET`, `EXCEPT`, `INTERSECT` and `WINDOW` as heads, `FULL` in a join
-head, `RECURSIVE` after `WITH`, `END` closing a `CASE`). On MySQL those
-keep their case as well: a table alias is compared by case there, and such
-a word may be one.
+RECURSIVE ROLLBACK ROWS VIEW WINDOW`) and keep their case, with two
+exceptions for a word the layout read as structure:
 
-The list is checked when it is built: a word is on it only if MySQL 5.7,
-MySQL 8 and MariaDB all reserve it. A word in doubt stays off.
+- `END` closing a `CASE` is uppercased in every dialect. It cannot be a
+  table name or an alias there (one would touch a `.`). An `END` closes
+  only a `CASE` of its own block: in `CASE WHEN x IN (SELECT id FROM
+  end) ...` the table `end` is a plain word.
+- On PostgreSQL and SQLite, so are `OFFSET`, `EXCEPT`, `INTERSECT` and
+  `WINDOW` as heads, `FULL` in a join head and `RECURSIVE` after `WITH`.
+  On MySQL these keep their case, since such a word may be an alias: a
+  query typed in lower case reads `LIMIT 1 offset 2` there.
 
 ### The safety check
 
@@ -267,8 +302,9 @@ next token, or at the end of the text when there is none.
   field is editing, which the agent guide lets a view change.
 - Undo: before the text is replaced, the state as it was (cursor range and
   text) is added to the field's undo history, and the formatted state
-  after it. One `Mod+Z` gives back the typed text and its selection; a
-  `Mod+Shift+Z` formats it again.
+  after it. A `Mod+Z` right after Format gives back the typed text and
+  its selection; a `Mod+Shift+Z` formats it again. Once the cursor has
+  moved, egui undoes that move first, as after any edit.
 - The cursor goes where `Formatted::cursor` says, with nothing selected.
   `SqlTab.cursor` follows it in the same frame.
 - A field that never had the keys has no egui state: Format then uses
@@ -308,8 +344,14 @@ next token, or at the end of the text when there is none.
 - A `)` with no `(` and a `(` never closed do not stop the formatter: the
   first is inline punctuation, the second's block ends with its statement.
 - A name that spells a clause word (a column called `offset`) is laid out
-  as that clause. The query means the same, since only whitespace moved
-  and the word's case is kept; quoting the name avoids it.
+  as that clause, unless it touches a `.`. The query means the same;
+  quoting the name avoids it.
+- MySQL and SQLite label a result column that has no alias with its
+  expression as typed, so Format can change such a header (`x is null`
+  becomes `x IS NULL`). The rows are the same.
+- A selected statement that does not start its line (the second of
+  `SELECT 1; SELECT 2`) is laid out from base column 0 and its first
+  line stays where it stood. Formatting the whole script puts it right.
 - A `\r\n` line ending between tokens becomes `\n`; inside a string or a
   comment it is copied.
 - The formatter runs on the UI thread, as the tokenizer does: one pass
@@ -322,18 +364,26 @@ next token, or at the end of the text when there is none.
   function; `BETWEEN ... AND`; `AND` and `OR` in `WHERE`, `HAVING` and
   `ON`; the `SELECT` list and the lists that stay on a line; `DISTINCT`;
   nested blocks in `IN`, in `FROM` and in `WITH`, two deep; set
-  operations; `CASE`, nested and with an operand; window functions and
-  `extract(... FROM ...)` staying inline; comments on their own line, at
+  operations; `CASE`, nested, with an operand, and with a block inside it
+  that names a table `end`; window functions and `extract(... FROM ...)`
+  staying inline; comments on their own line, at
   the end of a line, before `)` and `;`, and between statements; several
   statements and the blank line between them; a non-query statement
   keeping its lines; `\r\n` input.
-- Dialect cases: `$$` and `$tag$` bodies, `E'\''` and `::` (PostgreSQL);
-  backticks, `#` comments, `--` with and without a following space and
-  `/*! */` (MySQL); `[name]` and `PRAGMA` (SQLite).
+- The words that are not heads: a word touching a `.` (`r.from`,
+  `shop.order`, `order.id`), `IS DISTINCT FROM`, `WITH ORDINALITY`,
+  `SELECT STRAIGHT_JOIN`; a run of join leaders as one head.
+- Dialect cases: `$$` and `$tag$` bodies, `E'\''`, `::` and two strings
+  on two lines staying on two lines (PostgreSQL); backticks, `#`
+  comments, `--` with and without a following space, `/*! */`, a
+  statement that starts with one, and `\r\n` after a line comment
+  (MySQL); `[name]` and `PRAGMA` (SQLite).
 - Case: every listed word is uppercased; the words that can be names
-  keep their case on MySQL; the structural ones are uppercased on
-  PostgreSQL and SQLite; a quoted name and a string that spell a keyword
-  are untouched. The list is a subset of the highlighter's keywords.
+  keep their case on MySQL, apart from `END` closing a `CASE`; the
+  structural ones are uppercased on PostgreSQL and SQLite; a listed word
+  touching a `.` keeps its case; a quoted name and a string that spell a
+  keyword are untouched. The list is a subset of the highlighter's
+  keywords.
 - Invariants, over every case above and over the tokenizer's own test
   scripts, in all three dialects: the tokens but whitespace are the same
   before and after; formatting the result returns `None`; the safety
@@ -344,9 +394,11 @@ next token, or at the end of the text when there is none.
   a selection in the whitespace between statements formats nothing.
 - The cursor: inside a word, at a word's end, at a line's start, in
   leading whitespace and at the end of the script, before and after.
-- On the MySQL test server (when its URL is set): each listed word is
-  refused where a table alias is expected, and a word left off the list
-  (`first`) is accepted there.
+- On the MySQL test server (when its URL is set): each listed word the
+  MySQL dialect reads as a keyword is refused where a table alias is
+  expected, and a word left off the list (`first`) is accepted there; a
+  formatted query that names a table through a qualified name spelling a
+  reserved word still runs.
 - Headless UI tests through `src/testing.rs`: `Mod+Shift+F` formats the
   script, with the editor focused and not; the Format button does the
   same and gives the keys back to the editor; with a selection only the
