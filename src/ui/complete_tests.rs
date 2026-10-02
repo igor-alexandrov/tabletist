@@ -550,23 +550,39 @@ fn ctrl_n_and_ctrl_p_move_the_highlight_only_in_the_terminal_look() {
     assert_eq!(selected(&harness, tab), Some(0));
 
     // The other looks: not the list's keys. Ctrl+N is New connection
-    // where Mod is Ctrl (it reports `command` too), and nothing on macOS.
+    // where Mod is Ctrl (it reports `command` too), and no shortcut on
+    // macOS. There egui's text field reads Ctrl+N and Ctrl+P itself, as
+    // cursor down and up: the cursor may leave the word, which closes the
+    // list. Nowhere do the keys move the highlight.
+    let cursor_keys = cfg!(target_os = "macos");
+    let unmoved = |harness: &Harness, tab, what: &str| {
+        let highlight = selected(harness, tab);
+        if cursor_keys {
+            assert!(highlight.is_none_or(|row| row == 0), "{what}");
+        } else {
+            assert_eq!(highlight, Some(0), "{what}");
+        }
+    };
     for (ctrl, opens) in [
         (Modifiers::CTRL, false),
         (Modifiers::CTRL | Modifiers::COMMAND, true),
     ] {
         for pressed in [Key::N, Key::P] {
+            let what = format!("{pressed:?} {ctrl:?}");
             let (mut harness, tab) = editor();
             type_text(&mut harness, "se");
             // The frame of the press: the highlight has not moved.
             harness.frame(vec![key(pressed, ctrl)]);
-            assert_eq!(selected(&harness, tab), Some(0), "{pressed:?} {ctrl:?}");
+            unmoved(&harness, tab, &what);
             harness.frame(vec![release(pressed, ctrl)]);
             harness.settle();
-            assert_eq!(harness.app.dialog.is_some(), opens, "{pressed:?} {ctrl:?}");
-            // A dialog that opened took the keyboard, and the list went.
-            let highlight = (!opens).then_some(0);
-            assert_eq!(selected(&harness, tab), highlight, "{pressed:?} {ctrl:?}");
+            assert_eq!(harness.app.dialog.is_some(), opens, "{what}");
+            if opens {
+                // The dialog took the keyboard, and the list went.
+                assert_eq!(selected(&harness, tab), None, "{what}");
+            } else {
+                unmoved(&harness, tab, &what);
+            }
         }
     }
 }
