@@ -1509,9 +1509,7 @@ async fn the_words_format_uppercases_cannot_be_table_aliases() {
     let Some(_connection) = connect().await else {
         return;
     };
-    let opts =
-        mysql_async::Opts::from_url(&format!("{}?prefer_socket=false", url().unwrap())).unwrap();
-    let mut conn = mysql_async::Conn::new(opts).await.unwrap();
+    let mut conn = admin().await;
     // A keyword that can be a name is an alias here: Format leaves its
     // case alone.
     conn.query_drop("SELECT 1 FROM users first").await.unwrap();

@@ -21,9 +21,9 @@ pub struct Formatted {
 /// The keywords Format uppercases: the ones that cannot be an unquoted
 /// table name or alias where case would matter. Every one the MySQL
 /// dialect reads as a keyword is reserved in MySQL 5.7, MySQL 8 and
-/// MariaDB (the MySQL tests ask the server); the words only PostgreSQL or
-/// SQLite read as keywords are here because those compare unquoted names
-/// without case.
+/// MariaDB (the MySQL tests ask the server they run against); the words
+/// only PostgreSQL or SQLite read as keywords are here because those
+/// compare unquoted names without case.
 pub const UPPERCASED: &[&str] = &[
     "ALL",
     "ALTER",
