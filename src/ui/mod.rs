@@ -197,9 +197,9 @@ mod tests {
     }
 
     #[test]
-    fn the_disconnected_banner_keeps_its_corners_inside_the_window() {
+    fn the_lost_strip_keeps_its_buttons_inside_the_window() {
         for look in crate::theme::Look::ALL {
-            let mut harness = Harness::new();
+            let mut harness = Harness::with_size(egui::vec2(720.0, 480.0));
             harness.set_look(look);
             let tab = harness.connect_fake();
             let session = harness.app.workspace(tab).unwrap().session;
@@ -212,9 +212,8 @@ mod tests {
             let tree = harness.settle();
             let button =
                 crate::testing::bounds(&tree, "Reconnect", egui::accesskit::Role::Button).unwrap();
-            // The banner pads its contents by 12; rounded looks inset it by 8 more.
-            let expected = if look.tab_radius == 0 { 12.0 } else { 20.0 };
-            assert_eq!(harness.size.x - button.right(), expected, "{}", look.name);
+            assert!(button.left() >= 0.0, "{}", look.name);
+            assert!(button.right() <= harness.size.x, "{}", look.name);
         }
     }
 
@@ -6808,10 +6807,11 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_disconnected_tab_offers_reconnect_and_edit() {
-        let mut harness = Harness::new();
+    /// A tab with a page of `users` whose connection is then lost.
+    fn lost(harness: &mut Harness) -> crate::model::ConnTabId {
         let tab = harness.connect_fake();
+        harness.click("users");
+        harness.answer_rows(crate::testing::page(3, false));
         let session = harness.app.workspace(tab).unwrap().session;
         harness.app.apply(crate::model::Action::Backend(
             crate::backend::Event::Disconnected {
@@ -6819,13 +6819,45 @@ mod tests {
                 error: tabletist_db::Error::ConnectionLost("server closed the connection".into()),
             },
         ));
-        assert!(harness.has("The connection was lost."));
-        assert!(harness.has("Reconnect"));
-        harness.click("Edit connection");
-        assert!(matches!(
-            harness.app.dialog,
-            Some(crate::model::Dialog::Connection(_))
-        ));
+        tab
+    }
+
+    #[test]
+    fn a_lost_connection_keeps_what_was_on_screen_and_offers_the_way_back() {
+        for look in crate::theme::Look::ALL {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            let tab = lost(&mut harness);
+            let lead = format!(
+                "{} Fixture · dev {}",
+                look.label("Connection to"),
+                look.label("lost.")
+            );
+            assert!(harness.has(&lead), "{lead} in {}", look.name);
+            assert!(
+                harness.has("the connection was lost: server closed the connection"),
+                "{}",
+                look.name
+            );
+            assert!(harness.has("Row 1"), "{}", look.name);
+            harness.click("Reconnect");
+            assert!(matches!(
+                harness.app.workspace(tab).unwrap().status,
+                crate::model::SessionStatus::Connecting { .. }
+            ));
+            let again = format!("{} Fixture…", look.label("Reconnecting to"));
+            assert!(harness.has(&again), "{again} in {}", look.name);
+            assert!(!harness.has("Reconnect"), "{}", look.name);
+            assert!(harness.has("Row 1"), "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn a_lost_connection_can_be_left() {
+        let mut harness = Harness::new();
+        let tab = lost(&mut harness);
+        harness.click("Disconnect");
+        assert!(harness.app.workspace(tab).is_none());
     }
 
     #[test]

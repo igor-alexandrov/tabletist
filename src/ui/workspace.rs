@@ -1,5 +1,5 @@
-//! A connection tab: the connection bar, the disconnected banner, the
-//! sidebar, the object tabs and the open object.
+//! A connection tab: the connection bar, what connecting shows, the strip
+//! of a lost connection, the sidebar, the object tabs and the open object.
 
 use egui::{CornerRadius, Frame, Margin, Rect, Sense, Stroke, StrokeKind, pos2, vec2};
 use tabletist_db::TlsMode;
@@ -63,6 +63,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
         return;
     };
     let active = workspace.active_tab;
+    // What a lost connection left on screen reads as old.
+    let stale = !matches!(workspace.status, SessionStatus::Connected);
     let view = workspace.active_object_tab().map(|object| object.view);
     // The tab the row panel shows a row of: a table's Data view, or a SQL
     // editor with a row of its result selected.
@@ -76,6 +78,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
     egui::CentralPanel::default()
         .frame(Frame::new().fill(app.palette.window))
         .show(ui, |ui| {
+            if stale {
+                ui.multiply_opacity(states::STALE);
+            }
             if !look.terminal {
                 super::object_tabs::show(app, ui, tab);
                 if let Some(shown) = row_panel {
@@ -1656,6 +1661,9 @@ fn tls_status(mode: TlsMode, encrypted: Option<bool>) -> (&'static str, bool) {
     }
 }
 
+/// The strip over a tab whose connection was lost: what happened, the way
+/// back (Reconnect) and the way out (Disconnect). What was on screen stays
+/// under it. While a reconnect is on its way the strip says so.
 fn banner(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
     let locale = app.locale;
     let palette = app.palette;
@@ -1663,75 +1671,111 @@ fn banner(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
     let Some(workspace) = app.workspace(tab) else {
         return;
     };
-    let message = match &workspace.status {
-        SessionStatus::Connecting { .. } => {
-            ui.horizontal(|ui| {
-                ui.add_space(12.0);
-                ui.spinner();
-                Text::one(
-                    &look,
-                    widgets::body(&look),
-                    &gettext(locale, "Connecting…"),
-                    palette.text,
-                )
-                .layout(ui.ctx())
-                .label(ui);
-            });
-            return;
-        }
+    let say = |text: &'static str| look.label(&gettext(locale, text));
+    let name = display_safe(&workspace.name).into_owned();
+    // What happened, the plain sentence when it says more, the exact error.
+    let (lead, sentence, raw, reconnecting) = match &workspace.status {
         SessionStatus::Connected => return,
-        SessionStatus::Disconnected(error) => (
-            crate::ui::format::describe_error(locale, error),
-            error.to_string(),
-        ),
-        SessionStatus::Cancelled => (
-            gettext(locale, "Connection cancelled.").into_owned(),
+        SessionStatus::Connecting { .. } => (
+            format!("{} {name}…", say("Reconnecting to")),
             String::new(),
+            String::new(),
+            true,
+        ),
+        SessionStatus::Disconnected(error) => {
+            // The environment, when the connection has one (matching it is
+            // env.rs's alone).
+            let env = if workspace.environment == crate::env::Environment::None {
+                String::new()
+            } else {
+                format!(
+                    " · {}",
+                    workspace.environment.label(crate::env::Platform::Native)
+                )
+            };
+            // A plain loss is what the lead says already.
+            let sentence = if matches!(error, tabletist_db::Error::ConnectionLost(_)) {
+                String::new()
+            } else {
+                crate::ui::format::describe_error(locale, error)
+            };
+            (
+                format!("{} {name}{env} {}", say("Connection to"), say("lost.")),
+                sentence,
+                error.to_string(),
+                false,
+            )
+        }
+        SessionStatus::Cancelled => (
+            say("Connection cancelled."),
+            String::new(),
+            String::new(),
+            false,
         ),
     };
-    let (described, raw) = message;
-    let conn = workspace.conn_id.clone();
+    let tone = states::Tone::Warning;
     let mut reconnect = false;
-    let mut edit = false;
-    // Rounded corners sit inside the window; Omarchy's square banner spans it.
-    let inset = if look.tab_radius == 0 { 0 } else { 8 };
-    Frame::new()
-        .fill(palette.danger.gamma_multiply(0.12))
-        .corner_radius(egui::CornerRadius::same(look.tab_radius))
-        .inner_margin(Margin::symmetric(12, 10))
-        .outer_margin(Margin::same(inset))
+    let mut disconnect = false;
+    let shown = Frame::new()
+        .fill(tone.fill(&palette))
+        .inner_margin(Margin::symmetric(12, 8))
         .show(ui, |ui| {
             ui.horizontal(|ui| {
-                // The plain sentence, and under it the exact error when it
-                // says more (visible, so keyboards and screen readers get it).
+                ui.spacing_mut().item_spacing.x = 12.0;
+                if reconnecting {
+                    // The spinner asks for the frames that keep it turning.
+                    ui.add(egui::Spinner::new().size(14.0).color(palette.warning));
+                }
                 ui.vertical(|ui| {
-                    Text::one(&look, widgets::body(&look), &described, palette.text)
+                    ui.spacing_mut().item_spacing.y = 2.0;
+                    let strong = TextRole::pick(&look, TextRole::UiBodySemibold, TextRole::OGroup);
+                    Text::one(&look, strong, &lead, palette.text)
                         .layout(ui.ctx())
                         .label(ui);
-                    if !raw.is_empty() && raw != described {
+                    if !sentence.is_empty() {
+                        Text::one(&look, widgets::body(&look), &sentence, palette.secondary)
+                            .layout(ui.ctx())
+                            .label(ui);
+                    }
+                    // The exact error when it says more (visible, so
+                    // keyboards and screen readers get it).
+                    if !raw.is_empty() && raw != sentence {
                         Text::one(&look, widgets::secondary(&look), &raw, palette.secondary)
                             .layout(ui.ctx())
                             .label(ui);
                     }
                 });
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    reconnect = crate::ui::widgets::primary_button(
-                        ui,
-                        &gettext(locale, "Reconnect"),
-                        &look,
-                        &palette,
-                    )
-                    .clicked();
-                    edit =
-                        widgets::button(ui, &gettext(locale, "Edit connection"), &look).clicked();
+                    ui.spacing_mut().item_spacing.x = 8.0;
+                    let height = if look.terminal { 24.0 } else { 28.0 };
+                    let (out, back) = (say("Disconnect"), say("Reconnect"));
+                    disconnect = states::button(&out, &look)
+                        .label("Disconnect")
+                        .salt("lost")
+                        .quiet()
+                        .show(ui, height, &look, &palette)
+                        .clicked();
+                    if !reconnecting {
+                        reconnect = states::button(&back, &look)
+                            .label("Reconnect")
+                            .show(ui, height, &look, &palette)
+                            .clicked();
+                    }
                 });
             });
         });
+    let strip = shown.response.rect;
+    widgets::hline(
+        ui,
+        strip.x_range(),
+        strip.bottom() - 0.5,
+        tone.line(&palette),
+    );
     if reconnect {
         app.actions.push(Action::Reconnect(tab));
     }
-    if edit {
-        app.actions.push(Action::EditConnection(conn));
+    if disconnect {
+        app.actions.push(Action::Disconnect(tab));
     }
 }
 
