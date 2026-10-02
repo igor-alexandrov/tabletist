@@ -733,6 +733,8 @@ mod mock {
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     pub enum Screen {
         MacWorkspace,
+        /// The same workspace in the dark palette.
+        MacWorkspaceDark,
         OmarchyWorkspace,
         MacPicker,
         OmarchyPicker,
@@ -741,8 +743,9 @@ mod mock {
     }
 
     impl Screen {
-        pub const ALL: [Screen; 6] = [
+        pub const ALL: [Screen; 7] = [
             Self::MacWorkspace,
+            Self::MacWorkspaceDark,
             Self::OmarchyWorkspace,
             Self::MacPicker,
             Self::OmarchyPicker,
@@ -754,6 +757,7 @@ mod mock {
         pub fn name(self) -> &'static str {
             match self {
                 Self::MacWorkspace => "macos-workspace",
+                Self::MacWorkspaceDark => "macos-workspace-dark",
                 Self::OmarchyWorkspace => "omarchy-workspace",
                 Self::MacPicker => "macos-connections",
                 Self::OmarchyPicker => "omarchy-connections",
@@ -764,7 +768,9 @@ mod mock {
 
         pub fn look(self) -> Look {
             match self {
-                Self::MacWorkspace | Self::MacPicker | Self::MacDialog => Look::macos(),
+                Self::MacWorkspace | Self::MacWorkspaceDark | Self::MacPicker | Self::MacDialog => {
+                    Look::macos()
+                }
                 Self::OmarchyWorkspace | Self::OmarchyPicker | Self::OmarchyDialog => {
                     Look::omarchy()
                 }
@@ -775,7 +781,9 @@ mod mock {
         /// a 10 pt wallpaper margin and Hyprland's 2 pt border.
         pub fn size(self) -> egui::Vec2 {
             match self {
-                Self::MacWorkspace | Self::MacPicker | Self::MacDialog => egui::vec2(1440.0, 900.0),
+                Self::MacWorkspace | Self::MacWorkspaceDark | Self::MacPicker | Self::MacDialog => {
+                    egui::vec2(1440.0, 900.0)
+                }
                 Self::OmarchyWorkspace => egui::vec2(1896.0, 1056.0),
                 Self::OmarchyPicker | Self::OmarchyDialog => egui::vec2(936.0, 1016.0),
             }
@@ -785,7 +793,9 @@ mod mock {
         /// line up with them.
         pub fn design_scale(self) -> f32 {
             match self {
-                Self::MacWorkspace | Self::MacPicker | Self::MacDialog => 2000.0 / 1440.0,
+                Self::MacWorkspace | Self::MacWorkspaceDark | Self::MacPicker | Self::MacDialog => {
+                    2000.0 / 1440.0
+                }
                 Self::OmarchyWorkspace => 2000.0 / 1920.0,
                 Self::OmarchyPicker | Self::OmarchyDialog => 1846.0 / 960.0,
             }
@@ -796,6 +806,7 @@ mod mock {
         pub fn palette(self) -> Palette {
             match self {
                 Self::MacWorkspace | Self::MacPicker | Self::MacDialog => Palette::light(),
+                Self::MacWorkspaceDark => Palette::dark(),
                 Self::OmarchyWorkspace | Self::OmarchyPicker | Self::OmarchyDialog => tokyo_night(),
             }
         }
@@ -804,7 +815,7 @@ mod mock {
         pub fn stage(self, harness: &mut Harness) {
             crate::util::pin_now(Some(NOW));
             match self {
-                Self::MacWorkspace => {
+                Self::MacWorkspace | Self::MacWorkspaceDark => {
                     let tab = workspace(harness);
                     production_beside(harness, tab);
                 }

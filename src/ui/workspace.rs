@@ -924,14 +924,12 @@ fn mac_bar(
     locale: crate::i18n::Locale,
 ) {
     let center = rect.center().y;
-    // The bar's own rule, and white faces over its tint.
+    // The bar's own rule, and faces over its tint: nearly white on a light
+    // bar, a thin wash of white on a dark one.
     let rim = env.bar_border();
     let face = |alpha: f32| {
-        if palette.dark {
-            palette.window.gamma_multiply(alpha)
-        } else {
-            egui::Color32::WHITE.gamma_multiply(alpha)
-        }
+        let alpha = if palette.dark { alpha * 0.09 } else { alpha };
+        egui::Color32::WHITE.gamma_multiply(alpha)
     };
     let hair = Stroke::new(widgets::hairline(ui), rim);
     let corner = CornerRadius::same(look.radius);
