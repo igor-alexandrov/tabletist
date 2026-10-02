@@ -1344,7 +1344,7 @@ mod tests {
         };
         harness.answer_sql(Ok(script_outcome(vec![flags])), None);
         harness.settle();
-        // A false flag is muted; the same word as text is not a flag.
+        // A false flag is the second tag; the same word as text is no flag.
         let palette = harness.app.palette;
         let colors: Vec<egui::Color32> = harness
             .painted
@@ -1352,7 +1352,8 @@ mod tests {
             .filter(|(piece, _)| piece == "false")
             .map(|(_, color)| *color)
             .collect();
-        assert_eq!(colors, [palette.dim, palette.text]);
+        let (tag, _) = crate::ui::value_tags::slot_colors(1, &harness.app.look, &palette);
+        assert_eq!(colors, [tag, palette.text]);
     }
 
     #[test]

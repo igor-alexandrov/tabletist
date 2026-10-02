@@ -1561,7 +1561,7 @@ mod tests {
         );
         assert_eq!(
             style(&Value::Bool(true), ValueKind::Bool, &Tags::Bool),
-            (false, Style::True)
+            (false, Style::Tag(0))
         );
     }
 

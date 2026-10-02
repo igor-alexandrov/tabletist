@@ -64,10 +64,6 @@ pub enum Style {
     /// A value from a column's allowed list, in that palette slot (see
     /// [`crate::ui::value_tags`]).
     Tag(usize),
-    /// A true boolean: a neutral tag.
-    True,
-    /// A false boolean: muted text.
-    False,
     /// A JSON document with this many keys: a `{ n }` chip, then the text.
     Json(usize),
     /// A colour (`#3a7bd5`): a swatch of it, then the text.
@@ -273,8 +269,8 @@ pub fn initial_widths<'a>(
                 .map(|row| {
                     let cell = cell(row, col);
                     let chip = match cell.style {
-                        Style::Plain | Style::False => 0.0,
-                        Style::Tag(_) | Style::True => 16.0,
+                        Style::Plain => 0.0,
+                        Style::Tag(_) => 16.0,
                         Style::Json(_) => 44.0,
                         Style::Color(_) => SWATCH + SWATCH_GAP,
                     };
@@ -787,11 +783,11 @@ fn draw_cell(
         return;
     }
     match content.style {
-        Style::Tag(_) | Style::True | Style::False => {
+        Style::Tag(_) => {
             let (color, fill) = crate::ui::value_tags::style_colors(content.style, look, palette);
             // macOS and Windows: a chip in the value-tag face, 2 above and
-            // below, 6 at the sides. Terminal (and false): the text alone,
-            // in the tag's colour.
+            // below, 6 at the sides. Terminal: the text alone, in the
+            // tag's colour.
             let Some(fill) = fill else {
                 let shown = ellipsize(&content.text, room, false, |text| width(text, role));
                 paint(
