@@ -59,6 +59,24 @@ const SOURCE_WORDS: [&str; 3] = ["JOIN", "STRAIGHT_JOIN", "INTO"];
 /// removes, not a table whose columns the statement reads.
 const TABLE: &str = "TABLE";
 
+/// Keyword phrases the editor offers as one item.
+pub const PHRASES: [&str; 14] = [
+    "GROUP BY",
+    "ORDER BY",
+    "PARTITION BY",
+    "LEFT JOIN",
+    "RIGHT JOIN",
+    "INNER JOIN",
+    "CROSS JOIN",
+    "FULL JOIN",
+    "IS NULL",
+    "IS NOT NULL",
+    "NOT IN",
+    "NOT LIKE",
+    "NOT EXISTS",
+    "UNION ALL",
+];
+
 /// A token the server reads: not white space, not a comment.
 struct Piece<'a> {
     kind: TokenKind,
