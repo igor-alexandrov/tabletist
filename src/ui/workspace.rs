@@ -1732,7 +1732,7 @@ fn banner(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
     let mut reconnect = false;
     let mut disconnect = false;
     let shown = Frame::new()
-        .fill(tone.fill(&palette))
+        .fill(tone.fill(&look, &palette))
         .inner_margin(Margin::symmetric(12, 8))
         .show(ui, |ui| {
             ui.horizontal(|ui| {
@@ -1794,7 +1794,7 @@ fn banner(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
         ui,
         strip.x_range(),
         strip.bottom() - 0.5,
-        tone.line(&palette),
+        tone.line(&look, &palette),
     );
     if reconnect {
         app.actions.push(Action::Reconnect(tab));

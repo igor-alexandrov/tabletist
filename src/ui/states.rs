@@ -8,7 +8,8 @@ use std::time::Duration;
 use egui::{Align, Color32, CornerRadius, Frame, Margin, Rect, Sense, Stroke, StrokeKind, Ui};
 use egui::{pos2, vec2};
 
-use crate::theme::{self, Icon, Look, Palette};
+use crate::env::{EnvColors, Environment, Platform, env_colors};
+use crate::theme::{Icon, Look, Palette};
 use crate::typography::{Text, TextRole};
 use crate::ui::widgets::{self, ButtonSpec};
 
@@ -241,14 +242,26 @@ impl Tone {
         }
     }
 
-    /// The fill of a card or a banner in this tone.
-    pub fn fill(self, palette: &Palette) -> Color32 {
-        theme::mix(palette.window, self.color(palette), 0.10)
+    /// The tints of this tone: a failure wears production's red and a
+    /// warning staging's amber, the tints the connection bar already uses.
+    /// [`Tone::color`] is too dark to tint with: it is text's.
+    fn tints(self, look: &Look, palette: &Palette) -> EnvColors {
+        let env = match self {
+            Self::Danger => Environment::Production,
+            Self::Warning => Environment::Staging,
+        };
+        env_colors(env, Platform::of(look), palette)
     }
 
-    /// The line round a card or under a banner in this tone.
-    pub fn line(self, palette: &Palette) -> Color32 {
-        theme::mix(palette.window, self.color(palette), 0.25)
+    /// The fill of a card or a banner in this tone: its bar's tint.
+    pub fn fill(self, look: &Look, palette: &Palette) -> Color32 {
+        self.tints(look, palette).bar_bg()
+    }
+
+    /// The line round a card or under a banner in this tone: the line a
+    /// bar draws over its tint.
+    pub fn line(self, look: &Look, palette: &Palette) -> Color32 {
+        self.tints(look, palette).bar_border()
     }
 }
 
@@ -269,14 +282,14 @@ pub fn card(ui: &mut Ui, card: &Card<'_>, look: &Look, palette: &Palette) {
     } else {
         (
             CornerRadius::same(look.radius + 2),
-            Stroke::new(1.0, card.tone.line(palette)),
+            Stroke::new(1.0, card.tone.line(look, palette)),
         )
     };
     let strong = TextRole::pick(look, TextRole::UiBodySemibold, TextRole::OGroup);
     // The terminal's title takes the tone: it has no icon to carry it.
     let title = if look.terminal { tone } else { palette.text };
     let shown = Frame::new()
-        .fill(card.tone.fill(palette))
+        .fill(card.tone.fill(look, palette))
         .stroke(stroke)
         .corner_radius(corner)
         .inner_margin(Margin::same(14))

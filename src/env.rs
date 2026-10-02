@@ -611,6 +611,8 @@ mod tests {
             "src/ui/picker.rs",
             "src/ui/connect_dialog/mod.rs",
             "src/ui/env_tests.rs",
+            // A warning and a failure borrow two bars' tints.
+            "src/ui/states.rs",
         ];
         let mut found = Vec::new();
         for (path, text) in sources() {
