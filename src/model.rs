@@ -394,6 +394,9 @@ pub struct Workspace {
     pub focus_where: bool,
     /// Fold or unfold the row panel's documents on the next frame (`za`).
     pub fold_documents: Option<TabId>,
+    /// When the session last connected, in seconds since the Unix epoch
+    /// (the connection bar's card says how long ago).
+    pub connected_at: Option<u64>,
 }
 
 /// How many objects the sidebar's Recent section keeps.
@@ -1991,6 +1994,7 @@ impl Workspace {
             full_precision: false,
             focus_where: false,
             fold_documents: None,
+            connected_at: None,
         }
     }
 

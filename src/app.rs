@@ -1571,6 +1571,7 @@ impl App {
                             workspace.status = SessionStatus::Connected;
                             workspace.driver = driver;
                             workspace.encrypted = encrypted;
+                            workspace.connected_at = Some(crate::util::now_secs());
                             Some(tab)
                         }
                         _ => None,
@@ -3118,6 +3119,7 @@ mod tests {
             app.workspace(tab).unwrap().status,
             SessionStatus::Connected
         ));
+        assert!(app.workspace(tab).unwrap().connected_at.is_some());
     }
 
     #[test]

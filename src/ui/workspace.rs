@@ -182,6 +182,11 @@ struct Chip {
     /// session stands while it is not connected.
     line: String,
     link: Link,
+    /// Its place among the open connections, from 1: Cmd/Ctrl+1 is the
+    /// first.
+    number: usize,
+    /// What its card says: a name and a value per line.
+    card: Vec<(String, String)>,
 }
 
 fn bar_info(app: &App, tab: ConnTabId) -> Option<BarInfo> {
@@ -214,8 +219,10 @@ fn bar_info(app: &App, tab: ConnTabId) -> Option<BarInfo> {
 /// A chip for each open connection, in the header's order. `own` is the
 /// connection whose bar this is.
 fn chips(app: &App, own: ConnTabId) -> Vec<Chip> {
+    let now = crate::util::now_secs();
     app.open_connections()
-        .map(|(tab, workspace)| {
+        .enumerate()
+        .map(|(index, (tab, workspace))| {
             let (link, state) = match &workspace.status {
                 SessionStatus::Connected => (Link::Connected, None),
                 SessionStatus::Connecting { .. } => (Link::Connecting, Some("Connecting…")),
@@ -233,9 +240,149 @@ fn chips(app: &App, own: ConnTabId) -> Vec<Chip> {
                 env: workspace.environment,
                 line,
                 link,
+                number: index + 1,
+                card: card_rows(workspace, &app.look, app.locale, now),
             }
         })
         .collect()
+}
+
+/// What a chip's card says about its connection: where it points, what
+/// serves it, how far it can be trusted, and how it stands.
+fn card_rows(
+    workspace: &crate::model::Workspace,
+    look: &Look,
+    locale: crate::i18n::Locale,
+    now: u64,
+) -> Vec<(String, String)> {
+    let say = |text: &'static str| look.label(&gettext(locale, text));
+    let spec = &workspace.spec;
+    let sqlite = workspace.driver == tabletist_db::Driver::Sqlite;
+    let mut rows = Vec::new();
+    if sqlite {
+        let path = spec
+            .sqlite_path
+            .as_ref()
+            .map(|path| path.display().to_string())
+            .unwrap_or_default();
+        rows.push((say("File"), path));
+    } else {
+        rows.push((say("Host"), format!("{}:{}", spec.host, spec.port)));
+        if !spec.database.is_empty() {
+            rows.push((say("Database"), display_safe(&spec.database).into_owned()));
+        }
+        if !spec.user.is_empty() {
+            rows.push((say("User"), spec.user.clone()));
+        }
+    }
+    let server = workspace
+        .server_version
+        .value
+        .clone()
+        .unwrap_or_else(|| workspace.driver.label().to_owned());
+    rows.push((say("Server"), server));
+    let connected = matches!(workspace.status, SessionStatus::Connected);
+    let remote = !sqlite && !crate::model::is_local_host(&spec.host);
+    let tls = if remote {
+        let encrypted = connected.then_some(workspace.encrypted);
+        say(tls_status(spec.effective_tls(), encrypted).0)
+    } else {
+        say("Local")
+    };
+    let ssh = match &spec.ssh {
+        Some(ssh) => format!("{} {}", say("SSH via"), ssh.host),
+        None => say("no SSH"),
+    };
+    rows.push((say("Security"), format!("{tls} · {ssh}")));
+    let state = match &workspace.status {
+        SessionStatus::Connected => {
+            let tabs = match workspace.tabs.len() {
+                0 => say("no tabs open"),
+                1 => say("1 tab open"),
+                count => format!("{count} {}", say("tabs open")),
+            };
+            let since = crate::connections::when(workspace.connected_at, now);
+            (say("Connected"), format!("{since} · {tabs}"))
+        }
+        SessionStatus::Connecting { .. } => (say("Status"), say("Connecting…")),
+        SessionStatus::Disconnected(_) => (say("Status"), say("Disconnected")),
+        SessionStatus::Cancelled => (say("Status"), say("Cancelled")),
+    };
+    rows.push(state);
+    rows
+}
+
+/// What a click on `chip` does, as its card says it. The bar's own chip
+/// without other databases to switch to does nothing.
+fn card_hint(
+    chip: &Chip,
+    switchable: bool,
+    look: &Look,
+    locale: crate::i18n::Locale,
+) -> Option<String> {
+    let text = if !chip.own {
+        "Click to switch to this connection"
+    } else if switchable {
+        "Click to switch database"
+    } else {
+        return None;
+    };
+    Some(look.label(&gettext(locale, text)))
+}
+
+/// A chip's card, shown while the pointer rests on it: the connection and
+/// its key, what [`card_rows`] says, and what a click does.
+fn chip_card(ui: &mut egui::Ui, chip: &Chip, hint: Option<&str>, look: &Look, palette: &Palette) {
+    let small = widgets::secondary(look);
+    let strong = TextRole::pick(look, TextRole::UiBodySemibold, TextRole::OGroup);
+    let colors = crate::env::env_colors(chip.env, crate::env::Platform::of(look), palette);
+    let badge = if look.terminal {
+        Badge::Tracked
+    } else {
+        Badge::Chip
+    };
+    ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
+    ui.horizontal(|ui| {
+        let name = Text::one(look, strong, &chip.name, palette.text)
+            .layout(ui.ctx())
+            .label(ui);
+        let width = env_badge_width(ui, chip.env, badge, look);
+        let (place, _) = ui.allocate_exact_size(vec2(width, name.rect.height()), Sense::hover());
+        env_badge(
+            ui,
+            place.left(),
+            place.center().y,
+            chip.env,
+            &colors,
+            badge,
+            look,
+        );
+        if chip.number <= 9 {
+            let key = look.label(&format!("{}{}", look.command_key(), chip.number));
+            Text::one(look, small, &key, palette.dim)
+                .layout(ui.ctx())
+                .label(ui);
+        }
+    });
+    egui::Grid::new(("chip-card", chip.tab.0))
+        .num_columns(2)
+        .spacing(vec2(10.0, 6.0))
+        .show(ui, |ui| {
+            for (label, value) in &chip.card {
+                Text::one(look, small, label, palette.dim)
+                    .layout(ui.ctx())
+                    .label(ui);
+                Text::one(look, small, value, palette.text)
+                    .layout(ui.ctx())
+                    .label(ui);
+                ui.end_row();
+            }
+        });
+    if let Some(hint) = hint {
+        Text::one(look, small, hint, palette.dim)
+            .layout(ui.ctx())
+            .label(ui);
+    }
 }
 
 /// Where a connection points, in a word: its database, or the file's name
@@ -636,7 +783,10 @@ fn mac_bar(
             continue;
         }
         let colors = crate::env::env_colors(chip.env, platform, palette);
-        let response = ui.interact(hit, ui.id().with(("chip", chip.tab.0)), Sense::click());
+        let hint = card_hint(chip, switchable, look, locale);
+        let response = ui
+            .interact(hit, ui.id().with(("chip", chip.tab.0)), Sense::click())
+            .on_hover_ui(|ui| chip_card(ui, chip, hint.as_deref(), look, palette));
         let (name_color, fill) = if chip.own {
             announce_switcher(&response, info, switchable, locale);
             (palette.text, Some(face(0.85)))
@@ -895,7 +1045,10 @@ fn terminal_bar(
             continue;
         }
         let colors = crate::env::env_colors(chip.env, platform, palette);
-        let response = ui.interact(hit, ui.id().with(("chip", chip.tab.0)), Sense::click());
+        let hint = card_hint(chip, switchable, look, locale);
+        let response = ui
+            .interact(hit, ui.id().with(("chip", chip.tab.0)), Sense::click())
+            .on_hover_ui(|ui| chip_card(ui, chip, hint.as_deref(), look, palette));
         // The bar's own chip: the panel's colour inside its environment's
         // line. The others: the window's line, the text's when pointed at.
         let line = if chip.own {
@@ -1362,6 +1515,92 @@ mod tests {
         assert_eq!(
             place(&widths, Some(2), 12.0, wide, 20.0, 40.0)[0].left(),
             100.0
+        );
+    }
+
+    #[test]
+    fn a_chips_card_says_where_the_connection_points_and_how_it_stands() {
+        let locale = crate::i18n::Locale::default();
+        let look = Look::macos();
+        let row = |name: &str, value: &str| (name.to_owned(), value.to_owned());
+        // The fixture: a SQLite file, still connecting.
+        let mut workspace = crate::testing::workspace();
+        assert_eq!(
+            card_rows(&workspace, &look, locale, 0),
+            [
+                row("File", "/tmp/fixture.db"),
+                row("Server", "SQLite"),
+                row("Security", "Local · no SSH"),
+                row("Status", "Connecting…"),
+            ]
+        );
+        // A server behind a bastion, connected two hours ago.
+        let now = 1_790_683_200;
+        let (mut spec, _) = tabletist_db::ConnectSpec::from_url(
+            "postgres://app@db.example.com:5432/bookshop_production?sslmode=verify-full",
+        )
+        .unwrap();
+        spec.ssh = Some(tabletist_db::SshSpec {
+            host: "bastion".into(),
+            port: Some(22),
+            user: "deploy".into(),
+            auth: tabletist_db::SshAuth::Agent,
+        });
+        workspace.spec = spec;
+        workspace.driver = tabletist_db::Driver::Postgres;
+        workspace.status = SessionStatus::Connected;
+        workspace.encrypted = true;
+        workspace.connected_at = Some(now - 7_200);
+        assert_eq!(
+            card_rows(&workspace, &look, locale, now),
+            [
+                row("Host", "db.example.com:5432"),
+                row("Database", "bookshop_production"),
+                row("User", "app"),
+                row("Server", "PostgreSQL"),
+                row("Security", "TLS verified · SSH via bastion"),
+                row("Connected", "2 h ago · no tabs open"),
+            ]
+        );
+        // The terminal look says its own words in lower case, never a name.
+        let terminal = card_rows(&workspace, &Look::omarchy(), locale, now);
+        assert_eq!(terminal[0], row("host", "db.example.com:5432"));
+        assert_eq!(
+            terminal[4],
+            row("security", "tls verified · ssh via bastion")
+        );
+    }
+
+    #[test]
+    fn a_chips_card_says_what_a_click_does() {
+        let locale = crate::i18n::Locale::default();
+        let chip = |own: bool| Chip {
+            tab: ConnTabId(1),
+            own,
+            name: "Fixture".into(),
+            env: crate::env::Environment::Dev,
+            line: "fixture.db".into(),
+            link: Link::Connected,
+            number: 1,
+            card: Vec::new(),
+        };
+        let hint = |own: bool, switchable: bool, look: &Look| {
+            card_hint(&chip(own), switchable, look, locale)
+        };
+        let mac = Look::macos();
+        assert_eq!(
+            hint(false, false, &mac).as_deref(),
+            Some("Click to switch to this connection")
+        );
+        assert_eq!(
+            hint(true, true, &mac).as_deref(),
+            Some("Click to switch database")
+        );
+        // The bar's own chip with one database does nothing: no hint.
+        assert_eq!(hint(true, false, &mac), None);
+        assert_eq!(
+            hint(false, true, &Look::omarchy()).as_deref(),
+            Some("click to switch to this connection")
         );
     }
 
