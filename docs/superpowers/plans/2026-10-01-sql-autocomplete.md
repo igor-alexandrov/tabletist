@@ -23,6 +23,14 @@ Decided while planning; the spec's intent holds.
 - The bare schema's objects are asked for at sites that use them (tables, columns, qualifiers), not at the first word of a statement.
 - The commits are ten, not seven: keys with insertion, and the view, are separate commits, so are the keyword candidates and the list's model, and the docs are a commit of their own.
 
+## Changes during execution
+
+Found in review while the tasks were built. The task texts below are as planned, except where a line here says the text was brought in line.
+
+- Task 1: the test draws a button above the editor, so the arrow assertions test the filter; the hold block sits after the focus request.
+- Task 2: `FROM` and `UPDATE` are table words only where they start a table list. A `FROM` counts once the statement has had `SELECT`, `DELETE`, `UPDATE` or `SHOW`, not after `IS [NOT] DISTINCT`, and not as the first `FROM` inside `EXTRACT(`, `TRIM(`, `SUBSTRING(` or `OVERLAY(`. An `UPDATE` does not count after `FOR`, `KEY` or `DO`. A function in a `FROM` list is skipped with its arguments and alias, and the list goes on. `TABLE_WORDS` became `SOURCE_WORDS` and `TABLE`. The module has 28 tests, not 9.
+- Task 3: `Candidate::is_typed` says whether a row only repeats what is typed: a keyword whatever its case, any other name as spelled. `rank` uses it, and so do Task 4's Enter rule and opening rule (their text below was brought in line).
+
 ## Global Constraints
 
 - Checks before every commit (AGENTS.md): `cargo fmt --all --check`, `cargo clippy --locked --workspace --all-targets -- -D warnings`, `cargo test --locked --workspace --all-targets`, `RUSTDOCFLAGS='-D warnings' cargo doc --locked --workspace --no-deps`. Use `~/.cargo/bin/cargo` (the mise shim fails). When a task touches `src/shots.rs` (Task 6), also run `~/.cargo/bin/cargo check --locked --features shots --tests`: nothing else compiles it.
@@ -1670,8 +1678,8 @@ impl Completion {
     /// `text` already reads there.
     pub fn enter_is_a_line_break(&self, text: &str) -> bool {
         self.highlighted().is_none_or(|candidate| {
-            candidate.insert == self.typed
-                || text.get(self.site.word.clone()) == Some(candidate.insert.as_str())
+            let word = text.get(self.site.word.clone());
+            candidate.is_typed(&self.typed) || word.is_some_and(|word| candidate.is_typed(word))
         })
     }
 }
@@ -1873,7 +1881,7 @@ Add beside `run_sql`:
         // after a dot; not where a new name goes; not when the only row
         // is what is already typed.
         let only_exact = listed.more == 0
-            && matches!(listed.candidates.as_slice(), [only] if only.insert == typed);
+            && matches!(listed.candidates.as_slice(), [only] if only.is_typed(&typed));
         let after_dot = typed.is_empty() && !site.qualifier.is_empty();
         let new_name = site.expects == tabletist_db::complete::Expects::Name
             && site.qualifier.is_empty();
@@ -4102,7 +4110,7 @@ In `refresh_completion`, replace everything from `let palette = self.palette;` t
         // after a dot; not where a new name goes; not when the only row
         // is what is already typed (its names were still asked for).
         let only_exact = listed.more == 0
-            && matches!(listed.candidates.as_slice(), [only] if only.insert == typed);
+            && matches!(listed.candidates.as_slice(), [only] if only.is_typed(&typed));
         let after_dot = typed.is_empty() && !site.qualifier.is_empty();
         let new_name = site.expects == tabletist_db::complete::Expects::Name
             && site.qualifier.is_empty();
