@@ -1334,6 +1334,7 @@ impl App {
             return;
         };
         workspace.secrets = secrets.clone();
+        workspace.connect_started = Some(std::time::Instant::now());
         let (session, spec) = (workspace.session, workspace.spec.clone());
         // A blank answer means "no password" to the server.
         let mut secrets = secrets;
@@ -1409,6 +1410,7 @@ impl App {
         if let Some(workspace) = self.workspace_mut(tab) {
             let old = std::mem::replace(&mut workspace.session, session);
             workspace.status = SessionStatus::Connecting { request };
+            workspace.connect_started = None;
             workspace.forget_session_requests();
             self.backend.send(Command::Close { session: old });
         }
@@ -1557,6 +1559,7 @@ impl App {
         };
         let old = std::mem::replace(&mut workspace.session, session);
         workspace.status = SessionStatus::Connecting { request };
+        workspace.connect_started = None;
         workspace.forget_session_requests();
         self.backend.send(Command::Close { session: old });
         // Reuses the secrets this tab already has; asks only for missing ones.
@@ -3243,6 +3246,57 @@ mod tests {
             app.backend.sent.last(),
             Some(Command::Connect { session: s, .. }) if *s == new_session
         ));
+    }
+
+    #[test]
+    fn sending_the_connect_starts_its_clock() {
+        let (mut app, _dir) = app();
+        let (tab, _, _) = connect(&mut app);
+        assert!(app.workspace(tab).unwrap().connect_started.is_some());
+        // A reconnect is a new attempt with a clock of its own.
+        let sent = app.backend.sent.len();
+        app.apply(Action::Reconnect(tab));
+        let restarted = app.backend.sent[sent..]
+            .iter()
+            .any(|command| matches!(command, Command::Connect { .. }));
+        assert_eq!(
+            app.workspace(tab).unwrap().connect_started.is_some(),
+            restarted,
+            "the clock runs only once the Connect is sent"
+        );
+    }
+
+    #[test]
+    fn a_reconnect_waiting_at_the_password_prompt_has_no_clock() {
+        let (mut app, _dir) = app();
+        let conn = postgres_saved(&mut app, PasswordMode::Ask);
+        let tab = app.active_tab_id();
+        app.apply(Action::Connect { tab, conn });
+        prompt(&mut app).password = "wrong".into();
+        app.apply(Action::SubmitPassword);
+        assert!(app.workspace(tab).unwrap().connect_started.is_some());
+        let (session, request, _) = last_connect(&app);
+        app.apply(Action::Backend(Event::ConnectFailed {
+            session,
+            request,
+            error: rejected(),
+        }));
+        app.apply(Action::CloseDialog);
+        let sent = app.backend.sent.len();
+        app.apply(Action::Reconnect(tab));
+        assert!(matches!(app.dialog, Some(Dialog::Password(_))));
+        assert!(
+            !app.backend.sent[sent..]
+                .iter()
+                .any(|command| matches!(command, Command::Connect { .. })),
+            "no Connect is sent while the prompt is open"
+        );
+        let workspace = app.workspace(tab).unwrap();
+        assert!(matches!(workspace.status, SessionStatus::Connecting { .. }));
+        assert!(
+            workspace.connect_started.is_none(),
+            "the time of the attempt before is not shown"
+        );
     }
 
     #[test]

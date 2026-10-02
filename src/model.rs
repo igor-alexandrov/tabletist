@@ -354,6 +354,9 @@ pub struct Workspace {
     /// session connects; `prefer` may have fallen back to plain text.
     pub encrypted: bool,
     pub status: SessionStatus,
+    /// When the connect in flight was sent to the backend (after any
+    /// password prompt), for the time the tab shows.
+    pub connect_started: Option<std::time::Instant>,
     pub tree: Tree,
     /// Open tabs, in strip order.
     pub tabs: Vec<Tab>,
@@ -1055,6 +1058,8 @@ pub struct Fetch<T> {
     pub error: Option<Error>,
     /// The request whose answer `value` holds.
     pub loaded: Option<RequestId>,
+    /// When the pending request was sent, for the time a wait shows.
+    pub started: Option<std::time::Instant>,
 }
 
 impl<T> Default for Fetch<T> {
@@ -1064,6 +1069,7 @@ impl<T> Default for Fetch<T> {
             pending: None,
             error: None,
             loaded: None,
+            started: None,
         }
     }
 }
@@ -1072,6 +1078,7 @@ impl<T> Fetch<T> {
     pub fn start(&mut self, request: RequestId) {
         self.pending = Some(request);
         self.error = None;
+        self.started = Some(std::time::Instant::now());
     }
 
     /// Applies a result if it answers the pending request. Returns whether it did.
@@ -1080,6 +1087,7 @@ impl<T> Fetch<T> {
             return false;
         }
         self.pending = None;
+        self.started = None;
         match result {
             Ok(value) => {
                 self.value = Some(value);
@@ -1093,6 +1101,13 @@ impl<T> Fetch<T> {
 
     pub fn is_loading(&self) -> bool {
         self.pending.is_some()
+    }
+
+    /// How long the request in flight has been going.
+    pub fn running_for(&self) -> Option<Duration> {
+        self.pending
+            .and(self.started)
+            .map(|started| started.elapsed())
     }
 
     /// Never loaded and not loading.
@@ -1956,6 +1971,21 @@ impl SqlTab {
 }
 
 impl Workspace {
+    /// Whether the tab has shown its content: its schemas were listed, or
+    /// could not be, at least once. Until then the tab shows how
+    /// connecting goes.
+    pub fn opened(&self) -> bool {
+        self.tree.schemas.value.is_some() || self.tree.schemas.error.is_some()
+    }
+
+    /// How long the connect in flight has been going, once it was sent.
+    pub fn connecting_for(&self) -> Option<Duration> {
+        matches!(self.status, SessionStatus::Connecting { .. })
+            .then_some(self.connect_started)
+            .flatten()
+            .map(|started| started.elapsed())
+    }
+
     /// A workspace for `saved` that is connecting as `session`; `request`
     /// is the connect it waits for, and `secrets` are the ones typed so far.
     pub fn new(
@@ -1973,6 +2003,7 @@ impl Workspace {
             encrypted: false,
             spec: saved.spec,
             status: SessionStatus::Connecting { request },
+            connect_started: None,
             tree: Tree::default(),
             tabs: Vec::new(),
             next_query: 1,
@@ -2192,6 +2223,38 @@ mod tests {
             100,
             None,
         )))
+    }
+
+    #[test]
+    fn a_fetch_times_the_request_in_flight() {
+        let mut fetch: Fetch<u32> = Fetch::default();
+        assert_eq!(fetch.running_for(), None);
+        fetch.start(RequestId(1));
+        assert!(fetch.running_for().is_some());
+        assert!(fetch.finish(RequestId(1), Ok(7)));
+        assert_eq!(fetch.running_for(), None, "nothing is in flight");
+    }
+
+    #[test]
+    fn a_fetch_dropped_without_an_answer_is_not_timed() {
+        let mut fetch: Fetch<u32> = Fetch::default();
+        fetch.start(RequestId(1));
+        // Dropped without an answer: nothing is in flight any more.
+        fetch.pending = None;
+        assert_eq!(fetch.running_for(), None);
+    }
+
+    #[test]
+    fn a_workspace_opens_once_its_schemas_were_listed() {
+        let mut workspace = crate::testing::workspace();
+        assert!(!workspace.opened());
+        assert_eq!(workspace.connecting_for(), None, "nothing was sent yet");
+        workspace.connect_started = Some(std::time::Instant::now());
+        assert!(workspace.connecting_for().is_some());
+        workspace.status = SessionStatus::Connected;
+        assert_eq!(workspace.connecting_for(), None, "the connect was answered");
+        workspace.tree.schemas.value = Some(Vec::new());
+        assert!(workspace.opened());
     }
 
     #[test]
