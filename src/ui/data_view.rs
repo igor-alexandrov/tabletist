@@ -1284,7 +1284,10 @@ pub fn shown_error<T>(fetch: &crate::model::Fetch<T>) -> Option<&tabletist_db::E
 }
 
 /// An error as a card with its code, detail and hint, and Retry and
-/// Copy details buttons.
+/// Copy details buttons. The card shows what a database said as
+/// [`format::capped`] cuts it, and scrolls in the room over the buttons,
+/// which stay in reach under an error of any length. Copy details copies
+/// all of it.
 pub fn error_box(
     ui: &mut egui::Ui,
     error: &tabletist_db::Error,
@@ -1295,35 +1298,47 @@ pub fn error_box(
 ) {
     let say = |text: &'static str| look.label(&gettext(locale, text));
     let text = error.to_string();
+    // What else the database said, each under its name.
+    let mut more = Vec::new();
+    if let tabletist_db::Error::Query {
+        code, detail, hint, ..
+    } = error
+    {
+        for (label, said) in [("Code", code), ("Detail", detail), ("Hint", hint)] {
+            if let Some(said) = said {
+                more.push((gettext(locale, label), said.as_str()));
+            }
+        }
+    }
     ui.scope(|ui| {
         ui.spacing_mut().item_spacing = vec2(8.0, 10.0);
-        let card = states::Card {
-            tone: states::Tone::Danger,
-            icon: Icon::CircleAlert,
-            title: &text,
-            text: "",
-        };
-        states::card(ui, &card, look, palette);
-        let width = ui.available_width();
-        let mut details = text.clone();
-        if let tabletist_db::Error::Query {
-            code, detail, hint, ..
-        } = error
-        {
-            for (label, more) in [("Code", code), ("Detail", detail), ("Hint", hint)] {
-                if let Some(more) = more {
-                    let line = format!("{}: {more}", gettext(locale, label));
+        let height = states::button_height(look);
+        // The room the buttons leave, and no more: a scroll area keeps
+        // 64 pt by itself, which would push them out of a short view.
+        let room = (ui.available_height() - height - ui.spacing().item_spacing.y).max(0.0);
+        egui::ScrollArea::vertical()
+            .id_salt("error")
+            .max_height(room)
+            .min_scrolled_height(0.0)
+            .auto_shrink([false, true])
+            .show(ui, |ui| {
+                let card = states::Card {
+                    tone: states::Tone::Danger,
+                    icon: Icon::CircleAlert,
+                    title: &format::capped(&text),
+                    text: "",
+                };
+                states::card(ui, &card, look, palette);
+                let width = ui.available_width();
+                for (label, said) in &more {
+                    let line = format!("{label}: {}", format::capped(said));
                     Text::one(look, widgets::body(look), &line, palette.secondary)
                         .wrap(width)
                         .layout(ui.ctx())
                         .label(ui);
-                    details.push('\n');
-                    details.push_str(&line);
                 }
-            }
-        }
+            });
         ui.horizontal(|ui| {
-            let height = states::button_height(look);
             let (again, copy) = (say("Retry"), say("Copy details"));
             let again = states::button(&again, look).label("Retry");
             if again.show(ui, height, look, palette).clicked() {
@@ -1331,7 +1346,12 @@ pub fn error_box(
             }
             let copy = states::button(&copy, look).label("Copy details").quiet();
             if copy.show(ui, height, look, palette).clicked() {
-                ui.ctx().copy_text(details.clone());
+                // All of it: only what the card shows is cut.
+                let mut details = text.clone();
+                for (label, said) in &more {
+                    details.push_str(&format!("\n{label}: {said}"));
+                }
+                ui.ctx().copy_text(details);
             }
         });
     });

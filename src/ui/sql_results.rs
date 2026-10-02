@@ -672,26 +672,12 @@ fn note_at(
     widgets::announce(ui, Rect::from_min_size(at, laid.size()), name);
 }
 
-/// The most characters of what a database said that a message shows.
-const MESSAGE_MAX_CHARS: usize = 2_000;
-
-/// What a database said, cut to what a message shows and ending in "…"
-/// when cut. A message can hold megabytes (PostgreSQL repeats a literal it
-/// cannot read) and is written and laid out every frame, so nothing here
-/// looks past the cut. The start says what went wrong.
-fn capped(text: &str) -> std::borrow::Cow<'_, str> {
-    match text.char_indices().nth(MESSAGE_MAX_CHARS) {
-        Some((end, _)) => format!("{}…", &text[..end]).into(),
-        None => text.into(),
-    }
-}
-
-/// An error in its own words, cut as [`capped`] cuts.
+/// An error in its own words, cut as [`format::capped`] cuts.
 fn error_text(error: &Error) -> String {
     match error {
         // The message itself, without a copy of all of it first.
-        Error::Query { message, .. } => capped(message).into_owned(),
-        other => capped(&other.to_string()).into_owned(),
+        Error::Query { message, .. } => format::capped(message).into_owned(),
+        other => format::capped(&other.to_string()).into_owned(),
     }
 }
 
@@ -904,7 +890,7 @@ fn message(line: Line<'_>, run: Option<&SqlRun>, words: Words) -> Message {
         },
         Line::More(label, text) => Message::new(
             format!("{}:", words.say(label)),
-            capped(text).into_owned(),
+            format::capped(text).into_owned(),
             Tone::Muted,
         ),
         Line::Whole(error) => Message::new(String::new(), error_text(error), Tone::Failed),
@@ -995,51 +981,58 @@ fn messages(
 
 /// A write the read-only session refused: said as what it is, a limit of
 /// this version and not a mistake in the statement. The exact error
-/// stays under the card.
+/// stays under the card. A pane too short for it all scrolls.
 fn blocked(ui: &mut Ui, rect: Rect, error: &Error, env: &Env<'_>) {
     let Env { look, palette, .. } = *env;
     let inner = rect.shrink2(vec2(16.0, 14.0));
-    let mut column = ui.new_child(
+    let mut pane = ui.new_child(
         egui::UiBuilder::new()
             .id_salt("blocked")
             .max_rect(inner)
             .layout(egui::Layout::top_down(egui::Align::Min)),
     );
-    column.spacing_mut().item_spacing = vec2(8.0, 10.0);
-    let title = env.said(|words| words.say("This version only reads data"));
-    let text = env.said(|words| {
-        words.say(
-            "Every query runs in a read-only transaction, so this statement was refused. \
-             Nothing changed.",
-        )
-    });
-    let card = states::Card {
-        tone: states::Tone::Warning,
-        icon: Icon::Lock,
-        title: &title.painted,
-        text: &text.painted,
-    };
-    states::card(&mut column, &card, look, palette);
-    // The database's own words, after its code when it gave one.
-    let raw = match error {
-        Error::Query {
-            code: Some(code), ..
-        } => format!("{code} · {}", error_text(error)),
-        other => error_text(other),
-    };
-    Text::one(look, widgets::code(look), &raw, palette.secondary)
-        .wrap(inner.width())
-        .layout(column.ctx())
-        .label(&mut column);
-    let later = env.said(|words| words.say("Editing arrives in a later version."));
-    Text::one(
-        look,
-        widgets::secondary(look),
-        &later.painted,
-        palette.secondary,
-    )
-    .layout(column.ctx())
-    .label(&mut column);
+    // As short as the pane is: a scroll area keeps 64 pt by itself, which
+    // would run out under the pane.
+    egui::ScrollArea::vertical()
+        .auto_shrink([false, false])
+        .min_scrolled_height(0.0)
+        .show(&mut pane, |column| {
+            column.spacing_mut().item_spacing = vec2(8.0, 10.0);
+            let title = env.said(|words| words.say("This version only reads data"));
+            let text = env.said(|words| {
+                words.say(
+                    "Every query runs in a read-only transaction, so this statement was \
+                     refused. Nothing changed.",
+                )
+            });
+            let card = states::Card {
+                tone: states::Tone::Warning,
+                icon: Icon::Lock,
+                title: &title.painted,
+                text: &text.painted,
+            };
+            states::card(column, &card, look, palette);
+            // The database's own words, after its code when it gave one.
+            let raw = match error {
+                Error::Query {
+                    code: Some(code), ..
+                } => format!("{code} · {}", error_text(error)),
+                other => error_text(other),
+            };
+            Text::one(look, widgets::code(look), &raw, palette.secondary)
+                .wrap(column.available_width())
+                .layout(column.ctx())
+                .label(column);
+            let later = env.said(|words| words.say("Editing arrives in a later version."));
+            Text::one(
+                look,
+                widgets::secondary(look),
+                &later.painted,
+                palette.secondary,
+            )
+            .layout(column.ctx())
+            .label(column);
+        });
 }
 
 /// The Results pane of a run that ran: the rows of its last statement
@@ -1789,6 +1782,55 @@ mod tests {
     }
 
     #[test]
+    fn a_refused_write_in_a_short_pane_scrolls_to_its_last_line() {
+        for look in Look::ALL {
+            let (mut harness, tab) = editor(look, "UPDATE users SET email = 'x'");
+            let workspace = harness.app.workspace_mut(tab).unwrap();
+            workspace.driver = tabletist_db::Driver::Postgres;
+            // The editor takes most of the height: the results have room
+            // for the card's first lines and not for its last.
+            let id = workspace.active_tab.unwrap();
+            workspace.sql_tab_mut(id).unwrap().split = 0.8;
+            run(&mut harness);
+            harness.answer_sql(Ok(script_outcome(vec![read_only_refusal()])), None);
+            show_pane(&mut harness, tab, ResultPane::Results);
+            let title = look.label("This version only reads data");
+            let last = look.label("Editing arrives in a later version.");
+            // The card's title and its last line, and how far down the
+            // pane shows anything: to the footer under it, or to the
+            // window's end in the terminal look, which has none.
+            let places = |harness: &mut Harness| {
+                let tree = harness.settle();
+                let place = |label: &str| bounds(&tree, label, Role::Label);
+                let footer = labels(&tree)
+                    .into_iter()
+                    .find(|label| label.starts_with("Ln "));
+                let bottom = match footer.and_then(|footer| place(&footer)) {
+                    Some(footer) => footer.top(),
+                    None => harness.size.y,
+                };
+                let [title, last] = [&title, &last].map(|label| place(label).expect("a label"));
+                (title, last, bottom)
+            };
+            let (title, before, bottom) = places(&mut harness);
+            assert!(before.bottom() > bottom, "{}: {before:?}", look.name);
+            // The wheel over the card brings the rest of it up.
+            harness.frame(vec![egui::Event::PointerMoved(title.center())]);
+            harness.frame(vec![egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                delta: egui::vec2(0.0, -600.0),
+                modifiers: Modifiers::NONE,
+                phase: egui::TouchPhase::Move,
+            }]);
+            for _ in 0..60 {
+                harness.frame(Vec::new());
+            }
+            let (_, after, bottom) = places(&mut harness);
+            assert!(after.bottom() <= bottom, "{}: {after:?}", look.name);
+        }
+    }
+
+    #[test]
     fn another_error_keeps_its_own_words_in_the_results() {
         let look = Look::macos();
         let (mut harness, tab) = editor(look, "SELECT nope");
@@ -2108,16 +2150,6 @@ mod tests {
     }
 
     #[test]
-    fn a_message_is_cut_where_a_database_says_too_much() {
-        assert_eq!(capped("no such column: x"), "no such column: x");
-        let exact = "é".repeat(MESSAGE_MAX_CHARS);
-        assert_eq!(capped(&exact), exact.as_str());
-        // Cut between characters, never inside one.
-        let long = "é".repeat(MESSAGE_MAX_CHARS + 1);
-        assert_eq!(capped(&long), format!("{exact}…"));
-    }
-
-    #[test]
     fn a_huge_message_builds_a_bounded_amount_of_text() {
         // PostgreSQL repeats a literal it cannot read: 200 KB of it.
         let literal = "9".repeat(200_000);
@@ -2134,7 +2166,7 @@ mod tests {
         let lost = Error::ConnectionLost(huge.clone());
         // What a frame hands to layout and to screen readers: no piece of
         // text longer than a message may be, with its line before it.
-        let most = MESSAGE_MAX_CHARS + 64;
+        let most = format::MESSAGE_MAX_CHARS + 64;
         let bounded = |harness: &mut Harness, state: &str| {
             let tree = harness.settle();
             for label in labels(&tree) {

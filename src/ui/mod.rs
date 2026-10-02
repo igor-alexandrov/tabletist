@@ -1296,6 +1296,66 @@ mod tests {
         assert_eq!(fetches(&harness), before + 1);
     }
 
+    #[test]
+    fn a_very_long_error_is_cut_and_keeps_its_buttons_in_the_window() {
+        use egui::accesskit::Role;
+        // PostgreSQL repeats a literal it cannot read.
+        let long = format!(
+            "invalid input syntax for type integer: \"{}\"",
+            "9".repeat(5_000)
+        );
+        let error = tabletist_db::Error::Query {
+            code: Some("22P02".into()),
+            message: long.clone(),
+            detail: Some(long.clone()),
+            hint: Some(long.clone()),
+        };
+        for look in crate::theme::Look::ALL {
+            let mut harness = Harness::with_size(egui::vec2(720.0, 480.0));
+            harness.set_look(look);
+            harness.connect_fake();
+            harness.click("users");
+            let (session, request) = match crate::testing::last_sent(&harness.app) {
+                Command::FetchRows {
+                    session, request, ..
+                } => (*session, *request),
+                other => panic!("{other:?}"),
+            };
+            harness
+                .app
+                .apply(crate::model::Action::Backend(crate::backend::Event::Rows {
+                    session,
+                    request,
+                    result: Err(error.clone()),
+                }));
+            let tree = harness.settle();
+            let window = egui::Rect::from_min_size(egui::Pos2::ZERO, harness.size);
+            for name in ["Retry", "Copy details"] {
+                let button = crate::testing::bounds(&tree, name, Role::Button)
+                    .unwrap_or_else(|| panic!("{name} is missing in {}", look.name));
+                assert!(
+                    window.contains_rect(button),
+                    "{name} at {button:?} in {}",
+                    look.name
+                );
+            }
+            // What a frame lays out and names: no piece longer than a
+            // message may be, with its label before it.
+            let most = super::format::MESSAGE_MAX_CHARS + 64;
+            let named = crate::testing::labels(&tree);
+            let painted = harness.painted.iter().map(|(piece, _)| piece);
+            for piece in named.iter().chain(painted) {
+                let length = piece.chars().count();
+                assert!(length <= most, "{length} characters in {}", look.name);
+            }
+            // The clipboard gets all of it.
+            harness.click("Copy details");
+            let copied = harness.copied.clone().expect("the details were copied");
+            assert!(copied.starts_with(&long), "{}", look.name);
+            assert!(copied.ends_with(&format!("Hint: {long}")), "{}", look.name);
+        }
+    }
+
     /// Makes the active object tab's fetch look a second old.
     fn age_fetch(harness: &mut Harness, tab: crate::model::ConnTabId) {
         let workspace = harness.app.workspace_mut(tab).unwrap();

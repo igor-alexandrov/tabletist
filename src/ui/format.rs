@@ -411,6 +411,21 @@ pub fn describe_error(locale: impl fastframe_i18n::Locale, error: &tabletist_db:
     sentence.into_owned()
 }
 
+/// The most characters of what a database said that a message or an error
+/// card shows.
+pub const MESSAGE_MAX_CHARS: usize = 2_000;
+
+/// What a database said, cut to what a message shows and ending in "…"
+/// when cut. A message can hold megabytes (PostgreSQL repeats a literal it
+/// cannot read) and is written and laid out every frame, so nothing here
+/// looks past the cut. The start says what went wrong.
+pub fn capped(text: &str) -> Cow<'_, str> {
+    match text.char_indices().nth(MESSAGE_MAX_CHARS) {
+        Some((end, _)) => format!("{}…", &text[..end]).into(),
+        None => text.into(),
+    }
+}
+
 /// Whether `error` is the read-only session refusing a write: Tabletist's
 /// own guard, or the server's refusal. PostgreSQL and MySQL say SQLSTATE
 /// 25006; SQLite says SQLITE_READONLY (8), which its extended codes keep
@@ -529,6 +544,17 @@ mod tests {
         assert!(!refuses_writes(&coded("1"), Driver::Sqlite));
         // A SQLSTATE whose number ends in the same byte is not SQLite's code.
         assert!(!refuses_writes(&coded("23048"), Driver::Postgres));
+    }
+
+    #[test]
+    fn a_message_is_cut_where_a_database_says_too_much() {
+        use super::{MESSAGE_MAX_CHARS, capped};
+        assert_eq!(capped("no such column: x"), "no such column: x");
+        let exact = "é".repeat(MESSAGE_MAX_CHARS);
+        assert_eq!(capped(&exact), exact.as_str());
+        // Cut between characters, never inside one.
+        let long = "é".repeat(MESSAGE_MAX_CHARS + 1);
+        assert_eq!(capped(&long), format!("{exact}…"));
     }
 
     #[test]
