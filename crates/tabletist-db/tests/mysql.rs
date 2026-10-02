@@ -1535,5 +1535,12 @@ async fn the_words_format_uppercases_cannot_be_table_aliases() {
     let formatted = sql::format::format(Dialect::MySql, script, None, 0).unwrap();
     assert_eq!(formatted.text, "SELECT id\n  FROM tabletist.order");
     conn.query_drop(&formatted.text).await.unwrap();
+    // A user variable's name touches its `@`. Format leaves it there and as
+    // it is, though it spells a clause: the server reads the two as one.
+    conn.query_drop("SET @from = 1").await.unwrap();
+    let formatted = sql::format::format(Dialect::MySql, "select @from", None, 0).unwrap();
+    assert_eq!(formatted.text, "SELECT @from");
+    let value: Option<i64> = conn.query_first(&formatted.text).await.unwrap();
+    assert_eq!(value, Some(1));
     conn.disconnect().await.unwrap();
 }

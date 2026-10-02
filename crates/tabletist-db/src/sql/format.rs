@@ -244,6 +244,19 @@ impl Item<'_> {
     fn ends_line(&self) -> bool {
         self.kind == TokenKind::Comment && !self.text.starts_with("/*")
     }
+
+    /// `@`, `:`, a `$` and a number: what a server reads as one token
+    /// with a word that touches it (a user variable, a parameter, MySQL's
+    /// names that start with digits), though the tokenizer cuts the two
+    /// apart.
+    fn binds(&self) -> bool {
+        match self.kind {
+            TokenKind::Number => true,
+            TokenKind::Operator => matches!(self.text, "@" | ":"),
+            TokenKind::Punctuation => self.text.starts_with('$'),
+            _ => false,
+        }
+    }
 }
 
 fn items<'a>(script: &'a str, tokens: &[Token], region: &Range<usize>) -> Vec<Item<'a>> {
@@ -719,11 +732,17 @@ impl<'a> Layout<'a> {
             && minus(index - 2)
     }
 
-    /// Whether the item at `index` stands beside a `.`: a part of a
-    /// qualified name, whatever it spells.
+    /// Whether the item at `index` is a name, whatever it spells: it
+    /// stands beside a `.` (a qualified name), or it touches a sigil or a
+    /// number before it (`@from`, `:limit`, `1st`). Such a word is no
+    /// head and keeps its case, so the layout never parts it from what it
+    /// touches: the check at the end, which reads the two as the
+    /// tokenizer does, would not see that.
     fn named(&self, index: usize) -> bool {
         let dot = |index: usize| self.items.get(index).is_some_and(|item| item.is("."));
-        dot(index + 1) || (index > 0 && dot(index - 1))
+        let bound =
+            index > 0 && self.items[index].space.is_empty() && self.items[index - 1].binds();
+        dot(index + 1) || (index > 0 && dot(index - 1)) || bound
     }
 
     /// Whether the item at `index` is one of `words` as a keyword, not a
@@ -843,11 +862,42 @@ mod tests {
             return (script.to_owned(), 0..0);
         };
         let result = [&script[..region.start], &laid, &script[region.end..]].concat();
-        assert!(
-            same_tokens(script, &old, &result, &tokenize(dialect, &result)),
-            "{script:?}"
-        );
+        let new = tokenize(dialect, &result);
+        assert!(same_tokens(script, &old, &result, &new), "{script:?}");
+        assert!(sigils_hold(script, &old, &result, &new), "{script:?}");
         (result, region.start..region.start + laid.len())
+    }
+
+    /// Whether every word that touched a sigil or a number before it
+    /// (`@from`, `:limit`, `1st`) still touches it. The tokenizer cuts
+    /// these apart where a server reads one token, so `same_tokens` cannot
+    /// tell when the layout parts them.
+    fn sigils_hold(old: &str, old_tokens: &[Token], new: &str, new_tokens: &[Token]) -> bool {
+        let visible = |tokens: &[Token]| {
+            let tokens = tokens
+                .iter()
+                .filter(|token| token.kind != TokenKind::Whitespace);
+            tokens.cloned().collect::<Vec<Token>>()
+        };
+        let (old_tokens, new_tokens) = (visible(old_tokens), visible(new_tokens));
+        let touching =
+            |tokens: &[Token], at: usize| tokens[at - 1].range.end == tokens[at].range.start;
+        (1..old_tokens.len()).all(|at| {
+            let (before, word) = (&old_tokens[at - 1], &old_tokens[at]);
+            let sigil = match before.kind {
+                TokenKind::Number => true,
+                TokenKind::Operator => matches!(&old[before.range.clone()], "@" | ":"),
+                TokenKind::Punctuation => old[before.range.clone()].starts_with('$'),
+                _ => false,
+            };
+            let bound = sigil
+                && matches!(word.kind, TokenKind::Keyword | TokenKind::Identifier)
+                && touching(&old_tokens, at);
+            // The word's case is as it was, too.
+            !bound
+                || (touching(&new_tokens, at)
+                    && old[word.range.clone()] == new[new_tokens[at].range.clone()])
+        })
     }
 
     /// The whole of `script` formatted, or the script itself when Format
@@ -1235,6 +1285,54 @@ mod tests {
     }
 
     #[test]
+    fn a_word_that_touches_a_sigil_or_a_number_is_a_name() {
+        // The tokenizer cuts `@from` into `@` and `from`; a server reads
+        // one token. Whatever it spells, the word stays where it is and
+        // as it is: a MySQL user variable,
+        assert_eq!(
+            mysql("select * from t where d between @from and @to and x = @limit"),
+            lines(&[
+                "SELECT *",
+                "  FROM t",
+                " WHERE d BETWEEN @from AND @to",
+                "   AND x = @limit",
+            ])
+        );
+        assert_eq!(
+            mysql("select case when d < @end then 1 end, @@global.select"),
+            lines(&[
+                "SELECT CASE",
+                "           WHEN d < @end THEN 1",
+                "       END,",
+                "       @@global.select",
+            ])
+        );
+        assert_eq!(mysql("set @from = 1"), "SET @from = 1");
+        // a parameter,
+        assert_eq!(
+            sqlite("select :limit, @from, $offset from t where a = ?1"),
+            lines(&[
+                "SELECT :limit,",
+                "       @from,",
+                "       $offset",
+                "  FROM t",
+                " WHERE a = ?1",
+            ])
+        );
+        // and a name that starts with digits.
+        assert_eq!(
+            mysql("select 1from, 2 from t"),
+            lines(&["SELECT 1from,", "       2", "  FROM t"])
+        );
+        // Apart from the sigil it is the word it spells.
+        assert_eq!(pg("select 1 from t"), lines(&["SELECT 1", "  FROM t"]));
+        assert_eq!(
+            pg("select a::interval from t"),
+            lines(&["SELECT a::interval", "  FROM t"])
+        );
+    }
+
+    #[test]
     fn spacing_follows_what_was_typed_where_no_rule_sets_it() {
         // Tokens that touched still touch; a space that was typed stays
         // one space; commas and parentheses have their own rule.
@@ -1587,6 +1685,7 @@ mod tests {
             as case when then else end union distinct limit offset in exists insert values \
             straight_join natural full cross inner having window fetch for intersect except \
             all recursive is not over a b.c t x. .y 's' \"q\" `q` $$d$$ E'e' $1 1 2.5 \
+            @from :limit $offset @end 1from @ : $ \
             ( ) [ ] , ; . * - / = : < > ! | # @ /*c*/ /*!e*/";
         let awkward = [
             "--x\n",
