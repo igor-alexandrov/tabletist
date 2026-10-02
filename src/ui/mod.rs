@@ -757,6 +757,8 @@ mod tests {
         assert!(harness.has(&cancelled));
         assert!(!harness.has("The server refused the login. Check the user and password."));
         assert!(harness.has("Retry"));
+        // Nothing failed: there are no details to copy.
+        assert!(!harness.has("Copy details"));
     }
 
     #[test]

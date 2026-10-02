@@ -403,6 +403,10 @@ fn failure(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
             retry = retry_button.show(ui, height, &look, &palette).clicked();
             edit = edit_button.show(ui, height, &look, &palette).clicked();
         }
+        // A prompt the user closed has no error, so nothing to copy.
+        if error.is_none() {
+            return;
+        }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let copy = states::button(&copy, &look).label("Copy details").quiet();
             if copy.show(ui, height, &look, &palette).clicked() {
