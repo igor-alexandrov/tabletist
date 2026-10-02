@@ -439,7 +439,7 @@ impl Statement {
 
 /// Whether a token is SQL the server runs. An executable comment counts:
 /// MySQL and MariaDB run its contents.
-fn is_code(kind: TokenKind) -> bool {
+pub(crate) fn is_code(kind: TokenKind) -> bool {
     !matches!(kind, TokenKind::Whitespace | TokenKind::Comment)
 }
 

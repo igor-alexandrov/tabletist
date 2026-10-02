@@ -5,6 +5,7 @@
 
 mod catalog;
 mod check;
+pub mod complete;
 mod dialect;
 mod error;
 pub mod fixtures;
