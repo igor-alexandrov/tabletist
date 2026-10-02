@@ -1658,6 +1658,25 @@ mod tests {
     }
 
     #[test]
+    fn the_format_button_formats_and_gives_the_keys_back() {
+        for look in [crate::theme::Look::standard(), crate::theme::Look::macos()] {
+            let (mut harness, tab) = sql_harness(look);
+            harness.settle();
+            type_text(&mut harness, "select 1");
+            harness.click("Format");
+            assert_eq!(active_sql(&harness, tab).text, "SELECT 1", "{}", look.name);
+            assert!(harness.ctx.text_edit_focused(), "{}", look.name);
+        }
+        // The terminal has the key alone.
+        let (mut harness, tab) = sql_harness(crate::theme::Look::omarchy());
+        harness.settle();
+        type_text(&mut harness, "select 1");
+        assert!(!harness.has("Format"));
+        harness.press(Key::F, COMMAND_SHIFT);
+        assert_eq!(active_sql(&harness, tab).text, "SELECT 1");
+    }
+
+    #[test]
     fn command_shift_f_does_nothing_on_a_table_tab() {
         let mut harness = Harness::new();
         let tab = harness.connect_fake();
@@ -2143,10 +2162,10 @@ mod tests {
             let (mut harness, _tab) = sql_harness(look);
             // The terminal's toolbar leads with its menus, the others'
             // with Run.
-            let order = if look.terminal {
-                ["Limit", "Timeout", "Run", "Run all"]
+            let order: &[&str] = if look.terminal {
+                &["Limit", "Timeout", "Run", "Run all"]
             } else {
-                ["Run", "Run all", "Limit", "Timeout"]
+                &["Run", "Run all", "Format", "Limit", "Timeout"]
             };
             let role = if look.terminal {
                 egui::accesskit::Role::ComboBox
@@ -2393,6 +2412,8 @@ mod tests {
                 let state = [
                     painted(&harness, keys),
                     painted(&harness, note),
+                    // The terminal has no Format button.
+                    look.terminal || has(egui::accesskit::Role::Button, "Format"),
                     painted(&harness, full),
                     // The terminal's title, which the others do not have.
                     !look.terminal || has(egui::accesskit::Role::Label, "query 1"),
@@ -2406,7 +2427,7 @@ mod tests {
                 );
                 // A menu reads in full or short, never neither.
                 assert_eq!(
-                    state[4] && !state[2],
+                    state[5] && !state[3],
                     painted(&harness, short),
                     "{short} at {width} in {}",
                     look.name
@@ -2415,20 +2436,23 @@ mod tests {
                     states.push(state);
                 }
             }
-            // keys, note, full labels, title, menus
+            // keys, note, Format, full labels, title, menus
             let mut expected = vec![
-                [true, true, true, true, true],
-                [false, true, true, true, true],
-                [false, false, true, true, true],
+                [true, true, true, true, true, true],
+                [false, true, true, true, true, true],
+                [false, false, true, true, true, true],
             ];
             if look.terminal {
                 // The title goes before the labels shorten: the tab says
                 // it too.
-                expected.push([false, false, true, false, true]);
+                expected.push([false, false, true, true, false, true]);
+            } else {
+                // Format goes before them: its key formats too.
+                expected.push([false, false, false, true, true, true]);
             }
-            let title = !look.terminal;
-            expected.push([false, false, false, title, true]);
-            expected.push([false, false, false, title, false]);
+            let (format, title) = (look.terminal, !look.terminal);
+            expected.push([false, false, format, false, title, true]);
+            expected.push([false, false, format, false, title, false]);
             assert_eq!(states, expected, "{}", look.name);
         }
     }

@@ -232,6 +232,17 @@ pub(super) fn run_keys(look: &Look) -> (String, String) {
     }
 }
 
+/// The keys that format the script, as the macOS and the standard look
+/// spell shortcuts.
+fn format_keys(look: &Look) -> String {
+    let command = look.command_key();
+    if command == "⌘" {
+        format!("⇧{command}F")
+    } else {
+        format!("{command}Shift+F")
+    }
+}
+
 /// How a toolbar menu's button reads: worked out once a frame.
 struct MenuLabel {
     /// What the menu sets ("Limit").
@@ -450,8 +461,8 @@ fn run_button(
     }
 }
 
-/// macOS: Run and Run all; at the right the transaction note, then the
-/// Limit and Timeout menus.
+/// macOS: Run and Run all, a divider and Format; at the right the
+/// transaction note, then the Limit and Timeout menus.
 fn mac_toolbar(ui: &mut Ui, rect: Rect, bar: &Bar<'_>, actions: &mut Vec<Action>) {
     let Bar {
         locale,
@@ -461,9 +472,15 @@ fn mac_toolbar(ui: &mut Ui, rect: Rect, bar: &Bar<'_>, actions: &mut Vec<Action>
     } = *bar;
     let center = rect.top() + (rect.height() - 1.0) / 2.0;
     let (left, right) = (rect.left() + SIDE, rect.right() - SIDE);
-    let labels = [gettext(locale, "Run"), gettext(locale, "Run all")];
+    let labels = [
+        gettext(locale, "Run"),
+        gettext(locale, "Run all"),
+        gettext(locale, "Format"),
+    ];
     let (run_keys, all_keys) = run_keys(look);
+    let format_keys = format_keys(look);
     // Run: 14 at its sides, a 12 pt arrow, 8 apart. Run all: 12 and 6.
+    // Format: 10, and no border.
     let buttons = |keys: bool| {
         let run = ButtonSpec::new(&labels[0])
             .icon(Icon::Play)
@@ -472,10 +489,15 @@ fn mac_toolbar(ui: &mut Ui, rect: Rect, bar: &Bar<'_>, actions: &mut Vec<Action>
             .padding(14.0)
             .gap(8.0);
         let all = ButtonSpec::new(&labels[1]);
+        let format = ButtonSpec::new(&labels[2]).quiet().padding(10.0);
         if keys {
-            [run.shortcut(&run_keys), all.shortcut(&all_keys)]
+            [
+                run.shortcut(&run_keys),
+                all.shortcut(&all_keys),
+                format.shortcut(&format_keys),
+            ]
         } else {
-            [run, all]
+            [run, all, format]
         }
     };
     // The note: 10 at its sides, an 11 pt lock, 6, the words.
@@ -484,45 +506,72 @@ fn mac_toolbar(ui: &mut Ui, rect: Rect, bar: &Bar<'_>, actions: &mut Vec<Action>
         10.0 + 11.0 + 6.0 + TextRole::Secondary.width(ui.ctx(), look.faces, &note) + 10.0;
     // Everything 8 apart, and 16 between the two ends (8 at the tightest).
     // What gives way as the room runs out: the buttons' keys (the help
-    // says them too), then the note, and only then the menus' words, which
-    // alone say what "1,000" and "30 s" are; then the menus' chevrons, and
-    // last the menus (the buttons stay).
+    // says them too), then the note, then Format (its key formats too),
+    // and only then the menus' words, which alone say what "1,000" and
+    // "30 s" are; then the menus' chevrons, and last the menus (the run
+    // buttons stay).
     let shapes = [(false, true), (true, true), (true, false)]
         .map(|(short, chevron)| MenuShape { short, chevron });
     // Each width is measured once.
     let menu_sizes = shapes.map(|shape| menu_widths(ui, shape, bar));
-    let run_widths = [false, true].map(|keys| buttons(keys).map(|b| b.width(ui, look)));
+    let widths = [false, true].map(|keys| buttons(keys).map(|b| b.width(ui, look)));
     let room = right - left;
-    let needs = |shape: usize, badge: bool, keys: bool| {
-        let buttons: f32 = run_widths[usize::from(keys)].iter().sum();
+    // The divider before Format: a rule with 4 at its sides.
+    let divider = 4.0 + 1.0 + 4.0;
+    let needs = |shape: usize, badge: bool, keys: bool, format: bool| {
+        let [run, all, format_width] = widths[usize::from(keys)];
+        let format = if format {
+            8.0 + divider + 8.0 + format_width
+        } else {
+            0.0
+        };
         let badge = if badge { note_width + 8.0 } else { 0.0 };
         let between = if shapes[shape].chevron { 16.0 } else { 8.0 };
-        buttons + 8.0 + between + badge + menu_sizes[shape].iter().sum::<f32>() + 8.0
+        run + 8.0 + all + format + between + badge + menu_sizes[shape].iter().sum::<f32>() + 8.0
     };
     let fit = [
-        (0, true, true),
-        (0, true, false),
-        (0, false, false),
-        (1, false, false),
-        (2, false, false),
+        (0, true, true, true),
+        (0, true, false, true),
+        (0, false, false, true),
+        (0, false, false, false),
+        (1, false, false, false),
+        (2, false, false, false),
     ]
     .into_iter()
-    .find(|(shape, badge, keys)| needs(*shape, *badge, *keys) <= room);
-    let keys = fit.is_some_and(|(_, _, keys)| keys);
+    .find(|(shape, badge, keys, format)| needs(*shape, *badge, *keys, *format) <= room);
+    let keys = fit.is_some_and(|(_, _, keys, _)| keys);
     // Where each piece sits, then the pieces from left to right: the Tab
     // key and screen readers meet them in the order they are made.
-    let mut x = left;
-    let places = run_widths[usize::from(keys)].map(|width| {
-        let place = Rect::from_min_size(pos2(x, center - 16.0), vec2(width, 32.0));
-        x += width + 8.0;
-        place
-    });
-    for ((button, place), all) in buttons(keys).into_iter().zip(places).zip([false, true]) {
-        run_button(ui, button, place, all, bar, actions);
-    }
-    let Some((shape, badge, _)) = fit else {
+    let [run, all, format] = buttons(keys);
+    let [run_width, all_width, format_width] = widths[usize::from(keys)];
+    let place = |x: f32, width: f32| Rect::from_min_size(pos2(x, center - 16.0), vec2(width, 32.0));
+    let run_place = place(left, run_width);
+    let all_place = place(run_place.right() + 8.0, all_width);
+    run_button(ui, run, run_place, false, bar, actions);
+    run_button(ui, all, all_place, true, bar, actions);
+    let Some((shape, badge, _, formats)) = fit else {
         return;
     };
+    if formats {
+        let rule = all_place.right() + 8.0 + 4.5;
+        widgets::vline(
+            ui,
+            rule,
+            egui::Rangef::new(center - 10.0, center + 10.0),
+            palette.outline,
+        );
+        let rect = place(rule + 4.5 + 8.0, format_width);
+        let response = format.show_at(ui, rect, look, palette);
+        if response
+            .on_hover_text(gettext(locale, "Format the SQL"))
+            .clicked()
+        {
+            actions.push(Action::FormatSql {
+                tab: bar.tab,
+                sql_tab: bar.id,
+            });
+        }
+    }
     let [limit_width, timeout_width] = menu_sizes[shape];
     let shape = shapes[shape];
     let menu_rect = |right: f32, width: f32| {

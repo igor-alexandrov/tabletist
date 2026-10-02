@@ -1154,6 +1154,8 @@ pub struct ButtonSpec<'a> {
     justified: bool,
     /// The text muted and the shortcut in the text colour.
     hint: bool,
+    /// No border, and the text in the secondary colour.
+    quiet: bool,
 }
 
 impl<'a> ButtonSpec<'a> {
@@ -1174,6 +1176,7 @@ impl<'a> ButtonSpec<'a> {
             icon_size: 14.0,
             justified: false,
             hint: false,
+            quiet: false,
         }
     }
 
@@ -1188,6 +1191,14 @@ impl<'a> ButtonSpec<'a> {
     /// the shortcut in the text colour.
     pub fn hint(mut self) -> Self {
         self.hint = true;
+        self
+    }
+
+    /// A secondary button that stands back from the ones beside it: no
+    /// border, a fill only under the pointer, the text in the secondary
+    /// colour.
+    pub fn quiet(mut self) -> Self {
+        self.quiet = true;
         self
     }
 
@@ -1403,6 +1414,16 @@ impl<'a> ButtonSpec<'a> {
             (palette.dim, palette.text)
         } else {
             (text, shortcut)
+        };
+        let (fill, border, text) = if self.quiet && self.kind == ButtonKind::Secondary {
+            let fill = if hovered {
+                palette.panel
+            } else {
+                Color32::TRANSPARENT
+            };
+            (fill, None, palette.secondary)
+        } else {
+            (fill, border, text)
         };
         let painter = ui.painter();
         painter.rect_filled(rect, corner, fill);
