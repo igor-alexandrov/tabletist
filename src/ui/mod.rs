@@ -807,6 +807,49 @@ mod tests {
     }
 
     #[test]
+    fn the_picker_shows_an_open_connection_instead_of_connecting_again() {
+        for look in crate::theme::Look::ALL {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            assert!(!harness.has("open"), "{}", look.name);
+            let tab = harness.connect_fake();
+            harness.app.apply(crate::model::Action::ShowConnections);
+            // The saved connection is marked, and its button shows it.
+            assert!(harness.has("open"), "{}", look.name);
+            assert!(!harness.has("Connect to Fixture"), "{}", look.name);
+            let sent = harness.app.backend.sent.len();
+            harness.click("Show Fixture");
+            assert_eq!(harness.app.active_tab_id(), tab, "{}", look.name);
+            assert_eq!(harness.app.backend.sent.len(), sent, "{}", look.name);
+            assert_eq!(harness.app.tabs.len(), 2, "the picker stays for next time");
+        }
+    }
+
+    #[test]
+    fn enter_shows_an_open_connection_and_shift_enter_opens_it_again() {
+        let mut harness = Harness::new();
+        let tab = harness.connect_fake();
+        let conn = harness.app.workspace(tab).unwrap().conn_id.clone();
+        harness.app.apply(crate::model::Action::ShowConnections);
+        let picker = harness.app.active_tab_id();
+        harness.app.apply(crate::model::Action::SelectConnection {
+            tab: picker,
+            conn: Some(conn),
+        });
+        harness.press(Key::Enter, Modifiers::NONE);
+        assert_eq!(harness.app.active_tab_id(), tab);
+        assert_eq!(harness.app.open_connections().count(), 1);
+        harness.app.apply(crate::model::Action::ShowConnections);
+        harness.press(Key::Enter, Modifiers::SHIFT);
+        assert_eq!(
+            harness.app.open_connections().count(),
+            2,
+            "a second session of the same connection"
+        );
+        assert_eq!(harness.app.active_tab_id(), picker, "in the picker's tab");
+    }
+
+    #[test]
     fn the_picker_has_a_new_connection_button() {
         let mut harness = Harness::new();
         harness.click("New connection");

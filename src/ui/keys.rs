@@ -41,8 +41,8 @@ pub const SHORTCUTS: &[(&str, &str)] = &[
     ("Space, Mod+Shift+R", "Toggle row panel"),
     ("Mod+C, Mod+Shift+C", "Copy cell / copy row"),
     (
-        "Arrows, Enter, Mod+E, Mod+D, Mod+Backspace",
-        "Pick, edit, duplicate or delete a connection",
+        "Arrows, Enter, Shift+Enter, Mod+E, Mod+D, Mod+Backspace",
+        "Pick, open again, edit, duplicate or delete a connection",
     ),
     ("Arrows, Home/End, Enter", "Move in the tree"),
     ("Arrows, Page Up/Down, Home/End", "Move in the grid"),
@@ -397,11 +397,20 @@ fn letters(app: &mut App, ctx: &egui::Context, actions: &mut Vec<Action>) {
             actions.push(Action::MovePickerSelection { tab, step: -1 });
         }
         if let Some(conn) = selected {
-            if ctx.memory(|memory| memory.focused().is_none()) && pressed(Key::Enter) {
-                actions.push(Action::Connect {
-                    tab,
-                    conn: conn.clone(),
-                });
+            if ctx.memory(|memory| memory.focused().is_none()) {
+                // Shift first: egui ignores an extra Shift when matching.
+                let again = ctx.input_mut(|input| input.consume_key(Modifiers::SHIFT, Key::Enter));
+                if again || pressed(Key::Enter) {
+                    // Enter shows a connection that is open already; with
+                    // Shift it opens once more.
+                    actions.push(match app.tab_showing(&conn).filter(|_| !again) {
+                        Some(open) => Action::ActivateConnTab(open),
+                        None => Action::Connect {
+                            tab,
+                            conn: conn.clone(),
+                        },
+                    });
+                }
             }
             if command(Key::E) || (terminal && pressed(Key::E)) {
                 actions.push(Action::EditConnection(conn.clone()));

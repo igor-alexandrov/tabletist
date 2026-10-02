@@ -191,6 +191,13 @@ impl App {
         })
     }
 
+    /// The first tab that has the saved connection `conn` open.
+    pub fn tab_showing(&self, conn: &crate::connections::ConnectionId) -> Option<ConnTabId> {
+        self.open_connections()
+            .find(|(_, workspace)| workspace.conn_id == *conn)
+            .map(|(tab, _)| tab)
+    }
+
     pub fn tab_for_session(&self, session: SessionId) -> Option<ConnTabId> {
         self.tabs.iter().find_map(|tab| match &tab.content {
             ConnTabContent::Workspace(workspace) if workspace.session == session => Some(tab.id),
@@ -2949,6 +2956,23 @@ mod tests {
         assert_eq!(app.active_tab_id(), picker);
         let unique: std::collections::HashSet<_> = ids(&app).into_iter().collect();
         assert_eq!(unique.len(), 2, "tab ids must be unique");
+    }
+
+    #[test]
+    fn a_saved_connection_knows_the_tab_that_has_it_open() {
+        let (mut app, _dir) = app();
+        let (tab, _, _) = connect(&mut app);
+        let conn = app.workspace(tab).unwrap().conn_id.clone();
+        assert_eq!(app.tab_showing(&conn), Some(tab));
+        assert_eq!(app.tab_showing(&ConnectionId::new()), None);
+        // Open twice, the first tab is the one that shows.
+        app.apply(Action::ShowConnections);
+        let second = app.active_tab_id();
+        app.apply(Action::Connect {
+            tab: second,
+            conn: conn.clone(),
+        });
+        assert_eq!(app.tab_showing(&conn), Some(tab));
     }
 
     #[test]
