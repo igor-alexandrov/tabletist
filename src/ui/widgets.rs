@@ -1344,10 +1344,12 @@ impl<'a> ButtonSpec<'a> {
     /// Draws the button in `rect`.
     pub fn show_at(self, ui: &mut Ui, rect: Rect, look: &Look, palette: &Palette) -> Response {
         let enabled = self.kind != ButtonKind::Disabled;
+        // A button that cannot be pressed still takes the Tab key, so the
+        // keyboard can read why.
         let sense = if enabled {
             Sense::click()
         } else {
-            Sense::hover()
+            Sense::focusable_noninteractive()
         };
         let name = self.label.unwrap_or(self.text);
         let response = ui.interact(rect, self.id(ui), sense);
@@ -1470,7 +1472,17 @@ impl<'a> ButtonSpec<'a> {
             }
         }
         match self.reason {
-            Some(reason) => response.on_hover_text(reason),
+            Some(reason) => {
+                // Said to a screen reader, and shown while the keyboard is
+                // on the button as it is under the pointer.
+                ui.ctx().accesskit_node_builder(response.id, |node| {
+                    node.set_description(reason);
+                });
+                if focus::shown(&response) {
+                    response.show_tooltip_text(reason);
+                }
+                response.on_hover_text(reason)
+            }
             None => response,
         }
     }

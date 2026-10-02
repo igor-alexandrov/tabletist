@@ -8571,6 +8571,43 @@ mod tests {
     }
 
     #[test]
+    fn a_button_that_cannot_be_pressed_still_says_why_to_the_keyboard() {
+        let mut harness = Harness::new();
+        harness.set_look(crate::theme::Look::macos());
+        let tab = with_page(&mut harness);
+        let mut reached = false;
+        for _ in 0..60 {
+            harness.press(Key::Tab, Modifiers::NONE);
+            let tree = harness.settle();
+            if focused_name(&tree) == "Add row" {
+                reached = true;
+                // Why not, where a screen reader finds it and on screen.
+                let (_, node) = tree.nodes.iter().find(|(id, _)| *id == tree.focus).unwrap();
+                assert_eq!(
+                    node.description(),
+                    Some("Editing arrives in a later version")
+                );
+                assert!(node.is_disabled());
+                assert!(
+                    harness
+                        .painted
+                        .iter()
+                        .any(|(text, _)| text == "Editing arrives in a later version"),
+                    "{:?}",
+                    harness.painted
+                );
+                break;
+            }
+        }
+        assert!(reached, "Add row is a Tab stop");
+        // Enter does not press it.
+        let sent = harness.app.backend.sent.len();
+        harness.press(Key::Enter, Modifiers::NONE);
+        assert_eq!(harness.app.backend.sent.len(), sent);
+        assert!(harness.app.workspace(tab).is_some());
+    }
+
+    #[test]
     fn the_terminal_marks_the_pane_the_keys_go_to() {
         // An accent line round something as tall as a pane.
         let marked = |harness: &Harness| {
