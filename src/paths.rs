@@ -41,9 +41,9 @@ impl AppDirs {
         }
     }
 
-    /// Creates both directories (private to the user on Unix). Logging needs
-    /// the state directory before anything else runs (fastframe-log does not
-    /// create it).
+    /// Creates both directories (private to the user on Unix). Call it before
+    /// logging starts: fastframe-log creates a missing state directory with
+    /// default permissions.
     pub fn ensure(&self) -> std::io::Result<()> {
         crate::util::create_private_dir(&self.config)?;
         crate::util::create_private_dir(&self.state)
