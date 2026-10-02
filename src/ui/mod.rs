@@ -1495,7 +1495,106 @@ mod tests {
         assert!(harness.app.workspace(tab).unwrap().row_panel);
     }
 
+    /// Selects the bytes `range` of the active SQL editor's text, as a
+    /// drag over them would.
+    fn select_sql(
+        harness: &mut Harness,
+        tab: crate::model::ConnTabId,
+        range: std::ops::Range<usize>,
+    ) {
+        let sql = active_sql(harness, tab);
+        let chars = |byte: usize| sql.text[..byte].chars().count();
+        let selection = egui::text::CCursorRange::two(
+            egui::text::CCursor::new(chars(range.start)),
+            egui::text::CCursor::new(chars(range.end)),
+        );
+        let id = crate::ui::sql_text::editor_id(tab, sql.id);
+        let mut state = egui::TextEdit::load_state(&harness.ctx, id).unwrap_or_default();
+        state.cursor.set_char_range(Some(selection));
+        egui::TextEdit::store_state(&harness.ctx, id, state);
+        harness.settle();
+    }
+
     const COMMAND_SHIFT: Modifiers = Modifiers::COMMAND.plus(Modifiers::SHIFT);
+
+    #[test]
+    fn command_shift_f_formats_the_script_and_the_editor_keeps_the_keys() {
+        let mut harness = Harness::new();
+        let tab = harness.connect_fake();
+        harness.press(Key::T, Modifiers::COMMAND);
+        type_text(&mut harness, "select a,b from t");
+        harness.press(Key::F, COMMAND_SHIFT);
+        let formatted = "SELECT a,\n       b\n  FROM t";
+        let sql = active_sql(&harness, tab);
+        assert_eq!(sql.text, formatted);
+        assert_eq!(
+            sql.cursor,
+            formatted.len(),
+            "the cursor is still at the end"
+        );
+        assert!(harness.ctx.text_edit_focused());
+        // Typing goes on where the cursor is.
+        type_text(&mut harness, ";");
+        assert_eq!(active_sql(&harness, tab).text, format!("{formatted};"));
+        // With the keys given up (Esc) it formats too, and takes them back.
+        harness.press(Key::Escape, Modifiers::NONE);
+        assert!(!harness.ctx.text_edit_focused());
+        set_sql(&mut harness, tab, "select 1", 0);
+        harness.press(Key::F, COMMAND_SHIFT);
+        assert_eq!(active_sql(&harness, tab).text, "SELECT 1");
+        assert!(harness.ctx.text_edit_focused());
+    }
+
+    #[test]
+    fn one_undo_gives_back_the_script_as_typed() {
+        let mut harness = Harness::new();
+        let tab = harness.connect_fake();
+        harness.press(Key::T, Modifiers::COMMAND);
+        let typed = "select a,b from t";
+        let formatted = "SELECT a,\n       b\n  FROM t";
+        type_text(&mut harness, typed);
+        harness.press(Key::F, COMMAND_SHIFT);
+        assert_eq!(active_sql(&harness, tab).text, formatted);
+        harness.press(Key::Z, Modifiers::COMMAND);
+        let sql = active_sql(&harness, tab);
+        assert_eq!(sql.text, typed);
+        assert_eq!(sql.cursor, typed.len(), "and the cursor where it was");
+        // Redo formats it again.
+        harness.press(Key::Z, COMMAND_SHIFT);
+        assert_eq!(active_sql(&harness, tab).text, formatted);
+        // Formatting what is formatted adds nothing to undo: one undo is
+        // still all it takes.
+        harness.press(Key::F, COMMAND_SHIFT);
+        harness.press(Key::F, COMMAND_SHIFT);
+        assert_eq!(active_sql(&harness, tab).text, formatted);
+        harness.press(Key::Z, Modifiers::COMMAND);
+        assert_eq!(active_sql(&harness, tab).text, typed);
+    }
+
+    #[test]
+    fn format_with_a_selection_formats_the_statements_it_touches() {
+        let mut harness = Harness::new();
+        let tab = harness.connect_fake();
+        harness.press(Key::T, Modifiers::COMMAND);
+        let typed = "select 1 ;\nselect a,b from t ;\nselect 3 ;";
+        type_text(&mut harness, typed);
+        let list = typed.find("a,b").unwrap();
+        select_sql(&mut harness, tab, list..list + 3);
+        harness.press(Key::F, COMMAND_SHIFT);
+        let sql = active_sql(&harness, tab);
+        assert_eq!(
+            sql.text,
+            "select 1 ;\nSELECT a,\n       b\n  FROM t;\nselect 3 ;"
+        );
+        // The cursor is where the selection ended, after the `b`, and
+        // nothing is selected: typing adds to the text.
+        assert_eq!(&sql.text[..sql.cursor], "select 1 ;\nSELECT a,\n       b");
+        type_text(&mut harness, "2");
+        assert_eq!(
+            active_sql(&harness, tab).text,
+            "select 1 ;\nSELECT a,\n       b2\n  FROM t;\nselect 3 ;"
+        );
+    }
 
     #[test]
     fn command_shift_f_does_nothing_on_a_table_tab() {
