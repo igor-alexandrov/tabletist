@@ -48,6 +48,32 @@ tested headlessly through `src/testing.rs` (AccessKit tree + events). Do not
 weaken a lint, delete a test, or add an `allow` to make CI green without
 saying why the rule does not apply.
 
+## Pull requests
+
+`.github/workflows/pr-review.md` is a GitHub Agentic Workflow (gh-aw) and the
+only workflow that starts on a pull request. Copilot reviews each push first.
+Then the `review gate` job starts `ci.yml`, and `packaging.yml` when packaging
+paths changed. A review that requests changes fails the gate and nothing else
+runs on that commit: push a fix, or dismiss the review on the pull request and
+re-run the `review gate` job. Pull requests from forks and from Dependabot get
+no review and go straight to the checks.
+
+- After editing `pr-review.md` run `gh aw compile pr-review --actionlint`
+  (`gh extension install github/gh-aw`) and commit `pr-review.lock.yml` with
+  it. Never edit the lock file by hand.
+- The review needs the `COPILOT_GITHUB_TOKEN` secret: a fine-grained PAT of a
+  user account with the Copilot Requests permission. Without it the review
+  fails and the checks still run.
+- The paths that start `packaging.yml` are listed twice: in its `push` trigger
+  and in the gate of `pr-review.md`. Change them together.
+- The gate looks only at the review of the head commit. An older request for
+  changes is dismissed once a later commit gets a review with no inline
+  comments. Until then the pull request can still show "changes requested"
+  while its checks run: dismiss the old review by hand.
+- A job in `ci.yml` or `packaging.yml` that gains a `needs:` also needs
+  `if: ${{ !cancelled() }}`, or it is skipped on pull requests without a
+  review.
+
 ## Style
 
 - Never use em dashes. Use a full stop, comma, colon, or parentheses.
