@@ -98,8 +98,8 @@ pub fn main() -> anyhow::Result<()> {
             "warn,tabletist=info"
         },
     );
-    // fastframe-log does not create the log's folder; on a fresh install
-    // nothing else has yet.
+    // fastframe-log would create the log's folder itself, but with default
+    // permissions; made here first, it is private to the user.
     if let Err(error) = dirs.ensure() {
         eprintln!("could not create {}: {error}", dirs.state.display());
     }

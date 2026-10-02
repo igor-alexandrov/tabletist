@@ -59,15 +59,15 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 egui_kittest = { version = "0.36", optional = true, default-features = false, features = ["wgpu"] }
 # Shared foundation with spotifast (crmne/fastframe). Every crate comes from
 # the same tag; move them together.
-fastframe-text = { git = "https://github.com/crmne/fastframe", tag = "v0.2.2" }
-fastframe-fonts = { git = "https://github.com/crmne/fastframe", tag = "v0.2.2" }
-fastframe-icons = { git = "https://github.com/crmne/fastframe", tag = "v0.2.2" }
+fastframe-text = { git = "https://github.com/crmne/fastframe", tag = "v0.2.3" }
+fastframe-fonts = { git = "https://github.com/crmne/fastframe", tag = "v0.2.3" }
+fastframe-icons = { git = "https://github.com/crmne/fastframe", tag = "v0.2.3" }
 # Palettes, presets, and following the Omarchy theme live.
-fastframe-theme = { git = "https://github.com/crmne/fastframe", tag = "v0.2.2" }
+fastframe-theme = { git = "https://github.com/crmne/fastframe", tag = "v0.2.3" }
 # gettext catalogs compiled at build time (see build.rs).
-fastframe-i18n = { git = "https://github.com/crmne/fastframe", tag = "v0.2.2" }
+fastframe-i18n = { git = "https://github.com/crmne/fastframe", tag = "v0.2.3" }
 # Log file for bug reports and a panic log without payloads.
-fastframe-log = { git = "https://github.com/crmne/fastframe", tag = "v0.2.2" }
+fastframe-log = { git = "https://github.com/crmne/fastframe", tag = "v0.2.3" }
 # The database layer (no UI dependencies).
 tabletist-db = { path = "crates/tabletist-db" }
 # The backend runtime: one OS thread running tokio, where every database
@@ -113,7 +113,7 @@ windows-native-keyring-store = { version = "1.1", default-features = false }
 tokio = { version = "1", features = ["test-util"] }
 
 [build-dependencies]
-fastframe-i18n = { git = "https://github.com/crmne/fastframe", tag = "v0.2.2", features = ["build"] }
+fastframe-i18n = { git = "https://github.com/crmne/fastframe", tag = "v0.2.3", features = ["build"] }
 
 # A target-specific build dependency is chosen by the host, so only a build
 # on Windows compiles this; Linux and macOS builds never see it.
