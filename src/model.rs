@@ -1110,6 +1110,17 @@ impl<T> Fetch<T> {
             .map(|started| started.elapsed())
     }
 
+    /// The error shown in place of the value. Two are not shown while a
+    /// value is held, and what was on screen stays: a lost connection,
+    /// which the strip over the tab says, and a cancelled refresh, which
+    /// failed at nothing.
+    pub fn shown_error(&self) -> Option<&Error> {
+        let keeps_value = |error: &Error| {
+            self.value.is_some() && (error.is_connection_lost() || *error == Error::Cancelled)
+        };
+        self.error.as_ref().filter(|error| !keeps_value(error))
+    }
+
     /// Never loaded and not loading.
     pub fn needs_load(&self) -> bool {
         self.value.is_none() && self.pending.is_none() && self.error.is_none()
@@ -1555,6 +1566,16 @@ impl ObjectTab {
 
     pub fn page(&self) -> Option<&RowPage> {
         self.rows.value.as_ref()
+    }
+
+    /// Forgets the page and the selection in it, before a fetch that
+    /// answers an error. The filter bar keeps the columns it offered.
+    pub fn drop_page(&mut self) {
+        if let Some(page) = self.page() {
+            self.filter.columns = page.columns.iter().map(|c| c.name.clone()).collect();
+        }
+        self.selection = None;
+        self.rows.value = None;
     }
 
     /// The row panel's text for the selected row, if it is up to date.

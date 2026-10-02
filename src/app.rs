@@ -733,6 +733,17 @@ impl App {
                 match active {
                     Some((id, described)) => {
                         self.reset_count(tab, id);
+                        // Over an error box a refresh is a retry: what the
+                        // error replaced is not what comes back if it is
+                        // given up.
+                        if let Some(object) = self.object_tab_mut(tab, id) {
+                            if object.rows.shown_error().is_some() {
+                                object.drop_page();
+                            }
+                            if object.structure.shown_error().is_some() {
+                                object.structure.value = None;
+                            }
+                        }
                         self.fetch_rows(tab, id);
                         if described {
                             self.describe(tab, id);
@@ -954,12 +965,7 @@ impl App {
                     // A retry answers an error: no older page is on screen
                     // for a cancelled one to go back to.
                     if let Some(object) = self.object_tab_mut(tab, object_tab) {
-                        if let Some(page) = object.page() {
-                            object.filter.columns =
-                                page.columns.iter().map(|c| c.name.clone()).collect();
-                        }
-                        object.selection = None;
-                        object.rows.value = None;
+                        object.drop_page();
                     }
                     self.fetch_rows(tab, object_tab);
                 }

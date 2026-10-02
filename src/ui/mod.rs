@@ -7504,6 +7504,24 @@ mod tests {
         harness.app.apply(crate::model::Action::Backend(event));
     }
 
+    /// Refresh over an error box is a retry by another name: given up, it
+    /// leaves the error's "cancelled", not the rows from before the error.
+    #[test]
+    fn a_cancelled_refresh_over_an_error_does_not_bring_back_the_page() {
+        let cancelled = tabletist_db::Error::Cancelled.to_string();
+        let mut harness = Harness::new();
+        let tab = with_page(&mut harness);
+        harness.app.apply(crate::model::Action::Refresh(tab));
+        let error = tabletist_db::Error::query("no such column: nope");
+        fail_fetch(&mut harness, tab, false, error);
+        assert!(harness.has("no such column: nope"));
+        harness.app.apply(crate::model::Action::Refresh(tab));
+        cancel_fetches(&mut harness, tab);
+        assert!(!harness.has("Row 1"));
+        assert!(harness.has(&cancelled));
+        assert!(harness.has("Retry"));
+    }
+
     #[test]
     fn a_cancelled_retry_does_not_bring_back_the_page_under_the_error() {
         let cancelled = tabletist_db::Error::Cancelled.to_string();
