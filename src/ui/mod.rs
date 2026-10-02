@@ -7165,6 +7165,43 @@ mod tests {
     }
 
     #[test]
+    fn a_table_opened_empty_fits_its_columns_to_the_rows_that_come() {
+        use egui::accesskit::Role;
+        let email = |harness: &mut Harness| {
+            let tree = harness.settle();
+            let header = crate::testing::bounds(&tree, "email", Role::Button);
+            header.expect("the email header").width()
+        };
+        for look in crate::theme::Look::ALL {
+            // Opened with rows: the columns fit them.
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            let tab = harness.connect_fake();
+            harness.app.apply(crate::model::Action::OpenObject {
+                tab,
+                object: tabletist_db::ObjectRef::new("main", "users"),
+                kind: tabletist_db::ObjectKind::Table,
+                pin: true,
+            });
+            harness.answer_rows(crate::testing::page(3, false));
+            let fitted = email(&mut harness);
+            // Opened empty, the headers are all there is to fit.
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            let tab = empty_users(&mut harness);
+            assert!(email(&mut harness) < fitted, "{}", look.name);
+            // A refresh that finds rows fits the columns to them.
+            harness.app.apply(crate::model::Action::Refresh(tab));
+            harness.answer_rows(crate::testing::page(3, false));
+            assert_eq!(email(&mut harness), fitted, "{}", look.name);
+            // And a page with no rows after that leaves them as they are.
+            harness.app.apply(crate::model::Action::Refresh(tab));
+            harness.answer_rows(crate::testing::page(0, false));
+            assert_eq!(email(&mut harness), fitted, "{}", look.name);
+        }
+    }
+
+    #[test]
     fn reload_under_an_empty_table_fetches_again_and_takes_the_pointer() {
         let mut harness = Harness::new();
         empty_users(&mut harness);
