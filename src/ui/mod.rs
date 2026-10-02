@@ -3136,20 +3136,47 @@ mod tests {
     }
 
     #[test]
-    fn the_strips_toggle_stands_clear_of_the_tabs_in_every_look() {
+    fn the_last_tab_scrolls_clear_of_the_strips_toggle_in_every_look() {
         use egui::accesskit::Role;
         for look in crate::theme::Look::ALL {
-            let mut harness = Harness::new();
+            // A narrow window and more tabs than its strip has room for.
+            let mut harness = Harness::with_size(egui::vec2(700.0, 500.0));
             harness.set_look(look);
-            with_page(&mut harness);
-            let tree = harness.settle();
-            let bounds = |label| {
+            let tab = harness.connect_fake();
+            for _ in 0..8 {
+                harness.add_sql_tab(tab);
+            }
+            harness.click("Query 1 tab");
+            let place = |harness: &mut Harness, label| {
+                let tree = harness.settle();
                 crate::testing::bounds(&tree, label, Role::Button)
                     .unwrap_or_else(|| panic!("{label} missing in {}", look.name))
             };
-            let (users, toggle) = (bounds("users tab"), bounds("Show or hide the row panel"));
-            assert!(users.right() <= toggle.left(), "{}", look.name);
-            assert!(users.y_range().contains(toggle.center().y), "{}", look.name);
+            let (last, toggle) = ("Query 8 tab", "Show or hide the row panel");
+            let before = place(&mut harness, toggle);
+            assert!(
+                place(&mut harness, last).right() > before.left(),
+                "{}: the strip overflows",
+                look.name
+            );
+            // The strip scrolled to its end.
+            let over = place(&mut harness, "Query 1 tab").center();
+            harness.frame(vec![egui::Event::PointerMoved(over)]);
+            harness.frame(vec![
+                egui::Event::PointerMoved(over),
+                egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Point,
+                    delta: egui::vec2(-5_000.0, 0.0),
+                    modifiers: Modifiers::NONE,
+                    phase: egui::TouchPhase::Move,
+                },
+            ]);
+            harness.finish_animations();
+            let after = place(&mut harness, toggle);
+            assert_eq!(after, before, "{}: the toggle stays put", look.name);
+            let last = place(&mut harness, last);
+            assert!(last.right() <= after.left(), "{}", look.name);
+            assert!(last.y_range().contains(after.center().y), "{}", look.name);
         }
     }
 
