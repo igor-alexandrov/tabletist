@@ -308,6 +308,7 @@ pub fn show(app: &mut App, ui: &mut Ui, tab: ConnTabId, id: TabId) {
                 dialect,
                 look: &look,
                 palette: &palette,
+                hold_escape: false,
             };
             edit(ui, sql_tab, &field)
         });
@@ -415,6 +416,8 @@ struct Field<'a> {
     dialect: Dialect,
     look: &'a Look,
     palette: &'a Palette,
+    /// Keep the keyboard on Esc (a completion list is open and takes it).
+    hold_escape: bool,
 }
 
 /// The text field itself: edits the tab's text and reports its cursor.
@@ -439,7 +442,7 @@ fn edit(ui: &mut Ui, sql_tab: &mut SqlTab, field: &Field<'_>) -> Edited {
     let output = egui::TextEdit::multiline(&mut sql_tab.text)
         .id(field.id)
         .font(font)
-        // Tab indents; Esc gives the keys up.
+        // Tab indents; Esc gives the keys up unless `hold_escape`.
         .lock_focus(true)
         .frame(egui::Frame::new().inner_margin(margin))
         .desired_width(f32::INFINITY)
@@ -455,6 +458,24 @@ fn edit(ui: &mut Ui, sql_tab: &mut SqlTab, field: &Field<'_>) -> Edited {
         // The keys arrive with the next frame: ask for it, since no event
         // need follow the one that opened the tab.
         ui.ctx().request_repaint();
+    }
+    if field.hold_escape && output.response.has_focus() {
+        // The field set its own filter while it drew (the arrows and Tab).
+        // egui replaces the whole filter, so those are named again. The
+        // filter is read at the start of the next pass, so holding Esc takes
+        // effect a frame after the flag is set and ends a frame after it is
+        // cleared.
+        ui.memory_mut(|memory| {
+            memory.set_focus_lock_filter(
+                field.id,
+                egui::EventFilter {
+                    tab: true,
+                    horizontal_arrows: true,
+                    vertical_arrows: true,
+                    escape: true,
+                },
+            );
+        });
     }
     // egui counts the cursor in characters; a field never focused has
     // none, and the tab keeps the one it has. The footer and the status
@@ -590,6 +611,78 @@ mod tests {
         assert_eq!(numbers(3, true), [2, 1, 3, 1, 2]);
         assert_eq!(numbers(1, true), [1, 1, 2, 3, 4]);
         assert_eq!(numbers(5, true), [4, 3, 2, 1, 5]);
+    }
+
+    /// One frame of an editor on its own, with `events`. Returns whether
+    /// it has the keyboard afterwards.
+    fn editor_frame(
+        harness: &mut crate::testing::Harness,
+        sql: &mut SqlTab,
+        hold_escape: bool,
+        events: Vec<egui::Event>,
+    ) -> bool {
+        let (look, palette) = (Look::standard(), Palette::light());
+        let input = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, harness.size)),
+            events,
+            ..Default::default()
+        };
+        let mut focused = false;
+        let mut output = harness.ctx.run_ui(input, |ui| {
+            egui::CentralPanel::default().show(ui, |ui| {
+                // A neighbour for the focus to move to, were the arrows
+                // not held by the editor.
+                let _ = ui.button("above");
+                let field = Field {
+                    id: Id::new("held editor"),
+                    name: "SQL",
+                    left: 14,
+                    dialect: Dialect::Sqlite,
+                    look: &look,
+                    palette: &palette,
+                    hold_escape,
+                };
+                focused = edit(ui, sql, &field).focused;
+            });
+        });
+        // As `Harness::frame_with` does: a delta dropped unapplied panics.
+        output.textures_delta.clear();
+        focused
+    }
+
+    #[test]
+    fn an_editor_told_to_hold_escape_keeps_the_keyboard() {
+        use crate::testing::{key, release};
+        use egui::{Key, Modifiers};
+        let mut harness = crate::testing::Harness::new();
+        let mut sql = SqlTab::new(TabId(1), 1, 1_000, None);
+        sql.text = "SELECT 1\nFROM users".into();
+        // A new editor asks for the keyboard and has it a frame later; the
+        // lock filter takes one frame more, since `set_focus_lock_filter`
+        // does nothing until the widget had focus on the previous frame.
+        editor_frame(&mut harness, &mut sql, true, Vec::new());
+        editor_frame(&mut harness, &mut sql, true, Vec::new());
+        assert!(editor_frame(&mut harness, &mut sql, true, Vec::new()));
+        // Esc is held: the editor still has the keyboard.
+        let esc = || vec![key(Key::Escape, Modifiers::NONE)];
+        assert!(editor_frame(&mut harness, &mut sql, true, esc()));
+        let up = vec![release(Key::Escape, Modifiers::NONE)];
+        assert!(editor_frame(&mut harness, &mut sql, true, up));
+        // The arrows are still the editor's: the cursor moves up a line
+        // and the keyboard stays.
+        assert_eq!(sql.cursor, sql.text.len());
+        let before = sql.cursor;
+        let arrow = vec![key(Key::ArrowUp, Modifiers::NONE)];
+        assert!(editor_frame(&mut harness, &mut sql, true, arrow));
+        assert!(editor_frame(&mut harness, &mut sql, true, Vec::new()));
+        assert!(sql.cursor < before, "{} then {}", before, sql.cursor);
+        // So is Tab: it indents.
+        let tab = vec![key(Key::Tab, Modifiers::NONE)];
+        assert!(editor_frame(&mut harness, &mut sql, true, tab));
+        assert!(sql.text.contains('\t'));
+        // Not told to hold it: Esc leaves the editor, as before.
+        assert!(editor_frame(&mut harness, &mut sql, false, Vec::new()));
+        assert!(!editor_frame(&mut harness, &mut sql, false, esc()));
     }
 
     #[test]
