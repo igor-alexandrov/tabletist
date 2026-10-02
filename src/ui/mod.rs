@@ -7257,6 +7257,81 @@ mod tests {
         assert!(harness.has("Retry"));
     }
 
+    /// Cancels what `tab`'s object is fetching and answers each request as
+    /// the backend answers a cancelled one.
+    fn cancel_fetches(harness: &mut Harness, tab: crate::model::ConnTabId) {
+        use crate::backend::Event;
+        let workspace = harness.app.workspace(tab).unwrap();
+        let session = workspace.session;
+        let object = workspace.active_object_tab().unwrap();
+        let (rows, structure) = (object.rows.pending, object.structure.pending);
+        assert!(rows.or(structure).is_some(), "nothing is being fetched");
+        harness.app.apply(crate::model::Action::CancelQuery(tab));
+        if let Some(request) = rows {
+            harness
+                .app
+                .apply(crate::model::Action::Backend(Event::Rows {
+                    session,
+                    request,
+                    result: Err(tabletist_db::Error::Cancelled),
+                }));
+        }
+        if let Some(request) = structure {
+            harness
+                .app
+                .apply(crate::model::Action::Backend(Event::Structure {
+                    session,
+                    request,
+                    result: Err(tabletist_db::Error::Cancelled),
+                }));
+        }
+    }
+
+    #[test]
+    fn a_cancelled_refresh_leaves_the_page_as_it_was() {
+        for look in crate::theme::Look::ALL {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            let tab = with_page(&mut harness);
+            harness.app.apply(crate::model::Action::Refresh(tab));
+            cancel_fetches(&mut harness, tab);
+            assert!(harness.has("Row 1"), "{}", look.name);
+            assert!(!harness.has("Retry"), "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn a_cancelled_refresh_leaves_the_structure_as_it_was() {
+        let mut harness = Harness::new();
+        let tab = with_page(&mut harness);
+        harness.click("Structure");
+        harness.answer_structure(tabletist_db::Structure {
+            indexes: vec![tabletist_db::IndexInfo {
+                name: "users_email_idx".into(),
+                columns: vec!["email".into()],
+                unique: true,
+                primary: false,
+                method: None,
+            }],
+            ..Default::default()
+        });
+        harness.app.apply(crate::model::Action::Refresh(tab));
+        cancel_fetches(&mut harness, tab);
+        assert!(harness.has("users_email_idx"));
+        assert!(!harness.has("Retry"));
+    }
+
+    #[test]
+    fn a_cancelled_first_fetch_says_so_and_offers_retry() {
+        let mut harness = Harness::new();
+        let tab = harness.connect_fake();
+        // Nothing is held to go back to: the card is all there is to show.
+        harness.click("users");
+        cancel_fetches(&mut harness, tab);
+        assert!(harness.has(&tabletist_db::Error::Cancelled.to_string()));
+        assert!(harness.has("Retry"));
+    }
+
     #[test]
     fn a_lost_connection_can_be_left() {
         use egui::accesskit;

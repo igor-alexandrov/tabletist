@@ -1271,12 +1271,16 @@ pub fn plain_cell<'a>(
     }
 }
 
-/// The error a view shows in place of what `fetch` holds. A lost connection
-/// is not one while a value is held: the strip over the tab says it, and
-/// what was on screen stays under it.
+/// The error a view shows in place of what `fetch` holds. Two are not
+/// shown while a value is held, and what was on screen stays: a lost
+/// connection, which the strip over the tab says, and a cancelled refresh,
+/// which failed at nothing.
 pub fn shown_error<T>(fetch: &crate::model::Fetch<T>) -> Option<&tabletist_db::Error> {
-    let kept = |error: &tabletist_db::Error| error.is_connection_lost() && fetch.value.is_some();
-    fetch.error.as_ref().filter(|error| !kept(error))
+    let keeps_value = |error: &tabletist_db::Error| {
+        fetch.value.is_some()
+            && (error.is_connection_lost() || *error == tabletist_db::Error::Cancelled)
+    };
+    fetch.error.as_ref().filter(|error| !keeps_value(error))
 }
 
 /// An error as a card with its code, detail and hint, and Retry and
