@@ -49,7 +49,8 @@ Linux (Omarchy and Hyprland first), macOS and Windows.
 - A SQL editor per connection (Cmd/Ctrl+T): run the statement at the cursor
   (Cmd/Ctrl+Return) or the whole script, with a row limit and a timeout.
   Every run happens in a read-only transaction that is rolled back, and
-  statements that would leave it are refused.
+  statements that would leave it are refused. SQL keywords are completed
+  while typing (Ctrl+Space or Cmd/Ctrl+I asks for the list anywhere).
 - Quick open (Cmd/Ctrl+P) and a full keyboard map: press `?` in the app.
 - Looks native on each platform: a macOS look in IBM Plex, and on Linux the
   Omarchy look (square, keyboard first, vim keys, the desktop's monospace

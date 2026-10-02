@@ -1,6 +1,50 @@
 # SQL editor, slice 2: autocomplete
 
-Date: 2026-10-01. Status: design, not yet built.
+Date: 2026-10-01. Status: step 1 (the list and keywords) is implemented;
+steps 2 and 3 (schemas, tables and views; columns) are designed here and not
+yet built. "Step 1 as built" below says where the code differs from this
+text; where the two disagree, that section and the code win.
+
+## Step 1 as built
+
+- **Engine.** `FROM` and `UPDATE` are table words only where they start a
+  table list: a `FROM` counts once the statement has had `SELECT`, `DELETE`,
+  `UPDATE` or `SHOW`, not after `IS [NOT] DISTINCT`, and not as the first
+  `FROM` inside `EXTRACT(`, `TRIM(`, `SUBSTRING(` or `OVERLAY(`; an `UPDATE`
+  does not count after `FOR`, `KEY` or `DO`. A function in a `FROM` list is
+  skipped with its arguments and alias. A subquery in `FROM` is scanned, not
+  skipped, and a table after it in a comma list is not found. A qualifier
+  counts only when its dots touch the names.
+- **Matching.** Keywords and phrases match from their start only. A row
+  "is typed" when accepting it would only repeat the word: a keyword
+  whatever its case, any other name as spelled. That is what the Enter rule
+  and the opening rule compare.
+- **Opening.** A list asked for by hand opens even when its one row repeats
+  the word. A list opened on an empty word stays open when a letter is typed
+  and deleted. `Mod+I` asks for the list as `Ctrl+Space` does, since some
+  systems take `Ctrl+Space` first.
+- **Model.** The view's action is `SqlTyped`, sent only for typing.
+  `Completion` also keeps the typed part of the word, how it opened and a
+  serial; its site is behind an `Arc`. A list whose row was accepted is not
+  worked out again before the view inserts it.
+- **Keys.** They act only while this editor has the keyboard. Every press of
+  a frame moves the highlight. In a frame that also types, Tab does nothing
+  and Enter is the editor's line break. `Ctrl+N` and `Ctrl+P` are the list's
+  in the terminal look also while it has no rows.
+- **Insertion.** It is an undo step of its own in both directions, and the
+  caret is scrolled into view after it.
+- **The list.** The bundled faces have no Tab glyph: the macOS footer reads
+  `↩ Tab insert`. The matched part of a name is drawn at weight 500 on macOS
+  (Plex Mono is bundled at 400 and 500) and is not emphasised in the
+  standard look, whose monospace has one weight: a known gap. Any click on
+  the panel keeps the list and the editor's keyboard. A list waits, undrawn,
+  while the editor scrolls to its caret. Long names are cut with an
+  ellipsis.
+- **Accessibility.** The list is a list box and its rows are options. The
+  editor names the highlighted row as its active descendant only for a list
+  opened by hand or once the highlight was moved, so a screen reader stays
+  on the editor while a word is typed. Not tried with a screen reader.
+- **Platforms.** Built and tested headlessly on Linux only.
 
 ## Intent
 
