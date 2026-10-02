@@ -952,6 +952,16 @@ mod tests {
             pg("select 1 where (a and b) or (c or d)"),
             lines(&["SELECT 1", " WHERE (a AND b)", "    OR (c OR d)"])
         );
+        assert_eq!(
+            pg("select 1 from t group by a having b or c"),
+            lines(&[
+                "SELECT 1",
+                "  FROM t",
+                " GROUP BY a",
+                "HAVING b",
+                "    OR c"
+            ])
+        );
     }
 
     #[test]
@@ -1066,6 +1076,10 @@ mod tests {
         assert_eq!(
             pg("(select 1) union (select 2)"),
             lines(&["(SELECT 1)", " UNION (SELECT 2)"])
+        );
+        assert_eq!(
+            pg("select 1 union distinct select 2"),
+            lines(&["SELECT 1", " UNION DISTINCT", "SELECT 2"])
         );
     }
 
@@ -1351,6 +1365,17 @@ mod tests {
                 "SELECT 2",
             ])
         );
+        // A backslash escapes the quote in an E string.
+        assert_eq!(
+            pg("select E'\\'' as q, 'x' from t where a = E'it\\'s' and b"),
+            lines(&[
+                "SELECT E'\\'' AS q,",
+                "       'x'",
+                "  FROM t",
+                " WHERE a = E'it\\'s'",
+                "   AND b",
+            ])
+        );
         // MySQL: `#` comments, `--` only before a blank, the `\r` a line
         // comment keeps, and an executable comment, which is code: a
         // statement that starts with one is no query.
@@ -1397,12 +1422,15 @@ mod tests {
             }
         }
         // The keywords that can be names keep their case.
-        assert_eq!(
-            pg(
-                "show any begin cast commit current end filter first no only over rollback rows view"
-            ),
-            "SHOW any begin cast commit current end filter first no only over rollback rows view"
-        );
+        let names =
+            "any begin cast commit current end filter first no only over rollback rows view";
+        for dialect in DIALECTS {
+            assert_eq!(
+                formatted(dialect, &std::format!("show {names}")),
+                std::format!("SHOW {names}"),
+                "{dialect:?}"
+            );
+        }
         // Read as structure they are uppercased, but not on MySQL, where
         // such a word may be an alias and an alias's case can matter.
         let script = "with recursive a as (select 1) select * from a full join b on true \
