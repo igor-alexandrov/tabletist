@@ -3254,6 +3254,12 @@ mod tests {
         let (tab, _, _) = connect(&mut app);
         let first = app.workspace(tab).unwrap().connect_started;
         let first = first.expect("the connect was sent");
+        // The clock a second behind: a reconnect that left it alone would
+        // still read that.
+        let earlier = std::time::Instant::now().checked_sub(std::time::Duration::from_secs(1));
+        if earlier.is_some() {
+            app.workspace_mut(tab).unwrap().connect_started = earlier;
+        }
         // A reconnect is a new attempt with a clock of its own.
         let sent = app.backend.sent.len();
         app.apply(Action::Reconnect(tab));
@@ -3264,11 +3270,13 @@ mod tests {
             "the reconnect sent a Connect"
         );
         let second = app.workspace(tab).unwrap().connect_started;
-        // A coarse clock can read the same for both.
-        assert!(
-            second.expect("the clock was restarted") >= first,
-            "the clock runs from the new Connect"
-        );
+        let second = second.expect("the clock was restarted");
+        match earlier {
+            Some(earlier) => assert!(second > earlier, "the clock runs from the new Connect"),
+            // A clock too young to set back: a coarse one can read the same
+            // for both.
+            None => assert!(second >= first, "the clock runs from the new Connect"),
+        }
     }
 
     #[test]

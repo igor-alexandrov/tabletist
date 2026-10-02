@@ -1306,6 +1306,17 @@ mod tests {
         object.structure.started = earlier;
     }
 
+    /// Makes the active object tab's fetch look only just sent, however
+    /// long the test has taken: a start still to come has lasted no time.
+    fn pin_fetch(harness: &mut Harness, tab: crate::model::ConnTabId) {
+        let workspace = harness.app.workspace_mut(tab).unwrap();
+        let id = workspace.active_tab.unwrap();
+        let object = workspace.object_tab_mut(id).unwrap();
+        let later = std::time::Instant::now() + std::time::Duration::from_secs(3600);
+        object.rows.started = Some(later);
+        object.structure.started = Some(later);
+    }
+
     #[test]
     fn a_query_that_lasts_says_so_and_can_be_cancelled() {
         for look in crate::theme::Look::ALL {
@@ -1314,6 +1325,8 @@ mod tests {
             let tab = harness.connect_fake();
             harness.click("users");
             // A query that has only just been sent shows nothing of a wait.
+            // The clock is held: a slow run must not age the fetch.
+            pin_fetch(&mut harness, tab);
             assert!(!harness.has(&look.label("Running query…")), "{}", look.name);
             age_fetch(&mut harness, tab);
             assert!(harness.has(&look.label("Running query…")), "{}", look.name);
