@@ -88,7 +88,9 @@ copied byte for byte.
   untouched, byte for byte. A selection that overlaps no statement formats
   nothing.
 - Whitespace before the first token and after the last token of the
-  formatted part stays as typed.
+  formatted part stays as typed, apart from the indentation of the part's
+  first line, which is Format's to set: a statement indented on its line
+  starts at column 0.
 
 ### Query statements and the rest
 
@@ -146,11 +148,12 @@ parenthesis that is not a block, and outside every `CASE`):
 
 A word is not a head in three cases where it would otherwise be one:
 
-- A word that touches a `.` on either side is a name (`r.from`,
+- A word beside a `.`, before it or after it, is a name (`r.from`,
   `shop.order`), whatever it spells.
 - `FROM` right after `DISTINCT` (`a IS DISTINCT FROM b`).
-- `STRAIGHT_JOIN` before the `SELECT` list's first item (MySQL's
-  modifier, as in `SELECT DISTINCT STRAIGHT_JOIN title`).
+- `STRAIGHT_JOIN` in the `SELECT` clause (MySQL's modifier, as in
+  `SELECT DISTINCT STRAIGHT_JOIN title`): a join starts only after
+  `FROM`.
 
 Because heads count only at the top level, `extract(year FROM added)`,
 `count(*) OVER (PARTITION BY genre ORDER BY title)` and `id IN (1, 2)`
@@ -168,7 +171,8 @@ Lists:
 Blocks in parentheses: a `(` whose first token that is not a comment is
 `SELECT` or `WITH` opens a nested block. It stays on its line, its base
 column is the column after it, and its `)` follows the block's last token
-on the same line. Every other parenthesis is inline.
+on the same line. A block's first head stands right after its `(`, so a
+`WITH` there is not right-aligned. Every other parenthesis is inline.
 
     SELECT title
       FROM books
@@ -220,12 +224,14 @@ from their own column.
   line at the content column, or as the head it is.
 - A comment that had a line to itself keeps one: at the base column
   before a statement's first token, at the content column inside it.
-- A comment after code on its line stays after that code, one space
-  apart.
+- A comment after code on its line stays after that code: one space
+  apart where whitespace was typed, touching where it touched (on MySQL
+  a space before `--` can turn two minus signs into a comment).
 - A block comment is copied whole; the lines inside it are not
   re-indented.
-- A `)` or `;` that would follow a `--` comment goes on the next line:
-  the `)` under its `(`, the `;` at the statement's base column.
+- A `)`, `;` or `,` that would follow a `--` comment goes on the next
+  line: the `)` under its `(`, the `;` at the statement's base column,
+  the `,` at the content column.
 - The tokenizer counts the `\r` of a `\r\n` as part of a MySQL or SQLite
   line comment. It is copied with the comment, so those lines keep their
   `\r\n`.
@@ -240,8 +246,9 @@ from their own column.
 ### Case
 
 A token the tokenizer reads as a keyword in this dialect is uppercased
-when it is on this list, unless it touches a `.` on either side (after a
-`.`, and before one, a word is a name even when it is reserved):
+when it is on this list (`UPPERCASED`, public for the MySQL test that
+asks the server about it), unless it stands beside a `.` (after a `.`,
+and before one, a word is a name even when it is reserved):
 
 `ALL ALTER AND AS ASC BETWEEN BY CASE CREATE CROSS DEFAULT DELETE DESC
 DESCRIBE DISTINCT DROP ELSE EXISTS EXPLAIN FALSE FETCH FOR FROM GLOB GROUP
@@ -266,7 +273,7 @@ RECURSIVE ROLLBACK ROWS VIEW WINDOW`) and keep their case, with two
 exceptions for a word the layout read as structure:
 
 - `END` closing a `CASE` is uppercased in every dialect. It cannot be a
-  table name or an alias there (one would touch a `.`). An `END` closes
+  table name or an alias there (one would stand beside a `.`). An `END` closes
   only a `CASE` of its own block: in `CASE WHEN x IN (SELECT id FROM
   end) ...` the table `end` is a plain word.
 - On PostgreSQL and SQLite, so are `OFFSET`, `EXCEPT`, `INTERSECT` and
@@ -336,15 +343,15 @@ next token, or at the end of the text when there is none.
 
 ## Errors and edge cases
 
-- An empty or comment-only script, and a script already in this layout:
-  nothing happens, and nothing is added to the undo history.
+- An empty script and a script already in this layout: nothing happens,
+  and nothing is added to the undo history.
 - Formatting is idempotent: formatting a formatted script returns `None`.
 - An unterminated string, name or comment is one token to the end of the
   text; it is copied as it is and what stands before it is laid out.
 - A `)` with no `(` and a `(` never closed do not stop the formatter: the
   first is inline punctuation, the second's block ends with its statement.
 - A name that spells a clause word (a column called `offset`) is laid out
-  as that clause, unless it touches a `.`. The query means the same;
+  as that clause, unless it stands beside a `.`. The query means the same;
   quoting the name avoids it.
 - MySQL and SQLite label a result column that has no alias with its
   expression as typed, so Format can change such a header (`x is null`
@@ -370,7 +377,7 @@ next token, or at the end of the text when there is none.
   the end of a line, before `)` and `;`, and between statements; several
   statements and the blank line between them; a non-query statement
   keeping its lines; `\r\n` input.
-- The words that are not heads: a word touching a `.` (`r.from`,
+- The words that are not heads: a word beside a `.` (`r.from`,
   `shop.order`, `order.id`), `IS DISTINCT FROM`, `WITH ORDINALITY`,
   `SELECT STRAIGHT_JOIN`; a run of join leaders as one head.
 - Dialect cases: `$$` and `$tag$` bodies, `E'\''`, `::` and two strings
@@ -381,14 +388,17 @@ next token, or at the end of the text when there is none.
 - Case: every listed word is uppercased; the words that can be names
   keep their case on MySQL, apart from `END` closing a `CASE`; the
   structural ones are uppercased on PostgreSQL and SQLite; a listed word
-  touching a `.` keeps its case; a quoted name and a string that spell a
+  beside a `.` keeps its case; a quoted name and a string that spell a
   keyword are untouched. The list is a subset of the highlighter's
   keywords.
 - Invariants, over every case above and over the tokenizer's own test
   scripts, in all three dialects: the tokens but whitespace are the same
   before and after; formatting the result returns `None`; the safety
-  check passes. A case built to fuse tokens (`- -1`, `/ *`) returns the
-  operators unfused.
+  check passes. A case built to fuse tokens (`- -1`, `/ *`, MySQL's
+  `1---- x`) returns the operators unfused. The same holds for scripts
+  built at random, from a fixed seed, out of keywords, names, strings,
+  operators, comments and line breaks. These tests check the layout
+  itself, before the safety check that would hide a fault.
 - The selection: one statement of three is formatted and the others are
   byte for byte the same; a selection across two statements formats both;
   a selection in the whitespace between statements formats nothing.
