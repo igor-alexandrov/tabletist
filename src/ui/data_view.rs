@@ -1094,10 +1094,10 @@ fn empty_rows(
     let name = format::display_safe(&object.object.name);
     let object_tab = object.id;
     let filters = filter_texts(object);
-    if filters.is_empty() {
-        // Past the first page the table is not empty: its rows end before
-        // this page, and the way out is the page before.
-        let past = object.query.offset > 0;
+    // Past the first page there are rows, whatever the filters: they end
+    // before this page, and the way out is the page before.
+    let past = object.query.offset > 0;
+    if past || filters.is_empty() {
         let title = format!(
             "{} {name}",
             say(if past {

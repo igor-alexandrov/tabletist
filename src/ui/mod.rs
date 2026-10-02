@@ -7610,57 +7610,72 @@ mod tests {
     fn a_page_past_the_last_row_says_so_and_offers_the_one_before() {
         use egui::accesskit::{self, Role};
         for look in crate::theme::Look::ALL {
-            let mut harness = Harness::new();
-            harness.set_look(look);
-            let tab = harness.connect_fake();
-            harness.app.apply(crate::model::Action::OpenObject {
-                tab,
-                object: tabletist_db::ObjectRef::new("main", "users"),
-                kind: tabletist_db::ObjectKind::Table,
-                pin: true,
-            });
-            harness.answer_rows(crate::testing::page(300, true));
-            let object_tab = harness.app.workspace(tab).unwrap().active_tab.unwrap();
-            harness
-                .app
-                .apply(crate::model::Action::NextPage { tab, object_tab });
-            // The rows that were past the first page are gone by now.
-            harness.answer_rows(crate::testing::page(0, false));
-            let title = format!("{} users", look.label("No more rows in"));
-            assert!(harness.has(&title), "{title} in {}", look.name);
-            assert!(
-                harness.has(&look.label("This page is past the last row.")),
-                "{}",
-                look.name
-            );
-            assert!(
-                !harness.has(&look.label("The table exists and is empty.")),
-                "{}",
-                look.name
-            );
-            // The footer pages too, where there is one: the state's own
-            // button is the upper one, under its title.
-            let tree = harness.settle();
-            let said = crate::testing::bounds(&tree, &title, Role::Label).unwrap();
-            let (button, at) = buttons_named(&tree, "Previous page")[0];
-            assert!(at.top() >= said.bottom(), "{}", look.name);
-            harness.frame(vec![egui::Event::AccessKitActionRequest(
-                accesskit::ActionRequest {
-                    target_tree: accesskit::TreeId::ROOT,
-                    target_node: button,
-                    action: accesskit::Action::Click,
-                    data: None,
-                },
-            )]);
-            harness.settle();
-            assert!(
-                matches!(
-                    harness.app.backend.sent.last(),
-                    Some(Command::FetchRows { query, .. }) if query.offset == 0
-                ),
-                "{}",
-                look.name
-            );
+            // Rows matched on the pages before, under a filter too.
+            for filtered in [false, true] {
+                let mut harness = Harness::new();
+                harness.set_look(look);
+                let tab = harness.connect_fake();
+                harness.app.apply(crate::model::Action::OpenObject {
+                    tab,
+                    object: tabletist_db::ObjectRef::new("main", "users"),
+                    kind: tabletist_db::ObjectKind::Table,
+                    pin: true,
+                });
+                harness.answer_rows(crate::testing::page(300, true));
+                let object_tab = harness.app.workspace(tab).unwrap().active_tab.unwrap();
+                if filtered {
+                    let workspace = harness.app.workspace_mut(tab).unwrap();
+                    let object = workspace.object_tab_mut(object_tab).unwrap();
+                    object.filter.rows = vec![crate::model::FilterRow {
+                        column: "id".into(),
+                        op: tabletist_db::FilterOp::Gt,
+                        value: "0".into(),
+                    }];
+                    harness
+                        .app
+                        .apply(crate::model::Action::ApplyFilters { tab, object_tab });
+                    harness.answer_rows(crate::testing::page(300, true));
+                }
+                harness
+                    .app
+                    .apply(crate::model::Action::NextPage { tab, object_tab });
+                // The rows that were past the first page are gone by now.
+                harness.answer_rows(crate::testing::page(0, false));
+                let said = format!("{} (filtered: {filtered})", look.name);
+                let title = format!("{} users", look.label("No more rows in"));
+                assert!(harness.has(&title), "{title} in {said}");
+                assert!(
+                    harness.has(&look.label("This page is past the last row.")),
+                    "{said}"
+                );
+                for other in ["The table exists and is empty.", "No rows match the filter"] {
+                    assert!(!harness.has(&look.label(other)), "{other} in {said}");
+                }
+                // The footer pages too, where there is one: the state's own
+                // button is the upper one, under its title.
+                let tree = harness.settle();
+                let title = crate::testing::bounds(&tree, &title, Role::Label).unwrap();
+                let (button, at) = buttons_named(&tree, "Previous page")[0];
+                assert!(at.top() >= title.bottom(), "{said}");
+                harness.frame(vec![egui::Event::AccessKitActionRequest(
+                    accesskit::ActionRequest {
+                        target_tree: accesskit::TreeId::ROOT,
+                        target_node: button,
+                        action: accesskit::Action::Click,
+                        data: None,
+                    },
+                )]);
+                harness.settle();
+                // The page before, with the filter it had.
+                assert!(
+                    matches!(
+                        harness.app.backend.sent.last(),
+                        Some(Command::FetchRows { query, .. })
+                            if query.offset == 0 && query.filters.len() == usize::from(filtered)
+                    ),
+                    "{said}"
+                );
+            }
         }
     }
 
