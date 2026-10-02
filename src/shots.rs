@@ -299,6 +299,7 @@ fn both(name: &str, scene: impl Fn(&mut Harness)) {
 #[test]
 #[ignore = "renders with wgpu; run with --features shots -- --ignored"]
 fn shots() {
+    both("state-first-launch", |_| {});
     both("picker", |harness| {
         harness.app.connections.upsert(saved());
     });
@@ -349,15 +350,123 @@ fn shots() {
         node.objects.value = Some(Vec::new());
         let object_tab = workspace.active_tab.unwrap();
         let object = workspace.object_tab_mut(object_tab).unwrap();
-        object.filter.rows = vec![crate::model::FilterRow {
-            column: "kind".into(),
-            op: tabletist_db::FilterOp::Eq,
-            value: "cover".into(),
-        }];
+        object.filter.rows = vec![
+            crate::model::FilterRow {
+                column: "kind".into(),
+                op: tabletist_db::FilterOp::Eq,
+                value: "cover".into(),
+            },
+            crate::model::FilterRow {
+                column: "book_id".into(),
+                op: tabletist_db::FilterOp::Eq,
+                value: "4".into(),
+            },
+        ];
         harness.app.apply(Action::ApplyFilters { tab, object_tab });
         let mut empty = page();
         empty.rows.clear();
         harness.answer_rows(empty);
+    });
+    // A connect on its way, 2.4 s in.
+    both("state-connecting", |harness| {
+        harness.app.connections.upsert(saved());
+        harness.click("Connect to Bookshop");
+        let tab = harness.app.active_tab_id();
+        harness.app.workspace_mut(tab).unwrap().connect_started =
+            std::time::Instant::now().checked_sub(Duration::from_millis(2400));
+    });
+    // The three ways a connect fails that have a title of their own.
+    for (name, error) in [
+        (
+            "state-connect-auth",
+            tabletist_db::Error::Auth("password authentication failed for user \"demo\"".into()),
+        ),
+        (
+            "state-connect-unreachable",
+            tabletist_db::Error::Connect("Connection refused (os error 111)".into()),
+        ),
+        (
+            "state-connect-tls",
+            tabletist_db::Error::Tls("invalid peer certificate: NotValidForName".into()),
+        ),
+    ] {
+        both(name, |harness| {
+            harness.app.connections.upsert(saved());
+            harness.click("Connect to Bookshop");
+            let (session, request) = match harness.app.backend.sent.last() {
+                Some(crate::backend::Command::Connect {
+                    session, request, ..
+                }) => (*session, *request),
+                other => panic!("{other:?}"),
+            };
+            harness
+                .app
+                .apply(Action::Backend(crate::backend::Event::ConnectFailed {
+                    session,
+                    request,
+                    error: error.clone(),
+                }));
+        });
+    }
+    // A table with no rows and no filter.
+    both("state-empty-table", |harness| {
+        let tab = workspace(harness);
+        harness.app.apply(Action::Refresh(tab));
+        let mut empty = page();
+        empty.rows.clear();
+        harness.answer_rows(empty);
+    });
+    // The page after the last one: no rows, and a way back.
+    both("state-past-last-row", |harness| {
+        let tab = workspace(harness);
+        // The next page needs a page that says more follows.
+        harness.app.apply(Action::Refresh(tab));
+        let mut first = page();
+        first.has_more = true;
+        harness.answer_rows(first);
+        let object_tab = harness.app.workspace(tab).unwrap().active_tab.unwrap();
+        harness.app.apply(Action::NextPage { tab, object_tab });
+        let mut empty = page();
+        empty.rows.clear();
+        harness.answer_rows(empty);
+    });
+    // A table whose rows are on their way, 4.2 s in.
+    both("state-loading", |harness| {
+        let tab = workspace(harness);
+        harness.app.apply(Action::OpenObject {
+            tab,
+            object: ObjectRef::new("public", "book_reviews"),
+            kind: ObjectKind::Table,
+            pin: true,
+        });
+        let workspace = harness.app.workspace_mut(tab).unwrap();
+        let id = workspace.active_tab.unwrap();
+        workspace.object_tab_mut(id).unwrap().rows.started =
+            std::time::Instant::now().checked_sub(Duration::from_millis(4200));
+    });
+    // A write the read-only session refused.
+    both("sql-blocked", |harness| {
+        let tab = sql_script(
+            harness,
+            "UPDATE book_images\n   SET kind = 'ebook'\n WHERE id = 2;",
+        );
+        run_sql(harness, tab, true);
+        let refused = tabletist_db::StatementOutcome::Error {
+            error: tabletist_db::Error::Query {
+                code: Some("25006".into()),
+                message: "cannot execute UPDATE in a read-only transaction".into(),
+                detail: None,
+                hint: None,
+            },
+            position: None,
+        };
+        harness.answer_sql(Ok(crate::testing::script_outcome(vec![refused])), None);
+        let sql_tab = harness.app.workspace(tab).unwrap().active_tab.unwrap();
+        harness.app.apply(Action::SetResultPane {
+            tab,
+            sql_tab,
+            pane: crate::model::ResultPane::Results,
+        });
     });
     both("state-no-schemas", |harness| {
         let tab = workspace(harness);
