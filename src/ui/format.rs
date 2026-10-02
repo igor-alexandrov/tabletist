@@ -411,6 +411,24 @@ pub fn describe_error(locale: impl fastframe_i18n::Locale, error: &tabletist_db:
     sentence.into_owned()
 }
 
+/// Whether `error` is the read-only session refusing a write: Tabletist's
+/// own guard, or the server's refusal. PostgreSQL and MySQL say SQLSTATE
+/// 25006; SQLite says SQLITE_READONLY (8), which its extended codes keep
+/// in their low byte.
+pub fn refuses_writes(error: &tabletist_db::Error, driver: tabletist_db::Driver) -> bool {
+    use tabletist_db::{Driver, Error};
+    match error {
+        Error::Refused { .. } => true,
+        Error::Query {
+            code: Some(code), ..
+        } => match driver {
+            Driver::Sqlite => code.parse::<i32>().is_ok_and(|code| code & 0xff == 8),
+            Driver::Postgres | Driver::MySql => code == "25006",
+        },
+        _ => false,
+    }
+}
+
 /// A row as tab-separated values on one line.
 pub fn tsv_row(row: &[Value]) -> String {
     row.iter()
@@ -483,6 +501,36 @@ pub fn for_display(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_refused_write_is_told_from_other_errors() {
+        use super::refuses_writes;
+        use tabletist_db::{Driver, Error};
+        let coded = |code: &str| Error::Query {
+            code: Some(code.into()),
+            message: "no".into(),
+            detail: None,
+            hint: None,
+        };
+        let refused = Error::Refused {
+            line: 1,
+            what: "COMMIT".into(),
+        };
+        for driver in [Driver::Postgres, Driver::MySql, Driver::Sqlite] {
+            assert!(refuses_writes(&refused, driver));
+            assert!(!refuses_writes(&Error::Timeout, driver));
+        }
+        // SQLSTATE 25006: read_only_sql_transaction.
+        assert!(refuses_writes(&coded("25006"), Driver::Postgres));
+        assert!(refuses_writes(&coded("25006"), Driver::MySql));
+        assert!(!refuses_writes(&coded("42703"), Driver::Postgres));
+        // SQLITE_READONLY is 8; its extended codes keep it in the low byte.
+        assert!(refuses_writes(&coded("8"), Driver::Sqlite));
+        assert!(refuses_writes(&coded("1032"), Driver::Sqlite));
+        assert!(!refuses_writes(&coded("1"), Driver::Sqlite));
+        // A SQLSTATE whose number ends in the same byte is not SQLite's code.
+        assert!(!refuses_writes(&coded("23048"), Driver::Postgres));
+    }
+
     #[test]
     fn timestamps_drop_their_fraction_and_keep_their_zone() {
         use super::to_the_second;

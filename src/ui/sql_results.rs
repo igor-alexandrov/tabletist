@@ -13,11 +13,12 @@ use crate::app::App;
 use crate::backend::{CancelReason, RequestId};
 use crate::i18n::{Locale, gettext};
 use crate::model::{Action, ConnTabId, ResultPane, SqlRun, SqlTab, TabId};
-use crate::theme::{Look, Palette};
+use crate::theme::{Icon, Look, Palette};
 use crate::typography::{Laid, Text, TextRole};
 use crate::ui::data_view;
 use crate::ui::format;
 use crate::ui::grid::{self, Column};
+use crate::ui::states;
 use crate::ui::value_tags::Tags;
 use crate::ui::widgets::{self, ButtonSpec};
 
@@ -194,6 +195,8 @@ struct Place<'a> {
     sql: &'a SqlTab,
     /// Timestamps in full, as the workspace's tables show them.
     full_precision: bool,
+    /// Whose error codes the results read.
+    driver: tabletist_db::Driver,
 }
 
 fn draw(app: &App, ui: &mut Ui, tab: ConnTabId, id: TabId, actions: &mut Vec<Action>) {
@@ -213,6 +216,7 @@ fn draw(app: &App, ui: &mut Ui, tab: ConnTabId, id: TabId, actions: &mut Vec<Act
         tab,
         sql,
         full_precision: workspace.full_precision,
+        driver: workspace.driver,
     };
     let state = state(sql);
     let pane = ui.max_rect();
@@ -234,7 +238,11 @@ fn draw(app: &App, ui: &mut Ui, tab: ConnTabId, id: TabId, actions: &mut Vec<Act
             );
         }
         (State::Failed(error), ResultPane::Results) => {
-            note(&body, rest, &whole(error), palette.danger, &env);
+            if format::refuses_writes(error, place.driver) {
+                blocked(&mut body, rest, error, &env);
+            } else {
+                note(&body, rest, &whole(error), palette.danger, &env);
+            }
         }
         (State::Failed(error), ResultPane::Messages) => {
             let lines: Vec<Line<'_>> = std::iter::once(Line::Whole(error))
@@ -258,6 +266,9 @@ struct Head {
     info: Option<Said>,
     /// How long the run in flight has been going, from when it was queued.
     running: Option<Duration>,
+    /// The statements of the last run that failed (1 for a run that failed
+    /// as a whole), beside "Messages".
+    errors: usize,
 }
 
 fn head(sql: &SqlTab, state: &State<'_>, env: &Env<'_>) -> Head {
@@ -284,6 +295,16 @@ fn head(sql: &SqlTab, state: &State<'_>, env: &Env<'_>) -> Head {
             })
         }),
         running,
+        errors: match state {
+            State::Failed(_) => 1,
+            State::Ran(run) => run
+                .outcome
+                .results
+                .iter()
+                .filter(|result| matches!(result.outcome, StatementOutcome::Error { .. }))
+                .count(),
+            State::Idle | State::Waiting => 0,
+        },
     }
 }
 
@@ -295,6 +316,8 @@ struct PaneTab {
     /// The name as the look writes it, and the count after it.
     text: String,
     count: Option<String>,
+    /// What the count is painted in: the errors' is not the rows'.
+    count_color: egui::Color32,
     width: f32,
 }
 
@@ -330,7 +353,14 @@ fn header(
     let (left, right) = (rect.left() + side(look), rect.right() - side(look));
     // What follows the tabs starts 16 after them, and reads a step
     // quieter than they do (in the terminal, by its colour alone).
-    let start = pane_tabs(ui, (left, center), head.count, place, env, actions) + 16.0;
+    let start = pane_tabs(
+        ui,
+        (left, center),
+        (head.count, head.errors),
+        place,
+        env,
+        actions,
+    ) + 16.0;
     let role = TextRole::pick(look, TextRole::Secondary, TextRole::OBody);
     let spot = Spot {
         start,
@@ -359,7 +389,7 @@ fn header(
 fn pane_tabs(
     ui: &mut Ui,
     (left, center): (f32, f32),
-    count: Option<usize>,
+    (count, errors): (Option<usize>, usize),
     place: &Place<'_>,
     env: &Env<'_>,
     actions: &mut Vec<Action>,
@@ -373,10 +403,15 @@ fn pane_tabs(
     let width = |role: TextRole, text: &str| role.width(ui.ctx(), look.faces, text);
     let space = width(plain, " ");
     let tabs = [
-        (ResultPane::Results, "Results", count),
-        (ResultPane::Messages, "Messages", None),
+        (ResultPane::Results, "Results", count, palette.dim),
+        (
+            ResultPane::Messages,
+            "Messages",
+            (errors > 0).then_some(errors),
+            palette.danger,
+        ),
     ]
-    .map(|(pane, name, count)| {
+    .map(|(pane, name, count, count_color)| {
         let name = gettext(locale, name).into_owned();
         let text = look.label(&name);
         let count = count.map(|count| format::group_digits(count as u64));
@@ -389,6 +424,7 @@ fn pane_tabs(
             name,
             text,
             count,
+            count_color,
         }
     });
     // macOS: 28 pt tabs, 12 at their sides, 2 apart. The terminal: the
@@ -438,7 +474,7 @@ fn pane_tabs(
         }
         let mut text = Text::new(look).add(role, &tab.text, color);
         if let Some(count) = &tab.count {
-            text = text.space(plain, " ").add(plain, count, palette.dim);
+            text = text.space(plain, " ").add(plain, count, tab.count_color);
         }
         widgets::paint_text(ui, cell.left() + pad, center, text);
         if selected && look.terminal {
@@ -957,6 +993,55 @@ fn messages(
     keep_messages(ui.ctx(), results_id(place.tab, place.sql.id), area.id);
 }
 
+/// A write the read-only session refused: said as what it is, a limit of
+/// this version and not a mistake in the statement. The exact error
+/// stays under the card.
+fn blocked(ui: &mut Ui, rect: Rect, error: &Error, env: &Env<'_>) {
+    let Env { look, palette, .. } = *env;
+    let inner = rect.shrink2(vec2(16.0, 14.0));
+    let mut column = ui.new_child(
+        egui::UiBuilder::new()
+            .id_salt("blocked")
+            .max_rect(inner)
+            .layout(egui::Layout::top_down(egui::Align::Min)),
+    );
+    column.spacing_mut().item_spacing = vec2(8.0, 10.0);
+    let title = env.said(|words| words.say("This version only reads data"));
+    let text = env.said(|words| {
+        words.say(
+            "Every query runs in a read-only transaction, so this statement was refused. \
+             Nothing changed.",
+        )
+    });
+    let card = states::Card {
+        tone: states::Tone::Warning,
+        icon: Icon::Lock,
+        title: &title.painted,
+        text: &text.painted,
+    };
+    states::card(&mut column, &card, look, palette);
+    // The database's own words, after its code when it gave one.
+    let raw = match error {
+        Error::Query {
+            code: Some(code), ..
+        } => format!("{code} · {}", error_text(error)),
+        other => error_text(other),
+    };
+    Text::one(look, widgets::code(look), &raw, palette.secondary)
+        .wrap(inner.width())
+        .layout(column.ctx())
+        .label(&mut column);
+    let later = env.said(|words| words.say("Editing arrives in a later version."));
+    Text::one(
+        look,
+        widgets::secondary(look),
+        &later.painted,
+        palette.secondary,
+    )
+    .layout(column.ctx())
+    .label(&mut column);
+}
+
 /// The Results pane of a run that ran: the rows of its last statement
 /// that returned some, in the grid a table uses. With none, whether the
 /// run was stopped, where it failed, or that it ran.
@@ -971,6 +1056,7 @@ fn results(ui: &mut Ui, run: &SqlRun, place: &Place<'_>, env: &Env<'_>, actions:
         tab,
         sql,
         full_precision,
+        ..
     } = *place;
     let Some((columns, rows, truncated)) = sql.shown_rows() else {
         // A run someone stopped never reads as one that ran.
@@ -983,6 +1069,12 @@ fn results(ui: &mut Ui, run: &SqlRun, place: &Place<'_>, env: &Env<'_>, actions:
             let said = env.said(|words| cancel_text(run.cancel, words));
             note(ui, rect, &said, palette.warning, env);
         } else if let Some(index) = failed {
+            if let StatementOutcome::Error { error, .. } = &run.outcome.results[index].outcome
+                && format::refuses_writes(error, place.driver)
+            {
+                blocked(ui, rect, error, env);
+                return;
+            }
             // The statement's line, then what the database said of it.
             let named = Words {
                 locale,
@@ -1662,6 +1754,68 @@ mod tests {
                 assert!(harness.has("Row 2") && !harness.has("Row 3"), "{context}");
             }
         }
+    }
+
+    /// The server's refusal of a write in a read-only transaction.
+    fn read_only_refusal() -> StatementOutcome {
+        StatementOutcome::Error {
+            error: Error::Query {
+                code: Some("25006".into()),
+                message: "cannot execute UPDATE in a read-only transaction".into(),
+                detail: None,
+                hint: None,
+            },
+            position: None,
+        }
+    }
+
+    #[test]
+    fn a_refused_write_reads_as_a_limit_of_this_version() {
+        for look in Look::ALL {
+            let (mut harness, tab) = editor(look, "UPDATE users SET email = 'x'");
+            // The fixture's session is SQLite's: the code is PostgreSQL's.
+            harness.app.workspace_mut(tab).unwrap().driver = tabletist_db::Driver::Postgres;
+            run(&mut harness);
+            harness.answer_sql(Ok(script_outcome(vec![read_only_refusal()])), None);
+            show_pane(&mut harness, tab, ResultPane::Results);
+            let title = look.label("This version only reads data");
+            assert!(harness.has(&title), "{title} in {}", look.name);
+            assert!(
+                harness.has("25006 · cannot execute UPDATE in a read-only transaction"),
+                "{}",
+                look.name
+            );
+        }
+    }
+
+    #[test]
+    fn another_error_keeps_its_own_words_in_the_results() {
+        let look = Look::macos();
+        let (mut harness, tab) = editor(look, "SELECT nope");
+        run(&mut harness);
+        let failed = error_outcome("no such column: nope", None);
+        harness.answer_sql(Ok(script_outcome(vec![failed])), None);
+        show_pane(&mut harness, tab, ResultPane::Results);
+        assert!(!harness.has("This version only reads data"));
+    }
+
+    #[test]
+    fn the_messages_tab_counts_the_errors_of_the_last_run() {
+        let value = |harness: &mut Harness| {
+            let tree = harness.settle();
+            let id = node(&tree, "Messages", Role::Button).expect("the Messages tab");
+            let (_, tab) = tree.nodes.iter().find(|(node, _)| *node == id).unwrap();
+            tab.value().map(str::to_owned)
+        };
+        let (mut harness, _tab) = editor(Look::macos(), "SELECT nope");
+        assert_eq!(value(&mut harness), None);
+        run(&mut harness);
+        let failed = error_outcome("no such column: nope", None);
+        harness.answer_sql(Ok(script_outcome(vec![failed])), None);
+        assert_eq!(value(&mut harness).as_deref(), Some("1"));
+        run(&mut harness);
+        harness.answer_sql(Ok(script_outcome(vec![rows_outcome(2)])), None);
+        assert_eq!(value(&mut harness), None);
     }
 
     #[test]
