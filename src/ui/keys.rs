@@ -29,6 +29,7 @@ pub const SHORTCUTS: &[(&str, &str)] = &[
     ),
     ("Mod+T", "New SQL editor"),
     ("Mod+Return, Mod+Shift+Return", "Run statement / run all"),
+    ("Ctrl+Space, Mod+I", "Complete in the SQL editor"),
     ("Mod+W", "Close tab"),
     ("Mod+Shift+[ / ]", "Previous / next tab"),
     ("Mod+R", "Refresh"),
@@ -356,7 +357,12 @@ fn completion_keys(
     terminal: bool,
     actions: &mut Vec<Action>,
 ) {
-    if take_press(input, Modifiers::CTRL, Key::Space) > 0 {
+    // Two chords ask for a list: some systems take Ctrl+Space before the
+    // app sees it (macOS switches input sources with it, and an input
+    // method may be woken by it).
+    let asked = take_press(input, Modifiers::CTRL, Key::Space)
+        + take_press(input, Modifiers::COMMAND, Key::I);
+    if asked > 0 {
         actions.push(Action::OpenCompletion { tab, sql_tab });
     }
     let Some(list) = completing else {
@@ -390,8 +396,13 @@ fn completion_keys(
     if list.has_row {
         if input.events.iter().any(inserts_text) {
             // What this frame types is not what the list was worked out
-            // from: Tab and Enter stay the editor's, and the list is done.
-            if pressed(input, Key::Tab) || pressed(input, Key::Enter) {
+            // from: no row goes in. Tab is taken all the same, or it would
+            // put a tab character into the word being typed; whether the
+            // list goes on is the refresh's to say, for the word as it
+            // reads after this frame. Enter stays the editor's line break,
+            // and the list is done.
+            take_press(input, Modifiers::NONE, Key::Tab);
+            if pressed(input, Key::Enter) {
                 actions.push(close);
             }
         } else if take_press(input, Modifiers::NONE, Key::Tab) > 0 {
@@ -419,9 +430,12 @@ fn inserts_text(event: &egui::Event) -> bool {
 
 /// Whether `event` is `key` going down with exactly `modifiers`: Shift and
 /// Alt as named (`consume_key` and `matches_logically` let an extra Shift
-/// through), and no Ctrl or Cmd that is not named. Ctrl is named by
-/// `CTRL` and matches as every platform reports it: alone on macOS, with
-/// `command` set elsewhere. Ctrl held with Cmd on macOS is not Ctrl.
+/// through), and no Ctrl or Cmd that is not named.
+///
+/// Ctrl is named by `CTRL` and matches as every platform reports it: alone
+/// on macOS, with `command` set elsewhere. Ctrl held with Cmd on macOS is
+/// not Ctrl. Mod is named by `COMMAND`: Cmd on macOS, where an extra Ctrl
+/// changes nothing (as for the other Mod shortcuts), and Ctrl elsewhere.
 fn is_press(event: &egui::Event, modifiers: Modifiers, key: Key) -> bool {
     matches!(
         event,
@@ -432,8 +446,9 @@ fn is_press(event: &egui::Event, modifiers: Modifiers, key: Key) -> bool {
             ..
         } if *pressed == key
             && held.matches_exact(modifiers)
-            // egui lets the pattern's Ctrl match Ctrl+Cmd.
-            && (modifiers.mac_cmd || !held.mac_cmd)
+            // egui lets the pattern's Ctrl match Ctrl+Cmd. Cmd is held
+            // only where the pattern names it, or names Mod.
+            && (modifiers.mac_cmd || modifiers.command || !held.mac_cmd)
     )
 }
 
@@ -683,6 +698,7 @@ mod tests {
             "New connection",
             "New SQL editor",
             "Run statement / run all",
+            "Complete in the SQL editor",
             "Close tab",
             "Previous / next tab",
             "Refresh",
@@ -714,6 +730,57 @@ mod tests {
             keys("Run statement / run all"),
             Some("Mod+Return, Mod+Shift+Return")
         );
+        // Ctrl+Space is taken by some systems before the app sees it.
+        assert_eq!(
+            keys("Complete in the SQL editor"),
+            Some("Ctrl+Space, Mod+I")
+        );
+    }
+
+    #[test]
+    fn a_press_matches_its_modifiers_as_each_platform_reports_them() {
+        let press = |held| crate::testing::key(Key::I, held);
+        let is = |held, pattern| is_press(&press(held), pattern, Key::I);
+        let cmd = Modifiers::MAC_CMD | Modifiers::COMMAND;
+        let ctrl_elsewhere = Modifiers::CTRL | Modifiers::COMMAND;
+        // Mod: Cmd on macOS, with Ctrl or without, and Ctrl elsewhere.
+        for held in [
+            Modifiers::COMMAND,
+            cmd,
+            cmd | Modifiers::CTRL,
+            ctrl_elsewhere,
+        ] {
+            assert!(is(held, Modifiers::COMMAND), "{held:?}");
+        }
+        for held in [
+            Modifiers::NONE,
+            Modifiers::CTRL,
+            cmd | Modifiers::SHIFT,
+            ctrl_elsewhere | Modifiers::ALT,
+        ] {
+            assert!(!is(held, Modifiers::COMMAND), "{held:?}");
+        }
+        // Ctrl: alone on macOS, with the command key elsewhere, never Cmd.
+        for held in [Modifiers::CTRL, ctrl_elsewhere] {
+            assert!(is(held, Modifiers::CTRL), "{held:?}");
+        }
+        for held in [
+            Modifiers::NONE,
+            cmd,
+            cmd | Modifiers::CTRL,
+            Modifiers::CTRL | Modifiers::SHIFT,
+        ] {
+            assert!(!is(held, Modifiers::CTRL), "{held:?}");
+        }
+        // No modifier is none at all.
+        assert!(is(Modifiers::NONE, Modifiers::NONE));
+        for held in [Modifiers::SHIFT, Modifiers::ALT, Modifiers::CTRL, cmd] {
+            assert!(!is(held, Modifiers::NONE), "{held:?}");
+        }
+        // Another key, and a key coming up, are not this press.
+        assert!(!is_press(&press(Modifiers::NONE), Modifiers::NONE, Key::O));
+        let up = crate::testing::release(Key::I, Modifiers::NONE);
+        assert!(!is_press(&up, Modifiers::NONE, Key::I));
     }
 
     #[test]

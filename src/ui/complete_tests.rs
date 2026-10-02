@@ -2,11 +2,12 @@
 //! what closes it. The tasks that give it keys, a view and names from the
 //! database add their tests here.
 
+use egui::accesskit::Role;
 use egui::text::{CCursor, CCursorRange};
 use egui::{Key, Modifiers};
 
 use crate::backend::Command;
-use crate::completion::LISTED;
+use crate::completion::{Candidate, Kind, LISTED};
 use crate::model::{Action, Completion, ConnTabId, SqlTab, TabId, TextPrint, Wanted};
 use crate::testing::{Harness, key, release};
 use crate::ui::sql_text::TOKENIZED;
@@ -554,12 +555,18 @@ fn ctrl_n_and_ctrl_p_move_the_highlight_only_in_the_terminal_look() {
         (Modifiers::CTRL, false),
         (Modifiers::CTRL | Modifiers::COMMAND, true),
     ] {
-        for key in [Key::N, Key::P] {
+        for pressed in [Key::N, Key::P] {
             let (mut harness, tab) = editor();
             type_text(&mut harness, "se");
-            harness.press(key, ctrl);
-            assert_eq!(selected(&harness, tab), Some(0), "{key:?} {ctrl:?}");
-            assert_eq!(harness.app.dialog.is_some(), opens, "{key:?} {ctrl:?}");
+            // The frame of the press: the highlight has not moved.
+            harness.frame(vec![key(pressed, ctrl)]);
+            assert_eq!(selected(&harness, tab), Some(0), "{pressed:?} {ctrl:?}");
+            harness.frame(vec![release(pressed, ctrl)]);
+            harness.settle();
+            assert_eq!(harness.app.dialog.is_some(), opens, "{pressed:?} {ctrl:?}");
+            // A dialog that opened took the keyboard, and the list went.
+            let highlight = (!opens).then_some(0);
+            assert_eq!(selected(&harness, tab), highlight, "{pressed:?} {ctrl:?}");
         }
     }
 }
@@ -575,17 +582,18 @@ fn drop_keyboard(harness: &mut Harness) {
 }
 
 #[test]
-fn the_lists_keys_wait_while_the_keyboard_is_elsewhere() {
+fn the_list_closes_when_the_keyboard_leaves_and_its_keys_do_nothing() {
     for key in [Key::ArrowDown, Key::Tab, Key::Enter, Key::Escape] {
         let (mut harness, tab) = editor();
         type_text(&mut harness, "se");
-        // The keyboard leaves the editor; the model still holds its list.
+        assert_eq!(selected(&harness, tab), Some(0));
+        // The keyboard leaves the editor: its list goes with it.
         drop_keyboard(&mut harness);
         assert!(!editor_has_keyboard(&harness, tab));
-        assert_eq!(selected(&harness, tab), Some(0));
+        assert!(list(&harness, tab).is_none(), "{key:?}");
+        // The keys that were the list's do nothing to the script.
         harness.press(key, Modifiers::NONE);
-        let open = list(&harness, tab).unwrap_or_else(|| panic!("{key:?} closed the list"));
-        assert_eq!((open.selected, open.accept), (0, false), "{key:?}");
+        assert!(list(&harness, tab).is_none(), "{key:?}");
         assert_eq!(sql(&harness, tab).text, "se", "{key:?}");
         assert!(harness.app.dialog.is_none(), "{key:?}");
     }
@@ -649,7 +657,7 @@ fn escape_after_an_insertion_leaves_the_editor() {
 }
 
 #[test]
-fn tab_and_enter_in_a_frame_that_also_types_are_the_editors() {
+fn in_a_frame_that_also_types_tab_does_nothing_and_enter_is_a_line_break() {
     let typing = |text: &str| -> [egui::Event; 3] {
         [
             egui::Event::Text(text.into()),
@@ -657,19 +665,29 @@ fn tab_and_enter_in_a_frame_that_also_types_are_the_editors() {
             egui::Event::Ime(egui::ImeEvent::Commit(text.into())),
         ]
     };
-    for (pressed, after) in [(Key::Tab, "set\t"), (Key::Enter, "set\n")] {
-        for typed in typing("t") {
-            let (mut harness, tab) = editor();
-            type_text(&mut harness, "se");
-            assert_eq!(labels(&harness, tab), ["select", "set"]);
-            // The list was worked out from `se`, not from what this frame
-            // types: its row is not inserted.
-            let events = vec![typed.clone(), key(pressed, Modifiers::NONE)];
-            harness.frame(events);
-            harness.settle();
-            assert_eq!(sql(&harness, tab).text, after, "{typed:?}");
-            assert!(list(&harness, tab).is_none(), "{typed:?}");
-        }
+    // The list was worked out from `se`, not from what this frame types:
+    // its row is not inserted. Tab is taken all the same, so no tab
+    // character lands in the middle of the word, and the list goes on for
+    // the word as it now reads.
+    for typed in typing("l") {
+        let (mut harness, tab) = editor();
+        type_text(&mut harness, "se");
+        assert_eq!(labels(&harness, tab), ["select", "set"]);
+        harness.frame(vec![typed.clone(), key(Key::Tab, Modifiers::NONE)]);
+        harness.settle();
+        assert_eq!(sql(&harness, tab).text, "sel", "{typed:?}");
+        assert_eq!(labels(&harness, tab), ["select"], "{typed:?}");
+        assert_eq!(list(&harness, tab).unwrap().typed, "sel", "{typed:?}");
+    }
+    // Enter is the editor's line break, and the list is done.
+    for typed in typing("t") {
+        let (mut harness, tab) = editor();
+        type_text(&mut harness, "se");
+        assert_eq!(labels(&harness, tab), ["select", "set"]);
+        harness.frame(vec![typed.clone(), key(Key::Enter, Modifiers::NONE)]);
+        harness.settle();
+        assert_eq!(sql(&harness, tab).text, "set\n", "{typed:?}");
+        assert!(list(&harness, tab).is_none(), "{typed:?}");
     }
 }
 
@@ -795,12 +813,7 @@ fn ctrl_n_and_ctrl_p_are_the_lists_while_it_waits_for_its_rows() {
     harness.set_look(crate::theme::Look::omarchy());
     type_text(&mut harness, "se");
     // A list whose names are still being fetched: no row yet.
-    let (_, id) = ids(&harness, tab);
-    let workspace = harness.app.workspace_mut(tab).unwrap();
-    let open = workspace.sql_tab_mut(id).unwrap().completion.as_mut();
-    let open = open.expect("a list");
-    open.candidates = std::sync::Arc::new(Vec::new());
-    open.loading = true;
+    wait_for_rows(&mut harness, tab);
     for key in [Key::N, Key::P] {
         harness.press(key, ctrl());
         // Neither New connection nor Quick open.
@@ -835,9 +848,14 @@ fn ctrl_is_ctrl_as_every_platform_reports_it_and_cmd_is_not() {
         let (mut harness, tab) = editor();
         harness.set_look(crate::theme::Look::omarchy());
         type_text(&mut harness, "se");
-        harness.press(Key::N, held);
+        // The frame of the press: the highlight has not moved.
+        harness.frame(vec![key(Key::N, held)]);
         assert_eq!(selected(&harness, tab), Some(0), "{held:?}");
+        harness.frame(vec![release(Key::N, held)]);
+        harness.settle();
         assert!(harness.app.dialog.is_some(), "{held:?}");
+        // The dialog took the keyboard, and the list went.
+        assert!(list(&harness, tab).is_none(), "{held:?}");
     }
 }
 
@@ -887,4 +905,869 @@ fn the_caret_is_scrolled_into_view_after_an_insertion() {
     harness.finish_animations();
     assert!(sql(&harness, tab).text.len() > "select ".len() + 900 + 2);
     assert!(scrolled(&harness) > before);
+}
+
+/// The node labelled `label`, whatever its role.
+fn named<'a>(
+    tree: &'a egui::accesskit::TreeUpdate,
+    label: &str,
+) -> Option<&'a (egui::accesskit::NodeId, egui::accesskit::Node)> {
+    tree.nodes
+        .iter()
+        .find(|(_, node)| node.label() == Some(label))
+}
+
+/// Where the node labelled `label` sits, in points.
+fn bounds_of(tree: &egui::accesskit::TreeUpdate, label: &str) -> egui::Rect {
+    let (_, node) = named(tree, label).unwrap_or_else(|| panic!("nothing labelled {label:?}"));
+    let rect = node.bounds().expect("bounds");
+    egui::Rect::from_min_max(
+        egui::pos2(rect.x0 as f32, rect.y0 as f32),
+        egui::pos2(rect.x1 as f32, rect.y1 as f32),
+    )
+}
+
+/// How many pieces of text the last frame painted hold `part`.
+fn painted(harness: &Harness, part: &str) -> usize {
+    harness
+        .painted
+        .iter()
+        .filter(|(text, _)| text.contains(part))
+        .count()
+}
+
+/// The list's row named `name`.
+fn row(tree: &egui::accesskit::TreeUpdate, name: &str) -> Option<egui::accesskit::NodeId> {
+    crate::testing::node(tree, name, Role::ListBoxOption)
+}
+
+/// The node `id`.
+fn node_of(
+    tree: &egui::accesskit::TreeUpdate,
+    id: egui::accesskit::NodeId,
+) -> &egui::accesskit::Node {
+    let found = tree.nodes.iter().find(|(node, _)| *node == id);
+    &found.expect("a node").1
+}
+
+/// The row the editor names as its current one: what a screen reader
+/// takes for the focused object.
+fn active_row(tree: &egui::accesskit::TreeUpdate) -> Option<egui::accesskit::NodeId> {
+    let (_, editor) = named(tree, "SQL").expect("the editor");
+    editor.active_descendant()
+}
+
+#[test]
+fn the_list_is_a_list_box_and_its_rows_are_its_options() {
+    use egui::accesskit::Action;
+    let (mut harness, _tab) = editor();
+    type_text(&mut harness, "se");
+    let tree = harness.settle();
+    let (_, whole) = named(&tree, "Completions").expect("the list");
+    assert_eq!(whole.role(), Role::ListBox);
+    assert_eq!(whole.size_of_set(), Some(2));
+    let rows = ["select, keyword", "set, keyword"].map(|name| row(&tree, name).expect(name));
+    // The rows are the list's own, in order. Between them and it is the
+    // node egui makes for the `Ui` they are drawn in: a generic container,
+    // which AccessKit leaves out of what a screen reader is told, so the
+    // rows are the list's children there.
+    let [between] = whole.children() else {
+        panic!("{:?}", whole.children());
+    };
+    let between = node_of(&tree, *between);
+    assert_eq!(between.role(), Role::GenericContainer);
+    assert_eq!(between.children(), rows);
+    for (index, id) in rows.into_iter().enumerate() {
+        let option = node_of(&tree, id);
+        assert_eq!(option.is_selected(), Some(index == 0), "row {index}");
+        assert_eq!(option.position_in_set(), Some(index), "row {index}");
+        assert_eq!(option.size_of_set(), Some(2), "row {index}");
+        // A row is picked, never focused: the keyboard is the editor's.
+        assert!(option.supports_action(Action::Click), "row {index}");
+        assert!(!option.supports_action(Action::Focus), "row {index}");
+    }
+    assert!(!whole.supports_action(Action::Focus));
+    // The highlight moves: so does the selected state.
+    harness.press(Key::ArrowDown, Modifiers::NONE);
+    let tree = harness.settle();
+    for (name, selected) in [("select, keyword", false), ("set, keyword", true)] {
+        let option = node_of(&tree, row(&tree, name).expect(name));
+        assert_eq!(option.is_selected(), Some(selected), "{name}");
+    }
+}
+
+#[test]
+fn a_typed_list_leaves_a_screen_reader_on_the_editor_until_the_highlight_moves() {
+    let (mut harness, _tab) = editor();
+    type_text(&mut harness, "se");
+    // It opened by itself: the editor stays the focused object, or a
+    // reader would jump to a row on nearly every word typed.
+    let tree = harness.settle();
+    assert!(row(&tree, "select, keyword").is_some());
+    assert_eq!(active_row(&tree), None);
+    // The user moved in it: now the highlighted row is the current one.
+    harness.press(Key::ArrowDown, Modifiers::NONE);
+    let tree = harness.settle();
+    let second = row(&tree, "set, keyword");
+    assert!(second.is_some());
+    assert_eq!(active_row(&tree), second);
+    harness.press(Key::ArrowUp, Modifiers::NONE);
+    let tree = harness.settle();
+    assert_eq!(active_row(&tree), row(&tree, "select, keyword"));
+    // Closed: the editor names no row.
+    harness.press(Key::Escape, Modifiers::NONE);
+    let tree = harness.settle();
+    assert_eq!(active_row(&tree), None);
+}
+
+#[test]
+fn a_list_opened_by_hand_names_its_highlighted_row_at_once() {
+    let (mut harness, tab) = editor();
+    type_text(&mut harness, "se");
+    harness.press(Key::Space, ctrl());
+    assert!(list(&harness, tab).is_some_and(|list| list.manual && !list.moved));
+    let tree = harness.settle();
+    let first = row(&tree, "select, keyword");
+    assert!(first.is_some());
+    assert_eq!(active_row(&tree), first);
+}
+
+/// An AccessKit request for `action` on the node `target`.
+fn request(
+    harness: &mut Harness,
+    target: egui::accesskit::NodeId,
+    action: egui::accesskit::Action,
+) {
+    let request = egui::accesskit::ActionRequest {
+        target_tree: egui::accesskit::TreeId::ROOT,
+        target_node: target,
+        action,
+        data: None,
+    };
+    harness.frame(vec![egui::Event::AccessKitActionRequest(request)]);
+    harness.settle();
+}
+
+#[test]
+fn a_focus_request_on_the_list_leaves_the_keyboard_with_the_editor() {
+    for name in ["set, keyword", "Completions"] {
+        let (mut harness, tab) = editor();
+        type_text(&mut harness, "se");
+        let tree = harness.settle();
+        let (target, _) = *named(&tree, name).expect(name);
+        request(&mut harness, target, egui::accesskit::Action::Focus);
+        assert!(editor_has_keyboard(&harness, tab), "{name}");
+        assert_eq!(labels(&harness, tab), ["select", "set"], "{name}");
+        assert_eq!(sql(&harness, tab).text, "se", "{name}");
+    }
+}
+
+#[test]
+fn a_click_request_on_a_row_inserts_it() {
+    let (mut harness, tab) = editor();
+    type_text(&mut harness, "se");
+    let tree = harness.settle();
+    let target = row(&tree, "set, keyword").expect("a row");
+    request(&mut harness, target, egui::accesskit::Action::Click);
+    assert_eq!(sql(&harness, tab).text, "set");
+    assert!(list(&harness, tab).is_none());
+    assert!(editor_has_keyboard(&harness, tab));
+}
+
+/// A click of `button` at `at`: the pointer moves there, the button goes
+/// down and comes up, a frame each.
+fn click_at(harness: &mut Harness, at: egui::Pos2, button: egui::PointerButton) {
+    let press = |pressed| egui::Event::PointerButton {
+        pos: at,
+        button,
+        pressed,
+        modifiers: Modifiers::NONE,
+    };
+    harness.frame(vec![egui::Event::PointerMoved(at)]);
+    harness.frame(vec![press(true)]);
+    harness.frame(vec![press(false)]);
+    harness.settle();
+}
+
+/// A point of the list's footer: under its last row.
+fn footer_point(tree: &egui::accesskit::TreeUpdate) -> egui::Pos2 {
+    let whole = bounds_of(tree, "Completions");
+    let at = egui::pos2(whole.center().x, whole.bottom() - 4.0);
+    assert!(!bounds_of(tree, "set, keyword").contains(at));
+    at
+}
+
+#[test]
+fn a_click_on_a_row_inserts_it_and_the_editor_keeps_the_keyboard() {
+    let (mut harness, tab) = editor();
+    type_text(&mut harness, "se");
+    let tree = harness.settle();
+    let at = bounds_of(&tree, "set, keyword").center();
+    click_at(&mut harness, at, egui::PointerButton::Primary);
+    assert_eq!(sql(&harness, tab).text, "set");
+    assert!(list(&harness, tab).is_none());
+    assert!(editor_has_keyboard(&harness, tab));
+}
+
+#[test]
+fn a_click_on_the_list_beside_its_rows_keeps_the_list_and_the_keyboard() {
+    let (mut harness, tab) = editor();
+    type_text(&mut harness, "se");
+    let tree = harness.settle();
+    let at = footer_point(&tree);
+    click_at(&mut harness, at, egui::PointerButton::Primary);
+    assert_eq!(sql(&harness, tab).text, "se");
+    assert_eq!(labels(&harness, tab), ["select", "set"]);
+    assert!(editor_has_keyboard(&harness, tab));
+    // And the list's keys still work.
+    harness.press(Key::Tab, Modifiers::NONE);
+    assert_eq!(sql(&harness, tab).text, "select");
+}
+
+#[test]
+fn a_secondary_or_middle_click_on_the_list_keeps_the_list_and_the_keyboard() {
+    for button in [egui::PointerButton::Secondary, egui::PointerButton::Middle] {
+        for on_a_row in [true, false] {
+            let (mut harness, tab) = editor();
+            type_text(&mut harness, "se");
+            let tree = harness.settle();
+            let at = if on_a_row {
+                bounds_of(&tree, "set, keyword").center()
+            } else {
+                footer_point(&tree)
+            };
+            click_at(&mut harness, at, button);
+            let case = format!("{button:?}, on a row: {on_a_row}");
+            // Only a primary click picks a row.
+            assert_eq!(sql(&harness, tab).text, "se", "{case}");
+            assert_eq!(labels(&harness, tab), ["select", "set"], "{case}");
+            assert!(editor_has_keyboard(&harness, tab), "{case}");
+            // And the list's keys still work.
+            harness.press(Key::Tab, Modifiers::NONE);
+            assert_eq!(sql(&harness, tab).text, "select", "{case}");
+        }
+    }
+}
+
+#[test]
+fn escape_while_the_list_is_pressed_closes_it_and_the_editor_keeps_the_keyboard() {
+    let (mut harness, tab) = editor();
+    type_text(&mut harness, "se");
+    let tree = harness.settle();
+    let at = footer_point(&tree);
+    harness.frame(vec![egui::Event::PointerMoved(at)]);
+    harness.frame(vec![egui::Event::PointerButton {
+        pos: at,
+        button: egui::PointerButton::Primary,
+        pressed: true,
+        modifiers: Modifiers::NONE,
+    }]);
+    // The button stays down. The editor never lost the keyboard, so it is
+    // not handed it again: that would let go of Esc for a frame.
+    harness.settle();
+    harness.frame(vec![key(Key::Escape, Modifiers::NONE)]);
+    harness.frame(vec![release(Key::Escape, Modifiers::NONE)]);
+    harness.settle();
+    assert!(list(&harness, tab).is_none());
+    assert!(editor_has_keyboard(&harness, tab));
+}
+
+#[test]
+fn the_footer_names_the_keys_and_counts_the_rows_out_of_sight() {
+    let (mut harness, tab) = editor();
+    harness.press(Key::Space, ctrl());
+    let open = list(&harness, tab).expect("a list");
+    let hidden = open.candidates.len() + open.more - crate::ui::sql_complete::VISIBLE;
+    assert!(hidden > 0);
+    harness.settle();
+    assert_eq!(painted(&harness, &format!("{hidden} more")), 1);
+    assert_eq!(painted(&harness, "insert"), 1);
+    // Five rows show, and no sixth.
+    let tree = harness.settle();
+    let rows = tree
+        .nodes
+        .iter()
+        .filter(|(_, node)| {
+            node.label()
+                .is_some_and(|label| label.ends_with(", keyword"))
+        })
+        .count();
+    assert_eq!(rows, crate::ui::sql_complete::VISIBLE);
+}
+
+#[test]
+fn the_terminal_look_names_its_keys_in_the_list_and_the_mode_line() {
+    let (mut harness, _tab) = editor();
+    harness.set_look(crate::theme::Look::omarchy());
+    harness.settle();
+    assert_eq!(painted(&harness, "complete"), 0);
+    type_text(&mut harness, "se");
+    harness.settle();
+    assert_eq!(painted(&harness, "ctrl+n/p"), 1);
+    // The list's footer and the mode line's `tab complete`.
+    assert_eq!(painted(&harness, "complete"), 2);
+}
+
+#[test]
+fn the_terminal_footer_counts_the_rows_out_of_sight() {
+    let (mut harness, tab) = editor();
+    harness.set_look(crate::theme::Look::omarchy());
+    harness.press(Key::Space, ctrl());
+    let open = list(&harness, tab).expect("a list");
+    let hidden = open.candidates.len() + open.more - crate::ui::sql_complete::VISIBLE;
+    assert!(hidden > 0);
+    harness.settle();
+    // After the keys, in the same line.
+    assert_eq!(painted(&harness, &format!("move · {hidden} more")), 1);
+    // A list that shows all it has counts nothing.
+    let (mut harness, _tab) = editor();
+    harness.set_look(crate::theme::Look::omarchy());
+    type_text(&mut harness, "se");
+    harness.settle();
+    assert_eq!(painted(&harness, "ctrl+n/p"), 1);
+    assert_eq!(painted(&harness, "more"), 0);
+}
+
+#[test]
+fn the_mode_line_stops_naming_tab_once_a_row_is_accepted() {
+    let (mut harness, tab) = editor();
+    harness.set_look(crate::theme::Look::omarchy());
+    type_text(&mut harness, "se");
+    harness.settle();
+    assert_eq!(painted(&harness, "complete"), 2);
+    let (tab_id, sql_tab) = ids(&harness, tab);
+    harness.app.apply(Action::AcceptCompletion {
+        tab: tab_id,
+        sql_tab,
+        row: None,
+    });
+    // The frame between the accept and the insertion: the mode line is
+    // drawn before the editor puts the row in, and the list is no longer
+    // one to complete from.
+    harness.frame(Vec::new());
+    assert_eq!(painted(&harness, "complete"), 0);
+    assert_eq!(sql(&harness, tab).text, "select");
+}
+
+/// Makes the open list one that waits for its names: no row yet.
+fn wait_for_rows(harness: &mut Harness, tab: ConnTabId) {
+    let (_, id) = ids(harness, tab);
+    let workspace = harness.app.workspace_mut(tab).unwrap();
+    let open = workspace.sql_tab_mut(id).unwrap().completion.as_mut();
+    let open = open.expect("a list");
+    open.candidates = std::sync::Arc::new(Vec::new());
+    open.loading = true;
+}
+
+#[test]
+fn a_list_with_no_rows_names_no_keys() {
+    // macOS: what it waits for, and no key to insert with.
+    let (mut harness, tab) = editor();
+    type_text(&mut harness, "se");
+    harness.settle();
+    assert_eq!(painted(&harness, "insert"), 1);
+    wait_for_rows(&mut harness, tab);
+    let tree = harness.settle();
+    assert!(named(&tree, "Completions").is_some());
+    assert_eq!(painted(&harness, "Loading"), 1);
+    assert_eq!(painted(&harness, "insert"), 0);
+
+    // The terminal: neither in its footer nor in the mode line.
+    let (mut harness, tab) = editor();
+    harness.set_look(crate::theme::Look::omarchy());
+    type_text(&mut harness, "se");
+    wait_for_rows(&mut harness, tab);
+    let tree = harness.settle();
+    assert!(named(&tree, "Completions").is_some());
+    assert_eq!(painted(&harness, "loading"), 1);
+    assert_eq!(painted(&harness, "complete"), 0);
+    assert_eq!(painted(&harness, "ctrl+n/p"), 0);
+}
+
+/// Replaces the open list's rows with `rows`.
+fn set_rows(harness: &mut Harness, tab: ConnTabId, rows: Vec<Candidate>) {
+    let (_, id) = ids(harness, tab);
+    let workspace = harness.app.workspace_mut(tab).unwrap();
+    let open = workspace.sql_tab_mut(id).unwrap().completion.as_mut();
+    open.expect("a list").candidates = std::sync::Arc::new(rows);
+}
+
+#[test]
+fn a_long_name_and_a_long_type_are_cut_with_an_ellipsis() {
+    use crate::theme::Look;
+    for look in [Look::standard(), Look::omarchy()] {
+        let (mut harness, tab) = editor();
+        harness.set_look(look);
+        type_text(&mut harness, "se");
+        let name = format!("se{}", "_and_a_very_long_name".repeat(12));
+        let kind = "character varying(255) ".repeat(8);
+        let long = Candidate {
+            kind: Kind::Column,
+            label: name.clone(),
+            insert: name.clone(),
+            matched: 0..2,
+            detail: kind.clone(),
+        };
+        set_rows(&mut harness, tab, vec![long]);
+        let tree = harness.settle();
+        // What is painted of `whole`: its start, then "…".
+        let cut = |whole: &str| {
+            harness.painted.iter().any(|(text, _)| {
+                text.strip_suffix('…')
+                    .is_some_and(|start| !start.is_empty() && whole.starts_with(start))
+            })
+        };
+        assert!(cut(&name), "the name, terminal: {}", look.terminal);
+        assert!(cut(&kind), "the type, terminal: {}", look.terminal);
+        // A screen reader gets both whole.
+        let whole = format!("{name}, column, {kind}");
+        assert!(row(&tree, &whole).is_some());
+    }
+}
+
+#[test]
+fn losing_the_keyboard_closes_the_list() {
+    let (mut harness, tab) = editor();
+    type_text(&mut harness, "se");
+    // Quick open takes the keyboard.
+    harness.press(Key::P, Modifiers::COMMAND);
+    assert!(harness.app.dialog.is_some());
+    assert!(list(&harness, tab).is_none());
+}
+
+#[test]
+fn escape_in_the_frame_after_the_list_opens_closes_it() {
+    let (mut harness, tab) = editor();
+    // No frame between the two: the list opened at the end of the first
+    // and does not hold Esc yet, so Esc takes the keyboard from the editor.
+    harness.frame(vec![egui::Event::Text("se".into())]);
+    harness.frame(vec![key(Key::Escape, Modifiers::NONE)]);
+    harness.frame(vec![release(Key::Escape, Modifiers::NONE)]);
+    harness.settle();
+    assert!(list(&harness, tab).is_none());
+    assert_eq!(sql(&harness, tab).text, "se");
+}
+
+#[test]
+fn scrolling_the_word_out_of_the_pane_closes_the_list() {
+    let (mut harness, tab) = editor();
+    paste(&mut harness, &"select 1;\n".repeat(200));
+    type_text(&mut harness, "se");
+    // The editor scrolls to its caret, and the list shows under its word.
+    let tree = harness.finish_animations();
+    assert!(named(&tree, "Completions").is_some());
+    // The wheel over the editor, far enough for the last line to leave.
+    wheel_up(&mut harness, 20.0);
+    assert!(list(&harness, tab).is_none());
+    assert!(editor_has_keyboard(&harness, tab));
+}
+
+/// Turns the wheel over the editor: the script moves down by `lines` a
+/// frame, for ten frames, and then comes to rest (egui smooths the wheel
+/// over the frames that follow).
+fn wheel_up(harness: &mut Harness, lines: f32) {
+    let tree = harness.settle();
+    // Beside the gutter, which stays put: the field itself is as tall as
+    // the script and scrolls. Near the top, clear of a list at the caret.
+    let gutter = bounds_of(&tree, "Line numbers");
+    let over = egui::pos2(gutter.right() + 40.0, gutter.top() + 10.0);
+    harness.frame(vec![egui::Event::PointerMoved(over)]);
+    for _ in 0..10 {
+        harness.frame(vec![egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Line,
+            delta: egui::vec2(0.0, lines),
+            phase: egui::TouchPhase::Move,
+            modifiers: Modifiers::NONE,
+        }]);
+    }
+    harness.finish_animations();
+}
+
+#[test]
+fn scrolling_the_word_out_of_the_pane_sideways_closes_the_list() {
+    let (mut harness, tab) = editor();
+    // A first line to type on, over one far wider than the pane.
+    paste(&mut harness, &format!("\n{}", "1, ".repeat(400)));
+    harness.finish_animations();
+    harness.press(Key::ArrowUp, Modifiers::COMMAND);
+    harness.finish_animations();
+    assert_eq!(sql(&harness, tab).cursor, 0);
+    type_text(&mut harness, "se");
+    let tree = harness.finish_animations();
+    assert!(named(&tree, "Completions").is_some());
+    // The wheel, sideways, until the whole word has left on the left: the
+    // list is not kept at the pane's edge for a word nobody sees.
+    let gutter = bounds_of(&tree, "Line numbers");
+    let over = egui::pos2(gutter.right() + 400.0, gutter.bottom() - 10.0);
+    harness.frame(vec![egui::Event::PointerMoved(over)]);
+    for _ in 0..10 {
+        harness.frame(vec![egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Line,
+            delta: egui::vec2(-20.0, 0.0),
+            phase: egui::TouchPhase::Move,
+            modifiers: Modifiers::NONE,
+        }]);
+    }
+    harness.finish_animations();
+    assert!(scrolled(&harness, tab).x > 0.0);
+    assert!(list(&harness, tab).is_none());
+    assert!(editor_has_keyboard(&harness, tab));
+}
+
+#[test]
+fn a_list_opened_while_the_editor_scrolls_to_its_caret_waits_for_it() {
+    let (mut harness, tab) = editor();
+    // The paste puts the caret far below the pane: the editor is still
+    // scrolling to it when the word is typed.
+    harness.frame(vec![egui::Event::Paste("select 1;\n".repeat(200))]);
+    harness.frame(vec![egui::Event::Text("se".into())]);
+    let tree = harness.settle();
+    assert!(named(&tree, "Completions").is_none(), "not in the pane yet");
+    assert_eq!(labels(&harness, tab), ["select", "set"]);
+    // It shows once its word is in the pane.
+    let tree = harness.finish_animations();
+    assert!(named(&tree, "Completions").is_some());
+    assert_eq!(labels(&harness, tab), ["select", "set"]);
+}
+
+#[test]
+fn a_list_asked_for_with_the_caret_out_of_the_pane_brings_it_into_view() {
+    let (mut harness, tab) = editor();
+    paste(&mut harness, &"select 1;\n".repeat(200));
+    harness.finish_animations();
+    let (tab_id, id) = ids(&harness, tab);
+    let scrolled = |harness: &Harness| {
+        crate::ui::sql_text::scrolled_to(&harness.ctx, tab_id, id)
+            .expect("a scroll area")
+            .y
+    };
+    let at_the_caret = scrolled(&harness);
+    wheel_up(&mut harness, 20.0);
+    let away = scrolled(&harness);
+    assert!(away < at_the_caret / 2.0, "{away} of {at_the_caret}");
+    // Asked for by hand: the editor scrolls back to its caret, and the
+    // list shows there.
+    harness.press(Key::I, Modifiers::COMMAND);
+    let tree = harness.finish_animations();
+    assert!(list(&harness, tab).is_some_and(|list| list.manual));
+    assert!(named(&tree, "Completions").is_some());
+    let back = scrolled(&harness);
+    assert!(back > at_the_caret / 2.0, "{back} of {at_the_caret}");
+}
+
+#[test]
+fn mod_i_opens_the_list_by_hand() {
+    // As the harness presses Mod, then as macOS reports Cmd and as the
+    // others report Ctrl.
+    for held in [
+        Modifiers::COMMAND,
+        Modifiers::MAC_CMD | Modifiers::COMMAND,
+        Modifiers::CTRL | Modifiers::COMMAND,
+    ] {
+        let (mut harness, tab) = editor();
+        harness.press(Key::I, held);
+        let open = list(&harness, tab).unwrap_or_else(|| panic!("no list for {held:?}"));
+        assert!(open.manual, "{held:?}");
+        assert_eq!(open.candidates[0].label, "ALL", "{held:?}");
+        // The editor never saw the key.
+        assert_eq!(sql(&harness, tab).text, "", "{held:?}");
+        assert!(editor_has_keyboard(&harness, tab), "{held:?}");
+    }
+}
+
+#[test]
+fn mod_i_with_shift_or_alt_or_without_mod_opens_nothing() {
+    for held in [
+        Modifiers::COMMAND | Modifiers::SHIFT,
+        Modifiers::COMMAND | Modifiers::ALT,
+        Modifiers::CTRL | Modifiers::COMMAND | Modifiers::SHIFT,
+        Modifiers::MAC_CMD | Modifiers::COMMAND | Modifiers::ALT,
+        // Ctrl on macOS is not Mod there.
+        Modifiers::CTRL,
+    ] {
+        let (mut harness, tab) = editor();
+        harness.press(Key::I, held);
+        assert!(list(&harness, tab).is_none(), "{held:?}");
+        assert!(sql(&harness, tab).completion_wanted.is_none(), "{held:?}");
+        assert_eq!(sql(&harness, tab).text, "", "{held:?}");
+    }
+}
+
+#[test]
+fn mod_i_opens_nothing_while_the_keyboard_is_elsewhere() {
+    let (mut harness, tab) = editor();
+    drop_keyboard(&mut harness);
+    assert!(!editor_has_keyboard(&harness, tab));
+    harness.press(Key::I, Modifiers::COMMAND);
+    assert!(list(&harness, tab).is_none());
+    assert!(sql(&harness, tab).completion_wanted.is_none());
+    assert_eq!(sql(&harness, tab).text, "");
+}
+
+/// How far the editor is scrolled.
+fn scrolled(harness: &Harness, tab: ConnTabId) -> egui::Vec2 {
+    let (tab, id) = ids(harness, tab);
+    crate::ui::sql_text::scrolled_to(&harness.ctx, tab, id).expect("a scroll area")
+}
+
+/// Runs frames until the open list is drawn, or closed. One that is open
+/// and not drawn waits for the editor to scroll its caret into view: it
+/// may wait only while the editor scrolls.
+fn frames_until_the_list_shows(
+    harness: &mut Harness,
+    tab: ConnTabId,
+) -> egui::accesskit::TreeUpdate {
+    let mut still = 0;
+    for _ in 0..200 {
+        let before = scrolled(harness, tab);
+        let tree = harness.frame(Vec::new());
+        if list(harness, tab).is_none() || named(&tree, "Completions").is_some() {
+            return tree;
+        }
+        if scrolled(harness, tab) == before {
+            still += 1;
+        }
+        // egui starts to scroll the frame after it is asked to.
+        assert!(
+            still <= 2,
+            "the list is open, not drawn, and nothing scrolls"
+        );
+    }
+    panic!("the list neither showed nor closed");
+}
+
+#[test]
+fn a_list_waits_undrawn_only_while_the_editor_scrolls_to_its_caret() {
+    // Typed while the editor is on its way to a caret far below.
+    let (mut harness, tab) = editor();
+    harness.frame(vec![egui::Event::Paste("select 1;\n".repeat(200))]);
+    harness.frame(vec![egui::Event::Text("se".into())]);
+    let tree = frames_until_the_list_shows(&mut harness, tab);
+    assert!(named(&tree, "Completions").is_some());
+    assert_eq!(labels(&harness, tab), ["select", "set"]);
+
+    // Asked for by hand after scrolling away from the caret.
+    let (mut harness, tab) = editor();
+    paste(&mut harness, &"select 1;\n".repeat(200));
+    harness.finish_animations();
+    wheel_up(&mut harness, 20.0);
+    harness.frame(vec![key(Key::I, Modifiers::COMMAND)]);
+    harness.frame(vec![release(Key::I, Modifiers::COMMAND)]);
+    let tree = frames_until_the_list_shows(&mut harness, tab);
+    assert!(named(&tree, "Completions").is_some());
+    assert!(list(&harness, tab).is_some_and(|list| list.manual));
+}
+
+#[test]
+fn a_list_whose_word_starts_left_of_the_pane_shows_at_the_panes_edge() {
+    let (mut harness, tab) = editor();
+    // A short line over one wider than the pane: with the caret at the
+    // end of the long one, the view is scrolled to the right.
+    let short = "select 1 from t where se";
+    paste(&mut harness, &format!("{short}\n{}", "1, ".repeat(100)));
+    harness.finish_animations();
+    // Up: the caret lands at the end of the short line, and the editor
+    // scrolls back just far enough to show it. The word before it starts
+    // left of the pane.
+    harness.press(Key::ArrowUp, Modifiers::NONE);
+    harness.finish_animations();
+    assert_eq!(sql(&harness, tab).cursor, short.len());
+    assert!(scrolled(&harness, tab).x > 0.0);
+    harness.frame(vec![egui::Event::Text("l".into())]);
+    let tree = frames_until_the_list_shows(&mut harness, tab);
+    assert_eq!(labels(&harness, tab), ["select"]);
+    // Drawn, and inside the text's pane across: not over the gutter.
+    let whole = bounds_of(&tree, "Completions");
+    let gutter = bounds_of(&tree, "Line numbers");
+    assert!(whole.left() >= gutter.right(), "{whole:?} and {gutter:?}");
+    // Its keys act on a list the user sees.
+    harness.press(Key::Enter, Modifiers::NONE);
+    assert!(
+        sql(&harness, tab)
+            .text
+            .starts_with("select 1 from t where select\n")
+    );
+}
+
+#[test]
+fn a_list_with_no_place_closes_once_the_caret_is_in_the_pane() {
+    let (mut harness, tab) = editor();
+    // The caret at the end, in the pane; the first line far above it.
+    paste(&mut harness, &format!("se\n{}", "select 1;\n".repeat(200)));
+    harness.finish_animations();
+    // A list on the word of the first line, as no refresh would leave it:
+    // worked out from this script and this cursor, so it is not worked out
+    // again, yet hanging under a word that is out of the pane.
+    let (_, id) = ids(&harness, tab);
+    let workspace = harness.app.workspace_mut(tab).unwrap();
+    let dialect = workspace.driver.dialect();
+    let generation = workspace.catalog_generation;
+    let sql_tab = workspace.sql_tab_mut(id).unwrap();
+    let tokens = tabletist_db::sql::tokenize(dialect, &sql_tab.text);
+    let site = tabletist_db::complete::site(&tokens, &sql_tab.text, 2).expect("a site");
+    let catalog = crate::completion::Catalog { dialect };
+    let listed = crate::completion::list(&site, "se", false, &catalog);
+    assert!(!listed.candidates.is_empty());
+    let of = (TextPrint::of(&sql_tab.text), sql_tab.cursor, generation);
+    let open = Completion::new(false, of, site, "se".into(), listed, false);
+    sql_tab.completion = Some(open);
+    let before = sql_tab.text.clone();
+    // Nothing is left to scroll to: the list has no place and goes, and
+    // its keys with it.
+    let tree = frames_until_the_list_shows(&mut harness, tab);
+    assert!(named(&tree, "Completions").is_none());
+    harness.settle();
+    assert!(list(&harness, tab).is_none());
+    assert!(editor_has_keyboard(&harness, tab));
+    harness.press(Key::Tab, Modifiers::NONE);
+    assert_eq!(sql(&harness, tab).text, format!("{before}\t"));
+}
+
+#[test]
+fn a_list_asked_for_on_another_word_while_one_is_open_is_a_new_list() {
+    let (mut harness, tab) = editor();
+    paste(&mut harness, &"select 1;\n".repeat(200));
+    type_text(&mut harness, "se");
+    let tree = harness.finish_animations();
+    assert!(named(&tree, "Completions").is_some());
+    let serial = list(&harness, tab).expect("a list").serial;
+    // In one frame the cursor goes to the start of the script, far above
+    // the pane, and a list is asked for there: it takes the place of the
+    // open one with no frame between them.
+    let chord = [
+        (Key::ArrowUp, Modifiers::COMMAND),
+        (Key::I, Modifiers::COMMAND),
+    ];
+    harness.frame(chord.map(|(pressed, held)| key(pressed, held)).into());
+    harness.frame(chord.map(|(pressed, held)| release(pressed, held)).into());
+    let open = list(&harness, tab).expect("a list");
+    assert_ne!(open.serial, serial);
+    // It has not drawn yet, whatever the one before it did: it waits for
+    // the editor to scroll to its caret, and shows there.
+    let tree = frames_until_the_list_shows(&mut harness, tab);
+    assert!(named(&tree, "Completions").is_some());
+    let open = list(&harness, tab).expect("a list");
+    assert!(open.manual);
+    assert_eq!(sql(&harness, tab).cursor, 0);
+    assert_eq!((open.typed.as_str(), open.site.word.clone()), ("", 0..0));
+}
+
+#[test]
+fn the_first_list_of_another_editor_is_drawn_at_once() {
+    let (mut harness, _tab) = editor();
+    type_text(&mut harness, "se");
+    harness.settle();
+    assert_eq!(painted(&harness, "insert"), 1);
+    harness.press(Key::Escape, Modifiers::NONE);
+    assert_eq!(painted(&harness, "insert"), 0);
+    // A second editor. The frame after its word is typed paints its list:
+    // egui sizes a new area in a pass that paints nothing, and the lists
+    // of all editors share one area.
+    harness.press(Key::T, Modifiers::COMMAND);
+    harness.frame(vec![egui::Event::Text("se".into())]);
+    harness.frame(Vec::new());
+    assert_eq!(painted(&harness, "insert"), 1);
+}
+
+#[test]
+fn the_rows_in_view_follow_the_highlight_down_the_list() {
+    use crate::ui::sql_complete::{VISIBLE, row_name};
+    let (mut harness, tab) = editor();
+    harness.press(Key::Space, ctrl());
+    let open = list(&harness, tab).expect("a list");
+    assert!(open.candidates.len() > VISIBLE + 1);
+    let locale = harness.app.locale;
+    let names: Vec<String> = open
+        .candidates
+        .iter()
+        .map(|candidate| row_name(candidate, locale))
+        .collect();
+    let in_view = |tree: &egui::accesskit::TreeUpdate| -> Vec<usize> {
+        let shown = |index: &usize| row(tree, &names[*index]).is_some();
+        (0..names.len()).filter(shown).collect()
+    };
+    let tree = harness.settle();
+    assert_eq!(in_view(&tree), (0..VISIBLE).collect::<Vec<_>>());
+    // Down past the last row in view: the sixth candidate comes in and
+    // the first leaves.
+    for _ in 0..VISIBLE {
+        harness.press(Key::ArrowDown, Modifiers::NONE);
+    }
+    assert_eq!(selected(&harness, tab), Some(VISIBLE));
+    let tree = harness.settle();
+    assert_eq!(in_view(&tree), (1..=VISIBLE).collect::<Vec<_>>());
+    let last = node_of(&tree, row(&tree, &names[VISIBLE]).unwrap());
+    assert_eq!(last.is_selected(), Some(true));
+    assert_eq!(last.position_in_set(), Some(VISIBLE));
+    // Back up inside the view: the rows stay where they are.
+    harness.press(Key::ArrowUp, Modifiers::NONE);
+    let tree = harness.settle();
+    assert_eq!(in_view(&tree), (1..=VISIBLE).collect::<Vec<_>>());
+    // Up to the first row again: the view follows.
+    for _ in 0..VISIBLE {
+        harness.press(Key::ArrowUp, Modifiers::NONE);
+    }
+    assert_eq!(selected(&harness, tab), Some(0));
+    let tree = harness.settle();
+    assert_eq!(in_view(&tree), (0..VISIBLE).collect::<Vec<_>>());
+}
+
+#[test]
+fn a_closed_editor_leaves_nothing_of_its_list_in_eguis_memory() {
+    use crate::ui::sql_text::remembered;
+    let (mut harness, tab) = editor();
+    type_text(&mut harness, "se");
+    harness.settle();
+    let (tab_id, id) = ids(&harness, tab);
+    assert!(remembered(&harness.ctx, tab_id, id).contains(&"list"));
+    // The editor goes with its list open: it is not drawn again, so only
+    // forgetting the editor drops what the list kept.
+    harness.press(Key::W, Modifiers::COMMAND);
+    assert!(harness.app.workspace(tab).unwrap().sql_tab(id).is_none());
+    assert!(remembered(&harness.ctx, tab_id, id).is_empty());
+
+    // A list that closes drops it at once.
+    let (mut harness, tab) = editor();
+    type_text(&mut harness, "se");
+    harness.settle();
+    let (tab_id, id) = ids(&harness, tab);
+    harness.press(Key::Escape, Modifiers::NONE);
+    assert!(!remembered(&harness.ctx, tab_id, id).contains(&"list"));
+}
+
+#[test]
+fn a_list_that_shrinks_is_drawn_at_once_where_it_stays() {
+    // Where the list is: with five rows, in the first frame after one
+    // typed word left it a single row, and once that has settled.
+    let run = |height: f32, lines: usize| {
+        let mut harness = Harness::with_size(egui::vec2(1280.0, height));
+        harness.connect_fake();
+        harness.press(Key::T, Modifiers::COMMAND);
+        paste(&mut harness, &"\n".repeat(lines));
+        harness.finish_animations();
+        harness.press(Key::Space, ctrl());
+        let tree = harness.settle();
+        let place = |tree: &egui::accesskit::TreeUpdate| {
+            let (_, node) = named(tree, "Completions")?;
+            let rect = node.bounds()?;
+            Some((rect.y0, rect.y1))
+        };
+        let long = place(&tree)?;
+        harness.frame(vec![egui::Event::Text("sel".into())]);
+        let first = place(&harness.frame(Vec::new()))?;
+        let settled = place(&harness.settle())?;
+        Some((long, first, settled))
+    };
+    // A window where the long list has no room under its word and goes
+    // above it, and the short one fits under: there the short list is
+    // wholly below where the long one was.
+    let sizes = (0..16).map(|step| 360.0 + 20.0 * step as f32);
+    let found = sizes
+        .flat_map(|height| (1..16).map(move |lines| (height, lines)))
+        .filter_map(|(height, lines)| run(height, lines))
+        .find(|(long, _, settled)| settled.0 > long.1);
+    let (_, first, settled) = found.expect("a window where only the short list fits below");
+    // egui would keep an area inside the screen by the size it had a frame
+    // ago, and so draw the short list over its word's line for a frame.
+    assert_eq!(first, settled);
 }

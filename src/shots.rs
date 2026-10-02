@@ -407,6 +407,16 @@ fn shots() {
         let tab = workspace(harness);
         harness.app.apply(Action::NewSqlTab(tab));
     });
+    // The completion list, under a word being typed.
+    both("sql-complete", |harness| {
+        sql_editor(harness);
+        // The editor has the keyboard a frame after it opens.
+        harness.settle();
+        // The script ends without a `;`: close its last statement, so the
+        // word typed next starts a new one.
+        harness.frame(vec![egui::Event::Paste(";\n".into())]);
+        harness.frame(vec![egui::Event::Text("se".into())]);
+    });
     both("sql-running", |harness| {
         let tab = sql_editor(harness);
         run_sql(harness, tab, true);

@@ -1758,10 +1758,17 @@ pub enum Wanted {
 /// the catalog's generation.
 pub type ListedOf = (TextPrint, usize, u64);
 
+/// The serial of the next completion list to open.
+static NEXT_COMPLETION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 /// A SQL editor's completion list, while it is open. Its site holds names
 /// read from the script, so it is never logged (it has no `Debug`).
 #[derive(Clone)]
 pub struct Completion {
+    /// Tells this list from any other that was ever open: its own from the
+    /// time it opens until it closes, whatever is typed meanwhile. What
+    /// the view keeps for a list between frames is kept for this serial.
+    pub serial: u64,
     /// Opened with `Ctrl+Space`, not by typing.
     pub manual: bool,
     of: ListedOf,
@@ -1797,7 +1804,9 @@ impl Completion {
         listed: crate::completion::Listed,
         loading: bool,
     ) -> Self {
+        let serial = NEXT_COMPLETION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         Self {
+            serial,
             manual,
             of,
             on_empty: site.word.is_empty(),
@@ -3334,6 +3343,21 @@ mod tests {
                 .collect(),
             more: 0,
         }
+    }
+
+    #[test]
+    fn a_completion_keeps_its_serial_and_no_other_list_has_it() {
+        let mut list = completion_of(&["desc"], "de");
+        let other = completion_of(&["desc"], "de");
+        assert_ne!(list.serial, other.serial);
+        // The same list after more of its word is typed, and as the view
+        // copies it.
+        let serial = list.serial;
+        let of = (TextPrint::of("des"), 3, 0);
+        let rows = completion_rows(&["desc"]);
+        list.relist(of, completion_site("des"), "des".into(), rows, false);
+        assert_eq!(list.serial, serial);
+        assert_eq!(list.clone().serial, serial);
     }
 
     #[test]

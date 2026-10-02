@@ -14,8 +14,8 @@ use tabletist_db::Dialect;
 use tabletist_db::sql::{self, Statement, Token, TokenKind};
 
 use crate::app::App;
-use crate::i18n::gettext;
-use crate::model::{Action, ConnTabId, Pane, SqlTab, TabId, TextPrint};
+use crate::i18n::{Locale, gettext};
+use crate::model::{Action, Completion, ConnTabId, Pane, SqlTab, TabId, TextPrint};
 use crate::theme::{Look, Palette};
 use crate::typography::{Text, TextRole};
 use crate::ui::widgets;
@@ -129,7 +129,8 @@ struct ScrollId(Id);
 
 /// Drops what egui's memory keeps for a closed editor: its text field's
 /// cursor and undo history (which holds copies of the script), what was
-/// worked out from the script, and where it was scrolled to.
+/// worked out from the script, where it was scrolled to, and what its
+/// completion list kept.
 pub fn forget(ctx: &egui::Context, tab: ConnTabId, id: TabId) {
     let editor = editor_id(tab, id);
     ctx.data_mut(|data| {
@@ -140,6 +141,7 @@ pub fn forget(ctx: &egui::Context, tab: ConnTabId, id: TabId) {
         }
         data.remove::<ScrollId>(editor);
     });
+    super::sql_complete::forget(ctx, editor);
 }
 
 /// What egui's memory keeps for the editor `id`, by name.
@@ -157,6 +159,7 @@ pub fn remembered(ctx: &egui::Context, tab: ConnTabId, id: TabId) -> Vec<&'stati
         ),
         ("scroll id", area.is_some()),
         ("scroll", scrolled),
+        ("list", super::sql_complete::remembered(ctx, editor)),
     ]
     .into_iter()
     .filter_map(|(name, kept)| kept.then_some(name))
@@ -332,6 +335,9 @@ struct Edited {
     galley: Arc<Galley>,
     /// Where the galley's top left corner is on screen.
     origin: egui::Pos2,
+    /// The caret on screen, as tall as its line. A field never focused
+    /// has none.
+    caret: Option<Rect>,
     focused: bool,
     /// The field's text changed this frame by typing: not by a paste, an
     /// undo, a deletion or an input method's text while it is composed.
@@ -370,26 +376,25 @@ pub fn show(app: &mut App, ui: &mut Ui, tab: ConnTabId, id: TabId) {
     let backdrop = ui.painter().add(Shape::Noop);
     // The text scrolls both ways beside the gutter, which stays put.
     let text_pane = Rect::from_min_max(pos2(pane.left() + gutter.width, pane.top()), pane.max);
-    // An open completion list takes Esc: the editor keeps the keyboard.
-    // Not one whose row this frame inserts: Esc is the editor's again.
-    let holds_escape = sql_tab.completion.as_ref().is_some_and(|list| !list.accept);
+    let name = gettext(locale, "SQL");
+    let field = Field {
+        id: editor,
+        name: &name,
+        left: gutter.text_left,
+        dialect,
+        look: &look,
+        palette: &palette,
+        // An open completion list takes Esc: the editor keeps the
+        // keyboard. Not one whose row this frame inserts: Esc is the
+        // editor's again.
+        hold_escape: sql_tab.completion.as_ref().is_some_and(|list| !list.accept),
+    };
     let mut child = ui.new_child(egui::UiBuilder::new().id_salt("text").max_rect(text_pane));
     child.set_clip_rect(text_pane.intersect(ui.clip_rect()));
     let scrolled = egui::ScrollArea::both()
         .id_salt("scroll")
         .auto_shrink([false, false])
-        .show(&mut child, |ui| {
-            let field = Field {
-                id: editor,
-                name: &gettext(locale, "SQL"),
-                left: gutter.text_left,
-                dialect,
-                look: &look,
-                palette: &palette,
-                hold_escape: holds_escape,
-            };
-            edit(ui, sql_tab, &field)
-        });
+        .show(&mut child, |ui| edit(ui, sql_tab, &field));
     ui.data_mut(|data| data.insert_temp(editor, ScrollId(scrolled.id)));
     let mut edited = scrolled.inner;
     // The gutter is the editor's too: a press on it gives the editor the
@@ -414,6 +419,15 @@ pub fn show(app: &mut App, ui: &mut Ui, tab: ConnTabId, id: TabId) {
         ui.memory_mut(|memory| memory.request_focus(editor));
         edited.focused = true;
     }
+    // The open completion list, and the characters its word starts and
+    // ends at. (After the field drew: a list whose row was accepted went
+    // in there and is off the tab, so the one here is open.)
+    let completing = sql_tab.completion.as_ref().map(|list| {
+        let word = &list.site.word;
+        let start = char_index(&sql_tab.text, word.start);
+        let end = char_index(&sql_tab.text, word.end);
+        (list.clone(), start..end)
+    });
     let (cursor_line, _) = sql_tab.line_col();
     let error_line = sql_tab.error_mark().map(|(line, _)| line);
     // The statement Run executes, from the tokens the colours came from.
@@ -427,6 +441,14 @@ pub fn show(app: &mut App, ui: &mut Ui, tab: ConnTabId, id: TabId) {
     if edited.typed {
         app.actions.push(Action::SqlTyped { tab, sql_tab: id });
     }
+    let spot = Spot {
+        tab,
+        sql_tab: id,
+        text_pane,
+        locale,
+    };
+    let asked = completion_list(ui, completing.as_ref(), &mut edited, &field, &spot);
+    app.actions.extend(asked);
     let across = |x: egui::Rangef, y| Rect::from_x_y_ranges(x, y);
     let fill = |rect, color| Shape::rect_filled(rect, CornerRadius::ZERO, color);
     let mut behind = Vec::new();
@@ -487,6 +509,83 @@ pub fn show(app: &mut App, ui: &mut Ui, tab: ConnTabId, id: TabId) {
     }
 }
 
+/// Where an editor's completion list is drawn, and whose it is.
+struct Spot {
+    tab: ConnTabId,
+    sql_tab: TabId,
+    /// The text's pane: the editor without its gutter.
+    text_pane: Rect,
+    locale: Locale,
+}
+
+/// Draws the open completion list of an editor under its word:
+/// `completing` is the list and the characters its word starts and ends
+/// at, or nothing when no list is open. Returns what the frame asks of
+/// the list: a row picked, or that it closes.
+///
+/// A press on the list hands the keyboard back to the editor, and
+/// `edited` says so.
+fn completion_list(
+    ui: &Ui,
+    completing: Option<&(Completion, Range<usize>)>,
+    edited: &mut Edited,
+    field: &Field<'_>,
+    spot: &Spot,
+) -> Option<Action> {
+    let (tab, sql_tab, pane) = (spot.tab, spot.sql_tab, spot.text_pane);
+    let Some((list, chars)) = completing else {
+        super::sql_complete::forget(ui.ctx(), field.id);
+        return None;
+    };
+    let close = Action::CloseCompletion { tab, sql_tab };
+    // A character's place on screen, as tall as its line.
+    let on_screen = |at: usize| {
+        let place = edited.galley.pos_from_cursor(CCursor::new(at));
+        place.translate(edited.origin.to_vec2())
+    };
+    let (word, end) = (on_screen(chars.start), on_screen(chars.end));
+    // The list hangs under its word while some of the word is in the
+    // pane: its line is, and across the word starts before the pane's
+    // right edge and ends after its left one.
+    let in_sight = pane.y_range().contains(word.center().y)
+        && word.left() <= pane.right()
+        && end.right() >= pane.left();
+    if !in_sight {
+        // Scrolled out of the pane, the list has nothing to hang under.
+        // One that has not drawn yet waits instead, while the editor
+        // scrolls its caret into view (see `edit`) and no longer: with the
+        // caret in the pane and still no place for the list, it closes,
+        // rather than stay open with its keys live and nothing to see.
+        let drawn = super::sql_complete::was_shown(ui.ctx(), field.id, list);
+        let caret_on_its_way = edited
+            .caret
+            .is_some_and(|caret| !pane.contains(caret.center()));
+        let waits = !drawn && caret_on_its_way && edited.focused;
+        return (!waits).then_some(close);
+    }
+    // A start left of the pane (the line is scrolled, and the pane shows
+    // the word from further along): the list is drawn from the pane's
+    // left edge.
+    let word = word.translate(vec2((pane.left() - word.left()).max(0.0), 0.0));
+    let (look, palette) = (field.look, field.palette);
+    let shown = super::sql_complete::show(ui, list, word, field.id, look, palette, spot.locale);
+    // A press on the list lands outside the field, which gives the keys
+    // up: they stay the editor's. Only once it lost them: asking for the
+    // keyboard again lets go of the keys the field holds (Tab, the arrows,
+    // Esc) for a frame.
+    if shown.pressed && !edited.focused {
+        ui.memory_mut(|memory| memory.request_focus(field.id));
+        edited.focused = true;
+    }
+    if let Some(row) = shown.picked {
+        let row = Some(row);
+        return Some(Action::AcceptCompletion { tab, sql_tab, row });
+    }
+    // Checked after the list drew, so a press on a row does not count as
+    // the editor losing the keyboard.
+    (!edited.focused).then_some(close)
+}
+
 /// What the text field is, and what it draws with.
 struct Field<'a> {
     id: Id,
@@ -541,16 +640,31 @@ fn edit(ui: &mut Ui, sql_tab: &mut SqlTab, field: &Field<'_>) -> Edited {
         // need follow the one that opened the tab.
         ui.ctx().request_repaint();
     }
+    // The caret on screen.
+    let caret = output.state.cursor.range(&output.galley).map(|range| {
+        let caret = output.galley.pos_from_cursor(range.primary);
+        caret.translate(output.galley_pos.to_vec2())
+    });
+    // The field scrolls to its caret when its own events move it. A row
+    // put in from outside moves it too. And a completion list that has
+    // not drawn yet hangs under a word that may be out of the pane (it
+    // was asked for after scrolling away): the caret comes into view, and
+    // the list with it. (The list here is an open one: `insert_completion`
+    // took one whose row was accepted. One that still has no place once
+    // the caret is in the pane is closed by `completion_list`, so this
+    // ends.)
+    let list_waits = sql_tab
+        .completion
+        .as_ref()
+        .is_some_and(|list| !super::sql_complete::was_shown(ui.ctx(), field.id, list));
+    if (inserted || list_waits)
+        && let Some(caret) = caret
+    {
+        ui.scroll_to_rect(caret.expand(1.5), None);
+    }
     if inserted {
-        // The field scrolls to its caret when its own events move it; a
-        // row put in from outside moves it too. And one more frame: what
-        // is drawn before the editor (the footer's line and column) read
-        // the cursor before the row went in.
-        if let Some(range) = output.state.cursor.range(&output.galley) {
-            let caret = output.galley.pos_from_cursor(range.primary);
-            let on_screen = caret.translate(output.galley_pos.to_vec2());
-            ui.scroll_to_rect(on_screen.expand(1.5), None);
-        }
+        // One more frame: what is drawn before the editor (the footer's
+        // line and column) read the cursor before the row went in.
         ui.ctx().request_repaint();
     }
     if field.hold_escape && output.response.has_focus() {
@@ -583,6 +697,7 @@ fn edit(ui: &mut Ui, sql_tab: &mut SqlTab, field: &Field<'_>) -> Edited {
         typed,
         focused: output.response.has_focus(),
         origin: output.galley_pos,
+        caret,
         galley: output.galley,
     }
 }
