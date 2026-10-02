@@ -502,6 +502,8 @@ pub fn toolbar(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: Tab
                 actions.push(Action::ToggleFilterBar(tab));
             }
             let mut x = button.right() + 8.0;
+            // Where the button, the chips and the sort end.
+            let mut taken = button.right();
             for (index, text) in filters.iter().enumerate() {
                 let mono = TextRole::MonoSecondary;
                 let width = mono.width(ui.ctx(), look.faces, text);
@@ -534,13 +536,15 @@ pub fn toolbar(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: Tab
                     });
                 }
                 x = chip.right() + 8.0;
+                taken = chip.right();
             }
             if let Some((column, dir)) = &sort {
-                let (_, cleared) =
+                let (chip, cleared) =
                     sort_chip(ui, None, x, center, column, *dir, &look, &palette, locale);
                 if cleared {
                     actions.push(Action::ClearSort { tab, object_tab });
                 }
+                taken = chip.right();
             }
             if temporal {
                 let small = TextRole::Secondary;
@@ -555,34 +559,43 @@ pub fn toolbar(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: Tab
                         gettext(locale, "Full precision"),
                     )
                 };
+                // The hint keeps to the room the chips left, 12 clear of them:
+                // the sentence goes first, then the link.
+                let room = right - (taken + 12.0);
                 let link_width = small.width(ui.ctx(), look.faces, &link);
-                let hit = Rect::from_min_size(
-                    pos2(right - link_width, center - 9.0),
-                    vec2(link_width, 18.0),
-                );
-                let response = ui.interact(hit, ui.id().with("precision"), Sense::click());
-                response.widget_info(|| WidgetInfo::labeled(WidgetType::Link, true, link.as_ref()));
-                let color = if response.hovered() {
-                    palette.accent_hover
-                } else {
-                    palette.accent
-                };
-                widgets::paint_text(
-                    ui,
-                    hit.left(),
-                    center,
-                    Text::one(&look, small, &link, color),
-                );
-                // "… second · ", the space before the link kept out of the text.
-                let space = small.width(ui.ctx(), look.faces, " ");
-                widgets::paint_text_right(
-                    ui,
-                    hit.left() - space,
-                    center,
-                    Text::one(&look, small, &format!("{said} ·"), palette.dim),
-                );
-                if response.clicked() {
-                    actions.push(Action::ToggleFullPrecision(tab));
+                if link_width <= room {
+                    let hit = Rect::from_min_size(
+                        pos2(right - link_width, center - 9.0),
+                        vec2(link_width, 18.0),
+                    );
+                    let response = ui.interact(hit, ui.id().with("precision"), Sense::click());
+                    response
+                        .widget_info(|| WidgetInfo::labeled(WidgetType::Link, true, link.as_ref()));
+                    let color = if response.hovered() {
+                        palette.accent_hover
+                    } else {
+                        palette.accent
+                    };
+                    widgets::paint_text(
+                        ui,
+                        hit.left(),
+                        center,
+                        Text::one(&look, small, &link, color),
+                    );
+                    if response.clicked() {
+                        actions.push(Action::ToggleFullPrecision(tab));
+                    }
+                    // "… second · ", the space before the link kept out of the text.
+                    let space = small.width(ui.ctx(), look.faces, " ");
+                    let said = format!("{said} ·");
+                    if small.width(ui.ctx(), look.faces, &said) + space + link_width <= room {
+                        widgets::paint_text_right(
+                            ui,
+                            hit.left() - space,
+                            center,
+                            Text::one(&look, small, &said, palette.dim),
+                        );
+                    }
                 }
             }
         });

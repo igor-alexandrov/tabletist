@@ -361,6 +361,91 @@ mod tests {
     }
 
     #[test]
+    fn the_timestamp_hint_gives_way_to_the_filter_chips() {
+        use egui::accesskit::Role;
+        for look in [crate::theme::Look::standard(), crate::theme::Look::macos()] {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            let tab = harness.connect_fake();
+            harness.click("users");
+            let mut page = crate::testing::page(1, false);
+            page.columns[1].kind = tabletist_db::ValueKind::Temporal;
+            harness.answer_rows(page.clone());
+            let id = harness.app.workspace(tab).unwrap().active_tab.unwrap();
+            let object = harness
+                .app
+                .workspace_mut(tab)
+                .unwrap()
+                .object_tab_mut(id)
+                .unwrap();
+            object.filter.rows = vec![
+                crate::model::FilterRow {
+                    column: "id".into(),
+                    op: tabletist_db::FilterOp::Gt,
+                    value: "5".into(),
+                },
+                crate::model::FilterRow {
+                    column: "email".into(),
+                    op: tabletist_db::FilterOp::Contains,
+                    value: "example".into(),
+                },
+            ];
+            harness.app.apply(crate::model::Action::ApplyFilters {
+                tab,
+                object_tab: id,
+            });
+            harness.answer_rows(page);
+            let sentence = "Timestamps shown to the second ·";
+            // From a pane with no room for the hint to one with room for all of it.
+            for width in (700..=1900).step_by(30) {
+                harness.size.x = width as f32;
+                let tree = harness.settle();
+                let at = format!("in {} at {width} wide", look.name);
+                // Each chip: its text and its button.
+                let chips: Vec<(String, egui::Rect)> = tree
+                    .nodes
+                    .iter()
+                    .filter(|(_, node)| node.role() == Role::Button)
+                    .filter_map(|(_, node)| node.label()?.strip_prefix("Remove filter "))
+                    .map(|text| {
+                        let label = format!("Remove filter {text}");
+                        let button = crate::testing::bounds(&tree, &label, Role::Button)
+                            .unwrap_or_else(|| panic!("{label} has no bounds {at}"));
+                        let text_rect = harness
+                            .painted_rect(text)
+                            .unwrap_or_else(|| panic!("the chip {text:?} is not painted {at}"));
+                        (text.to_owned(), button.union(text_rect))
+                    })
+                    .collect();
+                assert_eq!(chips.len(), 2, "both filters have a chip {at}");
+                let link = crate::testing::bounds(&tree, "Full precision", Role::Link);
+                let said = harness.painted_rect(sentence);
+                assert!(
+                    said.is_none() || link.is_some(),
+                    "the sentence goes before its link does {at}"
+                );
+                for (part, rect) in [("link", link), ("sentence", said)] {
+                    let Some(rect) = rect else {
+                        continue;
+                    };
+                    for (text, chip) in &chips {
+                        assert!(
+                            !rect.intersects(*chip),
+                            "the hint's {part} at {rect:?} is on the chip {text:?} at {chip:?} {at}"
+                        );
+                    }
+                }
+                if width == 1900 {
+                    assert!(
+                        link.is_some() && said.is_some(),
+                        "a wide pane shows the whole hint {at}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn ctrl_b_hides_and_shows_the_sidebar() {
         let (mut harness, _tab) = tree_harness();
         assert!(harness.has("orders"));

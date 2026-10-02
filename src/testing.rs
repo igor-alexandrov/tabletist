@@ -21,6 +21,8 @@ pub struct Harness {
     pub fullscreen: bool,
     /// Every piece of text the last frame painted, with its color.
     pub painted: Vec<(String, egui::Color32)>,
+    /// Where the last frame painted each piece of text, in points.
+    pub text_rects: Vec<(String, egui::Rect)>,
     /// Every rectangle, circle and outline the last frame filled, and where.
     pub fills: Vec<(egui::Rect, egui::Color32)>,
     /// The colour of every line and outline the last frame drew.
@@ -76,10 +78,11 @@ impl Harness {
         }
         output.textures_delta.clear();
         self.painted.clear();
+        self.text_rects.clear();
         self.fills.clear();
         self.strokes.clear();
         for clipped in &output.shapes {
-            collect_text(&clipped.shape, &mut self.painted);
+            collect_text(&clipped.shape, &mut self.painted, &mut self.text_rects);
             collect_paint(&clipped.shape, &mut self.fills, &mut self.strokes);
         }
         let viewport = output.viewport_output.get(&egui::ViewportId::ROOT);
@@ -213,15 +216,29 @@ impl Harness {
             .map(|(_, color)| *color)
     }
 
+    /// Where the last frame painted `text`.
+    pub fn painted_rect(&self, text: &str) -> Option<egui::Rect> {
+        self.text_rects
+            .iter()
+            .find(|(painted, _)| painted == text)
+            .map(|(_, rect)| *rect)
+    }
+
     pub fn has(&mut self, label: &str) -> bool {
         let tree = self.settle();
         labels(&tree).iter().any(|found| found == label)
     }
 }
 
-fn collect_text(shape: &egui::Shape, into: &mut Vec<(String, egui::Color32)>) {
+fn collect_text(
+    shape: &egui::Shape,
+    into: &mut Vec<(String, egui::Color32)>,
+    rects: &mut Vec<(String, egui::Rect)>,
+) {
     match shape {
-        egui::Shape::Vec(shapes) => shapes.iter().for_each(|shape| collect_text(shape, into)),
+        egui::Shape::Vec(shapes) => shapes
+            .iter()
+            .for_each(|shape| collect_text(shape, into, rects)),
         egui::Shape::Text(text) => {
             let color = text.override_text_color.unwrap_or_else(|| {
                 let section = text.galley.job.sections.first();
@@ -231,6 +248,10 @@ fn collect_text(shape: &egui::Shape, into: &mut Vec<(String, egui::Color32)>) {
                 }
             });
             into.push((text.galley.text().to_owned(), color));
+            rects.push((
+                text.galley.text().to_owned(),
+                egui::Rect::from_min_size(text.pos, text.galley.size()),
+            ));
         }
         _ => {}
     }
@@ -630,6 +651,7 @@ impl Harness {
             viewport_commands: Vec::new(),
             fullscreen: false,
             painted: Vec::new(),
+            text_rects: Vec::new(),
             fills: Vec::new(),
             strokes: Vec::new(),
             repaint_after: std::time::Duration::MAX,
