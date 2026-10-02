@@ -1751,7 +1751,8 @@ fn banner(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                     + leave.width(ui, &look);
                 if reconnecting {
                     // The spinner asks for the frames that keep it turning.
-                    ui.add(egui::Spinner::new().size(14.0).color(palette.warning));
+                    let (at, _) = ui.allocate_exact_size(vec2(14.0, 14.0), Sense::hover());
+                    states::spinner(ui, at, palette.warning, &palette);
                 }
                 // The text wraps in what is left: a long error must not
                 // push the buttons out of the window.

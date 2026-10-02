@@ -332,6 +332,39 @@ pub fn card(ui: &mut Ui, card: &Card<'_>, look: &Look, palette: &Palette) {
     }
 }
 
+/// The width of a spinner's line.
+const RING: f32 = 2.0;
+
+/// A wait's spinner in `rect`: a ring, and over it a quarter of the ring
+/// in `color` that goes round once a second. It asks for the next frame
+/// while it shows, as `egui::Spinner` does: a wait's time ticks on those.
+pub fn spinner(ui: &Ui, rect: Rect, color: Color32, palette: &Palette) {
+    if !ui.is_rect_visible(rect) {
+        return;
+    }
+    ui.request_repaint();
+    // To the middle of the line, whose outer edge touches `rect`.
+    let radius = (rect.width().min(rect.height()) - RING) / 2.0;
+    if radius <= 0.0 {
+        return;
+    }
+    let center = rect.center();
+    ui.painter()
+        .circle_stroke(center, radius, Stroke::new(RING, palette.border));
+    let start = ui.input(|input| input.time).fract() * std::f64::consts::TAU;
+    // A line through enough points to read as round.
+    let pieces = (radius.round() as u32).clamp(8, 32);
+    let quarter = (0..=pieces)
+        .map(|piece| {
+            let turned = std::f64::consts::FRAC_PI_2 * f64::from(piece) / f64::from(pieces);
+            let (sin, cos) = (start + turned).sin_cos();
+            center + radius * vec2(cos as f32, sin as f32)
+        })
+        .collect();
+    ui.painter()
+        .add(egui::Shape::line(quarter, Stroke::new(RING, color)));
+}
+
 /// How far a step of a wait has come.
 #[derive(Clone, Copy, PartialEq)]
 pub enum StepState {
@@ -497,10 +530,7 @@ pub fn steps(ui: &mut Ui, rect: Rect, steps: &[Step<'_>], look: &Look, palette: 
         match step.state {
             StepState::Done => Icon::Check.image(palette.success, MARK).paint_at(ui, mark),
             // The spinner asks for the frames that keep the time going.
-            StepState::Running(_) => egui::Spinner::new()
-                .size(MARK)
-                .color(palette.accent)
-                .paint_at(ui, mark),
+            StepState::Running(_) => spinner(ui, mark, palette.accent, palette),
             StepState::Waiting if look.terminal => {
                 ui.painter()
                     .circle_filled(mark.center(), 1.5, palette.faint);
@@ -540,7 +570,7 @@ pub fn running(
     look: &Look,
     palette: &Palette,
 ) -> bool {
-    let spinner = if look.terminal { 12.0 } else { 14.0 };
+    let side = if look.terminal { 12.0 } else { 14.0 };
     let height = if look.terminal { 24.0 } else { 28.0 };
     let gap = 12.0;
     let role = widgets::body(look);
@@ -554,7 +584,7 @@ pub fn running(
     let width = widgets::measure(ui, line);
     let reserved = widgets::measure(ui, Text::one(look, role, &widest, palette.dim));
     let button_width = cancel.as_ref().map(|button| button.width(ui, look));
-    let content = spinner + gap + width + button_width.map_or(0.0, |width| gap + width);
+    let content = side + gap + width + button_width.map_or(0.0, |width| gap + width);
     // 14 before the spinner, 10 round the button.
     let card = Rect::from_center_size(rect.center(), vec2(14.0 + content + 10.0, height + 20.0));
     if look.terminal {
@@ -593,14 +623,9 @@ pub fn running(
     ui.interact(card, ui.id().with("running"), Sense::CLICK | Sense::DRAG);
     let (mut x, center) = (card.left() + 14.0, card.center().y);
     // The spinner asks for the frames that keep the time going.
-    egui::Spinner::new()
-        .size(spinner)
-        .color(palette.accent)
-        .paint_at(
-            ui,
-            Rect::from_center_size(pos2(x + spinner / 2.0, center), vec2(spinner, spinner)),
-        );
-    x += spinner + gap;
+    let ring = Rect::from_center_size(pos2(x + side / 2.0, center), vec2(side, side));
+    spinner(ui, ring, palette.accent, palette);
+    x += side + gap;
     widgets::paint_text(ui, x, center, Text::one(look, role, text, palette.text));
     // The time is its own piece, from where its room starts.
     let time = Text::one(look, role, &time, palette.dim);
@@ -1049,6 +1074,22 @@ mod tests {
                     &palette,
                 );
                 progress(ui, egui::Rangef::point(at.x), at.y, &palette);
+            });
+        }
+    }
+
+    /// Asserts nothing: a spinner with no room to turn in must not panic,
+    /// and that is all this guards.
+    #[test]
+    fn a_spinner_does_not_panic_in_no_room() {
+        for look in Look::ALL {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            let palette = harness.app.palette;
+            harness.frame_with(|ui| {
+                let at = ui.max_rect().min;
+                let none = Rect::from_min_size(at, vec2(0.0, 0.0));
+                spinner(ui, none, palette.accent, &palette);
             });
         }
     }
