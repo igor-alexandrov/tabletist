@@ -471,6 +471,10 @@ enum Dialog { Connection(..), Password(..), HostKey(..), QuickOpen(..), Help }
 - The reducer formats the selected row's text once, when the selection or
   the page changes; drawing only lays that text out.
 - A copy button per field and a filter field for wide tables.
+- On a SQL tab the panel shows the selected row of the result, and only while
+  one is selected (see the SQL editor spec).
+- What is folded or expanded belongs to a row of one page or one result:
+  another page, a refresh or a new result starts fresh.
 
 ### 5.8 Structure view
 

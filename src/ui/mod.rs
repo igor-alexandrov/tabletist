@@ -2015,6 +2015,21 @@ mod tests {
         assert!(harness.has(toggle));
     }
 
+    #[test]
+    fn the_terminal_strips_toggle_hides_and_shows_a_result_rows_panel() {
+        let mut harness = Harness::new();
+        harness.set_look(crate::theme::Look::omarchy());
+        let tab = harness.connect_fake();
+        with_sql_result(&mut harness, tab, 3);
+        let toggle = "Show or hide the row panel";
+        harness.click("Row 2");
+        assert!(panel_shows(&mut harness));
+        harness.click(toggle);
+        assert!(!panel_shows(&mut harness));
+        harness.click(toggle);
+        assert!(panel_shows(&mut harness));
+    }
+
     /// The fields of the row panel that shows, by their copy buttons.
     fn panel_shows(harness: &mut Harness) -> bool {
         harness.has("Copy email")
