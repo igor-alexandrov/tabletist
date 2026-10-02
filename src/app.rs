@@ -1889,13 +1889,39 @@ impl App {
                 request,
                 result,
             } => {
-                if let Some(tab) = self.tab_for_session(session)
-                    && let Some(workspace) = self.workspace_mut(tab)
-                    && let Some(object) = workspace
-                        .object_tabs_mut()
-                        .find(|o| o.structure.pending == Some(request))
-                {
+                let Some(tab) = self.tab_for_session(session) else {
+                    return;
+                };
+                let Some(workspace) = self.workspace_mut(tab) else {
+                    return;
+                };
+                let waiting = workspace
+                    .object_tabs_mut()
+                    .find(|o| o.structure.pending == Some(request));
+                if let Some(object) = waiting {
+                    // A table tab's structure tells the completion list
+                    // its columns too.
+                    let columns = result.as_ref().ok();
+                    let columns = columns.map(|structure| structure.columns.clone());
+                    let named = object.object.clone();
                     object.structure.finish(request, result);
+                    if let Some(columns) = columns {
+                        let kept = workspace.columns.entry(named).or_default();
+                        // One being fetched gets its own answer.
+                        if !kept.is_loading() {
+                            kept.value = Some(columns);
+                            kept.error = None;
+                        }
+                        workspace.catalog_changed();
+                    }
+                } else if let Some(kept) = workspace
+                    .columns
+                    .values_mut()
+                    .find(|kept| kept.pending == Some(request))
+                {
+                    // Asked for by a completion list.
+                    kept.finish(request, result.map(|structure| structure.columns));
+                    workspace.catalog_changed();
                 }
             }
             Event::SecretLoaded { request, result } => {
@@ -2296,6 +2322,7 @@ fn catalog_of<'a>(
         tree: &workspace.tree,
         bare: workspace.bare_schema(),
         schemas,
+        columns: &workspace.columns,
     }
 }
 
@@ -2345,11 +2372,19 @@ impl App {
 
     fn refresh_tree(&mut self, tab: ConnTabId) {
         self.load_schemas(tab);
-        // A schema only a completion list loaded is not the sidebar's to
-        // refresh: it goes, and loads again when a list needs it.
+        // The names of a schema the sidebar does not show unfolded (one
+        // only a completion list loaded, or one that was folded) are not
+        // loaded again here: they are forgotten, and load again when a
+        // list or the sidebar needs them. Its node stays: the prefix
+        // groups unfolded in it are the user's. The columns a list
+        // fetched go too.
         if let Some(workspace) = self.workspace_mut(tab) {
-            let nodes = &mut workspace.tree.nodes;
-            nodes.retain(|_, node| node.expanded || node.objects.is_loading());
+            for node in workspace.tree.nodes.values_mut() {
+                if !node.expanded && !node.objects.is_loading() {
+                    node.objects = Fetch::default();
+                }
+            }
+            workspace.columns.clear();
             workspace.catalog_changed();
         }
         let expanded: Vec<String> = self
@@ -2417,7 +2452,8 @@ impl App {
 
     /// Asks the backend for the names a completion list needs and the
     /// workspace never loaded. Only on a connected session; a load that
-    /// failed is not asked for again until the tree is refreshed.
+    /// failed is not asked for again until the tree is refreshed, which
+    /// forgets the columns too.
     fn send_needs(&mut self, tab: ConnTabId, needs: &[Need]) {
         for need in needs {
             let Some(workspace) = self.workspace(tab) else {
@@ -2433,8 +2469,33 @@ impl App {
                         self.load_objects(tab, schema);
                     }
                 }
+                Need::Columns(object) => {
+                    let kept = workspace.columns.get(object);
+                    if kept.is_none_or(Fetch::needs_load) {
+                        self.load_columns(tab, object.clone());
+                    }
+                }
             }
         }
+    }
+
+    /// Asks for `object`'s structure, for its columns in the completion
+    /// list. Nothing waits for it but the workspace's `columns`.
+    fn load_columns(&mut self, tab: ConnTabId, object: ObjectRef) {
+        let request = RequestId(self.next_id());
+        let Some(workspace) = self.workspace_mut(tab) else {
+            return;
+        };
+        let kept = workspace.columns.entry(object.clone()).or_default();
+        kept.start(request);
+        // An open completion list says it waits for them.
+        workspace.catalog_changed();
+        let session = workspace.session;
+        self.backend.send(Command::Describe {
+            session,
+            request,
+            object,
+        });
     }
 
     /// Works out the completion list of the SQL editor on screen: opens
@@ -4150,6 +4211,36 @@ mod tests {
             new.iter()
                 .any(|c| matches!(c, Command::ListObjects { schema, .. } if schema == "main"))
         );
+    }
+
+    #[test]
+    fn refreshing_the_tree_keeps_the_groups_unfolded_in_a_folded_schema() {
+        let mut harness = Harness::new();
+        let tab = harness.connect_fake();
+        harness.app.apply(Action::ToggleGroup {
+            tab,
+            schema: "main".into(),
+            prefix: "order".into(),
+        });
+        let toggle = || Action::ToggleSchema {
+            tab,
+            schema: "main".into(),
+        };
+        // Folded: its tables are not the refresh's to load again.
+        harness.app.apply(toggle());
+        let before = harness.app.backend.sent.len();
+        harness.app.apply(Action::RefreshTree(tab));
+        let new = &harness.app.backend.sent[before..];
+        assert!(!new.iter().any(|c| matches!(c, Command::ListObjects { .. })));
+        let node = &harness.app.workspace(tab).unwrap().tree.nodes["main"];
+        assert!(node.open_groups.contains("order"), "the user's stays");
+        // Its names are forgotten, and load again once it is unfolded.
+        assert!(node.objects.needs_load());
+        harness.app.apply(toggle());
+        assert!(matches!(
+            last_sent(&harness.app),
+            Command::ListObjects { schema, .. } if schema == "main"
+        ));
     }
 
     #[test]

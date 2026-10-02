@@ -1,15 +1,19 @@
 //! The rows of a SQL editor's completion list: what a site offers, from
 //! what the workspace knows. No UI.
 
+use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 
-use tabletist_db::complete::{Expects, PHRASES, Site};
-use tabletist_db::{Dialect, ObjectInfo, ObjectKind};
+use tabletist_db::complete::{Expects, PHRASES, Site, Source};
+use tabletist_db::{ColumnInfo, Dialect, ObjectInfo, ObjectKind, ObjectRef};
 
-use crate::model::Tree;
+use crate::model::{Fetch, Tree};
 
 /// How many candidates a list keeps; the rest are only counted.
 pub const KEPT: usize = 100;
+
+/// How many of a statement's tables have their columns fetched.
+pub const TABLES: usize = 8;
 
 #[cfg(test)]
 thread_local! {
@@ -65,6 +69,8 @@ pub struct Catalog<'a> {
     pub bare: Option<&'a str>,
     /// The schemas the sidebar shows.
     pub schemas: &'a [String],
+    /// The columns of the tables and views whose columns were fetched.
+    pub columns: &'a HashMap<ObjectRef, Fetch<Vec<ColumnInfo>>>,
 }
 
 /// Names a list reads that the workspace may not have loaded yet.
@@ -72,6 +78,8 @@ pub struct Catalog<'a> {
 pub enum Need {
     /// The tables and views of this schema.
     Objects(String),
+    /// The columns of this table or view.
+    Columns(ObjectRef),
 }
 
 /// A list's rows, best first, and how many more matched.
@@ -106,6 +114,8 @@ type Group = u8;
 
 /// The bare schema's tables; after a dot, the named schema's.
 const BARE: Group = 0;
+/// The columns of the statement's tables, or of the table before the dot.
+const COLUMNS: Group = 0;
 /// The other schemas' tables, qualified.
 const QUALIFIED: Group = 1;
 const SCHEMAS: Group = 2;
@@ -121,22 +131,104 @@ enum Target<'a> {
     Tables,
     /// The tables and views of this schema: the site is after `schema.`.
     SchemaTables(&'a str),
+    /// The columns of these tables, and then keywords when the site is
+    /// not after a dot.
+    Columns {
+        objects: Vec<ObjectRef>,
+        keywords: bool,
+    },
 }
 
 /// What `site` asks for. `manual` says the list was asked for by hand.
 /// Keywords belong neither after a dot nor where a table goes, and where
 /// a new name goes only when asked for by hand.
 fn target<'a>(site: &Site, manual: bool, catalog: &Catalog<'a>) -> Target<'a> {
+    // The columns of the one table a qualifier names, if the workspace
+    // knows it.
+    let of = |object: Option<ObjectRef>| Target::Columns {
+        objects: object.into_iter().collect(),
+        keywords: false,
+    };
     match site.qualifier.as_slice() {
         [] => match site.expects {
-            Expects::Start | Expects::Columns => Target::Keywords,
+            Expects::Start => Target::Keywords,
+            Expects::Columns => Target::Columns {
+                objects: sources(site, catalog),
+                keywords: true,
+            },
             Expects::Name if manual => Target::Keywords,
             Expects::Name => Target::Nothing,
             Expects::Tables => Target::Tables,
         },
-        [schema] => schema_named(catalog, schema).map_or(Target::Nothing, Target::SchemaTables),
+        // A source's alias first, then a source's own name, then a schema.
+        [one] => {
+            let alias = |source: &&Source| {
+                let alias = source.alias.as_deref();
+                alias.is_some_and(|alias| alias.eq_ignore_ascii_case(one))
+            };
+            let table = |source: &&Source| source.name.eq_ignore_ascii_case(one);
+            let mut named = site.sources.iter();
+            let found = named
+                .find(alias)
+                .or_else(|| site.sources.iter().find(table));
+            let object =
+                found.and_then(|source| resolve(source.schema.as_deref(), &source.name, catalog));
+            match (object, schema_named(catalog, one)) {
+                (Some(object), _) => of(Some(object)),
+                // A half-typed `FROM billing.` reads as a table called
+                // `billing`, which is none: a schema is what it is.
+                (None, Some(schema)) => Target::SchemaTables(schema),
+                // A table the workspace does not know (yet).
+                (None, None) if found.is_some() => of(None),
+                (None, None) => Target::Nothing,
+            }
+        }
+        [schema, table] => of(resolve(Some(schema), table, catalog)),
         _ => Target::Nothing,
     }
+}
+
+/// The loaded table or view a statement names: `schema.name` in that
+/// schema, a bare name in the bare schema and then in the other loaded
+/// ones, in their order. The name as spelled first, else whatever its
+/// case.
+fn resolve(schema: Option<&str>, name: &str, catalog: &Catalog<'_>) -> Option<ObjectRef> {
+    let within = |schema: &str| {
+        let objects = objects_of(catalog, schema);
+        let spelled = objects.iter().find(|info| info.name == name);
+        let any_case = || {
+            objects
+                .iter()
+                .find(|info| info.name.eq_ignore_ascii_case(name))
+        };
+        let found = spelled.or_else(any_case)?;
+        Some(ObjectRef::new(schema, found.name.as_str()))
+    };
+    match schema {
+        Some(schema) => within(schema_named(catalog, schema)?),
+        None => catalog.bare.and_then(within).or_else(|| {
+            let mut loaded: Vec<&String> = catalog.tree.nodes.keys().collect();
+            loaded.sort();
+            loaded.into_iter().find_map(|schema| within(schema))
+        }),
+    }
+}
+
+/// The statement's tables the workspace knows, each once, the first
+/// [`TABLES`] of them.
+fn sources(site: &Site, catalog: &Catalog<'_>) -> Vec<ObjectRef> {
+    let mut objects: Vec<ObjectRef> = Vec::new();
+    for source in &site.sources {
+        if objects.len() == TABLES {
+            break;
+        }
+        if let Some(object) = resolve(source.schema.as_deref(), &source.name, catalog)
+            && !objects.contains(&object)
+        {
+            objects.push(object);
+        }
+    }
+    objects
 }
 
 /// The shown schema called `name`: as spelled, else whatever its case.
@@ -161,16 +253,26 @@ fn objects_of<'a>(catalog: &Catalog<'a>, schema: &str) -> &'a [ObjectInfo] {
 /// The names `site` reads that may still have to be loaded: the caller
 /// asks for the ones the workspace never loaded.
 pub fn needs(site: &Site, catalog: &Catalog<'_>) -> Vec<Need> {
+    let schema_objects = |schema: &str| Need::Objects(schema.to_owned());
     // Asked for by hand or not, a site reads the same names.
-    let schema = match target(site, true, catalog) {
-        Target::Tables => catalog.bare,
-        Target::SchemaTables(schema) => Some(schema),
-        Target::Nothing | Target::Keywords => None,
-    };
-    schema
-        .map(|schema| Need::Objects(schema.to_owned()))
-        .into_iter()
-        .collect()
+    match target(site, true, catalog) {
+        Target::Nothing | Target::Keywords => Vec::new(),
+        Target::Tables => catalog.bare.map(schema_objects).into_iter().collect(),
+        Target::SchemaTables(schema) => vec![schema_objects(schema)],
+        Target::Columns { objects, .. } => {
+            // The statement's tables are matched against loaded objects:
+            // the bare schema's, and those of a `schema.table.` qualifier.
+            let mut needs: Vec<Need> = catalog.bare.map(schema_objects).into_iter().collect();
+            if let [schema, _] = site.qualifier.as_slice()
+                && let Some(schema) = schema_named(catalog, schema)
+                && catalog.bare != Some(schema)
+            {
+                needs.push(schema_objects(schema));
+            }
+            needs.extend(objects.into_iter().map(Need::Columns));
+            needs
+        }
+    }
 }
 
 /// What `site` offers for the `typed` part of its word, from `catalog`.
@@ -182,10 +284,27 @@ pub fn list(site: &Site, typed: &str, manual: bool, catalog: &Catalog<'_>) -> Li
     let mut found: Vec<(Group, Candidate)> = Vec::new();
     match target(site, manual, catalog) {
         Target::Nothing => {}
-        Target::Keywords => {
-            let words = tabletist_db::sql::keywords(dialect).chain(PHRASES);
-            let words = words.filter_map(|word| keyword(word, typed));
-            found.extend(words.map(|candidate| (KEYWORDS, candidate)));
+        Target::Keywords => keywords(&mut found, typed, dialect),
+        Target::Columns {
+            objects,
+            keywords: with_keywords,
+        } => {
+            // A column several tables share is offered once.
+            let mut seen = HashSet::new();
+            for object in &objects {
+                let fetched = catalog.columns.get(object);
+                let columns = fetched.and_then(|fetched| fetched.value.as_deref());
+                for info in columns.unwrap_or_default() {
+                    if seen.insert(info.name.as_str())
+                        && let Some(candidate) = column(info, typed, dialect)
+                    {
+                        found.push((COLUMNS, candidate));
+                    }
+                }
+            }
+            if with_keywords {
+                keywords(&mut found, typed, dialect);
+            }
         }
         Target::Tables => {
             // In the schemas' order: rows that read the same keep one order.
@@ -245,6 +364,24 @@ fn object(
         insert,
         matched,
         detail: String::new(),
+    })
+}
+
+/// Adds the keywords and phrases that start with `typed`.
+fn keywords(found: &mut Vec<(Group, Candidate)>, typed: &str, dialect: Dialect) {
+    let words = tabletist_db::sql::keywords(dialect).chain(PHRASES);
+    let words = words.filter_map(|word| keyword(word, typed));
+    found.extend(words.map(|candidate| (KEYWORDS, candidate)));
+}
+
+/// A column as a candidate when its name holds `typed`, with its type.
+fn column(info: &ColumnInfo, typed: &str, dialect: Dialect) -> Option<Candidate> {
+    Some(Candidate {
+        kind: Kind::Column,
+        label: info.name.clone(),
+        insert: dialect.ident(&info.name).into_owned(),
+        matched: find_ignoring_case(&info.name, typed)?,
+        detail: info.type_name.clone(),
     })
 }
 
@@ -328,8 +465,14 @@ fn rank(mut found: Vec<(Group, Candidate)>, typed: &str) -> Listed {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{Fetch, SchemaNode};
+    use crate::model::SchemaNode;
+    use std::sync::LazyLock;
     use tabletist_db::sql::tokenize;
+
+    type Columns = HashMap<ObjectRef, Fetch<Vec<ColumnInfo>>>;
+
+    /// No columns known.
+    static NO_COLUMNS: LazyLock<Columns> = LazyLock::new(Columns::new);
 
     fn catalog<'a>(
         dialect: Dialect,
@@ -342,7 +485,68 @@ mod tests {
             tree,
             bare,
             schemas,
+            columns: &NO_COLUMNS,
         }
+    }
+
+    /// A schema, a table, and its columns: each a name and a type.
+    type TableColumns<'a> = (&'a str, &'a str, &'a [(&'a str, &'a str)]);
+
+    /// A column cache holding these tables' columns.
+    fn columns_of(tables: &[TableColumns<'_>]) -> Columns {
+        let mut kept = Columns::new();
+        for (schema, table, columns) in tables {
+            let columns = columns
+                .iter()
+                .map(|(name, type_name)| ColumnInfo {
+                    name: (*name).to_owned(),
+                    type_name: (*type_name).to_owned(),
+                    ..Default::default()
+                })
+                .collect();
+            let fetched = Fetch {
+                value: Some(columns),
+                ..Default::default()
+            };
+            kept.insert(ObjectRef::new(*schema, *table), fetched);
+        }
+        kept
+    }
+
+    fn shop_columns() -> Columns {
+        columns_of(&[
+            (
+                "public",
+                "users",
+                &[
+                    ("id", "integer"),
+                    ("name", "text"),
+                    ("Created At", "timestamptz"),
+                ],
+            ),
+            (
+                "billing",
+                "invoices",
+                &[("id", "integer"), ("total", "numeric")],
+            ),
+        ])
+    }
+
+    /// What a PostgreSQL list offers at `marked` with the shop's columns
+    /// known.
+    fn offered_columns(marked: &str) -> Vec<Candidate> {
+        let (tree, schemas) = shop();
+        let columns = shop_columns();
+        let (site, typed) = site_at(marked);
+        let catalog = Catalog {
+            columns: &columns,
+            ..catalog(Dialect::Postgres, &tree, Some("public"), &schemas)
+        };
+        list(&site, &typed, false, &catalog).candidates
+    }
+
+    fn labels_of(candidates: &[Candidate]) -> Vec<&str> {
+        candidates.iter().map(|c| c.label.as_str()).collect()
     }
 
     /// A tree with these schemas loaded, each with its objects.
@@ -527,6 +731,199 @@ mod tests {
         assert!(needed("SEL|", Some("public")).is_empty());
         // Where a new name goes nothing is read, by hand or not.
         assert!(needed("SELECT * FROM users wh|", Some("public")).is_empty());
+    }
+
+    #[test]
+    fn columns_of_the_statements_tables_come_before_keywords() {
+        let found = offered_columns("SELECT na| FROM users");
+        assert_eq!(labels_of(&found), ["name", "natural"]);
+        assert_eq!(
+            (found[0].kind, found[0].detail.as_str()),
+            (Kind::Column, "text")
+        );
+        assert_eq!(found[1].kind, Kind::Keyword);
+        // A name that needs quotes is shown bare and inserted quoted.
+        let quoted = offered_columns("SELECT cr| FROM users");
+        assert_eq!(quoted[0].label, "Created At");
+        assert_eq!(quoted[0].insert, "\"Created At\"");
+        // A column two tables share is offered once.
+        let shared = offered_columns("SELECT id| FROM users u JOIN billing.invoices i ON true");
+        let ids = labels_of(&shared)
+            .into_iter()
+            .filter(|label| *label == "id");
+        assert_eq!(ids.count(), 1);
+        // A table the workspace does not know has no columns.
+        assert_eq!(
+            labels_of(&offered_columns("SELECT na| FROM nope")),
+            ["natural"]
+        );
+        // Nor has one whose columns were not fetched (yet), or could not be.
+        assert!(offered_columns("SELECT id| FROM active_users").is_empty());
+    }
+
+    #[test]
+    fn a_qualifier_is_an_alias_then_a_table_then_a_schema() {
+        let join = "FROM users u JOIN billing.invoices i ON true";
+        assert_eq!(
+            labels_of(&offered_columns(&format!("SELECT u.| {join}"))),
+            ["Created At", "id", "name"]
+        );
+        assert_eq!(
+            labels_of(&offered_columns(&format!("SELECT i.to| {join}"))),
+            ["total"]
+        );
+        // Whatever the case the alias is typed in.
+        assert_eq!(
+            labels_of(&offered_columns(&format!("SELECT I.to| {join}"))),
+            ["total"]
+        );
+        // A table's own name.
+        assert_eq!(
+            labels_of(&offered_columns("SELECT users.na| FROM users")),
+            ["name"]
+        );
+        // An alias is looked for before a table's name: `users` here is the
+        // invoices.
+        assert_eq!(
+            labels_of(&offered_columns(
+                "SELECT users.| FROM users u JOIN billing.invoices users ON true"
+            )),
+            ["id", "total"]
+        );
+        // An alias spelled like a schema is the alias.
+        assert_eq!(
+            labels_of(&offered_columns("SELECT billing.| FROM users billing")),
+            ["Created At", "id", "name"]
+        );
+        // A schema, where no table of the statement is called that: its
+        // tables, as before. A half-typed `FROM billing.` reads as a table
+        // called `billing`, which is none.
+        assert_eq!(
+            labels_of(&offered_columns("SELECT * FROM billing.|")),
+            ["invoices", "users"]
+        );
+        assert_eq!(
+            labels_of(&offered_columns("SELECT billing.| FROM users")),
+            ["invoices", "users"]
+        );
+        // `schema.table.`: that table's columns, named by the statement or not.
+        assert_eq!(
+            labels_of(&offered_columns("SELECT billing.invoices.| FROM users")),
+            ["id", "total"]
+        );
+        assert!(offered_columns("SELECT billing.nope.| FROM users").is_empty());
+        // An alias of a table the workspace does not know: nothing.
+        assert!(offered_columns("SELECT x.| FROM nope x").is_empty());
+        // After a dot there are no keywords.
+        assert_eq!(
+            labels_of(&offered_columns("SELECT u.na| FROM users u")),
+            ["name"]
+        );
+    }
+
+    #[test]
+    fn a_source_is_matched_as_spelled_and_then_whatever_its_case() {
+        use ObjectKind::Table;
+        let tree = tree_of(&[
+            ("public", &[("Users", Table), ("users", Table)]),
+            ("audit", &[("events", Table), ("users", Table)]),
+        ]);
+        let schemas = ["audit".to_owned(), "public".to_owned()];
+        let found = |schema: Option<&str>, name: &str, bare| {
+            let catalog = catalog(Dialect::Postgres, &tree, bare, &schemas);
+            resolve(schema, name, &catalog)
+        };
+        let public = Some("public");
+        let object = |schema: &str, name: &str| Some(ObjectRef::new(schema, name));
+        // As spelled first, else whatever the case.
+        assert_eq!(found(None, "users", public), object("public", "users"));
+        assert_eq!(found(None, "Users", public), object("public", "Users"));
+        assert_eq!(found(None, "USERS", public), object("public", "Users"));
+        // A bare name: the bare schema, then the other loaded ones.
+        assert_eq!(found(None, "events", public), object("audit", "events"));
+        assert_eq!(found(None, "users", None), object("audit", "users"));
+        assert_eq!(found(None, "nope", public), None);
+        // `schema.name`: in that schema only, whatever the schema's case.
+        assert_eq!(
+            found(Some("AUDIT"), "users", public),
+            object("audit", "users")
+        );
+        assert_eq!(found(Some("public"), "events", public), None);
+        assert_eq!(found(Some("nope"), "users", public), None);
+    }
+
+    #[test]
+    fn a_column_site_needs_its_tables_columns_up_to_eight() {
+        let (tree, schemas) = shop();
+        let needed = |marked: &str| {
+            let (site, _) = site_at(marked);
+            needs(
+                &site,
+                &catalog(Dialect::Postgres, &tree, Some("public"), &schemas),
+            )
+        };
+        let object = |schema: &str, name: &str| Need::Columns(ObjectRef::new(schema, name));
+        assert_eq!(
+            needed("SELECT | FROM users u JOIN billing.invoices i ON true"),
+            [
+                Need::Objects("public".into()),
+                object("public", "users"),
+                object("billing", "invoices"),
+            ]
+        );
+        // After an alias and a dot: that table's only.
+        assert_eq!(
+            needed("SELECT i.| FROM users u JOIN billing.invoices i ON true"),
+            [
+                Need::Objects("public".into()),
+                object("billing", "invoices")
+            ]
+        );
+        assert_eq!(
+            needed("SELECT billing.invoices.| FROM users"),
+            [
+                Need::Objects("public".into()),
+                Need::Objects("billing".into()),
+                object("billing", "invoices"),
+            ]
+        );
+        // The bare schema's own table: its objects are asked for once.
+        assert_eq!(
+            needed("SELECT public.users.| FROM users"),
+            [Need::Objects("public".into()), object("public", "users")]
+        );
+        // The same table twice is asked for once.
+        assert_eq!(
+            needed("SELECT | FROM users a JOIN users b ON true").len(),
+            2
+        );
+        // An alias of a table the workspace does not know (yet): the bare
+        // schema's objects, which may name it once they are loaded.
+        assert_eq!(
+            needed("SELECT x.| FROM nope x"),
+            [Need::Objects("public".into())]
+        );
+
+        let names: Vec<String> = (0..10).map(|index| format!("t{index}")).collect();
+        let tables: Vec<(&str, ObjectKind)> = names
+            .iter()
+            .map(|name| (name.as_str(), ObjectKind::Table))
+            .collect();
+        let wide = tree_of(&[("public", tables.as_slice())]);
+        let (site, _) = site_at(&format!("SELECT | FROM {}", names.join(", ")));
+        let schemas = vec!["public".to_owned()];
+        let needed = needs(
+            &site,
+            &catalog(Dialect::Postgres, &wide, Some("public"), &schemas),
+        );
+        let columns: Vec<&Need> = needed
+            .iter()
+            .filter(|need| matches!(need, Need::Columns(_)))
+            .collect();
+        assert_eq!(columns.len(), TABLES);
+        // The first of them, in the statement's order.
+        assert_eq!(columns[0], &object("public", "t0"));
+        assert_eq!(columns[TABLES - 1], &object("public", "t7"));
     }
 
     /// The site at the `|` of `marked` (read as SQLite), and what is typed

@@ -394,9 +394,14 @@ pub struct Workspace {
     pub next_query: u32,
     /// "PostgreSQL 17.2", asked for when the first SQL editor opens.
     pub server_version: Fetch<String>,
+    /// The columns of tables and views, for the SQL editors' completion:
+    /// fetched for the tables a statement names, and filled by a table
+    /// tab's structure. A fetch that failed stays failed, so it is not
+    /// asked for again. Cleared with the tree, and with the session.
+    pub columns: HashMap<ObjectRef, Fetch<Vec<tabletist_db::ColumnInfo>>>,
     /// Bumped whenever the names a completion list reads change (the
-    /// tree's schemas and objects), so an open list is worked out again.
-    /// Change it through `catalog_changed`.
+    /// tree's schemas and objects, and `columns`), so an open list is
+    /// worked out again. Change it through `catalog_changed`.
     pub catalog_generation: u64,
     /// The tab the workspace shows: an object tab or a SQL editor.
     pub active_tab: Option<TabId>,
@@ -2259,6 +2264,7 @@ impl Workspace {
             tabs: Vec::new(),
             next_query: 1,
             server_version: Fetch::default(),
+            columns: HashMap::new(),
             catalog_generation: 0,
             active_tab: None,
             row_panel: true,
@@ -2411,19 +2417,27 @@ impl Workspace {
                 let node = self.tree.nodes.get(schema);
                 node.is_some_and(|node| node.objects.is_loading())
             }
+            crate::completion::Need::Columns(object) => {
+                self.columns.get(object).is_some_and(Fetch::is_loading)
+            }
         }
     }
 
     /// Forgets what the SQL editors asked the session for. Call it wherever
     /// `session` is replaced: answers for the old one are dropped, so a run
     /// left pending would look like it runs for ever. The server may differ
-    /// too, so its version is asked for again (see `App::after_connect`).
+    /// too, so its version is asked for again (see `App::after_connect`),
+    /// and so are the columns a completion list offers.
     /// Object tabs are not touched: the connect reloads them.
     pub fn forget_session_requests(&mut self) {
         for sql in self.sql_tabs_mut() {
             sql.abandon_run();
         }
         self.server_version = Fetch::default();
+        // Fetches the old session will never answer, and names that may
+        // not be the new one's.
+        self.columns.clear();
+        self.catalog_changed();
     }
 }
 
@@ -2570,6 +2584,19 @@ mod tests {
         assert!(!workspace.is_loading(&Need::Objects("audit".into())));
         let node = workspace.tree.nodes.get_mut("main").unwrap();
         assert!(node.objects.finish(RequestId(7), Ok(Vec::new())));
+        assert!(!workspace.is_loading(&need), "answered");
+
+        // A table's columns.
+        let users = ObjectRef::new("main", "users");
+        let need = Need::Columns(users.clone());
+        assert!(!workspace.is_loading(&need), "never asked for");
+        let kept = workspace.columns.entry(users.clone()).or_default();
+        kept.start(RequestId(8));
+        assert!(workspace.is_loading(&need));
+        let orders = Need::Columns(ObjectRef::new("main", "orders"));
+        assert!(!workspace.is_loading(&orders));
+        let kept = workspace.columns.get_mut(&users).unwrap();
+        assert!(kept.finish(RequestId(8), Err(Error::query("permission denied"))));
         assert!(!workspace.is_loading(&need), "answered");
     }
 
@@ -3137,9 +3164,20 @@ mod tests {
             .unwrap()
             .rows
             .start(RequestId(4));
+        // Columns a completion list has, and ones it waits for.
+        let users = workspace.columns.entry(ObjectRef::new("main", "users"));
+        users.or_default().value = Some(Vec::new());
+        let orders = workspace.columns.entry(ObjectRef::new("main", "orders"));
+        orders.or_default().start(RequestId(5));
+        let generation = workspace.catalog_generation;
         workspace.forget_session_requests();
         assert!(workspace.sql_tabs().all(|sql| !sql.is_running()));
         assert!(workspace.server_version.needs_load());
+        assert!(workspace.columns.is_empty());
+        assert_ne!(
+            workspace.catalog_generation, generation,
+            "an open list is worked out again"
+        );
         assert!(
             workspace.object_tab(TabId(1)).unwrap().rows.is_loading(),
             "object tabs are reloaded after the connect instead"

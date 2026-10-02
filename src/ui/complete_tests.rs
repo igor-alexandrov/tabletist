@@ -6,7 +6,7 @@ use egui::accesskit::Role;
 use egui::text::{CCursor, CCursorRange};
 use egui::{Key, Modifiers};
 
-use tabletist_db::{ObjectInfo, ObjectKind};
+use tabletist_db::{ColumnInfo, ObjectInfo, ObjectKind, ObjectRef, Structure};
 
 use crate::backend::{Command, Event};
 use crate::completion::{Candidate, Kind, LISTED};
@@ -1660,11 +1660,13 @@ fn a_list_with_no_place_closes_once_the_caret_is_in_the_pane() {
     let site = tabletist_db::complete::site(&tokens, &sql_tab.text, 2).expect("a site");
     // Keywords only: the first word of a statement reads no names.
     let tree = crate::model::Tree::default();
+    let columns = std::collections::HashMap::new();
     let catalog = crate::completion::Catalog {
         dialect,
         tree: &tree,
         bare: None,
         schemas: &[],
+        columns: &columns,
     };
     let listed = crate::completion::list(&site, "se", false, &catalog);
     assert!(!listed.candidates.is_empty());
@@ -2095,10 +2097,13 @@ fn refreshing_the_tree_forgets_what_only_the_list_loaded() {
     assert_eq!(labels(&harness, tab), ["monthly"]);
     harness.app.apply(Action::RefreshTree(tab));
     let workspace = harness.app.workspace(tab).unwrap();
-    assert!(!workspace.tree.nodes.contains_key("reports"));
+    // Its names are forgotten, not asked for again by the refresh.
+    let reports = workspace.tree.nodes.get("reports");
+    assert!(reports.is_none_or(|node| node.objects.needs_load()));
+    let main = &workspace.tree.nodes["main"];
     assert!(
-        workspace.tree.nodes.contains_key("main"),
-        "the sidebar's own stays"
+        main.objects.value.is_some() && main.objects.is_loading(),
+        "the sidebar's own stays, and is loaded again"
     );
     assert_eq!(asked_for_objects(&harness, "reports"), 1);
     // The open list needs them: they load again, and it waits.
@@ -2125,7 +2130,10 @@ fn refreshing_a_tree_with_nothing_unfolded_reaches_an_open_list() {
     let before = objects(&harness);
     harness.app.apply(Action::RefreshTree(tab));
     assert_eq!(objects(&harness), before, "the refresh asks for no tables");
-    assert!(harness.app.workspace(tab).unwrap().tree.nodes.is_empty());
+    // No names are left: the ones a list loaded and the ones of a schema
+    // the sidebar folded are both forgotten.
+    let nodes = &harness.app.workspace(tab).unwrap().tree.nodes;
+    assert!(nodes.values().all(|node| node.objects.needs_load()));
     // The list's own are asked for again.
     harness.settle();
     assert_eq!(asked_for_objects(&harness, "reports"), 2);
@@ -2207,4 +2215,318 @@ fn a_large_schema_is_listed_once_per_change() {
         listed,
         "moving lists nothing"
     );
+}
+
+fn structure(columns: &[(&str, &str)]) -> Structure {
+    Structure {
+        columns: columns
+            .iter()
+            .map(|(name, type_name)| ColumnInfo {
+                name: (*name).to_owned(),
+                type_name: (*type_name).to_owned(),
+                ..Default::default()
+            })
+            .collect(),
+        ..Default::default()
+    }
+}
+
+/// The structure of the fixture's `users`.
+fn users() -> Structure {
+    structure(&[("id", "INTEGER"), ("email", "TEXT"), ("meta", "JSON")])
+}
+
+/// How many times the backend was asked for the structure of `table`.
+fn asked_to_describe(harness: &Harness, table: &str) -> usize {
+    let sent = harness.app.backend.sent.iter();
+    sent.filter(
+        |command| matches!(command, Command::Describe { object, .. } if object.name == table),
+    )
+    .count()
+}
+
+/// Answers the newest `Describe` of `table`.
+fn answer_describe(
+    harness: &mut Harness,
+    table: &str,
+    result: Result<Structure, tabletist_db::Error>,
+) {
+    let sent = harness.app.backend.sent.iter().rev();
+    let (session, request) = sent
+        .filter_map(|command| match command {
+            Command::Describe {
+                session,
+                request,
+                object,
+            } if object.name == table => Some((*session, *request)),
+            _ => None,
+        })
+        .next()
+        .unwrap_or_else(|| panic!("no Describe of {table} was sent"));
+    harness.app.apply(Action::Backend(Event::Structure {
+        session,
+        request,
+        result,
+    }));
+    harness.settle();
+}
+
+/// The generation of the names a list reads.
+fn generation(harness: &Harness, tab: ConnTabId) -> u64 {
+    harness.app.workspace(tab).unwrap().catalog_generation
+}
+
+#[test]
+fn columns_are_fetched_once_and_fill_the_waiting_list() {
+    let (mut harness, tab) = editor();
+    paste(&mut harness, "select * from users where ");
+    assert_eq!(asked_to_describe(&harness, "users"), 0);
+    let before = generation(&harness, tab);
+    type_text(&mut harness, "em");
+    assert_eq!(asked_to_describe(&harness, "users"), 1);
+    // Asking is a change an open list is worked out again for.
+    let asked = generation(&harness, tab);
+    assert_ne!(asked, before);
+    // No keyword starts with `em`: the list waits for the columns.
+    let open = list(&harness, tab).expect("a waiting list");
+    assert!(open.candidates.is_empty() && open.loading);
+    // And goes on waiting: they are not asked for again while it does.
+    harness.settle();
+    assert_eq!(asked_to_describe(&harness, "users"), 1);
+    answer_describe(&mut harness, "users", Ok(users()));
+    assert_ne!(generation(&harness, tab), asked);
+    assert_eq!(labels(&harness, tab), ["email"]);
+    let open = list(&harness, tab).unwrap();
+    assert_eq!(
+        (open.candidates[0].kind, open.candidates[0].detail.as_str()),
+        (Kind::Column, "TEXT")
+    );
+    assert!(!open.loading);
+    type_text(&mut harness, "a");
+    assert_eq!(asked_to_describe(&harness, "users"), 1);
+    harness.press(Key::Tab, Modifiers::NONE);
+    assert_eq!(sql(&harness, tab).text, "select * from users where email");
+}
+
+#[test]
+fn columns_come_before_keywords_and_keywords_show_while_columns_load() {
+    let (mut harness, tab) = editor();
+    paste(&mut harness, "select * from users where ");
+    type_text(&mut harness, "in");
+    // What it has, while the columns are on their way.
+    assert_eq!(labels(&harness, tab)[..2], ["in", "inner"]);
+    assert!(list(&harness, tab).unwrap().loading);
+    let described = structure(&[("id", "INTEGER"), ("invited_by", "INTEGER")]);
+    answer_describe(&mut harness, "users", Ok(described));
+    // The keyword that is typed, then the column, then the other keywords.
+    assert_eq!(labels(&harness, tab)[..3], ["in", "invited_by", "inner"]);
+    assert!(!list(&harness, tab).unwrap().loading);
+}
+
+#[test]
+fn an_alias_and_a_dot_offer_that_tables_columns() {
+    let (mut harness, tab) = editor();
+    paste(&mut harness, "select * from users u join orders o on ");
+    type_text(&mut harness, "o");
+    type_text(&mut harness, ".");
+    assert!(list(&harness, tab).is_some_and(|list| list.loading));
+    // Only the table the alias names is asked for.
+    assert_eq!(asked_to_describe(&harness, "orders"), 1);
+    assert_eq!(asked_to_describe(&harness, "users"), 0);
+    let orders = structure(&[("id", "INTEGER"), ("user_id", "INTEGER"), ("total", "REAL")]);
+    answer_describe(&mut harness, "orders", Ok(orders));
+    assert_eq!(labels(&harness, tab), ["id", "total", "user_id"]);
+    assert_eq!(asked_to_describe(&harness, "orders"), 1);
+}
+
+#[test]
+fn a_schema_and_a_table_and_a_dot_offer_its_columns() {
+    let (mut harness, tab) = editor();
+    type_text(&mut harness, "select main.users.");
+    answer_describe(&mut harness, "users", Ok(users()));
+    assert_eq!(labels(&harness, tab), ["email", "id", "meta"]);
+}
+
+#[test]
+fn a_table_tabs_structure_fills_the_columns() {
+    let mut harness = Harness::new();
+    let tab = harness.connect_fake();
+    harness.click("users");
+    harness.answer_rows(crate::testing::page(5, false));
+    let table = harness.app.workspace(tab).unwrap().active_tab.unwrap();
+    harness.app.describe(tab, table);
+    let before = generation(&harness, tab);
+    harness.answer_structure(users());
+    let workspace = harness.app.workspace(tab).unwrap();
+    let kept = &workspace.columns[&ObjectRef::new("main", "users")];
+    assert_eq!(kept.value.as_ref().map(Vec::len), Some(3));
+    assert_ne!(workspace.catalog_generation, before);
+    // The tab got its structure as before.
+    let structure = &workspace.object_tab(table).unwrap().structure;
+    assert_eq!(structure.value.as_ref(), Some(&users()));
+    assert!(!structure.is_loading());
+
+    let asked = asked_to_describe(&harness, "users");
+    harness.press(Key::T, Modifiers::COMMAND);
+    paste(&mut harness, "select * from users where ");
+    type_text(&mut harness, "em");
+    assert_eq!(labels(&harness, tab), ["email"]);
+    assert!(!list(&harness, tab).unwrap().loading);
+    assert_eq!(asked_to_describe(&harness, "users"), asked, "known already");
+}
+
+#[test]
+fn a_table_tabs_structure_that_failed_leaves_its_columns_to_be_asked_for() {
+    let mut harness = Harness::new();
+    let tab = harness.connect_fake();
+    harness.click("users");
+    harness.answer_rows(crate::testing::page(5, false));
+    let table = harness.app.workspace(tab).unwrap().active_tab.unwrap();
+    answer_describe(
+        &mut harness,
+        "users",
+        Err(tabletist_db::Error::query("permission denied")),
+    );
+    let workspace = harness.app.workspace(tab).unwrap();
+    assert!(workspace.columns.is_empty());
+    // The tab shows its error as before.
+    assert!(
+        workspace
+            .object_tab(table)
+            .unwrap()
+            .structure
+            .error
+            .is_some()
+    );
+
+    let asked = asked_to_describe(&harness, "users");
+    harness.press(Key::T, Modifiers::COMMAND);
+    paste(&mut harness, "select * from users where ");
+    type_text(&mut harness, "em");
+    assert_eq!(asked_to_describe(&harness, "users"), asked + 1);
+    answer_describe(&mut harness, "users", Ok(users()));
+    assert_eq!(labels(&harness, tab), ["email"]);
+    // The answer was the list's: the tab's structure is as it was.
+    let workspace = harness.app.workspace(tab).unwrap();
+    assert!(
+        workspace
+            .object_tab(table)
+            .unwrap()
+            .structure
+            .value
+            .is_none()
+    );
+}
+
+#[test]
+fn a_fetch_that_failed_is_not_asked_again() {
+    let (mut harness, tab) = editor();
+    paste(&mut harness, "select * from users where ");
+    type_text(&mut harness, "em");
+    answer_describe(
+        &mut harness,
+        "users",
+        Err(tabletist_db::Error::query("permission denied")),
+    );
+    // No columns and no error in the editor: the list closes.
+    assert!(list(&harness, tab).is_none());
+    type_text(&mut harness, "a");
+    assert_eq!(asked_to_describe(&harness, "users"), 1);
+    assert!(list(&harness, tab).is_none());
+}
+
+#[test]
+fn no_columns_are_asked_of_a_session_that_is_not_connected() {
+    let (mut harness, tab) = editor();
+    paste(&mut harness, "select * from users where ");
+    harness.app.workspace_mut(tab).unwrap().status =
+        crate::model::SessionStatus::Disconnected(tabletist_db::Error::query("gone"));
+    type_text(&mut harness, "em");
+    assert_eq!(sql(&harness, tab).text, "select * from users where em");
+    assert_eq!(asked_to_describe(&harness, "users"), 0);
+    assert!(list(&harness, tab).is_none());
+}
+
+#[test]
+fn an_exact_match_takes_the_highlight_back() {
+    let (mut harness, tab) = editor();
+    paste(&mut harness, "select * from users order by ");
+    type_text(&mut harness, "des");
+    let described = structure(&[("id", "INTEGER"), ("description", "TEXT")]);
+    answer_describe(&mut harness, "users", Ok(described));
+    // The column leads the keyword, highlighted.
+    assert_eq!(labels(&harness, tab), ["description", "desc"]);
+    assert_eq!(selected(&harness, tab), Some(0));
+    // Moved away and back: the highlight is the user's now.
+    harness.press(Key::ArrowDown, Modifiers::NONE);
+    harness.press(Key::ArrowUp, Modifiers::NONE);
+    assert!(list(&harness, tab).unwrap().moved);
+    // One more letter spells the keyword: it leads, highlighted, and
+    // Enter is the line break that was meant.
+    type_text(&mut harness, "c");
+    assert_eq!(labels(&harness, tab), ["desc", "description"]);
+    assert_eq!(selected(&harness, tab), Some(0));
+    harness.press(Key::Enter, Modifiers::NONE);
+    assert_eq!(
+        sql(&harness, tab).text,
+        "select * from users order by desc\n"
+    );
+}
+
+#[test]
+fn refreshing_and_reconnecting_forget_the_columns() {
+    let (mut harness, tab) = editor();
+    paste(&mut harness, "select * from users where ");
+    type_text(&mut harness, "em");
+    answer_describe(&mut harness, "users", Ok(users()));
+    assert_eq!(harness.app.workspace(tab).unwrap().columns.len(), 1);
+    harness.app.apply(Action::RefreshTree(tab));
+    assert!(harness.app.workspace(tab).unwrap().columns.is_empty());
+    // The open list needs them: they are asked for again, and it waits.
+    harness.settle();
+    assert_eq!(asked_to_describe(&harness, "users"), 2);
+    let open = list(&harness, tab).expect("a waiting list");
+    assert!(open.candidates.is_empty() && open.loading);
+    answer_describe(&mut harness, "users", Ok(users()));
+    assert_eq!(labels(&harness, tab), ["email"]);
+
+    // What is kept, and what is on its way.
+    let workspace = harness.app.workspace_mut(tab).unwrap();
+    let orders = workspace.columns.entry(ObjectRef::new("main", "orders"));
+    orders.or_default().start(crate::backend::RequestId(0));
+    assert_eq!(workspace.columns.len(), 2);
+    harness.app.apply(Action::Reconnect(tab));
+    assert!(harness.app.workspace(tab).unwrap().columns.is_empty());
+}
+
+#[test]
+fn switching_the_database_takes_its_columns_off_the_list() {
+    let (mut harness, tab) = editor();
+    paste(&mut harness, "select * from users where ");
+    type_text(&mut harness, "em");
+    answer_describe(&mut harness, "users", Ok(users()));
+    assert_eq!(labels(&harness, tab), ["email"]);
+    harness.app.apply(Action::SwitchDatabase {
+        tab,
+        database: "other".into(),
+    });
+    assert!(harness.app.workspace(tab).unwrap().columns.is_empty());
+    harness.settle();
+    // The other database's tables are not known yet.
+    assert!(list(&harness, tab).is_none());
+    assert_eq!(asked_to_describe(&harness, "users"), 1);
+}
+
+#[test]
+fn an_answer_for_columns_that_were_forgotten_is_dropped() {
+    let (mut harness, tab) = editor();
+    paste(&mut harness, "select * from users where ");
+    type_text(&mut harness, "em");
+    assert_eq!(asked_to_describe(&harness, "users"), 1);
+    // Forgotten while the answer is on its way, with no list to ask again.
+    harness.press(Key::Escape, Modifiers::NONE);
+    assert!(list(&harness, tab).is_none());
+    harness.app.apply(Action::RefreshTree(tab));
+    answer_describe(&mut harness, "users", Ok(users()));
+    assert!(harness.app.workspace(tab).unwrap().columns.is_empty());
 }
