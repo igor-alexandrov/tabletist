@@ -65,6 +65,18 @@ text; where the two disagree, those sections and the code win.
 - **Qualifiers.** With a table in the bare schema called like a schema,
   `FROM billing.` offers the table's columns. A source named like one of the
   statement's CTEs gets no columns, not the columns of a table of that name.
+- **Tables where a value goes.** A column may be written with its table
+  (`accounts.id`), so a column site also offers what a table site does
+  (tables and views, schemas, CTE names) when its word follows a comma, an
+  open parenthesis, an operator other than `*`, or `SELECT`, `DISTINCT`,
+  `WHERE`, `AND`, `OR`, `ON`, `HAVING`, `BY`, `CASE`, `WHEN`, `THEN`,
+  `ELSE`, `SET`, `RETURNING`, `LIKE`, `ILIKE` or `BETWEEN`. Also before the
+  statement has its `FROM`. After anything else (a name, a number, a
+  closing parenthesis) the next clause's keyword is what is typed, and no
+  table is offered. Order there: columns, then tables that start with the
+  typed text, then keywords, then tables that only hold it. A table is not
+  offered after a `*` (read as the star of a select list), and a table the
+  statement names under an alias is offered by its own name.
 - **Waiting.** Nothing is loading on a session that is not connected, so a
   waiting list closes when its session is replaced.
 - **The tree.** A refresh keeps every node and forgets the objects of nodes

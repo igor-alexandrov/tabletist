@@ -121,15 +121,16 @@ pub fn may_open(site: &Site, typed: &str, manual: bool) -> bool {
 /// Where a kind of candidate comes in a site's list: lower first.
 type Group = u8;
 
-/// The bare schema's tables; after a dot, the named schema's.
-const BARE: Group = 0;
 /// The columns of the statement's tables, or of the table before the dot.
 const COLUMNS: Group = 0;
+/// The bare schema's tables; after a dot, the named schema's.
+const BARE: Group = 1;
 /// The other schemas' tables, qualified.
-const QUALIFIED: Group = 1;
-const SCHEMAS: Group = 2;
-const CTES: Group = 3;
-/// Keywords come after every name.
+const QUALIFIED: Group = 2;
+const SCHEMAS: Group = 3;
+const CTES: Group = 4;
+/// Keywords come after every name, but for the tables that only hold what
+/// is typed where a value goes: those come this much later.
 const KEYWORDS: Group = 9;
 
 /// What a site asks for, once its qualifier is read.
@@ -140,10 +141,14 @@ enum Target<'a> {
     Tables,
     /// The tables and views of this schema: the site is after `schema.`.
     SchemaTables(&'a str),
-    /// The columns of these tables, and then keywords when the site is
-    /// not after a dot.
+    /// The columns of these tables; then, where a value goes, what a
+    /// table site offers: a column may be written with its table
+    /// (`accounts.id`), also before the statement has its FROM. And
+    /// keywords when the site is not after a dot: after the names that
+    /// start with what is typed, before the tables that only hold it.
     Columns {
         objects: Vec<ObjectRef>,
+        tables: bool,
         keywords: bool,
     },
 }
@@ -156,6 +161,7 @@ fn target<'a>(site: &Site, manual: bool, catalog: &Catalog<'a>) -> Target<'a> {
     // knows it.
     let of = |object: Option<ObjectRef>| Target::Columns {
         objects: object.into_iter().collect(),
+        tables: false,
         keywords: false,
     };
     match site.qualifier.as_slice() {
@@ -163,6 +169,7 @@ fn target<'a>(site: &Site, manual: bool, catalog: &Catalog<'a>) -> Target<'a> {
             Expects::Start => Target::Keywords,
             Expects::Columns => Target::Columns {
                 objects: sources(site, catalog),
+                tables: site.value,
                 keywords: true,
             },
             Expects::Name if manual => Target::Keywords,
@@ -313,6 +320,7 @@ pub fn list(site: &Site, typed: &str, manual: bool, catalog: &Catalog<'_>) -> Li
         Target::Keywords => keywords(&mut found, typed, dialect),
         Target::Columns {
             objects,
+            tables: with_tables,
             keywords: with_keywords,
         } => {
             // A column several tables share is offered once.
@@ -328,31 +336,23 @@ pub fn list(site: &Site, typed: &str, manual: bool, catalog: &Catalog<'_>) -> Li
                     }
                 }
             }
+            if with_tables {
+                let first = found.len();
+                tables(&mut found, site, typed, catalog);
+                // Here a keyword is as likely as a table: a table that
+                // only holds what is typed comes after the keywords, so
+                // `ca` reads as CASE before it reads as `locations`.
+                for (group, candidate) in &mut found[first..] {
+                    if candidate.matched.start != 0 {
+                        *group += KEYWORDS;
+                    }
+                }
+            }
             if with_keywords {
                 keywords(&mut found, typed, dialect);
             }
         }
-        Target::Tables => {
-            // In the schemas' order: rows that read the same keep one order.
-            let mut loaded: Vec<&String> = catalog.tree.nodes.keys().collect();
-            loaded.sort();
-            for schema in loaded {
-                let (group, qualifier) = if catalog.bare == Some(schema.as_str()) {
-                    (BARE, None)
-                } else {
-                    (QUALIFIED, Some(schema.as_str()))
-                };
-                let objects = objects_of(catalog, schema).iter();
-                let objects = objects.filter_map(|info| object(info, qualifier, typed, dialect));
-                found.extend(objects.map(|candidate| (group, candidate)));
-            }
-            let schemas = catalog.schemas.iter();
-            let schemas = schemas.filter_map(|schema| name(schema, Kind::Schema, typed, dialect));
-            found.extend(schemas.map(|candidate| (SCHEMAS, candidate)));
-            let ctes = site.ctes.iter();
-            let ctes = ctes.filter_map(|cte| name(cte, Kind::Table, typed, dialect));
-            found.extend(ctes.map(|candidate| (CTES, candidate)));
-        }
+        Target::Tables => tables(&mut found, site, typed, catalog),
         Target::SchemaTables(schema) => {
             let objects = objects_of(catalog, schema).iter();
             let objects = objects.filter_map(|info| object(info, None, typed, dialect));
@@ -360,6 +360,31 @@ pub fn list(site: &Site, typed: &str, manual: bool, catalog: &Catalog<'_>) -> Li
         }
     }
     rank(found, typed)
+}
+
+/// Adds what a table site offers for `typed`: the tables and views of
+/// every loaded schema, the shown schemas and the statement's CTE names.
+fn tables(found: &mut Vec<(Group, Candidate)>, site: &Site, typed: &str, catalog: &Catalog<'_>) {
+    let dialect = catalog.dialect;
+    // In the schemas' order: rows that read the same keep one order.
+    let mut loaded: Vec<&String> = catalog.tree.nodes.keys().collect();
+    loaded.sort();
+    for schema in loaded {
+        let (group, qualifier) = if catalog.bare == Some(schema.as_str()) {
+            (BARE, None)
+        } else {
+            (QUALIFIED, Some(schema.as_str()))
+        };
+        let objects = objects_of(catalog, schema).iter();
+        let objects = objects.filter_map(|info| object(info, qualifier, typed, dialect));
+        found.extend(objects.map(|candidate| (group, candidate)));
+    }
+    let schemas = catalog.schemas.iter();
+    let schemas = schemas.filter_map(|schema| name(schema, Kind::Schema, typed, dialect));
+    found.extend(schemas.map(|candidate| (SCHEMAS, candidate)));
+    let ctes = site.ctes.iter();
+    let ctes = ctes.filter_map(|cte| name(cte, Kind::Table, typed, dialect));
+    found.extend(ctes.map(|candidate| (CTES, candidate)));
 }
 
 /// A table or view as a candidate when it holds `typed`: bare, or as
@@ -788,6 +813,60 @@ mod tests {
     }
 
     #[test]
+    fn where_a_value_goes_tables_and_views_follow_the_columns() {
+        let rows = |marked: &str| {
+            let found = offered_columns(marked).into_iter();
+            found.map(|c| (c.label, c.kind)).collect::<Vec<_>>()
+        };
+        let named = |label: &str, kind| (label.to_owned(), kind);
+        // A column written with its table: the table's name is completed,
+        // as after FROM.
+        assert_eq!(
+            rows("SELECT users.id, us|\n  FROM users"),
+            [
+                named("user_totals", Kind::MaterializedView),
+                named("users", Kind::Table),
+                // A keyword is as likely here: it comes before the tables
+                // that only hold what is typed.
+                named("using", Kind::Keyword),
+                named("active_users", Kind::View),
+                named("billing.users", Kind::Table),
+            ]
+        );
+        // Before the statement has a FROM, and with the other schemas'
+        // tables inserted with their schema.
+        let early = offered_columns("SELECT inv|");
+        assert_eq!(labels_of(&early), ["billing.invoices"]);
+        assert_eq!(early[0].insert, "billing.invoices");
+        // The columns of the statement's tables come first.
+        assert_eq!(
+            labels_of(&offered_columns("SELECT tot| FROM billing.invoices")),
+            ["total", "user_totals"]
+        );
+        // After a condition's words too, and schemas and CTE names with
+        // the tables.
+        assert_eq!(
+            labels_of(&offered_columns("SELECT * FROM users WHERE bil|")),
+            ["billing.invoices", "billing.users", "billing"]
+        );
+        assert_eq!(
+            labels_of(&offered_columns("WITH recent AS (SELECT 1) SELECT rec|")),
+            ["recent", "recursive"]
+        );
+        // Not after a value, where the next clause's keyword goes.
+        assert_eq!(
+            labels_of(&offered_columns("SELECT * FROM users u us|")),
+            ["using"]
+        );
+        assert_eq!(
+            labels_of(&offered_columns("SELECT * FROM users WHERE id = 1 us|")),
+            ["using"]
+        );
+        // Nor after a dot.
+        assert!(offered_columns("SELECT users.us| FROM users").is_empty());
+    }
+
+    #[test]
     fn a_qualifier_is_an_alias_then_a_table_then_a_schema() {
         let join = "FROM users u JOIN billing.invoices i ON true";
         assert_eq!(
@@ -859,7 +938,7 @@ mod tests {
         // table's would be wrong. The keywords are still there.
         assert_eq!(offered("SELECT na| FROM users"), ["natural"]);
         let all = offered_columns(&format!("{with} SELECT | FROM users"));
-        assert!(!all.is_empty() && all.iter().all(|c| c.kind == Kind::Keyword));
+        assert!(!all.is_empty() && all.iter().all(|c| c.kind != Kind::Column));
         // Through the CTE's own name and through an alias of it.
         assert!(offered("SELECT users.| FROM users").is_empty());
         assert!(offered("SELECT u.| FROM users u").is_empty());
@@ -881,7 +960,7 @@ mod tests {
         // The statement's other tables keep their columns.
         assert_eq!(
             offered("SELECT tot| FROM users JOIN billing.invoices i ON true"),
-            ["total"]
+            ["total", "user_totals"]
         );
         // A CTE of another name hides nothing.
         let other = offered_columns("WITH recent AS (SELECT 1) SELECT na| FROM users, recent");

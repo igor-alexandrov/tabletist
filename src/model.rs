@@ -3716,6 +3716,7 @@ mod tests {
             word: 0..typed.len(),
             qualifier: Vec::new(),
             expects: tabletist_db::complete::Expects::Columns,
+            value: false,
             sources: Vec::new(),
             ctes: Vec::new(),
         }
