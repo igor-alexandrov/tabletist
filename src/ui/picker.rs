@@ -804,11 +804,15 @@ fn mac_row(
         Text::one(look, host_role, &shown, palette.text),
     );
     if !database.is_empty() {
+        let database_role = TextRole::MonoSecondary;
+        let shown = crate::ui::grid::ellipsize(&database, host_width - 24.0, false, |text| {
+            database_role.width(ui.ctx(), look.faces, text)
+        });
         widgets::paint_label(
             ui,
             host_x,
             bottom,
-            Text::one(look, TextRole::MonoSecondary, &database, palette.dim),
+            Text::one(look, database_role, &shown, palette.dim),
         );
     }
     let (tls, verified) = tls_label(connection);

@@ -603,6 +603,48 @@ mod tests {
     }
 
     #[test]
+    fn a_long_database_name_stays_in_the_host_column_of_a_narrow_window() {
+        for look in [crate::theme::Look::standard(), crate::theme::Look::macos()] {
+            let mut harness = Harness::with_size(egui::vec2(1000.0, 650.0));
+            harness.set_look(look);
+            let (mut spec, _) = tabletist_db::ConnectSpec::from_url(
+                "postgres://clerk@db.bookshop.example/bookshop_development",
+            )
+            .unwrap();
+            spec.tls = tabletist_db::TlsMode::Require;
+            harness
+                .app
+                .connections
+                .upsert(crate::connections::SavedConnection {
+                    id: crate::connections::ConnectionId::new(),
+                    name: "Bookshop".into(),
+                    environment: crate::env::Environment::Dev,
+                    read_only: None,
+                    password: crate::connections::PasswordMode::None,
+                    ssh_secret: crate::connections::PasswordMode::None,
+                    spec,
+                });
+            let tree = harness.settle();
+            // The row may cut the name short, so find it by how it starts.
+            let database = tree
+                .nodes
+                .iter()
+                .find(|(_, node)| node.value().is_some_and(|text| text.starts_with("/book")))
+                .and_then(|(_, node)| node.bounds())
+                .expect("the database");
+            let tls = crate::testing::bounds(&tree, "require", egui::accesskit::Role::Label)
+                .expect("the TLS mode");
+            assert!(
+                (database.x1 as f32) < tls.left(),
+                "{}: the database ends at {}, TLS starts at {}",
+                look.name,
+                database.x1,
+                tls.left()
+            );
+        }
+    }
+
+    #[test]
     fn the_connect_button_on_a_row_connects_in_this_tab() {
         let mut harness = Harness::new();
         add_saved(&mut harness, "Production");
