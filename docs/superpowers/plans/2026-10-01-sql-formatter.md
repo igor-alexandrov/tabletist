@@ -125,25 +125,37 @@ mod tests {
 
     const DIALECTS: [Dialect; 3] = [Dialect::Postgres, Dialect::MySql, Dialect::Sqlite];
 
-    /// The whole of `script` formatted, or the script itself when Format
-    /// has nothing to change. Checks what every result owes: the same
-    /// tokens, and nothing left for a second pass.
-    fn formatted(dialect: Dialect, script: &str) -> String {
+    /// `script` with the statements `selection` overlaps laid out (all of
+    /// them for `None`), and where the laid out part is in the result. The
+    /// layout itself, before the check that would hide a fault: the tokens
+    /// are compared here.
+    fn laid(
+        dialect: Dialect,
+        script: &str,
+        selection: Option<Range<usize>>,
+    ) -> (String, Range<usize>) {
         let old = tokenize(dialect, script);
-        // The layout itself, before the check that would hide a fault.
-        let result = match laid_out(dialect, script, &old, None) {
-            Some((region, laid)) => {
-                [&script[..region.start], &laid, &script[region.end..]].concat()
-            }
-            None => script.to_owned(),
+        let Some((region, laid)) = laid_out(dialect, script, &old, selection) else {
+            return (script.to_owned(), 0..0);
         };
+        let result = [&script[..region.start], &laid, &script[region.end..]].concat();
         assert!(
             same_tokens(script, &old, &result, &tokenize(dialect, &result)),
             "{script:?}"
         );
+        (result, region.start..region.start + laid.len())
+    }
+
+    /// The whole of `script` formatted, or the script itself when Format
+    /// has nothing to change. Checks what every result owes: the same
+    /// tokens, and nothing left for a second pass.
+    fn formatted(dialect: Dialect, script: &str) -> String {
+        let (result, _) = laid(dialect, script, None);
         let checked = format(dialect, script, None, 0).map(|formatted| formatted.text);
         assert_eq!(checked.as_deref().unwrap_or(script), result, "{script:?}");
-        assert!(format(dialect, &result, None, 0).is_none(), "{result:?}");
+        // The second pass is the layout's too: `format` returns `None` as
+        // well for a layout its check refused.
+        assert_eq!(laid(dialect, &result, None).0, result, "{script:?}");
         result
     }
 
@@ -265,6 +277,16 @@ mod tests {
             pg("select 1 where (a and b) or (c or d)"),
             lines(&["SELECT 1", " WHERE (a AND b)", "    OR (c OR d)"])
         );
+        assert_eq!(
+            pg("select 1 from t group by a having b or c"),
+            lines(&[
+                "SELECT 1",
+                "  FROM t",
+                " GROUP BY a",
+                "HAVING b",
+                "    OR c"
+            ])
+        );
     }
 
     #[test]
@@ -361,6 +383,23 @@ mod tests {
     }
 
     #[test]
+    fn nesting_without_end_stops_being_laid_out_as_blocks() {
+        // Deeper than any stack could follow: the layout must not recurse
+        // for each.
+        let deep = 100_000;
+        let script = "(select 1 from ".repeat(deep) + "t" + &")".repeat(deep);
+        let formatted = format(Dialect::Postgres, &script, None, 0).unwrap();
+        // Each block puts its FROM on a line; past the depth it is all on
+        // the last one.
+        assert_eq!(formatted.text.lines().count(), MAX_DEPTH + 1);
+        let last = "(SELECT 1 FROM ".repeat(deep - MAX_DEPTH) + "t" + &")".repeat(deep);
+        assert!(formatted.text.ends_with(&last));
+        // Nor is a long run of join leaders read to its end for each word.
+        let script = "select ".to_owned() + &"left ".repeat(deep) + "join t";
+        assert!(format(Dialect::Postgres, &script, None, 0).is_some());
+    }
+
+    #[test]
     fn set_operations_are_heads() {
         assert_eq!(
             pg("select 1 union select 2 union all select 3 except select 4 intersect select 5"),
@@ -379,6 +418,10 @@ mod tests {
         assert_eq!(
             pg("(select 1) union (select 2)"),
             lines(&["(SELECT 1)", " UNION (SELECT 2)"])
+        );
+        assert_eq!(
+            pg("select 1 union distinct select 2"),
+            lines(&["SELECT 1", " UNION DISTINCT", "SELECT 2"])
         );
     }
 
@@ -664,6 +707,17 @@ mod tests {
                 "SELECT 2",
             ])
         );
+        // A backslash escapes the quote in an E string.
+        assert_eq!(
+            pg("select E'\\'' as q, 'x' from t where a = E'it\\'s' and b"),
+            lines(&[
+                "SELECT E'\\'' AS q,",
+                "       'x'",
+                "  FROM t",
+                " WHERE a = E'it\\'s'",
+                "   AND b",
+            ])
+        );
         // MySQL: `#` comments, `--` only before a blank, the `\r` a line
         // comment keeps, and an executable comment, which is code: a
         // statement that starts with one is no query.
@@ -710,12 +764,15 @@ mod tests {
             }
         }
         // The keywords that can be names keep their case.
-        assert_eq!(
-            pg(
-                "show any begin cast commit current end filter first no only over rollback rows view"
-            ),
-            "SHOW any begin cast commit current end filter first no only over rollback rows view"
-        );
+        let names =
+            "any begin cast commit current end filter first no only over rollback rows view";
+        for dialect in DIALECTS {
+            assert_eq!(
+                formatted(dialect, &std::format!("show {names}")),
+                std::format!("SHOW {names}"),
+                "{dialect:?}"
+            );
+        }
         // Read as structure they are uppercased, but not on MySQL, where
         // such a word may be an alias and an alias's case can matter.
         let script = "with recursive a as (select 1) select * from a full join b on true \
@@ -856,8 +913,17 @@ mod tests {
                     script.push(' ');
                 }
             }
+            // The pieces are ASCII, so every offset is a character's.
+            let (from, to) = (next(script.len() + 1), next(script.len() + 1));
+            let selection = from.min(to)..from.max(to);
             for dialect in DIALECTS {
                 formatted(dialect, &script);
+                // A selection's statements: the same tokens, and laid out
+                // again they stay as they are.
+                let (result, part) = laid(dialect, &script, Some(selection.clone()));
+                if !part.is_empty() {
+                    assert_eq!(laid(dialect, &result, Some(part)).0, result, "{script:?}");
+                }
             }
         }
     }
@@ -1005,9 +1071,9 @@ pub struct Formatted {
 /// The keywords Format uppercases: the ones that cannot be an unquoted
 /// table name or alias where case would matter. Every one the MySQL
 /// dialect reads as a keyword is reserved in MySQL 5.7, MySQL 8 and
-/// MariaDB (the MySQL tests ask the server); the words only PostgreSQL or
-/// SQLite read as keywords are here because those compare unquoted names
-/// without case.
+/// MariaDB (the MySQL tests ask the server they run against); the words
+/// only PostgreSQL or SQLite read as keywords are here because those
+/// compare unquoted names without case.
 pub const UPPERCASED: &[&str] = &[
     "ALL",
     "ALTER",
@@ -1109,6 +1175,16 @@ const JOIN_LEADERS: &[&str] = &[
 /// The width of the river: `SELECT`.
 const RIVER: usize = 6;
 
+/// How far a `WHEN`, an `ELSE` and what follows them stand in from their
+/// `CASE`.
+const CASE_INDENT: usize = 4;
+
+/// How deep queries in parentheses are laid out as blocks. The layout
+/// recurses once for each, so a script nested without end (a generated
+/// one, a hostile paste) must not be followed all the way down: past
+/// this depth a parenthesis stays on its line, whatever it holds.
+const MAX_DEPTH: usize = 64;
+
 /// `script` with the statements `selection` overlaps formatted, or all of
 /// them when it is `None` or empty, and where `cursor` went. All three are
 /// byte offsets. `None` when there is nothing to change.
@@ -1132,7 +1208,7 @@ pub fn format(
     let cursor = if cursor <= region.start {
         cursor
     } else if cursor >= region.end {
-        region.start + laid.len() + (cursor - region.end)
+        region.start + laid.len() + (cursor.min(script.len()) - region.end)
     } else {
         moved(&tokens, &after, cursor).unwrap_or(text.len())
     };
@@ -1229,7 +1305,10 @@ fn items<'a>(script: &'a str, tokens: &[Token], region: &Range<usize>) -> Vec<It
     for token in inside {
         let text = &script[token.range.clone()];
         if token.kind == TokenKind::Whitespace {
-            space = text;
+            // What stands before the first item is not between two.
+            if !items.is_empty() {
+                space = text;
+            }
         } else {
             items.push(Item {
                 kind: token.kind,
@@ -1320,8 +1399,9 @@ enum Place {
 struct Block {
     /// The column its river starts at.
     base: usize,
-    /// A statement's own block: no `)` ends it.
-    top: bool,
+    /// How many blocks it is inside of. A statement's own block is
+    /// inside none, and no `)` ends it.
+    depth: usize,
     clause: Clause,
     /// `AND` and `OR` start lines: in a `WHERE`, a `HAVING`, a join's `ON`.
     conditions: bool,
@@ -1337,10 +1417,10 @@ struct Block {
 }
 
 impl Block {
-    fn new(base: usize, top: bool) -> Self {
+    fn new(base: usize, depth: usize) -> Self {
         Self {
             base,
-            top,
+            depth,
             clause: Clause::Other,
             conditions: false,
             between: false,
@@ -1431,7 +1511,7 @@ impl<'a> Layout<'a> {
 
     /// A query statement and its `;`.
     fn query(&mut self) {
-        self.block(0, true);
+        self.block(0, 0);
         if self.items.get(self.at).is_some() {
             // The block stopped at the statement's `;`.
             if self.ended {
@@ -1445,8 +1525,8 @@ impl<'a> Layout<'a> {
 
     /// Lays out a block from its first token to the `)` that ends it (left
     /// for the caller), the statement's `;` (left too) or the end.
-    fn block(&mut self, base: usize, top: bool) {
-        let mut block = Block::new(base, top);
+    fn block(&mut self, base: usize, depth: usize) {
+        let mut block = Block::new(base, depth);
         while let Some(item) = self.items.get(self.at).copied() {
             match item.kind {
                 TokenKind::Semicolon => return,
@@ -1471,7 +1551,7 @@ impl<'a> Layout<'a> {
                             };
                             self.put(&mut block, place, false);
                         }
-                        None if block.top => self.put(&mut block, Place::Inline, false),
+                        None if block.depth == 0 => self.put(&mut block, Place::Inline, false),
                         None => return,
                     }
                 }
@@ -1488,14 +1568,14 @@ impl<'a> Layout<'a> {
 
     /// A `(`: a block of its own, or a parenthesis on its line.
     fn open(&mut self, block: &mut Block) {
-        let nested = self.opens_block(self.at);
+        let nested = block.depth < MAX_DEPTH && self.opens_block(self.at);
         self.put(block, Place::Inline, false);
         let column = self.writer.column;
         if !nested {
             block.frames.push(Frame::Paren(column - 1));
             return;
         }
-        self.block(column, false);
+        self.block(column, block.depth + 1);
         if self.items.get(self.at).is_some_and(|item| item.is(")")) {
             if self.ended {
                 self.writer.line(column - 1);
@@ -1520,7 +1600,7 @@ impl<'a> Layout<'a> {
         }
         if let Some(Frame::Case(column)) = block.frames.last().copied() {
             if is("WHEN") || is("ELSE") {
-                return self.put(block, Place::Line(column + 4), false);
+                return self.put(block, Place::Line(column + CASE_INDENT), false);
             }
             if is("END") {
                 block.frames.pop();
@@ -1591,8 +1671,10 @@ impl<'a> Layout<'a> {
 
     /// How many words the join head at `at` has: leaders, then `JOIN`.
     fn join(&self, at: usize) -> Option<usize> {
+        // No join has more leaders than `NATURAL LEFT OUTER`: a longer run
+        // of them is not read to its end for every word of it.
         let mut end = at;
-        while self.word(end, JOIN_LEADERS) {
+        while end - at < 3 && self.word(end, JOIN_LEADERS) {
             end += 1;
         }
         self.word(end, &["JOIN"]).then_some(end - at + 1)
@@ -1641,6 +1723,7 @@ impl<'a> Layout<'a> {
                 // PostgreSQL joins two strings only across a line break.
                 self.writer.push(item.space);
             } else if item.is(",") || item.is(")") || before.is("(") {
+                // Nothing stands before a `,` or a `)`, nor after a `(`.
             } else if block.headed || before.is(",") || !item.space.is_empty() {
                 self.writer.push(" ");
             }
@@ -1793,7 +1876,7 @@ fn moved(old: &[Token], new: &[Token], cursor: usize) -> Option<usize> {
 - [ ] **Step 5: Run the tests**
 
 Run: `~/.cargo/bin/cargo test --locked -p tabletist-db --lib sql::format`
-Expected: `test result: ok. 22 passed`.
+Expected: `test result: ok. 23 passed`.
 
 If an expectation fails, the layout is wrong, not the test: the expected scripts follow the spec's rules and were produced by this code. Do not edit an expected string to match.
 
@@ -1835,9 +1918,7 @@ async fn the_words_format_uppercases_cannot_be_table_aliases() {
     let Some(_connection) = connect().await else {
         return;
     };
-    let opts =
-        mysql_async::Opts::from_url(&format!("{}?prefer_socket=false", url().unwrap())).unwrap();
-    let mut conn = mysql_async::Conn::new(opts).await.unwrap();
+    let mut conn = admin().await;
     // A keyword that can be a name is an alias here: Format leaves its
     // case alone.
     conn.query_drop("SELECT 1 FROM users first").await.unwrap();
@@ -1956,7 +2037,7 @@ In `src/ui/mod.rs`, in `question_mark_opens_the_shortcuts_and_escape_closes_them
 Also in `src/ui/mod.rs`, in the tests module, before `fn command_period_cancels_a_sql_run` (the `#[test]` line above it included):
 
 ```rust
-    const FORMAT: Modifiers = Modifiers::COMMAND.plus(Modifiers::SHIFT);
+    const COMMAND_SHIFT: Modifiers = Modifiers::COMMAND.plus(Modifiers::SHIFT);
 
     #[test]
     fn command_shift_f_does_nothing_on_a_table_tab() {
@@ -1970,7 +2051,7 @@ Also in `src/ui/mod.rs`, in the tests module, before `fn command_period_cancels_
         });
         harness.answer_rows(crate::testing::page(3, false));
         // Mod+F would take the press for its own were it not consumed.
-        harness.press(Key::F, FORMAT);
+        harness.press(Key::F, COMMAND_SHIFT);
         assert!(!harness.has("Apply"), "the filter bar stays shut");
         harness.press(Key::F, Modifiers::COMMAND);
         assert!(harness.has("Apply"));
@@ -2027,9 +2108,10 @@ In `src/app.rs`, in `App::apply`, after the `Action::RunSql` arm:
 
 ```rust
             Action::FormatSql { tab, sql_tab } => {
-                // The keys go back to the editor after a click on the button.
                 if let Some(sql) = self.sql_tab_mut(tab, sql_tab) {
                     sql.format = true;
+                    // The keys go back to the editor after a click on the
+                    // toolbar's button.
                     sql.focus_editor = true;
                 }
             }
@@ -2050,7 +2132,7 @@ In `handle`, inside `ctx.input_mut`, after the `if let Some((tab, sql_tab)) = sq
         // Format is a SQL editor's. The press is taken on every tab, or
         // Mod+F, below, would take it for its own.
         let format = consume_press(input, Modifiers::COMMAND | Modifiers::SHIFT, Key::F);
-        if let (true, Some((tab, sql_tab))) = (format, sql) {
+        if format && let Some((tab, sql_tab)) = sql {
             actions.push(Action::FormatSql { tab, sql_tab });
         }
 ```
@@ -2108,7 +2190,7 @@ In `src/ui/sql_text.rs`, in the tests module, before `fn a_character_index_becom
     }
 ```
 
-In `src/ui/mod.rs`, in the tests module, before `const FORMAT` (added in Task 3), the helper:
+In `src/ui/mod.rs`, in the tests module, before `const COMMAND_SHIFT` (added in Task 3), the helper:
 
 ```rust
     /// Selects the bytes `range` of the active SQL editor's text, as a
@@ -2132,7 +2214,7 @@ In `src/ui/mod.rs`, in the tests module, before `const FORMAT` (added in Task 3)
     }
 ```
 
-and after `const FORMAT`, the tests:
+and after `const COMMAND_SHIFT`, the tests:
 
 ```rust
     #[test]
@@ -2141,7 +2223,7 @@ and after `const FORMAT`, the tests:
         let tab = harness.connect_fake();
         harness.press(Key::T, Modifiers::COMMAND);
         type_text(&mut harness, "select a,b from t");
-        harness.press(Key::F, FORMAT);
+        harness.press(Key::F, COMMAND_SHIFT);
         let formatted = "SELECT a,\n       b\n  FROM t";
         let sql = active_sql(&harness, tab);
         assert_eq!(sql.text, formatted);
@@ -2158,7 +2240,7 @@ and after `const FORMAT`, the tests:
         harness.press(Key::Escape, Modifiers::NONE);
         assert!(!harness.ctx.text_edit_focused());
         set_sql(&mut harness, tab, "select 1", 0);
-        harness.press(Key::F, FORMAT);
+        harness.press(Key::F, COMMAND_SHIFT);
         assert_eq!(active_sql(&harness, tab).text, "SELECT 1");
         assert!(harness.ctx.text_edit_focused());
     }
@@ -2171,19 +2253,19 @@ and after `const FORMAT`, the tests:
         let typed = "select a,b from t";
         let formatted = "SELECT a,\n       b\n  FROM t";
         type_text(&mut harness, typed);
-        harness.press(Key::F, FORMAT);
+        harness.press(Key::F, COMMAND_SHIFT);
         assert_eq!(active_sql(&harness, tab).text, formatted);
         harness.press(Key::Z, Modifiers::COMMAND);
         let sql = active_sql(&harness, tab);
         assert_eq!(sql.text, typed);
         assert_eq!(sql.cursor, typed.len(), "and the cursor where it was");
         // Redo formats it again.
-        harness.press(Key::Z, FORMAT);
+        harness.press(Key::Z, COMMAND_SHIFT);
         assert_eq!(active_sql(&harness, tab).text, formatted);
         // Formatting what is formatted adds nothing to undo: one undo is
         // still all it takes.
-        harness.press(Key::F, FORMAT);
-        harness.press(Key::F, FORMAT);
+        harness.press(Key::F, COMMAND_SHIFT);
+        harness.press(Key::F, COMMAND_SHIFT);
         assert_eq!(active_sql(&harness, tab).text, formatted);
         harness.press(Key::Z, Modifiers::COMMAND);
         assert_eq!(active_sql(&harness, tab).text, typed);
@@ -2198,7 +2280,7 @@ and after `const FORMAT`, the tests:
         type_text(&mut harness, typed);
         let list = typed.find("a,b").unwrap();
         select_sql(&mut harness, tab, list..list + 3);
-        harness.press(Key::F, FORMAT);
+        harness.press(Key::F, COMMAND_SHIFT);
         let sql = active_sql(&harness, tab);
         assert_eq!(
             sql.text,
@@ -2337,7 +2419,7 @@ In `src/ui/mod.rs`, in the tests module, after `fn format_with_a_selection_forma
         harness.settle();
         type_text(&mut harness, "select 1");
         assert!(!harness.has("Format"));
-        harness.press(Key::F, FORMAT);
+        harness.press(Key::F, COMMAND_SHIFT);
         assert_eq!(active_sql(&harness, tab).text, "SELECT 1");
     }
 ```
