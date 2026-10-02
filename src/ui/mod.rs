@@ -9,6 +9,7 @@ pub mod data_view;
 #[cfg(test)]
 mod env_tests;
 pub mod filter_bar;
+pub mod focus;
 pub mod format;
 pub mod grid;
 pub mod help;

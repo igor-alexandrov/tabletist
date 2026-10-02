@@ -3035,6 +3035,8 @@ impl App {
     pub fn frame_ui(&mut self, ui: &mut egui::Ui) {
         self.poll_backend();
         self.apply_actions();
+        // Before the shortcuts take their keys: what the user works with.
+        crate::ui::focus::begin_frame(ui.ctx());
         // Before the keys and the view, which read the list: it is the one
         // the last frame's actions left, after anything the backend
         // delivered just now.
@@ -3044,6 +3046,8 @@ impl App {
             crate::ui::keys::handle(self, ui.ctx());
         }
         crate::ui::show(self, ui);
+        // Over everything drawn: the ring of what has the keyboard.
+        crate::ui::focus::paint(ui.ctx(), &self.look, &self.palette);
         crate::ui::keys::after_frame(ui.ctx());
         self.apply_actions();
         // A list that opened or changed shows on the next frame.
