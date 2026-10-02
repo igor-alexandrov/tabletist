@@ -76,10 +76,18 @@ struct FieldInfo {
     target_column: String,
 }
 
-/// A column's label: `id · int8 · primary key`. The terminal's half-width
-/// cells name a timestamp alone, as the design does.
+/// A column's label: `id · int8 · primary key`, then what [`facts`] says of
+/// its value (`cover · bytea · 48.2 KB · looks like JPEG`). The terminal's
+/// half-width cells name a timestamp alone, as the design does.
 /// Names and types come from the server, so nothing hidden in them shows.
-fn label(name: &str, type_name: &str, kind: ValueKind, info: &FieldInfo, look: &Look) -> String {
+fn label(
+    name: &str,
+    type_name: &str,
+    kind: ValueKind,
+    info: &FieldInfo,
+    facts: &[String],
+    look: &Look,
+) -> String {
     let name = format::display_safe(name).into_owned();
     if look.terminal && kind == ValueKind::Temporal {
         return name;
@@ -98,11 +106,65 @@ fn label(name: &str, type_name: &str, kind: ValueKind, info: &FieldInfo, look: &
             "primary key".into()
         });
     }
+    parts.extend(facts.iter().cloned());
     let mut text = parts.join(" · ");
     if let (Some(target), true) = (&info.target, look.terminal) {
         text.push_str(&format!(" → {}", format::display_safe(&target.name)));
     }
     text
+}
+
+/// A text value longer than this says how long it is in its label.
+const COUNTED_CHARS: usize = 120;
+
+/// The longest array the panel lists: its text is read into elements every
+/// frame it shows. A longer one is text, cut and unfolded as any long text.
+const ARRAY_MAX: usize = 64 * 1024;
+
+/// Whether `text` is an array the panel lists element by element.
+fn listed(text: &str, column: &tabletist_db::ColumnMeta) -> bool {
+    text.len() <= ARRAY_MAX && format::is_array(&column.type_name, column.kind)
+}
+
+/// What a field's label says of its value, after its column's name and
+/// type: how many elements an array has, how big a binary value is and what
+/// it starts as, how long a long text is.
+fn facts(
+    value: &Value,
+    column: &tabletist_db::ColumnMeta,
+    formatted: Option<&format::FieldText>,
+    look: &Look,
+    locale: crate::i18n::Locale,
+) -> Vec<String> {
+    let say = |text: &'static str| look.label(&gettext(locale, text));
+    match value {
+        // Sixteen bytes read as a UUID: there is nothing more to say.
+        Value::Bytes(bytes) if format::uuid(bytes).is_some() => Vec::new(),
+        Value::Bytes(bytes) if look.terminal => std::iter::once(format::terse_size(bytes.len()))
+            .chain(format::sniff(bytes).map(str::to_lowercase))
+            .collect(),
+        Value::Bytes(bytes) => std::iter::once(format::human_size(bytes.len()))
+            .chain(format::sniff(bytes).map(|kind| format!("{} {kind}", say("looks like"))))
+            .collect(),
+        Value::Text(text) if listed(text, column) => format::array_items(text)
+            .map(|array| {
+                let count = array.items.len();
+                let noun = if count == 1 { "element" } else { "elements" };
+                format!("{count} {}", say(noun))
+            })
+            .into_iter()
+            .collect(),
+        Value::Text(_) => formatted
+            .and_then(|field| field.characters)
+            .filter(|count| *count > COUNTED_CHARS)
+            .map(|count| {
+                let noun = if look.terminal { "chars" } else { "characters" };
+                format!("{} {}", format::group_digits(count as u64), say(noun))
+            })
+            .into_iter()
+            .collect(),
+        Value::Null | Value::Bool(_) | Value::Int(_) | Value::Float(_) => Vec::new(),
+    }
 }
 
 /// What the panel shows a row of: a table's page, or a SQL editor's result.
@@ -758,8 +820,22 @@ fn field(
     // page or another result keeps no folds and nothing expanded.
     let request = texts.and_then(|texts| texts.request);
     let label_role = caption(look);
-    let text = label(&column.name, &column.type_name, column.kind, info, look);
+    let formatted = texts.and_then(|texts| texts.fields.get(col));
     let doc = json_doc(ui.ctx(), value, column.kind);
+    // A document's label shares its line with the document's controls.
+    let facts = if doc.is_some() {
+        Vec::new()
+    } else {
+        facts(value, column, formatted, look, locale)
+    };
+    let text = label(
+        &column.name,
+        &column.type_name,
+        column.kind,
+        info,
+        &facts,
+        look,
+    );
     let width = ui.available_width();
     // A document's label line holds its 26 pt copy button (macOS); a
     // plain label is one line of its text.
@@ -849,14 +925,7 @@ fn field(
         3.0
     });
     if value.is_null() {
-        Text::one(
-            look,
-            crate::ui::grid::data_role(look),
-            "NULL",
-            palette.faint,
-        )
-        .layout(ui.ctx())
-        .label(ui);
+        crate::ui::grid::null_label(ui, look, palette);
         return;
     }
     if let Some(doc) = doc {
@@ -888,11 +957,46 @@ fn field(
         }
         return;
     }
-    let Some(formatted) = texts.and_then(|texts| texts.fields.get(col)) else {
+    let Some(formatted) = formatted else {
         return;
     };
+    let say = |text: &'static str| look.label(&gettext(locale, text));
+    match value {
+        // Sixteen bytes are the UUID they hold: text, laid out below.
+        Value::Bytes(bytes) if format::uuid(bytes).is_some() => {}
+        Value::Bytes(bytes) => {
+            binary(ui, bytes, &formatted.short, look, palette, locale);
+            return;
+        }
+        Value::Text(text) => {
+            let marks = crate::ui::grid::marks(ui.ctx(), look);
+            if let Some(shown) = format::blank_text(text, marks) {
+                let note = if text.is_empty() {
+                    say("empty string")
+                } else {
+                    say("whitespace only")
+                };
+                stand_in(ui, &shown, &note, look, palette);
+                return;
+            }
+            if listed(text, column)
+                && let Some(array) = format::array_items(text)
+            {
+                if array.items.is_empty() {
+                    stand_in(ui, "{}", &say("empty array"), look, palette);
+                } else {
+                    elements(ui, &array, look, palette, locale);
+                }
+                return;
+            }
+        }
+        Value::Null | Value::Bool(_) | Value::Int(_) | Value::Float(_) => {}
+    }
     let expanded_id = Id::new(("row-panel-expanded", tab, tab_id, request, row, col));
     let expanded: bool = ui.data(|data| data.get_temp(expanded_id)).unwrap_or(false);
+    // Whether the value takes more lines than the panel shows at first:
+    // known once it is laid out at the width it gets.
+    let mut tall = false;
     let long = formatted.full.is_some();
     let shown = match &formatted.full {
         Some(full) if expanded => full,
@@ -948,17 +1052,37 @@ fn field(
         let room = (ui.available_width() - link).max(24.0);
         ui.allocate_ui(vec2(room, 0.0), |ui| {
             let mut layouter = crate::typography::layouter(look, role, color);
-            ui.add(
-                TextEdit::multiline(&mut shown.as_str())
-                    .font(role.font_id(look.faces))
-                    // Flush with the field name above.
-                    .frame(egui::Frame::NONE)
-                    .margin(egui::Margin::ZERO)
-                    .desired_width(room)
-                    .desired_rows(1)
-                    .layouter(&mut layouter),
-            )
-            .labelled_by(name_id);
+            tall = layouter(ui, &shown.as_str(), room).rows.len() > CLAMP_ROWS;
+            let mut edit = |ui: &mut egui::Ui| {
+                ui.add(
+                    TextEdit::multiline(&mut shown.as_str())
+                        .font(role.font_id(look.faces))
+                        // Flush with the field name above.
+                        .frame(egui::Frame::NONE)
+                        .margin(egui::Margin::ZERO)
+                        .desired_width(room)
+                        .desired_rows(1)
+                        .layouter(&mut layouter),
+                )
+                .labelled_by(name_id);
+            };
+            if tall && !expanded {
+                // The first lines, the last of them fading out (macOS):
+                // "Show all" below gives the rest.
+                let line = line_of(ui, role, look);
+                let size = vec2(room, CLAMP_ROWS as f32 * line);
+                let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
+                let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect));
+                child.set_clip_rect(rect.intersect(ui.clip_rect()));
+                edit(&mut child);
+                if !look.terminal {
+                    let last =
+                        Rect::from_min_max(pos2(rect.left(), rect.bottom() - line), rect.max);
+                    fade(ui, last, palette.window);
+                }
+            } else {
+                edit(ui);
+            }
         });
         if let Some((text, target)) = follow {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
@@ -982,7 +1106,7 @@ fn field(
             });
         }
     });
-    if long {
+    if long || tall {
         let label = if expanded {
             gettext(locale, "Show less").into_owned()
         } else {
@@ -995,6 +1119,152 @@ fn field(
         if link.clicked() {
             ui.data_mut(|data| data.insert_temp(expanded_id, !expanded));
         }
+    }
+}
+
+/// The lines of a long value the panel shows before "Show all".
+const CLAMP_ROWS: usize = 3;
+
+/// Fades `rect` from clear at its top to `color` at its bottom: the last
+/// line of a value cut short runs out into the panel.
+fn fade(ui: &egui::Ui, rect: Rect, color: egui::Color32) {
+    let clear = color.gamma_multiply(0.0);
+    let mut mesh = egui::Mesh::default();
+    mesh.colored_vertex(rect.left_top(), clear);
+    mesh.colored_vertex(rect.right_top(), clear);
+    mesh.colored_vertex(rect.right_bottom(), color);
+    mesh.colored_vertex(rect.left_bottom(), color);
+    mesh.add_triangle(0, 1, 2);
+    mesh.add_triangle(0, 2, 3);
+    ui.painter().add(mesh);
+}
+
+/// A value with nothing to see: what the grid writes for it (`''`, a mark
+/// for each space, `{}`), and in words what that is.
+fn stand_in(ui: &mut egui::Ui, shown: &str, note: &str, look: &Look, palette: &Palette) {
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 6.0;
+        let role = crate::ui::grid::data_role(look);
+        Text::one(look, role, shown, palette.faint)
+            .layout(ui.ctx())
+            .label(ui);
+        Text::one(look, widgets::secondary(look), note, palette.secondary)
+            .layout(ui.ctx())
+            .label(ui);
+    });
+}
+
+/// The most elements of an array the panel lists.
+const ELEMENTS_SHOWN: usize = 100;
+
+/// An array's elements, one to a line after their positions (which count
+/// from 1, as PostgreSQL's do).
+fn elements(
+    ui: &mut egui::Ui,
+    array: &format::ArrayItems<'_>,
+    look: &Look,
+    palette: &Palette,
+    locale: crate::i18n::Locale,
+) {
+    let role = TextRole::pick(look, TextRole::MonoSecondary, TextRole::OSecondary);
+    let shown = array.items.len().min(ELEMENTS_SHOWN);
+    // The positions share a column as wide as the last one's.
+    let column = role.width(ui.ctx(), look.faces, &format!("[{shown}]"));
+    let line = line_of(ui, role, look);
+    ui.scope(|ui| {
+        ui.spacing_mut().item_spacing = vec2(8.0, 2.0);
+        for (index, item) in array.items.iter().take(ELEMENTS_SHOWN).enumerate() {
+            ui.horizontal_top(|ui| {
+                let (place, _) = ui.allocate_exact_size(vec2(column, line), Sense::hover());
+                let position = format!("[{}]", index + 1);
+                widgets::paint_text(
+                    ui,
+                    place.left(),
+                    place.center().y,
+                    Text::one(look, role, &position, palette.faint),
+                );
+                Text::one(look, role, &format::display_safe(item), palette.text)
+                    .wrap(ui.available_width())
+                    .layout(ui.ctx())
+                    .label(ui);
+            });
+        }
+        let more = array.items.len() - shown;
+        if more > 0 {
+            let rest = format!(
+                "… {} {}",
+                format::group_digits(more as u64),
+                look.label(&gettext(locale, "more elements"))
+            );
+            Text::one(look, role, &rest, palette.faint)
+                .layout(ui.ctx())
+                .label(ui);
+        }
+    });
+}
+
+/// A binary value: its first bytes, and how many more there are. The whole
+/// of it is a file's worth, which Copy gives.
+fn binary(
+    ui: &mut egui::Ui,
+    bytes: &[u8],
+    preview: &str,
+    look: &Look,
+    palette: &Palette,
+    locale: crate::i18n::Locale,
+) {
+    let say = |text: &'static str| look.label(&gettext(locale, text));
+    if bytes.is_empty() {
+        Text::one(
+            look,
+            widgets::secondary(look),
+            &say("no bytes"),
+            palette.secondary,
+        )
+        .layout(ui.ctx())
+        .label(ui);
+        return;
+    }
+    let role = TextRole::pick(look, TextRole::Json, TextRole::OSecondary);
+    let more = bytes.len().saturating_sub(format::HEX_PREVIEW);
+    let rest = (more > 0).then(|| {
+        let count = format::group_digits(more as u64);
+        if look.terminal {
+            format!("… {count} {}", say("more"))
+        } else {
+            format!(
+                "… {count} {} · {} {} {}",
+                say("more bytes"),
+                say("first"),
+                format::HEX_PREVIEW,
+                say("shown")
+            )
+        }
+    });
+    let lines = |ui: &mut egui::Ui| {
+        ui.spacing_mut().item_spacing.y = 0.0;
+        Text::one(look, role, preview, palette.secondary)
+            .layout(ui.ctx())
+            .label(ui);
+        if let Some(rest) = &rest {
+            Text::one(look, role, rest, palette.faint)
+                .layout(ui.ctx())
+                .label(ui);
+        }
+    };
+    if look.terminal {
+        ui.scope(lines);
+    } else {
+        Frame::new()
+            .fill(palette.panel)
+            // The design's 1 pt border outside 8 and 10 of padding.
+            .stroke(Stroke::new(1.0, palette.surface_hover))
+            .corner_radius(CornerRadius::same(look.radius))
+            .inner_margin(egui::Margin::symmetric(10, 8))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                lines(ui);
+            });
     }
 }
 
@@ -1278,5 +1548,146 @@ mod tests {
         // Under its least width the panel gives way too.
         assert_eq!(range(400.0), (200.0, 200.0));
         assert_eq!(range(0.0), (0.0, 0.0));
+    }
+
+    /// A table open on one row of awkward values, that row in the panel.
+    fn awkward(look: Look) -> crate::testing::Harness {
+        awkward_with(look, "{en,fr}")
+    }
+
+    /// [`awkward`], its array column holding `languages`.
+    fn awkward_with(look: Look, languages: &str) -> crate::testing::Harness {
+        use tabletist_db::{ColumnMeta, ObjectKind, ObjectRef, RowPage};
+        let mut harness = crate::testing::Harness::new();
+        harness.set_look(look);
+        let tab = harness.connect_fake();
+        harness.app.apply(Action::OpenObject {
+            tab,
+            object: ObjectRef::new("main", "editions"),
+            kind: ObjectKind::Table,
+            pin: true,
+        });
+        let column = |name: &str, type_name: &str, kind| ColumnMeta {
+            name: name.into(),
+            type_name: type_name.into(),
+            kind,
+        };
+        let text = |value: &str| Value::Text(value.into());
+        let jpeg: Vec<u8> = [0xff, 0xd8, 0xff, 0xe0]
+            .into_iter()
+            .chain(std::iter::repeat_n(0, 96))
+            .collect();
+        harness.answer_rows(RowPage {
+            columns: vec![
+                column("title", "text", ValueKind::Text),
+                column("subtitle", "text", ValueKind::Text),
+                column("languages", "_text", ValueKind::Other),
+                column("cover", "bytea", ValueKind::Binary),
+                column("notes", "text", ValueKind::Text),
+            ],
+            rows: vec![vec![
+                text(&"A long title. ".repeat(40)),
+                text(""),
+                text(languages),
+                Value::Bytes(jpeg.into()),
+                Value::Null,
+            ]],
+            has_more: false,
+            ordered_by_key: true,
+            elapsed: std::time::Duration::ZERO,
+        });
+        let id = harness.app.workspace(tab).unwrap().active_tab.unwrap();
+        harness.app.apply(Action::SelectCell {
+            tab,
+            id,
+            cell: CellPos { row: 0, col: 0 },
+        });
+        harness.settle();
+        harness
+    }
+
+    #[test]
+    fn a_fields_label_says_what_its_value_does_not_show() {
+        for look in Look::ALL {
+            let mut harness = awkward(look);
+            let labels = crate::testing::labels(&harness.settle());
+            let expected = if look.terminal {
+                [
+                    "title · text · 560 chars",
+                    "languages · text[] · 2 elements",
+                    "cover · bytea · 100B · jpeg",
+                ]
+            } else {
+                [
+                    "title · text · 560 characters",
+                    "languages · text[] · 2 elements",
+                    "cover · bytea · 100 B · looks like JPEG",
+                ]
+            };
+            for label in expected {
+                assert!(
+                    labels.iter().any(|found| found == label),
+                    "{label} in {}: {labels:?}",
+                    look.name
+                );
+            }
+            // A value that shows whole says nothing more.
+            assert!(labels.iter().any(|found| found == "subtitle · text"));
+        }
+    }
+
+    #[test]
+    fn values_with_nothing_to_see_say_what_they_are() {
+        for look in Look::ALL {
+            let mut harness = awkward(look);
+            let labels = crate::testing::labels(&harness.settle());
+            for text in ["''", "empty string", "NULL", "en", "fr"] {
+                assert!(
+                    labels.iter().any(|found| found == text),
+                    "{text} in {}: {labels:?}",
+                    look.name
+                );
+            }
+            // A binary value is its first bytes and a count of the rest.
+            let painted = |text: &str| {
+                harness
+                    .painted
+                    .iter()
+                    .any(|(piece, _)| piece.contains(text))
+            };
+            assert!(painted("ff d8 ff e0 00 00"), "{:?}", harness.painted);
+            assert!(painted("76"), "the bytes past the first 24");
+            // An array's elements stand after their positions.
+            assert!(painted("[1]") && painted("[2]"), "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn an_array_too_long_to_read_every_frame_is_text() {
+        let long = format!("{{{}}}", vec!["element"; 20_000].join(","));
+        let mut harness = awkward_with(Look::macos(), &long);
+        let labels = crate::testing::labels(&harness.settle());
+        // No list and no count of elements: its length, as any long text.
+        assert!(
+            labels.iter().any(|label| {
+                label.starts_with("languages · text[] · ") && label.ends_with(" characters")
+            }),
+            "{labels:?}"
+        );
+        assert!(!labels.iter().any(|label| label.contains("elements")));
+        assert!(labels.iter().any(|label| label.starts_with("Show all")));
+    }
+
+    #[test]
+    fn a_long_value_shows_its_start_until_asked_for_all() {
+        for look in Look::ALL {
+            let mut harness = awkward(look);
+            assert!(harness.has("Show all (560 B)"), "{}", look.name);
+            assert!(!harness.has("Show less"));
+            harness.click("Show all (560 B)");
+            assert!(harness.has("Show less"), "{}", look.name);
+            harness.click("Show less");
+            assert!(harness.has("Show all (560 B)"), "{}", look.name);
+        }
     }
 }

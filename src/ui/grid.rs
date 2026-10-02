@@ -861,6 +861,36 @@ fn paint_chip(
         .paint_center(painter, rect.center());
 }
 
+/// NULL where a value would be, laid out in `ui`: the grid's chip, or the
+/// terminal's faint word. The row panel's fields use it.
+pub fn null_label(ui: &mut Ui, look: &Look, palette: &Palette) -> egui::Response {
+    let role = data_role(look);
+    if look.terminal {
+        return Text::one(look, role, "NULL", palette.faint)
+            .layout(ui.ctx())
+            .label(ui);
+    }
+    let skin = ChipSkin::null(palette);
+    let size = vec2(
+        chip_width(ui, "NULL", skin.role, look),
+        role.row_height(ui.ctx(), look.faces),
+    );
+    let (rect, response) = ui.allocate_exact_size(size, Sense::hover());
+    response.widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, "NULL"));
+    if ui.is_rect_visible(rect) {
+        paint_chip(
+            ui.painter(),
+            ui,
+            "NULL",
+            rect.left(),
+            rect.center().y,
+            skin,
+            look,
+        );
+    }
+    response
+}
+
 /// One cell: its text, tag, chips or colour swatch, cut to fit.
 fn draw_cell(
     ui: &Ui,
