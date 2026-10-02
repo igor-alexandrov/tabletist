@@ -1416,11 +1416,8 @@ impl<'a> ButtonSpec<'a> {
             (text, shortcut)
         };
         let (fill, border, text) = if self.quiet && self.kind == ButtonKind::Secondary {
-            let fill = if hovered {
-                palette.panel
-            } else {
-                Color32::TRANSPARENT
-            };
+            // Under the pointer, the fill its look gives a secondary button.
+            let fill = if hovered { fill } else { Color32::TRANSPARENT };
             (fill, None, palette.secondary)
         } else {
             (fill, border, text)

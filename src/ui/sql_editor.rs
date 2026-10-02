@@ -516,7 +516,7 @@ fn mac_toolbar(ui: &mut Ui, rect: Rect, bar: &Bar<'_>, actions: &mut Vec<Action>
     let menu_sizes = shapes.map(|shape| menu_widths(ui, shape, bar));
     let widths = [false, true].map(|keys| buttons(keys).map(|b| b.width(ui, look)));
     let room = right - left;
-    // The divider before Format: a rule with 4 at its sides.
+    // The divider before Format: a rule 20 tall with 4 at its sides.
     let divider = 4.0 + 1.0 + 4.0;
     let needs = |shape: usize, badge: bool, keys: bool, format: bool| {
         let [run, all, format_width] = widths[usize::from(keys)];
@@ -553,15 +553,15 @@ fn mac_toolbar(ui: &mut Ui, rect: Rect, bar: &Bar<'_>, actions: &mut Vec<Action>
         return;
     };
     if formats {
-        let rule = all_place.right() + 8.0 + 4.5;
+        let rule = all_place.right() + 8.0 + divider / 2.0;
         widgets::vline(
             ui,
             rule,
             egui::Rangef::new(center - 10.0, center + 10.0),
             palette.outline,
         );
-        let rect = place(rule + 4.5 + 8.0, format_width);
-        let response = format.show_at(ui, rect, look, palette);
+        let format_place = place(all_place.right() + 8.0 + divider + 8.0, format_width);
+        let response = format.show_at(ui, format_place, look, palette);
         if response
             .on_hover_text(gettext(locale, "Format the SQL"))
             .clicked()

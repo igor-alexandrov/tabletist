@@ -2414,6 +2414,12 @@ mod tests {
                     "1,000",
                 )
             };
+            // Format's key, which goes when the run buttons' keys do.
+            let format_keys = if look == crate::theme::Look::macos() {
+                "⇧⌘F"
+            } else {
+                "Ctrl+Shift+F"
+            };
             // Every state the toolbar passes through as the window narrows,
             // in the order it meets them.
             let mut states = Vec::new();
@@ -2435,6 +2441,12 @@ mod tests {
                     has(egui::accesskit::Role::Button, "Run")
                         && has(egui::accesskit::Role::Button, "Run all"),
                     "the run buttons at {width} in {}",
+                    look.name
+                );
+                assert_eq!(
+                    painted(&harness, format_keys),
+                    state[0] && !look.terminal,
+                    "{format_keys} at {width} in {}",
                     look.name
                 );
                 // A menu reads in full or short, never neither.
