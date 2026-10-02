@@ -8,7 +8,7 @@ use std::time::Duration;
 use egui::{Align, Color32, CornerRadius, Frame, Margin, Rect, Sense, Stroke, StrokeKind, Ui};
 use egui::{pos2, vec2};
 
-use crate::env::{EnvColors, Environment, Platform, env_colors};
+use crate::env::{Platform, failure_tint, warning_tint};
 use crate::theme::{Icon, Look, Palette};
 use crate::typography::{Text, TextRole};
 use crate::ui::widgets::{self, ButtonSpec};
@@ -250,26 +250,27 @@ impl Tone {
         }
     }
 
-    /// The tints of this tone: a failure wears production's red and a
-    /// warning staging's amber, the tints the connection bar already uses.
-    /// [`Tone::color`] is too dark to tint with: it is text's.
-    fn tints(self, look: &Look, palette: &Palette) -> EnvColors {
-        let env = match self {
-            Self::Danger => Environment::Production,
-            Self::Warning => Environment::Staging,
-        };
-        env_colors(env, Platform::of(look), palette)
+    /// The tint of this tone and the line over it, lent by the module
+    /// that owns them: a failure wears the production bar's red and a
+    /// warning the staging bar's amber. [`Tone::color`] is too dark to
+    /// tint with: it is text's.
+    fn tints(self, look: &Look, palette: &Palette) -> (Color32, Color32) {
+        let platform = Platform::of(look);
+        match self {
+            Self::Danger => failure_tint(platform, palette),
+            Self::Warning => warning_tint(platform, palette),
+        }
     }
 
     /// The fill of a card or a banner in this tone: its bar's tint.
     pub fn fill(self, look: &Look, palette: &Palette) -> Color32 {
-        self.tints(look, palette).bar_bg()
+        self.tints(look, palette).0
     }
 
     /// The line round a card or under a banner in this tone: the line a
     /// bar draws over its tint.
     pub fn line(self, look: &Look, palette: &Palette) -> Color32 {
-        self.tints(look, palette).bar_border()
+        self.tints(look, palette).1
     }
 }
 
