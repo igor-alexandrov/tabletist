@@ -3117,6 +3117,42 @@ mod tests {
         assert!(panel_shows(&mut harness));
     }
 
+    #[test]
+    fn the_strips_toggle_opens_a_closed_row_panel_in_every_look() {
+        for look in crate::theme::Look::ALL {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            let tab = with_page(&mut harness);
+            let open = |harness: &Harness| harness.app.workspace(tab).unwrap().row_panel;
+            harness.click("Row 1");
+            harness.click("Close the row panel");
+            assert!(!open(&harness), "{}", look.name);
+            // The panel's own button went with it, and the tree has the
+            // arrows, so Space is not the panel's: the strip brings it back.
+            harness.click("Show or hide the row panel");
+            assert!(open(&harness), "{}", look.name);
+            assert!(harness.has("Close the row panel"), "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn the_strips_toggle_stands_clear_of_the_tabs_in_every_look() {
+        use egui::accesskit::Role;
+        for look in crate::theme::Look::ALL {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            with_page(&mut harness);
+            let tree = harness.settle();
+            let bounds = |label| {
+                crate::testing::bounds(&tree, label, Role::Button)
+                    .unwrap_or_else(|| panic!("{label} missing in {}", look.name))
+            };
+            let (users, toggle) = (bounds("users tab"), bounds("Show or hide the row panel"));
+            assert!(users.right() <= toggle.left(), "{}", look.name);
+            assert!(users.y_range().contains(toggle.center().y), "{}", look.name);
+        }
+    }
+
     /// The fields of the row panel that shows, by their copy buttons.
     fn panel_shows(harness: &mut Harness) -> bool {
         harness.has("Copy email")
