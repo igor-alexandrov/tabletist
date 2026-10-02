@@ -8488,6 +8488,50 @@ mod tests {
         assert_eq!(harness.copied.as_deref(), Some("Total: \u{202E}00.0001"));
     }
 
+    /// SQLite and MySQL keep a UUID key as sixteen bytes (`blob(16)`,
+    /// `binary(16)`): the grid, the row panel and the clipboard give the
+    /// UUID, not the value's size.
+    #[test]
+    fn a_sixteen_byte_key_reads_as_a_uuid() {
+        let uuid = "0199a3f2-7c1e-7abc-8def-0123456789ab";
+        let (mut harness, tab) = tree_harness();
+        harness.click("users");
+        let mut page = crate::testing::page(1, false);
+        page.columns[0].type_name = "blob(16)".into();
+        page.columns[0].kind = tabletist_db::ValueKind::Binary;
+        page.rows[0][0] = tabletist_db::Value::Bytes(
+            vec![
+                0x01, 0x99, 0xa3, 0xf2, 0x7c, 0x1e, 0x7a, 0xbc, 0x8d, 0xef, 0x01, 0x23, 0x45, 0x67,
+                0x89, 0xab,
+            ]
+            .into(),
+        );
+        harness.answer_rows(page);
+        let workspace = harness.app.workspace_mut(tab).unwrap();
+        workspace.row_panel = true;
+        let id = workspace.active_tab.unwrap();
+        harness.app.apply(crate::model::Action::SelectCell {
+            tab,
+            id,
+            cell: crate::model::CellPos { row: 0, col: 0 },
+        });
+        harness.settle();
+        let painted: Vec<&str> = harness
+            .painted
+            .iter()
+            .map(|(text, _)| text.as_str())
+            .collect();
+        // Once in the grid, once as the row panel's field.
+        let shown = painted.iter().filter(|text| **text == uuid).count();
+        assert!(shown >= 2, "{painted:?}");
+        assert!(
+            !painted.iter().any(|text| text.contains("BLOB")),
+            "{painted:?}"
+        );
+        harness.copy(false);
+        assert_eq!(harness.copied.as_deref(), Some(uuid));
+    }
+
     /// Two schemas with a `users` table: the tab and the row panel name the
     /// schema, and a name only one schema has stays short.
     #[test]
