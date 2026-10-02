@@ -7604,6 +7604,27 @@ mod tests {
     }
 
     #[test]
+    fn a_reload_that_lasts_shows_its_wait_in_place_of_the_empty_state() {
+        for look in crate::theme::Look::ALL {
+            // The reload finds rows, or none again.
+            for rows in [3, 0] {
+                let mut harness = Harness::new();
+                harness.set_look(look);
+                let tab = empty_users(&mut harness);
+                let title = format!("{} users", look.label("No rows in"));
+                assert!(harness.has(&title), "{}", look.name);
+                harness.click("Reload");
+                age_fetch(&mut harness, tab);
+                // The box says what is happening: nothing lies under it.
+                assert!(harness.has(&look.label("Running query…")), "{}", look.name);
+                assert!(!harness.has(&title), "{}", look.name);
+                harness.answer_rows(crate::testing::page(rows, false));
+                assert_eq!(harness.has(&title), rows == 0, "{} {rows}", look.name);
+            }
+        }
+    }
+
+    #[test]
     fn filters_that_match_nothing_are_named_and_the_last_one_can_go() {
         let mut harness = Harness::new();
         harness.set_look(crate::theme::Look::macos());

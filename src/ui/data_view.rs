@@ -956,6 +956,10 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
     };
     let mut actions = Vec::new();
     let area = ui.max_rect();
+    // How long the fetch in flight has been going, read once: every piece
+    // below sees the same wait.
+    let waited = object.rows.running_for();
+    let lasted = waited.is_some_and(states::lasted);
     if let Some(error) = shown_error(&object.rows) {
         Frame::new().inner_margin(Margin::same(12)).show(ui, |ui| {
             error_box(ui, error, &look, &palette, locale, || {
@@ -1023,7 +1027,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
                 column: page.columns[col].name.clone(),
             });
         }
-        if page.rows.is_empty() {
+        // Not while a fetch has lasted: its box would sit on the state's
+        // title or its button, and says what is happening by itself.
+        if page.rows.is_empty() && !lasted {
             // The headers stay: the columns are still worth reading.
             let under = Rect::from_min_max(
                 pos2(area.left(), area.top() + grid::header_height(&look)),
@@ -1038,7 +1044,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
                 &mut actions,
             );
         }
-    } else if object.rows.running_for().is_some_and(states::lasted) {
+    } else if lasted {
         // Rows on their way and none to show yet: the shape of a grid.
         if !look.terminal {
             states::progress(ui, area.x_range(), area.top(), &palette);
@@ -1048,8 +1054,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
     }
     // A fetch that has lasted, over whatever is up: a refresh and the next
     // page keep the page they replace on screen.
-    if let Some(waited) = object.rows.running_for() {
-        if states::lasted(waited) {
+    if let Some(waited) = waited {
+        if lasted {
             let (text, name, keys) = (
                 look.label(&gettext(locale, "Running query…")),
                 look.label(&gettext(locale, "Cancel")),
