@@ -15,6 +15,7 @@ use crate::theme::{Icon, Look, Palette};
 use crate::typography::{Text, TextRole};
 use crate::ui::format;
 use crate::ui::grid::{self, Cell, Column, Style};
+use crate::ui::states;
 use crate::ui::widgets;
 
 /// Left and right padding of the header, toolbar and footer.
@@ -381,20 +382,10 @@ fn sort_chip(
     (chip, response.clicked())
 }
 
-/// Above the grid: Add filter and the filters in use (macOS), or the
-/// terminal's WHERE line; the sort; and how timestamps are shown.
-pub fn toolbar(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId) {
-    let locale = app.locale;
-    let palette = app.palette;
-    let look = app.look;
-    let Some(workspace) = app.workspace(tab) else {
-        return;
-    };
-    let full_precision = workspace.full_precision;
-    let Some(object) = workspace.object_tab(object_tab) else {
-        return;
-    };
-    let filters: Vec<String> = object
+/// The applied filters as the toolbar's chips write them, the raw WHERE
+/// last.
+fn filter_texts(object: &ObjectTab) -> Vec<String> {
+    object
         .query
         .filters
         .iter()
@@ -410,7 +401,23 @@ pub fn toolbar(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: Tab
             }
         })
         .chain(object.query.raw_where.clone())
-        .collect();
+        .collect()
+}
+
+/// Above the grid: Add filter and the filters in use (macOS), or the
+/// terminal's WHERE line; the sort; and how timestamps are shown.
+pub fn toolbar(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId) {
+    let locale = app.locale;
+    let palette = app.palette;
+    let look = app.look;
+    let Some(workspace) = app.workspace(tab) else {
+        return;
+    };
+    let full_precision = workspace.full_precision;
+    let Some(object) = workspace.object_tab(object_tab) else {
+        return;
+    };
+    let filters = filter_texts(object);
     let sort = object
         .query
         .sort
@@ -949,6 +956,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
         return;
     };
     let mut actions = Vec::new();
+    let area = ui.max_rect();
     if let Some(error) = &object.rows.error {
         Frame::new().inner_margin(Margin::same(12)).show(ui, |ui| {
             error_box(ui, error, &look, &palette, locale, || {
@@ -956,90 +964,80 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
             });
         });
     } else if let Some(page) = object.page() {
-        if page.rows.is_empty() {
-            let filtered = !object.query.filters.is_empty() || object.query.raw_where.is_some();
-            let table = object.kind == tabletist_db::ObjectKind::Table;
-            ui.vertical_centered(|ui| {
-                ui.add_space(ui.available_height() / 3.0);
-                let text = if filtered {
-                    gettext(locale, "No rows match the filter")
-                } else if table {
-                    gettext(locale, "This table is empty")
-                } else {
-                    gettext(locale, "No rows")
-                };
-                Text::one(&look, widgets::body(&look), &text, palette.secondary)
-                    .layout(ui.ctx())
-                    .label(ui);
-                if filtered {
-                    ui.add_space(8.0);
-                    let label = gettext(locale, "Clear filter");
-                    if widgets::button(ui, &label, &look).clicked() {
-                        actions.push(Action::ClearFilters { tab, object_tab });
-                    }
+        let structure = object.structure.value.as_ref();
+        let columns: Vec<Column<'_>> = page
+            .columns
+            .iter()
+            .map(|column| {
+                let (type_line, key) = type_line(
+                    &column.name,
+                    &column.type_name,
+                    column.kind,
+                    structure,
+                    &look,
+                );
+                Column {
+                    name: &column.name,
+                    type_line,
+                    numeric: column.kind == ValueKind::Numeric,
+                    sort: object.sort_of(&column.name),
+                    key,
+                    flexible: column.kind == ValueKind::Json,
+                    sortable: true,
                 }
+            })
+            .collect();
+        let ctx = ui.ctx().clone();
+        let tags = crate::ui::value_tags::Tags::of_page(page, structure);
+        let output = grid::show(
+            ui,
+            // Full precision widens timestamps: the columns fit again.
+            Id::new(("grid", tab.0, object_tab.0, full_precision)),
+            &columns,
+            page.rows.len(),
+            object.query.offset,
+            object.selection,
+            &palette,
+            &look,
+            |row, col| {
+                cell(
+                    &ctx,
+                    &page.rows[row][col],
+                    page.columns[col].kind,
+                    &tags[col],
+                    &look,
+                    full_precision,
+                )
+            },
+        );
+        if let Some(cell) = output.clicked {
+            actions.push(Action::SelectCell {
+                tab,
+                id: object_tab,
+                cell,
             });
-        } else {
-            let structure = object.structure.value.as_ref();
-            let columns: Vec<Column<'_>> = page
-                .columns
-                .iter()
-                .map(|column| {
-                    let (type_line, key) = type_line(
-                        &column.name,
-                        &column.type_name,
-                        column.kind,
-                        structure,
-                        &look,
-                    );
-                    Column {
-                        name: &column.name,
-                        type_line,
-                        numeric: column.kind == ValueKind::Numeric,
-                        sort: object.sort_of(&column.name),
-                        key,
-                        flexible: column.kind == ValueKind::Json,
-                        sortable: true,
-                    }
-                })
-                .collect();
-            let ctx = ui.ctx().clone();
-            let tags = crate::ui::value_tags::Tags::of_page(page, structure);
-            let output = grid::show(
-                ui,
-                // Full precision widens timestamps: the columns fit again.
-                Id::new(("grid", tab.0, object_tab.0, full_precision)),
-                &columns,
-                page.rows.len(),
-                object.query.offset,
-                object.selection,
-                &palette,
-                &look,
-                |row, col| {
-                    cell(
-                        &ctx,
-                        &page.rows[row][col],
-                        page.columns[col].kind,
-                        &tags[col],
-                        &look,
-                        full_precision,
-                    )
-                },
+        }
+        if let Some(col) = output.sort_clicked {
+            actions.push(Action::SortBy {
+                tab,
+                object_tab,
+                column: page.columns[col].name.clone(),
+            });
+        }
+        if page.rows.is_empty() {
+            // The headers stay: the columns are still worth reading.
+            let under = Rect::from_min_max(
+                pos2(area.left(), area.top() + grid::header_height(&look)),
+                area.max,
             );
-            if let Some(cell) = output.clicked {
-                actions.push(Action::SelectCell {
-                    tab,
-                    id: object_tab,
-                    cell,
-                });
-            }
-            if let Some(col) = output.sort_clicked {
-                actions.push(Action::SortBy {
-                    tab,
-                    object_tab,
-                    column: page.columns[col].name.clone(),
-                });
-            }
+            empty_rows(
+                ui,
+                under,
+                object,
+                tab,
+                (&look, &palette, locale),
+                &mut actions,
+            );
         }
     } else {
         ui.centered_and_justified(|ui| {
@@ -1047,6 +1045,97 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
         });
     }
     app.actions.extend(actions);
+}
+
+/// What a page with no rows says under its column headers: that the table
+/// is empty, or which filters leave nothing, and the way out of each.
+fn empty_rows(
+    ui: &mut egui::Ui,
+    rect: Rect,
+    object: &ObjectTab,
+    tab: ConnTabId,
+    (look, palette, locale): (&Look, &Palette, crate::i18n::Locale),
+    actions: &mut Vec<Action>,
+) {
+    let say = |text: &'static str| look.label(&gettext(locale, text));
+    let name = format::display_safe(&object.object.name);
+    let object_tab = object.id;
+    let filters = filter_texts(object);
+    if filters.is_empty() {
+        let title = format!("{} {name}", say("No rows in"));
+        let text = if object.kind == tabletist_db::ObjectKind::Table {
+            say("The table exists and is empty.")
+        } else {
+            say("It returned no rows.")
+        };
+        let notice = states::Notice {
+            icon: Icon::Table,
+            title: &title,
+            text: &text,
+        };
+        // No key beside it: Cmd/Ctrl+R refreshes the tree while the tree
+        // has the keys.
+        let reload = say("Reload");
+        let button = states::button(&reload, look).label("Reload");
+        let button = if look.terminal {
+            button
+        } else {
+            button.icon(Icon::RefreshCw)
+        };
+        if states::empty(ui, rect, &notice, vec![button], look, palette).is_some() {
+            actions.push(Action::Refresh(tab));
+        }
+        return;
+    }
+    let title = if filters.len() == 1 {
+        say("No rows match the filter")
+    } else {
+        format!(
+            "{} {} {}",
+            say("No rows match"),
+            filters.len(),
+            say("filters")
+        )
+    };
+    let none = format!(
+        "{} {}.",
+        say("None matches"),
+        filters.join(&format!(" {} ", say("and")))
+    );
+    // The catalog's estimate of the whole table, when it has one.
+    let text = match object.estimated_rows {
+        Some(rows) => format!(
+            "{name} {} {} {}. {none}",
+            say("has about"),
+            format::group_digits(rows),
+            say(if rows == 1 { "row" } else { "rows" })
+        ),
+        None => none,
+    };
+    let notice = states::Notice {
+        icon: Icon::Funnel,
+        title: &title,
+        text: &text,
+    };
+    let (clear, last) = (say("Clear filters"), say("Remove last filter"));
+    let mut buttons = vec![states::button(&clear, look).label("Clear filters")];
+    if filters.len() > 1 {
+        buttons.push(
+            states::button(&last, look)
+                .label("Remove last filter")
+                .quiet(),
+        );
+    }
+    match states::empty(ui, rect, &notice, buttons, look, palette) {
+        Some(0) => actions.push(Action::ClearFilters { tab, object_tab }),
+        // `DropFilter` counts the raw WHERE last, as `filter_texts` does.
+        Some(_) => actions.push(Action::DropFilter {
+            tab,
+            object_tab,
+            index: filters.len() - 1,
+        }),
+        None => {}
+    }
 }
 
 /// A cell of a result grid, a table's or a SQL editor's: a value from its

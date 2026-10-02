@@ -7001,17 +7001,17 @@ mod tests {
             object_tab: id,
         });
         harness.answer_rows(crate::testing::page(0, false));
-        assert!(harness.has("No rows match the filter"));
-        harness.click("Clear filter");
+        let title = harness.app.look.label("No rows match the filter");
+        assert!(harness.has(&title));
+        harness.click("Clear filters");
         assert!(matches!(
             harness.app.backend.sent.last(),
             Some(crate::backend::Command::FetchRows { query, .. }) if query.filters.is_empty()
         ));
     }
 
-    #[test]
-    fn an_empty_table_says_so() {
-        let mut harness = Harness::new();
+    /// The fixture's `users` table, open with a page of no rows.
+    fn empty_users(harness: &mut Harness) -> crate::model::ConnTabId {
         let tab = harness.connect_fake();
         harness.app.apply(crate::model::Action::OpenObject {
             tab,
@@ -7020,7 +7020,85 @@ mod tests {
             pin: true,
         });
         harness.answer_rows(crate::testing::page(0, false));
-        assert!(harness.has("This table is empty"));
+        tab
+    }
+
+    #[test]
+    fn an_empty_table_keeps_its_columns_and_says_so() {
+        for look in crate::theme::Look::ALL {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            empty_users(&mut harness);
+            let title = format!("{} users", look.label("No rows in"));
+            assert!(harness.has(&title), "{title} in {}", look.name);
+            assert!(
+                harness.has(&look.label("The table exists and is empty.")),
+                "{}",
+                look.name
+            );
+            // The structure stays readable: the grid's header (a button,
+            // as it sorts) is there with no rows under it.
+            let tree = harness.settle();
+            assert!(
+                crate::testing::node(&tree, "email", egui::accesskit::Role::Button).is_some(),
+                "{}",
+                look.name
+            );
+        }
+    }
+
+    #[test]
+    fn reload_under_an_empty_table_fetches_again_and_takes_the_pointer() {
+        let mut harness = Harness::new();
+        empty_users(&mut harness);
+        let before = fetches(&harness);
+        // With the pointer, not through AccessKit: the grid under the
+        // button must not take the click.
+        let tree = harness.settle();
+        let button =
+            crate::testing::bounds(&tree, "Reload", egui::accesskit::Role::Button).unwrap();
+        click_at(&mut harness, button.center());
+        assert_eq!(fetches(&harness), before + 1);
+    }
+
+    #[test]
+    fn filters_that_match_nothing_are_named_and_the_last_one_can_go() {
+        let mut harness = Harness::new();
+        harness.set_look(crate::theme::Look::macos());
+        let tab = harness.connect_fake();
+        harness.click("users");
+        harness.answer_rows(crate::testing::page(3, false));
+        let id = harness.app.workspace(tab).unwrap().active_tab.unwrap();
+        let row = |column: &str, value: &str| crate::model::FilterRow {
+            column: column.into(),
+            op: tabletist_db::FilterOp::Eq,
+            value: value.into(),
+        };
+        harness
+            .app
+            .workspace_mut(tab)
+            .unwrap()
+            .object_tab_mut(id)
+            .unwrap()
+            .filter
+            .rows = vec![row("id", "999"), row("email", "nobody")];
+        harness.app.apply(crate::model::Action::ApplyFilters {
+            tab,
+            object_tab: id,
+        });
+        harness.answer_rows(crate::testing::page(0, false));
+        assert!(harness.has("No rows match 2 filters"));
+        // The fixture's estimate for `users`.
+        assert!(
+            harness
+                .has("users has about 1,200,000 rows. None matches id = 999 and email = nobody.")
+        );
+        harness.click("Remove last filter");
+        assert!(matches!(
+            harness.app.backend.sent.last(),
+            Some(Command::FetchRows { query, .. })
+                if query.filters.len() == 1 && query.filters[0].column == "id"
+        ));
     }
 
     #[test]
