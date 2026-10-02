@@ -3117,6 +3117,93 @@ mod tests {
         assert!(panel_shows(&mut harness));
     }
 
+    #[test]
+    fn the_strips_toggle_opens_a_closed_row_panel_in_every_look() {
+        for look in crate::theme::Look::ALL {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            let tab = with_page(&mut harness);
+            let open = |harness: &Harness| harness.app.workspace(tab).unwrap().row_panel;
+            harness.click("Row 1");
+            harness.click("Close the row panel");
+            assert!(!open(&harness), "{}", look.name);
+            // The panel's own button went with it, and the tree has the
+            // arrows, so Space is not the panel's: the strip brings it back.
+            harness.click("Show or hide the row panel");
+            assert!(open(&harness), "{}", look.name);
+            assert!(harness.has("Close the row panel"), "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn the_last_tab_scrolls_clear_of_the_strips_toggle_in_every_look() {
+        use egui::accesskit::Role;
+        for look in crate::theme::Look::ALL {
+            // A narrow window and more tabs than its strip has room for.
+            let mut harness = Harness::with_size(egui::vec2(700.0, 500.0));
+            harness.set_look(look);
+            let tab = harness.connect_fake();
+            for _ in 0..8 {
+                harness.add_sql_tab(tab);
+            }
+            harness.click("Query 1 tab");
+            let place = |harness: &mut Harness, label| {
+                let tree = harness.settle();
+                crate::testing::bounds(&tree, label, Role::Button)
+                    .unwrap_or_else(|| panic!("{label} missing in {}", look.name))
+            };
+            let (last, toggle) = ("Query 8 tab", "Show or hide the row panel");
+            let before = place(&mut harness, toggle);
+            assert!(
+                place(&mut harness, last).right() > before.left(),
+                "{}: the strip overflows",
+                look.name
+            );
+            // The strip scrolled to its end.
+            let over = place(&mut harness, "Query 1 tab").center();
+            harness.frame(vec![egui::Event::PointerMoved(over)]);
+            harness.frame(vec![
+                egui::Event::PointerMoved(over),
+                egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Point,
+                    delta: egui::vec2(-5_000.0, 0.0),
+                    modifiers: Modifiers::NONE,
+                    phase: egui::TouchPhase::Move,
+                },
+            ]);
+            harness.finish_animations();
+            let after = place(&mut harness, toggle);
+            assert_eq!(after, before, "{}: the toggle stays put", look.name);
+            let last = place(&mut harness, last);
+            assert!(last.right() <= after.left(), "{}", look.name);
+            assert!(last.y_range().contains(after.center().y), "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn the_strips_toggle_says_whether_the_row_panel_is_open() {
+        use egui::accesskit::{Role, Toggled};
+        for look in crate::theme::Look::ALL {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            with_page(&mut harness);
+            let toggle = "Show or hide the row panel";
+            let state = |harness: &mut Harness| {
+                let tree = harness.settle();
+                let id = crate::testing::node(&tree, toggle, Role::Button);
+                let (_, node) = tree
+                    .nodes
+                    .iter()
+                    .find(|(node, _)| Some(*node) == id)
+                    .unwrap_or_else(|| panic!("{toggle} missing in {}", look.name));
+                node.toggled()
+            };
+            assert_eq!(state(&mut harness), Some(Toggled::True), "{}", look.name);
+            harness.click(toggle);
+            assert_eq!(state(&mut harness), Some(Toggled::False), "{}", look.name);
+        }
+    }
+
     /// The fields of the row panel that shows, by their copy buttons.
     fn panel_shows(harness: &mut Harness) -> bool {
         harness.has("Copy email")

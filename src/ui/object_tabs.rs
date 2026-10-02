@@ -25,7 +25,8 @@ fn mac_width(text: f32) -> f32 {
     (14.0 + 14.0 + 8.0 + text + 8.0 + 22.0 + 6.0).max(150.0)
 }
 
-/// The terminal's toggle cells at each end of the strip.
+/// A toggle's cell at an end of the strip: the row panel's in every look,
+/// and the sidebar's in the terminal's.
 const TOGGLE_CELL: f32 = 40.0;
 
 pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
@@ -170,42 +171,52 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                             }
                             if look.terminal {
                                 new_sql(ui, bar, tab, locale, &look, &palette, &mut actions);
+                            } else {
+                                // Room to scroll the last tab clear of the
+                                // row panel's toggle.
+                                ui.add_space(TOGGLE_CELL);
                             }
                         });
                     });
             });
-            // The row panel's toggle, on every tab: a SQL editor's result
-            // has a row panel too.
-            if look.terminal {
-                let cell = Rect::from_min_max(pos2(bar.right() - TOGGLE_CELL, bar.top()), bar.max);
-                ui.painter()
-                    .rect_filled(cell, CornerRadius::ZERO, palette.panel);
-                widgets::vline(ui, cell.left() + 0.5, bar.y_range(), palette.outline);
-                let mut child = ui.new_child(
-                    egui::UiBuilder::new()
-                        .max_rect(Rect::from_center_size(cell.center(), vec2(24.0, 24.0))),
+            // The row panel's toggle, in every look and on every tab: a SQL
+            // editor's result has a row panel too. A closed panel has no
+            // button of its own left to open it with.
+            let cell = Rect::from_min_max(pos2(bar.right() - TOGGLE_CELL, bar.top()), bar.max);
+            ui.painter().rect_filled(cell, CornerRadius::ZERO, fill);
+            widgets::vline(ui, cell.left() + 0.5, bar.y_range(), rule);
+            let mut child = ui.new_child(
+                egui::UiBuilder::new()
+                    .max_rect(Rect::from_center_size(cell.center(), vec2(24.0, 24.0))),
+            );
+            let label = gettext(locale, "Show or hide the row panel");
+            let response = icon_button(&mut child, Icon::PanelRight, &label, &look, &palette);
+            // Whether the panel is open is more than the icon's colour.
+            response
+                .widget_info(|| WidgetInfo::selected(WidgetType::Button, true, row_panel, &label));
+            // The other looks' strip has the tone a button takes under the
+            // pointer: there the button takes the tone a tab does.
+            let lit = !look.terminal && response.hovered();
+            if lit {
+                child.painter().rect_filled(
+                    response.rect,
+                    CornerRadius::same(look.radius),
+                    palette.surface,
                 );
+            }
+            if row_panel || lit {
                 let tint = if row_panel {
                     palette.accent
                 } else {
-                    palette.dim
+                    palette.text
                 };
-                let response = icon_button(
-                    &mut child,
-                    Icon::PanelRight,
-                    &gettext(locale, "Show or hide the row panel"),
-                    &look,
-                    &palette,
+                Icon::PanelRight.image(tint, 16.0).paint_at(
+                    &child,
+                    Rect::from_center_size(response.rect.center(), vec2(16.0, 16.0)),
                 );
-                if row_panel {
-                    Icon::PanelRight.image(tint, 16.0).paint_at(
-                        &child,
-                        Rect::from_center_size(response.rect.center(), vec2(16.0, 16.0)),
-                    );
-                }
-                if response.clicked() {
-                    actions.push(Action::ToggleRowPanel(tab));
-                }
+            }
+            if response.clicked() {
+                actions.push(Action::ToggleRowPanel(tab));
             }
         });
     app.actions.extend(actions);

@@ -479,8 +479,10 @@ enum Dialog { Connection(..), Password(..), HostKey(..), QuickOpen(..), Help }
 
 ### 5.7 Row panel
 
-- Resizable right panel, toggled with Space (when the grid has focus) or
-  Cmd/Ctrl+Shift+R. Follows the grid selection. It takes at most half the
+- Resizable right panel, toggled with Space (when the grid has focus),
+  Cmd/Ctrl+Shift+R, or the button at the right end of the tab strip (in
+  every look: a closed panel has no button of its own to open it with).
+  Follows the grid selection. It takes at most half the
   width beside the sidebar; the width it was dragged to comes back when the
   window has room again.
 - One entry per field: name, type, and the full value as selectable read-only
