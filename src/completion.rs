@@ -3,8 +3,10 @@
 
 use std::ops::Range;
 
-use tabletist_db::Dialect;
 use tabletist_db::complete::{Expects, PHRASES, Site};
+use tabletist_db::{Dialect, ObjectInfo, ObjectKind};
+
+use crate::model::Tree;
 
 /// How many candidates a list keeps; the rest are only counted.
 pub const KEPT: usize = 100;
@@ -55,8 +57,21 @@ impl Candidate {
 }
 
 /// What the workspace knows, as a list reads it.
-pub struct Catalog {
+pub struct Catalog<'a> {
     pub dialect: Dialect,
+    pub tree: &'a Tree,
+    /// The schema a bare name is looked up in (`public`, the connection's
+    /// database, `main`), when the tree has it.
+    pub bare: Option<&'a str>,
+    /// The schemas the sidebar shows.
+    pub schemas: &'a [String],
+}
+
+/// Names a list reads that the workspace may not have loaded yet.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Need {
+    /// The tables and views of this schema.
+    Objects(String),
 }
 
 /// A list's rows, best first, and how many more matched.
@@ -89,37 +104,159 @@ pub fn may_open(site: &Site, typed: &str, manual: bool) -> bool {
 /// Where a kind of candidate comes in a site's list: lower first.
 type Group = u8;
 
+/// The bare schema's tables; after a dot, the named schema's.
+const BARE: Group = 0;
+/// The other schemas' tables, qualified.
+const QUALIFIED: Group = 1;
+const SCHEMAS: Group = 2;
+const CTES: Group = 3;
 /// Keywords come after every name.
 const KEYWORDS: Group = 9;
 
+/// What a site asks for, once its qualifier is read.
+enum Target<'a> {
+    Nothing,
+    Keywords,
+    /// Tables and views of every loaded schema, schemas and CTE names.
+    Tables,
+    /// The tables and views of this schema: the site is after `schema.`.
+    SchemaTables(&'a str),
+}
+
+/// What `site` asks for. `manual` says the list was asked for by hand.
+/// Keywords belong neither after a dot nor where a table goes, and where
+/// a new name goes only when asked for by hand.
+fn target<'a>(site: &Site, manual: bool, catalog: &Catalog<'a>) -> Target<'a> {
+    match site.qualifier.as_slice() {
+        [] => match site.expects {
+            Expects::Start | Expects::Columns => Target::Keywords,
+            Expects::Name if manual => Target::Keywords,
+            Expects::Name => Target::Nothing,
+            Expects::Tables => Target::Tables,
+        },
+        [schema] => schema_named(catalog, schema).map_or(Target::Nothing, Target::SchemaTables),
+        _ => Target::Nothing,
+    }
+}
+
+/// The shown schema called `name`: as spelled, else whatever its case.
+fn schema_named<'a>(catalog: &Catalog<'a>, name: &str) -> Option<&'a str> {
+    let schemas = catalog.schemas;
+    let spelled = schemas.iter().find(|schema| *schema == name);
+    let any_case = || {
+        schemas
+            .iter()
+            .find(|schema| schema.eq_ignore_ascii_case(name))
+    };
+    spelled.or_else(any_case).map(String::as_str)
+}
+
+/// The loaded tables and views of `schema`; none while they are not.
+fn objects_of<'a>(catalog: &Catalog<'a>, schema: &str) -> &'a [ObjectInfo] {
+    let node = catalog.tree.nodes.get(schema);
+    node.and_then(|node| node.objects.value.as_deref())
+        .unwrap_or_default()
+}
+
+/// The names `site` reads that may still have to be loaded: the caller
+/// asks for the ones the workspace never loaded.
+pub fn needs(site: &Site, catalog: &Catalog<'_>) -> Vec<Need> {
+    // Asked for by hand or not, a site reads the same names.
+    let schema = match target(site, true, catalog) {
+        Target::Tables => catalog.bare,
+        Target::SchemaTables(schema) => Some(schema),
+        Target::Nothing | Target::Keywords => None,
+    };
+    schema
+        .map(|schema| Need::Objects(schema.to_owned()))
+        .into_iter()
+        .collect()
+}
+
 /// What `site` offers for the `typed` part of its word, from `catalog`.
 /// `manual` says the list was asked for by hand.
-pub fn list(site: &Site, typed: &str, manual: bool, catalog: &Catalog) -> Listed {
+pub fn list(site: &Site, typed: &str, manual: bool, catalog: &Catalog<'_>) -> Listed {
     #[cfg(test)]
     LISTED.with(|count| count.set(count.get() + 1));
+    let dialect = catalog.dialect;
     let mut found: Vec<(Group, Candidate)> = Vec::new();
-    if offers_keywords(site, manual) {
-        let words = tabletist_db::sql::keywords(catalog.dialect).chain(PHRASES);
-        found.extend(
-            words
-                .filter_map(|word| keyword(word, typed))
-                .map(|candidate| (KEYWORDS, candidate)),
-        );
+    match target(site, manual, catalog) {
+        Target::Nothing => {}
+        Target::Keywords => {
+            let words = tabletist_db::sql::keywords(dialect).chain(PHRASES);
+            let words = words.filter_map(|word| keyword(word, typed));
+            found.extend(words.map(|candidate| (KEYWORDS, candidate)));
+        }
+        Target::Tables => {
+            // In the schemas' order: rows that read the same keep one order.
+            let mut loaded: Vec<&String> = catalog.tree.nodes.keys().collect();
+            loaded.sort();
+            for schema in loaded {
+                let (group, qualifier) = if catalog.bare == Some(schema.as_str()) {
+                    (BARE, None)
+                } else {
+                    (QUALIFIED, Some(schema.as_str()))
+                };
+                let objects = objects_of(catalog, schema).iter();
+                let objects = objects.filter_map(|info| object(info, qualifier, typed, dialect));
+                found.extend(objects.map(|candidate| (group, candidate)));
+            }
+            let schemas = catalog.schemas.iter();
+            let schemas = schemas.filter_map(|schema| name(schema, Kind::Schema, typed, dialect));
+            found.extend(schemas.map(|candidate| (SCHEMAS, candidate)));
+            let ctes = site.ctes.iter();
+            let ctes = ctes.filter_map(|cte| name(cte, Kind::Table, typed, dialect));
+            found.extend(ctes.map(|candidate| (CTES, candidate)));
+        }
+        Target::SchemaTables(schema) => {
+            let objects = objects_of(catalog, schema).iter();
+            let objects = objects.filter_map(|info| object(info, None, typed, dialect));
+            found.extend(objects.map(|candidate| (BARE, candidate)));
+        }
     }
     rank(found, typed)
 }
 
-/// Whether keywords belong at `site`: not after a dot, not where a table
-/// goes, and where a new name goes only when asked for by hand.
-fn offers_keywords(site: &Site, manual: bool) -> bool {
-    if !site.qualifier.is_empty() {
-        return false;
-    }
-    match site.expects {
-        Expects::Start | Expects::Columns => true,
-        Expects::Name => manual,
-        Expects::Tables => false,
-    }
+/// A table or view as a candidate when it holds `typed`: bare, or as
+/// `schema.name` when it lives outside the bare schema.
+fn object(
+    info: &ObjectInfo,
+    schema: Option<&str>,
+    typed: &str,
+    dialect: Dialect,
+) -> Option<Candidate> {
+    let label = match schema {
+        Some(schema) => format!("{schema}.{}", info.name),
+        None => info.name.clone(),
+    };
+    let matched = find_ignoring_case(&label, typed)?;
+    let insert = match schema {
+        Some(schema) => format!("{}.{}", dialect.ident(schema), dialect.ident(&info.name)),
+        None => dialect.ident(&info.name).into_owned(),
+    };
+    let kind = match info.kind {
+        ObjectKind::Table => Kind::Table,
+        ObjectKind::View => Kind::View,
+        ObjectKind::MaterializedView => Kind::MaterializedView,
+    };
+    Some(Candidate {
+        kind,
+        label,
+        insert,
+        matched,
+        detail: String::new(),
+    })
+}
+
+/// A schema or a CTE as a candidate when its name holds `typed`.
+fn name(name: &str, kind: Kind, typed: &str, dialect: Dialect) -> Option<Candidate> {
+    Some(Candidate {
+        kind,
+        label: name.to_owned(),
+        insert: dialect.ident(name).into_owned(),
+        matched: find_ignoring_case(name, typed)?,
+        detail: String::new(),
+    })
 }
 
 /// `word` as a candidate when it starts with `typed`, in the case typed:
@@ -191,7 +328,206 @@ fn rank(mut found: Vec<(Group, Candidate)>, typed: &str) -> Listed {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::{Fetch, SchemaNode};
     use tabletist_db::sql::tokenize;
+
+    fn catalog<'a>(
+        dialect: Dialect,
+        tree: &'a Tree,
+        bare: Option<&'a str>,
+        schemas: &'a [String],
+    ) -> Catalog<'a> {
+        Catalog {
+            dialect,
+            tree,
+            bare,
+            schemas,
+        }
+    }
+
+    /// A tree with these schemas loaded, each with its objects.
+    fn tree_of(schemas: &[(&str, &[(&str, ObjectKind)])]) -> Tree {
+        let mut tree = Tree::default();
+        for (schema, objects) in schemas {
+            let objects = objects
+                .iter()
+                .map(|(name, kind)| ObjectInfo {
+                    name: (*name).to_owned(),
+                    kind: *kind,
+                    estimated_rows: None,
+                })
+                .collect();
+            let node = SchemaNode {
+                objects: Fetch {
+                    value: Some(objects),
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            tree.nodes.insert((*schema).to_owned(), node);
+        }
+        tree
+    }
+
+    fn shop() -> (Tree, Vec<String>) {
+        use ObjectKind::{MaterializedView, Table, View};
+        let tree = tree_of(&[
+            (
+                "public",
+                &[
+                    ("users", Table),
+                    ("active_users", View),
+                    ("Order Items", Table),
+                    ("user_totals", MaterializedView),
+                ],
+            ),
+            ("billing", &[("invoices", Table), ("users", Table)]),
+        ]);
+        (tree, vec!["billing".to_owned(), "public".to_owned()])
+    }
+
+    /// `(label, insert, kind)` of what a PostgreSQL list offers at `marked`.
+    fn offered(marked: &str, bare: Option<&str>) -> Vec<(String, String, Kind)> {
+        let (tree, schemas) = shop();
+        let (site, typed) = site_at(marked);
+        let catalog = catalog(Dialect::Postgres, &tree, bare, &schemas);
+        list(&site, &typed, false, &catalog)
+            .candidates
+            .into_iter()
+            .map(|c| (c.label, c.insert, c.kind))
+            .collect()
+    }
+
+    fn row(label: &str, insert: &str, kind: Kind) -> (String, String, Kind) {
+        (label.to_owned(), insert.to_owned(), kind)
+    }
+
+    #[test]
+    fn a_table_site_offers_tables_schemas_and_cte_names() {
+        assert_eq!(
+            offered("SELECT * FROM |", Some("public")),
+            [
+                // The bare schema's, bare.
+                row("active_users", "active_users", Kind::View),
+                row("Order Items", "\"Order Items\"", Kind::Table),
+                row("user_totals", "user_totals", Kind::MaterializedView),
+                row("users", "users", Kind::Table),
+                // Every other loaded schema's, qualified.
+                row("billing.invoices", "billing.invoices", Kind::Table),
+                row("billing.users", "billing.users", Kind::Table),
+                // The schemas.
+                row("billing", "billing", Kind::Schema),
+                row("public", "public", Kind::Schema),
+            ]
+        );
+        // Names that start with what is typed lead the ones that hold it.
+        assert_eq!(
+            offered("SELECT * FROM us|", Some("public")),
+            [
+                row("user_totals", "user_totals", Kind::MaterializedView),
+                row("users", "users", Kind::Table),
+                row("active_users", "active_users", Kind::View),
+                row("billing.users", "billing.users", Kind::Table),
+            ]
+        );
+        assert_eq!(
+            offered(
+                "WITH recent AS (SELECT 1) SELECT * FROM rec|",
+                Some("public")
+            ),
+            [row("recent", "recent", Kind::Table)]
+        );
+    }
+
+    #[test]
+    fn nothing_is_bare_without_a_bare_schema() {
+        assert_eq!(
+            offered("SELECT * FROM inv|", None),
+            [row("billing.invoices", "billing.invoices", Kind::Table)]
+        );
+        let users = offered("SELECT * FROM users|", None);
+        assert_eq!(users.len(), 3);
+        assert!(users.iter().all(|(label, ..)| label.contains('.')));
+    }
+
+    #[test]
+    fn a_schema_and_a_dot_offer_that_schemas_tables() {
+        assert_eq!(
+            offered("SELECT * FROM billing.|", Some("public")),
+            [
+                row("invoices", "invoices", Kind::Table),
+                row("users", "users", Kind::Table),
+            ]
+        );
+        // Whatever the case the schema is typed in.
+        assert_eq!(
+            offered("SELECT * FROM BILLING.inv|", Some("public")),
+            [row("invoices", "invoices", Kind::Table)]
+        );
+        // Not a schema: nothing.
+        assert!(offered("SELECT * FROM nope.|", Some("public")).is_empty());
+        // After a dot there are no keywords, wherever it is.
+        assert!(offered("SELECT billing.sel|", Some("public")).is_empty());
+    }
+
+    #[test]
+    fn a_name_that_is_not_a_plain_word_is_inserted_quoted() {
+        use ObjectKind::Table;
+        let tree = tree_of(&[
+            ("Sales Data", &[("order", Table), ("Totals", Table)]),
+            ("public", &[("Order Items", Table)]),
+        ]);
+        let schemas = ["Sales Data".to_owned(), "public".to_owned()];
+        let offered = |marked: &str| {
+            let (site, typed) = site_at(marked);
+            let catalog = catalog(Dialect::Postgres, &tree, Some("public"), &schemas);
+            let listed = list(&site, &typed, false, &catalog);
+            let rows = listed.candidates.into_iter();
+            rows.map(|c| (c.label, c.insert)).collect::<Vec<_>>()
+        };
+        // Each part of a qualified name is quoted by itself; the row shows
+        // the names as they are.
+        assert_eq!(
+            offered("SELECT * FROM sal|"),
+            [
+                (
+                    "Sales Data.order".to_owned(),
+                    "\"Sales Data\".\"order\"".to_owned()
+                ),
+                (
+                    "Sales Data.Totals".to_owned(),
+                    "\"Sales Data\".\"Totals\"".to_owned()
+                ),
+                ("Sales Data".to_owned(), "\"Sales Data\"".to_owned()),
+            ]
+        );
+        // A CTE's name too.
+        assert_eq!(
+            offered("WITH \"Recent Ones\" AS (SELECT 1) SELECT * FROM rec|"),
+            [("Recent Ones".to_owned(), "\"Recent Ones\"".to_owned())]
+        );
+    }
+
+    #[test]
+    fn a_site_needs_the_objects_of_the_schema_it_reads() {
+        let (tree, schemas) = shop();
+        let needed = |marked: &str, bare| {
+            let (site, _) = site_at(marked);
+            needs(&site, &catalog(Dialect::Postgres, &tree, bare, &schemas))
+        };
+        assert_eq!(
+            needed("SELECT * FROM |", Some("public")),
+            [Need::Objects("public".into())]
+        );
+        assert_eq!(
+            needed("SELECT * FROM billing.|", Some("public")),
+            [Need::Objects("billing".into())]
+        );
+        assert!(needed("SELECT * FROM |", None).is_empty());
+        assert!(needed("SEL|", Some("public")).is_empty());
+        // Where a new name goes nothing is read, by hand or not.
+        assert!(needed("SELECT * FROM users wh|", Some("public")).is_empty());
+    }
 
     /// The site at the `|` of `marked` (read as SQLite), and what is typed
     /// of its word.
@@ -212,7 +548,8 @@ mod tests {
     /// catalog is of `dialect`.
     fn keywords_in(dialect: Dialect, marked: &str, manual: bool) -> Vec<String> {
         let (site, typed) = site_at(marked);
-        let catalog = Catalog { dialect };
+        let tree = Tree::default();
+        let catalog = catalog(dialect, &tree, None, &[]);
         let listed = list(&site, &typed, manual, &catalog);
         listed.candidates.into_iter().map(|c| c.label).collect()
     }
@@ -249,9 +586,8 @@ mod tests {
         // Keywords and phrases must fit under KEPT, or the last ones fall
         // out of the list.
         let (site, typed) = site_at("|");
-        let catalog = Catalog {
-            dialect: Dialect::Sqlite,
-        };
+        let tree = Tree::default();
+        let catalog = catalog(Dialect::Sqlite, &tree, None, &[]);
         assert_eq!(list(&site, &typed, true, &catalog).more, 0);
     }
 
@@ -337,9 +673,8 @@ mod tests {
     #[test]
     fn a_keyword_is_inserted_as_it_reads_and_marks_what_matched() {
         let (site, typed) = site_at("sel|");
-        let catalog = Catalog {
-            dialect: Dialect::Sqlite,
-        };
+        let tree = Tree::default();
+        let catalog = catalog(Dialect::Sqlite, &tree, None, &[]);
         let listed = list(&site, &typed, false, &catalog);
         assert_eq!(
             listed.candidates,

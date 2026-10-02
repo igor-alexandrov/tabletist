@@ -9,6 +9,7 @@ use tabletist_db::{
 };
 
 use crate::backend::{CancelReason, Command, Event, RequestId, StateFile};
+use crate::completion::Need;
 use crate::connections::{PasswordMode, SavedConnection};
 use crate::i18n::Locale;
 use crate::model::{Action, ConnTab, ConnTabContent, ConnTabId, PickerState};
@@ -1077,6 +1078,7 @@ impl App {
                 if let Some(workspace) = self.workspace_mut(tab) {
                     workspace.spec.database = database;
                     workspace.tree = Tree::default();
+                    workspace.catalog_changed();
                     // The other database has other objects, but a SQL
                     // editor's text is the user's work: it stays.
                     workspace.tabs.retain(|open| matches!(open, Tab::Sql(_)));
@@ -1815,6 +1817,7 @@ impl App {
                 if !workspace.tree.schemas.finish(request, result) {
                     return;
                 }
+                workspace.catalog_changed();
                 let database = workspace.spec.database.clone();
                 let default = workspace.tree.schemas.value.as_ref().and_then(|schemas| {
                     schemas
@@ -1845,8 +1848,9 @@ impl App {
                 if let Some(tab) = self.tab_for_session(session)
                     && let Some(workspace) = self.workspace_mut(tab)
                     && let Some(node) = workspace.tree.nodes.get_mut(&schema)
+                    && node.objects.finish(request, result)
                 {
-                    node.objects.finish(request, result);
+                    workspace.catalog_changed();
                 }
             }
             Event::Rows {
@@ -2281,6 +2285,20 @@ fn lost<T>(fetch: &Fetch<T>) -> bool {
     fetch.error.as_ref().is_some_and(Error::is_connection_lost)
 }
 
+/// What `workspace` knows, as a completion list reads it. `schemas` are
+/// the ones its sidebar shows.
+fn catalog_of<'a>(
+    workspace: &'a Workspace,
+    schemas: &'a [String],
+) -> crate::completion::Catalog<'a> {
+    crate::completion::Catalog {
+        dialect: workspace.driver.dialect(),
+        tree: &workspace.tree,
+        bare: workspace.bare_schema(),
+        schemas,
+    }
+}
+
 impl App {
     pub fn load_schemas(&mut self, tab: ConnTabId) {
         let request = RequestId(self.next_id());
@@ -2304,6 +2322,8 @@ impl App {
             .or_default()
             .objects
             .start(request);
+        // An open completion list says it waits for them.
+        workspace.catalog_changed();
         let session = workspace.session;
         self.backend.send(Command::ListObjects {
             session,
@@ -2325,6 +2345,13 @@ impl App {
 
     fn refresh_tree(&mut self, tab: ConnTabId) {
         self.load_schemas(tab);
+        // A schema only a completion list loaded is not the sidebar's to
+        // refresh: it goes, and loads again when a list needs it.
+        if let Some(workspace) = self.workspace_mut(tab) {
+            let nodes = &mut workspace.tree.nodes;
+            nodes.retain(|_, node| node.expanded || node.objects.is_loading());
+            workspace.catalog_changed();
+        }
         let expanded: Vec<String> = self
             .workspace(tab)
             .map(|workspace| {
@@ -2388,11 +2415,35 @@ impl App {
         }
     }
 
+    /// Asks the backend for the names a completion list needs and the
+    /// workspace never loaded. Only on a connected session; a load that
+    /// failed is not asked for again until the tree is refreshed.
+    fn send_needs(&mut self, tab: ConnTabId, needs: &[Need]) {
+        for need in needs {
+            let Some(workspace) = self.workspace(tab) else {
+                return;
+            };
+            if !matches!(workspace.status, SessionStatus::Connected) {
+                return;
+            }
+            match need {
+                Need::Objects(schema) => {
+                    let node = workspace.tree.nodes.get(schema);
+                    if node.is_none_or(|node| node.objects.needs_load()) {
+                        self.load_objects(tab, schema);
+                    }
+                }
+            }
+        }
+    }
+
     /// Works out the completion list of the SQL editor on screen: opens
     /// the one that was asked for, recomputes an open one whose script,
     /// cursor or catalog changed, and closes one with nothing left to
-    /// offer. Lists of editors that are not on screen are dropped. A list
-    /// waiting for the view to insert its row is left as it is.
+    /// offer. The names its site reads and the workspace never loaded are
+    /// asked for, and a list with no rows stays open while they are on
+    /// their way. Lists of editors that are not on screen are dropped. A
+    /// list waiting for the view to insert its row is left as it is.
     /// Returns whether a list changed, so the frame is drawn again.
     ///
     /// Called from `frame_ui`, which has the egui context: the script's
@@ -2471,10 +2522,30 @@ impl App {
             sql.completion = None;
             return changed | was_open;
         }
-        let catalog = crate::completion::Catalog { dialect };
+        let (print, cursor) = (of.0, of.1);
+        // Asking is part of opening: the names the site reads are asked
+        // for before the list is worked out, whatever it holds so far.
+        let show_system = self.settings.show_system_schemas;
+        let Some(workspace) = self.workspace(tab) else {
+            return changed;
+        };
+        let schemas = workspace
+            .tree
+            .visible_schemas(workspace.driver, show_system);
+        let needs = crate::completion::needs(&site, &catalog_of(workspace, &schemas));
+        self.send_needs(tab, &needs);
+        let Some(workspace) = self.workspace(tab) else {
+            return changed;
+        };
+        let catalog = catalog_of(workspace, &schemas);
         let listed = crate::completion::list(&site, &typed, manual, &catalog);
-        // Nothing is fetched for the list yet.
-        let loading = false;
+        let loading = needs.iter().any(|need| workspace.is_loading(need));
+        // The generation after asking: asking changed it.
+        let of = (print, cursor, workspace.catalog_generation);
+        let Some(sql) = self.sql_tab_mut(tab, id) else {
+            return changed;
+        };
+        // A list with no rows stays open only while names are on their way.
         let empty = listed.candidates.is_empty() && !loading;
         if going {
             match sql.completion.as_mut() {
@@ -2487,8 +2558,8 @@ impl App {
             return true;
         }
         // Opening: not with nothing to offer, and by typing not when the
-        // only row is what is already typed. Asked for by hand, that one
-        // row shows.
+        // only row is what is already typed (its names were still asked
+        // for). Asked for by hand, that one row shows.
         let opens = !empty && (manual || !listed.only_repeats(&typed));
         sql.completion = opens.then(|| Completion::new(manual, of, site, typed, listed, loading));
         changed | was_open | sql.completion.is_some()

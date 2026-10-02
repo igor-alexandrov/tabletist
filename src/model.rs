@@ -395,9 +395,8 @@ pub struct Workspace {
     /// "PostgreSQL 17.2", asked for when the first SQL editor opens.
     pub server_version: Fetch<String>,
     /// Bumped whenever the names a completion list reads change (the
-    /// tree's objects, the columns), so an open list is worked out again.
-    /// Nothing bumps it yet: a list reads keywords only. The tasks that
-    /// load names for the list will.
+    /// tree's schemas and objects), so an open list is worked out again.
+    /// Change it through `catalog_changed`.
     pub catalog_generation: u64,
     /// The tab the workspace shows: an object tab or a SQL editor.
     pub active_tab: Option<TabId>,
@@ -2384,6 +2383,37 @@ impl Workspace {
         }
     }
 
+    /// The schema a statement's bare names are looked up in: `public` on
+    /// PostgreSQL, the connection's database on MySQL, `main` on SQLite.
+    /// `None` when the server has no such schema: then a completion
+    /// inserts every name with its schema.
+    pub fn bare_schema(&self) -> Option<&str> {
+        let name = match self.driver {
+            Driver::Postgres => "public",
+            Driver::MySql => self.spec.database.as_str(),
+            Driver::Sqlite => "main",
+        };
+        let schemas = self.tree.schemas.value.as_ref()?;
+        let found = schemas.iter().find(|schema| *schema == name);
+        found.map(String::as_str)
+    }
+
+    /// The names a completion list reads changed: an open list is worked
+    /// out again.
+    pub fn catalog_changed(&mut self) {
+        self.catalog_generation = self.catalog_generation.wrapping_add(1);
+    }
+
+    /// Whether what `need` names is being fetched.
+    pub fn is_loading(&self, need: &crate::completion::Need) -> bool {
+        match need {
+            crate::completion::Need::Objects(schema) => {
+                let node = self.tree.nodes.get(schema);
+                node.is_some_and(|node| node.objects.is_loading())
+            }
+        }
+    }
+
     /// Forgets what the SQL editors asked the session for. Call it wherever
     /// `session` is replaced: answers for the old one are dropped, so a run
     /// left pending would look like it runs for ever. The server may differ
@@ -2508,6 +2538,51 @@ mod tests {
         assert_eq!(workspace.connecting_for(), None, "the connect was answered");
         workspace.tree.schemas.value = Some(Vec::new());
         assert!(workspace.opened());
+    }
+
+    #[test]
+    fn the_bare_schema_is_the_one_a_dialect_searches() {
+        let mut workspace = crate::testing::workspace();
+        // The fixture is SQLite.
+        assert_eq!(workspace.bare_schema(), None, "no schemas listed yet");
+        workspace.tree.schemas.value = Some(vec!["main".into(), "audit".into()]);
+        assert_eq!(workspace.bare_schema(), Some("main"));
+        workspace.driver = Driver::Postgres;
+        assert_eq!(workspace.bare_schema(), None, "no public here");
+        workspace.tree.schemas.value = Some(vec!["public".into(), "audit".into()]);
+        assert_eq!(workspace.bare_schema(), Some("public"));
+        workspace.driver = Driver::MySql;
+        workspace.spec.database = "audit".into();
+        assert_eq!(workspace.bare_schema(), Some("audit"));
+        workspace.spec.database = String::new();
+        assert_eq!(workspace.bare_schema(), None, "no database chosen");
+    }
+
+    #[test]
+    fn a_need_is_loading_while_its_names_are_asked_for() {
+        use crate::completion::Need;
+        let mut workspace = crate::testing::workspace();
+        let need = Need::Objects("main".into());
+        assert!(!workspace.is_loading(&need), "never asked for");
+        let node = workspace.tree.nodes.entry("main".into()).or_default();
+        node.objects.start(RequestId(7));
+        assert!(workspace.is_loading(&need));
+        assert!(!workspace.is_loading(&Need::Objects("audit".into())));
+        let node = workspace.tree.nodes.get_mut("main").unwrap();
+        assert!(node.objects.finish(RequestId(7), Ok(Vec::new())));
+        assert!(!workspace.is_loading(&need), "answered");
+    }
+
+    #[test]
+    fn a_changed_catalog_is_another_generation() {
+        let mut workspace = crate::testing::workspace();
+        let before = workspace.catalog_generation;
+        workspace.catalog_changed();
+        assert_ne!(workspace.catalog_generation, before);
+        // It wraps rather than panics.
+        workspace.catalog_generation = u64::MAX;
+        workspace.catalog_changed();
+        assert_eq!(workspace.catalog_generation, 0);
     }
 
     #[test]

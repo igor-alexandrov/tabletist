@@ -6,7 +6,9 @@ use egui::accesskit::Role;
 use egui::text::{CCursor, CCursorRange};
 use egui::{Key, Modifiers};
 
-use crate::backend::Command;
+use tabletist_db::{ObjectInfo, ObjectKind};
+
+use crate::backend::{Command, Event};
 use crate::completion::{Candidate, Kind, LISTED};
 use crate::model::{Action, Completion, ConnTabId, SqlTab, TabId, TextPrint, Wanted};
 use crate::testing::{Harness, key, release};
@@ -337,12 +339,16 @@ fn a_list_waiting_to_insert_its_row_is_not_worked_out_again() {
     let listed = LISTED.with(|c| c.get());
     // The names it reads change under it. (Not a frame: the editor's next
     // draw inserts the row and takes the list.)
-    harness.app.workspace_mut(tab).unwrap().catalog_generation += 1;
+    let workspace = harness.app.workspace_mut(tab).unwrap();
+    // The catalog the list was worked out from: connecting changed it.
+    let generation = workspace.catalog_generation;
+    workspace.catalog_changed();
+    assert_ne!(workspace.catalog_generation, generation);
     harness.app.refresh_completion(&harness.ctx);
     let open = list(&harness, tab).expect("a list");
     assert!(open.accept);
     assert_eq!(open.selected, 1);
-    assert!(open.is_of((TextPrint::of("se"), 2, 0)));
+    assert!(open.is_of((TextPrint::of("se"), 2, generation)));
     // A list asked for meanwhile waits too.
     harness.app.apply(Action::OpenCompletion {
         tab: tab_id,
@@ -1652,7 +1658,14 @@ fn a_list_with_no_place_closes_once_the_caret_is_in_the_pane() {
     let sql_tab = workspace.sql_tab_mut(id).unwrap();
     let tokens = tabletist_db::sql::tokenize(dialect, &sql_tab.text);
     let site = tabletist_db::complete::site(&tokens, &sql_tab.text, 2).expect("a site");
-    let catalog = crate::completion::Catalog { dialect };
+    // Keywords only: the first word of a statement reads no names.
+    let tree = crate::model::Tree::default();
+    let catalog = crate::completion::Catalog {
+        dialect,
+        tree: &tree,
+        bare: None,
+        schemas: &[],
+    };
     let listed = crate::completion::list(&site, "se", false, &catalog);
     assert!(!listed.candidates.is_empty());
     let of = (TextPrint::of(&sql_tab.text), sql_tab.cursor, generation);
@@ -1875,4 +1888,323 @@ fn format_leaves_no_list_of_the_script_as_it_was() {
     harness.settle();
     assert_eq!(sql(&harness, tab).text, "SELECT 1 fr");
     assert!(list(&harness, tab).is_none());
+}
+
+fn table(name: &str) -> ObjectInfo {
+    ObjectInfo {
+        name: name.to_owned(),
+        kind: ObjectKind::Table,
+        estimated_rows: None,
+    }
+}
+
+/// How many times the backend was asked for the tables and views of the
+/// schema `of`.
+fn asked_for_objects(harness: &Harness, of: &str) -> usize {
+    let sent = harness.app.backend.sent.iter();
+    sent.filter(|command| matches!(command, Command::ListObjects { schema, .. } if schema == of))
+        .count()
+}
+
+/// Answers the newest `ListObjects`.
+fn answer_objects(harness: &mut Harness, result: Result<Vec<ObjectInfo>, tabletist_db::Error>) {
+    let sent = harness.app.backend.sent.iter().rev();
+    let (session, request, schema) = sent
+        .filter_map(|command| match command {
+            Command::ListObjects {
+                session,
+                request,
+                schema,
+            } => Some((*session, *request, schema.clone())),
+            _ => None,
+        })
+        .next()
+        .expect("a ListObjects was sent");
+    harness.app.apply(Action::Backend(Event::Objects {
+        session,
+        request,
+        schema,
+        result,
+    }));
+    harness.settle();
+}
+
+/// Answers the newest `ListSchemas` with `schemas`.
+fn answer_schemas(harness: &mut Harness, schemas: &[&str]) {
+    let sent = harness.app.backend.sent.iter().rev();
+    let (session, request) = sent
+        .filter_map(|command| match command {
+            Command::ListSchemas { session, request } => Some((*session, *request)),
+            _ => None,
+        })
+        .next()
+        .expect("a ListSchemas was sent");
+    harness.app.apply(Action::Backend(Event::Schemas {
+        session,
+        request,
+        result: Ok(schemas.iter().map(|schema| (*schema).to_owned()).collect()),
+    }));
+    harness.settle();
+}
+
+/// An editor on a workspace that also has a schema `reports`, whose
+/// objects were never loaded, with `select * from reports` in it.
+fn editor_before_reports() -> (Harness, ConnTabId) {
+    let (mut harness, tab) = editor();
+    let workspace = harness.app.workspace_mut(tab).unwrap();
+    workspace.tree.schemas.value = Some(vec!["main".into(), "reports".into()]);
+    paste(&mut harness, "select * from reports");
+    (harness, tab)
+}
+
+#[test]
+fn tables_and_views_are_offered_where_a_table_goes() {
+    let (mut harness, tab) = editor();
+    paste(&mut harness, "select * from ");
+    type_text(&mut harness, "us");
+    // What starts with the typed text, then what holds it.
+    assert_eq!(labels(&harness, tab), ["users", "active_users"]);
+    let kinds: Vec<Kind> = list(&harness, tab)
+        .map(|list| list.candidates.iter().map(|c| c.kind).collect())
+        .unwrap_or_default();
+    assert_eq!(kinds, [Kind::Table, Kind::View]);
+    assert!(!list(&harness, tab).unwrap().loading);
+    harness.press(Key::Tab, Modifiers::NONE);
+    assert_eq!(sql(&harness, tab).text, "select * from users");
+    assert_eq!(
+        asked_for_objects(&harness, "main"),
+        1,
+        "loaded at connect, not again"
+    );
+}
+
+#[test]
+fn a_schema_and_then_its_tables() {
+    let (mut harness, tab) = editor();
+    paste(&mut harness, "select * from ");
+    type_text(&mut harness, "ma");
+    assert_eq!(labels(&harness, tab), ["main"]);
+    harness.press(Key::Tab, Modifiers::NONE);
+    assert_eq!(sql(&harness, tab).text, "select * from main");
+    // The dot opens the list on the schema's tables.
+    type_text(&mut harness, ".");
+    assert_eq!(labels(&harness, tab), ["active_users", "orders", "users"]);
+    type_text(&mut harness, "or");
+    harness.press(Key::Enter, Modifiers::NONE);
+    assert_eq!(sql(&harness, tab).text, "select * from main.orders");
+    assert_eq!(
+        asked_for_objects(&harness, "main"),
+        1,
+        "loaded at connect, not again"
+    );
+}
+
+#[test]
+fn a_schema_is_loaded_on_demand() {
+    let (mut harness, tab) = editor_before_reports();
+    assert_eq!(asked_for_objects(&harness, "reports"), 0);
+    type_text(&mut harness, ".");
+    assert_eq!(asked_for_objects(&harness, "reports"), 1);
+    // The list waits, open, with no rows.
+    let open = list(&harness, tab).expect("a waiting list");
+    assert!(open.candidates.is_empty() && open.loading);
+    // And goes on waiting: it is not asked for again while it does.
+    harness.settle();
+    assert_eq!(asked_for_objects(&harness, "reports"), 1);
+    answer_objects(&mut harness, Ok(vec![table("monthly"), table("yearly")]));
+    assert_eq!(labels(&harness, tab), ["monthly", "yearly"]);
+    assert!(!list(&harness, tab).unwrap().loading);
+    // Not asked again, and not unfolded in the sidebar.
+    type_text(&mut harness, "m");
+    assert_eq!(labels(&harness, tab), ["monthly"]);
+    assert_eq!(asked_for_objects(&harness, "reports"), 1);
+    let workspace = harness.app.workspace(tab).unwrap();
+    assert!(!workspace.tree.nodes["reports"].expanded);
+}
+
+#[test]
+fn enter_is_a_line_break_while_a_list_waits() {
+    let (mut harness, tab) = editor_before_reports();
+    type_text(&mut harness, ".");
+    assert!(list(&harness, tab).is_some_and(|list| list.candidates.is_empty()));
+    harness.press(Key::Enter, Modifiers::NONE);
+    assert_eq!(sql(&harness, tab).text, "select * from reports.\n");
+    assert!(list(&harness, tab).is_none());
+}
+
+#[test]
+fn an_answer_that_leaves_the_list_empty_closes_it() {
+    let (mut harness, tab) = editor_before_reports();
+    type_text(&mut harness, ".");
+    assert!(list(&harness, tab).is_some());
+    answer_objects(&mut harness, Ok(Vec::new()));
+    assert!(list(&harness, tab).is_none());
+}
+
+#[test]
+fn a_load_that_failed_is_not_asked_again() {
+    let (mut harness, tab) = editor_before_reports();
+    type_text(&mut harness, ".");
+    answer_objects(
+        &mut harness,
+        Err(tabletist_db::Error::query("permission denied")),
+    );
+    assert!(list(&harness, tab).is_none());
+    type_text(&mut harness, "mo");
+    assert_eq!(asked_for_objects(&harness, "reports"), 1);
+    assert!(list(&harness, tab).is_none());
+}
+
+#[test]
+fn nothing_is_asked_of_a_session_that_is_not_connected() {
+    let (mut harness, tab) = editor_before_reports();
+    harness.app.workspace_mut(tab).unwrap().status =
+        crate::model::SessionStatus::Disconnected(tabletist_db::Error::query("gone"));
+    type_text(&mut harness, ".");
+    assert_eq!(sql(&harness, tab).text, "select * from reports.");
+    assert_eq!(asked_for_objects(&harness, "reports"), 0);
+    assert!(list(&harness, tab).is_none());
+}
+
+#[test]
+fn a_whole_word_opens_nothing_and_its_names_are_still_asked_for() {
+    let (mut harness, tab) = editor();
+    // The bare schema's tables were never loaded.
+    let workspace = harness.app.workspace_mut(tab).unwrap();
+    workspace.tree.nodes.remove("main");
+    paste(&mut harness, "select * from ");
+    assert_eq!(asked_for_objects(&harness, "main"), 1, "at connect");
+    // The schema's name is all the list has, and it is what is typed.
+    type_text(&mut harness, "main");
+    assert_eq!(asked_for_objects(&harness, "main"), 2);
+    assert!(list(&harness, tab).is_none());
+    // Nor does it open when they arrive.
+    answer_objects(&mut harness, Ok(vec![table("mainland")]));
+    assert!(list(&harness, tab).is_none());
+    // They are there for the next list.
+    type_text(&mut harness, "l");
+    assert_eq!(labels(&harness, tab), ["mainland"]);
+    assert_eq!(asked_for_objects(&harness, "main"), 2);
+}
+
+#[test]
+fn refreshing_the_tree_forgets_what_only_the_list_loaded() {
+    let (mut harness, tab) = editor_before_reports();
+    type_text(&mut harness, ".");
+    answer_objects(&mut harness, Ok(vec![table("monthly")]));
+    assert_eq!(labels(&harness, tab), ["monthly"]);
+    harness.app.apply(Action::RefreshTree(tab));
+    let workspace = harness.app.workspace(tab).unwrap();
+    assert!(!workspace.tree.nodes.contains_key("reports"));
+    assert!(
+        workspace.tree.nodes.contains_key("main"),
+        "the sidebar's own stays"
+    );
+    assert_eq!(asked_for_objects(&harness, "reports"), 1);
+    // The open list needs them: they load again, and it waits.
+    harness.settle();
+    assert_eq!(asked_for_objects(&harness, "reports"), 2);
+    let open = list(&harness, tab).expect("a waiting list");
+    assert!(open.candidates.is_empty() && open.loading);
+}
+
+#[test]
+fn refreshing_a_tree_with_nothing_unfolded_reaches_an_open_list() {
+    let (mut harness, tab) = editor_before_reports();
+    // Nothing is the sidebar's to load again.
+    let workspace = harness.app.workspace_mut(tab).unwrap();
+    workspace.tree.nodes.get_mut("main").unwrap().expanded = false;
+    type_text(&mut harness, ".");
+    answer_objects(&mut harness, Ok(vec![table("monthly")]));
+    assert_eq!(labels(&harness, tab), ["monthly"]);
+    let objects = |harness: &Harness| {
+        let sent = harness.app.backend.sent.iter();
+        sent.filter(|command| matches!(command, Command::ListObjects { .. }))
+            .count()
+    };
+    let before = objects(&harness);
+    harness.app.apply(Action::RefreshTree(tab));
+    assert_eq!(objects(&harness), before, "the refresh asks for no tables");
+    assert!(harness.app.workspace(tab).unwrap().tree.nodes.is_empty());
+    // The list's own are asked for again.
+    harness.settle();
+    assert_eq!(asked_for_objects(&harness, "reports"), 2);
+    assert!(list(&harness, tab).is_some_and(|list| list.loading));
+}
+
+#[test]
+fn names_asked_for_again_show_on_an_open_list_as_loading() {
+    let (mut harness, tab) = editor();
+    paste(&mut harness, "select * from ");
+    type_text(&mut harness, "us");
+    assert_eq!(labels(&harness, tab), ["users", "active_users"]);
+    assert!(!list(&harness, tab).unwrap().loading);
+    // As the sidebar does for a schema it shows.
+    harness.app.load_objects(tab, "main");
+    harness.settle();
+    // What it has stays while the answer is on its way.
+    assert_eq!(labels(&harness, tab), ["users", "active_users"]);
+    assert!(list(&harness, tab).unwrap().loading);
+    answer_objects(&mut harness, Ok(vec![table("users")]));
+    assert_eq!(labels(&harness, tab), ["users"]);
+    assert!(!list(&harness, tab).unwrap().loading);
+}
+
+#[test]
+fn schemas_that_arrive_join_an_open_list() {
+    let (mut harness, tab) = editor();
+    paste(&mut harness, "select * from ");
+    type_text(&mut harness, "ma");
+    assert_eq!(labels(&harness, tab), ["main"]);
+    harness.app.apply(Action::RefreshTree(tab));
+    harness.settle();
+    // The bare schema's tables are on their way again, and the list says
+    // so over the rows it has.
+    assert_eq!(labels(&harness, tab), ["main"]);
+    assert!(list(&harness, tab).unwrap().loading);
+    answer_schemas(&mut harness, &["main", "mart"]);
+    assert_eq!(labels(&harness, tab), ["main", "mart"]);
+    assert!(list(&harness, tab).unwrap().loading);
+    answer_objects(&mut harness, Ok(vec![table("mail"), table("users")]));
+    assert_eq!(labels(&harness, tab), ["mail", "main", "mart"]);
+    assert!(!list(&harness, tab).unwrap().loading);
+}
+
+#[test]
+fn switching_the_database_takes_its_names_off_the_list() {
+    let (mut harness, tab) = editor();
+    paste(&mut harness, "select * from ");
+    type_text(&mut harness, "us");
+    assert_eq!(labels(&harness, tab), ["users", "active_users"]);
+    harness.app.apply(Action::SwitchDatabase {
+        tab,
+        database: "other".into(),
+    });
+    harness.settle();
+    // The other database's names are not known yet.
+    assert!(list(&harness, tab).is_none());
+    assert_eq!(sql(&harness, tab).text, "select * from us");
+}
+
+#[test]
+fn a_large_schema_is_listed_once_per_change() {
+    let (mut harness, tab) = editor();
+    let objects: Vec<ObjectInfo> = (0..10_000)
+        .map(|index| table(&format!("name_{index:05}")))
+        .collect();
+    let workspace = harness.app.workspace_mut(tab).unwrap();
+    workspace.tree.nodes.get_mut("main").unwrap().objects.value = Some(objects);
+    paste(&mut harness, "select * from ");
+    type_text(&mut harness, "na");
+    let open = list(&harness, tab).expect("a list");
+    assert_eq!((open.candidates.len(), open.more), (100, 9_900));
+    let listed = LISTED.with(|count| count.get());
+    harness.settle();
+    harness.press(Key::ArrowDown, Modifiers::NONE);
+    assert_eq!(selected(&harness, tab), Some(1));
+    assert_eq!(
+        LISTED.with(|count| count.get()),
+        listed,
+        "moving lists nothing"
+    );
 }
