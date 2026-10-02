@@ -96,6 +96,33 @@ pub struct GridOutput {
     pub focused: bool,
 }
 
+/// Which of a grid's columns were in view when it was last drawn.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ColumnsShown {
+    /// The first and the last column in view, counted from 0. A pinned
+    /// column counts among them while the column after it is in view; past
+    /// that it is in sight but not of the range.
+    pub first: usize,
+    pub last: usize,
+    pub total: usize,
+    /// The grid's first column stays in sight while the others scroll.
+    pub pinned: bool,
+}
+
+impl ColumnsShown {
+    /// Whether some columns are out of view.
+    pub fn partial(&self) -> bool {
+        let apart = usize::from(self.pinned && self.first > 0);
+        self.last + 1 - self.first + apart < self.total
+    }
+}
+
+/// The columns the grid `id` showed when it was last drawn: what a status
+/// line says of them, a frame later.
+pub fn columns_shown(ctx: &egui::Context, id: Id) -> Option<ColumnsShown> {
+    ctx.data(|data| data.get_temp(id.with("columns-shown")))
+}
+
 /// How wide `text` is in `role`, in points (laid out once, then cached).
 fn text_width(ui: &Ui, text: &str, role: TextRole, look: &Look) -> f32 {
     role.width(ui.ctx(), look.faces, text)
@@ -342,6 +369,7 @@ pub fn forget(ctx: &egui::Context, id: Id) {
             data.remove::<egui::scroll_area::State>(scroll);
         }
         data.remove::<Option<CellPos>>(id.with("last-selection"));
+        data.remove::<ColumnsShown>(id.with("columns-shown"));
         data.remove::<Kept>(id);
     });
 }
@@ -413,6 +441,24 @@ pub fn show<'a>(
     let total = gutter + widths.iter().sum::<f32>();
     let hairline = crate::ui::widgets::hairline(ui);
     let visible = ui.max_rect();
+    // A key column that leads the grid stays in sight: the others scroll
+    // under it, so a row is never read without knowing whose it is.
+    let pinned = columns.len() > 1 && columns[0].key;
+    // Drawn last, over what scrolled under it; the others in their order.
+    let order: Vec<usize> = (usize::from(pinned)..columns.len())
+        .chain(pinned.then_some(0))
+        .collect();
+    // Each column's left edge, from the first one's: found once a frame,
+    // not once a cell. A width dragged this frame moves its neighbours the
+    // next.
+    let lefts: Vec<f32> = widths
+        .iter()
+        .scan(0.0, |edge, width| {
+            let left = *edge;
+            *edge += width;
+            Some(left)
+        })
+        .collect();
     // The grid is one Tab stop, not one for each row: with the keyboard on
     // it the arrows move the selected cell, which shows where they are.
     let stop = ui.interact(visible, id.with("keys"), Sense::focusable_noninteractive());
@@ -445,16 +491,32 @@ pub fn show<'a>(
             let full = total.max(ui.available_width());
             ui.allocate_space(vec2(total, header_height));
 
+            // How far the pinned column stands off its place: as far as
+            // the grid is scrolled sideways.
+            let shift = if pinned {
+                // Under a point it is the clip's own margin, not a scroll.
+                Some(ui.clip_rect().left() - origin.x)
+                    .filter(|shift| *shift >= 1.0)
+                    .unwrap_or(0.0)
+            } else {
+                0.0
+            };
             if let Some(target) = reveal {
                 let col = target.col.min(widths.len().saturating_sub(1));
                 let x = origin.x + gutter + widths[..col].iter().sum::<f32>();
                 let y = origin.y + header_height + target.row as f32 * row_height;
                 // Include the header's height above the row so the sticky
-                // header never covers it.
+                // header never covers it, and the pinned column's width
+                // before a cell that scrolls so that never does either.
+                let cover = if pinned && col > 0 {
+                    gutter + widths[0]
+                } else {
+                    0.0
+                };
                 let rect = Rect::from_min_size(
-                    pos2(x, y - header_height),
+                    pos2(x - cover, y - header_height),
                     vec2(
-                        widths.get(col).copied().unwrap_or(0.0),
+                        widths.get(col).copied().unwrap_or(0.0) + cover,
                         row_height + header_height,
                     ),
                 );
@@ -470,7 +532,15 @@ pub fn show<'a>(
                 if response.clicked() {
                     let col = response
                         .interact_pointer_pos()
-                        .map(|pointer| column_at(&widths, pointer.x - rect.left() - gutter))
+                        .map(|pointer| {
+                            let x = pointer.x - rect.left() - gutter;
+                            // Over the pinned column, whatever is under it.
+                            if pinned && x - shift < widths[0] {
+                                0
+                            } else {
+                                column_at(&widths, x)
+                            }
+                        })
                         .unwrap_or(0);
                     output.clicked = Some(CellPos { row, col });
                 }
@@ -497,25 +567,55 @@ pub fn show<'a>(
                     let y = painter.round_to_pixel_center(rect.bottom() - hairline / 2.0);
                     painter.hline(rect.x_range(), y, Stroke::new(hairline, palette.surface));
                 }
-                if selected_row {
-                    if look.terminal {
-                        // The cursor: a bold accent block in the gutter.
-                        let cursor =
-                            Text::one(look, TextRole::OGroup, "▌", palette.accent).layout(ui.ctx());
-                        cursor.paint_center(
-                            &painter,
-                            pos2(rect.left() + GUTTER / 2.0, rect.center().y),
-                        );
-                    } else if !lit_row {
-                        let bar = Rect::from_min_size(rect.min, vec2(3.0, rect.height()));
-                        painter.rect_filled(bar, CornerRadius::ZERO, palette.accent);
-                    }
-                }
-                let mut x = rect.left() + gutter;
-                for (col, width) in widths.iter().enumerate() {
+                for &col in &order {
+                    let left = rect.left() + gutter + lefts[col];
                     let cell_rect =
-                        Rect::from_min_size(pos2(x, rect.top()), vec2(*width, row_height));
-                    x += width;
+                        Rect::from_min_size(pos2(left, rect.top()), vec2(widths[col], row_height));
+                    // The first column, and the row's mark before it, stand
+                    // where the view begins while it is pinned.
+                    let cell_rect = if col == 0 {
+                        let lead = Rect::from_min_max(
+                            pos2(rect.left() + shift, rect.top()),
+                            pos2(cell_rect.right() + shift, rect.bottom()),
+                        );
+                        if shift > 0.0 {
+                            // Over what scrolled under: the row's own fill.
+                            let under = fill.unwrap_or(palette.window);
+                            painter.rect_filled(lead, CornerRadius::ZERO, under);
+                            if !look.terminal {
+                                let y =
+                                    painter.round_to_pixel_center(rect.bottom() - hairline / 2.0);
+                                painter.hline(
+                                    lead.x_range(),
+                                    y,
+                                    Stroke::new(hairline, palette.surface),
+                                );
+                            }
+                            painter.vline(
+                                lead.right() - hairline / 2.0,
+                                lead.y_range(),
+                                Stroke::new(hairline, palette.outline),
+                            );
+                        }
+                        if selected_row {
+                            if look.terminal {
+                                // The cursor: a bold accent block in the
+                                // gutter.
+                                let cursor = Text::one(look, TextRole::OGroup, "▌", palette.accent)
+                                    .layout(ui.ctx());
+                                cursor.paint_center(
+                                    &painter,
+                                    pos2(lead.left() + GUTTER / 2.0, rect.center().y),
+                                );
+                            } else if !lit_row {
+                                let bar = Rect::from_min_size(lead.min, vec2(3.0, rect.height()));
+                                painter.rect_filled(bar, CornerRadius::ZERO, palette.accent);
+                            }
+                        }
+                        cell_rect.translate(vec2(shift, 0.0))
+                    } else {
+                        cell_rect
+                    };
                     if !ui.is_rect_visible(cell_rect) {
                         continue;
                     }
@@ -595,9 +695,28 @@ pub fn show<'a>(
             painter.rect_filled(header, CornerRadius::ZERO, header_fill);
             let y = painter.round_to_pixel_center(header.bottom() - hairline / 2.0);
             painter.hline(header.x_range(), y, Stroke::new(hairline, palette.outline));
-            let mut x = origin.x + gutter;
-            for (col, column) in columns.iter().enumerate() {
-                let rect = Rect::from_min_size(pos2(x, top), vec2(widths[col], header_height));
+            for &col in &order {
+                let column = &columns[col];
+                let left = origin.x + gutter + lefts[col];
+                let rect = Rect::from_min_size(pos2(left, top), vec2(widths[col], header_height));
+                // The pinned column's header stands with its cells, over
+                // the headers that scrolled under it.
+                let rect = if col == 0 && shift > 0.0 {
+                    let lead = Rect::from_min_max(
+                        pos2(origin.x + shift, top),
+                        pos2(rect.right() + shift, header.bottom()),
+                    );
+                    painter.rect_filled(lead, CornerRadius::ZERO, header_fill);
+                    painter.hline(lead.x_range(), y, Stroke::new(hairline, palette.outline));
+                    painter.vline(
+                        lead.right() - hairline / 2.0,
+                        lead.y_range(),
+                        Stroke::new(hairline, palette.outline),
+                    );
+                    rect.translate(vec2(shift, 0.0))
+                } else {
+                    rect
+                };
                 // A header that sorts nothing still takes the pointer's
                 // clicks, and drops them: a hover-only header would let
                 // them through to a row scrolled under it.
@@ -640,10 +759,41 @@ pub fn show<'a>(
                     widths[col] = (widths[col] + drag.drag_delta().x).max(MIN_WIDTH);
                     keep = true;
                 }
-                x += widths[col];
             }
             origin
         });
+
+    // The columns in view, for the status line to say: the ones that show
+    // any of themselves past the pinned one.
+    {
+        let offset = scroll.state.offset.x;
+        let from = offset + if pinned { gutter + widths[0] } else { 0.0 };
+        let to = offset + scroll.inner_rect.width();
+        let mut edge = gutter;
+        let mut seen: Option<(usize, usize)> = None;
+        for (col, width) in widths.iter().enumerate() {
+            let scrolls = !(pinned && col == 0);
+            if scrolls && edge < to && edge + width > from {
+                seen = Some((seen.map_or(col, |(first, _)| first), col));
+            }
+            edge += width;
+        }
+        // The pinned column leads the range while its neighbour shows.
+        let seen = match seen {
+            Some((1, last)) if pinned => Some((0, last)),
+            None if pinned => Some((0, 0)),
+            seen => seen,
+        };
+        if let Some((first, last)) = seen {
+            let shown = ColumnsShown {
+                first,
+                last,
+                total: widths.len(),
+                pinned,
+            };
+            ui.data_mut(|data| data.insert_temp(id.with("columns-shown"), shown));
+        }
+    }
 
     // Columns the viewport cuts off entirely: a pill at the header's right
     // edge says how many, and scrolls to them.
@@ -1450,6 +1600,133 @@ mod tests {
             let shapes = painted(&ctx, &look, &palette, false, Vec::new());
             assert!(!lit(&shapes) && whole_row(&shapes), "{}", look.name);
         }
+    }
+
+    #[test]
+    fn a_leading_key_column_stays_in_sight_while_the_others_scroll() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx, false, &Look::standard());
+        ctx.enable_accesskit();
+        let id = egui::Id::new("grid");
+        let names: Vec<String> = (0..8).map(|col| format!("column_{col}")).collect();
+        let columns: Vec<Column<'_>> = names
+            .iter()
+            .enumerate()
+            .map(|(col, name)| Column {
+                name,
+                type_line: "int8".into(),
+                numeric: false,
+                sort: None,
+                key: col == 0,
+                flexible: false,
+                sortable: true,
+            })
+            .collect();
+        // One frame of a 320 pt wide grid: its output, where each cell's
+        // text was painted, and the AccessKit tree.
+        let frame = |events: Vec<egui::Event>| {
+            let mut result = GridOutput::default();
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(320.0, 300.0),
+                )),
+                events,
+                ..Default::default()
+            };
+            let mut output = ctx.run_ui(input, |ui| {
+                result = show(
+                    ui,
+                    id,
+                    &columns,
+                    3,
+                    0,
+                    None,
+                    false,
+                    &Palette::light(),
+                    &Look::standard(),
+                    |row, col| Cell {
+                        text: format!("r{row}c{col}").into(),
+                        null: false,
+                        style: Style::Plain,
+                    },
+                );
+            });
+            output.textures_delta.clear();
+            let texts: Vec<(String, f32)> = output
+                .shapes
+                .iter()
+                .filter_map(|clipped| match &clipped.shape {
+                    egui::Shape::Text(text) if clipped.clip_rect.contains(text.pos) => {
+                        Some((text.galley.text().to_owned(), text.pos.x))
+                    }
+                    _ => None,
+                })
+                .collect();
+            let tree = output.platform_output.accesskit_update.expect("accesskit");
+            (result, texts, tree)
+        };
+        let at = |texts: &[(String, f32)], cell: &str| {
+            texts
+                .iter()
+                .rev()
+                .find(|(text, _)| text == cell)
+                .map(|(_, x)| *x)
+        };
+        frame(Vec::new());
+        let (_, texts, tree) = frame(Vec::new());
+        let shown = columns_shown(&ctx, id).expect("the columns in view");
+        assert_eq!((shown.first, shown.total, shown.pinned), (0, 8, true));
+        assert!(shown.partial(), "{shown:?}");
+        let before = at(&texts, "r0c0").expect("the key");
+        // To the columns out of view: the pill at the header's end.
+        let more = tree
+            .nodes
+            .iter()
+            .find(|(_, node)| {
+                node.label()
+                    .is_some_and(|name| name.ends_with("more columns"))
+            })
+            .map(|(id, _)| *id)
+            .expect("the pill");
+        frame(vec![click(more)]);
+        frame(Vec::new());
+        let (_, texts, _) = frame(Vec::new());
+        let scrolled = columns_shown(&ctx, id).unwrap();
+        assert!(scrolled.last > shown.last, "{scrolled:?}");
+        // The range is of the columns that scrolled into view: the key is
+        // in sight beside it, and some are still out of it.
+        assert!(scrolled.first > 1 && scrolled.pinned, "{scrolled:?}");
+        assert!(scrolled.partial(), "{scrolled:?}");
+        // The key is where it was; the column after it went under it.
+        assert_eq!(at(&texts, "r0c0"), Some(before));
+        assert!(at(&texts, "r0c1").is_none_or(|x| x < before));
+        // A click over the key picks the key's cell, not one under it.
+        let over_key = egui::pos2(before + 4.0, 45.0 + 26.0 * 1.5);
+        let press = |pressed| egui::Event::PointerButton {
+            pos: over_key,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        frame(vec![egui::Event::PointerMoved(over_key), press(true)]);
+        let (output, _, _) = frame(vec![press(false)]);
+        assert_eq!(output.clicked, Some(CellPos { row: 1, col: 0 }));
+    }
+
+    #[test]
+    fn a_grid_without_a_leading_key_pins_nothing() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx, false, &Look::standard());
+        ctx.enable_accesskit();
+        // A result's columns: none is a key.
+        let mut columns = columns_that(false);
+        columns[0].key = false;
+        frame_of(&ctx, &columns, 3, Vec::new());
+        frame_of(&ctx, &columns, 3, Vec::new());
+        let shown = columns_shown(&ctx, egui::Id::new("grid")).expect("the columns in view");
+        assert!(!shown.pinned);
+        assert!(!shown.partial(), "every column fits: {shown:?}");
     }
 
     #[test]

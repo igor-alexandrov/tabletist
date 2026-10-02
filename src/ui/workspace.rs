@@ -1554,10 +1554,20 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                 .map(|count| count.to_string())
                 .or_else(|| (!page.has_more).then(|| last.to_string()))
                 .unwrap_or_else(|| "?".into());
-            Some(format!(
+            let rows = format!(
                 "{first}–{last}/{total} · {}",
                 crate::ui::format::elapsed(page.elapsed)
-            ))
+            );
+            // The columns in view first, while some are out of it.
+            let columns = (object.view == ObjectView::Data)
+                .then(|| {
+                    super::data_view::columns_note(ui.ctx(), workspace, tab, object, &look, locale)
+                })
+                .flatten();
+            Some(match columns {
+                Some(columns) => format!("{columns} · {rows}"),
+                None => rows,
+            })
         })
         .unwrap_or_default();
     egui::Panel::bottom(egui::Id::new(("status-line", tab.0)))

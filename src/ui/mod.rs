@@ -8607,6 +8607,74 @@ mod tests {
         assert!(harness.app.workspace(tab).is_some());
     }
 
+    /// A table of twelve text columns behind a key, open in `harness`.
+    fn wide_table(harness: &mut Harness) {
+        use tabletist_db::{ColumnInfo, ColumnMeta, RowPage, Structure, Value, ValueKind};
+        let tab = harness.connect_fake();
+        harness.app.apply(crate::model::Action::OpenObject {
+            tab,
+            object: tabletist_db::ObjectRef::new("main", "wide"),
+            kind: tabletist_db::ObjectKind::Table,
+            pin: true,
+        });
+        let names: Vec<String> = std::iter::once("id".to_owned())
+            .chain((1..12).map(|index| format!("a_rather_long_column_{index}")))
+            .collect();
+        harness.answer_structure(Structure {
+            columns: names
+                .iter()
+                .map(|name| ColumnInfo {
+                    name: name.clone(),
+                    type_name: "text".into(),
+                    nullable: true,
+                    default: None,
+                    comment: None,
+                    allowed_values: None,
+                })
+                .collect(),
+            primary_key: vec!["id".into()],
+            indexes: Vec::new(),
+            foreign_keys: Vec::new(),
+        });
+        harness.answer_rows(RowPage {
+            columns: names
+                .iter()
+                .map(|name| ColumnMeta {
+                    name: name.clone(),
+                    type_name: "text".into(),
+                    kind: ValueKind::Text,
+                })
+                .collect(),
+            rows: vec![vec![Value::Text("value".into()); 12]; 3],
+            has_more: false,
+            ordered_by_key: true,
+            elapsed: std::time::Duration::ZERO,
+        });
+        harness.settle();
+        harness.settle();
+    }
+
+    #[test]
+    fn the_status_line_says_which_columns_are_in_view_while_some_are_not() {
+        for look in crate::theme::Look::ALL {
+            let said = |harness: &Harness| {
+                harness
+                    .painted
+                    .iter()
+                    .any(|(text, _)| text.contains("of 12 · id pinned"))
+            };
+            let mut harness = Harness::with_size(egui::vec2(1600.0, 600.0));
+            harness.set_look(look);
+            wide_table(&mut harness);
+            assert!(said(&harness), "{}: {:?}", look.name, harness.painted);
+            // With room for every column there is nothing to say.
+            let mut harness = Harness::with_size(egui::vec2(6000.0, 600.0));
+            harness.set_look(look);
+            wide_table(&mut harness);
+            assert!(!said(&harness), "{}", look.name);
+        }
+    }
+
     #[test]
     fn the_terminal_marks_the_pane_the_keys_go_to() {
         // An accent line round something as tall as a pane.

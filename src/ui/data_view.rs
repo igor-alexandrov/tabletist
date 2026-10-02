@@ -759,6 +759,47 @@ fn dashed_rect(ui: &egui::Ui, rect: Rect, radius: f32, color: egui::Color32) {
     }
 }
 
+/// The id of a table's grid. Full precision widens timestamps: the columns
+/// are fitted again, as a grid of its own.
+fn grid_id(tab: ConnTabId, object_tab: TabId, full_precision: bool) -> Id {
+    Id::new(("grid", tab.0, object_tab.0, full_precision))
+}
+
+/// What a status line says of the columns while some are out of view:
+/// `Columns 1–10 of 40 · id pinned`, or the terminal's `cols 1–7 of 40`.
+/// Nothing while every column shows. It reads what the grid drew last, so
+/// it is a frame behind a scroll.
+pub fn columns_note(
+    ctx: &egui::Context,
+    workspace: &crate::model::Workspace,
+    tab: ConnTabId,
+    object: &ObjectTab,
+    look: &Look,
+    locale: crate::i18n::Locale,
+) -> Option<String> {
+    let id = grid_id(tab, object.id, workspace.full_precision);
+    let shown = grid::columns_shown(ctx, id).filter(grid::ColumnsShown::partial)?;
+    let say = |text: &'static str| look.label(&gettext(locale, text));
+    let noun = if look.terminal { "cols" } else { "Columns" };
+    let mut note = format!(
+        "{} {}–{} {} {}",
+        say(noun),
+        shown.first + 1,
+        shown.last + 1,
+        say("of"),
+        shown.total
+    );
+    let first = object.page().and_then(|page| page.columns.first());
+    if let (true, Some(column)) = (shown.pinned, first) {
+        note.push_str(&format!(
+            " · {} {}",
+            format::display_safe(&column.name),
+            say("pinned")
+        ));
+    }
+    Some(note)
+}
+
 /// The status footer: the page's range and paging, then what is selected
 /// and how long the query took.
 pub fn footer(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId) {
@@ -794,6 +835,10 @@ pub fn footer(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabI
     let timing = page.map(|page| format::elapsed(page.elapsed));
     let unordered = page.is_some_and(|page| !page.ordered_by_key) && object.query.sort.is_empty();
     let selected = object.selection.is_some();
+    let columns = app
+        .workspace(tab)
+        .filter(|_| view == ObjectView::Data)
+        .and_then(|workspace| columns_note(ui.ctx(), workspace, tab, object, &look, locale));
     let mut actions = Vec::new();
     egui::Panel::bottom(Id::new(("object-footer", tab.0, object_tab.0)))
         .exact_size(33.0)
@@ -850,6 +895,31 @@ pub fn footer(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabI
                     }
                     ui.spacing_mut().item_spacing.x = 16.0;
                     ui.add_space(14.0);
+                    // The columns in view, where the footer has the room: what
+                    // its right end says comes first.
+                    if let Some(columns) = &columns {
+                        let width = |text: &str| {
+                            widgets::secondary(&look).width(ui.ctx(), look.faces, text)
+                        };
+                        let state = if selected {
+                            format!(
+                                "{} · {}",
+                                gettext(locale, "1 row selected"),
+                                gettext(locale, "read-only")
+                            )
+                        } else {
+                            gettext(locale, "read-only").into_owned()
+                        };
+                        let query = timing
+                            .as_ref()
+                            .map(|timing| format!("{} {timing}", gettext(locale, "Query")));
+                        let taken = width(&state)
+                            + query.as_deref().map_or(0.0, |query| 16.0 + width(query))
+                            + 16.0;
+                        if ui.available_width() >= width(columns) + 16.0 + taken {
+                            note(ui, columns, status, &look);
+                        }
+                    }
                     if filtered {
                         note(ui, &gettext(locale, "Filtered"), palette.accent, &look)
                             .on_hover_text(gettext(locale, "Cmd/Ctrl+F edits the filter"));
@@ -1033,8 +1103,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
         let tags = crate::ui::value_tags::Tags::of_page(page, structure);
         let output = grid::show(
             ui,
-            // Full precision widens timestamps: the columns fit again.
-            Id::new(("grid", tab.0, object_tab.0, full_precision)),
+            grid_id(tab, object_tab, full_precision),
             &columns,
             page.rows.len(),
             object.query.offset,

@@ -530,6 +530,31 @@ fn shots() {
             harness.press(egui::Key::ArrowDown, egui::Modifiers::NONE);
         }
     });
+    // A wide table scrolled to its last columns: the key stays in sight.
+    both("values-scrolled", |harness| {
+        let tab = harness.connect_fake();
+        let workspace = harness.app.workspace_mut(tab).unwrap();
+        workspace.name = "Bookshop".into();
+        workspace.driver = Driver::Postgres;
+        harness.app.apply(Action::OpenObject {
+            tab,
+            object: ObjectRef::new("public", "book_images"),
+            kind: ObjectKind::Table,
+            pin: true,
+        });
+        harness.answer_structure(structure());
+        harness.answer_rows(page());
+        // The last column's cell: the grid scrolls to show it.
+        let object_tab = harness.app.workspace(tab).unwrap().active_tab.unwrap();
+        harness.app.apply(Action::SelectCell {
+            tab,
+            id: object_tab,
+            cell: CellPos { row: 4, col: 5 },
+        });
+        harness.app.apply(Action::ToggleRowPanel(tab));
+        // The scroll glides: let it arrive.
+        harness.finish_animations();
+    });
     both("structure", |harness| {
         let tab = workspace(harness);
         let object_tab = harness.app.workspace(tab).unwrap().active_tab.unwrap();
