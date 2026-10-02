@@ -77,6 +77,19 @@ const FIXED: [(u32, u32); SLOTS] = [
     (0xEEF3E0, 0x4C5A1E), // olive
 ];
 
+/// The same slots on a dark palette: a deep tone of each hue under a light
+/// one.
+const FIXED_DARK: [(u32, u32); SLOTS] = [
+    (0x3B3026, 0xE3B88C), // tan
+    (0x26324A, 0x9FBDF0), // blue
+    (0x332B4A, 0xC3ACF2), // violet
+    (0x1F3A38, 0x8FD3CD), // teal
+    (0x42361C, 0xE6C274), // amber
+    (0x30343A, 0xB9C1CC), // slate
+    (0x45283A, 0xEDA6C6), // rose
+    (0x30381F, 0xBCCB88), // olive
+];
+
 fn hex(rgb: u32) -> Color32 {
     let [_, r, g, b] = rgb.to_be_bytes();
     Color32::from_rgb(r, g, b)
@@ -88,15 +101,9 @@ pub fn slot_colors(slot: usize, look: &Look, palette: &Palette) -> (Color32, Opt
     if look.terminal {
         return (terminal_slots(palette)[slot % SLOTS], None);
     }
-    let (fill, text) = FIXED[slot % SLOTS];
-    let (fill, text) = (hex(fill), hex(text));
-    if palette.dark {
-        // The same hues on a dark window: the light tone as text over a
-        // deep fill of the ink.
-        (fill, Some(palette.window.lerp_to_gamma(text, 0.45)))
-    } else {
-        (text, Some(fill))
-    }
+    let table = if palette.dark { &FIXED_DARK } else { &FIXED };
+    let (fill, text) = table[slot % SLOTS];
+    (hex(text), Some(hex(fill)))
 }
 
 /// The colours a cell styled `style` draws in: its text, and its chip's
@@ -313,6 +320,30 @@ mod tests {
                 slot_colors(7, &look, &light),
                 (hex(0x4C5A1E), Some(hex(0xEEF3E0)))
             );
+        }
+    }
+
+    #[test]
+    fn a_tag_reads_on_its_fill_and_no_two_slots_look_alike() {
+        for look in [Look::macos(), Look::standard()] {
+            for (theme, palette) in [("light", Palette::light()), ("dark", Palette::dark())] {
+                let slots: Vec<_> = (0..SLOTS)
+                    .map(|slot| slot_colors(slot, &look, &palette))
+                    .collect();
+                for (slot, (text, fill)) in slots.iter().enumerate() {
+                    let fill = fill.expect("a desktop tag is a chip");
+                    let ratio = crate::theme::contrast(*text, fill);
+                    assert!(ratio >= 4.5, "{theme} slot {slot}: {ratio:.2}");
+                    // The chip shows on the content and on a selected row.
+                    for under in [palette.window, palette.selection] {
+                        assert_ne!(fill, under, "{theme} slot {slot}");
+                    }
+                    assert!(
+                        slots[..slot].iter().all(|other| other != &slots[slot]),
+                        "{theme} slot {slot} repeats"
+                    );
+                }
+            }
         }
     }
 
