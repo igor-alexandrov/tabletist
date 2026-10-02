@@ -548,7 +548,9 @@ tab's result grid as on a table's.
   buttons' keys, the read-only note, on Omarchy the tab title, then the
   menus' words (leaving "1,000" and "30 s"), on macOS the menus' chevrons,
   and last the menus. The run buttons stay.
-- Explain and Format are absent until slice 3, not disabled.
+- Explain is absent until its slice, not disabled. Format, its button
+  and its place in the order above are in
+  `2026-10-01-sql-formatter-design.md`.
 
 ### Editor
 

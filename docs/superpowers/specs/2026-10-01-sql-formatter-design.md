@@ -27,7 +27,7 @@ design canvas Artifact. They are not copied into the repository.
 | Engine | Our own formatter over `sql::tokenize`, in `tabletist-db`. No new dependency. |
 | Layout | River style: clause words right-aligned to one column, as in the macOS artboard's sample and the scripts in our tests. |
 | What is formatted | The statements a selection touches; with no selection, the whole script. |
-| Case | Reserved words that can never be a name are uppercased. Every other word keeps its case. |
+| Case | Reserved words that can never be a name are uppercased, and a few words where the layout reads them as structure. Every other word keeps its case. |
 | Safety | The result is tokenized again; if any token but whitespace differs, the text is left as typed. |
 | Controls | `Mod+Shift+F` in every look. A Format button in the macOS and standard toolbar. Omarchy has the key only, as its artboard has no button. |
 | Settings | None. One style, no options. |
@@ -136,21 +136,26 @@ parenthesis that is not a block, and outside every `CASE`):
 - `WITH` (with `RECURSIVE`), only as its block's first token that is not
   a comment: `WITH ORDINALITY`, `WITH ROLLUP` and `WITH TIES` stay on
   their lines.
-- `JOIN` and `STRAIGHT_JOIN`, with the words that lead a join: any run of
-  `INNER`, `LEFT`, `RIGHT`, `FULL`, `CROSS`, `NATURAL` and `OUTER` that
-  ends in `JOIN` is one head with it (`NATURAL LEFT OUTER JOIN`), aligned
-  by its first word. These words are a head only in such a run, so
-  `left(title, 2)` is a function call. `ON` and `USING` stay on the
-  join's line.
+- `JOIN` and `STRAIGHT_JOIN`, with the words that lead a join: a run of
+  up to three of `INNER`, `LEFT`, `RIGHT`, `FULL`, `CROSS`, `NATURAL` and
+  `OUTER` that ends in `JOIN` is one head with it (`NATURAL LEFT OUTER
+  JOIN`), aligned by its first word. These words are a head only in such
+  a run, so `left(title, 2)` is a function call. `ON` and `USING` stay on
+  the join's line.
 - `UNION`, `EXCEPT`, `INTERSECT`, with a following `ALL` or `DISTINCT`.
 - `AND` and `OR` in a `WHERE`, a `HAVING` or a join's `ON`. The `AND` of
   a `BETWEEN ... AND ...` is not a head.
 - `GROUP` and `ORDER` only when `BY` follows.
 
-A word is not a head in three cases where it would otherwise be one:
+A word is not a head in four cases where it would otherwise be one:
 
 - A word beside a `.`, before it or after it, is a name (`r.from`,
   `shop.order`), whatever it spells.
+- A word that touches a `@`, a `:`, a `$` or a number before it is a name
+  too: a MySQL user variable (`@from`), a parameter (`:limit`,
+  `$offset`), a name that starts with digits (`1st`). The tokenizer cuts
+  these in two where a server reads one token, so the safety check cannot
+  tell when a layout parts them: the word stays where it is.
 - `FROM` right after `DISTINCT` (`a IS DISTINCT FROM b`).
 - `STRAIGHT_JOIN` in the `SELECT` clause (MySQL's modifier, as in
   `SELECT DISTINCT STRAIGHT_JOIN title`): a join starts only after
@@ -173,7 +178,9 @@ Blocks in parentheses: a `(` whose first token that is not a comment is
 `SELECT` or `WITH` opens a nested block. It stays on its line, its base
 column is the column after it, and its `)` follows the block's last token
 on the same line. A block's first head stands right after its `(`, so a
-`WITH` there is not right-aligned. Every other parenthesis is inline.
+`WITH` there is not right-aligned. Every other parenthesis is inline, and
+so is a query nested more than 64 blocks deep: the layout follows each
+block in turn, and a script nested without end must not exhaust it.
 
     SELECT title
       FROM books
@@ -251,8 +258,9 @@ from their own column.
 
 A token the tokenizer reads as a keyword in this dialect is uppercased
 when it is on this list (`UPPERCASED`, public for the MySQL test that
-asks the server about it), unless it stands beside a `.` (after a `.`,
-and before one, a word is a name even when it is reserved):
+asks the server about it), unless it is a name by the rules above: it
+stands beside a `.` (after a `.`, and before one, a word is a name even
+when it is reserved), or it touches a sigil or a number before it:
 
 `ALL ALTER AND AS ASC BETWEEN BY CASE CREATE CROSS DEFAULT DELETE DESC
 DESCRIBE DISTINCT DROP ELSE EXISTS EXPLAIN FALSE FETCH FOR FROM GLOB GROUP
@@ -363,9 +371,13 @@ is in that text.
 - A name that spells a clause word (a column called `offset`) is laid out
   as that clause, unless it stands beside a `.`. The query means the same;
   quoting the name avoids it.
+- From whitespace the cursor goes before the next token, so a cursor on
+  an empty line between two statements ends before the second: Run then
+  runs that one, where before Format it ran the first.
 - MySQL and SQLite label a result column that has no alias with its
   expression as typed, so Format can change such a header (`x is null`
-  becomes `x IS NULL`). The rows are the same.
+  becomes `x IS NULL`), and on SQLite an alias that spells an uppercased
+  word (`AS left`). The rows are the same.
 - A selected statement that does not start its line (the second of
   `SELECT 1; SELECT 2`) is laid out from base column 0 and its first
   line stays where it stood: its first head is not padded to the river,
@@ -390,8 +402,14 @@ is in that text.
   statements and the blank line between them; a non-query statement
   keeping its lines; `\r\n` input.
 - The words that are not heads: a word beside a `.` (`r.from`,
-  `shop.order`, `order.id`), `IS DISTINCT FROM`, `WITH ORDINALITY`,
-  `SELECT STRAIGHT_JOIN`; a run of join leaders as one head.
+  `shop.order`, `order.id`), a word that touches a sigil or a number
+  (`@from`, `@end` in a `CASE`, `:limit`, `$offset`, `1from`),
+  `IS DISTINCT FROM`, `WITH ORDINALITY`, `SELECT STRAIGHT_JOIN`; a run
+  of join leaders as one head. Every test case and every script built at
+  random also checks that a word that touched a sigil still touches it
+  and keeps its case: the token check cannot see that.
+- Nesting 100,000 deep is laid out without exhausting the stack, as
+  blocks to the depth limit and on one line past it.
 - Dialect cases: `$$` and `$tag$` bodies, `E'\''`, `::` and two strings
   on two lines staying on two lines (PostgreSQL); backticks, `#`
   comments, `--` with and without a following space, `/*! */`, a
@@ -422,7 +440,8 @@ is in that text.
   MySQL dialect reads as a keyword is refused where a table alias is
   expected, and a word left off the list (`first`) is accepted there; a
   formatted query that names a table through a qualified name spelling a
-  reserved word still runs.
+  reserved word still runs, and so does one that reads a user variable
+  named as a clause (`@from`).
 - Headless UI tests through `src/testing.rs`: `Mod+Shift+F` formats the
   script, with the editor focused and not; the Format button does the
   same and gives the keys back to the editor; with a selection only the

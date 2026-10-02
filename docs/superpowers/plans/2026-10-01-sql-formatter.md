@@ -12,7 +12,7 @@
 
 ## How this plan was checked
 
-Every piece of code below was compiled and its tests were run in a scratch copy of the repository while planning: `cargo fmt --check`, `cargo clippy -D warnings`, `cargo doc -D warnings` and `cargo test --workspace --all-targets` (735 app tests, 200 `tabletist-db` unit tests) pass with all of it applied. The formatter was also run over more than a million scripts built at random, with the safety check out of the way. That and a review of the plan found three faults, each fixed and under test: a space added before a `--` comment fused two minus signs into a comment on MySQL; a line break after two touching minus signs did the same; and a `WITH` statement formatted through a selection, where it did not start its line, gained two spaces on every press. The reviews of the tasks as they were built added more, all folded back into this plan: a cap on how deep nested queries are followed (the layout recurses once for each), a bound on a quadratic scan of join leaders, the redo stack that Format left in place, and scrolling the cursor into view after Format.
+Every piece of code below was compiled and its tests were run in a scratch copy of the repository while planning: `cargo fmt --check`, `cargo clippy -D warnings`, `cargo doc -D warnings` and `cargo test --workspace --all-targets` (737 app tests, 202 `tabletist-db` unit tests, as the branch ended) pass with all of it applied. The formatter was also run over more than a million scripts built at random, with the safety check out of the way. That and a review of the plan found three faults, each fixed and under test: a space added before a `--` comment fused two minus signs into a comment on MySQL; a line break after two touching minus signs did the same; and a `WITH` statement formatted through a selection, where it did not start its line, gained two spaces on every press. The reviews of the tasks as they were built added more, all folded back into this plan: a cap on how deep nested queries are followed (the layout recurses once for each), a bound on a quadratic scan of join leaders, the redo stack that Format left in place, scrolling the cursor into view after Format, and, from the final review, a word parted from the sigil it touches (`@from` on MySQL), which the token check could not see.
 
 Not checked, so check it when you get there:
 
@@ -29,6 +29,8 @@ Found while building the prototype; the spec was changed to say the same.
 - `STRAIGHT_JOIN` is not a head anywhere in the `SELECT` clause, not only before the list's first item.
 - A `,` that would follow a `--` comment goes on the next line, as `)` and `;` do.
 - `UPPERCASED` is public, so the MySQL integration test can ask the server about each word.
+- A word that touches a `@`, a `:`, a `$` or a number before it is a name: no head, its case kept. The tokenizer cuts `@from` in two where a server reads one token.
+- Queries nested more than 64 blocks deep stay on their line, and a join head has at most three leaders.
 - On MySQL a token that touches two touching minus signs stays on their line, whatever it is: a line break after `--` would make a comment of them.
 - A selected statement that does not start its line goes on from the column it stands at: its first head is not padded to the river, and columns on its first line count from there.
 
@@ -96,6 +98,7 @@ README.md, the spec                     docs
 - `Writer` keeps the output and the current column, counted in characters. `line(column)` starts a line, or uses the current one when it is still empty.
 - `cased` uppercases a keyword that is on `UPPERCASED` (or that `put` was told is structure) and does not stand beside a `.` (`named`).
 - `dashes` is the one MySQL rule: no line starts right after two touching minus signs.
+- `named` is what keeps a word from being read as structure: beside a `.`, or touching a sigil or a number before it (`Item::binds`). The tests' `sigils_hold` checks that such a word still touches its sigil, which the token check cannot see.
 - `moved` maps the cursor by counting token bytes before it.
 
 - [ ] **Step 1: Declare the module**
@@ -139,11 +142,42 @@ mod tests {
             return (script.to_owned(), 0..0);
         };
         let result = [&script[..region.start], &laid, &script[region.end..]].concat();
-        assert!(
-            same_tokens(script, &old, &result, &tokenize(dialect, &result)),
-            "{script:?}"
-        );
+        let new = tokenize(dialect, &result);
+        assert!(same_tokens(script, &old, &result, &new), "{script:?}");
+        assert!(sigils_hold(script, &old, &result, &new), "{script:?}");
         (result, region.start..region.start + laid.len())
+    }
+
+    /// Whether every word that touched a sigil or a number before it
+    /// (`@from`, `:limit`, `1st`) still touches it. The tokenizer cuts
+    /// these apart where a server reads one token, so `same_tokens` cannot
+    /// tell when the layout parts them.
+    fn sigils_hold(old: &str, old_tokens: &[Token], new: &str, new_tokens: &[Token]) -> bool {
+        let visible = |tokens: &[Token]| {
+            let tokens = tokens
+                .iter()
+                .filter(|token| token.kind != TokenKind::Whitespace);
+            tokens.cloned().collect::<Vec<Token>>()
+        };
+        let (old_tokens, new_tokens) = (visible(old_tokens), visible(new_tokens));
+        let touching =
+            |tokens: &[Token], at: usize| tokens[at - 1].range.end == tokens[at].range.start;
+        (1..old_tokens.len()).all(|at| {
+            let (before, word) = (&old_tokens[at - 1], &old_tokens[at]);
+            let sigil = match before.kind {
+                TokenKind::Number => true,
+                TokenKind::Operator => matches!(&old[before.range.clone()], "@" | ":"),
+                TokenKind::Punctuation => old[before.range.clone()].starts_with('$'),
+                _ => false,
+            };
+            let bound = sigil
+                && matches!(word.kind, TokenKind::Keyword | TokenKind::Identifier)
+                && touching(&old_tokens, at);
+            // The word's case is as it was, too.
+            !bound
+                || (touching(&new_tokens, at)
+                    && old[word.range.clone()] == new[new_tokens[at].range.clone()])
+        })
     }
 
     /// The whole of `script` formatted, or the script itself when Format
@@ -531,6 +565,54 @@ mod tests {
     }
 
     #[test]
+    fn a_word_that_touches_a_sigil_or_a_number_is_a_name() {
+        // The tokenizer cuts `@from` into `@` and `from`; a server reads
+        // one token. Whatever it spells, the word stays where it is and
+        // as it is: a MySQL user variable,
+        assert_eq!(
+            mysql("select * from t where d between @from and @to and x = @limit"),
+            lines(&[
+                "SELECT *",
+                "  FROM t",
+                " WHERE d BETWEEN @from AND @to",
+                "   AND x = @limit",
+            ])
+        );
+        assert_eq!(
+            mysql("select case when d < @end then 1 end, @@global.select"),
+            lines(&[
+                "SELECT CASE",
+                "           WHEN d < @end THEN 1",
+                "       END,",
+                "       @@global.select",
+            ])
+        );
+        assert_eq!(mysql("set @from = 1"), "SET @from = 1");
+        // a parameter,
+        assert_eq!(
+            sqlite("select :limit, @from, $offset from t where a = ?1"),
+            lines(&[
+                "SELECT :limit,",
+                "       @from,",
+                "       $offset",
+                "  FROM t",
+                " WHERE a = ?1",
+            ])
+        );
+        // and a name that starts with digits.
+        assert_eq!(
+            mysql("select 1from, 2 from t"),
+            lines(&["SELECT 1from,", "       2", "  FROM t"])
+        );
+        // Apart from the sigil it is the word it spells.
+        assert_eq!(pg("select 1 from t"), lines(&["SELECT 1", "  FROM t"]));
+        assert_eq!(
+            pg("select a::interval from t"),
+            lines(&["SELECT a::interval", "  FROM t"])
+        );
+    }
+
+    #[test]
     fn spacing_follows_what_was_typed_where_no_rule_sets_it() {
         // Tokens that touched still touch; a space that was typed stays
         // one space; commas and parentheses have their own rule.
@@ -883,6 +965,7 @@ mod tests {
             as case when then else end union distinct limit offset in exists insert values \
             straight_join natural full cross inner having window fetch for intersect except \
             all recursive is not over a b.c t x. .y 's' \"q\" `q` $$d$$ E'e' $1 1 2.5 \
+            @from :limit $offset @end 1from @ : $ \
             ( ) [ ] , ; . * - / = : < > ! | # @ /*c*/ /*!e*/";
         let awkward = [
             "--x\n",
@@ -1293,6 +1376,19 @@ impl Item<'_> {
     /// `--` and MySQL's `#`: a comment that ends its line.
     fn ends_line(&self) -> bool {
         self.kind == TokenKind::Comment && !self.text.starts_with("/*")
+    }
+
+    /// `@`, `:`, a `$` and a number: what a server reads as one token
+    /// with a word that touches it (a user variable, a parameter, MySQL's
+    /// names that start with digits), though the tokenizer cuts the two
+    /// apart.
+    fn binds(&self) -> bool {
+        match self.kind {
+            TokenKind::Number => true,
+            TokenKind::Operator => matches!(self.text, "@" | ":"),
+            TokenKind::Punctuation => self.text.starts_with('$'),
+            _ => false,
+        }
     }
 }
 
@@ -1769,11 +1865,17 @@ impl<'a> Layout<'a> {
             && minus(index - 2)
     }
 
-    /// Whether the item at `index` stands beside a `.`: a part of a
-    /// qualified name, whatever it spells.
+    /// Whether the item at `index` is a name, whatever it spells: it
+    /// stands beside a `.` (a qualified name), or it touches a sigil or a
+    /// number before it (`@from`, `:limit`, `1st`). Such a word is no
+    /// head and keeps its case, so the layout never parts it from what it
+    /// touches: the check at the end, which reads the two as the
+    /// tokenizer does, would not see that.
     fn named(&self, index: usize) -> bool {
         let dot = |index: usize| self.items.get(index).is_some_and(|item| item.is("."));
-        dot(index + 1) || (index > 0 && dot(index - 1))
+        let bound =
+            index > 0 && self.items[index].space.is_empty() && self.items[index - 1].binds();
+        dot(index + 1) || (index > 0 && dot(index - 1)) || bound
     }
 
     /// Whether the item at `index` is one of `words` as a keyword, not a
@@ -1876,7 +1978,7 @@ fn moved(old: &[Token], new: &[Token], cursor: usize) -> Option<usize> {
 - [ ] **Step 5: Run the tests**
 
 Run: `~/.cargo/bin/cargo test --locked -p tabletist-db --lib sql::format`
-Expected: `test result: ok. 23 passed`.
+Expected: `test result: ok. 24 passed`.
 
 If an expectation fails, the layout is wrong, not the test: the expected scripts follow the spec's rules and were produced by this code. Do not edit an expected string to match.
 
@@ -1944,6 +2046,13 @@ async fn the_words_format_uppercases_cannot_be_table_aliases() {
     let formatted = sql::format::format(Dialect::MySql, script, None, 0).unwrap();
     assert_eq!(formatted.text, "SELECT id\n  FROM tabletist.order");
     conn.query_drop(&formatted.text).await.unwrap();
+    // A user variable's name touches its `@`. Format leaves it there and as
+    // it is, though it spells a clause: the server reads the two as one.
+    conn.query_drop("SET @from = 1").await.unwrap();
+    let formatted = sql::format::format(Dialect::MySql, "select @from", None, 0).unwrap();
+    assert_eq!(formatted.text, "SELECT @from");
+    let value: Option<i64> = conn.query_first(&formatted.text).await.unwrap();
+    assert_eq!(value, Some(1));
     conn.disconnect().await.unwrap();
 }
 ```
