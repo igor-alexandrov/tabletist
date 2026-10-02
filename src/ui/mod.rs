@@ -126,6 +126,7 @@ mod tests {
                 harness.answer_rows(crate::testing::page(3, false));
                 let tree = harness.settle();
                 for (label, role) in [
+                    ("Connections", egui::accesskit::Role::Button),
                     ("Disconnect", egui::accesskit::Role::Button),
                     ("Refresh objects", egui::accesskit::Role::Button),
                     ("Row 1", egui::accesskit::Role::Button),
@@ -677,6 +678,51 @@ mod tests {
             harness.app.active_tab().content,
             crate::model::ConnTabContent::Picker(_)
         ));
+    }
+
+    #[test]
+    fn the_top_bar_connections_button_opens_the_picker_in_a_new_tab() {
+        for look in crate::theme::Look::ALL {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            let tab = harness.connect_fake();
+            harness.click("Connections");
+            assert_eq!(harness.app.tabs.len(), 2, "{}", look.name);
+            assert!(
+                matches!(
+                    harness.app.active_tab().content,
+                    crate::model::ConnTabContent::Picker(_)
+                ),
+                "{}",
+                look.name
+            );
+            // The connection stays open in its own tab.
+            assert!(harness.app.workspace(tab).is_some(), "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn the_connections_button_keeps_clear_of_the_connection() {
+        for look in crate::theme::Look::ALL {
+            let mut harness = Harness::with_size(egui::vec2(720.0, 480.0));
+            harness.set_look(look);
+            let tab = harness.connect_fake();
+            harness.app.workspace_mut(tab).unwrap().name = "Bar check".into();
+            let tree = harness.settle();
+            let button =
+                crate::testing::bounds(&tree, "Connections", egui::accesskit::Role::Button)
+                    .unwrap_or_else(|| panic!("Connections missing in {}", look.name));
+            let name = crate::testing::bounds(&tree, "Bar check", egui::accesskit::Role::Label)
+                .unwrap_or_else(|| panic!("the name is missing in {}", look.name));
+            let disconnect =
+                crate::testing::bounds(&tree, "Disconnect", egui::accesskit::Role::Button)
+                    .unwrap_or_else(|| panic!("Disconnect missing in {}", look.name));
+            let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, harness.size);
+            assert!(screen.contains_rect(button), "{}", look.name);
+            // It leads the bar: before the connection's name, off Disconnect.
+            assert!(button.right() < name.left(), "{}", look.name);
+            assert!(!button.intersects(disconnect), "{}", look.name);
+        }
     }
 
     #[test]
