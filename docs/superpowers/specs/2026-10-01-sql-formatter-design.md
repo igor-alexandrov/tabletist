@@ -1,6 +1,6 @@
 # SQL editor: Format
 
-Date: 2026-10-01. Status: design, not yet built.
+Date: 2026-10-01. Status: implemented.
 
 ## Intent
 
