@@ -731,6 +731,9 @@ pub fn show<'a>(
         }
     }
 
+    if lit {
+        focus::pane_border(ui, visible, look, palette);
+    }
     ui.data_mut(|data| {
         if keep {
             data.insert_temp(widths_id, widths);

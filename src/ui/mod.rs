@@ -8509,6 +8509,54 @@ mod tests {
     }
 
     #[test]
+    fn the_terminal_marks_the_pane_the_keys_go_to() {
+        // An accent line round something as tall as a pane.
+        let marked = |harness: &Harness| {
+            let accent = harness.app.palette.accent;
+            harness
+                .outlines
+                .iter()
+                .any(|(rect, stroke)| stroke.color == accent && rect.height() > 200.0)
+        };
+        for look in crate::theme::Look::ALL {
+            let (mut harness, _tab) = tree_harness();
+            harness.set_look(look);
+            harness.click("orders");
+            harness.answer_rows(crate::testing::page(3, true));
+            // The pointer alone marks nothing.
+            harness.settle();
+            assert!(!marked(&harness), "{}", look.name);
+            // A key: the tree has the arrows, where opening left them.
+            harness.press(Key::ArrowDown, Modifiers::NONE);
+            harness.settle();
+            assert_eq!(marked(&harness), look.terminal, "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn the_terminals_open_table_is_marked_quietly_while_the_keys_are_elsewhere() {
+        let (mut harness, _tab) = tree_harness();
+        harness.set_look(crate::theme::Look::omarchy());
+        harness.click("orders");
+        harness.answer_rows(crate::testing::page(3, true));
+        // The bar at the left of the open table's row, in `color`.
+        let bar = |harness: &Harness, color: egui::Color32| {
+            harness
+                .fills
+                .iter()
+                .any(|(rect, fill)| *fill == color && rect.width() < 4.0 && rect.height() > 10.0)
+        };
+        let (accent, muted) = (harness.app.palette.accent, harness.app.palette.dim);
+        // Opening left the arrows with the tree.
+        harness.settle();
+        assert!(bar(&harness, accent) && !bar(&harness, muted));
+        // A click in the grid takes them there.
+        harness.click("Row 1");
+        harness.settle();
+        assert!(bar(&harness, muted));
+    }
+
+    #[test]
     fn the_pointer_takes_the_ring_away() {
         let (mut harness, _tab) = tree_harness();
         harness.set_look(crate::theme::Look::macos());

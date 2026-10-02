@@ -136,6 +136,10 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
         .flatten();
     let reveal_pending = workspace.tree.reveal_cursor;
     let mut actions = Vec::new();
+    // Whether the keys come to the tree and the keyboard is in use: then
+    // its cursor shows, and the terminal look marks the pane.
+    let keys = workspace.pane == crate::model::Pane::Tree;
+    let lit = keys && focus::visible(ui.ctx()) && !focus::on_control(ui.ctx());
 
     // The terminal's sidebar takes the theme's dark background too.
     let fill = if look.sidebar_tinted || look.terminal {
@@ -332,6 +336,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                                 Marks {
                                     active: active.as_ref(),
                                     cursor: cursor.as_ref(),
+                                    keys,
+                                    lit,
                                 },
                                 locale,
                                 Skin {
@@ -348,6 +354,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                 terminal_footer(ui, full, &look, &palette);
             } else {
                 sql_button(ui, full, tab, locale, &look, &palette, &mut actions);
+            }
+            if lit {
+                focus::pane_border(ui, full, &look, &palette);
             }
         });
     if reveal_pending && let Some(workspace) = app.workspace_mut(tab) {
@@ -652,6 +661,10 @@ fn schema_header(
 struct Marks<'a> {
     active: Option<&'a ObjectRef>,
     cursor: Option<&'a TreeNode>,
+    /// The arrows are the tree's.
+    keys: bool,
+    /// And the keyboard is in use: the cursor shows.
+    lit: bool,
 }
 
 /// A row with the keyboard is ringed inside its highlight: a ring outside
@@ -757,10 +770,17 @@ fn tree_row(
     };
     widgets::selection(ui, band, selected, response.hovered(), look, palette);
     let highlight = widgets::selection_rect(band, look);
+    // The terminal's bar on the open object's row is muted while the keys
+    // are elsewhere: selected, not focused.
+    if selected && !marks.keys && look.selection == crate::theme::Selection::Bar {
+        let edge = Rect::from_min_size(band.min, vec2(2.0, band.height()));
+        ui.painter()
+            .rect_filled(edge, CornerRadius::ZERO, palette.dim);
+    }
     // The row the arrows are on, while the keyboard is in use and its keys
     // come to the tree: the ring a focused row takes. Apart from the open
     // object's fill: one says where the keys are, the other what is open.
-    if marks.cursor == Some(&row.node) && focus::visible(ui.ctx()) && !focus::on_control(ui.ctx()) {
+    if marks.cursor == Some(&row.node) && marks.lit {
         ui.painter().rect_stroke(
             highlight,
             CornerRadius::same(look.radius.saturating_sub(2)),
