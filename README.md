@@ -53,8 +53,9 @@ Linux (Omarchy and Hyprland first), macOS and Windows.
   Every run happens in a read-only transaction that is rolled back, and
   statements that would leave it are refused. Format (Cmd/Ctrl+Shift+F)
   lays queries out in river style and uppercases reserved words, in the
-  selection's statements or the whole script. SQL keywords are completed
-  while typing (Ctrl+Space or Cmd/Ctrl+I asks for the list anywhere).
+  selection's statements or the whole script. Keywords, schemas, tables,
+  views and the columns of a statement's tables are completed while typing
+  (Ctrl+Space or Cmd/Ctrl+I asks for the list anywhere).
 - Quick open (Cmd/Ctrl+P) and a full keyboard map: press `?` in the app.
 - Looks native on each platform: a macOS look in IBM Plex, and on Linux the
   Omarchy look (square, keyboard first, vim keys, the desktop's monospace

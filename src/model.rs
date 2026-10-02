@@ -394,10 +394,14 @@ pub struct Workspace {
     pub next_query: u32,
     /// "PostgreSQL 17.2", asked for when the first SQL editor opens.
     pub server_version: Fetch<String>,
+    /// The columns of tables and views, for the SQL editors' completion:
+    /// fetched for the tables a statement names, and filled by a table
+    /// tab's structure. A fetch that failed stays failed, so it is not
+    /// asked for again. Cleared with the tree, and with the session.
+    pub columns: HashMap<ObjectRef, Fetch<Vec<tabletist_db::ColumnInfo>>>,
     /// Bumped whenever the names a completion list reads change (the
-    /// tree's objects, the columns), so an open list is worked out again.
-    /// Nothing bumps it yet: a list reads keywords only. The tasks that
-    /// load names for the list will.
+    /// tree's schemas and objects, and `columns`), so an open list is
+    /// worked out again. Change it through `catalog_changed`.
     pub catalog_generation: u64,
     /// The tab the workspace shows: an object tab or a SQL editor.
     pub active_tab: Option<TabId>,
@@ -1959,11 +1963,20 @@ impl Completion {
 
     /// Whether Enter is the editor's line break rather than an insertion:
     /// there is no row, or the highlighted one inserts what the script
-    /// `text` already reads there.
+    /// `text` already reads there, or the list only guesses at it. A list
+    /// that opened by typing, with its highlight where the list put it,
+    /// guesses unless its row goes on from the typed text: a row that
+    /// holds the text further in (`birthday` for `day`) is most likely no
+    /// completion of a word that is whole. Tab inserts such a row, and so
+    /// does Enter once the user moved the highlight or asked for the list
+    /// by hand.
     pub fn enter_is_a_line_break(&self, text: &str) -> bool {
         self.highlighted().is_none_or(|candidate| {
             let word = text.get(self.site.word.clone());
-            candidate.is_typed(&self.typed) || word.is_some_and(|word| candidate.is_typed(word))
+            let typed = candidate.is_typed(&self.typed)
+                || word.is_some_and(|word| candidate.is_typed(word));
+            let chosen = self.manual || self.moved;
+            typed || (!chosen && candidate.matched.start != 0)
         })
     }
 }
@@ -2260,6 +2273,7 @@ impl Workspace {
             tabs: Vec::new(),
             next_query: 1,
             server_version: Fetch::default(),
+            columns: HashMap::new(),
             catalog_generation: 0,
             active_tab: None,
             row_panel: true,
@@ -2384,16 +2398,61 @@ impl Workspace {
         }
     }
 
+    /// The schema a statement's bare names are looked up in: `public` on
+    /// PostgreSQL, the connection's database on MySQL, `main` on SQLite.
+    /// `None` when the server has no such schema: then a completion
+    /// inserts every name with its schema.
+    pub fn bare_schema(&self) -> Option<&str> {
+        let name = match self.driver {
+            Driver::Postgres => "public",
+            Driver::MySql => self.spec.database.as_str(),
+            Driver::Sqlite => "main",
+        };
+        let schemas = self.tree.schemas.value.as_ref()?;
+        let found = schemas.iter().find(|schema| *schema == name);
+        found.map(String::as_str)
+    }
+
+    /// The names a completion list reads changed: an open list is worked
+    /// out again.
+    pub fn catalog_changed(&mut self) {
+        self.catalog_generation = self.catalog_generation.wrapping_add(1);
+    }
+
+    /// Whether what `need` names is on its way: it was asked for, and the
+    /// session it was asked of is still there to answer. A fetch left
+    /// pending by a session that was replaced (a reconnect) or lost never
+    /// ends, and a list must not wait for it.
+    pub fn is_loading(&self, need: &crate::completion::Need) -> bool {
+        if !matches!(self.status, SessionStatus::Connected) {
+            return false;
+        }
+        match need {
+            crate::completion::Need::Objects(schema) => {
+                let node = self.tree.nodes.get(schema);
+                node.is_some_and(|node| node.objects.is_loading())
+            }
+            crate::completion::Need::Columns(object) => {
+                self.columns.get(object).is_some_and(Fetch::is_loading)
+            }
+        }
+    }
+
     /// Forgets what the SQL editors asked the session for. Call it wherever
     /// `session` is replaced: answers for the old one are dropped, so a run
     /// left pending would look like it runs for ever. The server may differ
-    /// too, so its version is asked for again (see `App::after_connect`).
+    /// too, so its version is asked for again (see `App::after_connect`),
+    /// and so are the columns a completion list offers.
     /// Object tabs are not touched: the connect reloads them.
     pub fn forget_session_requests(&mut self) {
         for sql in self.sql_tabs_mut() {
             sql.abandon_run();
         }
         self.server_version = Fetch::default();
+        // Fetches the old session will never answer, and names that may
+        // not be the new one's.
+        self.columns.clear();
+        self.catalog_changed();
     }
 }
 
@@ -2508,6 +2567,92 @@ mod tests {
         assert_eq!(workspace.connecting_for(), None, "the connect was answered");
         workspace.tree.schemas.value = Some(Vec::new());
         assert!(workspace.opened());
+    }
+
+    #[test]
+    fn the_bare_schema_is_the_one_a_dialect_searches() {
+        let mut workspace = crate::testing::workspace();
+        // The fixture is SQLite.
+        assert_eq!(workspace.bare_schema(), None, "no schemas listed yet");
+        workspace.tree.schemas.value = Some(vec!["main".into(), "audit".into()]);
+        assert_eq!(workspace.bare_schema(), Some("main"));
+        workspace.driver = Driver::Postgres;
+        assert_eq!(workspace.bare_schema(), None, "no public here");
+        workspace.tree.schemas.value = Some(vec!["public".into(), "audit".into()]);
+        assert_eq!(workspace.bare_schema(), Some("public"));
+        workspace.driver = Driver::MySql;
+        workspace.spec.database = "audit".into();
+        assert_eq!(workspace.bare_schema(), Some("audit"));
+        workspace.spec.database = String::new();
+        assert_eq!(workspace.bare_schema(), None, "no database chosen");
+    }
+
+    #[test]
+    fn a_need_is_loading_while_its_names_are_asked_for() {
+        use crate::completion::Need;
+        let mut workspace = crate::testing::workspace();
+        workspace.status = SessionStatus::Connected;
+        let need = Need::Objects("main".into());
+        assert!(!workspace.is_loading(&need), "never asked for");
+        let node = workspace.tree.nodes.entry("main".into()).or_default();
+        node.objects.start(RequestId(7));
+        assert!(workspace.is_loading(&need));
+        assert!(!workspace.is_loading(&Need::Objects("audit".into())));
+        let node = workspace.tree.nodes.get_mut("main").unwrap();
+        assert!(node.objects.finish(RequestId(7), Ok(Vec::new())));
+        assert!(!workspace.is_loading(&need), "answered");
+
+        // A table's columns.
+        let users = ObjectRef::new("main", "users");
+        let need = Need::Columns(users.clone());
+        assert!(!workspace.is_loading(&need), "never asked for");
+        let kept = workspace.columns.entry(users.clone()).or_default();
+        kept.start(RequestId(8));
+        assert!(workspace.is_loading(&need));
+        let orders = Need::Columns(ObjectRef::new("main", "orders"));
+        assert!(!workspace.is_loading(&orders));
+        let kept = workspace.columns.get_mut(&users).unwrap();
+        assert!(kept.finish(RequestId(8), Err(Error::query("permission denied"))));
+        assert!(!workspace.is_loading(&need), "answered");
+    }
+
+    #[test]
+    fn no_need_is_loading_unless_the_session_is_connected() {
+        use crate::completion::Need;
+        let mut workspace = crate::testing::workspace();
+        let node = workspace.tree.nodes.entry("reports".into()).or_default();
+        node.objects.start(RequestId(7));
+        let users = ObjectRef::new("main", "users");
+        let kept = workspace.columns.entry(users.clone()).or_default();
+        kept.start(RequestId(8));
+        let needs = [Need::Objects("reports".into()), Need::Columns(users)];
+        workspace.status = SessionStatus::Connected;
+        assert!(needs.iter().all(|need| workspace.is_loading(need)));
+        // A session that is being replaced, or is gone, answers nothing:
+        // what was asked of it is not on its way, pending or not.
+        for status in [
+            SessionStatus::Connecting {
+                request: RequestId(9),
+            },
+            SessionStatus::Disconnected(Error::query("gone")),
+            SessionStatus::Cancelled,
+        ] {
+            workspace.status = status;
+            let loading = needs.iter().any(|need| workspace.is_loading(need));
+            assert!(!loading, "{:?}", workspace.status);
+        }
+    }
+
+    #[test]
+    fn a_changed_catalog_is_another_generation() {
+        let mut workspace = crate::testing::workspace();
+        let before = workspace.catalog_generation;
+        workspace.catalog_changed();
+        assert_ne!(workspace.catalog_generation, before);
+        // It wraps rather than panics.
+        workspace.catalog_generation = u64::MAX;
+        workspace.catalog_changed();
+        assert_eq!(workspace.catalog_generation, 0);
     }
 
     #[test]
@@ -3062,9 +3207,20 @@ mod tests {
             .unwrap()
             .rows
             .start(RequestId(4));
+        // Columns a completion list has, and ones it waits for.
+        let users = workspace.columns.entry(ObjectRef::new("main", "users"));
+        users.or_default().value = Some(Vec::new());
+        let orders = workspace.columns.entry(ObjectRef::new("main", "orders"));
+        orders.or_default().start(RequestId(5));
+        let generation = workspace.catalog_generation;
         workspace.forget_session_requests();
         assert!(workspace.sql_tabs().all(|sql| !sql.is_running()));
         assert!(workspace.server_version.needs_load());
+        assert!(workspace.columns.is_empty());
+        assert_ne!(
+            workspace.catalog_generation, generation,
+            "an open list is worked out again"
+        );
         assert!(
             workspace.object_tab(TabId(1)).unwrap().rows.is_loading(),
             "object tabs are reloaded after the connect instead"
@@ -3648,6 +3804,78 @@ mod tests {
         assert!(!moved.enter_is_a_line_break("as"));
         // No row to insert: Enter is the editor's.
         assert!(completion_of(&[], "zz").enter_is_a_line_break("zz"));
+    }
+
+    /// A list of these columns, each with the part of its name that
+    /// matched `typed`, opened by hand (`manual`) or by typing.
+    fn completion_matching(
+        manual: bool,
+        rows: &[(&str, std::ops::Range<usize>)],
+        typed: &str,
+    ) -> Completion {
+        let mut listed = completion_rows(&[]);
+        listed.candidates = rows
+            .iter()
+            .map(|(label, matched)| crate::completion::Candidate {
+                kind: crate::completion::Kind::Column,
+                label: (*label).to_owned(),
+                insert: (*label).to_owned(),
+                matched: matched.clone(),
+                detail: String::new(),
+            })
+            .collect();
+        let of = (TextPrint::of(typed), typed.len(), 0);
+        let site = completion_site(typed);
+        Completion::new(manual, of, site, typed.to_owned(), listed, false)
+    }
+
+    #[test]
+    fn enter_inserts_a_row_the_typed_text_begins() {
+        let list = completion_matching(false, &[("email", 0..2)], "em");
+        assert!(!list.enter_is_a_line_break("em"));
+        // Nothing typed (right after a dot): every row goes on from it.
+        let after_dot = completion_matching(false, &[("email", 0..0)], "");
+        assert!(!after_dot.enter_is_a_line_break(""));
+    }
+
+    #[test]
+    fn enter_is_a_line_break_on_a_row_that_only_holds_the_typed_text() {
+        // `day` is most likely a whole word, not the start of `birthday`.
+        let rows = [("birthday", 5..8), ("holiday", 4..7)];
+        let list = completion_matching(false, &rows, "day");
+        assert!(list.enter_is_a_line_break("day"));
+        // A row that begins with it leads the list and is inserted.
+        let leading = [("day_of_week", 0..3), ("birthday", 5..8)];
+        let list = completion_matching(false, &leading, "day");
+        assert!(!list.enter_is_a_line_break("day"));
+    }
+
+    #[test]
+    fn enter_inserts_a_row_the_user_chose_or_asked_for() {
+        let rows = [("birthday", 5..8), ("holiday", 4..7)];
+        // The highlight moved to another row.
+        let mut moved = completion_matching(false, &rows, "day");
+        moved.move_by(1);
+        assert!(!moved.enter_is_a_line_break("day"));
+        // And back to the first one: the user's choice all the same.
+        moved.move_by(-1);
+        assert_eq!((moved.selected, moved.moved), (0, true));
+        assert!(!moved.enter_is_a_line_break("day"));
+        // The typed word changed since: the highlight is the list's again.
+        let of = (TextPrint::of("days"), 4, 0);
+        let mut listed = completion_rows(&["holidays"]);
+        listed.candidates[0].matched = 4..8;
+        moved.relist(of, completion_site("days"), "days".into(), listed, false);
+        assert!(moved.enter_is_a_line_break("days"));
+        // A list opened by hand was asked for: Enter inserts its row.
+        let manual = completion_matching(true, &rows, "day");
+        assert!(!manual.enter_is_a_line_break("day"));
+        // Whatever the list, a row that is what is typed is a line break.
+        let mut exact = completion_matching(true, &[("day", 0..3), ("birthday", 5..8)], "day");
+        assert!(exact.enter_is_a_line_break("day"));
+        exact.move_by(1);
+        exact.move_by(-1);
+        assert!(exact.enter_is_a_line_break("day"));
     }
 
     #[test]

@@ -1,9 +1,8 @@
 # SQL editor, slice 2: autocomplete
 
-Date: 2026-10-01. Status: step 1 (the list and keywords) is implemented;
-steps 2 and 3 (schemas, tables and views; columns) are designed here and not
-yet built. "Step 1 as built" below says where the code differs from this
-text; where the two disagree, that section and the code win.
+Date: 2026-10-01. Status: implemented, all three steps. "Step 1 as built"
+and "Steps 2 and 3 as built" below say where the code differs from this
+text; where the two disagree, those sections and the code win.
 
 ## Step 1 as built
 
@@ -45,6 +44,38 @@ text; where the two disagree, that section and the code win.
   opened by hand or once the highlight was moved, so a screen reader stays
   on the editor while a word is typed. Not tried with a screen reader.
 - **Platforms.** Built and tested headlessly on Linux only.
+
+## Steps 2 and 3 as built
+
+- **Enter.** For a list opened by typing whose highlight was not moved,
+  Enter inserts only a row that starts with the typed text; a row that only
+  holds it elsewhere (`birthday` for `day`) is inserted by Tab, or by Enter
+  once the highlight was moved or the list was opened by hand. Ten clause
+  words joined the keywords (`LAST`, `NULLS`, `LOCKED`, `SKIP`, `NOWAIT`,
+  `NOTHING`, `ROW`, `PRECEDING`, `FOLLOWING`, `UNBOUNDED`), and a word after
+  a `::` cast has no site: it is a type.
+- **"Is typed".** A name that is inserted bare compares whatever its case
+  (`USERS` is `users`); a quoted or qualified insertion compares as
+  spelled, so `Users` typed bare on PostgreSQL is still repaired to
+  `"Users"`. On a MySQL server whose table names are case-sensitive this
+  takes a differently cased table name for typed.
+- **Asking.** The bare schema's objects are asked for at sites that read
+  them (tables, columns, qualifiers), not at the first word of a statement.
+  A source in a schema whose objects were never loaded gets no columns.
+- **Qualifiers.** With a table in the bare schema called like a schema,
+  `FROM billing.` offers the table's columns. A source named like one of the
+  statement's CTEs gets no columns, not the columns of a table of that name.
+- **Waiting.** Nothing is loading on a session that is not connected, so a
+  waiting list closes when its session is replaced.
+- **The tree.** A refresh keeps every node and forgets the objects of nodes
+  that are neither expanded nor loading: the names only a list loaded.
+- **The list** keeps the best 120, not 100.
+- **Known limits.** Enter still inserts where a whole word the list does
+  not know begins a known name (`count` before a column `country`, an alias
+  `total` before `total_cents`). An answer and Enter arriving in the same
+  frame insert from rows the user has not seen. With no bare schema every
+  table label is qualified, and Enter does not insert one from its table
+  name; Tab does. Not tried against a real PostgreSQL or MySQL server.
 
 ## Intent
 
