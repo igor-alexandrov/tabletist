@@ -149,6 +149,26 @@ pub fn env_colors(env: Environment, platform: Platform, palette: &Palette) -> En
     }
 }
 
+/// `env`'s bar tint and the line a bar draws over it.
+fn bar_tint(env: Environment, platform: Platform, palette: &Palette) -> (Color32, Color32) {
+    let colors = env_colors(env, platform, palette);
+    (colors.bar_bg(), colors.bar_border())
+}
+
+/// The tint of something held back and the line over it: the staging
+/// bar's. A state borrows them and colours no connection, so a warning and
+/// a staging bar never disagree.
+pub fn warning_tint(platform: Platform, palette: &Palette) -> (Color32, Color32) {
+    bar_tint(Environment::Staging, platform, palette)
+}
+
+/// The tint of something that failed and the line over it: the production
+/// bar's. A state borrows them and colours no connection, so a failure and
+/// a production bar never disagree.
+pub fn failure_tint(platform: Platform, palette: &Palette) -> (Color32, Color32) {
+    bar_tint(Environment::Production, platform, palette)
+}
+
 /// The design's fixed colours: base, badge fill, badge text.
 fn native_table(env: Environment) -> (Color32, Color32, Color32) {
     let rgb = Color32::from_rgb;
@@ -395,6 +415,25 @@ mod tests {
     }
 
     #[test]
+    fn a_state_borrows_the_tints_of_the_staging_and_production_bars() {
+        for platform in [Platform::Native, Platform::Omarchy] {
+            for palette in [Palette::light(), Palette::dark()] {
+                let said = format!("{platform:?}, dark: {}", palette.dark);
+                let bar = |env| {
+                    let colors = env_colors(env, platform, &palette);
+                    (colors.bar_bg(), colors.bar_border())
+                };
+                let staging = bar(Environment::Staging);
+                let production = bar(Environment::Production);
+                assert_eq!(warning_tint(platform, &palette), staging, "{said}");
+                assert_eq!(failure_tint(platform, &palette), production, "{said}");
+                // Two tints, not one lent twice.
+                assert_ne!(staging, production, "{said}");
+            }
+        }
+    }
+
+    #[test]
     fn labels_are_lower_case_pills_and_upper_case_tags() {
         let native: Vec<_> = Environment::ALL
             .iter()
@@ -609,7 +648,6 @@ mod tests {
             OWNER,
             "src/ui/workspace.rs",
             "src/ui/picker.rs",
-            "src/ui/conn_tabs.rs",
             "src/ui/connect_dialog/mod.rs",
             "src/ui/env_tests.rs",
         ];

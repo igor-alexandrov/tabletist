@@ -329,7 +329,7 @@ pub struct Look {
     pub name: &'static str,
     /// Controls, tree rows, object tabs, icon-button hover, cards.
     pub radius: u8,
-    /// Connection tabs.
+    /// Menus and the disconnected banner.
     pub tab_radius: u8,
     /// Dialogs and popups.
     pub dialog_radius: u8,
@@ -652,6 +652,7 @@ fastframe_icons::icons! {
     pub enum Icon {
         prefix: "tabletist-icon-",
         directory: "../assets/icons/",
+        Check => lucide "check",
         ChevronDown => lucide "chevron-down",
         ChevronLeft => lucide "chevron-left",
         ChevronRight => lucide "chevron-right",
@@ -680,6 +681,7 @@ fastframe_icons::icons! {
         ArrowUp => "arrow-up",
         ChevronsUpDown => "chevrons-up-down",
         Code => "code",
+        Database => "database",
         Funnel => "funnel",
         Image => "image",
         KeyRound => "key-round",
@@ -687,7 +689,10 @@ fastframe_icons::icons! {
         ListTree => "list-tree",
         LogIn => "log-in",
         PanelRight => "panel-right",
+        Server => "server",
+        ShieldAlert => "shield-alert",
         Table => "table-2",
+        WifiOff => "wifi-off",
     }
 }
 

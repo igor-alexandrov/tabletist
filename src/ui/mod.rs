@@ -4,7 +4,6 @@
 pub mod about;
 #[cfg(test)]
 mod complete_tests;
-pub mod conn_tabs;
 pub mod connect_dialog;
 pub mod data_view;
 #[cfg(test)]
@@ -26,6 +25,7 @@ pub mod sql_complete;
 pub mod sql_editor;
 pub mod sql_results;
 pub mod sql_text;
+pub mod states;
 pub mod structure;
 pub mod value_tags;
 pub mod widgets;
@@ -37,10 +37,6 @@ use crate::app::App;
 use crate::model::ConnTabContent;
 
 pub fn show(app: &mut App, ui: &mut egui::Ui) {
-    // One connection needs no tab bar: its own bar leads the window.
-    if app.tabs.len() > 1 {
-        conn_tabs::show(app, ui);
-    }
     notice(app, ui);
     let fill = app.palette.window;
     egui::CentralPanel::default()
@@ -99,9 +95,7 @@ fn notice(app: &mut App, ui: &mut egui::Ui) {
 /// points below the window's top: on the line of the bar that leads the
 /// window, so the buttons and that bar's contents share one line.
 pub fn window_buttons_line(app: &App, zoom: f32) -> f32 {
-    if app.tabs.len() > 1 {
-        conn_tabs::line(app, zoom)
-    } else if matches!(app.active_tab().content, ConnTabContent::Picker(_)) {
+    if matches!(app.active_tab().content, ConnTabContent::Picker(_)) {
         picker::header_line(&app.look)
     } else {
         workspace::bar_line(app, zoom)
@@ -129,6 +123,7 @@ mod tests {
                 harness.answer_rows(crate::testing::page(3, false));
                 let tree = harness.settle();
                 for (label, role) in [
+                    ("Connections", egui::accesskit::Role::Button),
                     ("Disconnect", egui::accesskit::Role::Button),
                     ("Refresh objects", egui::accesskit::Role::Button),
                     ("Row 1", egui::accesskit::Role::Button),
@@ -204,58 +199,93 @@ mod tests {
         }
     }
 
+    /// Where the buttons named `label` are, from the top of the window down.
+    fn buttons_named(
+        tree: &egui::accesskit::TreeUpdate,
+        label: &str,
+    ) -> Vec<(egui::accesskit::NodeId, egui::Rect)> {
+        let mut buttons: Vec<_> = tree
+            .nodes
+            .iter()
+            .filter(|(_, node)| {
+                node.label() == Some(label) && node.role() == egui::accesskit::Role::Button
+            })
+            .filter_map(|(id, node)| {
+                let rect = node.bounds()?;
+                Some((
+                    *id,
+                    egui::Rect::from_min_max(
+                        egui::pos2(rect.x0 as f32, rect.y0 as f32),
+                        egui::pos2(rect.x1 as f32, rect.y1 as f32),
+                    ),
+                ))
+            })
+            .collect();
+        buttons.sort_by(|(_, a), (_, b)| a.top().total_cmp(&b.top()));
+        buttons
+    }
+
     #[test]
-    fn the_disconnected_banner_keeps_its_corners_inside_the_window() {
+    fn the_lost_strip_keeps_its_buttons_inside_the_window() {
+        // What a server that is down answers a reconnect with: more than
+        // the strip has room for on one line.
+        let refused = "connection to server at \"db.internal.example.com\" (10.20.30.40), \
+                       port 5432 failed: Connection refused. Is the server running on that \
+                       host and accepting TCP/IP connections?";
         for look in crate::theme::Look::ALL {
-            let mut harness = Harness::new();
-            harness.set_look(look);
-            let tab = harness.connect_fake();
-            let session = harness.app.workspace(tab).unwrap().session;
-            harness.app.apply(crate::model::Action::Backend(
-                crate::backend::Event::Disconnected {
-                    session,
-                    error: tabletist_db::Error::ConnectionLost("server went away".into()),
-                },
-            ));
-            let tree = harness.settle();
-            let button =
-                crate::testing::bounds(&tree, "Reconnect", egui::accesskit::Role::Button).unwrap();
-            // The banner pads its contents by 12; rounded looks inset it by 8 more.
-            let expected = if look.tab_radius == 0 { 12.0 } else { 20.0 };
-            assert_eq!(harness.size.x - button.right(), expected, "{}", look.name);
+            for long in [false, true] {
+                let mut harness = Harness::with_size(egui::vec2(720.0, 480.0));
+                harness.set_look(look);
+                let tab = harness.connect_fake();
+                let session = harness.app.workspace(tab).unwrap().session;
+                harness.app.apply(crate::model::Action::Backend(
+                    crate::backend::Event::Disconnected {
+                        session,
+                        error: tabletist_db::Error::ConnectionLost("server went away".into()),
+                    },
+                ));
+                let error = tabletist_db::Error::Connect(refused.into());
+                if long {
+                    harness.app.apply(crate::model::Action::Reconnect(tab));
+                    let Command::Connect {
+                        session, request, ..
+                    } = *crate::testing::last_sent(&harness.app)
+                    else {
+                        panic!("expected Connect");
+                    };
+                    harness.app.apply(crate::model::Action::Backend(
+                        crate::backend::Event::ConnectFailed {
+                            session,
+                            request,
+                            error: error.clone(),
+                        },
+                    ));
+                }
+                let tree = harness.settle();
+                let window = egui::Rect::from_min_size(egui::Pos2::ZERO, harness.size);
+                // The connection bar has a Disconnect of its own: the
+                // strip's is the lower one.
+                let reconnect = buttons_named(&tree, "Reconnect");
+                let disconnect = buttons_named(&tree, "Disconnect");
+                assert_eq!((reconnect.len(), disconnect.len()), (1, 2), "{}", look.name);
+                if long {
+                    // The error is there in full, before the buttons.
+                    let said = error.to_string();
+                    let text = crate::testing::bounds(&tree, &said, egui::accesskit::Role::Label);
+                    let text = text.expect("the exact error");
+                    assert!(text.right() <= reconnect[0].1.left(), "{}", look.name);
+                }
+                for (name, (_, button)) in
+                    [("Reconnect", reconnect[0]), ("Disconnect", disconnect[1])]
+                {
+                    assert!(
+                        window.contains_rect(button),
+                        "{name} at {button:?} in {} (long error: {long})",
+                        look.name
+                    );
+                }
+            }
         }
-    }
-
-    #[test]
-    fn one_connection_needs_no_tab_bar() {
-        let mut harness = Harness::new();
-        assert!(!harness.has("New tab"));
-        assert!(!harness.has("New connection tab"));
-        harness.press(Key::O, Modifiers::COMMAND);
-        assert!(harness.has("New tab"));
-        assert!(harness.has("New connection tab"));
-    }
-
-    #[test]
-    fn the_plus_button_opens_a_tab() {
-        let mut harness = Harness::new();
-        harness.app.apply(crate::model::Action::NewConnTab);
-        harness.click("New connection tab");
-        assert_eq!(harness.app.tabs.len(), 3);
-        assert_eq!(harness.app.active, 2);
-    }
-
-    #[test]
-    fn the_close_button_closes_its_tab() {
-        let mut harness = Harness::new();
-        let closing = harness.app.active_tab_id();
-        let first = harness.connect_fake();
-        // Named apart from the saved connection the new tab's picker lists.
-        harness.app.workspace_mut(first).unwrap().name = "Tab one".into();
-        harness.app.apply(crate::model::Action::NewConnTab);
-        harness.click("Close Tab one");
-        assert_eq!(harness.app.tabs.len(), 1);
-        assert_ne!(harness.app.tabs[0].id, closing);
     }
 
     #[test]
@@ -363,6 +393,91 @@ mod tests {
     }
 
     #[test]
+    fn the_timestamp_hint_gives_way_to_the_filter_chips() {
+        use egui::accesskit::Role;
+        for look in [crate::theme::Look::standard(), crate::theme::Look::macos()] {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            let tab = harness.connect_fake();
+            harness.click("users");
+            let mut page = crate::testing::page(1, false);
+            page.columns[1].kind = tabletist_db::ValueKind::Temporal;
+            harness.answer_rows(page.clone());
+            let id = harness.app.workspace(tab).unwrap().active_tab.unwrap();
+            let object = harness
+                .app
+                .workspace_mut(tab)
+                .unwrap()
+                .object_tab_mut(id)
+                .unwrap();
+            object.filter.rows = vec![
+                crate::model::FilterRow {
+                    column: "id".into(),
+                    op: tabletist_db::FilterOp::Gt,
+                    value: "5".into(),
+                },
+                crate::model::FilterRow {
+                    column: "email".into(),
+                    op: tabletist_db::FilterOp::Contains,
+                    value: "example".into(),
+                },
+            ];
+            harness.app.apply(crate::model::Action::ApplyFilters {
+                tab,
+                object_tab: id,
+            });
+            harness.answer_rows(page);
+            let sentence = "Timestamps shown to the second ·";
+            // From a pane with no room for the hint to one with room for all of it.
+            for width in (700..=1900).step_by(30) {
+                harness.size.x = width as f32;
+                let tree = harness.settle();
+                let at = format!("in {} at {width} wide", look.name);
+                // Each chip: its text and its button.
+                let chips: Vec<(String, egui::Rect)> = tree
+                    .nodes
+                    .iter()
+                    .filter(|(_, node)| node.role() == Role::Button)
+                    .filter_map(|(_, node)| node.label()?.strip_prefix("Remove filter "))
+                    .map(|text| {
+                        let label = format!("Remove filter {text}");
+                        let button = crate::testing::bounds(&tree, &label, Role::Button)
+                            .unwrap_or_else(|| panic!("{label} has no bounds {at}"));
+                        let text_rect = harness
+                            .painted_rect(text)
+                            .unwrap_or_else(|| panic!("the chip {text:?} is not painted {at}"));
+                        (text.to_owned(), button.union(text_rect))
+                    })
+                    .collect();
+                assert_eq!(chips.len(), 2, "both filters have a chip {at}");
+                let link = crate::testing::bounds(&tree, "Full precision", Role::Link);
+                let said = harness.painted_rect(sentence);
+                assert!(
+                    said.is_none() || link.is_some(),
+                    "the sentence goes before its link does {at}"
+                );
+                for (part, rect) in [("link", link), ("sentence", said)] {
+                    let Some(rect) = rect else {
+                        continue;
+                    };
+                    for (text, chip) in &chips {
+                        assert!(
+                            !rect.intersects(*chip),
+                            "the hint's {part} at {rect:?} is on the chip {text:?} at {chip:?} {at}"
+                        );
+                    }
+                }
+                if width == 1900 {
+                    assert!(
+                        link.is_some() && said.is_some(),
+                        "a wide pane shows the whole hint {at}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn ctrl_b_hides_and_shows_the_sidebar() {
         let (mut harness, _tab) = tree_harness();
         assert!(harness.has("orders"));
@@ -447,8 +562,22 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_o_opens_a_tab() {
+    fn ctrl_o_shows_the_connections() {
         let mut harness = Harness::new();
+        // Already on the picker: nothing to open.
+        harness.press(Key::O, Modifiers::COMMAND);
+        assert_eq!(harness.app.tabs.len(), 1);
+        let tab = harness.connect_fake();
+        harness.press(Key::O, Modifiers::COMMAND);
+        assert_eq!(harness.app.tabs.len(), 2);
+        assert!(matches!(
+            harness.app.active_tab().content,
+            crate::model::ConnTabContent::Picker(_)
+        ));
+        // From the connection again, the same picker.
+        harness
+            .app
+            .apply(crate::model::Action::ActivateConnTab(tab));
         harness.press(Key::O, Modifiers::COMMAND);
         assert_eq!(harness.app.tabs.len(), 2);
     }
@@ -456,7 +585,8 @@ mod tests {
     #[test]
     fn ctrl_shift_w_closes_the_connection_tab() {
         let mut harness = Harness::new();
-        harness.app.apply(crate::model::Action::NewConnTab);
+        harness.connect_fake();
+        harness.app.apply(crate::model::Action::ShowConnections);
         let active = harness.app.active_tab_id();
         harness.press(Key::W, Modifiers::COMMAND | Modifiers::SHIFT);
         assert_eq!(harness.app.tabs.len(), 1);
@@ -466,28 +596,64 @@ mod tests {
     #[test]
     fn plain_ctrl_w_does_not_close_the_connection_tab() {
         let mut harness = Harness::new();
-        harness.app.apply(crate::model::Action::NewConnTab);
+        harness.connect_fake();
+        harness.app.apply(crate::model::Action::ShowConnections);
         harness.press(Key::W, Modifiers::COMMAND);
         assert_eq!(harness.app.tabs.len(), 2);
     }
 
     #[test]
-    fn number_shortcuts_and_ctrl_tab_switch_tabs() {
+    fn number_shortcuts_switch_connections_and_ctrl_tab_every_tab() {
         let mut harness = Harness::new();
-        harness.app.apply(crate::model::Action::NewConnTab);
-        harness.app.apply(crate::model::Action::NewConnTab);
+        let first = harness.connect_fake();
+        let second = connect_another(&mut harness, "Second");
+        harness.app.apply(crate::model::Action::ShowConnections);
         harness.press(Key::Num1, Modifiers::COMMAND);
-        assert_eq!(harness.app.active, 0);
+        assert_eq!(harness.app.active_tab_id(), first);
+        harness.press(Key::Num2, Modifiers::COMMAND);
+        assert_eq!(harness.app.active_tab_id(), second);
+        // The picker has no number, and is one of the tabs Ctrl+Tab visits.
+        harness.press(Key::Num3, Modifiers::COMMAND);
+        assert_eq!(harness.app.active_tab_id(), second);
         harness.press(Key::Tab, Modifiers::CTRL);
-        assert_eq!(harness.app.active, 1);
+        assert_eq!(harness.app.active, 2);
         harness.press(Key::Tab, Modifiers::CTRL | Modifiers::SHIFT);
-        assert_eq!(harness.app.active, 0);
+        assert_eq!(harness.app.active, 1);
     }
 
     #[test]
-    fn the_picker_shows_its_empty_state() {
-        let mut harness = Harness::new();
-        assert!(harness.has("No saved connections yet"));
+    fn first_launch_says_why_the_list_is_empty_and_offers_a_connection() {
+        use egui::accesskit::{self, Role};
+        for look in crate::theme::Look::ALL {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            let title = look.label("No connections yet");
+            assert!(harness.has(&title), "{}", look.name);
+            // The header's button and the empty state's: the lower one is
+            // the empty state's.
+            let tree = harness.settle();
+            let top = |node: &accesskit::Node| node.bounds().map_or(0.0, |rect| rect.y0);
+            let mut buttons: Vec<_> = tree
+                .nodes
+                .iter()
+                .filter(|(_, node)| {
+                    node.label() == Some("New connection") && node.role() == Role::Button
+                })
+                .collect();
+            assert_eq!(buttons.len(), 2, "{}", look.name);
+            buttons.sort_by(|(_, a), (_, b)| top(a).total_cmp(&top(b)));
+            let lower = buttons[1].0;
+            harness.frame(vec![egui::Event::AccessKitActionRequest(
+                accesskit::ActionRequest {
+                    target_tree: accesskit::TreeId::ROOT,
+                    target_node: lower,
+                    action: accesskit::Action::Click,
+                    data: None,
+                },
+            )]);
+            harness.settle();
+            assert!(harness.app.dialog.is_some(), "{}", look.name);
+        }
     }
 
     #[test]
@@ -524,6 +690,15 @@ mod tests {
         }
     }
 
+    /// Opens another connection beside the open ones, named `name`: the
+    /// picker (Mod+O), then a connect in it. Returns its tab, which shows.
+    fn connect_another(harness: &mut Harness, name: &str) -> crate::model::ConnTabId {
+        harness.press(Key::O, Modifiers::COMMAND);
+        let tab = harness.connect_fake();
+        harness.app.workspace_mut(tab).unwrap().name = name.into();
+        tab
+    }
+
     fn add_saved(harness: &mut Harness, name: &str) -> crate::connections::ConnectionId {
         let saved = crate::connections::SavedConnection {
             id: crate::connections::ConnectionId::new(),
@@ -558,7 +733,8 @@ mod tests {
         add_saved(&mut harness, "Staging");
         assert!(harness.has("Production"));
         assert!(harness.has("Staging"));
-        assert!(!harness.has("No saved connections yet"));
+        let title = harness.app.look.label("No connections yet");
+        assert!(!harness.has(&title));
         if let crate::model::ConnTabContent::Picker(picker) = &mut harness.app.tabs[0].content {
             picker.search = "stag".into();
         }
@@ -613,6 +789,48 @@ mod tests {
     }
 
     #[test]
+    fn a_long_database_name_stays_in_the_host_column_of_a_narrow_window() {
+        for look in [crate::theme::Look::standard(), crate::theme::Look::macos()] {
+            let mut harness = Harness::with_size(egui::vec2(1000.0, 650.0));
+            harness.set_look(look);
+            let (mut spec, _) = tabletist_db::ConnectSpec::from_url(
+                "postgres://clerk@db.bookshop.example/bookshop_development",
+            )
+            .unwrap();
+            spec.tls = tabletist_db::TlsMode::Require;
+            harness
+                .app
+                .connections
+                .upsert(crate::connections::SavedConnection {
+                    id: crate::connections::ConnectionId::new(),
+                    name: "Bookshop".into(),
+                    environment: crate::env::Environment::Dev,
+                    read_only: None,
+                    password: crate::connections::PasswordMode::None,
+                    ssh_secret: crate::connections::PasswordMode::None,
+                    spec,
+                });
+            let tree = harness.settle();
+            // The row may cut the name short, so find it by how it starts.
+            let database = tree
+                .nodes
+                .iter()
+                .find(|(_, node)| node.value().is_some_and(|text| text.starts_with("/book")))
+                .and_then(|(_, node)| node.bounds())
+                .expect("the database");
+            let tls = crate::testing::bounds(&tree, "require", egui::accesskit::Role::Label)
+                .expect("the TLS mode");
+            assert!(
+                (database.x1 as f32) < tls.left(),
+                "{}: the database ends at {}, TLS starts at {}",
+                look.name,
+                database.x1,
+                tls.left()
+            );
+        }
+    }
+
+    #[test]
     fn the_connect_button_on_a_row_connects_in_this_tab() {
         let mut harness = Harness::new();
         add_saved(&mut harness, "Production");
@@ -626,7 +844,7 @@ mod tests {
     }
 
     #[test]
-    fn a_disconnected_workspace_offers_reconnect() {
+    fn a_connect_that_was_lost_offers_retry() {
         let mut harness = Harness::new();
         add_saved(&mut harness, "Production");
         harness.click("Connect to Production");
@@ -638,8 +856,8 @@ mod tests {
                 error: tabletist_db::Error::ConnectionLost("server went away".into()),
             },
         ));
-        assert!(harness.has("Reconnect"));
-        harness.click("Reconnect");
+        assert!(harness.has("Retry"));
+        harness.click("Retry");
         assert!(matches!(
             harness.app.workspace(tab).unwrap().status,
             crate::model::SessionStatus::Connecting { .. }
@@ -647,7 +865,7 @@ mod tests {
     }
 
     #[test]
-    fn cancelling_the_password_prompt_says_so_and_offers_reconnect() {
+    fn cancelling_the_password_prompt_says_so_and_offers_retry() {
         let mut harness = Harness::new();
         let (spec, _) = tabletist_db::ConnectSpec::from_url("postgres://me@db.example.com/app")
             .expect("a valid URL");
@@ -665,9 +883,12 @@ mod tests {
             });
         harness.click("Connect to Production");
         harness.click("Cancel");
-        assert!(harness.has("Connection cancelled."));
+        let cancelled = harness.app.look.label("Connection cancelled");
+        assert!(harness.has(&cancelled));
         assert!(!harness.has("The server refused the login. Check the user and password."));
-        assert!(harness.has("Reconnect"));
+        assert!(harness.has("Retry"));
+        // Nothing failed: there are no details to copy.
+        assert!(!harness.has("Copy details"));
     }
 
     #[test]
@@ -680,6 +901,341 @@ mod tests {
             harness.app.active_tab().content,
             crate::model::ConnTabContent::Picker(_)
         ));
+    }
+
+    #[test]
+    fn a_connecting_tab_shows_its_steps_and_cancel_returns_to_the_picker() {
+        for look in crate::theme::Look::ALL {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            add_saved(&mut harness, "Production");
+            harness.click("Connect to Production");
+            let tab = harness.app.active_tab_id();
+            // A SQLite file is opened; a server is connected to.
+            let open = format!("{} Production.db", look.label("Open"));
+            assert!(harness.has(&open), "{open} in {}", look.name);
+            assert!(harness.has(&look.label("Load schema")), "{}", look.name);
+            harness.click("Cancel connecting");
+            assert!(harness.app.workspace(tab).is_none(), "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn the_first_step_names_the_server_and_its_tunnel() {
+        let mut harness = Harness::new();
+        harness.set_look(crate::theme::Look::macos());
+        add_saved_with_tunnel(&mut harness);
+        harness.click("Connect to Prod");
+        assert!(harness.has("Connect to db.example.com:5432 via bastion"));
+    }
+
+    #[test]
+    fn a_tunnelled_connects_first_step_is_on_screen_in_full() {
+        for look in crate::theme::Look::ALL {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            add_saved_with_tunnel(&mut harness);
+            harness.click("Connect to Prod");
+            harness.settle();
+            // What is painted, not what the step is named: none of it cut.
+            let step = format!(
+                "{} db.example.com:5432 {} bastion",
+                look.label("Connect to"),
+                look.label("via")
+            );
+            assert!(
+                harness.painted.iter().any(|(text, _)| *text == step),
+                "{}: {:?}",
+                look.name,
+                harness.painted
+            );
+        }
+    }
+
+    #[test]
+    fn a_step_too_long_for_the_window_is_cut_short() {
+        for look in crate::theme::Look::ALL {
+            let mut harness = Harness::with_size(egui::vec2(420.0, 480.0));
+            harness.set_look(look);
+            let id = add_saved_with_tunnel(&mut harness);
+            let mut saved = harness.app.connections.get(&id).unwrap().clone();
+            saved.spec.host = "an-uncommonly-long-host-name.internal.example.com".into();
+            harness.app.connections.upsert(saved);
+            harness.click("Connect to Prod");
+            harness.settle();
+            let start = look.label("Connect to");
+            let painted = harness
+                .painted
+                .iter()
+                .find(|(text, _)| text.starts_with(&start))
+                .unwrap_or_else(|| panic!("{}: {:?}", look.name, harness.painted));
+            assert!(painted.0.ends_with('…'), "{}: {}", look.name, painted.0);
+        }
+    }
+
+    #[test]
+    fn escape_cancels_a_connect_and_does_nothing_once_the_tab_opened() {
+        let mut harness = Harness::new();
+        add_saved(&mut harness, "Production");
+        harness.click("Connect to Production");
+        let tab = harness.app.active_tab_id();
+        harness.press(Key::Escape, Modifiers::NONE);
+        assert!(harness.app.workspace(tab).is_none());
+
+        let mut harness = Harness::new();
+        let tab = harness.connect_fake();
+        harness.press(Key::Escape, Modifiers::NONE);
+        assert!(harness.app.workspace(tab).is_some());
+    }
+
+    #[test]
+    fn a_switch_of_database_keeps_its_editors_from_escape_and_cancel() {
+        for look in crate::theme::Look::ALL {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            let tab = harness.connect_fake();
+            let query = harness.add_sql_tab(tab);
+            harness.app.apply(crate::model::Action::SwitchDatabase {
+                tab,
+                database: "other".into(),
+            });
+            // The tab shows the steps of its connect, and nothing that
+            // would close the editor with it.
+            let tree = harness.settle();
+            let labels = crate::testing::labels(&tree);
+            assert!(labels.contains(&look.label("Load schema")), "{}", look.name);
+            assert!(
+                !labels.iter().any(|label| label == "Cancel connecting"),
+                "{}",
+                look.name
+            );
+            harness.press(Key::Escape, Modifiers::NONE);
+            let workspace = harness.app.workspace(tab);
+            assert!(
+                workspace.is_some_and(|workspace| workspace.sql_tab(query).is_some()),
+                "{}",
+                look.name
+            );
+        }
+    }
+
+    #[test]
+    fn escape_closes_an_open_list_before_it_cancels_a_connect() {
+        let mut harness = Harness::new();
+        let tab = harness.connect_fake();
+        with_database_picker(&mut harness, tab);
+        harness.app.apply(crate::model::Action::SwitchDatabase {
+            tab,
+            database: "postgres".into(),
+        });
+        harness.click("Database");
+        assert!(egui::Popup::is_any_open(&harness.ctx), "the list is open");
+        harness.press(Key::Escape, Modifiers::NONE);
+        assert!(!egui::Popup::is_any_open(&harness.ctx), "the list closed");
+        assert!(harness.app.workspace(tab).is_some());
+        // With no list open the key is the connect's again.
+        harness.press(Key::Escape, Modifiers::NONE);
+        assert!(harness.app.workspace(tab).is_none());
+    }
+
+    #[test]
+    fn an_escape_held_to_close_a_dialog_does_not_cancel_the_connect_under_it() {
+        let mut harness = Harness::new();
+        add_saved(&mut harness, "Production");
+        harness.click("Connect to Production");
+        let tab = harness.app.active_tab_id();
+        harness.frame(vec![egui::Event::Text("?".into())]);
+        harness.settle();
+        assert!(harness.app.dialog.is_some(), "the shortcuts are open");
+        let escape = || crate::testing::key(Key::Escape, Modifiers::NONE);
+        harness.frame(vec![escape()]);
+        harness.settle();
+        assert!(harness.app.dialog.is_none(), "the press closed them");
+        // The key is still down: egui reads these as repeats.
+        harness.frame(vec![escape()]);
+        harness.frame(vec![escape()]);
+        assert!(harness.app.workspace(tab).is_some());
+        // Let go and pressed again, it cancels.
+        harness.frame(vec![crate::testing::release(Key::Escape, Modifiers::NONE)]);
+        harness.press(Key::Escape, Modifiers::NONE);
+        assert!(harness.app.workspace(tab).is_none());
+    }
+
+    #[test]
+    fn the_top_bar_connections_button_opens_the_picker_in_a_new_tab() {
+        for look in crate::theme::Look::ALL {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            let tab = harness.connect_fake();
+            harness.click("Connections");
+            assert_eq!(harness.app.tabs.len(), 2, "{}", look.name);
+            assert!(
+                matches!(
+                    harness.app.active_tab().content,
+                    crate::model::ConnTabContent::Picker(_)
+                ),
+                "{}",
+                look.name
+            );
+            // The connection stays open in its own tab.
+            assert!(harness.app.workspace(tab).is_some(), "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn the_connections_button_keeps_clear_of_the_connection() {
+        for look in crate::theme::Look::ALL {
+            let mut harness = Harness::with_size(egui::vec2(720.0, 480.0));
+            harness.set_look(look);
+            let tab = harness.connect_fake();
+            harness.app.workspace_mut(tab).unwrap().name = "Bar check".into();
+            let tree = harness.settle();
+            let button =
+                crate::testing::bounds(&tree, "Connections", egui::accesskit::Role::Button)
+                    .unwrap_or_else(|| panic!("Connections missing in {}", look.name));
+            let name = crate::testing::bounds(&tree, "Bar check", egui::accesskit::Role::Label)
+                .unwrap_or_else(|| panic!("the name is missing in {}", look.name));
+            let disconnect =
+                crate::testing::bounds(&tree, "Disconnect", egui::accesskit::Role::Button)
+                    .unwrap_or_else(|| panic!("Disconnect missing in {}", look.name));
+            let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, harness.size);
+            assert!(screen.contains_rect(button), "{}", look.name);
+            // It leads the bar: before the connection's name, off Disconnect.
+            assert!(button.right() < name.left(), "{}", look.name);
+            assert!(!button.intersects(disconnect), "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn the_bar_has_a_chip_for_each_open_connection() {
+        for look in crate::theme::Look::ALL {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            let first = harness.connect_fake();
+            harness.app.workspace_mut(first).unwrap().name = "First".into();
+            let second = connect_another(&mut harness, "Second");
+            let env = crate::env::Environment::Dev.label(crate::env::Platform::of(&look));
+            // The second shows: its chip is the database switcher, and
+            // reads its name.
+            let tree = harness.settle();
+            for (label, role) in [
+                ("Database", egui::accesskit::Role::ComboBox),
+                ("Second", egui::accesskit::Role::Label),
+            ] {
+                assert!(
+                    crate::testing::node(&tree, label, role).is_some(),
+                    "{label} missing in {}",
+                    look.name
+                );
+            }
+            // The first's chip switches to it, and back.
+            harness.click(&format!("Switch to First · {env}"));
+            assert_eq!(harness.app.active_tab_id(), first, "{}", look.name);
+            harness.click(&format!("Switch to Second · {env}"));
+            assert_eq!(harness.app.active_tab_id(), second, "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn a_chip_says_how_its_session_stands_while_it_is_not_connected() {
+        for look in crate::theme::Look::ALL {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            let tab = harness.connect_fake();
+            // Connected, it says where it points: the fixture's file.
+            assert!(harness.has("fixture.db"), "{}", look.name);
+            let session = harness.app.workspace(tab).unwrap().session;
+            harness.app.apply(crate::model::Action::Backend(
+                crate::backend::Event::Disconnected {
+                    session,
+                    error: tabletist_db::Error::ConnectionLost("server went away".into()),
+                },
+            ));
+            assert!(harness.has(&look.label("Disconnected")), "{}", look.name);
+            assert!(!harness.has("fixture.db"), "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn many_chips_share_the_bar_and_the_one_showing_stays_whole() {
+        for look in crate::theme::Look::ALL {
+            let mut harness = Harness::with_size(egui::vec2(720.0, 480.0));
+            harness.set_look(look);
+            harness.connect_fake();
+            for number in 2..=8 {
+                connect_another(&mut harness, &format!("Connection number {number}"));
+            }
+            let tree = harness.settle();
+            let bounds = |label: &str, role| {
+                crate::testing::bounds(&tree, label, role)
+                    .unwrap_or_else(|| panic!("{label} missing in {}", look.name))
+            };
+            let connections = bounds("Connections", egui::accesskit::Role::Button);
+            let disconnect = bounds("Disconnect", egui::accesskit::Role::Button);
+            // The last one shows: its chip is whole, between the buttons.
+            let own = bounds("Database", egui::accesskit::Role::ComboBox);
+            assert!(own.left() > connections.right(), "{}", look.name);
+            assert!(own.right() < disconnect.left(), "{}", look.name);
+            assert!(own.width() > 60.0, "{}: {own:?}", look.name);
+            // No other chip reaches over either button.
+            let others: Vec<_> = tree
+                .nodes
+                .iter()
+                .filter(|(_, node)| {
+                    node.label()
+                        .is_some_and(|label| label.starts_with("Switch to"))
+                })
+                .filter_map(|(_, node)| node.bounds())
+                .collect();
+            assert!(!others.is_empty(), "{}", look.name);
+            for chip in others {
+                assert!(chip.x0 as f32 >= connections.right(), "{}", look.name);
+                assert!(chip.x1 as f32 <= disconnect.left(), "{}", look.name);
+            }
+        }
+    }
+
+    #[test]
+    fn the_picker_shows_an_open_connection_instead_of_connecting_again() {
+        for look in crate::theme::Look::ALL {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            assert!(!harness.has("open"), "{}", look.name);
+            let tab = harness.connect_fake();
+            harness.app.apply(crate::model::Action::ShowConnections);
+            // The saved connection is marked, and its button shows it.
+            assert!(harness.has("open"), "{}", look.name);
+            assert!(!harness.has("Connect to Fixture"), "{}", look.name);
+            let sent = harness.app.backend.sent.len();
+            harness.click("Show Fixture");
+            assert_eq!(harness.app.active_tab_id(), tab, "{}", look.name);
+            assert_eq!(harness.app.backend.sent.len(), sent, "{}", look.name);
+            assert_eq!(harness.app.tabs.len(), 2, "the picker stays for next time");
+        }
+    }
+
+    #[test]
+    fn enter_shows_an_open_connection_and_shift_enter_opens_it_again() {
+        let mut harness = Harness::new();
+        let tab = harness.connect_fake();
+        let conn = harness.app.workspace(tab).unwrap().conn_id.clone();
+        harness.app.apply(crate::model::Action::ShowConnections);
+        let picker = harness.app.active_tab_id();
+        harness.app.apply(crate::model::Action::SelectConnection {
+            tab: picker,
+            conn: Some(conn),
+        });
+        harness.press(Key::Enter, Modifiers::NONE);
+        assert_eq!(harness.app.active_tab_id(), tab);
+        assert_eq!(harness.app.open_connections().count(), 1);
+        harness.app.apply(crate::model::Action::ShowConnections);
+        harness.press(Key::Enter, Modifiers::SHIFT);
+        assert_eq!(
+            harness.app.open_connections().count(),
+            2,
+            "a second session of the same connection"
+        );
+        assert_eq!(harness.app.active_tab_id(), picker, "in the picker's tab");
     }
 
     #[test]
@@ -699,6 +1255,109 @@ mod tests {
             .iter()
             .filter(|c| matches!(c, Command::FetchRows { .. }))
             .count()
+    }
+
+    /// A saved PostgreSQL connection whose connect fails with `error`.
+    fn fail_connect(harness: &mut Harness, error: tabletist_db::Error) -> crate::model::ConnTabId {
+        let (spec, _) = tabletist_db::ConnectSpec::from_url("postgres://reader@db.example.com/app")
+            .expect("a valid URL");
+        harness
+            .app
+            .connections
+            .upsert(crate::connections::SavedConnection {
+                id: crate::connections::ConnectionId::new(),
+                name: "Production".into(),
+                environment: crate::env::Environment::Production,
+                read_only: None,
+                password: crate::connections::PasswordMode::None,
+                ssh_secret: crate::connections::PasswordMode::None,
+                spec,
+            });
+        harness.click("Connect to Production");
+        let Command::Connect {
+            session, request, ..
+        } = *crate::testing::last_sent(&harness.app)
+        else {
+            panic!("expected Connect");
+        };
+        harness.app.apply(crate::model::Action::Backend(
+            crate::backend::Event::ConnectFailed {
+                session,
+                request,
+                error,
+            },
+        ));
+        harness.app.active_tab_id()
+    }
+
+    #[test]
+    fn an_unreachable_server_says_which_and_retry_connects_again() {
+        let mut harness = Harness::new();
+        harness.set_look(crate::theme::Look::macos());
+        let refused = tabletist_db::Error::Connect("Connection refused (os error 111)".into());
+        let tab = fail_connect(&mut harness, refused);
+        assert!(harness.has("Can't reach db.example.com:5432"));
+        assert!(harness.has(
+            "Could not reach the server. Check the host and port, and that the server is running."
+        ));
+        // The exact error stays on screen.
+        assert!(harness.has("could not connect: Connection refused (os error 111)"));
+        harness.click("Retry");
+        assert!(matches!(
+            harness.app.workspace(tab).unwrap().status,
+            crate::model::SessionStatus::Connecting { .. }
+        ));
+    }
+
+    #[test]
+    fn a_refused_login_names_the_user_and_offers_the_connection() {
+        let mut harness = Harness::new();
+        harness.set_look(crate::theme::Look::macos());
+        let refused =
+            tabletist_db::Error::Auth("password authentication failed for user \"reader\"".into());
+        fail_connect(&mut harness, refused);
+        assert!(harness.has("Password rejected for reader"));
+        harness.click("Edit connection");
+        assert!(matches!(
+            harness.app.dialog,
+            Some(crate::model::Dialog::Connection(_))
+        ));
+    }
+
+    #[test]
+    fn a_tls_failure_says_there_is_no_way_round_it() {
+        let mut harness = Harness::new();
+        harness.set_look(crate::theme::Look::macos());
+        let failed = tabletist_db::Error::Tls("invalid peer certificate: NotValidForName".into());
+        fail_connect(&mut harness, failed);
+        assert!(harness.has("TLS or certificate problem"));
+        // The plain sentence under it is `describe_error`'s.
+        assert!(
+            harness.has(
+                "The secure connection failed. Try another TLS mode, or check the certificate."
+            )
+        );
+        assert!(harness.has(
+            "There is no \"connect anyway\". Change the TLS mode or the host in the connection."
+        ));
+    }
+
+    #[test]
+    fn a_failed_connect_offers_its_buttons_in_every_look() {
+        use egui::accesskit::Role;
+        for look in crate::theme::Look::ALL {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            fail_connect(&mut harness, tabletist_db::Error::Timeout);
+            let tree = harness.settle();
+            for name in ["Retry", "Edit connection", "Copy details"] {
+                assert!(
+                    crate::testing::node(&tree, name, Role::Button).is_some(),
+                    "{name} in {}",
+                    look.name
+                );
+            }
+        }
     }
 
     #[test]
@@ -722,6 +1381,25 @@ mod tests {
         assert!(harness.has("email"));
         assert!(harness.has("Row 5"));
         assert!(harness.has("Rows 1–5 of 5"));
+    }
+
+    #[test]
+    fn the_footer_says_it_waits_while_the_first_page_is_on_its_way() {
+        // The terminal look has no footer.
+        for look in crate::theme::Look::ALL
+            .into_iter()
+            .filter(|look| !look.terminal)
+        {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            harness.connect_fake();
+            harness.click("users");
+            assert!(harness.has("Waiting for server"), "{}", look.name);
+            assert!(!harness.has("No rows"), "{}", look.name);
+            harness.answer_rows(crate::testing::page(5, false));
+            assert!(!harness.has("Waiting for server"), "{}", look.name);
+            assert!(harness.has("Rows 1–5 of 5"), "{}", look.name);
+        }
     }
 
     #[test]
@@ -768,15 +1446,209 @@ mod tests {
     }
 
     #[test]
-    fn a_running_query_shows_a_cancel_button() {
+    fn a_very_long_error_is_cut_and_keeps_its_buttons_in_the_window() {
+        use egui::accesskit::Role;
+        // PostgreSQL repeats a literal it cannot read.
+        let long = format!(
+            "invalid input syntax for type integer: \"{}\"",
+            "9".repeat(5_000)
+        );
+        let error = tabletist_db::Error::Query {
+            code: Some("22P02".into()),
+            message: long.clone(),
+            detail: Some(long.clone()),
+            hint: Some(long.clone()),
+        };
+        for look in crate::theme::Look::ALL {
+            let mut harness = Harness::with_size(egui::vec2(720.0, 480.0));
+            harness.set_look(look);
+            harness.connect_fake();
+            harness.click("users");
+            let (session, request) = match crate::testing::last_sent(&harness.app) {
+                Command::FetchRows {
+                    session, request, ..
+                } => (*session, *request),
+                other => panic!("{other:?}"),
+            };
+            harness
+                .app
+                .apply(crate::model::Action::Backend(crate::backend::Event::Rows {
+                    session,
+                    request,
+                    result: Err(error.clone()),
+                }));
+            let tree = harness.settle();
+            let window = egui::Rect::from_min_size(egui::Pos2::ZERO, harness.size);
+            // The footer, by the arrow it always has. The terminal look
+            // has no footer.
+            let footer = crate::testing::bounds(&tree, "Previous page", Role::Button);
+            assert_eq!(footer.is_none(), look.terminal, "{}", look.name);
+            for name in ["Retry", "Copy details"] {
+                let button = crate::testing::bounds(&tree, name, Role::Button)
+                    .unwrap_or_else(|| panic!("{name} is missing in {}", look.name));
+                assert!(
+                    window.contains_rect(button),
+                    "{name} at {button:?} in {}",
+                    look.name
+                );
+                // In the view's own room, not over what is under it.
+                if let Some(footer) = footer {
+                    assert!(
+                        button.bottom() <= footer.top(),
+                        "{name} at {button:?} over the footer at {footer:?} in {}",
+                        look.name
+                    );
+                }
+            }
+            // What a frame lays out and names: no piece longer than a
+            // message may be, with its label before it.
+            let most = super::format::MESSAGE_MAX_CHARS + 64;
+            let named = crate::testing::labels(&tree);
+            let painted = harness.painted.iter().map(|(piece, _)| piece);
+            for piece in named.iter().chain(painted) {
+                let length = piece.chars().count();
+                assert!(length <= most, "{length} characters in {}", look.name);
+            }
+            // The clipboard gets all of it.
+            harness.click("Copy details");
+            let copied = harness.copied.clone().expect("the details were copied");
+            assert!(copied.starts_with(&long), "{}", look.name);
+            assert!(copied.ends_with(&format!("Hint: {long}")), "{}", look.name);
+        }
+    }
+
+    /// Makes the active object tab's fetch look a second old.
+    fn age_fetch(harness: &mut Harness, tab: crate::model::ConnTabId) {
+        let workspace = harness.app.workspace_mut(tab).unwrap();
+        let id = workspace.active_tab.unwrap();
+        let object = workspace.object_tab_mut(id).unwrap();
+        let earlier = std::time::Instant::now().checked_sub(std::time::Duration::from_secs(1));
+        object.rows.started = earlier;
+        object.structure.started = earlier;
+    }
+
+    /// Makes the active object tab's fetch look only just sent, however
+    /// long the test has taken: a start still to come has lasted no time.
+    fn pin_fetch(harness: &mut Harness, tab: crate::model::ConnTabId) {
+        let workspace = harness.app.workspace_mut(tab).unwrap();
+        let id = workspace.active_tab.unwrap();
+        let object = workspace.object_tab_mut(id).unwrap();
+        let later = std::time::Instant::now() + std::time::Duration::from_secs(3600);
+        object.rows.started = Some(later);
+        object.structure.started = Some(later);
+    }
+
+    #[test]
+    fn a_query_that_lasts_says_so_and_can_be_cancelled() {
+        for look in crate::theme::Look::ALL {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            let tab = harness.connect_fake();
+            harness.click("users");
+            // A query that has only just been sent shows nothing of a wait.
+            // The clock is held: a slow run must not age the fetch.
+            pin_fetch(&mut harness, tab);
+            assert!(!harness.has(&look.label("Running query…")), "{}", look.name);
+            age_fetch(&mut harness, tab);
+            assert!(harness.has(&look.label("Running query…")), "{}", look.name);
+            // The time the box shows ticks on the frames its spinner asks
+            // for: the next one at once, with no event to bring it.
+            assert_eq!(
+                harness.repaint_after,
+                std::time::Duration::ZERO,
+                "{}",
+                look.name
+            );
+            harness.click("Cancel query");
+            assert!(
+                matches!(
+                    crate::testing::last_sent(&harness.app),
+                    Command::Cancel { .. }
+                ),
+                "{}",
+                look.name
+            );
+        }
+    }
+
+    #[test]
+    fn a_structure_that_takes_long_says_so_over_the_one_it_has() {
+        for look in crate::theme::Look::ALL {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            let tab = with_page(&mut harness);
+            let loading = look.label("Loading structure…");
+            harness.click("Structure");
+            // The first fetch, with nothing to show yet.
+            age_fetch(&mut harness, tab);
+            assert!(harness.has(&loading), "{}", look.name);
+            harness.answer_structure(tabletist_db::Structure {
+                indexes: vec![tabletist_db::IndexInfo {
+                    name: "users_email_idx".into(),
+                    columns: vec!["email".into()],
+                    unique: true,
+                    primary: false,
+                    method: None,
+                }],
+                ..Default::default()
+            });
+            assert!(!harness.has(&loading), "{}", look.name);
+            // A refresh keeps the structure under its wait, and can be
+            // cancelled as the first fetch can.
+            harness.app.apply(crate::model::Action::Refresh(tab));
+            age_fetch(&mut harness, tab);
+            assert!(harness.has(&loading), "{}", look.name);
+            assert!(harness.has("users_email_idx"), "{}", look.name);
+            harness.click("Cancel query");
+            assert!(
+                matches!(
+                    crate::testing::last_sent(&harness.app),
+                    Command::Cancel { .. }
+                ),
+                "{}",
+                look.name
+            );
+        }
+    }
+
+    #[test]
+    fn a_refresh_keeps_the_page_under_the_running_card() {
         let mut harness = Harness::new();
-        harness.connect_fake();
+        let tab = with_page(&mut harness);
+        // Opening from the sidebar leaves the keys with the tree, where
+        // Mod+R refreshes the tree: give them to the grid.
+        focus_grid(&mut harness, tab);
+        harness.press(Key::R, Modifiers::COMMAND);
+        age_fetch(&mut harness, tab);
+        let running = harness.app.look.label("Running query…");
+        assert!(harness.has(&running));
+        assert!(harness.has("Row 1"));
+    }
+
+    #[test]
+    fn the_running_card_takes_the_clicks_the_page_under_it_would_get() {
+        let mut harness = Harness::new();
+        let tab = harness.connect_fake();
         harness.click("users");
-        harness.click("Cancel query");
-        assert!(matches!(
-            crate::testing::last_sent(&harness.app),
-            Command::Cancel { .. }
-        ));
+        // Enough rows that the middle of the area is over one.
+        harness.answer_rows(crate::testing::page(60, false));
+        focus_grid(&mut harness, tab);
+        harness.press(Key::R, Modifiers::COMMAND);
+        age_fetch(&mut harness, tab);
+        let tree = harness.settle();
+        let text = crate::testing::bounds(
+            &tree,
+            &harness.app.look.label("Running query…"),
+            egui::accesskit::Role::Label,
+        )
+        .expect("the running text");
+        let under = crate::testing::bounds(&tree, "Row 1", egui::accesskit::Role::Button)
+            .expect("the first row");
+        // The text is over the grid's rows: a click there would select.
+        assert!(text.center().y > under.top(), "{text:?} {under:?}");
+        assert_eq!(selection(&harness, tab), None);
+        click_at(&mut harness, text.center());
+        assert_eq!(selection(&harness, tab), None);
     }
 
     #[test]
@@ -875,21 +1747,31 @@ mod tests {
         tab: crate::model::ConnTabId,
         rows: usize,
     ) -> crate::model::TabId {
+        with_sql_outcome(harness, tab, crate::testing::rows_outcome(rows))
+    }
+
+    /// Opens a SQL editor in `tab`, runs `SELECT 1` in it and answers with
+    /// `outcome`.
+    fn with_sql_outcome(
+        harness: &mut Harness,
+        tab: crate::model::ConnTabId,
+        outcome: tabletist_db::StatementOutcome,
+    ) -> crate::model::TabId {
         harness.app.apply(crate::model::Action::NewSqlTab(tab));
         let id = harness.app.workspace(tab).unwrap().active_tab.unwrap();
         set_sql(harness, tab, "SELECT 1", 0);
+        run_sql(harness, tab, id);
+        harness.answer_sql(Ok(crate::testing::script_outcome(vec![outcome])), None);
+        id
+    }
+
+    /// Starts a run of the SQL editor `id` and leaves it in flight.
+    fn run_sql(harness: &mut Harness, tab: crate::model::ConnTabId, id: crate::model::TabId) {
         harness.app.apply(crate::model::Action::RunSql {
             tab,
             sql_tab: id,
             all: false,
         });
-        harness.answer_sql(
-            Ok(crate::testing::script_outcome(vec![
-                crate::testing::rows_outcome(rows),
-            ])),
-            None,
-        );
-        id
     }
 
     /// Puts `text` in the active SQL editor with the cursor at byte `cursor`.
@@ -1498,6 +2380,217 @@ mod tests {
         assert!(harness.app.workspace(tab).unwrap().row_panel);
     }
 
+    /// Selects the bytes `range` of the active SQL editor's text, as a
+    /// drag over them would.
+    fn select_sql(
+        harness: &mut Harness,
+        tab: crate::model::ConnTabId,
+        range: std::ops::Range<usize>,
+    ) {
+        // A field without the keys drops its selection when it is drawn.
+        assert!(harness.ctx.text_edit_focused());
+        let sql = active_sql(harness, tab);
+        let chars = |byte: usize| sql.text[..byte].chars().count();
+        let selection = egui::text::CCursorRange::two(
+            egui::text::CCursor::new(chars(range.start)),
+            egui::text::CCursor::new(chars(range.end)),
+        );
+        let id = crate::ui::sql_text::editor_id(tab, sql.id);
+        let mut state = egui::TextEdit::load_state(&harness.ctx, id).unwrap_or_default();
+        state.cursor.set_char_range(Some(selection));
+        egui::TextEdit::store_state(&harness.ctx, id, state);
+        harness.settle();
+    }
+
+    const COMMAND_SHIFT: Modifiers = Modifiers::COMMAND.plus(Modifiers::SHIFT);
+
+    #[test]
+    fn command_shift_f_formats_the_script_and_the_editor_keeps_the_keys() {
+        let mut harness = Harness::new();
+        let tab = harness.connect_fake();
+        harness.press(Key::T, Modifiers::COMMAND);
+        type_text(&mut harness, "select a,b from t");
+        harness.press(Key::F, COMMAND_SHIFT);
+        let formatted = "SELECT a,\n       b\n  FROM t";
+        let sql = active_sql(&harness, tab);
+        assert_eq!(sql.text, formatted);
+        assert_eq!(
+            sql.cursor,
+            formatted.len(),
+            "the cursor is still at the end"
+        );
+        assert!(harness.ctx.text_edit_focused());
+        // Typing goes on where the cursor is.
+        type_text(&mut harness, ";");
+        assert_eq!(active_sql(&harness, tab).text, format!("{formatted};"));
+        // With the keys given up (Esc) it formats too, and takes them back.
+        harness.press(Key::Escape, Modifiers::NONE);
+        assert!(!harness.ctx.text_edit_focused());
+        set_sql(&mut harness, tab, "select 1", 0);
+        harness.press(Key::F, COMMAND_SHIFT);
+        assert_eq!(active_sql(&harness, tab).text, "SELECT 1");
+        assert!(harness.ctx.text_edit_focused());
+    }
+
+    #[test]
+    fn one_undo_gives_back_the_script_as_typed() {
+        let mut harness = Harness::new();
+        let tab = harness.connect_fake();
+        harness.press(Key::T, Modifiers::COMMAND);
+        let typed = "select a,b from t";
+        let formatted = "SELECT a,\n       b\n  FROM t";
+        type_text(&mut harness, typed);
+        harness.press(Key::F, COMMAND_SHIFT);
+        assert_eq!(active_sql(&harness, tab).text, formatted);
+        harness.press(Key::Z, Modifiers::COMMAND);
+        let sql = active_sql(&harness, tab);
+        assert_eq!(sql.text, typed);
+        assert_eq!(sql.cursor, typed.len(), "and the cursor where it was");
+        // Redo formats it again.
+        harness.press(Key::Z, COMMAND_SHIFT);
+        assert_eq!(active_sql(&harness, tab).text, formatted);
+        // Formatting what is formatted adds nothing to undo: one undo is
+        // still all it takes.
+        harness.press(Key::F, COMMAND_SHIFT);
+        harness.press(Key::F, COMMAND_SHIFT);
+        assert_eq!(active_sql(&harness, tab).text, formatted);
+        harness.press(Key::Z, Modifiers::COMMAND);
+        assert_eq!(active_sql(&harness, tab).text, typed);
+    }
+
+    #[test]
+    fn format_leaves_nothing_to_redo_as_an_edit_does() {
+        let mut harness = Harness::new();
+        let tab = harness.connect_fake();
+        harness.press(Key::T, Modifiers::COMMAND);
+        let typed = "select a,b from t";
+        let formatted = "SELECT a,\n       b\n  FROM t";
+        type_text(&mut harness, typed);
+        harness.press(Key::F, COMMAND_SHIFT);
+        harness.press(Key::Z, Modifiers::COMMAND);
+        assert_eq!(active_sql(&harness, tab).text, typed);
+        // Formatted again, what that undo left to redo is gone: a redo
+        // changes nothing, and one undo is still all it takes.
+        harness.press(Key::F, COMMAND_SHIFT);
+        harness.press(Key::Z, COMMAND_SHIFT);
+        assert_eq!(active_sql(&harness, tab).text, formatted);
+        harness.press(Key::Z, Modifiers::COMMAND);
+        assert_eq!(active_sql(&harness, tab).text, typed);
+    }
+
+    #[test]
+    fn format_brings_the_cursor_into_view() {
+        let mut harness = Harness::new();
+        let tab = harness.connect_fake();
+        harness.press(Key::T, Modifiers::COMMAND);
+        // One line that Format lays out as more lines than the pane shows.
+        let columns: Vec<String> = (0..80).map(|n| format!("c{n}")).collect();
+        type_text(
+            &mut harness,
+            &format!("select {} from t", columns.join(",")),
+        );
+        let id = active_sql(&harness, tab).id;
+        let scrolled = |harness: &Harness| {
+            crate::ui::sql_text::scroll_offset(&harness.ctx, tab, id).expect("a scroll area")
+        };
+        assert_eq!(scrolled(&harness).y, 0.0);
+        harness.press(Key::F, COMMAND_SHIFT);
+        harness.finish_animations();
+        let sql = active_sql(&harness, tab);
+        assert_eq!(sql.text.lines().count(), 81);
+        assert_eq!(sql.cursor, sql.text.len(), "the cursor is on the last line");
+        assert!(scrolled(&harness).y > 0.0, "and that line is in view");
+    }
+
+    #[test]
+    fn format_with_a_selection_formats_the_statements_it_touches() {
+        let mut harness = Harness::new();
+        let tab = harness.connect_fake();
+        harness.press(Key::T, Modifiers::COMMAND);
+        // Letters of two bytes each before the selection: egui counts a
+        // cursor in characters, Format in bytes.
+        let typed = "select 'żółw' ;\nselect a,b from t ;\nselect 3 ;";
+        let formatted = "select 'żółw' ;\nSELECT a,\n       b\n  FROM t;\nselect 3 ;";
+        type_text(&mut harness, typed);
+        let list = typed.find("a,b").unwrap();
+        select_sql(&mut harness, tab, list..list + 3);
+        let id = crate::ui::sql_text::editor_id(tab, active_sql(&harness, tab).id);
+        let selection = |harness: &Harness| {
+            let state = egui::TextEdit::load_state(&harness.ctx, id).unwrap();
+            state.cursor.char_range().unwrap()
+        };
+        let selected = selection(&harness);
+        assert!(!selected.is_empty());
+        harness.press(Key::F, COMMAND_SHIFT);
+        let sql = active_sql(&harness, tab);
+        assert_eq!(sql.text, formatted);
+        // The cursor is where the selection ended, after the `b`, and
+        // nothing is selected.
+        let cursor = "select 'żółw' ;\nSELECT a,\n       b";
+        assert_eq!(&sql.text[..sql.cursor], cursor);
+        assert!(selection(&harness).is_empty());
+        // Undo gives the selection back with the text.
+        harness.press(Key::Z, Modifiers::COMMAND);
+        assert_eq!(active_sql(&harness, tab).text, typed);
+        assert_eq!(selection(&harness), selected);
+        // Formatted again (redo), typing adds to the text at the cursor.
+        harness.press(Key::Z, COMMAND_SHIFT);
+        type_text(&mut harness, "2");
+        assert_eq!(
+            active_sql(&harness, tab).text,
+            formatted.replace("       b\n", "       b2\n")
+        );
+    }
+
+    #[test]
+    fn the_format_button_formats_and_gives_the_keys_back() {
+        for look in [crate::theme::Look::standard(), crate::theme::Look::macos()] {
+            let (mut harness, tab) = sql_harness(look);
+            // Wide enough for the buttons' keys.
+            harness.size.x = 1600.0;
+            harness.settle();
+            type_text(&mut harness, "select 1");
+            let keys = if look == crate::theme::Look::macos() {
+                "⇧⌘F"
+            } else {
+                "Ctrl+Shift+F"
+            };
+            assert!(painted(&harness, keys), "{keys} in {}", look.name);
+            // The editor gives the keys up (Esc); the button formats and
+            // gives them back.
+            harness.press(Key::Escape, Modifiers::NONE);
+            assert!(!harness.ctx.text_edit_focused(), "{}", look.name);
+            harness.click("Format");
+            assert_eq!(active_sql(&harness, tab).text, "SELECT 1", "{}", look.name);
+            assert!(harness.ctx.text_edit_focused(), "{}", look.name);
+        }
+        // The terminal has the key alone.
+        let (mut harness, tab) = sql_harness(crate::theme::Look::omarchy());
+        harness.settle();
+        type_text(&mut harness, "select 1");
+        assert!(!harness.has("Format"));
+        harness.press(Key::F, COMMAND_SHIFT);
+        assert_eq!(active_sql(&harness, tab).text, "SELECT 1");
+    }
+
+    #[test]
+    fn command_shift_f_does_nothing_on_a_table_tab() {
+        let mut harness = Harness::new();
+        let tab = harness.connect_fake();
+        harness.app.apply(crate::model::Action::OpenObject {
+            tab,
+            object: tabletist_db::ObjectRef::new("main", "users"),
+            kind: tabletist_db::ObjectKind::Table,
+            pin: true,
+        });
+        harness.answer_rows(crate::testing::page(3, false));
+        // Mod+F would take the press for its own were it not consumed.
+        harness.press(Key::F, COMMAND_SHIFT);
+        assert!(!harness.has("Apply"), "the filter bar stays shut");
+        harness.press(Key::F, Modifiers::COMMAND);
+        assert!(harness.has("Apply"));
+    }
+
     #[test]
     fn command_period_cancels_a_sql_run() {
         let mut harness = Harness::new();
@@ -1550,7 +2643,7 @@ mod tests {
     }
 
     #[test]
-    fn the_row_panel_and_paging_keys_do_nothing_on_a_sql_tab() {
+    fn the_paging_keys_do_nothing_on_a_sql_tab_nor_the_row_panels_with_no_row_selected() {
         let mut harness = Harness::new();
         let tab = harness.connect_fake();
         harness.app.apply(crate::model::Action::OpenObject {
@@ -1562,7 +2655,9 @@ mod tests {
         harness.answer_rows(crate::testing::page(300, true));
         let users = harness.app.workspace(tab).unwrap().active_tab.unwrap();
         let query = with_sql_result(&mut harness, tab, 3);
-        // With the keys out of the editor, where Space would be typed.
+        // With the keys out of the editor, where Space would be typed. No
+        // row of the result is selected, so its panel has nothing to show
+        // and the keys leave it as it is.
         harness.press(Key::Escape, Modifiers::NONE);
         let panel = harness.app.workspace(tab).unwrap().row_panel;
         let sent = harness.app.backend.sent.len();
@@ -1617,13 +2712,13 @@ mod tests {
     #[test]
     fn the_shortcuts_of_any_tab_work_on_a_sql_tab() {
         let (mut harness, tab) = tree_harness();
-        harness.app.apply(crate::model::Action::NewConnTab);
+        harness.app.apply(crate::model::Action::ShowConnections);
         harness.press(Key::Num1, Modifiers::COMMAND);
         assert_eq!(harness.app.active_tab_id(), tab);
         harness.press(Key::T, Modifiers::COMMAND);
         let workspace = harness.app.workspace(tab).unwrap();
         assert!(workspace.active_sql_tab().is_some());
-        harness.press(Key::Num2, Modifiers::COMMAND);
+        harness.press(Key::Tab, Modifiers::CTRL);
         assert_eq!(harness.app.active, 1);
         harness.press(Key::Num1, Modifiers::COMMAND);
         assert_eq!(harness.app.active, 0);
@@ -1966,10 +3061,10 @@ mod tests {
             let (mut harness, _tab) = sql_harness(look);
             // The terminal's toolbar leads with its menus, the others'
             // with Run.
-            let order = if look.terminal {
-                ["Limit", "Timeout", "Run", "Run all"]
+            let order: &[&str] = if look.terminal {
+                &["Limit", "Timeout", "Run", "Run all"]
             } else {
-                ["Run", "Run all", "Limit", "Timeout"]
+                &["Run", "Run all", "Format", "Limit", "Timeout"]
             };
             let role = if look.terminal {
                 egui::accesskit::Role::ComboBox
@@ -1987,19 +3082,967 @@ mod tests {
     }
 
     #[test]
-    fn the_terminal_strip_has_no_row_panel_toggle_on_a_sql_tab() {
+    fn the_terminal_strip_keeps_its_row_panel_toggle_on_a_sql_tab() {
         let (mut harness, tab) = sql_harness(crate::theme::Look::omarchy());
         let toggle = "Show or hide the row panel";
-        assert!(!harness.has(toggle), "an editor has no row panel");
-        let panel = harness.app.workspace(tab).unwrap().row_panel;
-        // A table tab keeps it, and coming back to the editor loses it.
+        let open = |harness: &Harness| harness.app.workspace(tab).unwrap().row_panel;
+        assert!(harness.has(toggle), "a result has a row panel too");
+        assert!(open(&harness));
+        harness.click(toggle);
+        assert!(!open(&harness));
+        // The same toggle as a table tab's: one panel for the workspace.
         harness.click("users");
         harness.answer_rows(crate::testing::page(5, false));
         assert!(harness.has(toggle));
+        assert!(!harness.has("Select a row to see its fields"));
         harness.click(toggle);
-        assert_ne!(harness.app.workspace(tab).unwrap().row_panel, panel);
+        assert!(open(&harness));
         harness.click("Query 1 tab");
-        assert!(!harness.has(toggle));
+        assert!(harness.has(toggle));
+    }
+
+    #[test]
+    fn the_terminal_strips_toggle_hides_and_shows_a_result_rows_panel() {
+        let mut harness = Harness::new();
+        harness.set_look(crate::theme::Look::omarchy());
+        let tab = harness.connect_fake();
+        with_sql_result(&mut harness, tab, 3);
+        let toggle = "Show or hide the row panel";
+        harness.click("Row 2");
+        assert!(panel_shows(&mut harness));
+        harness.click(toggle);
+        assert!(!panel_shows(&mut harness));
+        harness.click(toggle);
+        assert!(panel_shows(&mut harness));
+    }
+
+    /// The fields of the row panel that shows, by their copy buttons.
+    fn panel_shows(harness: &mut Harness) -> bool {
+        harness.has("Copy email")
+    }
+
+    #[test]
+    fn selecting_a_result_row_opens_the_row_panel() {
+        for look in crate::theme::Look::ALL {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            let tab = harness.connect_fake();
+            let id = with_sql_result(&mut harness, tab, 3);
+            // Until a row is selected the editor and the results keep the
+            // whole width: no panel, and no placeholder for one.
+            assert!(!panel_shows(&mut harness), "{}", look.name);
+            assert!(!harness.has("Close the row panel"), "{}", look.name);
+            assert!(!harness.has("Select a row to see its fields"));
+            // The grid paints its cells: only the panel announces a value.
+            assert!(!harness.has("user2@example.com"), "{}", look.name);
+            // The band under the editor is as wide as the editor.
+            let wide = band(&mut harness).width();
+            harness.click("Row 2");
+            assert!(harness.has("user2@example.com"), "{}", look.name);
+            assert_eq!(
+                sql_selection(&harness, tab, id),
+                Some(crate::model::CellPos { row: 1, col: 0 })
+            );
+            for label in [
+                "Close the row panel",
+                "id · INTEGER",
+                "email · TEXT",
+                "Copy email",
+            ] {
+                assert!(harness.has(label), "{label} in {}", look.name);
+            }
+            // The panel stands beside the editor as well as the results.
+            assert!(band(&mut harness).width() < wide, "{}", look.name);
+            harness.click("Copy email");
+            assert_eq!(harness.copied.as_deref(), Some("user2@example.com"));
+        }
+    }
+
+    #[test]
+    fn a_result_rows_panel_is_titled_by_its_number_and_its_query() {
+        for look in [crate::theme::Look::standard(), crate::theme::Look::macos()] {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            let tab = harness.connect_fake();
+            with_sql_result(&mut harness, tab, 3);
+            let named = |harness: &Harness| {
+                harness
+                    .painted
+                    .iter()
+                    .filter(|(text, _)| text == "Query 1")
+                    .count()
+            };
+            harness.settle();
+            let before = named(&harness);
+            harness.click("Row 3");
+            let tree = harness.settle();
+            // A result has no key to name its row by: its number does.
+            assert!(
+                crate::testing::node(&tree, "Row 3", egui::accesskit::Role::Label).is_some(),
+                "{}: {:?}",
+                look.name,
+                crate::testing::labels(&tree)
+            );
+            assert_eq!(named(&harness), before + 1, "under it, the query's name");
+        }
+    }
+
+    #[test]
+    fn a_result_rows_panel_has_no_editing_controls() {
+        for look in crate::theme::Look::ALL {
+            let controls = if look.terminal {
+                "yy p duplicate"
+            } else {
+                "Duplicate"
+            };
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            let tab = with_page(&mut harness);
+            harness.click("Row 1");
+            assert!(harness.has(controls), "a table's row in {}", look.name);
+            with_sql_result(&mut harness, tab, 3);
+            harness.click("Row 1");
+            assert!(panel_shows(&mut harness), "{}", look.name);
+            assert!(!harness.has(controls), "a result's row in {}", look.name);
+        }
+    }
+
+    #[test]
+    fn the_terminal_panel_offers_a_result_row_no_copy_key() {
+        let hints = |harness: &Harness| -> Vec<String> {
+            let painted = harness.painted.iter();
+            painted
+                .map(|(text, _)| text.clone())
+                .filter(|text| text.starts_with("za fold"))
+                .collect()
+        };
+        let mut harness = Harness::new();
+        harness.set_look(crate::theme::Look::omarchy());
+        // The first row's `meta` is a document, with its keys beside it.
+        let tab = with_page(&mut harness);
+        harness.click("Row 1");
+        harness.settle();
+        assert_eq!(hints(&harness), ["za fold · y copy"]);
+        // `y` copies from a table's grid only: a result's row does not
+        // offer it.
+        with_sql_result(&mut harness, tab, 3);
+        harness.click("Row 1");
+        harness.settle();
+        assert_eq!(hints(&harness), ["za fold"]);
+    }
+
+    #[test]
+    fn the_panels_buttons_step_through_a_results_rows_and_close_it() {
+        for look in crate::theme::Look::ALL {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            let tab = harness.connect_fake();
+            let id = with_sql_result(&mut harness, tab, 3);
+            let at = |row, col| Some(crate::model::CellPos { row, col });
+            harness.click("Row 2");
+            harness.click("Next row");
+            assert_eq!(sql_selection(&harness, tab, id), at(2, 0), "{}", look.name);
+            assert!(harness.has("user3@example.com"), "{}", look.name);
+            harness.click("Previous row");
+            harness.click("Previous row");
+            assert_eq!(sql_selection(&harness, tab, id), at(0, 0), "{}", look.name);
+            assert!(harness.has("user1@example.com"), "{}", look.name);
+            harness.click("Close the row panel");
+            assert!(!harness.app.workspace(tab).unwrap().row_panel);
+            assert!(!panel_shows(&mut harness), "{}", look.name);
+            // Closed, it stays closed for the next row, as a table's does.
+            harness.click("Row 3");
+            assert_eq!(sql_selection(&harness, tab, id), at(2, 0));
+            assert!(!panel_shows(&mut harness), "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn the_messages_pane_hides_a_result_rows_panel() {
+        for look in crate::theme::Look::ALL {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            let tab = harness.connect_fake();
+            let id = with_sql_result(&mut harness, tab, 3);
+            harness.click("Row 2");
+            assert!(panel_shows(&mut harness), "{}", look.name);
+            harness.click("Messages");
+            assert!(!panel_shows(&mut harness), "{}", look.name);
+            assert!(!harness.has("Close the row panel"), "{}", look.name);
+            // The row stays selected, so the panel is back with its grid.
+            harness.click("Results");
+            assert_eq!(
+                sql_selection(&harness, tab, id),
+                Some(crate::model::CellPos { row: 1, col: 0 })
+            );
+            assert!(panel_shows(&mut harness), "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn a_new_result_closes_the_row_panel_until_a_row_of_it_is_selected() {
+        let mut harness = Harness::new();
+        let tab = harness.connect_fake();
+        let id = with_sql_result(&mut harness, tab, 3);
+        harness.click("Row 2");
+        assert!(panel_shows(&mut harness));
+        // The run in flight leaves the last result, and its row, in place.
+        run_sql(&mut harness, tab, id);
+        assert!(panel_shows(&mut harness));
+        // The second result differs from the first, so stale text shows.
+        let mut page = crate::testing::page(5, false);
+        page.rows[3][1] = tabletist_db::Value::Text("fourth@example.com".into());
+        let second = tabletist_db::StatementOutcome::Rows {
+            columns: page.columns,
+            rows: page.rows,
+            truncated: false,
+        };
+        harness.answer_sql(Ok(crate::testing::script_outcome(vec![second])), None);
+        assert_eq!(sql_selection(&harness, tab, id), None);
+        assert!(!panel_shows(&mut harness));
+        assert!(harness.app.workspace(tab).unwrap().row_panel, "still open");
+        harness.click("Row 4");
+        assert!(panel_shows(&mut harness));
+        assert!(harness.has("fourth@example.com"));
+        // A run that failed as a whole leaves no rows, and so no panel.
+        run_sql(&mut harness, tab, id);
+        let lost = tabletist_db::Error::ConnectionLost("the server went away".into());
+        harness.answer_sql(Err(lost), None);
+        // The failure opens the Messages pane, which hides the panel by
+        // itself: look at the results.
+        harness.click("Results");
+        assert!(!panel_shows(&mut harness));
+    }
+
+    #[test]
+    fn a_table_tab_keeps_its_row_panel_beside_a_sql_tab() {
+        let mut harness = Harness::new();
+        let tab = with_page(&mut harness);
+        with_sql_result(&mut harness, tab, 3);
+        assert!(!harness.has("Select a row to see its fields"));
+        harness.click("users tab");
+        assert!(harness.has("Select a row to see its fields"));
+        harness.click("Structure");
+        assert!(!harness.has("Select a row to see its fields"));
+    }
+
+    #[test]
+    fn a_result_rows_text_is_formatted_once_not_every_frame() {
+        use crate::ui::format::FULL_TEXTS;
+        let mut harness = Harness::new();
+        let tab = harness.connect_fake();
+        let mut page = crate::testing::page(2, false);
+        page.rows[0][1] = tabletist_db::Value::Text("x".repeat(1_000_000).into());
+        let columns = page.columns.len();
+        let outcome = tabletist_db::StatementOutcome::Rows {
+            columns: page.columns,
+            rows: page.rows,
+            truncated: false,
+        };
+        let id = with_sql_outcome(&mut harness, tab, outcome);
+        harness.settle();
+        let idle = FULL_TEXTS.with(std::cell::Cell::get);
+        harness.click("Row 1");
+        harness.settle();
+        let before = FULL_TEXTS.with(std::cell::Cell::get);
+        assert_eq!(before - idle, columns, "the selected row, once");
+        for step in 0..5 {
+            let at = egui::pos2(900.0 + step as f32 * 10.0, 300.0);
+            harness.frame(vec![egui::Event::PointerMoved(at)]);
+        }
+        assert_eq!(FULL_TEXTS.with(std::cell::Cell::get), before);
+        // Another row is formatted, once.
+        harness.click("Row 2");
+        let after = FULL_TEXTS.with(std::cell::Cell::get);
+        assert_eq!(after - before, columns);
+        harness.settle();
+        assert_eq!(FULL_TEXTS.with(std::cell::Cell::get), after);
+        // Nothing keeps the text of a row no panel shows.
+        let fields = |harness: &Harness| {
+            let workspace = harness.app.workspace(tab).unwrap();
+            workspace.sql_tab(id).unwrap().fields.is_some()
+        };
+        assert!(fields(&harness));
+        harness.click("Close the row panel");
+        assert!(!fields(&harness));
+    }
+
+    #[test]
+    fn a_tables_row_text_is_back_after_the_structure_view() {
+        let mut harness = Harness::new();
+        with_page(&mut harness);
+        harness.click("Row 1");
+        assert!(harness.has("user1@example.com"));
+        harness.click("Structure");
+        harness.click("Data");
+        assert!(harness.has("user1@example.com"));
+    }
+
+    #[test]
+    fn each_sql_tab_keeps_its_own_selected_row() {
+        let mut harness = Harness::new();
+        let tab = harness.connect_fake();
+        with_sql_result(&mut harness, tab, 3);
+        let second = with_sql_result(&mut harness, tab, 3);
+        harness.click("Row 3");
+        harness.click("Query 1 tab");
+        harness.click("Row 1");
+        assert!(harness.has("user1@example.com"));
+        assert!(!harness.has("user3@example.com"));
+        harness.click("Query 2 tab");
+        assert!(harness.has("user3@example.com"));
+        assert!(!harness.has("user1@example.com"));
+        harness
+            .app
+            .apply(crate::model::Action::CloseTab { tab, id: second });
+        assert!(harness.has("user1@example.com"));
+    }
+
+    #[test]
+    fn space_and_ctrl_shift_r_toggle_a_result_rows_panel() {
+        let mut harness = Harness::new();
+        let tab = harness.connect_fake();
+        let id = with_sql_result(&mut harness, tab, 3);
+        let open = |harness: &Harness| harness.app.workspace(tab).unwrap().row_panel;
+        // Out of the editor, where Space would be typed, and onto a row.
+        harness.press(Key::Escape, Modifiers::NONE);
+        harness.press(Key::ArrowDown, Modifiers::NONE);
+        assert!(panel_shows(&mut harness));
+        harness.press(Key::Space, Modifiers::NONE);
+        assert!(!open(&harness));
+        assert!(!panel_shows(&mut harness));
+        harness.press(Key::R, Modifiers::COMMAND | Modifiers::SHIFT);
+        assert!(open(&harness));
+        assert!(panel_shows(&mut harness));
+        // Mod+Shift+R works from the editor too; Space is typed there.
+        let workspace = harness.app.workspace_mut(tab).unwrap();
+        workspace.sql_tab_mut(id).unwrap().focus_editor = true;
+        harness.settle();
+        assert!(harness.ctx.text_edit_focused());
+        harness.press(Key::R, Modifiers::COMMAND | Modifiers::SHIFT);
+        assert!(!open(&harness));
+        harness.press(Key::Space, Modifiers::NONE);
+        assert!(!open(&harness));
+        // Under the messages no row shows, and the keys leave the panel be.
+        harness.click("Messages");
+        harness.press(Key::R, Modifiers::COMMAND | Modifiers::SHIFT);
+        assert!(!open(&harness));
+    }
+
+    /// A key that `keys::letters` reads as the character it types.
+    fn type_key(harness: &mut Harness, key: Key, text: &str) {
+        harness.settle();
+        harness.frame(vec![
+            crate::testing::key(key, Modifiers::NONE),
+            egui::Event::Text(text.into()),
+        ]);
+        harness.frame(vec![crate::testing::release(key, Modifiers::NONE)]);
+        harness.settle();
+    }
+
+    #[test]
+    fn the_terminal_keys_of_the_row_panel_work_on_a_result_row() {
+        let mut harness = Harness::new();
+        harness.set_look(crate::theme::Look::omarchy());
+        let tab = harness.connect_fake();
+        let id = with_sql_result(&mut harness, tab, 3);
+        let open = |harness: &Harness| harness.app.workspace(tab).unwrap().row_panel;
+        let at = |row, col| Some(crate::model::CellPos { row, col });
+        harness.press(Key::Escape, Modifiers::NONE);
+        // With no row selected the panel's keys have nothing to show.
+        for key in [Key::I, Key::Enter, Key::Escape] {
+            harness.press(key, Modifiers::NONE);
+            assert!(open(&harness), "{key:?} with no row");
+        }
+        // Nor with the panel closed, where Enter and `i` would open it.
+        harness.app.apply(crate::model::Action::ToggleRowPanel(tab));
+        for key in [Key::Enter, Key::I] {
+            harness.press(key, Modifiers::NONE);
+            assert!(!open(&harness), "{key:?} with no row");
+        }
+        harness.app.apply(crate::model::Action::ToggleRowPanel(tab));
+        // `]` and `[` step through the rows as `j` and `k` do.
+        type_key(&mut harness, Key::CloseBracket, "]");
+        assert_eq!(sql_selection(&harness, tab, id), at(0, 0));
+        assert!(panel_shows(&mut harness));
+        type_key(&mut harness, Key::CloseBracket, "]");
+        assert_eq!(sql_selection(&harness, tab, id), at(1, 0));
+        type_key(&mut harness, Key::OpenBracket, "[");
+        assert_eq!(sql_selection(&harness, tab, id), at(0, 0));
+        // Esc closes the panel, Enter opens it, `i` does either.
+        harness.press(Key::Escape, Modifiers::NONE);
+        assert!(!open(&harness));
+        assert!(!panel_shows(&mut harness));
+        // `za` with the panel closed leaves nothing folded for its next opening.
+        harness.press(Key::Z, Modifiers::NONE);
+        harness.press(Key::A, Modifiers::NONE);
+        assert!(harness.app.workspace(tab).unwrap().fold_documents.is_none());
+        harness.press(Key::Escape, Modifiers::NONE);
+        assert!(!open(&harness), "Esc only closes");
+        harness.press(Key::Enter, Modifiers::NONE);
+        assert!(open(&harness));
+        harness.press(Key::Enter, Modifiers::NONE);
+        assert!(open(&harness), "Enter only opens");
+        harness.press(Key::I, Modifiers::NONE);
+        assert!(!open(&harness));
+        harness.press(Key::I, Modifiers::NONE);
+        assert!(open(&harness));
+        assert!(panel_shows(&mut harness));
+        // `za` folds the row's documents: the first row's `meta`.
+        assert!(harness.has(r#""plan": "pro""#));
+        harness.press(Key::Z, Modifiers::NONE);
+        harness.press(Key::A, Modifiers::NONE);
+        assert!(harness.has("{ 1 key }"));
+        assert!(!harness.has(r#""plan": "pro""#));
+    }
+
+    #[test]
+    fn the_terminal_keys_of_the_row_panel_work_on_a_table_row() {
+        let mut harness = Harness::new();
+        harness.set_look(crate::theme::Look::omarchy());
+        let tab = with_page(&mut harness);
+        focus_grid(&mut harness, tab);
+        let open = |harness: &Harness| harness.app.workspace(tab).unwrap().row_panel;
+        let at = |row, col| Some(crate::model::CellPos { row, col });
+        // A table tab keeps its panel open with no row selected.
+        assert!(open(&harness));
+        assert!(harness.has("Select a row to see its fields"));
+        // `]` and `[` step through the rows as `j` and `k` do.
+        type_key(&mut harness, Key::CloseBracket, "]");
+        assert_eq!(selection(&harness, tab), at(0, 0));
+        assert!(panel_shows(&mut harness));
+        type_key(&mut harness, Key::CloseBracket, "]");
+        assert_eq!(selection(&harness, tab), at(1, 0));
+        type_key(&mut harness, Key::OpenBracket, "[");
+        assert_eq!(selection(&harness, tab), at(0, 0));
+        // Esc closes the panel, Enter opens it, `i` does either.
+        harness.press(Key::Escape, Modifiers::NONE);
+        assert!(!open(&harness));
+        assert!(!panel_shows(&mut harness));
+        // `za` with the panel closed leaves nothing folded for its next opening.
+        harness.press(Key::Z, Modifiers::NONE);
+        harness.press(Key::A, Modifiers::NONE);
+        assert!(harness.app.workspace(tab).unwrap().fold_documents.is_none());
+        harness.press(Key::Escape, Modifiers::NONE);
+        assert!(!open(&harness), "Esc only closes");
+        harness.press(Key::Enter, Modifiers::NONE);
+        assert!(open(&harness));
+        harness.press(Key::Enter, Modifiers::NONE);
+        assert!(open(&harness), "Enter only opens");
+        harness.press(Key::I, Modifiers::NONE);
+        assert!(!open(&harness));
+        harness.press(Key::I, Modifiers::NONE);
+        assert!(open(&harness));
+        assert!(panel_shows(&mut harness));
+        // `za` folds the row's documents: the first row's `meta`.
+        assert!(harness.has(r#""plan": "pro""#));
+        harness.press(Key::Z, Modifiers::NONE);
+        harness.press(Key::A, Modifiers::NONE);
+        assert!(harness.has("{ 1 key }"));
+        assert!(!harness.has(r#""plan": "pro""#));
+    }
+
+    #[test]
+    fn escape_out_of_the_editor_leaves_the_row_panel_open() {
+        let mut harness = Harness::new();
+        harness.set_look(crate::theme::Look::omarchy());
+        let tab = harness.connect_fake();
+        let id = with_sql_result(&mut harness, tab, 3);
+        let open = |harness: &Harness| harness.app.workspace(tab).unwrap().row_panel;
+        harness.click("Row 2");
+        let workspace = harness.app.workspace_mut(tab).unwrap();
+        workspace.sql_tab_mut(id).unwrap().focus_editor = true;
+        harness.settle();
+        assert!(harness.ctx.text_edit_focused());
+        // The first Esc only leaves the editor; the next one closes the panel.
+        harness.press(Key::Escape, Modifiers::NONE);
+        assert!(!harness.ctx.text_edit_focused());
+        assert!(open(&harness));
+        assert!(panel_shows(&mut harness));
+        harness.press(Key::Escape, Modifiers::NONE);
+        assert!(!open(&harness));
+    }
+
+    #[test]
+    fn escape_out_of_the_where_line_leaves_the_row_panel_open() {
+        let mut harness = Harness::new();
+        harness.set_look(crate::theme::Look::omarchy());
+        let tab = with_page(&mut harness);
+        focus_grid(&mut harness, tab);
+        let open = |harness: &Harness| harness.app.workspace(tab).unwrap().row_panel;
+        type_key(&mut harness, Key::Slash, "/");
+        assert!(
+            harness.ctx.text_edit_focused(),
+            "the WHERE line has the keys"
+        );
+        // The first Esc only leaves the field; the next one closes the panel.
+        harness.press(Key::Escape, Modifiers::NONE);
+        assert!(!harness.ctx.text_edit_focused());
+        assert!(open(&harness));
+        harness.press(Key::Escape, Modifiers::NONE);
+        assert!(!open(&harness));
+    }
+
+    #[test]
+    fn enter_on_a_focused_button_is_the_buttons_not_the_row_panels() {
+        let mut harness = Harness::new();
+        harness.set_look(crate::theme::Look::omarchy());
+        let tab = harness.connect_fake();
+        let id = with_sql_result(&mut harness, tab, 3);
+        harness.click("Row 2");
+        harness.app.apply(crate::model::Action::ToggleRowPanel(tab));
+        assert!(!harness.app.workspace(tab).unwrap().row_panel);
+        focus(&mut harness, "Messages", egui::accesskit::Role::Button);
+        harness.press(Key::Enter, Modifiers::NONE);
+        let workspace = harness.app.workspace(tab).unwrap();
+        assert_eq!(
+            workspace.sql_tab(id).unwrap().pane,
+            crate::model::ResultPane::Messages
+        );
+        assert!(!workspace.row_panel);
+    }
+
+    #[test]
+    fn enter_on_a_focused_button_is_the_buttons_on_a_table_tab() {
+        let mut harness = Harness::new();
+        harness.set_look(crate::theme::Look::omarchy());
+        let tab = with_page(&mut harness);
+        focus_grid(&mut harness, tab);
+        harness.app.apply(crate::model::Action::ToggleRowPanel(tab));
+        assert!(!harness.app.workspace(tab).unwrap().row_panel);
+        focus(&mut harness, "Structure", egui::accesskit::Role::Button);
+        assert_eq!(focused_name(&harness.settle()), "Structure");
+        harness.press(Key::Enter, Modifiers::NONE);
+        let workspace = harness.app.workspace(tab).unwrap();
+        assert_eq!(
+            workspace.active_object_tab().unwrap().view,
+            crate::model::ObjectView::Structure
+        );
+        assert!(!workspace.row_panel);
+    }
+
+    #[test]
+    fn opening_the_row_panel_keeps_the_keyboard_on_the_result_row() {
+        for look in crate::theme::Look::ALL {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            let tab = harness.connect_fake();
+            with_sql_result(&mut harness, tab, 3);
+            focus(&mut harness, "Row 2", egui::accesskit::Role::Button);
+            harness.press(Key::Enter, Modifiers::NONE);
+            assert!(panel_shows(&mut harness), "{}", look.name);
+            assert_eq!(focused_name(&harness.settle()), "Row 2", "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn a_new_result_does_not_inherit_an_expanded_value() {
+        let long_row_outcome = || {
+            let mut page = crate::testing::page(2, false);
+            page.rows[0][1] = tabletist_db::Value::Text("x".repeat(1_000_000).into());
+            tabletist_db::StatementOutcome::Rows {
+                columns: page.columns,
+                rows: page.rows,
+                truncated: false,
+            }
+        };
+        let show_all = |harness: &mut Harness| {
+            let tree = harness.settle();
+            crate::testing::labels(&tree)
+                .into_iter()
+                .find(|label| label.starts_with("Show all"))
+        };
+        let mut harness = Harness::new();
+        let tab = harness.connect_fake();
+        let id = with_sql_outcome(&mut harness, tab, long_row_outcome());
+        harness.click("Row 1");
+        let link = show_all(&mut harness).expect("a link to the whole value");
+        harness.click(&link);
+        assert!(harness.has("Show less"));
+        // The same row of another result keeps nothing expanded.
+        run_sql(&mut harness, tab, id);
+        harness.answer_sql(
+            Ok(crate::testing::script_outcome(vec![long_row_outcome()])),
+            None,
+        );
+        harness.click("Row 1");
+        assert!(!harness.has("Show less"));
+        assert!(show_all(&mut harness).is_some());
+    }
+
+    #[test]
+    fn a_refreshed_page_does_not_inherit_an_expanded_value() {
+        let long_row_page = || {
+            let mut page = crate::testing::page(2, false);
+            page.rows[0][1] = tabletist_db::Value::Text("x".repeat(1_000_000).into());
+            page
+        };
+        let show_all = |harness: &mut Harness| {
+            let tree = harness.settle();
+            crate::testing::labels(&tree)
+                .into_iter()
+                .find(|label| label.starts_with("Show all"))
+        };
+        let mut harness = Harness::new();
+        let tab = harness.connect_fake();
+        harness.click("users");
+        harness.answer_rows(long_row_page());
+        harness.click("Row 1");
+        let link = show_all(&mut harness).expect("a link to the whole value");
+        harness.click(&link);
+        assert!(harness.has("Show less"));
+        // The same row of the refreshed page keeps nothing expanded.
+        focus_grid(&mut harness, tab);
+        let sent = harness.app.backend.sent.len();
+        harness.press(Key::R, Modifiers::COMMAND);
+        assert!(harness.app.backend.sent.len() > sent, "a refresh was sent");
+        assert!(matches!(
+            crate::testing::last_sent(&harness.app),
+            Command::FetchRows { .. }
+        ));
+        harness.answer_rows(long_row_page());
+        assert_eq!(
+            selection(&harness, tab),
+            Some(crate::model::CellPos { row: 0, col: 0 })
+        );
+        assert!(!harness.has("Show less"));
+        assert!(show_all(&mut harness).is_some());
+    }
+
+    #[test]
+    fn two_result_columns_of_one_name_fold_apart() {
+        // `SELECT a.meta, b.meta ...`: the fixture's columns, twice.
+        let page = crate::testing::page(1, false);
+        let outcome = tabletist_db::StatementOutcome::Rows {
+            columns: [page.columns.clone(), page.columns].concat(),
+            rows: page
+                .rows
+                .into_iter()
+                .map(|row| [row.clone(), row].concat())
+                .collect(),
+            truncated: false,
+        };
+        let named = |harness: &mut Harness, name: &str| {
+            let tree = harness.settle();
+            let labels = crate::testing::labels(&tree);
+            labels.iter().filter(|label| *label == name).count()
+        };
+        for look in crate::theme::Look::ALL {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            let tab = harness.connect_fake();
+            with_sql_outcome(&mut harness, tab, outcome.clone());
+            harness.click("Row 1");
+            // Each document has its own toggle.
+            assert_eq!(named(&mut harness, "Collapse meta"), 2, "{}", look.name);
+            // Folding the first leaves the second open.
+            let open = named(&mut harness, r#""plan": "pro""#);
+            harness.click("Collapse meta");
+            assert_eq!(named(&mut harness, "Expand meta"), 1, "{}", look.name);
+            assert_eq!(named(&mut harness, "Collapse meta"), 1, "{}", look.name);
+            assert!(harness.has("{ 1 key }"), "{}", look.name);
+            assert_eq!(
+                named(&mut harness, r#""plan": "pro""#),
+                open / 2,
+                "{}",
+                look.name
+            );
+        }
+    }
+
+    #[test]
+    fn the_row_panel_leaves_the_editor_half_the_room() {
+        for look in crate::theme::Look::ALL {
+            let mut harness = Harness::with_size(egui::vec2(1000.0, 650.0));
+            harness.set_look(look);
+            let tab = harness.connect_fake();
+            with_sql_result(&mut harness, tab, 3);
+            let room = band(&mut harness).width();
+            harness.click("Row 2");
+            assert!(panel_shows(&mut harness), "{}", look.name);
+            let editor = band(&mut harness).width();
+            assert!(editor < room, "{}", look.name);
+            // A point of slack for rounding to the pixel.
+            assert!(
+                editor >= room / 2.0 - 1.0,
+                "{editor} of {room} in {}",
+                look.name
+            );
+        }
+    }
+
+    #[test]
+    fn the_row_panel_gets_its_width_back_when_the_window_grows() {
+        let mut harness = Harness::new();
+        harness.set_look(crate::theme::Look::omarchy());
+        let tab = harness.connect_fake();
+        with_sql_result(&mut harness, tab, 3);
+        let room = band(&mut harness).width();
+        harness.click("Row 2");
+        let wide = band(&mut harness).width();
+        // A narrower window: the panel gives way to the editor.
+        let narrower = 380.0;
+        harness.size.x -= narrower;
+        let editor = band(&mut harness).width();
+        assert!(editor >= (room - narrower) / 2.0 - 1.0, "{editor}");
+        // And back: the panel is as wide as it was.
+        harness.size.x += narrower;
+        harness.settle();
+        assert!((band(&mut harness).width() - wide).abs() < 1.0);
+    }
+
+    #[test]
+    fn a_tables_row_panel_gives_way_in_a_narrow_window_and_comes_back() {
+        let mut harness = Harness::new();
+        let tab = with_page(&mut harness);
+        focus_grid(&mut harness, tab);
+        harness.click("Row 1");
+        // A field's label is as wide as the panel lets it be.
+        let label = |harness: &mut Harness| {
+            let tree = harness.settle();
+            crate::testing::bounds(&tree, "id · INTEGER", egui::accesskit::Role::Label)
+                .expect("the id field")
+                .width()
+        };
+        let wide = label(&mut harness);
+        harness.size.x = 800.0;
+        assert!(label(&mut harness) < wide - 1.0, "the panel gave way");
+        harness.size.x = 1280.0;
+        harness.settle();
+        assert!((label(&mut harness) - wide).abs() < 1.0, "and came back");
+    }
+
+    #[test]
+    fn a_dragged_row_panel_width_is_the_one_that_comes_back() {
+        for look in crate::theme::Look::ALL {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            let tab = harness.connect_fake();
+            with_sql_result(&mut harness, tab, 3);
+            harness.click("Row 2");
+            let opened = band(&mut harness);
+            // The panel's edge is where the editor ends. It is caught just
+            // inside the panel (a press on the editor's last point is the
+            // editor's) and beside the editor, clear of the band, which is
+            // a handle of its own.
+            let grip = |band: egui::Rect| egui::pos2(band.right() + 2.0, band.top() - 30.0);
+            // Towards the editor: a wider panel, its edge under the pointer.
+            let to = grip(opened) - egui::vec2(30.0, 0.0);
+            drag(&mut harness, grip(opened), to);
+            let wider = band(&mut harness);
+            assert!(
+                (wider.right() - to.x).abs() <= 1.0,
+                "the edge follows the pointer in {}: {opened:?} to {wider:?}",
+                look.name
+            );
+            assert!(wider.width() < opened.width() - 1.0, "{}", look.name);
+            // And away from it, past where it was: a narrower one.
+            let to = grip(wider) + egui::vec2(70.0, 0.0);
+            drag(&mut harness, grip(wider), to);
+            let dragged = band(&mut harness);
+            assert!(
+                (dragged.right() - to.x).abs() <= 1.0,
+                "and back out in {}: {wider:?} to {dragged:?}",
+                look.name
+            );
+            assert!(dragged.width() > opened.width() + 1.0, "{}", look.name);
+            // It stays there.
+            harness.settle();
+            assert_eq!(band(&mut harness), dragged, "{}", look.name);
+            // A narrow window cuts the panel down: the editor loses less
+            // than the window does.
+            let narrower = 500.0;
+            harness.size.x -= narrower;
+            let cut = band(&mut harness).width();
+            assert!(
+                cut > dragged.width() - narrower + 1.0,
+                "{cut} in {}",
+                look.name
+            );
+            // With room again the panel is as wide as it was dragged to,
+            // not as it opened.
+            harness.size.x += narrower;
+            harness.settle();
+            let back = band(&mut harness).width();
+            assert!(
+                (back - dragged.width()).abs() < 1.0,
+                "{back} for {} in {}",
+                dragged.width(),
+                look.name
+            );
+        }
+    }
+
+    #[test]
+    fn a_window_resized_while_the_edge_is_held_keeps_the_wanted_width() {
+        let mut harness = Harness::new();
+        harness.set_look(crate::theme::Look::omarchy());
+        let tab = harness.connect_fake();
+        with_sql_result(&mut harness, tab, 3);
+        harness.click("Row 2");
+        let wide = band(&mut harness).width();
+        // A window that cuts the panel down.
+        harness.size.x = 1000.0;
+        let cut = band(&mut harness);
+        // The edge is held and pulled well into the editor: the panel is
+        // as wide as it may be already, and stays.
+        let grip = egui::pos2(cut.right() + 2.0, cut.top() - 30.0);
+        let button = |pressed| egui::Event::PointerButton {
+            pos: grip,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        };
+        harness.frame(vec![egui::Event::PointerMoved(grip)]);
+        harness.frame(vec![button(true)]);
+        let pulled = grip - egui::vec2(150.0, 0.0);
+        harness.frame(vec![egui::Event::PointerMoved(pulled)]);
+        // The window gets narrower still while it is held, the pointer
+        // still past where the edge may go.
+        harness.size.x = 900.0;
+        harness.frame(Vec::new());
+        harness.frame(vec![egui::Event::PointerButton {
+            pos: pulled,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: Modifiers::NONE,
+        }]);
+        harness.settle();
+        // With room again the panel is as wide as it opened: no width a
+        // small window cut it to was taken for a dragged one.
+        harness.size.x = 1280.0;
+        harness.settle();
+        let back = band(&mut harness).width();
+        assert!((back - wide).abs() < 1.0, "{back} for {wide}");
+    }
+
+    #[test]
+    fn the_row_panel_gives_way_in_the_smallest_window() {
+        for look in crate::theme::Look::ALL {
+            let mut harness = Harness::with_size(egui::vec2(720.0, 480.0));
+            harness.set_look(look);
+            let tab = harness.connect_fake();
+            with_sql_result(&mut harness, tab, 3);
+            let room = band(&mut harness).width();
+            harness.click("Row 2");
+            assert!(panel_shows(&mut harness), "{}", look.name);
+            // The panel is under its usual least width here, and the
+            // editor still has its half.
+            let editor = band(&mut harness).width();
+            assert!(editor < room, "{}", look.name);
+            assert!(
+                editor >= room / 2.0 - 1.0,
+                "{editor} of {room} in {}",
+                look.name
+            );
+        }
+    }
+
+    #[test]
+    fn a_sliver_of_a_row_panel_does_not_panic() {
+        for look in crate::theme::Look::ALL {
+            for sql in [false, true] {
+                let mut harness = Harness::new();
+                harness.set_look(look);
+                if sql {
+                    let tab = harness.connect_fake();
+                    with_sql_result(&mut harness, tab, 3);
+                } else {
+                    let tab = with_page(&mut harness);
+                    focus_grid(&mut harness, tab);
+                }
+                harness.click("Row 1");
+                assert!(panel_shows(&mut harness), "{}", look.name);
+                // Narrower and narrower, down to no room at all: drawing
+                // the panel only has to go on.
+                for width in [380.0, 300.0, 120.0, 40.0] {
+                    harness.size.x = width;
+                    harness.settle();
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_terminal_footer_fits_a_narrow_row_panel() {
+        let mut harness = Harness::new();
+        harness.set_look(crate::theme::Look::omarchy());
+        let tab = with_page(&mut harness);
+        focus_grid(&mut harness, tab);
+        harness.click("Row 1");
+        let note = "read-only in 0.1.0 · editing arrives in a later version";
+        let pieces = |harness: &mut Harness| -> Vec<String> {
+            harness.settle();
+            let painted = harness.painted.iter();
+            painted.map(|(text, _)| text.clone()).collect()
+        };
+        // With room for them, the note and each cell's words are whole (a
+        // cell's key and its word are one painted piece).
+        let wide = pieces(&mut harness);
+        assert!(wide.iter().any(|piece| piece == note));
+        assert!(wide.iter().any(|piece| piece == "yy p duplicate"));
+        // A narrower window cuts the panel: the note is cut to fit it.
+        harness.size.x = 1000.0;
+        let narrow = pieces(&mut harness);
+        assert!(!narrow.iter().any(|piece| piece == note), "{narrow:?}");
+        assert!(
+            narrow
+                .iter()
+                .any(|piece| piece.starts_with("read-only in 0.1.0") && piece.ends_with('…')),
+            "{narrow:?}"
+        );
+        // And a cell too narrow for its words keeps its key alone.
+        assert!(narrow.iter().any(|piece| piece == "yy p"), "{narrow:?}");
+        assert!(
+            !narrow.iter().any(|piece| piece.contains("duplicate")),
+            "{narrow:?}"
+        );
+    }
+
+    #[test]
+    fn the_terminal_header_names_its_row_in_the_smallest_window() {
+        // What the last frame painted. The header's hint is one piece, its
+        // keys and its words together.
+        let pieces = |harness: &mut Harness| -> Vec<String> {
+            harness.settle();
+            let painted = harness.painted.iter();
+            painted.map(|(text, _)| text.clone()).collect()
+        };
+        for sql in [false, true] {
+            let mut harness = Harness::new();
+            harness.set_look(crate::theme::Look::omarchy());
+            if sql {
+                let tab = harness.connect_fake();
+                with_sql_result(&mut harness, tab, 3);
+            } else {
+                let tab = with_page(&mut harness);
+                focus_grid(&mut harness, tab);
+            }
+            harness.click("Row 1");
+            // With room, the hint says what its keys do.
+            let wide = pieces(&mut harness);
+            assert!(
+                wide.iter().any(|piece| piece == "[ ] prev/next"),
+                "sql {sql}: {wide:?}"
+            );
+            // In the smallest window the hint gives way before the row's
+            // name: its keys alone, and the name is no bare ellipsis.
+            harness.size = egui::vec2(720.0, 480.0);
+            let small = pieces(&mut harness);
+            assert!(panel_shows(&mut harness), "sql {sql}");
+            assert!(
+                !small.iter().any(|piece| piece == "…"),
+                "sql {sql}: {small:?}"
+            );
+            assert!(
+                !small.iter().any(|piece| piece.contains("prev/next")),
+                "sql {sql}: {small:?}"
+            );
+            assert!(
+                small.iter().any(|piece| piece == "[ ]"),
+                "sql {sql}: {small:?}"
+            );
+        }
     }
 
     /// Presses the pointer at `from`, moves it to `to` and lets go.
@@ -2206,6 +4249,12 @@ mod tests {
                     "1,000",
                 )
             };
+            // Format's key, which goes when the run buttons' keys do.
+            let format_keys = if look == crate::theme::Look::macos() {
+                "⇧⌘F"
+            } else {
+                "Ctrl+Shift+F"
+            };
             // Every state the toolbar passes through as the window narrows,
             // in the order it meets them.
             let mut states = Vec::new();
@@ -2216,6 +4265,8 @@ mod tests {
                 let state = [
                     painted(&harness, keys),
                     painted(&harness, note),
+                    // The terminal has no Format button.
+                    look.terminal || has(egui::accesskit::Role::Button, "Format"),
                     painted(&harness, full),
                     // The terminal's title, which the others do not have.
                     !look.terminal || has(egui::accesskit::Role::Label, "query 1"),
@@ -2227,9 +4278,15 @@ mod tests {
                     "the run buttons at {width} in {}",
                     look.name
                 );
+                assert_eq!(
+                    painted(&harness, format_keys),
+                    state[0] && !look.terminal,
+                    "{format_keys} at {width} in {}",
+                    look.name
+                );
                 // A menu reads in full or short, never neither.
                 assert_eq!(
-                    state[4] && !state[2],
+                    state[5] && !state[3],
                     painted(&harness, short),
                     "{short} at {width} in {}",
                     look.name
@@ -2238,20 +4295,23 @@ mod tests {
                     states.push(state);
                 }
             }
-            // keys, note, full labels, title, menus
+            // keys, note, Format, full labels, title, menus
             let mut expected = vec![
-                [true, true, true, true, true],
-                [false, true, true, true, true],
-                [false, false, true, true, true],
+                [true, true, true, true, true, true],
+                [false, true, true, true, true, true],
+                [false, false, true, true, true, true],
             ];
             if look.terminal {
                 // The title goes before the labels shorten: the tab says
                 // it too.
-                expected.push([false, false, true, false, true]);
+                expected.push([false, false, true, true, false, true]);
+            } else {
+                // Format goes before them: its key formats too.
+                expected.push([false, false, false, true, true, true]);
             }
-            let title = !look.terminal;
-            expected.push([false, false, false, title, true]);
-            expected.push([false, false, false, title, false]);
+            let (format, title) = (look.terminal, !look.terminal);
+            expected.push([false, false, format, false, title, true]);
+            expected.push([false, false, format, false, title, false]);
             assert_eq!(states, expected, "{}", look.name);
         }
     }
@@ -2613,6 +4673,19 @@ mod tests {
     }
 
     #[test]
+    fn a_fold_toggle_keeps_the_keyboard_after_it_is_pressed() {
+        let mut harness = Harness::new();
+        with_json(&mut harness, r#"{"plan":"pro","seats":[3,4]}"#);
+        focus(&mut harness, "Collapse meta", egui::accesskit::Role::Button);
+        harness.press(Key::Enter, Modifiers::NONE);
+        assert!(harness.has("{ 2 keys }"));
+        assert_eq!(focused_name(&harness.settle()), "Expand meta");
+        harness.press(Key::Enter, Modifiers::NONE);
+        assert!(harness.has(r#""plan": "pro","#));
+        assert_eq!(focused_name(&harness.settle()), "Collapse meta");
+    }
+
+    #[test]
     fn a_long_json_document_opens_its_top_level_and_expand_all_opens_the_rest() {
         let mut harness = Harness::new();
         let items = (0..50).map(|n| n.to_string()).collect::<Vec<_>>().join(",");
@@ -2759,7 +4832,8 @@ mod tests {
     #[test]
     fn shortcuts_are_ignored_while_the_dialog_is_open() {
         let mut harness = Harness::new();
-        harness.app.apply(crate::model::Action::NewConnTab);
+        harness.connect_fake();
+        harness.app.apply(crate::model::Action::ShowConnections);
         harness.press(Key::N, Modifiers::COMMAND);
         if let Some(crate::model::Dialog::Connection(form)) = &mut harness.app.dialog {
             form.name = "typed".into();
@@ -3141,7 +5215,7 @@ mod tests {
             .apply(crate::model::Action::Connect { tab, conn });
         harness.press(Key::Escape, Modifiers::NONE);
         assert!(harness.app.dialog.is_none());
-        assert!(harness.has("Reconnect"));
+        assert!(harness.has("Retry"));
     }
 
     #[test]
@@ -4966,6 +7040,7 @@ mod tests {
         harness.frame(vec![egui::Event::Text("?".into())]);
         assert!(harness.has("Keyboard shortcuts"));
         assert!(harness.has("Quick open"));
+        assert!(harness.has("Format SQL"));
         harness.press(Key::Escape, Modifiers::NONE);
         assert!(harness.app.dialog.is_none());
     }
@@ -5113,21 +7188,19 @@ mod tests {
     }
 
     #[test]
-    fn tabs_share_the_title_bar_with_the_mac_window_buttons() {
+    fn several_connections_share_the_title_bar_with_the_mac_window_buttons() {
         let mut harness = Harness::new();
         mac_title_bar(&mut harness);
-        let first = harness.connect_fake();
-        // Named apart from the saved connection the new tab's picker lists.
-        harness.app.workspace_mut(first).unwrap().name = "Tab one".into();
-        harness.app.apply(crate::model::Action::NewConnTab);
+        harness.connect_fake();
+        connect_another(&mut harness, "Second");
         let tree = harness.settle();
-        let tab = bounds_of(&tree, "Tab one");
-        assert!(tab.x0 >= 80.0, "tabs start after the buttons: {tab:?}");
-        let middle = (tab.y0 + tab.y1) / 2.0;
+        let button = bounds_of(&tree, "Connections");
         assert!(
-            (middle - 20.0).abs() < 1.0,
-            "centred on the buttons' line: {tab:?}"
+            button.x0 >= 80.0,
+            "the bar starts after the buttons: {button:?}"
         );
+        let chip = bounds_of(&tree, "Switch to Fixture · dev");
+        assert!(chip.x0 > button.x1, "the chips follow: {chip:?}");
     }
 
     /// The middle of the node labelled (or valued) `label`.
@@ -5158,9 +7231,9 @@ mod tests {
         );
 
         // One connection: its bar, under the environment stripe.
-        let first = harness.connect_fake();
+        harness.connect_fake();
         let tree = harness.settle();
-        let bar = middle_of(&tree, "Fixture");
+        let bar = middle_of(&tree, "Connections");
         assert!(
             (line(&harness) - bar).abs() < 1.0,
             "the connection bar at {bar}, the buttons at {}",
@@ -5168,15 +7241,23 @@ mod tests {
         );
         assert!(line(&harness) > 20.0, "below the title bar's own middle");
 
-        // Several: the tab bar.
-        harness.app.workspace_mut(first).unwrap().name = "Tab one".into();
-        harness.app.apply(crate::model::Action::NewConnTab);
+        // Several: the same bar, a chip for each.
+        connect_another(&mut harness, "Second");
         let tree = harness.settle();
-        let tab = bounds_of(&tree, "Tab one");
-        let tabs = (tab.y0 + tab.y1) / 2.0;
+        let bar = middle_of(&tree, "Connections");
         assert!(
-            (line(&harness) - tabs).abs() < 1.0,
-            "the tabs at {tabs}, the buttons at {}",
+            (line(&harness) - bar).abs() < 1.0,
+            "the connection bar at {bar}, the buttons at {}",
+            line(&harness)
+        );
+
+        // The picker again, with the connections open behind it: its header.
+        harness.press(Key::O, Modifiers::COMMAND);
+        let tree = harness.settle();
+        let header = middle_of(&tree, "New connection");
+        assert!(
+            (line(&harness) - header).abs() < 1.0,
+            "the picker's header at {header}, the buttons at {}",
             line(&harness)
         );
     }
@@ -5185,17 +7266,15 @@ mod tests {
     fn the_mac_title_bar_is_measured_in_window_points_not_zoomed_ones() {
         let mut harness = Harness::new();
         mac_title_bar(&mut harness);
-        let first = harness.connect_fake();
-        // Named apart from the saved connection the new tab's picker lists.
-        harness.app.workspace_mut(first).unwrap().name = "Tab one".into();
-        harness.app.apply(crate::model::Action::NewConnTab);
+        harness.connect_fake();
         harness.ctx.set_zoom_factor(2.0);
         let tree = harness.settle();
-        let tab = bounds_of(&tree, "Tab one");
-        // 80 window points are 40 egui points at 2x zoom.
+        let button = bounds_of(&tree, "Connections");
+        // 80 window points are 40 egui points at 2x zoom: the bar starts
+        // past those, well short of 80.
         assert!(
-            (tab.x0 - 40.0).abs() < 1.0,
-            "tabs start after the buttons: {tab:?}"
+            button.x0 >= 40.0 && button.x0 < 80.0,
+            "the bar starts after the buttons: {button:?}"
         );
     }
 
@@ -5213,48 +7292,6 @@ mod tests {
             .expect("the connection's name");
         assert!(name.x0 >= 80.0, "after the buttons: {name:?}");
         assert!(name.y1 < 40.0, "in the title bar: {name:?}");
-    }
-
-    #[test]
-    fn the_space_beside_the_mac_window_buttons_stays_when_the_tabs_scroll() {
-        let mut harness = Harness::new();
-        mac_title_bar(&mut harness);
-        for _ in 0..12 {
-            harness.app.apply(crate::model::Action::NewConnTab);
-        }
-        let before = bounds_of(&harness.settle(), "New tab");
-        let over = egui::pos2(400.0, 20.0);
-        harness.frame(vec![egui::Event::PointerMoved(over)]);
-        harness.frame(vec![
-            egui::Event::PointerMoved(over),
-            egui::Event::MouseWheel {
-                unit: egui::MouseWheelUnit::Point,
-                delta: egui::vec2(-400.0, 0.0),
-                modifiers: Modifiers::NONE,
-                phase: egui::TouchPhase::Move,
-            },
-        ]);
-        for _ in 0..60 {
-            harness.frame(vec![]);
-        }
-        let after = bounds_of(&harness.settle(), "New tab");
-        assert!(after.x0 < before.x0 - 100.0, "the tabs scrolled: {after:?}");
-
-        // The corner by the buttons still moves the window.
-        let at = egui::pos2(76.0, 20.0);
-        harness.frame(vec![egui::Event::PointerMoved(at)]);
-        harness.frame(vec![egui::Event::PointerButton {
-            pos: at,
-            button: egui::PointerButton::Primary,
-            pressed: true,
-            modifiers: Modifiers::NONE,
-        }]);
-        harness.frame(vec![egui::Event::PointerMoved(at + egui::vec2(30.0, 0.0))]);
-        assert!(
-            harness
-                .viewport_commands
-                .contains(&egui::ViewportCommand::StartDrag)
-        );
     }
 
     #[test]
@@ -5300,10 +7337,11 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_disconnected_tab_offers_reconnect_and_edit() {
-        let mut harness = Harness::new();
+    /// A tab with a page of `users` whose connection is then lost.
+    fn lost(harness: &mut Harness) -> crate::model::ConnTabId {
         let tab = harness.connect_fake();
+        harness.click("users");
+        harness.answer_rows(crate::testing::page(3, false));
         let session = harness.app.workspace(tab).unwrap().session;
         harness.app.apply(crate::model::Action::Backend(
             crate::backend::Event::Disconnected {
@@ -5311,13 +7349,391 @@ mod tests {
                 error: tabletist_db::Error::ConnectionLost("server closed the connection".into()),
             },
         ));
-        assert!(harness.has("The connection was lost."));
+        tab
+    }
+
+    #[test]
+    fn a_lost_connection_keeps_what_was_on_screen_and_offers_the_way_back() {
+        for look in crate::theme::Look::ALL {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            let tab = lost(&mut harness);
+            let lead = format!(
+                "{} Fixture · dev {}",
+                look.label("Connection to"),
+                look.label("lost.")
+            );
+            assert!(harness.has(&lead), "{lead} in {}", look.name);
+            assert!(
+                harness.has("the connection was lost: server closed the connection"),
+                "{}",
+                look.name
+            );
+            assert!(harness.has("Row 1"), "{}", look.name);
+            harness.click("Reconnect");
+            assert!(matches!(
+                harness.app.workspace(tab).unwrap().status,
+                crate::model::SessionStatus::Connecting { .. }
+            ));
+            let again = format!("{} Fixture…", look.label("Reconnecting to"));
+            assert!(harness.has(&again), "{again} in {}", look.name);
+            assert!(!harness.has("Reconnect"), "{}", look.name);
+            assert!(harness.has("Row 1"), "{}", look.name);
+        }
+    }
+
+    /// A terminal button's text is muted only beside its key, which then
+    /// carries it: muted and alone, it would read as one that is off.
+    #[test]
+    fn a_terminal_button_without_a_key_reads_as_text_and_one_with_a_key_shows_it() {
+        let look = crate::theme::Look::omarchy();
+        let mut harness = Harness::new();
+        harness.set_look(look);
+        lost(&mut harness);
+        harness.settle();
+        let text = harness.app.palette.text;
+        // The strip's lead is ordinary text; Reconnect has no key.
+        let lead = format!(
+            "{} Fixture · dev {}",
+            look.label("Connection to"),
+            look.label("lost.")
+        );
+        assert_eq!(harness.painted_color(&lead), Some(text));
+        assert_eq!(harness.painted_color(&look.label("Reconnect")), Some(text));
+
+        // A connect's Cancel shows the key that gives up.
+        let mut harness = Harness::new();
+        harness.set_look(look);
+        add_saved(&mut harness, "Production");
+        harness.click("Connect to Production");
+        harness.settle();
+        for piece in [look.label("Cancel"), "esc".to_owned()] {
+            assert!(
+                harness.painted.iter().any(|(text, _)| *text == piece),
+                "{piece}: {:?}",
+                harness.painted
+            );
+        }
+        // The key carries the button, in the colour a button without one
+        // has its text in, and the text stands back from it.
+        let key = harness.painted_color("esc");
+        assert_eq!(key, Some(harness.app.palette.text));
+        assert_ne!(harness.painted_color(&look.label("Cancel")), key);
+    }
+
+    /// Fails what a refresh of `tab` asked for (its rows and, when it had
+    /// one, its structure) as a connection that is gone does, then reports
+    /// the loss: the order the backend sends them in.
+    fn lose_on_refresh(
+        harness: &mut Harness,
+        tab: crate::model::ConnTabId,
+        error: &tabletist_db::Error,
+    ) {
+        use crate::backend::Event;
+        let workspace = harness.app.workspace(tab).unwrap();
+        let session = workspace.session;
+        let object = workspace.active_object_tab().unwrap();
+        let (rows, structure) = (object.rows.pending, object.structure.pending);
+        let request = rows.expect("the refresh fetched the rows");
+        let result = Err(error.clone());
+        harness
+            .app
+            .apply(crate::model::Action::Backend(Event::Rows {
+                session,
+                request,
+                result,
+            }));
+        if let Some(request) = structure {
+            let result = Err(error.clone());
+            harness
+                .app
+                .apply(crate::model::Action::Backend(Event::Structure {
+                    session,
+                    request,
+                    result,
+                }));
+        }
+        let error = error.clone();
+        harness
+            .app
+            .apply(crate::model::Action::Backend(Event::Disconnected {
+                session,
+                error,
+            }));
+    }
+
+    /// How many times `text` is on screen.
+    fn times_said(harness: &mut Harness, text: &str) -> usize {
+        let tree = harness.settle();
+        let said = crate::testing::labels(&tree);
+        said.iter().filter(|said| *said == text).count()
+    }
+
+    #[test]
+    fn a_refresh_that_finds_the_connection_lost_keeps_the_page() {
+        let error = tabletist_db::Error::ConnectionLost("server closed the connection".into());
+        for look in crate::theme::Look::ALL {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            let tab = harness.connect_fake();
+            harness.click("users");
+            harness.answer_rows(crate::testing::page(3, false));
+            // The keys are the tree's after a click in it.
+            focus_grid(&mut harness, tab);
+            let before = fetches(&harness);
+            harness.press(Key::R, Modifiers::COMMAND);
+            assert_eq!(fetches(&harness), before + 1, "{}", look.name);
+            lose_on_refresh(&mut harness, tab, &error);
+            // The strip says it, once, and the rows stay under it.
+            assert!(harness.has("Reconnect"), "{}", look.name);
+            assert!(harness.has("Row 1"), "{}", look.name);
+            assert_eq!(
+                times_said(&mut harness, &error.to_string()),
+                1,
+                "{}",
+                look.name
+            );
+        }
+    }
+
+    #[test]
+    fn a_refresh_that_finds_the_connection_lost_keeps_the_structure() {
+        let error = tabletist_db::Error::ConnectionLost("server closed the connection".into());
+        let mut harness = Harness::new();
+        let tab = with_page(&mut harness);
+        harness.click("Structure");
+        harness.answer_structure(tabletist_db::Structure {
+            indexes: vec![tabletist_db::IndexInfo {
+                name: "users_email_idx".into(),
+                columns: vec!["email".into()],
+                unique: true,
+                primary: false,
+                method: None,
+            }],
+            ..Default::default()
+        });
+        assert!(harness.has("users_email_idx"));
+        harness.app.apply(crate::model::Action::Refresh(tab));
+        lose_on_refresh(&mut harness, tab, &error);
         assert!(harness.has("Reconnect"));
-        harness.click("Edit connection");
-        assert!(matches!(
-            harness.app.dialog,
-            Some(crate::model::Dialog::Connection(_))
-        ));
+        assert!(harness.has("users_email_idx"));
+        assert_eq!(times_said(&mut harness, &error.to_string()), 1);
+    }
+
+    #[test]
+    fn a_lost_connection_with_no_page_to_show_says_what_failed() {
+        let error = tabletist_db::Error::ConnectionLost("server closed the connection".into());
+        let mut harness = Harness::new();
+        let tab = harness.connect_fake();
+        // The first fetch of the table is what finds the loss.
+        harness.click("users");
+        lose_on_refresh(&mut harness, tab, &error);
+        assert!(harness.has("Retry"));
+    }
+
+    /// Cancels what `tab`'s object is fetching and answers each request as
+    /// the backend answers a cancelled one.
+    fn cancel_fetches(harness: &mut Harness, tab: crate::model::ConnTabId) {
+        use crate::backend::Event;
+        let workspace = harness.app.workspace(tab).unwrap();
+        let session = workspace.session;
+        let object = workspace.active_object_tab().unwrap();
+        let (rows, structure) = (object.rows.pending, object.structure.pending);
+        assert!(rows.or(structure).is_some(), "nothing is being fetched");
+        harness.app.apply(crate::model::Action::CancelQuery(tab));
+        if let Some(request) = rows {
+            harness
+                .app
+                .apply(crate::model::Action::Backend(Event::Rows {
+                    session,
+                    request,
+                    result: Err(tabletist_db::Error::Cancelled),
+                }));
+        }
+        if let Some(request) = structure {
+            harness
+                .app
+                .apply(crate::model::Action::Backend(Event::Structure {
+                    session,
+                    request,
+                    result: Err(tabletist_db::Error::Cancelled),
+                }));
+        }
+    }
+
+    #[test]
+    fn a_cancelled_refresh_leaves_the_page_as_it_was() {
+        for look in crate::theme::Look::ALL {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            let tab = with_page(&mut harness);
+            harness.app.apply(crate::model::Action::Refresh(tab));
+            cancel_fetches(&mut harness, tab);
+            assert!(harness.has("Row 1"), "{}", look.name);
+            assert!(!harness.has("Retry"), "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn a_cancelled_refresh_leaves_the_structure_as_it_was() {
+        let mut harness = Harness::new();
+        let tab = with_page(&mut harness);
+        harness.click("Structure");
+        harness.answer_structure(tabletist_db::Structure {
+            indexes: vec![tabletist_db::IndexInfo {
+                name: "users_email_idx".into(),
+                columns: vec!["email".into()],
+                unique: true,
+                primary: false,
+                method: None,
+            }],
+            ..Default::default()
+        });
+        harness.app.apply(crate::model::Action::Refresh(tab));
+        cancel_fetches(&mut harness, tab);
+        assert!(harness.has("users_email_idx"));
+        assert!(!harness.has("Retry"));
+    }
+
+    #[test]
+    fn a_cancelled_first_fetch_says_so_and_offers_retry() {
+        let mut harness = Harness::new();
+        let tab = harness.connect_fake();
+        // Nothing is held to go back to: the card is all there is to show.
+        harness.click("users");
+        cancel_fetches(&mut harness, tab);
+        assert!(harness.has(&tabletist_db::Error::Cancelled.to_string()));
+        assert!(harness.has("Retry"));
+    }
+
+    /// Answers the rows (or, with `structure`, the structure) `tab`'s
+    /// object is fetching with `error`.
+    fn fail_fetch(
+        harness: &mut Harness,
+        tab: crate::model::ConnTabId,
+        structure: bool,
+        error: tabletist_db::Error,
+    ) {
+        use crate::backend::Event;
+        let workspace = harness.app.workspace(tab).unwrap();
+        let session = workspace.session;
+        let object = workspace.active_object_tab().unwrap();
+        let event = if structure {
+            Event::Structure {
+                session,
+                request: object.structure.pending.expect("a structure on its way"),
+                result: Err(error),
+            }
+        } else {
+            Event::Rows {
+                session,
+                request: object.rows.pending.expect("rows on their way"),
+                result: Err(error),
+            }
+        };
+        harness.app.apply(crate::model::Action::Backend(event));
+    }
+
+    /// Refresh over an error box is a retry by another name: given up, it
+    /// leaves the error's "cancelled", not the rows from before the error.
+    #[test]
+    fn a_cancelled_refresh_over_an_error_does_not_bring_back_the_page() {
+        let cancelled = tabletist_db::Error::Cancelled.to_string();
+        let mut harness = Harness::new();
+        let tab = with_page(&mut harness);
+        harness.app.apply(crate::model::Action::Refresh(tab));
+        let error = tabletist_db::Error::query("no such column: nope");
+        fail_fetch(&mut harness, tab, false, error);
+        assert!(harness.has("no such column: nope"));
+        harness.app.apply(crate::model::Action::Refresh(tab));
+        cancel_fetches(&mut harness, tab);
+        assert!(!harness.has("Row 1"));
+        assert!(harness.has(&cancelled));
+        assert!(harness.has("Retry"));
+    }
+
+    #[test]
+    fn a_cancelled_retry_does_not_bring_back_the_page_under_the_error() {
+        let cancelled = tabletist_db::Error::Cancelled.to_string();
+        for look in crate::theme::Look::ALL {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            let tab = with_page(&mut harness);
+            harness.app.apply(crate::model::Action::Refresh(tab));
+            let error = tabletist_db::Error::query("no such column: nope");
+            fail_fetch(&mut harness, tab, false, error);
+            assert!(harness.has("no such column: nope"), "{}", look.name);
+            assert!(!harness.has("Row 1"), "{}", look.name);
+            // The error was the last thing on screen: a retry given up
+            // has no page to go back to.
+            harness.click("Retry");
+            cancel_fetches(&mut harness, tab);
+            assert!(!harness.has("Row 1"), "{}", look.name);
+            assert!(harness.has(&cancelled), "{}", look.name);
+            assert!(harness.has("Retry"), "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn a_cancelled_retry_does_not_bring_back_the_structure_under_the_error() {
+        let cancelled = tabletist_db::Error::Cancelled.to_string();
+        for look in crate::theme::Look::ALL {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            let tab = with_page(&mut harness);
+            harness.click("Structure");
+            harness.answer_structure(tabletist_db::Structure {
+                indexes: vec![tabletist_db::IndexInfo {
+                    name: "users_email_idx".into(),
+                    columns: vec!["email".into()],
+                    unique: true,
+                    primary: false,
+                    method: None,
+                }],
+                ..Default::default()
+            });
+            assert!(harness.has("users_email_idx"), "{}", look.name);
+            harness.app.apply(crate::model::Action::Refresh(tab));
+            harness.answer_rows(crate::testing::page(5, false));
+            let error = tabletist_db::Error::query("permission denied for table users");
+            fail_fetch(&mut harness, tab, true, error);
+            assert!(
+                harness.has("permission denied for table users"),
+                "{}",
+                look.name
+            );
+            assert!(!harness.has("users_email_idx"), "{}", look.name);
+            harness.click("Retry");
+            cancel_fetches(&mut harness, tab);
+            assert!(!harness.has("users_email_idx"), "{}", look.name);
+            assert!(harness.has(&cancelled), "{}", look.name);
+            assert!(harness.has("Retry"), "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn a_lost_connection_can_be_left() {
+        use egui::accesskit;
+        for look in crate::theme::Look::ALL {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            let tab = lost(&mut harness);
+            // The connection bar has a Disconnect of its own: the strip's
+            // is the lower one.
+            let tree = harness.settle();
+            let buttons = buttons_named(&tree, "Disconnect");
+            assert_eq!(buttons.len(), 2, "{}", look.name);
+            harness.frame(vec![egui::Event::AccessKitActionRequest(
+                accesskit::ActionRequest {
+                    target_tree: accesskit::TreeId::ROOT,
+                    target_node: buttons[1].0,
+                    action: accesskit::Action::Click,
+                    data: None,
+                },
+            )]);
+            harness.settle();
+            assert!(harness.app.workspace(tab).is_none(), "{}", look.name);
+        }
     }
 
     #[test]
@@ -5461,17 +7877,17 @@ mod tests {
             object_tab: id,
         });
         harness.answer_rows(crate::testing::page(0, false));
-        assert!(harness.has("No rows match the filter"));
-        harness.click("Clear filter");
+        let title = harness.app.look.label("No rows match the filter");
+        assert!(harness.has(&title));
+        harness.click("Clear filters");
         assert!(matches!(
             harness.app.backend.sent.last(),
             Some(crate::backend::Command::FetchRows { query, .. }) if query.filters.is_empty()
         ));
     }
 
-    #[test]
-    fn an_empty_table_says_so() {
-        let mut harness = Harness::new();
+    /// The fixture's `users` table, open with a page of no rows.
+    fn empty_users(harness: &mut Harness) -> crate::model::ConnTabId {
         let tab = harness.connect_fake();
         harness.app.apply(crate::model::Action::OpenObject {
             tab,
@@ -5480,7 +7896,241 @@ mod tests {
             pin: true,
         });
         harness.answer_rows(crate::testing::page(0, false));
-        assert!(harness.has("This table is empty"));
+        tab
+    }
+
+    #[test]
+    fn an_empty_table_keeps_its_columns_and_says_so() {
+        for look in crate::theme::Look::ALL {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            empty_users(&mut harness);
+            let title = format!("{} users", look.label("No rows in"));
+            assert!(harness.has(&title), "{title} in {}", look.name);
+            assert!(
+                harness.has(&look.label("The table exists and is empty.")),
+                "{}",
+                look.name
+            );
+            // The structure stays readable: the grid's header (a button,
+            // as it sorts) is there with no rows under it.
+            let tree = harness.settle();
+            assert!(
+                crate::testing::node(&tree, "email", egui::accesskit::Role::Button).is_some(),
+                "{}",
+                look.name
+            );
+        }
+    }
+
+    #[test]
+    fn an_estimate_of_no_rows_is_not_given_as_the_tables_size() {
+        let mut harness = Harness::new();
+        let tab = harness.connect_fake();
+        harness.click("users");
+        harness.answer_rows(crate::testing::page(3, false));
+        let id = harness.app.workspace(tab).unwrap().active_tab.unwrap();
+        let workspace = harness.app.workspace_mut(tab).unwrap();
+        let object = workspace.object_tab_mut(id).unwrap();
+        // What an older PostgreSQL says of a table it never analysed.
+        object.estimated_rows = Some(0);
+        object.filter.rows = vec![crate::model::FilterRow {
+            column: "id".into(),
+            op: tabletist_db::FilterOp::Eq,
+            value: "999".into(),
+        }];
+        harness.app.apply(crate::model::Action::ApplyFilters {
+            tab,
+            object_tab: id,
+        });
+        harness.answer_rows(crate::testing::page(0, false));
+        assert!(harness.has("No rows match the filter"));
+        assert!(harness.has("None matches id = 999."));
+    }
+
+    #[test]
+    fn a_table_opened_empty_fits_its_columns_to_the_rows_that_come() {
+        use egui::accesskit::Role;
+        let email = |harness: &mut Harness| {
+            let tree = harness.settle();
+            let header = crate::testing::bounds(&tree, "email", Role::Button);
+            header.expect("the email header").width()
+        };
+        for look in crate::theme::Look::ALL {
+            // Opened with rows: the columns fit them.
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            let tab = harness.connect_fake();
+            harness.app.apply(crate::model::Action::OpenObject {
+                tab,
+                object: tabletist_db::ObjectRef::new("main", "users"),
+                kind: tabletist_db::ObjectKind::Table,
+                pin: true,
+            });
+            harness.answer_rows(crate::testing::page(3, false));
+            let fitted = email(&mut harness);
+            // Opened empty, the headers are all there is to fit.
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            let tab = empty_users(&mut harness);
+            assert!(email(&mut harness) < fitted, "{}", look.name);
+            // A refresh that finds rows fits the columns to them.
+            harness.app.apply(crate::model::Action::Refresh(tab));
+            harness.answer_rows(crate::testing::page(3, false));
+            assert_eq!(email(&mut harness), fitted, "{}", look.name);
+            // And a page with no rows after that leaves them as they are.
+            harness.app.apply(crate::model::Action::Refresh(tab));
+            harness.answer_rows(crate::testing::page(0, false));
+            assert_eq!(email(&mut harness), fitted, "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn a_page_past_the_last_row_says_so_and_offers_the_one_before() {
+        use egui::accesskit::{self, Role};
+        for look in crate::theme::Look::ALL {
+            // Rows matched on the pages before, under a filter too.
+            for filtered in [false, true] {
+                let mut harness = Harness::new();
+                harness.set_look(look);
+                let tab = harness.connect_fake();
+                harness.app.apply(crate::model::Action::OpenObject {
+                    tab,
+                    object: tabletist_db::ObjectRef::new("main", "users"),
+                    kind: tabletist_db::ObjectKind::Table,
+                    pin: true,
+                });
+                harness.answer_rows(crate::testing::page(300, true));
+                let object_tab = harness.app.workspace(tab).unwrap().active_tab.unwrap();
+                if filtered {
+                    let workspace = harness.app.workspace_mut(tab).unwrap();
+                    let object = workspace.object_tab_mut(object_tab).unwrap();
+                    object.filter.rows = vec![crate::model::FilterRow {
+                        column: "id".into(),
+                        op: tabletist_db::FilterOp::Gt,
+                        value: "0".into(),
+                    }];
+                    harness
+                        .app
+                        .apply(crate::model::Action::ApplyFilters { tab, object_tab });
+                    harness.answer_rows(crate::testing::page(300, true));
+                }
+                harness
+                    .app
+                    .apply(crate::model::Action::NextPage { tab, object_tab });
+                // The rows that were past the first page are gone by now.
+                harness.answer_rows(crate::testing::page(0, false));
+                let said = format!("{} (filtered: {filtered})", look.name);
+                let title = format!("{} users", look.label("No more rows in"));
+                assert!(harness.has(&title), "{title} in {said}");
+                assert!(
+                    harness.has(&look.label("This page is past the last row.")),
+                    "{said}"
+                );
+                for other in ["The table exists and is empty.", "No rows match the filter"] {
+                    assert!(!harness.has(&look.label(other)), "{other} in {said}");
+                }
+                // The footer pages too, where there is one: the state's own
+                // button is the upper one, under its title.
+                let tree = harness.settle();
+                let title = crate::testing::bounds(&tree, &title, Role::Label).unwrap();
+                let (button, at) = buttons_named(&tree, "Previous page")[0];
+                assert!(at.top() >= title.bottom(), "{said}");
+                harness.frame(vec![egui::Event::AccessKitActionRequest(
+                    accesskit::ActionRequest {
+                        target_tree: accesskit::TreeId::ROOT,
+                        target_node: button,
+                        action: accesskit::Action::Click,
+                        data: None,
+                    },
+                )]);
+                harness.settle();
+                // The page before, with the filter it had.
+                assert!(
+                    matches!(
+                        harness.app.backend.sent.last(),
+                        Some(Command::FetchRows { query, .. })
+                            if query.offset == 0 && query.filters.len() == usize::from(filtered)
+                    ),
+                    "{said}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn reload_under_an_empty_table_fetches_again_and_takes_the_pointer() {
+        let mut harness = Harness::new();
+        empty_users(&mut harness);
+        let before = fetches(&harness);
+        // With the pointer, not through AccessKit: the grid under the
+        // button must not take the click.
+        let tree = harness.settle();
+        let button =
+            crate::testing::bounds(&tree, "Reload", egui::accesskit::Role::Button).unwrap();
+        click_at(&mut harness, button.center());
+        assert_eq!(fetches(&harness), before + 1);
+    }
+
+    #[test]
+    fn a_reload_that_lasts_shows_its_wait_in_place_of_the_empty_state() {
+        for look in crate::theme::Look::ALL {
+            // The reload finds rows, or none again.
+            for rows in [3, 0] {
+                let mut harness = Harness::new();
+                harness.set_look(look);
+                let tab = empty_users(&mut harness);
+                let title = format!("{} users", look.label("No rows in"));
+                assert!(harness.has(&title), "{}", look.name);
+                harness.click("Reload");
+                age_fetch(&mut harness, tab);
+                // The box says what is happening: nothing lies under it.
+                assert!(harness.has(&look.label("Running query…")), "{}", look.name);
+                assert!(!harness.has(&title), "{}", look.name);
+                harness.answer_rows(crate::testing::page(rows, false));
+                assert_eq!(harness.has(&title), rows == 0, "{} {rows}", look.name);
+            }
+        }
+    }
+
+    #[test]
+    fn filters_that_match_nothing_are_named_and_the_last_one_can_go() {
+        let mut harness = Harness::new();
+        harness.set_look(crate::theme::Look::macos());
+        let tab = harness.connect_fake();
+        harness.click("users");
+        harness.answer_rows(crate::testing::page(3, false));
+        let id = harness.app.workspace(tab).unwrap().active_tab.unwrap();
+        let row = |column: &str, value: &str| crate::model::FilterRow {
+            column: column.into(),
+            op: tabletist_db::FilterOp::Eq,
+            value: value.into(),
+        };
+        harness
+            .app
+            .workspace_mut(tab)
+            .unwrap()
+            .object_tab_mut(id)
+            .unwrap()
+            .filter
+            .rows = vec![row("id", "999"), row("email", "nobody")];
+        harness.app.apply(crate::model::Action::ApplyFilters {
+            tab,
+            object_tab: id,
+        });
+        harness.answer_rows(crate::testing::page(0, false));
+        assert!(harness.has("No rows match 2 filters"));
+        // The fixture's estimate for `users`.
+        assert!(
+            harness
+                .has("users has about 1,200,000 rows. None matches id = 999 and email = nobody.")
+        );
+        harness.click("Remove last filter");
+        assert!(matches!(
+            harness.app.backend.sent.last(),
+            Some(Command::FetchRows { query, .. })
+                if query.filters.len() == 1 && query.filters[0].column == "id"
+        ));
     }
 
     #[test]
@@ -5924,6 +8574,106 @@ mod tests {
         );
         harness.copy(false);
         assert_eq!(harness.copied.as_deref(), Some("Total: \u{202E}00.0001"));
+    }
+
+    /// SQLite and MySQL keep a UUID key as sixteen bytes (`blob(16)`,
+    /// `binary(16)`): the grid, the row panel and the clipboard give the
+    /// UUID, not the value's size.
+    #[test]
+    fn a_sixteen_byte_key_reads_as_a_uuid() {
+        let uuid = "0199a3f2-7c1e-7abc-8def-0123456789ab";
+        let (mut harness, tab) = tree_harness();
+        harness.click("users");
+        let mut page = crate::testing::page(1, false);
+        page.columns[0].type_name = "blob(16)".into();
+        page.columns[0].kind = tabletist_db::ValueKind::Binary;
+        page.rows[0][0] = tabletist_db::Value::Bytes(
+            vec![
+                0x01, 0x99, 0xa3, 0xf2, 0x7c, 0x1e, 0x7a, 0xbc, 0x8d, 0xef, 0x01, 0x23, 0x45, 0x67,
+                0x89, 0xab,
+            ]
+            .into(),
+        );
+        harness.answer_rows(page);
+        let workspace = harness.app.workspace_mut(tab).unwrap();
+        workspace.row_panel = true;
+        let id = workspace.active_tab.unwrap();
+        harness.app.apply(crate::model::Action::SelectCell {
+            tab,
+            id,
+            cell: crate::model::CellPos { row: 0, col: 0 },
+        });
+        harness.settle();
+        let painted: Vec<&str> = harness
+            .painted
+            .iter()
+            .map(|(text, _)| text.as_str())
+            .collect();
+        // Once in the grid, once as the row panel's field.
+        let shown = painted.iter().filter(|text| **text == uuid).count();
+        assert!(shown >= 2, "{painted:?}");
+        assert!(
+            !painted.iter().any(|text| text.contains("BLOB")),
+            "{painted:?}"
+        );
+        harness.copy(false);
+        assert_eq!(harness.copied.as_deref(), Some(uuid));
+    }
+
+    /// Following a sixteen-byte foreign key filters the target by the UUID
+    /// the grid shows. The database layer reads that text back as the bytes
+    /// (`tabletist_db::Dialect`), so the filter value has to stay this text.
+    #[test]
+    fn following_a_sixteen_byte_key_filters_by_the_uuid_it_shows() {
+        let (mut harness, tab) = tree_harness();
+        harness.click("users");
+        let mut page = crate::testing::page(1, false);
+        page.columns[0].type_name = "blob(16)".into();
+        page.columns[0].kind = tabletist_db::ValueKind::Binary;
+        page.rows[0][0] = tabletist_db::Value::Bytes(
+            vec![
+                0x01, 0x99, 0xa3, 0xf2, 0x7c, 0x1e, 0x7a, 0xbc, 0x8d, 0xef, 0x01, 0x23, 0x45, 0x67,
+                0x89, 0xab,
+            ]
+            .into(),
+        );
+        harness.answer_rows(page);
+        harness.answer_structure(tabletist_db::Structure {
+            foreign_keys: vec![tabletist_db::ForeignKeyInfo {
+                name: None,
+                columns: vec!["id".into()],
+                ref_schema: "main".into(),
+                ref_table: "orders".into(),
+                ref_columns: vec!["account_id".into()],
+                on_update: String::new(),
+                on_delete: String::new(),
+            }],
+            ..Default::default()
+        });
+        let id = harness.app.workspace(tab).unwrap().active_tab.unwrap();
+        harness.app.apply(crate::model::Action::SelectCell {
+            tab,
+            id,
+            cell: crate::model::CellPos { row: 0, col: 0 },
+        });
+        harness.app.apply(crate::model::Action::FollowSelectedKey {
+            tab,
+            object_tab: id,
+        });
+        match crate::testing::last_sent(&harness.app) {
+            Command::FetchRows { query, .. } => {
+                assert_eq!(query.object.name, "orders");
+                assert_eq!(
+                    query.filters,
+                    [tabletist_db::Filter {
+                        column: "account_id".into(),
+                        op: tabletist_db::FilterOp::Eq,
+                        value: "0199a3f2-7c1e-7abc-8def-0123456789ab".into(),
+                    }]
+                );
+            }
+            other => panic!("{other:?}"),
+        }
     }
 
     /// Two schemas with a `users` table: the tab and the row panel name the

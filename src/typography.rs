@@ -73,6 +73,8 @@ pub enum TextRole {
     GroupLabel,
     /// The picker's environment tags.
     EnvTag,
+    /// The environment tag in the connection bar's chips.
+    ChipEnv,
     /// View and trigger tags in the object tree.
     TagSmall,
     /// The database name, the sort chip's column, a connection's database.
@@ -95,6 +97,8 @@ pub enum TextRole {
     FormLabel,
     /// The connection dialog's group headings (Database, Server, Security).
     Legend,
+    /// What an empty area or a failed connection says first.
+    StateTitle,
     // Omarchy, from the spec.
     OBody,
     OTableTitle,
@@ -116,7 +120,7 @@ pub enum TextRole {
 }
 
 impl TextRole {
-    pub const ALL: [TextRole; 40] = [
+    pub const ALL: [TextRole; 42] = [
         Self::UiBody,
         Self::UiBodyStrong,
         Self::TableTitle,
@@ -133,6 +137,7 @@ impl TextRole {
         Self::UiBodySemibold,
         Self::GroupLabel,
         Self::EnvTag,
+        Self::ChipEnv,
         Self::TagSmall,
         Self::MonoSecondary,
         Self::MonoGroup,
@@ -144,6 +149,7 @@ impl TextRole {
         Self::CompletionMatch,
         Self::FormLabel,
         Self::Legend,
+        Self::StateTitle,
         Self::OBody,
         Self::OTableTitle,
         Self::OScreenTitle,
@@ -178,6 +184,7 @@ impl TextRole {
             Self::UiBodySemibold => "ui-body-semibold",
             Self::GroupLabel => "group-label",
             Self::EnvTag => "env-tag",
+            Self::ChipEnv => "chip-env",
             Self::TagSmall => "tag-small",
             Self::MonoSecondary => "mono-secondary",
             Self::MonoGroup => "mono-group",
@@ -189,6 +196,7 @@ impl TextRole {
             Self::CompletionMatch => "completion-match",
             Self::FormLabel => "form-label",
             Self::Legend => "legend",
+            Self::StateTitle => "state-title",
             Self::OBody => "o-body",
             Self::OTableTitle => "o-table-title",
             Self::OScreenTitle => "o-screen-title",
@@ -254,6 +262,7 @@ impl TextRole {
             Self::UiBodySemibold => style(Sans, 600, 13.0),
             Self::GroupLabel => capitals(Sans, 600, 12.0, 0.06),
             Self::EnvTag => style(Sans, 500, 11.0),
+            Self::ChipEnv => style(Sans, 500, 10.5),
             Self::TagSmall => style(Sans, 400, 10.5),
             Self::MonoSecondary => style(Mono, 400, 12.0),
             Self::MonoGroup => style(Mono, 500, 12.0),
@@ -267,6 +276,7 @@ impl TextRole {
             Self::CompletionMatch => style(Mono, 500, 12.5),
             Self::FormLabel => style(Sans, 500, 12.0),
             Self::Legend => style(Sans, 600, 12.0),
+            Self::StateTitle => style(Sans, 600, 15.0),
             Self::OBody => style(Mono, 400, 13.0),
             Self::OTableTitle => style(Mono, 700, 15.0),
             Self::OScreenTitle => style(Mono, 700, 14.0),

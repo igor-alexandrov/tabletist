@@ -355,6 +355,27 @@ impl Conn {
         rows.iter().map(|row| column(row, 0)).collect()
     }
 
+    /// The `bytea` columns a filter of `query` compares as bytes when its
+    /// value reads as bytes; empty, without asking, when no filter has such
+    /// a value.
+    async fn binary_columns(&self, query: &RowQuery) -> Result<Vec<String>> {
+        if !crate::dialect::reads_bytes(query) {
+            return Ok(Vec::new());
+        }
+        let rows = self
+            .catalog(
+                "SELECT a.attname::text \
+                 FROM pg_attribute a \
+                 JOIN pg_class c ON c.oid = a.attrelid \
+                 JOIN pg_namespace n ON n.oid = c.relnamespace \
+                 WHERE n.nspname = $1 AND c.relname = $2 AND a.attnum > 0 \
+                   AND NOT a.attisdropped AND a.atttypid = 'bytea'::regtype",
+                &[&query.object.schema, &query.object.name],
+            )
+            .await?;
+        rows.iter().map(|row| column(row, 0)).collect()
+    }
+
     pub async fn describe(&self, object: &ObjectRef) -> Result<Structure> {
         let oid = self.relation(object).await?;
         let columns = self
@@ -467,7 +488,8 @@ impl Conn {
     /// protocol (every value as text) inside a read-only transaction.
     pub async fn fetch_rows(&self, query: &RowQuery) -> Result<RowPage> {
         let key = self.primary_key(&query.object).await?;
-        let sql = Dialect::Postgres.select_rows(query, &key);
+        let binary = self.binary_columns(query).await?;
+        let sql = Dialect::Postgres.select_rows(query, &key, &binary);
         let limit = query.limit as usize;
         let mut client = self.client.lock().await;
         let started = Instant::now();
@@ -505,7 +527,8 @@ impl Conn {
     }
 
     pub async fn count_rows(&self, query: &RowQuery) -> Result<u64> {
-        let sql = Dialect::Postgres.count_rows(query);
+        let binary = self.binary_columns(query).await?;
+        let sql = Dialect::Postgres.count_rows(query, &binary);
         let mut client = self.client.lock().await;
         let transaction = client
             .build_transaction()

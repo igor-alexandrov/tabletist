@@ -49,8 +49,8 @@ struct PendingStore {
     adopt: bool,
 }
 
-/// The native title bar the tab bar shares: its height, and how far the
-/// window's own buttons (the macOS traffic lights) reach from the left.
+/// The native title bar the connection bar shares: its height, and how far
+/// the window's own buttons (the macOS traffic lights) reach from the left.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct TitleBar {
     pub height: f32,
@@ -83,8 +83,8 @@ pub struct App {
     pub host_keys: HostKeys,
     /// Why known_hosts.json could not be read; no new host is trusted then.
     pub host_keys_error: Option<String>,
-    /// The window's own title bar the tab bar shares (macOS), measured from
-    /// the window every frame; zero elsewhere.
+    /// The window's own title bar the connection bar shares (macOS),
+    /// measured from the window every frame; zero elsewhere.
     pub titlebar: TitleBar,
     /// The OS theme seen last frame, to notice light/dark switches.
     system_theme: Option<egui::Theme>,
@@ -183,6 +183,22 @@ impl App {
         }
     }
 
+    /// The open connections with their tabs, in the order the header shows
+    /// them. The picker is not one of them.
+    pub fn open_connections(&self) -> impl Iterator<Item = (ConnTabId, &Workspace)> {
+        self.tabs.iter().filter_map(|tab| match &tab.content {
+            ConnTabContent::Workspace(workspace) => Some((tab.id, &**workspace)),
+            ConnTabContent::Picker(_) => None,
+        })
+    }
+
+    /// The first tab that has the saved connection `conn` open.
+    pub fn tab_showing(&self, conn: &crate::connections::ConnectionId) -> Option<ConnTabId> {
+        self.open_connections()
+            .find(|(_, workspace)| workspace.conn_id == *conn)
+            .map(|(tab, _)| tab)
+    }
+
     pub fn tab_for_session(&self, session: SessionId) -> Option<ConnTabId> {
         self.tabs.iter().find_map(|tab| match &tab.content {
             ConnTabContent::Workspace(workspace) if workspace.session == session => Some(tab.id),
@@ -223,6 +239,14 @@ impl App {
         self.tabs.iter().position(|tab| tab.id == id)
     }
 
+    /// Where the picker tab is, when one is open. There is never more than
+    /// one: the saved connections are one screen.
+    fn picker_index(&self) -> Option<usize> {
+        self.tabs
+            .iter()
+            .position(|tab| matches!(tab.content, ConnTabContent::Picker(_)))
+    }
+
     /// Applies queued actions until none are left (an action may queue more).
     pub fn apply_actions(&mut self) {
         while !self.actions.is_empty() {
@@ -234,17 +258,32 @@ impl App {
     }
 
     /// Formats the row each open row panel shows, once per selection or
-    /// page, so drawing never reads a whole (possibly huge) value.
+    /// page (or SQL result), so drawing never reads a whole (possibly huge)
+    /// value.
     fn format_rows(&mut self) {
         for tab in &mut self.tabs {
             let ConnTabContent::Workspace(workspace) = &mut tab.content else {
                 continue;
             };
-            let (open, active) = (workspace.row_panel, workspace.active_tab);
+            let shown = workspace.row_panel_tab();
+            for sql in workspace.sql_tabs_mut() {
+                let row = sql.selected_row().filter(|_| shown == Some(sql.id));
+                let Some(row) = row else {
+                    // Nothing shows it: free the text.
+                    sql.fields = None;
+                    continue;
+                };
+                if sql.selected_fields().is_some() {
+                    continue;
+                }
+                let request = sql.run.loaded;
+                let values = sql.shown_rows().and_then(|(_, rows, _)| rows.get(row));
+                sql.fields = values.map(|values| row_fields(request, row, values));
+            }
             for object in workspace.object_tabs_mut() {
                 let row = object
                     .selection
-                    .filter(|_| open && active == Some(object.id))
+                    .filter(|_| shown == Some(object.id))
                     .map(|cell| cell.row);
                 let Some((row, page)) = row.zip(object.page()) else {
                     // Nothing shows it: free the text.
@@ -254,30 +293,34 @@ impl App {
                 if object.selected_fields().is_some() {
                     continue;
                 }
-                object.fields = page.rows.get(row).map(|values| crate::model::RowFields {
-                    request: object.rows.loaded,
-                    row,
-                    fields: values.iter().map(crate::ui::format::field_text).collect(),
-                });
+                let request = object.rows.loaded;
+                object.fields = page
+                    .rows
+                    .get(row)
+                    .map(|values| row_fields(request, row, values));
             }
         }
     }
 
     pub fn apply(&mut self, action: Action) {
         match action {
-            Action::NewConnTab => {
-                let tab = self.picker_tab();
-                self.tabs.push(tab);
-                self.active = self.tabs.len() - 1;
-            }
+            Action::ShowConnections => match self.picker_index() {
+                Some(index) => self.active = index,
+                None => {
+                    let tab = self.picker_tab();
+                    self.tabs.push(tab);
+                    self.active = self.tabs.len() - 1;
+                }
+            },
             Action::CloseConnTab(id) => self.close_tab(id),
             Action::ActivateConnTab(id) => {
                 if let Some(index) = self.tab_index(id) {
                     self.active = index;
                 }
             }
-            Action::ActivateConnTabIndex(index) => {
-                if index < self.tabs.len() {
+            Action::ActivateConnection(position) => {
+                let tab = self.open_connections().nth(position).map(|(tab, _)| tab);
+                if let Some(index) = tab.and_then(|tab| self.tab_index(tab)) {
                     self.active = index;
                 }
             }
@@ -294,10 +337,17 @@ impl App {
             Action::Disconnect(tab) => {
                 if let Some(workspace) = self.workspace(tab) {
                     let session = workspace.session;
-                    self.backend.send(Command::Close { session });
-                    self.close_editors(tab);
-                    if let Some(entry) = self.tabs.iter_mut().find(|t| t.id == tab) {
-                        entry.content = ConnTabContent::Picker(PickerState::default());
+                    if self.picker_index().is_some() {
+                        // The saved connections have a tab already: this
+                        // one closes, and that one shows.
+                        self.close_tab(tab);
+                        self.apply(Action::ShowConnections);
+                    } else {
+                        self.backend.send(Command::Close { session });
+                        self.close_editors(tab);
+                        if let Some(entry) = self.tabs.iter_mut().find(|t| t.id == tab) {
+                            entry.content = ConnTabContent::Picker(PickerState::default());
+                        }
                     }
                 }
             }
@@ -423,9 +473,9 @@ impl App {
                     picker.focus_search = true;
                 }
             }
-            Action::FoldDocuments { tab, object_tab } => {
+            Action::FoldDocuments { tab, id } => {
                 if let Some(workspace) = self.workspace_mut(tab) {
-                    workspace.fold_documents = Some(object_tab);
+                    workspace.fold_documents = Some(id);
                 }
             }
             Action::FollowSelectedKey { tab, object_tab } => {
@@ -684,6 +734,17 @@ impl App {
                 match active {
                     Some((id, described)) => {
                         self.reset_count(tab, id);
+                        // Over an error box a refresh is a retry: what the
+                        // error replaced is not what comes back if it is
+                        // given up.
+                        if let Some(object) = self.object_tab_mut(tab, id) {
+                            if object.rows.shown_error().is_some() {
+                                object.drop_page();
+                            }
+                            if object.structure.shown_error().is_some() {
+                                object.structure.value = None;
+                            }
+                        }
                         self.fetch_rows(tab, id);
                         if described {
                             self.describe(tab, id);
@@ -751,6 +812,14 @@ impl App {
                 if let Some(sql) = self.sql_tab_mut(tab, sql_tab) {
                     sql.completion = None;
                     sql.completion_wanted = None;
+                }
+            }
+            Action::FormatSql { tab, sql_tab } => {
+                if let Some(sql) = self.sql_tab_mut(tab, sql_tab) {
+                    sql.format = true;
+                    // The keys go back to the editor after a click on the
+                    // toolbar's button.
+                    sql.focus_editor = true;
                 }
             }
             Action::SetSqlLimit {
@@ -936,10 +1005,21 @@ impl App {
                 if bar_changed {
                     self.apply_filters(tab, object_tab);
                 } else {
+                    // A retry answers an error: no older page is on screen
+                    // for a cancelled one to go back to.
+                    if let Some(object) = self.object_tab_mut(tab, object_tab) {
+                        object.drop_page();
+                    }
                     self.fetch_rows(tab, object_tab);
                 }
             }
-            Action::RetryStructure { tab, object_tab } => self.describe(tab, object_tab),
+            Action::RetryStructure { tab, object_tab } => {
+                // As a retry of the rows: the structure under the error goes.
+                if let Some(object) = self.object_tab_mut(tab, object_tab) {
+                    object.structure.value = None;
+                }
+                self.describe(tab, object_tab);
+            }
             Action::SetDriver(driver) => {
                 if let Some(Dialog::Connection(form)) = &mut self.dialog {
                     // A port left at the old driver's default follows the driver.
@@ -1319,6 +1399,7 @@ impl App {
             return;
         };
         workspace.secrets = secrets.clone();
+        workspace.connect_started = Some(std::time::Instant::now());
         let (session, spec) = (workspace.session, workspace.spec.clone());
         // A blank answer means "no password" to the server.
         let mut secrets = secrets;
@@ -1394,6 +1475,7 @@ impl App {
         if let Some(workspace) = self.workspace_mut(tab) {
             let old = std::mem::replace(&mut workspace.session, session);
             workspace.status = SessionStatus::Connecting { request };
+            workspace.connect_started = None;
             workspace.forget_session_requests();
             self.backend.send(Command::Close { session: old });
         }
@@ -1542,6 +1624,7 @@ impl App {
         };
         let old = std::mem::replace(&mut workspace.session, session);
         workspace.status = SessionStatus::Connecting { request };
+        workspace.connect_started = None;
         workspace.forget_session_requests();
         self.backend.send(Command::Close { session: old });
         // Reuses the secrets this tab already has; asks only for missing ones.
@@ -1563,6 +1646,7 @@ impl App {
                             workspace.status = SessionStatus::Connected;
                             workspace.driver = driver;
                             workspace.encrypted = encrypted;
+                            workspace.connected_at = Some(crate::util::now_secs());
                             Some(tab)
                         }
                         _ => None,
@@ -2096,7 +2180,7 @@ impl App {
         }
         if connect {
             if !matches!(self.active_tab().content, ConnTabContent::Picker(_)) {
-                self.apply(Action::NewConnTab);
+                self.apply(Action::ShowConnections);
             }
             let tab = self.active_tab_id();
             let mut secrets = Secrets {
@@ -2828,6 +2912,7 @@ impl App {
             crate::ui::keys::handle(self, ui.ctx());
         }
         crate::ui::show(self, ui);
+        crate::ui::keys::after_frame(ui.ctx());
         self.apply_actions();
         // A list that opened or changed shows on the next frame.
         if self.refresh_completion(ui.ctx()) {
@@ -2950,6 +3035,19 @@ fn step(index: usize, delta: isize, len: usize) -> usize {
     moved as usize
 }
 
+/// A row's text for the row panel, formatted once.
+fn row_fields(
+    request: Option<RequestId>,
+    row: usize,
+    values: &[tabletist_db::Value],
+) -> crate::model::RowFields {
+    crate::model::RowFields {
+        request,
+        row,
+        fields: values.iter().map(crate::ui::format::field_text).collect(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3012,15 +3110,82 @@ mod tests {
         assert!(matches!(app.tabs[0].content, ConnTabContent::Picker(_)));
     }
 
+    /// Opens another connection: the picker, then a connect in it.
+    fn connect_another(app: &mut App) -> ConnTabId {
+        app.apply(Action::ShowConnections);
+        connect(app).0
+    }
+
     #[test]
-    fn new_tabs_open_at_the_end_and_become_active() {
+    fn showing_the_connections_opens_one_picker_tab_and_returns_to_it() {
         let (mut app, _dir) = app();
-        app.apply(Action::NewConnTab);
-        app.apply(Action::NewConnTab);
-        assert_eq!(app.tabs.len(), 3);
-        assert_eq!(app.active, 2);
+        // The app starts on the picker: nothing to open.
+        app.apply(Action::ShowConnections);
+        assert_eq!(app.tabs.len(), 1);
+        let (first, _, _) = connect(&mut app);
+        app.apply(Action::ShowConnections);
+        assert_eq!(app.tabs.len(), 2);
+        assert_eq!(app.active, 1, "a new tab opens at the end and shows");
+        assert!(matches!(
+            app.active_tab().content,
+            ConnTabContent::Picker(_)
+        ));
+        let picker = app.active_tab_id();
+        // From the connection again, the same picker tab shows.
+        app.apply(Action::ActivateConnTab(first));
+        app.apply(Action::ShowConnections);
+        assert_eq!(app.tabs.len(), 2);
+        assert_eq!(app.active_tab_id(), picker);
         let unique: std::collections::HashSet<_> = ids(&app).into_iter().collect();
-        assert_eq!(unique.len(), 3, "tab ids must be unique");
+        assert_eq!(unique.len(), 2, "tab ids must be unique");
+    }
+
+    #[test]
+    fn a_saved_connection_knows_the_tab_that_has_it_open() {
+        let (mut app, _dir) = app();
+        let (tab, _, _) = connect(&mut app);
+        let conn = app.workspace(tab).unwrap().conn_id.clone();
+        assert_eq!(app.tab_showing(&conn), Some(tab));
+        assert_eq!(app.tab_showing(&ConnectionId::new()), None);
+        // Open twice, the first tab is the one that shows.
+        app.apply(Action::ShowConnections);
+        let second = app.active_tab_id();
+        app.apply(Action::Connect {
+            tab: second,
+            conn: conn.clone(),
+        });
+        assert_eq!(app.tab_showing(&conn), Some(tab));
+    }
+
+    #[test]
+    fn disconnecting_shows_the_one_picker() {
+        let (mut app, _dir) = app();
+        // Alone, the connection's tab becomes the picker.
+        let (only, session, _) = connect(&mut app);
+        app.apply(Action::Disconnect(only));
+        assert_eq!(ids(&app), [only.0]);
+        assert!(matches!(
+            app.active_tab().content,
+            ConnTabContent::Picker(_)
+        ));
+        assert!(
+            matches!(app.backend.sent.last(), Some(Command::Close { session: s }) if *s == session)
+        );
+        // With the picker open in a tab of its own, the connection's tab
+        // closes and the picker shows.
+        let (first, session, _) = connect(&mut app);
+        let second = connect_another(&mut app);
+        app.apply(Action::ShowConnections);
+        let picker = app.active_tab_id();
+        app.apply(Action::Disconnect(first));
+        assert_eq!(ids(&app), [second.0, picker.0]);
+        assert_eq!(app.active_tab_id(), picker);
+        assert!(
+            app.backend
+                .sent
+                .iter()
+                .any(|command| matches!(command, Command::Close { session: s } if *s == session))
+        );
     }
 
     #[test]
@@ -3036,10 +3201,9 @@ mod tests {
     #[test]
     fn closing_a_tab_before_the_active_one_keeps_the_active_tab() {
         let (mut app, _dir) = app();
-        app.apply(Action::NewConnTab);
-        app.apply(Action::NewConnTab);
-        let active = app.active_tab_id();
-        let first = app.tabs[0].id;
+        let (first, _, _) = connect(&mut app);
+        connect_another(&mut app);
+        let active = connect_another(&mut app);
         app.apply(Action::CloseConnTab(first));
         assert_eq!(app.active_tab_id(), active);
     }
@@ -3047,9 +3211,9 @@ mod tests {
     #[test]
     fn closing_the_active_tab_activates_its_right_neighbour_or_the_new_last() {
         let (mut app, _dir) = app();
-        app.apply(Action::NewConnTab);
-        app.apply(Action::NewConnTab);
-        let [a, b, c] = [app.tabs[0].id, app.tabs[1].id, app.tabs[2].id];
+        let (a, _, _) = connect(&mut app);
+        let b = connect_another(&mut app);
+        let c = connect_another(&mut app);
         app.apply(Action::ActivateConnTab(b));
         app.apply(Action::CloseConnTab(b));
         assert_eq!(app.active_tab_id(), c);
@@ -3066,29 +3230,42 @@ mod tests {
     }
 
     #[test]
-    fn tabs_activate_by_index_and_cycle_with_wrapping() {
+    fn connections_activate_by_position_and_tabs_cycle_with_wrapping() {
         let (mut app, _dir) = app();
-        app.apply(Action::NewConnTab);
-        app.apply(Action::NewConnTab);
-        app.apply(Action::ActivateConnTabIndex(0));
-        assert_eq!(app.active, 0);
-        app.apply(Action::ActivateConnTabIndex(7));
-        assert_eq!(app.active, 0, "an index past the end is ignored");
-        app.apply(Action::CycleConnTab(-1));
-        assert_eq!(app.active, 2);
+        let (first, _, _) = connect(&mut app);
+        let second = connect_another(&mut app);
+        // The picker, last, is a tab but not a connection.
+        app.apply(Action::ShowConnections);
+        app.apply(Action::ActivateConnection(0));
+        assert_eq!(app.active_tab_id(), first);
+        app.apply(Action::ActivateConnection(1));
+        assert_eq!(app.active_tab_id(), second);
+        app.apply(Action::ActivateConnection(2));
+        assert_eq!(app.active_tab_id(), second, "the picker has no number");
+        app.apply(Action::ActivateConnection(7));
+        assert_eq!(
+            app.active_tab_id(),
+            second,
+            "a position past the end is ignored"
+        );
+        app.apply(Action::CycleConnTab(1));
+        assert_eq!(app.active, 2, "cycling reaches the picker");
         app.apply(Action::CycleConnTab(1));
         assert_eq!(app.active, 0);
+        app.apply(Action::CycleConnTab(-1));
+        assert_eq!(app.active, 2);
     }
 
     #[test]
     fn queued_actions_are_drained_in_order() {
         let (mut app, _dir) = app();
-        app.actions.push(Action::NewConnTab);
-        app.actions.push(Action::ActivateConnTabIndex(0));
+        let (first, _, _) = connect(&mut app);
+        app.actions.push(Action::ShowConnections);
+        app.actions.push(Action::ActivateConnection(0));
         app.apply_actions();
         assert!(app.actions.is_empty());
         assert_eq!(app.tabs.len(), 2);
-        assert_eq!(app.active, 0);
+        assert_eq!(app.active_tab_id(), first);
     }
 
     use crate::backend::{Command, Event, RequestId, SessionId};
@@ -3148,6 +3325,7 @@ mod tests {
             app.workspace(tab).unwrap().status,
             SessionStatus::Connected
         ));
+        assert!(app.workspace(tab).unwrap().connected_at.is_some());
     }
 
     #[test]
@@ -3247,6 +3425,70 @@ mod tests {
             app.backend.sent.last(),
             Some(Command::Connect { session: s, .. }) if *s == new_session
         ));
+    }
+
+    #[test]
+    fn sending_the_connect_starts_its_clock() {
+        let (mut app, _dir) = app();
+        let (tab, _, _) = connect(&mut app);
+        let first = app.workspace(tab).unwrap().connect_started;
+        let first = first.expect("the connect was sent");
+        // The clock a second behind: a reconnect that left it alone would
+        // still read that.
+        let earlier = std::time::Instant::now().checked_sub(std::time::Duration::from_secs(1));
+        if earlier.is_some() {
+            app.workspace_mut(tab).unwrap().connect_started = earlier;
+        }
+        // A reconnect is a new attempt with a clock of its own.
+        let sent = app.backend.sent.len();
+        app.apply(Action::Reconnect(tab));
+        assert!(
+            app.backend.sent[sent..]
+                .iter()
+                .any(|command| matches!(command, Command::Connect { .. })),
+            "the reconnect sent a Connect"
+        );
+        let second = app.workspace(tab).unwrap().connect_started;
+        let second = second.expect("the clock was restarted");
+        match earlier {
+            Some(earlier) => assert!(second > earlier, "the clock runs from the new Connect"),
+            // A clock too young to set back: a coarse one can read the same
+            // for both.
+            None => assert!(second >= first, "the clock runs from the new Connect"),
+        }
+    }
+
+    #[test]
+    fn a_reconnect_waiting_at_the_password_prompt_has_no_clock() {
+        let (mut app, _dir) = app();
+        let conn = postgres_saved(&mut app, PasswordMode::Ask);
+        let tab = app.active_tab_id();
+        app.apply(Action::Connect { tab, conn });
+        prompt(&mut app).password = "wrong".into();
+        app.apply(Action::SubmitPassword);
+        assert!(app.workspace(tab).unwrap().connect_started.is_some());
+        let (session, request, _) = last_connect(&app);
+        app.apply(Action::Backend(Event::ConnectFailed {
+            session,
+            request,
+            error: rejected(),
+        }));
+        app.apply(Action::CloseDialog);
+        let sent = app.backend.sent.len();
+        app.apply(Action::Reconnect(tab));
+        assert!(matches!(app.dialog, Some(Dialog::Password(_))));
+        assert!(
+            !app.backend.sent[sent..]
+                .iter()
+                .any(|command| matches!(command, Command::Connect { .. })),
+            "no Connect is sent while the prompt is open"
+        );
+        let workspace = app.workspace(tab).unwrap();
+        assert!(matches!(workspace.status, SessionStatus::Connecting { .. }));
+        assert!(
+            workspace.connect_started.is_none(),
+            "the time of the attempt before is not shown"
+        );
     }
 
     #[test]
@@ -4407,7 +4649,7 @@ mod tests {
         }));
         assert_eq!(asked(&app), 1);
         // On a picker there is no workspace to open an editor in.
-        app.apply(Action::NewConnTab);
+        app.apply(Action::ShowConnections);
         let picker = app.active_tab_id();
         app.apply(Action::NewSqlTab(picker));
         assert!(app.workspace(picker).is_none());
@@ -5079,6 +5321,23 @@ mod tests {
             split: 0.2,
         });
         assert_eq!(sql(&harness, tab, first).split, 1.0);
+        assert_eq!(harness.app.backend.sent.len(), sent);
+    }
+
+    #[test]
+    fn format_sql_asks_the_editor_to_format_and_take_the_keys() {
+        let mut harness = Harness::new();
+        let (tab, id) = new_sql(&mut harness);
+        let sent = harness.app.backend.sent.len();
+        let workspace = harness.app.workspace_mut(tab).unwrap();
+        workspace.sql_tab_mut(id).unwrap().focus_editor = false;
+        harness.app.apply(Action::FormatSql { tab, sql_tab: id });
+        assert!(sql(&harness, tab, id).format);
+        assert!(sql(&harness, tab, id).focus_editor);
+        // Nothing is asked of the backend, and a tab that closed since is
+        // left alone.
+        harness.app.apply(Action::CloseTab { tab, id });
+        harness.app.apply(Action::FormatSql { tab, sql_tab: id });
         assert_eq!(harness.app.backend.sent.len(), sent);
     }
 
@@ -7435,7 +7694,7 @@ mod tests {
         }
     }
 
-    /// Batch 7: count, filters, quick open, tree keys.
+    /// Count, filters, quick open, tree keys.
     mod power {
         use super::*;
         use crate::model::{FilterRow, Pane, TabId, TreeKey, TreeNode};
@@ -7997,6 +8256,41 @@ mod tests {
                 Some(Command::FetchRows { query, .. }) => assert_eq!(query.offset, offset),
                 other => panic!("{other:?}"),
             }
+        }
+
+        #[test]
+        fn retry_drops_the_page_under_the_error_but_keeps_the_columns() {
+            let mut harness = Harness::new();
+            let (tab, id) = open_users(&mut harness);
+            harness.app.apply(Action::SelectCell {
+                tab,
+                id,
+                cell: CellPos { row: 1, col: 0 },
+            });
+            harness.app.apply(Action::Refresh(tab));
+            let (session, request) = match harness.app.backend.sent.last() {
+                Some(Command::FetchRows {
+                    session, request, ..
+                }) => (*session, *request),
+                other => panic!("{other:?}"),
+            };
+            harness.app.apply(Action::Backend(Event::Rows {
+                session,
+                request,
+                result: Err(Error::query("connection reset")),
+            }));
+            assert!(object(&harness, tab, id).page().is_some(), "held");
+            harness.app.apply(Action::RetryRows {
+                tab,
+                object_tab: id,
+            });
+            let object = object(&harness, tab, id);
+            assert!(object.page().is_none(), "no page older than the error");
+            assert_eq!(object.selection, None, "nor a cell of it");
+            assert!(
+                !object.filter.columns.is_empty(),
+                "the bar still lists columns"
+            );
         }
 
         #[test]

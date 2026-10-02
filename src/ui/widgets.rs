@@ -273,9 +273,8 @@ pub fn selection_text(selected: bool, look: &Look, palette: &Palette) -> Color32
 /// How far a raised tab sits inside its track.
 const TRACK_INSET: f32 = 2.0;
 
-/// A tab's background: connection tabs (`radius` = `look.tab_radius`) and
-/// object tabs (`look.radius`). Raised tabs sit in a [`TabTrack`], which
-/// fills the inactive ones.
+/// A tab's background: the object tabs, with `radius` = `look.radius`.
+/// Raised tabs sit in a [`TabTrack`], which fills the inactive ones.
 pub fn tab(
     ui: &Ui,
     rect: Rect,
@@ -1154,6 +1153,8 @@ pub struct ButtonSpec<'a> {
     justified: bool,
     /// The text muted and the shortcut in the text colour.
     hint: bool,
+    /// No border, and the text in the secondary colour.
+    quiet: bool,
 }
 
 impl<'a> ButtonSpec<'a> {
@@ -1174,6 +1175,7 @@ impl<'a> ButtonSpec<'a> {
             icon_size: 14.0,
             justified: false,
             hint: false,
+            quiet: false,
         }
     }
 
@@ -1188,6 +1190,14 @@ impl<'a> ButtonSpec<'a> {
     /// the shortcut in the text colour.
     pub fn hint(mut self) -> Self {
         self.hint = true;
+        self
+    }
+
+    /// A secondary button that stands back from the ones beside it: no
+    /// border, a fill only under the pointer, the text in the secondary
+    /// colour.
+    pub fn quiet(mut self) -> Self {
+        self.quiet = true;
         self
     }
 
@@ -1403,6 +1413,13 @@ impl<'a> ButtonSpec<'a> {
             (palette.dim, palette.text)
         } else {
             (text, shortcut)
+        };
+        let (fill, border, text) = if self.quiet && self.kind == ButtonKind::Secondary {
+            // Under the pointer, the fill its look gives a secondary button.
+            let fill = if hovered { fill } else { Color32::TRANSPARENT };
+            (fill, None, palette.secondary)
+        } else {
+            (fill, border, text)
         };
         let painter = ui.painter();
         painter.rect_filled(rect, corner, fill);

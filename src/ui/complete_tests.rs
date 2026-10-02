@@ -895,7 +895,7 @@ fn the_caret_is_scrolled_into_view_after_an_insertion() {
     let row = list(&harness, tab).and_then(|list| list.highlighted());
     assert!(row.expect("a row").insert.len() > 2);
     let scrolled = |harness: &Harness| {
-        crate::ui::sql_text::scrolled_to(&harness.ctx, tab_id, id)
+        crate::ui::sql_text::scroll_offset(&harness.ctx, tab_id, id)
             .expect("a scroll area")
             .x
     };
@@ -1437,7 +1437,7 @@ fn a_list_asked_for_with_the_caret_out_of_the_pane_brings_it_into_view() {
     harness.finish_animations();
     let (tab_id, id) = ids(&harness, tab);
     let scrolled = |harness: &Harness| {
-        crate::ui::sql_text::scrolled_to(&harness.ctx, tab_id, id)
+        crate::ui::sql_text::scroll_offset(&harness.ctx, tab_id, id)
             .expect("a scroll area")
             .y
     };
@@ -1507,7 +1507,7 @@ fn mod_i_opens_nothing_while_the_keyboard_is_elsewhere() {
 /// How far the editor is scrolled.
 fn scrolled(harness: &Harness, tab: ConnTabId) -> egui::Vec2 {
     let (tab, id) = ids(harness, tab);
-    crate::ui::sql_text::scrolled_to(&harness.ctx, tab, id).expect("a scroll area")
+    crate::ui::sql_text::scroll_offset(&harness.ctx, tab, id).expect("a scroll area")
 }
 
 /// Runs frames until the open list is drawn, or closed. One that is open
@@ -1770,4 +1770,62 @@ fn a_list_that_shrinks_is_drawn_at_once_where_it_stays() {
     // egui would keep an area inside the screen by the size it had a frame
     // ago, and so draw the short list over its word's line for a frame.
     assert_eq!(first, settled);
+}
+
+#[test]
+fn format_leaves_no_list_of_the_script_as_it_was() {
+    const COMMAND_SHIFT: Modifiers = Modifiers::COMMAND.plus(Modifiers::SHIFT);
+    // An editor with a list open on `fr`, typed after `script`.
+    let completing = |script: &str| {
+        let (mut harness, tab) = editor();
+        paste(&mut harness, script);
+        type_text(&mut harness, "fr");
+        assert_eq!(labels(&harness, tab), ["from"]);
+        (harness, tab)
+    };
+    // An open list is of the script on screen, once a frame is over.
+    let no_stale_list = |harness: &Harness, tab: ConnTabId| {
+        let sql = sql(harness, tab);
+        let open = sql.completion.as_ref();
+        assert!(open.is_none_or(|list| list.is_of_text(&sql.text)));
+    };
+
+    // Format leaves the word where it was: the list goes on, worked out
+    // again from the formatted script, and its row goes into that one.
+    let (mut harness, tab) = completing("select 1 ");
+    harness.frame(vec![key(Key::F, COMMAND_SHIFT)]);
+    // The editor formats the script when it is drawn next.
+    harness.frame(vec![release(Key::F, COMMAND_SHIFT)]);
+    assert_eq!(sql(&harness, tab).text, "SELECT 1 fr");
+    no_stale_list(&harness, tab);
+    harness.settle();
+    assert!(list(&harness, tab).is_some_and(|list| list.is_of_text("SELECT 1 fr")));
+    assert_eq!(labels(&harness, tab), ["from"]);
+    assert!(editor_has_keyboard(&harness, tab));
+    harness.press(Key::Tab, Modifiers::NONE);
+    assert_eq!(sql(&harness, tab).text, "SELECT 1 from");
+
+    // Format moves the word: the list closes.
+    let (mut harness, tab) = completing("select a,b ");
+    harness.frame(vec![key(Key::F, COMMAND_SHIFT)]);
+    harness.frame(vec![release(Key::F, COMMAND_SHIFT)]);
+    assert_eq!(sql(&harness, tab).text, "SELECT a,\n       b fr");
+    no_stale_list(&harness, tab);
+    harness.settle();
+    assert!(list(&harness, tab).is_none());
+    assert!(editor_has_keyboard(&harness, tab));
+
+    // Tab in the frame that formats: its keys are read before the editor
+    // is drawn, from the list of the script as typed. That row is not put
+    // into the formatted script.
+    let (mut harness, tab) = completing("select 1 ");
+    harness.frame(vec![key(Key::F, COMMAND_SHIFT)]);
+    harness.frame(vec![
+        release(Key::F, COMMAND_SHIFT),
+        key(Key::Tab, Modifiers::NONE),
+    ]);
+    harness.frame(vec![release(Key::Tab, Modifiers::NONE)]);
+    harness.settle();
+    assert_eq!(sql(&harness, tab).text, "SELECT 1 fr");
+    assert!(list(&harness, tab).is_none());
 }

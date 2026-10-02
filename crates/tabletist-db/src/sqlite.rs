@@ -542,7 +542,8 @@ impl Conn {
         // can never fall in a gap between them.
         self.run(move |connection| {
             let key = primary_key(connection, &query.object)?;
-            let sql = Dialect::Sqlite.select_rows(&query, &key);
+            let binary = binary_columns(connection, &query)?;
+            let sql = Dialect::Sqlite.select_rows(&query, &key, &binary);
             let ordered_by_key = !key.is_empty();
             let started = Instant::now();
             let mut statement = connection.prepare(&sql.text).map_err(map_error)?;
@@ -588,8 +589,10 @@ impl Conn {
 
     pub async fn count_rows(&self, query: &RowQuery) -> Result<u64> {
         check_raw_where(query)?;
-        let sql = Dialect::Sqlite.count_rows(query);
+        let query = query.clone();
         self.run(move |connection| {
+            let binary = binary_columns(connection, &query)?;
+            let sql = Dialect::Sqlite.count_rows(&query, &binary);
             let count: i64 = connection
                 .query_row(
                     &sql.text,
@@ -624,6 +627,27 @@ fn columns(connection: &rusqlite::Connection, object: &ObjectRef) -> Result<Vec<
         .map_err(map_error)?
         .collect::<std::result::Result<Vec<_>, _>>()
         .map_err(map_error)
+}
+
+/// The columns a filter of `query` compares as bytes when its value reads
+/// as bytes; empty, without asking, when no filter has such a value. SQLite
+/// keeps a blob in a column of any type, so besides the ones declared as
+/// blobs these are the ones whose type says nothing: none at all, or a name
+/// like `BINARY(16)` or `UUID` that SQLite gives no blob affinity.
+fn binary_columns(connection: &rusqlite::Connection, query: &RowQuery) -> Result<Vec<String>> {
+    if !crate::dialect::reads_bytes(query) {
+        return Ok(Vec::new());
+    }
+    Ok(columns(connection, &query.object)?
+        .into_iter()
+        .filter(|column| {
+            matches!(
+                ValueKind::from_sqlite_decl(&column.type_name),
+                ValueKind::Binary | ValueKind::Other
+            )
+        })
+        .map(|column| column.name)
+        .collect())
 }
 
 fn primary_key(connection: &rusqlite::Connection, object: &ObjectRef) -> Result<Vec<String>> {

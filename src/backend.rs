@@ -522,6 +522,9 @@ struct Running {
     /// The worker closed the session: it starts no further command, not
     /// even one it has already taken off its queue.
     closed: bool,
+    /// The request at which a test has the session's task panic.
+    #[cfg(test)]
+    panics: Option<RequestId>,
 }
 
 impl Running {
@@ -559,15 +562,65 @@ impl Running {
 
 /// Marks a session's task as over when it ends, however it ends, so that
 /// nothing goes on cancelling a script for it.
-struct SessionEnd(Arc<Mutex<Running>>);
+///
+/// A task that ends before its loop does (it panicked, or was dropped) has
+/// a connection nobody runs any more. The command it was running and the
+/// ones still queued are answered as lost and the session is reported
+/// disconnected, so the tab offers a reconnect and no request waits for an
+/// answer that never comes.
+struct SessionEnd {
+    session: SessionId,
+    running: Arc<Mutex<Running>>,
+    commands: tokio_mpsc::UnboundedReceiver<Command>,
+    outbox: Outbox,
+    /// The command taken off the queue, until it has answered.
+    command: Option<Command>,
+    /// The task reached the end of its loop: it has answered all it will.
+    finished: bool,
+}
+
+impl SessionEnd {
+    fn new(
+        session: SessionId,
+        running: Arc<Mutex<Running>>,
+        commands: tokio_mpsc::UnboundedReceiver<Command>,
+        outbox: Outbox,
+    ) -> Self {
+        Self {
+            session,
+            running,
+            commands,
+            outbox,
+            command: None,
+            finished: false,
+        }
+    }
+}
 
 impl Drop for SessionEnd {
     fn drop(&mut self) {
-        let mut running = lock(&self.0);
-        running.request = None;
-        running.stop = None;
-        running.cancelling = false;
-        running.closed = true;
+        {
+            let mut running = lock(&self.running);
+            running.request = None;
+            running.stop = None;
+            running.cancelling = false;
+            running.closed = true;
+        }
+        // The worker let go of the session (a Close, or the backend is
+        // shutting down): nobody waits for it, as when it ends in order.
+        if self.finished || self.commands.is_closed() {
+            return;
+        }
+        log::error!("session {} stopped unexpectedly", self.session.0);
+        let error = Error::ConnectionLost("the session stopped unexpectedly".into());
+        if let Some(command) = self.command.take() {
+            fail(&self.outbox, command, error.clone());
+        }
+        fail_queued(&mut self.commands, &self.outbox, &error);
+        self.outbox.emit(Event::Disconnected {
+            session: self.session,
+            error,
+        });
     }
 }
 
@@ -1037,28 +1090,31 @@ fn fail_queued(
 async fn run_session(
     session: SessionId,
     connection: Connection,
-    mut commands: tokio_mpsc::UnboundedReceiver<Command>,
+    commands: tokio_mpsc::UnboundedReceiver<Command>,
     mut stop: tokio::sync::oneshot::Receiver<()>,
     running: Arc<Mutex<Running>>,
     outbox: Outbox,
 ) {
-    let _end = SessionEnd(Arc::clone(&running));
+    let mut end = SessionEnd::new(session, Arc::clone(&running), commands, outbox.clone());
     loop {
         let command = tokio::select! {
             biased;
             _ = &mut stop => break,
-            command = commands.recv() => match command {
+            command = end.commands.recv() => match command {
                 Some(command) => command,
                 None => break,
             },
         };
+        // Kept by `end` until it has answered, so that it is answered even
+        // if this task ends first.
+        let command = &*end.command.insert(command);
         // A cancel meant for the previous command may still be on its way:
         // let it land first, so it cannot stop this one.
         let cancels = std::mem::take(&mut lock(&running).cancels);
         for cancel in cancels {
             let _ = cancel.await;
         }
-        let request = request_of(&command);
+        let request = request_of(command);
         // A script's stop flag; any other command leaves it unused.
         let script_stop = StopFlag::new();
         let skipped = {
@@ -1085,16 +1141,22 @@ async fn run_session(
             skipped
         };
         if skipped {
-            skip(&outbox, command);
+            if let Some(command) = end.command.take() {
+                skip(&outbox, command);
+            }
             continue;
+        }
+        #[cfg(test)]
+        if request.is_some() && lock(&running).panics == request {
+            panic!("a test has the session panic at {request:?}");
         }
         let lost = match command {
             Command::ListSchemas { session, request } => {
                 let result = connection.list_schemas().await;
                 let lost = lost_error(&result);
                 outbox.emit(Event::Schemas {
-                    session,
-                    request,
+                    session: *session,
+                    request: *request,
                     result,
                 });
                 lost
@@ -1104,12 +1166,12 @@ async fn run_session(
                 request,
                 schema,
             } => {
-                let result = connection.list_objects(&schema).await;
+                let result = connection.list_objects(schema).await;
                 let lost = lost_error(&result);
                 outbox.emit(Event::Objects {
-                    session,
-                    request,
-                    schema,
+                    session: *session,
+                    request: *request,
+                    schema: schema.clone(),
                     result,
                 });
                 lost
@@ -1119,11 +1181,11 @@ async fn run_session(
                 request,
                 object,
             } => {
-                let result = connection.describe(&object).await;
+                let result = connection.describe(object).await;
                 let lost = lost_error(&result);
                 outbox.emit(Event::Structure {
-                    session,
-                    request,
+                    session: *session,
+                    request: *request,
                     result,
                 });
                 lost
@@ -1133,11 +1195,11 @@ async fn run_session(
                 request,
                 query,
             } => {
-                let result = connection.fetch_rows(&query).await;
+                let result = connection.fetch_rows(query).await;
                 let lost = lost_error(&result);
                 outbox.emit(Event::Rows {
-                    session,
-                    request,
+                    session: *session,
+                    request: *request,
                     result,
                 });
                 lost
@@ -1147,11 +1209,11 @@ async fn run_session(
                 request,
                 query,
             } => {
-                let result = connection.count_rows(&query).await;
+                let result = connection.count_rows(query).await;
                 let lost = lost_error(&result);
                 outbox.emit(Event::Count {
-                    session,
-                    request,
+                    session: *session,
+                    request: *request,
                     result,
                 });
                 lost
@@ -1160,8 +1222,8 @@ async fn run_session(
                 let result = connection.list_databases().await;
                 let lost = lost_error(&result);
                 outbox.emit(Event::Databases {
-                    session,
-                    request,
+                    session: *session,
+                    request: *request,
                     result,
                 });
                 lost
@@ -1175,7 +1237,7 @@ async fn run_session(
             } => {
                 let timer = timeout.map(|after| {
                     Timer::start(
-                        request,
+                        *request,
                         after,
                         script_stop.clone(),
                         connection.cancel_handle(),
@@ -1185,7 +1247,7 @@ async fn run_session(
                 // Awaited to its end whatever stops it: the script rolls
                 // back and leaves the session as it found it.
                 let result = connection
-                    .run_script(&statements, limit, &script_stop)
+                    .run_script(statements, *limit, &script_stop)
                     .await;
                 let timed_out = match timer {
                     Some(timer) => timer.end().await,
@@ -1194,8 +1256,8 @@ async fn run_session(
                 let cancel = cancel_reason(&script_stop, timed_out, &result);
                 let lost = lost_error(&result);
                 outbox.emit(Event::SqlRan {
-                    session,
-                    request,
+                    session: *session,
+                    request: *request,
                     result,
                     cancel,
                 });
@@ -1205,8 +1267,8 @@ async fn run_session(
                 let result = connection.server_version().await;
                 let lost = lost_error(&result);
                 outbox.emit(Event::ServerVersion {
-                    session,
-                    request,
+                    session: *session,
+                    request: *request,
                     result,
                 });
                 lost
@@ -1220,6 +1282,7 @@ async fn run_session(
             | Command::Save { .. }
             | Command::Flush { .. } => None,
         };
+        end.command = None;
         {
             let mut running = lock(&running);
             running.request = None;
@@ -1227,11 +1290,12 @@ async fn run_session(
             running.cancelling = false;
         }
         if let Some(error) = lost {
-            fail_queued(&mut commands, &outbox, &error);
+            fail_queued(&mut end.commands, &outbox, &error);
             outbox.emit(Event::Disconnected { session, error });
             break;
         }
     }
+    end.finished = true;
     let _ = connection.close().await;
 }
 
@@ -2567,7 +2631,14 @@ mod tests {
         let running = Arc::new(Mutex::new(running_script(&stop)));
         assert!(lock(&running).script_takes_a_cancel());
         assert!(lock(&running).start_cancelling());
-        drop(SessionEnd(Arc::clone(&running)));
+        let (_queue, commands) = tokio_mpsc::unbounded_channel();
+        let (outbox, _received) = quiet_outbox();
+        drop(SessionEnd::new(
+            SessionId(1),
+            Arc::clone(&running),
+            commands,
+            outbox,
+        ));
         let running = lock(&running);
         assert!(!running.script_takes_a_cancel());
         assert!(!running.cancelling);
@@ -2577,7 +2648,7 @@ mod tests {
 
     #[test]
     fn a_session_whose_queue_ends_says_that_it_is_over() {
-        let (outbox, _received) = quiet_outbox();
+        let (outbox, received) = quiet_outbox();
         runtime().block_on(async {
             let (_dir, connection) = sqlite_connection().await;
             let (queue, commands) = tokio_mpsc::unbounded_channel();
@@ -2606,6 +2677,157 @@ mod tests {
             assert!(running.stop.is_none());
             assert!(!running.script_takes_a_cancel());
         });
+        // It ended in order: nothing was lost, so nothing is reported.
+        let said: Vec<Event> = received.try_iter().collect();
+        assert!(said.is_empty(), "{said:?}");
+    }
+
+    /// Starts a session with a count (request 2) and a listing (request 3)
+    /// on its queue, in the state `running`.
+    async fn session_with_two_requests(
+        running: Running,
+        count: RowQuery,
+        outbox: Outbox,
+    ) -> (
+        tempfile::TempDir,
+        SessionHandle,
+        tokio::task::JoinHandle<()>,
+    ) {
+        let (dir, connection) = sqlite_connection().await;
+        let session = SessionId(1);
+        let (handle, commands, stopped) = session_handle(&connection, running);
+        handle
+            .queue
+            .send(Command::CountRows {
+                session,
+                request: RequestId(2),
+                query: count,
+            })
+            .unwrap();
+        handle
+            .queue
+            .send(Command::ListSchemas {
+                session,
+                request: RequestId(3),
+            })
+            .unwrap();
+        let task = tokio::spawn(run_session(
+            session,
+            connection,
+            commands,
+            stopped,
+            Arc::clone(&handle.running),
+            outbox,
+        ));
+        (dir, handle, task)
+    }
+
+    /// Waits until the session of `handle` runs `request`.
+    async fn runs(handle: &SessionHandle, request: RequestId) {
+        let deadline = std::time::Instant::now() + WAIT;
+        while lock(&handle.running).request != Some(request) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the session must start {request:?}"
+            );
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    }
+
+    /// What a session that stopped while it ran request 2, with request 3
+    /// queued, must have said, and what it must have left behind.
+    fn assert_answered_as_lost(handle: &SessionHandle, said: &[Event]) {
+        assert!(
+            matches!(
+                said,
+                [
+                    Event::Count {
+                        request: RequestId(2),
+                        result: Err(Error::ConnectionLost(_)),
+                        ..
+                    },
+                    Event::Schemas {
+                        request: RequestId(3),
+                        result: Err(Error::ConnectionLost(_)),
+                        ..
+                    },
+                    Event::Disconnected {
+                        session: SessionId(1),
+                        error: Error::ConnectionLost(_),
+                    },
+                ]
+            ),
+            "{said:?}"
+        );
+        // Later commands fail at the sender, so the worker answers them.
+        assert!(
+            handle
+                .queue
+                .send(Command::ListSchemas {
+                    session: SessionId(1),
+                    request: RequestId(4),
+                })
+                .is_err()
+        );
+        let running = lock(&handle.running);
+        assert!(running.closed);
+        assert_eq!(running.request, None);
+    }
+
+    #[test]
+    fn a_session_that_panics_answers_its_requests_and_is_disconnected() {
+        let (outbox, received) = quiet_outbox();
+        runtime().block_on(async {
+            let panics = Running {
+                panics: Some(RequestId(2)),
+                ..Running::default()
+            };
+            let count = RowQuery::new(ObjectRef::new("main", "users"), 10);
+            let (_dir, handle, task) = session_with_two_requests(panics, count, outbox).await;
+            let ended = tokio::time::timeout(WAIT, task)
+                .await
+                .expect("the session must end");
+            assert!(ended.is_err_and(|error| error.is_panic()));
+            let said: Vec<Event> = received.try_iter().collect();
+            assert_answered_as_lost(&handle, &said);
+        });
+    }
+
+    #[test]
+    fn a_session_that_is_dropped_answers_its_requests_and_is_disconnected() {
+        let (outbox, received) = quiet_outbox();
+        runtime().block_on(async {
+            let (_dir, handle, task) =
+                session_with_two_requests(Running::default(), slow_count(100_000), outbox).await;
+            runs(&handle, RequestId(2)).await;
+            task.abort();
+            let ended = tokio::time::timeout(WAIT, task)
+                .await
+                .expect("the session must end");
+            assert!(ended.is_err_and(|error| error.is_cancelled()));
+            let said: Vec<Event> = received.try_iter().collect();
+            assert_answered_as_lost(&handle, &said);
+        });
+    }
+
+    #[test]
+    fn a_session_the_worker_let_go_of_is_dropped_in_silence() {
+        let (outbox, received) = quiet_outbox();
+        runtime().block_on(async {
+            let (_dir, handle, task) =
+                session_with_two_requests(Running::default(), slow_count(100_000), outbox).await;
+            runs(&handle, RequestId(2)).await;
+            // A Close, or the backend shutting down: no tab waits for this
+            // session any more.
+            drop(handle);
+            task.abort();
+            let ended = tokio::time::timeout(WAIT, task)
+                .await
+                .expect("the session must end");
+            assert!(ended.is_err_and(|error| error.is_cancelled()));
+        });
+        let said: Vec<Event> = received.try_iter().collect();
+        assert!(said.is_empty(), "{said:?}");
     }
 
     #[test]

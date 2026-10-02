@@ -562,6 +562,169 @@ async fn admin() -> tokio_postgres::Client {
     client
 }
 
+/// The first column of each row of `object` the filter keeps, in key
+/// order, after checking the count agrees.
+async fn kept(
+    connection: &Connection,
+    object: &str,
+    column: &str,
+    op: FilterOp,
+    value: &str,
+) -> Vec<i64> {
+    let mut query = RowQuery::new(ObjectRef::new("public", object), 50);
+    query.filters = vec![Filter {
+        column: column.into(),
+        op,
+        value: value.into(),
+    }];
+    let page = connection.fetch_rows(&query).await.unwrap();
+    assert_eq!(
+        connection.count_rows(&query).await.unwrap(),
+        page.rows.len() as u64,
+        "{column} {op:?} {value}"
+    );
+    ids(&page)
+}
+
+/// A `bytea` key of sixteen bytes shows as a UUID, and other binary as `0x`
+/// hex: neither text is `bytea` input, so the filter has to write the bytes.
+/// A `uuid` column takes the text as it is.
+#[tokio::test]
+async fn a_uuid_or_hex_filter_matches_a_bytea_key_and_its_foreign_key() {
+    let Some(connection) = connect().await else {
+        return;
+    };
+    let admin = admin().await;
+    admin
+        .batch_execute(
+            r"DROP TABLE IF EXISTS uuid_memberships, uuid_accounts;
+              CREATE TABLE uuid_accounts (n int NOT NULL, id bytea PRIMARY KEY, ref uuid, slug text);
+              INSERT INTO uuid_accounts VALUES
+                  (1, '\x0199a3f27c1e7abc8def0123456789ab',
+                   '0199a3f2-7c1e-7abc-8def-0123456789ab', '0199a3f2-7c1e-7abc-8def-0123456789ab'),
+                  (2, '\x0199a3f27c1e7abc8def0123456789ac',
+                   '0199a3f2-7c1e-7abc-8def-0123456789ac', '0199a3f27c1e7abc8def0123456789ac'),
+                  (3, convert_to('0199a3f2-7c1e-7abc-8def-0123456789ad', 'UTF8'), NULL, '0xcafe');
+              CREATE TABLE uuid_memberships (
+                  id int PRIMARY KEY, account_id bytea NOT NULL REFERENCES uuid_accounts (id)
+              );
+              INSERT INTO uuid_memberships VALUES
+                  (1, '\x0199a3f27c1e7abc8def0123456789ab'),
+                  (2, '\x0199a3f27c1e7abc8def0123456789ac'),
+                  (3, '\x0199a3f27c1e7abc8def0123456789ab');",
+        )
+        .await
+        .unwrap();
+    let ab = "0199a3f2-7c1e-7abc-8def-0123456789ab";
+    for (column, op, value, expected) in [
+        ("id", FilterOp::Eq, ab, vec![1]),
+        (
+            "id",
+            FilterOp::Eq,
+            " 0199A3F2-7C1E-7ABC-8DEF-0123456789AB ",
+            vec![1],
+        ),
+        (
+            "id",
+            FilterOp::Eq,
+            "0199a3f27c1e7abc8def0123456789ac",
+            vec![2],
+        ),
+        (
+            "id",
+            FilterOp::Eq,
+            "0x0199a3f27c1e7abc8def0123456789ab",
+            vec![1],
+        ),
+        ("id", FilterOp::Ne, ab, vec![2, 3]),
+        (
+            "id",
+            FilterOp::In,
+            "0199a3f2-7c1e-7abc-8def-0123456789ab, 0x0199a3f27c1e7abc8def0123456789ac, nothing",
+            vec![1, 2],
+        ),
+        // A UUID kept as text in a bytea column still matches as text.
+        (
+            "id",
+            FilterOp::Eq,
+            "0199a3f2-7c1e-7abc-8def-0123456789ad",
+            vec![3],
+        ),
+        // uuid and text columns take the text as it is.
+        ("ref", FilterOp::Eq, ab, vec![1]),
+        (
+            "ref",
+            FilterOp::Eq,
+            "0199a3f27c1e7abc8def0123456789ac",
+            vec![2],
+        ),
+        (
+            "ref",
+            FilterOp::In,
+            "0199a3f2-7c1e-7abc-8def-0123456789ab, 0199a3f27c1e7abc8def0123456789ac",
+            vec![1, 2],
+        ),
+        ("slug", FilterOp::Eq, ab, vec![1]),
+        ("slug", FilterOp::Eq, "0xcafe", vec![3]),
+    ] {
+        assert_eq!(
+            kept(&connection, "uuid_accounts", column, op, value).await,
+            expected,
+            "{column} {op:?} {value}"
+        );
+    }
+
+    // Following the foreign key: the value is what the app shows for it.
+    let memberships = ObjectRef::new("public", "uuid_memberships");
+    let structure = connection.describe(&memberships).await.unwrap();
+    let foreign = &structure.foreign_keys[0];
+    assert_eq!(foreign.columns, ["account_id"]);
+    assert_eq!(foreign.ref_table, "uuid_accounts");
+    let page = connection
+        .fetch_rows(&RowQuery::new(memberships, 50))
+        .await
+        .unwrap();
+    assert_eq!(page.columns[1].kind, ValueKind::Binary);
+    let Value::Bytes(key) = &page.rows[1][1] else {
+        panic!("account_id is {:?}", page.rows[1][1]);
+    };
+    let hex: String = key.iter().map(|byte| format!("{byte:02x}")).collect();
+    let uuid = format!(
+        "{}-{}-{}-{}-{}",
+        &hex[..8],
+        &hex[8..12],
+        &hex[12..16],
+        &hex[16..20],
+        &hex[20..]
+    );
+    assert_eq!(
+        kept(
+            &connection,
+            "uuid_accounts",
+            &foreign.ref_columns[0],
+            FilterOp::Eq,
+            &uuid
+        )
+        .await,
+        vec![2]
+    );
+    assert_eq!(
+        kept(
+            &connection,
+            "uuid_memberships",
+            "account_id",
+            FilterOp::Eq,
+            ab
+        )
+        .await,
+        vec![1, 3]
+    );
+    admin
+        .batch_execute("DROP TABLE uuid_memberships, uuid_accounts")
+        .await
+        .unwrap();
+}
+
 fn script(text: &str) -> Vec<tabletist_db::sql::Statement> {
     tabletist_db::sql::statements(Dialect::Postgres, text)
 }

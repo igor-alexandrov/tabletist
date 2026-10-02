@@ -9,6 +9,7 @@ use crate::i18n::gettext;
 use crate::model::{Action, ConnTabContent};
 use crate::theme::{self, Icon, Look, Palette};
 use crate::typography::{Text, TextRole};
+use crate::ui::states;
 use crate::ui::widgets::{self, ButtonSpec};
 
 /// The header's height, per look (its rule below included).
@@ -152,13 +153,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     let total = app.connections.connections.len();
     let mut actions = Vec::new();
     let full = ui.max_rect();
-    // macOS: alone, the header is the title bar, beside the window buttons.
+    // macOS: the header is the title bar, beside the window buttons.
     let zoom = ui.ctx().zoom_factor();
-    let inset = if app.tabs.len() == 1 {
-        app.titlebar.inset / zoom
-    } else {
-        0.0
-    };
+    let inset = app.titlebar.inset / zoom;
     let backdrop = if look.terminal {
         palette.window
     } else {
@@ -316,7 +313,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     if look.terminal {
         let hints = [
             ("j/k", "move", true),
-            ("enter", "connect", true),
+            ("enter", "connect / show", true),
             ("e", "edit", true),
             ("n", "new", true),
             ("yy", "duplicate", true),
@@ -373,14 +370,46 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     let body = Rect::from_min_max(pos2(full.left(), top), pos2(full.right(), footer.top()));
     let mut list = ui.new_child(egui::UiBuilder::new().max_rect(body));
     let found = app.connections.search(&search);
-    if app.connections.connections.is_empty() || found.is_empty() {
-        let text = if app.connections.connections.is_empty() {
-            gettext(locale, "No saved connections yet")
+    if app.connections.connections.is_empty() {
+        // First launch: why the list is empty, and the one next step.
+        let keyring = if look.faces == theme::Faces::Plex {
+            gettext(locale, "Tabletist stores passwords in the macOS Keychain.")
         } else {
-            gettext(locale, "No connections match")
+            gettext(locale, "Tabletist stores passwords in the system keyring.")
         };
+        let text = format!(
+            "{} {keyring}",
+            gettext(
+                locale,
+                "Add a PostgreSQL, MySQL or SQLite database to start browsing."
+            )
+        );
+        let (title, text) = (
+            look.label(&gettext(locale, "No connections yet")),
+            look.label(&text),
+        );
+        let notice = states::Notice {
+            icon: Icon::Database,
+            title: &title,
+            text: &text,
+        };
+        let name = look.label(&gettext(locale, "New connection"));
+        let keys = if look.terminal { "n" } else { &command_n };
+        let add = states::key_button(&name, keys, &look)
+            .label("New connection")
+            .salt("empty");
+        let add = if look.terminal {
+            add
+        } else {
+            add.primary().icon(Icon::Plus).padding(14.0).gap(8.0)
+        };
+        if states::empty(&mut list, body, &notice, vec![add], &look, &palette).is_some() {
+            actions.push(Action::NewConnection);
+        }
+    } else if found.is_empty() {
         list.add_space(40.0);
         list.vertical_centered(|ui| {
+            let text = gettext(locale, "No connections match");
             Text::one(&look, widgets::body(&look), &text, palette.secondary)
                 .layout(ui.ctx())
                 .label(ui);
@@ -416,7 +445,10 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                                 connection,
                                 &app.connections,
                                 selected.as_ref(),
-                                tab,
+                                Opening {
+                                    tab,
+                                    open: app.tab_showing(&connection.id),
+                                },
                                 skin,
                                 &mut actions,
                             );
@@ -443,7 +475,10 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                                 connection,
                                 &app.connections,
                                 selected.as_ref(),
-                                tab,
+                                Opening {
+                                    tab,
+                                    open: app.tab_showing(&connection.id),
+                                },
                                 skin,
                                 &mut actions,
                             );
@@ -543,6 +578,33 @@ struct RowSkin<'a> {
     side: f32,
 }
 
+/// Where a row's connection opens: the picker's tab, or the tab that has
+/// it open already.
+#[derive(Clone, Copy)]
+struct Opening {
+    tab: crate::model::ConnTabId,
+    open: Option<crate::model::ConnTabId>,
+}
+
+impl Opening {
+    /// What choosing the row does: an open connection shows, another
+    /// connects in the picker's tab.
+    fn choose(self, connection: &SavedConnection) -> Action {
+        match self.open {
+            Some(open) => Action::ActivateConnTab(open),
+            None => self.connect(connection),
+        }
+    }
+
+    /// Connects in the picker's tab, open already or not.
+    fn connect(self, connection: &SavedConnection) -> Action {
+        Action::Connect {
+            tab: self.tab,
+            conn: connection.id.clone(),
+        }
+    }
+}
+
 /// Where a connection points, as the rows say it: host and port, then the
 /// database (a file's name for SQLite).
 fn target(connection: &SavedConnection) -> (String, String) {
@@ -557,15 +619,17 @@ fn target(connection: &SavedConnection) -> (String, String) {
 }
 
 /// The row's own response, answering a click by selecting and a double
-/// click, Enter or a screen reader by connecting.
+/// click, Enter or a screen reader by choosing it: an open connection
+/// shows, another connects.
 fn row_response(
     ui: &mut egui::Ui,
     rect: Rect,
     connection: &SavedConnection,
-    tab: crate::model::ConnTabId,
+    opening: Opening,
     look: &Look,
     actions: &mut Vec<Action>,
 ) -> egui::Response {
+    let tab = opening.tab;
     let response = ui.interact(
         rect,
         ui.id().with(("connection", &connection.id.0)),
@@ -575,10 +639,7 @@ fn row_response(
     let activated = response.double_clicked()
         || (response.clicked() && !response.clicked_by(egui::PointerButton::Primary));
     if activated {
-        actions.push(Action::Connect {
-            tab,
-            conn: connection.id.clone(),
-        });
+        actions.push(opening.choose(connection));
     } else if response.clicked() {
         actions.push(Action::SelectConnection {
             tab,
@@ -591,11 +652,16 @@ fn row_response(
         let item = |ui: &mut egui::Ui, text: &'static str| {
             widgets::button(ui, &gettext(locale, text), look).clicked()
         };
-        if item(ui, "Connect") {
-            actions.push(Action::Connect {
-                tab,
-                conn: id.clone(),
-            });
+        // An open connection shows, and can be opened once more.
+        if opening.open.is_some() {
+            if item(ui, "Show") {
+                actions.push(opening.choose(connection));
+            }
+            if item(ui, "Connect again") {
+                actions.push(opening.connect(connection));
+            }
+        } else if item(ui, "Connect") {
+            actions.push(opening.connect(connection));
         }
         if item(ui, "Edit…") {
             actions.push(Action::EditConnection(id.clone()));
@@ -610,6 +676,24 @@ fn row_response(
     response
 }
 
+/// The words on the button that chooses a row, and its accessible name:
+/// Show for a connection that is open, Connect for another.
+fn choose_labels(
+    connection: &SavedConnection,
+    opening: Opening,
+    locale: crate::i18n::Locale,
+) -> (String, String) {
+    let (text, label) = if opening.open.is_some() {
+        ("Show", "Show")
+    } else {
+        ("Connect", "Connect to")
+    };
+    (
+        gettext(locale, text).into_owned(),
+        format!("{} {}", gettext(locale, label), connection.name),
+    )
+}
+
 /// macOS: a row of the card, a colour bar at its left edge, columns for
 /// the name, where it points, its security and when it was last used.
 #[allow(clippy::too_many_arguments)] // one call site
@@ -620,7 +704,7 @@ fn mac_row(
     connection: &SavedConnection,
     store: &crate::connections::SavedConnections,
     selected: Option<&ConnectionId>,
-    tab: crate::model::ConnTabId,
+    opening: Opening,
     skin: RowSkin<'_>,
     actions: &mut Vec<Action>,
 ) {
@@ -637,7 +721,7 @@ fn mac_row(
         pos2(card.left(), rect.top()),
         pos2(card.right(), rect.bottom()),
     );
-    let response = row_response(ui, rect, connection, tab, look, actions);
+    let response = row_response(ui, rect, connection, opening, look, actions);
     let is_selected = selected == Some(&connection.id);
     let rows = (card.height() / height).round() as usize;
     // The card's inner corners: its 10 less its border.
@@ -696,7 +780,7 @@ fn mac_row(
             palette.text,
         ),
     );
-    super::workspace::env_badge(
+    let badge = super::workspace::env_badge(
         ui,
         name_x + name_width + 8.0,
         top,
@@ -705,6 +789,29 @@ fn mac_row(
         super::workspace::Badge::Mac,
         look,
     );
+    if opening.open.is_some() {
+        // Open in a tab already: an outlined tag in the accent, 8 on.
+        let text = gettext(locale, "open");
+        let laid = Text::one(look, TextRole::Shortcut, &text, palette.accent).layout(ui.ctx());
+        let tag = Rect::from_min_size(
+            pos2(
+                name_x + name_width + 8.0 + badge + 8.0,
+                top - (laid.height() + 2.0) / 2.0,
+            ),
+            vec2(laid.width() + 14.0, laid.height() + 2.0),
+        );
+        ui.painter().rect_stroke(
+            tag,
+            CornerRadius::same(10),
+            Stroke::new(
+                widgets::hairline(ui),
+                palette.window.lerp_to_gamma(palette.accent, 0.45),
+            ),
+            StrokeKind::Inside,
+        );
+        laid.paint_left(ui.painter(), tag.left() + 7.0, top);
+        widgets::announce(ui, tag, &text);
+    }
     let user = &connection.spec.user;
     let second = if user.is_empty() {
         connection.spec.driver.label().to_owned()
@@ -730,11 +837,15 @@ fn mac_row(
         Text::one(look, host_role, &shown, palette.text),
     );
     if !database.is_empty() {
+        let database_role = TextRole::MonoSecondary;
+        let shown = crate::ui::grid::ellipsize(&database, host_width - 24.0, false, |text| {
+            database_role.width(ui.ctx(), look.faces, text)
+        });
         widgets::paint_label(
             ui,
             host_x,
             bottom,
-            Text::one(look, TextRole::MonoSecondary, &database, palette.dim),
+            Text::one(look, database_role, &shown, palette.dim),
         );
     }
     let (tls, verified) = tls_label(connection);
@@ -771,12 +882,12 @@ fn mac_row(
             palette.dim,
         ),
     );
-    // Edit, more, and Connect: on the selected row and under the pointer.
-    // Connect is always there for keyboards and screen readers.
+    // Edit, more, and Connect (Show, for a connection that is open): on
+    // the selected row and under the pointer. Connect is always there for
+    // keyboards and screen readers.
     let shown = is_selected || ui.rect_contains_pointer(rect);
     let y = rect.center().y;
-    let connect_label = format!("{} {}", gettext(locale, "Connect to"), connection.name);
-    let connect_text = gettext(locale, "Connect");
+    let (connect_text, connect_label) = choose_labels(connection, opening, locale);
     // 16 in from the right, 6 apart, 30 tall.
     let connect = ButtonSpec::new(&connect_text)
         .primary()
@@ -795,10 +906,7 @@ fn mac_row(
         connect.hidden_at(ui, place)
     };
     if response.clicked() {
-        actions.push(Action::Connect {
-            tab,
-            conn: connection.id.clone(),
-        });
+        actions.push(opening.choose(connection));
     }
     let more_place =
         Rect::from_min_size(pos2(place.left() - 6.0 - 30.0, y - 15.0), vec2(30.0, 30.0));
@@ -862,7 +970,7 @@ fn terminal_row(
     connection: &SavedConnection,
     store: &crate::connections::SavedConnections,
     selected: Option<&ConnectionId>,
-    tab: crate::model::ConnTabId,
+    opening: Opening,
     skin: RowSkin<'_>,
     actions: &mut Vec<Action>,
 ) {
@@ -875,7 +983,7 @@ fn terminal_row(
     } = skin;
     let (rect, _) =
         ui.allocate_exact_size(vec2(ui.available_width(), row_height(look)), Sense::hover());
-    let response = row_response(ui, rect, connection, tab, look, actions);
+    let response = row_response(ui, rect, connection, opening, look, actions);
     let is_selected = selected == Some(&connection.id);
     let center = rect.center().y;
     if is_selected {
@@ -905,12 +1013,26 @@ fn terminal_row(
     // A 13 pt name and a 12 pt line, 3 apart, centred.
     let top = center - 9.8;
     let bottom = center + 9.8;
-    widgets::paint_text(
+    let name_width = widgets::paint_text(
         ui,
         text_x,
         top,
         Text::one(look, TextRole::OGroup, &connection.name, palette.text),
     );
+    if opening.open.is_some() {
+        // Open in a tab already: the word in the accent, 10 on.
+        widgets::paint_label(
+            ui,
+            text_x + name_width + 10.0,
+            top,
+            Text::one(
+                look,
+                TextRole::OBody,
+                &gettext(locale, "open"),
+                palette.accent,
+            ),
+        );
+    }
     let spec = &connection.spec;
     let mut line = spec.summary();
     if let Some(at) = line.find(" via ") {
@@ -952,17 +1074,58 @@ fn terminal_row(
         center,
         Text::one(look, small, &when, palette.dim),
     );
-    // Connect, for screen readers and the tests; the keys do it here.
-    let connect = format!("{} {}", gettext(locale, "Connect to"), connection.name);
+    // Connect (Show, for a connection that is open), for screen readers
+    // and the tests; the keys do it here.
+    let (_, choose) = choose_labels(connection, opening, locale);
     let hit = Rect::from_min_size(pos2(rect.right() - side - 1.0, rect.top()), vec2(1.0, 1.0));
-    if ButtonSpec::new(&connect)
+    if ButtonSpec::new(&choose)
         .salt(&connection.id.0)
         .hidden_at(ui, hit)
         .clicked()
     {
-        actions.push(Action::Connect {
-            tab,
-            conn: connection.id.clone(),
-        });
+        actions.push(opening.choose(connection));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn choosing_a_row_shows_an_open_connection_and_connects_another() {
+        let connection = SavedConnection {
+            id: ConnectionId::new(),
+            name: "Fixture".into(),
+            environment: crate::env::Environment::Dev,
+            read_only: None,
+            password: crate::connections::PasswordMode::None,
+            ssh_secret: crate::connections::PasswordMode::None,
+            spec: tabletist_db::ConnectSpec::sqlite("/tmp/fixture.db"),
+        };
+        let picker = crate::model::ConnTabId(1);
+        let open = crate::model::ConnTabId(2);
+        let connects = |action: Action| {
+            let Action::Connect { tab, conn } = action else {
+                return false;
+            };
+            tab == picker && conn == connection.id
+        };
+        // Not open: choosing it connects in the picker's tab.
+        let closed = Opening {
+            tab: picker,
+            open: None,
+        };
+        assert!(connects(closed.choose(&connection)));
+        // Open: choosing it shows that tab, and it can still connect again
+        // (the row menu's Connect again, and Shift+Enter).
+        let opened = Opening {
+            tab: picker,
+            open: Some(open),
+        };
+        assert!(matches!(
+            opened.choose(&connection),
+            Action::ActivateConnTab(tab) if tab == open
+        ));
+        assert!(connects(opened.connect(&connection)));
     }
 }

@@ -24,8 +24,27 @@ pub fn cell_text(value: &Value) -> Cow<'_, str> {
         Value::Int(number) => Cow::Owned(number.to_string()),
         Value::Float(number) => Cow::Owned(number.to_string()),
         Value::Text(text) => one_line(text),
-        Value::Bytes(bytes) => Cow::Owned(format!("BLOB · {}", human_size(bytes.len()))),
+        Value::Bytes(bytes) => {
+            Cow::Owned(uuid(bytes).unwrap_or_else(|| format!("BLOB · {}", human_size(bytes.len()))))
+        }
     }
+}
+
+/// Sixteen bytes as the UUID they hold: `0199a3f2-7c1e-7abc-8def-0123456789ab`.
+/// SQLite and MySQL have no UUID type, so a UUID key is kept in a `blob(16)`
+/// or `binary(16)` column and arrives as bytes. The text is the bytes' hex
+/// with four hyphens, so sixteen bytes that are no UUID lose nothing by it.
+/// `None` for any other length.
+pub fn uuid(bytes: &[u8]) -> Option<String> {
+    let bytes: &[u8; 16] = bytes.try_into().ok()?;
+    let mut text = String::with_capacity(36);
+    for (index, byte) in bytes.iter().enumerate() {
+        if matches!(index, 4 | 6 | 8 | 10) {
+            text.push('-');
+        }
+        let _ = write!(text, "{byte:02x}");
+    }
+    Some(text)
 }
 
 /// Text on one line, as a grid cell shows it: line breaks and tabs become
@@ -215,17 +234,18 @@ pub fn ellipsize_middle(text: &str, max: f32, width: impl Fn(&str) -> f32) -> St
     candidate(fits)
 }
 
-/// The whole value as text, for the clipboard. Binary becomes `0x` hex.
+/// The whole value as text, for the clipboard. Binary becomes `0x` hex,
+/// and sixteen bytes the UUID the grid shows.
 pub fn plain_text(value: &Value) -> String {
     match value {
-        Value::Bytes(bytes) => {
+        Value::Bytes(bytes) => uuid(bytes).unwrap_or_else(|| {
             let mut hex = String::with_capacity(2 + bytes.len() * 2);
             hex.push_str("0x");
             for byte in bytes.iter() {
                 let _ = write!(hex, "{byte:02x}");
             }
             hex
-        }
+        }),
         Value::Text(text) => text.to_string(),
         other => cell_text(other).into_owned(),
     }
@@ -238,14 +258,18 @@ thread_local! {
 }
 
 /// The whole value as the row panel shows it as text. JSON the panel can
-/// parse is drawn as a tree instead (`json_view`). Text is borrowed, not
-/// copied.
+/// parse is drawn as a tree instead (`json_view`). Binary is its size and a
+/// hex dump, and sixteen bytes the UUID the grid shows. Text is borrowed,
+/// not copied.
 pub fn full_text(value: &Value) -> Cow<'_, str> {
     #[cfg(test)]
     FULL_TEXTS.with(|count| count.set(count.get() + 1));
     match value {
         Value::Text(text) => Cow::Borrowed(text),
         Value::Bytes(bytes) => {
+            if let Some(uuid) = uuid(bytes) {
+                return Cow::Owned(uuid);
+            }
             let shown = &bytes[..bytes.len().min(HEX_LIMIT)];
             let mut text = format!("{}\n{}", human_size(bytes.len()), hex_dump(shown));
             if bytes.len() > HEX_LIMIT {
@@ -411,6 +435,40 @@ pub fn describe_error(locale: impl fastframe_i18n::Locale, error: &tabletist_db:
     sentence.into_owned()
 }
 
+/// The most characters of what a database said that a message or an error
+/// card shows.
+pub const MESSAGE_MAX_CHARS: usize = 2_000;
+
+/// What a database said, cut to what a message shows and ending in "…"
+/// when cut. A message can hold megabytes (PostgreSQL repeats a literal it
+/// cannot read) and is written and laid out every frame, so nothing here
+/// looks past the cut. The start says what went wrong.
+pub fn capped(text: &str) -> Cow<'_, str> {
+    match text.char_indices().nth(MESSAGE_MAX_CHARS) {
+        Some((end, _)) => format!("{}…", &text[..end]).into(),
+        None => text.into(),
+    }
+}
+
+/// Whether `error` is the read-only session refusing a write: Tabletist's
+/// own guard, or the server's refusal. PostgreSQL and MySQL say SQLSTATE
+/// 25006; SQLite says SQLITE_READONLY (8) and no more. Its extended codes
+/// keep the 8 in their low byte and are not a refused write: a journal to
+/// recover, a lock or a directory it cannot have, which a SELECT can meet.
+pub fn refuses_writes(error: &tabletist_db::Error, driver: tabletist_db::Driver) -> bool {
+    use tabletist_db::{Driver, Error};
+    match error {
+        Error::Refused { .. } => true,
+        Error::Query {
+            code: Some(code), ..
+        } => match driver {
+            Driver::Sqlite => code == "8",
+            Driver::Postgres | Driver::MySql => code == "25006",
+        },
+        _ => false,
+    }
+}
+
 /// A row as tab-separated values on one line.
 pub fn tsv_row(row: &[Value]) -> String {
     row.iter()
@@ -483,6 +541,55 @@ pub fn for_display(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_refused_write_is_told_from_other_errors() {
+        use super::refuses_writes;
+        use tabletist_db::{Driver, Error};
+        let coded = |code: &str| Error::Query {
+            code: Some(code.into()),
+            message: "no".into(),
+            detail: None,
+            hint: None,
+        };
+        let refused = Error::Refused {
+            line: 1,
+            what: "COMMIT".into(),
+        };
+        for driver in [Driver::Postgres, Driver::MySql, Driver::Sqlite] {
+            assert!(refuses_writes(&refused, driver));
+            assert!(!refuses_writes(&Error::Timeout, driver));
+        }
+        // SQLSTATE 25006: read_only_sql_transaction.
+        assert!(refuses_writes(&coded("25006"), Driver::Postgres));
+        assert!(refuses_writes(&coded("25006"), Driver::MySql));
+        assert!(!refuses_writes(&coded("42703"), Driver::Postgres));
+        // SQLITE_READONLY is 8: what a write on the read-only session gets.
+        assert!(refuses_writes(&coded("8"), Driver::Sqlite));
+        assert!(!refuses_writes(&coded("1"), Driver::Sqlite));
+        // Its extended codes keep the 8 in their low byte and are other
+        // troubles, which a SELECT can meet: RECOVERY, CANTLOCK, ROLLBACK,
+        // DBMOVED, CANTINIT and DIRECTORY.
+        for extended in ["264", "520", "776", "1032", "1288", "1544"] {
+            assert!(
+                !refuses_writes(&coded(extended), Driver::Sqlite),
+                "{extended}"
+            );
+        }
+        // A SQLSTATE whose number ends in the same byte is not SQLite's code.
+        assert!(!refuses_writes(&coded("23048"), Driver::Postgres));
+    }
+
+    #[test]
+    fn a_message_is_cut_where_a_database_says_too_much() {
+        use super::{MESSAGE_MAX_CHARS, capped};
+        assert_eq!(capped("no such column: x"), "no such column: x");
+        let exact = "é".repeat(MESSAGE_MAX_CHARS);
+        assert_eq!(capped(&exact), exact.as_str());
+        // Cut between characters, never inside one.
+        let long = "é".repeat(MESSAGE_MAX_CHARS + 1);
+        assert_eq!(capped(&long), format!("{exact}…"));
+    }
+
     #[test]
     fn timestamps_drop_their_fraction_and_keep_their_zone() {
         use super::to_the_second;
@@ -574,6 +681,29 @@ mod tests {
             cell_text(&Value::Bytes(vec![0; 1536].into())),
             "BLOB · 1.5 KB"
         );
+    }
+
+    #[test]
+    fn sixteen_bytes_read_as_a_uuid_everywhere() {
+        let key = Value::Bytes(
+            vec![
+                0x01, 0x99, 0xa3, 0xf2, 0x7c, 0x1e, 0x7a, 0xbc, 0x8d, 0xef, 0x01, 0x23, 0x45, 0x67,
+                0x89, 0xab,
+            ]
+            .into(),
+        );
+        let uuid = "0199a3f2-7c1e-7abc-8def-0123456789ab";
+        assert_eq!(cell_text(&key), uuid);
+        assert_eq!(plain_text(&key), uuid);
+        assert_eq!(full_text(&key), uuid);
+        assert_eq!(tsv_row(&[Value::Int(1), key]), format!("1\t{uuid}"));
+        // Any other length stays a blob.
+        for len in [15, 17] {
+            let blob = Value::Bytes(vec![0xab; len].into());
+            assert_eq!(cell_text(&blob), format!("BLOB · {len} B"));
+            assert!(plain_text(&blob).starts_with("0xabab"));
+            assert!(full_text(&blob).starts_with(&format!("{len} B\n00000000  ab")));
+        }
     }
 
     #[test]

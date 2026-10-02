@@ -13,8 +13,8 @@ use crate::connections::{ConnectionId, PasswordMode, SavedConnection};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ConnTabId(pub u64);
 
-/// One tab in the connection tab bar: one connection, or the picker that
-/// chooses one.
+/// One tab: one connection (a chip in the connection bar), or the picker
+/// that chooses one.
 #[derive(Debug)]
 pub struct ConnTab {
     pub id: ConnTabId,
@@ -45,12 +45,14 @@ pub struct PickerState {
 /// applies them after the frame is drawn.
 #[derive(Debug)]
 pub enum Action {
-    /// Open a new picker tab and make it active.
-    NewConnTab,
+    /// Cmd/Ctrl+O and the Connections button: show the saved connections,
+    /// in the picker tab there is, or in a new one at the end.
+    ShowConnections,
     CloseConnTab(ConnTabId),
     ActivateConnTab(ConnTabId),
-    /// Cmd/Ctrl+1..9: activate the tab at this position, if there is one.
-    ActivateConnTabIndex(usize),
+    /// Cmd/Ctrl+1..9: activate the open connection at this position, as the
+    /// header numbers them, if there is one.
+    ActivateConnection(usize),
     /// Ctrl+Tab (+1) and Ctrl+Shift+Tab (-1), wrapping around.
     CycleConnTab(isize),
     /// A result from the backend.
@@ -141,7 +143,7 @@ pub enum Action {
     /// Fold (or unfold) every JSON document in the row panel (`za`).
     FoldDocuments {
         tab: ConnTabId,
-        object_tab: TabId,
+        id: TabId,
     },
     /// Follow the foreign key of the selected cell's column (`gd`).
     FollowSelectedKey {
@@ -231,6 +233,12 @@ pub enum Action {
         tab: ConnTabId,
         sql_tab: TabId,
         all: bool,
+    },
+    /// Format the editor's script, or the statements its selection
+    /// overlaps.
+    FormatSql {
+        tab: ConnTabId,
+        sql_tab: TabId,
     },
     /// The Limit menu: this editor's row limit, and the one new editors get.
     SetSqlLimit {
@@ -376,6 +384,9 @@ pub struct Workspace {
     /// session connects; `prefer` may have fallen back to plain text.
     pub encrypted: bool,
     pub status: SessionStatus,
+    /// When the connect in flight was sent to the backend (after any
+    /// password prompt), for the time the tab shows.
+    pub connect_started: Option<std::time::Instant>,
     pub tree: Tree,
     /// Open tabs, in strip order.
     pub tabs: Vec<Tab>,
@@ -421,6 +432,9 @@ pub struct Workspace {
     pub focus_where: bool,
     /// Fold or unfold the row panel's documents on the next frame (`za`).
     pub fold_documents: Option<TabId>,
+    /// When the session last connected, in seconds since the Unix epoch
+    /// (the connection bar's card says how long ago).
+    pub connected_at: Option<u64>,
 }
 
 /// How many objects the sidebar's Recent section keeps.
@@ -1079,6 +1093,8 @@ pub struct Fetch<T> {
     pub error: Option<Error>,
     /// The request whose answer `value` holds.
     pub loaded: Option<RequestId>,
+    /// When the pending request was sent, for the time a wait shows.
+    pub started: Option<std::time::Instant>,
 }
 
 impl<T> Default for Fetch<T> {
@@ -1088,6 +1104,7 @@ impl<T> Default for Fetch<T> {
             pending: None,
             error: None,
             loaded: None,
+            started: None,
         }
     }
 }
@@ -1096,6 +1113,7 @@ impl<T> Fetch<T> {
     pub fn start(&mut self, request: RequestId) {
         self.pending = Some(request);
         self.error = None;
+        self.started = Some(std::time::Instant::now());
     }
 
     /// Applies a result if it answers the pending request. Returns whether it did.
@@ -1104,6 +1122,7 @@ impl<T> Fetch<T> {
             return false;
         }
         self.pending = None;
+        self.started = None;
         match result {
             Ok(value) => {
                 self.value = Some(value);
@@ -1117,6 +1136,24 @@ impl<T> Fetch<T> {
 
     pub fn is_loading(&self) -> bool {
         self.pending.is_some()
+    }
+
+    /// How long the request in flight has been going.
+    pub fn running_for(&self) -> Option<Duration> {
+        self.pending
+            .and(self.started)
+            .map(|started| started.elapsed())
+    }
+
+    /// The error shown in place of the value. Two are not shown while a
+    /// value is held, and what was on screen stays: a lost connection,
+    /// which the strip over the tab says, and a cancelled refresh, which
+    /// failed at nothing.
+    pub fn shown_error(&self) -> Option<&Error> {
+        let keeps_value = |error: &Error| {
+            self.value.is_some() && (error.is_connection_lost() || *error == Error::Cancelled)
+        };
+        self.error.as_ref().filter(|error| !keeps_value(error))
     }
 
     /// Never loaded and not loading.
@@ -1457,11 +1494,12 @@ pub struct ObjectTab {
 }
 
 /// The row panel's text for one row, formatted once when the selection or
-/// the page changes: a cell can hold megabytes, too much to format again
-/// every frame.
+/// the page (or the SQL result) changes: a cell can hold megabytes, too much
+/// to format again every frame.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RowFields {
-    /// The rows request whose page holds the row.
+    /// The request whose answer holds the row: a table's rows, or a SQL
+    /// editor's run.
     pub request: Option<RequestId>,
     pub row: usize,
     /// One per column.
@@ -1563,6 +1601,16 @@ impl ObjectTab {
 
     pub fn page(&self) -> Option<&RowPage> {
         self.rows.value.as_ref()
+    }
+
+    /// Forgets the page and the selection in it, before a fetch that
+    /// answers an error. The filter bar keeps the columns it offered.
+    pub fn drop_page(&mut self) {
+        if let Some(page) = self.page() {
+            self.filter.columns = page.columns.iter().map(|c| c.name.clone()).collect();
+        }
+        self.selection = None;
+        self.rows.value = None;
     }
 
     /// The row panel's text for the selected row, if it is up to date.
@@ -1940,6 +1988,8 @@ pub struct SqlTab {
     /// to 1. Change it through `set_split`.
     pub split: f32,
     pub selection: Option<CellPos>,
+    /// The row panel's text for the selected row (see `App::format_rows`).
+    pub fields: Option<RowFields>,
     /// Focus the editor on the next frame.
     pub focus_editor: bool,
     /// The completion list, while it is open.
@@ -1947,6 +1997,9 @@ pub struct SqlTab {
     /// A list was asked for and is not worked out yet:
     /// `App::refresh_completion` takes this and decides.
     pub completion_wanted: Option<Wanted>,
+    /// Format the script on the next frame: the editor does it, where the
+    /// selection and the undo history are.
+    pub format: bool,
     /// The text the last run that finished started with. Its error mark
     /// names a line of that text, so it holds only while the text is that.
     ran_text: Option<TextPrint>,
@@ -1968,6 +2021,7 @@ impl std::fmt::Debug for SqlTab {
             .field("split", &self.split)
             .field("selection", &self.selection)
             .field("focus_editor", &self.focus_editor)
+            .field("format", &self.format)
             .finish_non_exhaustive()
     }
 }
@@ -1989,9 +2043,11 @@ impl SqlTab {
             pane: ResultPane::default(),
             split: Self::DEFAULT_SPLIT,
             selection: None,
+            fields: None,
             focus_editor: true,
             completion: None,
             completion_wanted: None,
+            format: false,
             ran_text: None,
         }
     }
@@ -2104,6 +2160,22 @@ impl SqlTab {
             .map_or((0, 0), |(columns, rows, _)| (rows.len(), columns.len()))
     }
 
+    /// The selected row of the result, while the Results pane shows it:
+    /// the row the row panel is for. None under the Messages pane, which
+    /// shows no rows.
+    pub fn selected_row(&self) -> Option<usize> {
+        let row = self.selection?.row;
+        (self.pane == ResultPane::Results && row < self.dims().0).then_some(row)
+    }
+
+    /// The row panel's text for the selected row, if it is up to date.
+    pub fn selected_fields(&self) -> Option<&RowFields> {
+        let row = self.selected_row()?;
+        self.fields
+            .as_ref()
+            .filter(|fields| fields.row == row && fields.request == self.run.loaded)
+    }
+
     /// The cursor's 1-based line and column (in characters).
     pub fn line_col(&self) -> (usize, usize) {
         // The cursor is the view's: text set from elsewhere may leave it
@@ -2137,6 +2209,35 @@ impl SqlTab {
 }
 
 impl Workspace {
+    /// Whether the tab has content to show now: its schemas are listed, or
+    /// could not be. Until then the tab shows how connecting goes. A switch
+    /// of database starts the tree over, so a tab in use can go back to
+    /// not opened.
+    pub fn opened(&self) -> bool {
+        self.tree.schemas.value.is_some() || self.tree.schemas.error.is_some()
+    }
+
+    /// Whether giving up the connect loses nothing: the tab has not opened,
+    /// a connect or its schema listing is under way, and no tab is open in
+    /// it. Giving up closes the workspace, and with it the SQL editors a
+    /// switch of database keeps.
+    pub fn can_give_up(&self) -> bool {
+        !self.opened()
+            && matches!(
+                self.status,
+                SessionStatus::Connecting { .. } | SessionStatus::Connected
+            )
+            && self.tabs.is_empty()
+    }
+
+    /// How long the connect in flight has been going, once it was sent.
+    pub fn connecting_for(&self) -> Option<Duration> {
+        matches!(self.status, SessionStatus::Connecting { .. })
+            .then_some(self.connect_started)
+            .flatten()
+            .map(|started| started.elapsed())
+    }
+
     /// A workspace for `saved` that is connecting as `session`; `request`
     /// is the connect it waits for, and `secrets` are the ones typed so far.
     pub fn new(
@@ -2154,6 +2255,7 @@ impl Workspace {
             encrypted: false,
             spec: saved.spec,
             status: SessionStatus::Connecting { request },
+            connect_started: None,
             tree: Tree::default(),
             tabs: Vec::new(),
             next_query: 1,
@@ -2176,6 +2278,7 @@ impl Workspace {
             full_precision: false,
             focus_where: false,
             fold_documents: None,
+            connected_at: None,
         }
     }
 
@@ -2229,6 +2332,20 @@ impl Workspace {
     /// The active tab, when it is a SQL editor.
     pub fn active_sql_tab(&self) -> Option<&SqlTab> {
         self.sql_tab(self.active_tab?)
+    }
+
+    /// The tab whose row the row panel shows: none while the panel is
+    /// closed. A table's Data view keeps the panel open with no row
+    /// selected; a SQL editor gives it room only while a row of its result
+    /// is selected.
+    pub fn row_panel_tab(&self) -> Option<TabId> {
+        if !self.row_panel {
+            return None;
+        }
+        match self.tab(self.active_tab?)? {
+            Tab::Object(object) => (object.view == ObjectView::Data).then_some(object.id),
+            Tab::Sql(sql) => sql.selected_row().map(|_| sql.id),
+        }
     }
 
     /// The object tabs, in strip order.
@@ -2359,6 +2476,55 @@ mod tests {
             100,
             None,
         )))
+    }
+
+    #[test]
+    fn a_fetch_times_the_request_in_flight() {
+        let mut fetch: Fetch<u32> = Fetch::default();
+        assert_eq!(fetch.running_for(), None);
+        fetch.start(RequestId(1));
+        assert!(fetch.running_for().is_some());
+        assert!(fetch.finish(RequestId(1), Ok(7)));
+        assert_eq!(fetch.running_for(), None, "nothing is in flight");
+    }
+
+    #[test]
+    fn a_fetch_dropped_without_an_answer_is_not_timed() {
+        let mut fetch: Fetch<u32> = Fetch::default();
+        fetch.start(RequestId(1));
+        // Dropped without an answer: nothing is in flight any more.
+        fetch.pending = None;
+        assert_eq!(fetch.running_for(), None);
+    }
+
+    #[test]
+    fn a_workspace_opens_once_its_schemas_were_listed() {
+        let mut workspace = crate::testing::workspace();
+        assert!(!workspace.opened());
+        assert_eq!(workspace.connecting_for(), None, "nothing was sent yet");
+        workspace.connect_started = Some(std::time::Instant::now());
+        assert!(workspace.connecting_for().is_some());
+        workspace.status = SessionStatus::Connected;
+        assert_eq!(workspace.connecting_for(), None, "the connect was answered");
+        workspace.tree.schemas.value = Some(Vec::new());
+        assert!(workspace.opened());
+    }
+
+    #[test]
+    fn a_connect_is_given_up_only_with_nothing_to_lose() {
+        let mut workspace = crate::testing::workspace();
+        assert!(workspace.can_give_up(), "a first connect");
+        workspace.status = SessionStatus::Connected;
+        assert!(workspace.can_give_up(), "its schemas are being listed");
+        // A SQL editor is the user's work: a switch of database keeps it.
+        workspace.tabs.push(sql_tab(1));
+        assert!(!workspace.can_give_up(), "an editor is open");
+        workspace.tabs.clear();
+        workspace.status = SessionStatus::Cancelled;
+        assert!(!workspace.can_give_up(), "nothing is under way");
+        workspace.status = SessionStatus::Connected;
+        workspace.tree.schemas.value = Some(Vec::new());
+        assert!(!workspace.can_give_up(), "the tab opened");
     }
 
     #[test]
@@ -2643,6 +2809,76 @@ mod tests {
         assert_eq!(readings(&sql), (None, false, (0, 0), None));
         run_script(&mut sql, "SELECT 2", vec![rows_outcome(2)]);
         assert_eq!(readings(&sql), (Some(1), true, (2, 3), None));
+    }
+
+    #[test]
+    fn a_sql_tabs_selected_row_is_one_its_results_pane_shows() {
+        let mut sql = editor();
+        sql.selection = Some(CellPos { row: 0, col: 0 });
+        assert_eq!(sql.selected_row(), None, "nothing ran");
+        run_script(&mut sql, "SELECT 1", vec![rows_outcome(3)]);
+        sql.selection = None;
+        assert_eq!(sql.selected_row(), None);
+        sql.selection = Some(CellPos { row: 2, col: 1 });
+        assert_eq!(sql.selected_row(), Some(2));
+        sql.pane = ResultPane::Messages;
+        assert_eq!(sql.selected_row(), None, "the messages show no rows");
+        sql.pane = ResultPane::Results;
+        // A selection past the result's rows is no row of it.
+        sql.selection = Some(CellPos { row: 3, col: 0 });
+        assert_eq!(sql.selected_row(), None);
+    }
+
+    #[test]
+    fn a_sql_tabs_row_text_holds_for_its_row_and_its_run() {
+        let mut sql = editor();
+        run_script(&mut sql, "SELECT 1", vec![rows_outcome(3)]);
+        sql.selection = Some(CellPos { row: 1, col: 0 });
+        assert!(sql.selected_fields().is_none(), "not formatted yet");
+        sql.fields = Some(RowFields {
+            request: sql.run.loaded,
+            row: 1,
+            fields: Vec::new(),
+        });
+        assert!(sql.selected_fields().is_some());
+        sql.selection = Some(CellPos { row: 2, col: 0 });
+        assert!(sql.selected_fields().is_none(), "another row");
+        sql.selection = Some(CellPos { row: 1, col: 2 });
+        assert!(sql.selected_fields().is_some(), "another cell of the row");
+        sql.pane = ResultPane::Messages;
+        assert!(sql.selected_fields().is_none(), "no row shows");
+        sql.pane = ResultPane::Results;
+        assert!(sql.selected_fields().is_some());
+        // The same row of the next result is not the row that was formatted.
+        run_script(&mut sql, "SELECT 2", vec![rows_outcome(3)]);
+        assert!(sql.selected_fields().is_none());
+    }
+
+    #[test]
+    fn the_row_panel_shows_a_tables_data_view_or_a_selected_result_row() {
+        let mut workspace = crate::testing::workspace();
+        workspace.tabs.push(object_tab(1, "users", true));
+        workspace.tabs.push(sql_tab(2));
+        assert_eq!(workspace.row_panel_tab(), None, "no tab is active");
+        workspace.active_tab = Some(TabId(1));
+        assert_eq!(workspace.row_panel_tab(), Some(TabId(1)));
+        workspace.object_tab_mut(TabId(1)).unwrap().view = ObjectView::Structure;
+        assert_eq!(workspace.row_panel_tab(), None, "the Structure view");
+        workspace.active_tab = Some(TabId(2));
+        assert_eq!(workspace.row_panel_tab(), None, "nothing ran");
+        let sql = workspace.sql_tab_mut(TabId(2)).unwrap();
+        run_script(sql, "SELECT 1", vec![rows_outcome(3)]);
+        assert_eq!(workspace.row_panel_tab(), None, "no row is selected");
+        let sql = workspace.sql_tab_mut(TabId(2)).unwrap();
+        sql.selection = Some(CellPos { row: 0, col: 0 });
+        assert_eq!(workspace.row_panel_tab(), Some(TabId(2)));
+        workspace.row_panel = false;
+        assert_eq!(workspace.row_panel_tab(), None, "the panel is closed");
+        workspace.active_tab = Some(TabId(1));
+        workspace.object_tab_mut(TabId(1)).unwrap().view = ObjectView::Data;
+        assert_eq!(workspace.row_panel_tab(), None, "closed for a table too");
+        workspace.row_panel = true;
+        assert_eq!(workspace.row_panel_tab(), Some(TabId(1)));
     }
 
     #[test]

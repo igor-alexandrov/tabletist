@@ -98,8 +98,8 @@ pub fn main() -> anyhow::Result<()> {
             "warn,tabletist=info"
         },
     );
-    // fastframe-log does not create the log's folder; on a fresh install
-    // nothing else has yet.
+    // fastframe-log would create the log's folder itself, but with default
+    // permissions; made here first, it is private to the user.
     if let Err(error) = dirs.ensure() {
         eprintln!("could not create {}: {error}", dirs.state.display());
     }
@@ -228,8 +228,8 @@ pub fn native_options(size: Option<[f32; 2]>, persist: bool) -> eframe::NativeOp
             viewport
         }
     };
-    // macOS: no separate title strip. The connection tabs sit in the title
-    // bar next to the window buttons, as in Safari.
+    // macOS: no separate title strip. The connection bar sits in the title
+    // bar next to the window buttons, as Safari's tabs do.
     let viewport = if cfg!(target_os = "macos") {
         viewport
             .with_fullsize_content_view(true)

@@ -2,7 +2,8 @@
 
 Date: 2026-09-30. Status: implemented. This spec describes the slice as
 built; where the code and the first draft differed, the text follows the
-code.
+code. Since 2026-10-01 the row panel shows a selected result row (see Results
+and Shortcuts on a SQL tab).
 
 ## Intent
 
@@ -35,7 +36,8 @@ each with its own spec, plan and pull request:
 
 1. **Core editor** (this spec).
 2. Autocomplete: keywords, tables and views, columns.
-3. Explain and Format.
+3. Explain and Format. Format is built alone, first
+   (`2026-10-01-sql-formatter-design.md`).
 4. History, Copy and Export.
 5. Vim normal mode in the Omarchy editor.
 
@@ -63,8 +65,8 @@ harmless reads for little gain over the refusal list plus the check).
 ## Out of scope
 
 Autocomplete, Explain, Format, History, Copy, Export, vim modes, saving or
-restoring query text, the row panel for SQL results, several result sets side
-by side, and running anything outside a read-only transaction.
+restoring query text, several result sets side by side, and running anything
+outside a read-only transaction.
 
 ## Running queries (`tabletist-db`)
 
@@ -454,6 +456,7 @@ pub struct SqlTab {
     pub pane: ResultPane,   // Results or Messages
     pub split: f32,         // editor share of the height, 0.45 by default
     pub selection: Option<CellPos>,
+    pub fields: Option<RowFields>, // the row panel's text for the selected row
     pub focus_editor: bool, // focus the editor on the next frame
     ran_text: Option<TextPrint>, // the text the last finished run started with
 }
@@ -481,6 +484,15 @@ the cursor's line and column; `error_mark` is where the last run failed.
 `TextPrint` is a length and a hash of a text, never the text: the error
 mark holds only while the editor's text is still the one that ran, and no
 run is in flight.
+
+`selected_row` is the selected row while the Results pane shows it: the row
+the row panel is for. `fields` holds that row's text (`RowFields`, as on
+`ObjectTab`): `App::format_rows` fills it once per selection and frees it
+when no panel shows the row, and `selected_fields` gives it while it is
+still that row of that run. `Workspace::row_panel_tab` names the tab whose
+row the row panel shows: an object tab in its Data view, or a SQL tab with a
+selected row, and none while the panel is closed. `FoldDocuments` carries
+the `id` of either kind of tab.
 
 A run that failed as a whole (`Refused`, `LeftReadOnly`, `Unsupported`,
 connection lost) is the `Fetch`'s error; `SqlRun` exists only when
@@ -520,7 +532,8 @@ tab's result grid as on a table's.
 - Tabs are named "Query 1", "Query 2", ... per connection, and sit in the
   same strip as table tabs with a code icon. They are always pinned (never a
   preview tab). Closing one never asks.
-- The row panel and its toggle do not apply to SQL tabs in this slice.
+- The Omarchy strip's row panel toggle stays on a SQL tab: a result's row
+  has a row panel too (see Results).
 
 ### Shortcuts on a SQL tab
 
@@ -528,8 +541,18 @@ tab's result grid as on a table's.
   all, also while typing. `Mod+.` cancels.
 - `Mod+W`, `Mod+Shift+[ / ]`, `Mod+1..9`, `Mod+B`, `Mod+P`, `?` work as on
   any tab.
-- `Mod+R`, `Mod+F`, `Mod+Alt+Left / Right`, Space and `Mod+Shift+R` do
-  nothing on a SQL tab (no refresh, filter, paging or row panel here).
+- `Mod+R`, `Mod+F` and `Mod+Alt+Left / Right` do nothing on a SQL tab (no
+  refresh, filter or paging here).
+- While a row of the result is selected, the row panel's keys work as in a
+  table tab: Space (outside the editor) and `Mod+Shift+R` show or hide it,
+  and on Omarchy `i` does the same, Enter opens it, Esc closes it and `za`
+  folds its documents. With no row selected they do nothing: there is no
+  panel to show or hide. Omarchy's `[` and `]` step through the result's
+  rows whenever its grid shows.
+- On Omarchy, in a table tab as well: the Esc that leaves the editor (or the
+  WHERE line) does only that, and the next Esc closes the panel; Enter
+  opens the panel only when no button has the keyboard (a focused button
+  takes it); `za` folds only while the panel shows.
 - While the editor has focus, keys go to it (Tab inserts a tab character,
   arrows move the cursor). Esc leaves the editor; then arrows, Page Up/Down
   and Home/End move in the result grid, and the Omarchy vim letters that
@@ -547,7 +570,9 @@ tab's result grid as on a table's.
   buttons' keys, the read-only note, on Omarchy the tab title, then the
   menus' words (leaving "1,000" and "30 s"), on macOS the menus' chevrons,
   and last the menus. The run buttons stay.
-- Explain and Format are absent until slice 3, not disabled.
+- Explain is absent until its slice, not disabled. Format, its button
+  and its place in the order above are in
+  `2026-10-01-sql-formatter-design.md`.
 
 ### Editor
 
@@ -576,6 +601,27 @@ tab's result grid as on a table's.
   a result is in the order its statement gave it, so there is no sorting.
   When the limit cut rows off, a note reads "First 1,000 rows (limit
   reached)".
+- Selecting a row of the result opens the row panel on it: the same right
+  panel as a table tab's (one width and one open or closed state per
+  workspace), beside the editor and the results. It is there only while a
+  row is selected and the Results pane shows: no placeholder takes the
+  editor's width before that, the Messages pane hides it (the row stays
+  selected), and a finished run clears the selection and so closes it. A
+  result has no table behind it: the panel is titled by the row's number
+  over "Query N", shows no key and no foreign key link, tags only booleans,
+  and leaves out the editing controls and Omarchy's `y copy` hint. Closed
+  with its button or a key, it stays closed until it is toggled back. A
+  result row that has the keyboard keeps it when the panel appears, and
+  what was folded or expanded in one result's row is not carried to the
+  next result's. A result may have two columns of one name: each is a
+  field of its own, and a JSON document in each folds on its own.
+- The panel takes at most half the width beside the sidebar, on a SQL tab
+  as on a table tab, so the editor and the results keep at least as much as
+  the panel. In a narrow window that goes under the panel's usual least
+  width. The width it was dragged to comes back when there is room again.
+- Known limits: the result grid sizes its columns before the panel opens,
+  so a JSON column may need a horizontal scroll once it does. The Omarchy
+  status line on a SQL tab does not list the panel's keys.
 - Messages lists each statement: its line, then rows returned or affected
   and the time, or the error, or "Cancelled". Statements that did not start
   read "Not run": after an error, and after the one statement a stopped run
@@ -674,7 +720,10 @@ tab's result grid as on a table's.
   AccessKit table; an error or a refusal switches to Messages; a late result
   for a closed tab is dropped; the limit and timeout menus change the next
   request and the settings; `Mod+O` opens a connection tab; `Mod+R` and
-  `Mod+F` do nothing on a SQL tab.
+  `Mod+F` do nothing on a SQL tab; selecting a result row opens the row
+  panel with that row's values, the Messages pane and a new run close it, a
+  focused row keeps the keyboard, and the panel's keys work on a selected
+  result row.
 - Settings: an older settings file without the new keys loads with the
   defaults.
 - No design or pixel conformance checks. Screenshots for review use the

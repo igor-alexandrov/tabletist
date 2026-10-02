@@ -19,9 +19,9 @@ const NUMBERS: [Key; 9] = [
 
 /// Every shortcut, for the help dialog. `Mod` is Cmd on macOS, Ctrl elsewhere.
 pub const SHORTCUTS: &[(&str, &str)] = &[
-    ("Mod+O", "New connection tab"),
-    ("Mod+Shift+W", "Close connection tab"),
-    ("Mod+1…9, Ctrl+Tab, Ctrl+Shift+Tab", "Switch connection tab"),
+    ("Mod+O", "Connections"),
+    ("Mod+Shift+W", "Close connection"),
+    ("Mod+1…9, Ctrl+Tab, Ctrl+Shift+Tab", "Switch connection"),
     ("Mod+N", "New connection"),
     (
         "Mod+S, Mod+T, Mod+Enter",
@@ -29,6 +29,7 @@ pub const SHORTCUTS: &[(&str, &str)] = &[
     ),
     ("Mod+T", "New SQL editor"),
     ("Mod+Return, Mod+Shift+Return", "Run statement / run all"),
+    ("Mod+Shift+F", "Format SQL"),
     ("Ctrl+Space, Mod+I", "Complete in the SQL editor"),
     ("Mod+W", "Close tab"),
     ("Mod+Shift+[ / ]", "Previous / next tab"),
@@ -38,11 +39,12 @@ pub const SHORTCUTS: &[(&str, &str)] = &[
     ("Mod+B", "Show or hide the sidebar"),
     ("Mod+Alt+Left / Right", "Previous / next page"),
     ("Mod+.", "Cancel running query"),
+    ("Esc", "Cancel connecting"),
     ("Space, Mod+Shift+R", "Toggle row panel"),
     ("Mod+C, Mod+Shift+C", "Copy cell / copy row"),
     (
-        "Arrows, Enter, Mod+E, Mod+D, Mod+Backspace",
-        "Pick, edit, duplicate or delete a connection",
+        "Arrows, Enter, Shift+Enter, Mod+E, Mod+D, Mod+Backspace",
+        "Pick, open again, edit, duplicate or delete a connection",
     ),
     ("Arrows, Home/End, Enter", "Move in the tree"),
     ("Arrows, Page Up/Down, Home/End", "Move in the grid"),
@@ -69,6 +71,12 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
     let sql = app.active_sql();
     let any_tab = app.active_workspace_tab();
     let in_workspace = app.workspace(active).is_some();
+    // A connect with nothing to lose: Esc gives up, as its Cancel does. An
+    // open popup keeps its Esc: this runs before the popup is drawn.
+    let give_up = !egui::Popup::is_any_open(ctx)
+        && app
+            .workspace(active)
+            .is_some_and(|workspace| workspace.can_give_up());
     let editing = ctx.text_edit_focused();
     // Grid keys act only on a visible grid: the Data view of the active tab.
     let grid = object.is_some_and(|(tab, id)| {
@@ -81,6 +89,13 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
         app.workspace(tab)
             .and_then(|workspace| workspace.sql_tab(id))
             .is_some_and(shows_grid)
+    });
+    // A SQL editor's row panel is its selected row's: with none selected
+    // the panel's keys have nothing to show or hide.
+    let sql_row = sql.is_some_and(|(tab, id)| {
+        app.workspace(tab)
+            .and_then(|workspace| workspace.sql_tab(id))
+            .is_some_and(|sql| sql.selected_row().is_some())
     });
     // Space activates a focused button; it only toggles the panel otherwise.
     let focused = ctx.memory(|memory| memory.focused().is_some());
@@ -136,6 +151,17 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
                 }
             }
         }
+        // Format is a SQL editor's. The press is taken on every tab, or
+        // Mod+F, below, would take it for its own.
+        let format = consume_press(input, Modifiers::COMMAND | Modifiers::SHIFT, Key::F);
+        if format && let Some((tab, sql_tab)) = sql {
+            actions.push(Action::FormatSql { tab, sql_tab });
+        }
+        // A fresh press only: an Esc held to close a dialog over the tab
+        // repeats after the dialog is gone.
+        if give_up && consume_press(input, Modifiers::NONE, Key::Escape) {
+            actions.push(Action::Disconnect(active));
+        }
         let mut key = |modifiers: Modifiers, key: Key, action: Action| {
             if input.consume_key(modifiers, key) {
                 actions.push(action);
@@ -146,9 +172,10 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
             Key::W,
             Action::CloseConnTab(active),
         );
-        // A SQL editor has no row panel, and nothing to refresh or filter.
+        // A SQL editor has nothing to refresh or filter, and a row panel
+        // only for a selected row of its result.
         let on_sql = sql.is_some();
-        if !on_sql {
+        if !on_sql || sql_row {
             key(
                 Modifiers::COMMAND | Modifiers::SHIFT,
                 Key::R,
@@ -165,13 +192,13 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
         if in_workspace {
             key(Modifiers::COMMAND, Key::T, Action::NewSqlTab(active));
         }
-        key(Modifiers::COMMAND, Key::O, Action::NewConnTab);
+        key(Modifiers::COMMAND, Key::O, Action::ShowConnections);
         key(Modifiers::COMMAND, Key::N, Action::NewConnection);
         for (index, number) in NUMBERS.into_iter().enumerate() {
             key(
                 Modifiers::COMMAND,
                 number,
-                Action::ActivateConnTabIndex(index),
+                Action::ActivateConnection(index),
             );
         }
         if !on_sql {
@@ -278,8 +305,9 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
                         },
                     );
                 }
-                // The row panel shows a table's row, not a SQL result's.
-                if grid && !focused {
+                // The row panel shows a table's row, or the selected row
+                // of a SQL result.
+                if (grid || sql_row) && !focused {
                     key(Modifiers::NONE, Key::Space, Action::ToggleRowPanel(tab));
                 }
             }
@@ -474,6 +502,20 @@ fn pending_id() -> egui::Id {
     egui::Id::new("pending-key")
 }
 
+/// Whether a text field had the keyboard when the last frame ended.
+fn was_editing_id() -> egui::Id {
+    egui::Id::new("was-editing")
+}
+
+/// Notes, once the frame is drawn, whether a text field has the keyboard.
+/// egui takes it away on Escape before the next frame's keys are read,
+/// so only this tells an Escape that left a field from one pressed
+/// outside it.
+pub fn after_frame(ctx: &egui::Context) {
+    let editing = ctx.text_edit_focused();
+    ctx.data_mut(|data| data.insert_temp(was_editing_id(), editing));
+}
+
 /// Whether `text` was typed this frame (consumed): keys named by the
 /// character they type, so they work on every keyboard layout.
 fn typed(ctx: &egui::Context, text: &str) -> bool {
@@ -502,6 +544,9 @@ fn letters(app: &mut App, ctx: &egui::Context, actions: &mut Vec<Action>) {
     let tab = app.active_tab_id();
     let terminal = app.look.terminal;
     let pending: Option<char> = ctx.data(|data| data.get_temp(pending_id())).flatten();
+    let left_field: bool = ctx
+        .data(|data| data.get_temp(was_editing_id()))
+        .unwrap_or(false);
     let mut next_pending = None;
     let pressed = |key: Key| ctx.input_mut(|input| input.consume_key(Modifiers::NONE, key));
     let command = |key: Key| ctx.input_mut(|input| input.consume_key(Modifiers::COMMAND, key));
@@ -514,11 +559,20 @@ fn letters(app: &mut App, ctx: &egui::Context, actions: &mut Vec<Action>) {
             actions.push(Action::MovePickerSelection { tab, step: -1 });
         }
         if let Some(conn) = selected {
-            if ctx.memory(|memory| memory.focused().is_none()) && pressed(Key::Enter) {
-                actions.push(Action::Connect {
-                    tab,
-                    conn: conn.clone(),
-                });
+            if ctx.memory(|memory| memory.focused().is_none()) {
+                // Shift first: egui ignores an extra Shift when matching.
+                let again = ctx.input_mut(|input| input.consume_key(Modifiers::SHIFT, Key::Enter));
+                if again || pressed(Key::Enter) {
+                    // Enter shows a connection that is open already; with
+                    // Shift it opens once more.
+                    actions.push(match app.tab_showing(&conn).filter(|_| !again) {
+                        Some(open) => Action::ActivateConnTab(open),
+                        None => Action::Connect {
+                            tab,
+                            conn: conn.clone(),
+                        },
+                    });
+                }
             }
             if command(Key::E) || (terminal && pressed(Key::E)) {
                 actions.push(Action::EditConnection(conn.clone()));
@@ -561,6 +615,7 @@ fn letters(app: &mut App, ctx: &egui::Context, actions: &mut Vec<Action>) {
     };
     let tree = workspace.pane == crate::model::Pane::Tree;
     let panel = workspace.row_panel;
+    let shown = workspace.row_panel_tab();
     // The digits follow the strip, so they reach SQL editors too.
     let tabs: Vec<_> = workspace.tabs.iter().map(crate::model::Tab::id).collect();
     let active = workspace.active_object_tab().map(|object| object.id);
@@ -568,6 +623,11 @@ fn letters(app: &mut App, ctx: &egui::Context, actions: &mut Vec<Action>) {
     let sql_grid = workspace
         .active_sql_tab()
         .filter(|sql| shows_grid(sql))
+        .map(|sql| sql.id);
+    // And, with a row of it selected, the letters of the row panel.
+    let sql_row = workspace
+        .active_sql_tab()
+        .filter(|sql| sql.selected_row().is_some())
         .map(|sql| sql.id);
     for (index, number) in NUMBERS.into_iter().enumerate() {
         if pressed(number)
@@ -611,32 +671,47 @@ fn letters(app: &mut App, ctx: &egui::Context, actions: &mut Vec<Action>) {
             }
         }
     }
+    // `[` and `]` step through the rows of the grid `j/k` move in.
+    if let Some(id) = active.or(sql_grid) {
+        for (text, rows) in [("[", -1), ("]", 1)] {
+            if typed(ctx, text) {
+                actions.push(Action::MoveSelection {
+                    tab,
+                    id,
+                    rows,
+                    cols: 0,
+                });
+            }
+        }
+    }
+    // The row panel's keys: an object tab's, or a SQL result's while a row
+    // of it is selected (with none its panel has nothing to show).
+    if let Some(id) = active.or(sql_row) {
+        // Enter belongs to a focused button.
+        let focused = ctx.memory(|memory| memory.focused().is_some());
+        if !tree && !panel && !focused && pressed(Key::Enter) {
+            actions.push(Action::ToggleRowPanel(tab));
+        }
+        if pressed(Key::I) {
+            actions.push(Action::ToggleRowPanel(tab));
+        }
+        // An Esc that left a text field did only that.
+        if panel && !left_field && pressed(Key::Escape) {
+            actions.push(Action::ToggleRowPanel(tab));
+        }
+        if pressed(Key::Z) {
+            next_pending = Some('z');
+        }
+        // Only the documents of a panel that shows.
+        if pressed(Key::A) && pending == Some('z') && shown == Some(id) {
+            actions.push(Action::FoldDocuments { tab, id });
+        }
+    }
     // The letters below act on an object tab: none of them on a SQL editor.
     let Some(object_tab) = active else {
         ctx.data_mut(|data| data.insert_temp(pending_id(), next_pending));
         return;
     };
-    let step = |rows: isize, cols: isize| Action::MoveSelection {
-        tab,
-        id: object_tab,
-        rows,
-        cols,
-    };
-    if !tree && !panel && pressed(Key::Enter) {
-        actions.push(Action::ToggleRowPanel(tab));
-    }
-    if typed(ctx, "[") {
-        actions.push(step(-1, 0));
-    }
-    if typed(ctx, "]") {
-        actions.push(step(1, 0));
-    }
-    if pressed(Key::I) {
-        actions.push(Action::ToggleRowPanel(tab));
-    }
-    if panel && pressed(Key::Escape) {
-        actions.push(Action::ToggleRowPanel(tab));
-    }
     if typed(ctx, "/") {
         actions.push(Action::FocusWhere(tab));
     }
@@ -654,12 +729,6 @@ fn letters(app: &mut App, ctx: &egui::Context, actions: &mut Vec<Action>) {
     }
     if pressed(Key::G) {
         next_pending = Some('g');
-    }
-    if pressed(Key::Z) {
-        next_pending = Some('z');
-    }
-    if pressed(Key::A) && pending == Some('z') {
-        actions.push(Action::FoldDocuments { tab, object_tab });
     }
     if pressed(Key::D) {
         if pending == Some('g') {
@@ -692,12 +761,13 @@ mod tests {
     fn the_shortcut_table_covers_the_spec_map() {
         let descriptions: Vec<&str> = SHORTCUTS.iter().map(|(_, what)| *what).collect();
         for expected in [
-            "New connection tab",
-            "Close connection tab",
-            "Switch connection tab",
+            "Connections",
+            "Close connection",
+            "Switch connection",
             "New connection",
             "New SQL editor",
             "Run statement / run all",
+            "Format SQL",
             "Complete in the SQL editor",
             "Close tab",
             "Previous / next tab",
@@ -725,11 +795,12 @@ mod tests {
                 .map(|(keys, _)| *keys)
         };
         assert_eq!(keys("New SQL editor"), Some("Mod+T"));
-        assert_eq!(keys("New connection tab"), Some("Mod+O"));
+        assert_eq!(keys("Connections"), Some("Mod+O"));
         assert_eq!(
             keys("Run statement / run all"),
             Some("Mod+Return, Mod+Shift+Return")
         );
+        assert_eq!(keys("Format SQL"), Some("Mod+Shift+F"));
         // Ctrl+Space is taken by some systems before the app sees it.
         assert_eq!(
             keys("Complete in the SQL editor"),

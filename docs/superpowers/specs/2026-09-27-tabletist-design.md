@@ -21,7 +21,8 @@ PostgreSQL, MySQL, SQLite. No others in v1.
 ### Success criteria for v1
 
 1. A user can save a connection (direct, TLS, or through an SSH tunnel), and
-   open it in a connection tab. Several connection tabs can be open at once.
+   open it in a connection tab. Several can be open at once, each a chip in
+   the connection bar.
 2. The sidebar lists schemas and their tables, views, and materialized views.
 3. Opening a table shows its rows in a virtualized grid, paged 300 at a time,
    sortable by column (server side), with an estimated total row count.
@@ -122,12 +123,11 @@ tabletist/
     testing.rs               headless UI test harness (AccessKit tree + events)
     shots.rs                 screenshots for visual review (`shots` feature)
     ui/mod.rs                panel layout, dialogs
-    ui/conn_tabs.rs          connection tab bar
     ui/picker.rs             saved-connection picker
     ui/connect_dialog.rs     new or edit connection, SSH section
     ui/password_prompt.rs    asks for a password or passphrase
     ui/host_key_prompt.rs    trust an unknown SSH host key
-    ui/workspace.rs          a connected tab: top bar, disconnected banner, body
+    ui/workspace.rs          a connected tab: connection bar, disconnected banner, body
     ui/sidebar.rs            filter, refresh, tree of schemas and objects
     ui/object_tabs.rs        object tab bar (preview tabs in italics)
     ui/data_view.rs          footer and grid, or the error or empty state
@@ -291,6 +291,16 @@ pub struct RowPage { pub columns: Vec<ColumnMeta>, pub rows: Vec<Vec<Value>>,
   OFFSET ..` per dialect. Identifiers are always quoted (`"x"` or `` `x` ``,
   with embedded quotes doubled). Filter values are bound parameters for SQLite and MySQL, and quoted literals (with `'` doubled, under `standard_conforming_strings = on`) for PostgreSQL, whose rows are read through the simple-query protocol.
   `Contains`/`StartsWith` escape `%` and `_`.
+- A filter value is text, and text never equals the bytes of a binary
+  column. So for `Eq`, `Ne` and `In` on a binary column, a value written as
+  the app shows binary (a UUID, hyphenated or as 32 hex digits, or `0x` hex)
+  is compared as those bytes as well as the text: `"id" IN (?, ?)`, and for
+  PostgreSQL `"id" IN (E'\\x0199..', E'0199..')`. That is what makes a
+  typed or pasted UUID, and a followed foreign key, find a `blob(16)`,
+  `binary(16)` or `bytea` key. The driver looks the table's binary columns
+  up (`bytea`; MySQL's `binary`, `varbinary` and blobs; in SQLite the
+  columns declared as blobs and those whose type says nothing), and only
+  when a filter has such a value. Any other column gets the text alone.
 - With no user sort, rows are ordered by the primary key when there is one, so
   paging is stable. Without a primary key there is no ORDER BY and the footer
   says the order is unstable.
@@ -383,8 +393,7 @@ enum Dialog { Connection(..), Password(..), HostKey(..), QuickOpen(..), Help }
 ### 5.2 Layout
 
 ```
-┌ [● prod-db ×] [● staging ×] [○ local.sqlite ×] [+] ───────────────────────────┐  connection tabs
-├ top bar: database ▾ │ via SSH host │ TLS verified │ disconnect ───────────────┤
+┌ [≡] [● prod-db ▾] [● staging] [○ local.sqlite] │ read-only │ disconnect ──────┐  connection bar
 ├ sidebar ──────┬ [users] [orders*] [events] ─────────────┬ row panel ─────────┤  object tabs
 │ filter  ⟳     │ filter bar: [col ▾][op ▾][value] + x ⏎   │ users #42          │
 │ ▾ public      ├─────────────────────────────────────────│ id      int4    42 │
@@ -400,13 +409,22 @@ enum Dialog { Connection(..), Password(..), HostKey(..), QuickOpen(..), Help }
 
 - One tab, one connection (one `Session`). Several tabs can be open at once;
   the same saved connection can be opened in more than one tab.
-- A tab shows the connection's color tag, name, and status (connecting,
-  connected, disconnected).
-- `+` or Cmd/Ctrl+O opens a new tab with the **picker**. The app starts with
+- The window has no tab bar. The **connection bar** leads it and shows every
+  open connection as a chip: its environment's colour, its name and
+  environment, and its database, or how its session stands while it is not
+  connected (connecting, disconnected, cancelled). The bar's own chip opens
+  the database switcher; another's switches to that connection. A card
+  under a chip says where the connection points and since when.
+- When the chips outgrow the bar, the TLS, SSH and read-only pills give way,
+  then names shorten, then the row slides to keep the bar's own chip whole.
+- The picker is one tab at most. The bar's **Connections** button or
+  Cmd/Ctrl+O shows it, opening it when there is none. The app starts with
   one picker tab.
+- Cmd/Ctrl+1..9 switch to an open connection by its place in the bar;
+  Ctrl+Tab visits every tab, the picker too.
 - Closing a tab cancels its running query, closes the connection and the SSH
-  tunnel, and removes the tab. Middle-click closes. The bar scrolls when it
-  overflows.
+  tunnel, and removes the tab. **Disconnect** does the same and shows the
+  picker.
 - When a connection drops, the tab keeps its tree and object tabs and shows a
   "Disconnected: <reason>" banner with **Reconnect**.
 
@@ -414,7 +432,9 @@ enum Dialog { Connection(..), Password(..), HostKey(..), QuickOpen(..), Help }
 
 - Picker: searchable list of saved connections showing color tag, driver icon,
   and `user@host/db` (or the file name for SQLite). Double-click or Enter
-  connects in this tab. New, Edit, Duplicate, Delete.
+  connects in this tab. A connection that is open already is marked
+  **open**, and choosing it shows its tab; Shift+Enter connects once more.
+  New, Edit, Duplicate, Delete.
 - Connection dialog: name; driver; environment (local, dev, staging,
   production, none), which follows where the connection points until one is
   chosen and decides its colour; host, port, database, user, password, or
@@ -460,17 +480,29 @@ enum Dialog { Connection(..), Password(..), HostKey(..), QuickOpen(..), Help }
 ### 5.7 Row panel
 
 - Resizable right panel, toggled with Space (when the grid has focus) or
-  Cmd/Ctrl+Shift+R. Follows the grid selection.
+  Cmd/Ctrl+Shift+R. Follows the grid selection. It takes at most half the
+  width beside the sidebar; the width it was dragged to comes back when the
+  window has room again.
 - One entry per field: name, type, and the full value as selectable read-only
   text. JSON up to 256 KiB is a highlighted tree in monospace: keys keep
   their order, objects and arrays fold (all open up to 40 lines, else only
   the top level), with Expand all / Collapse all. Larger or invalid JSON is
   plain text. Binary shows its size and a hex
-  preview of the first 4 KiB. Text longer than 20 lines or 4,000 characters
+  preview of the first 4 KiB. A binary value of sixteen bytes is a UUID
+  (SQLite's `blob(16)` and MySQL's `binary(16)` keys): the grid, the panel
+  and the clipboard give it as `0199a3f2-7c1e-7abc-8def-0123456789ab`.
+  Text longer than 20 lines or 4,000 characters
   is collapsed with "Show all". NULL shows a NULL badge.
 - The reducer formats the selected row's text once, when the selection or
   the page changes; drawing only lays that text out.
 - A copy button per field and a filter field for wide tables.
+- On a SQL tab the panel shows the selected row of the result, and only while
+  one is selected (see the SQL editor spec).
+- What is folded or expanded belongs to a row of one page or one result:
+  another page, a refresh or a new result starts fresh.
+- On Omarchy an Esc that leaves a text field does only that (the next one
+  closes the panel), Enter opens the panel only when no widget has the
+  keyboard, and `za` folds only while the panel shows.
 
 ### 5.8 Structure view
 
@@ -488,10 +520,10 @@ read-only table (structure data is small; the data grid is not needed).
 
 | Shortcut | Action |
 |---|---|
-| Cmd/Ctrl+O | New connection tab (picker) |
+| Cmd/Ctrl+O | Connections (the picker) |
 | Cmd/Ctrl+T | New SQL editor (added after v1, see `2026-09-30-sql-editor-core-design.md`) |
-| Cmd/Ctrl+Shift+W | Close connection tab |
-| Cmd/Ctrl+1..9, Ctrl+Tab, Ctrl+Shift+Tab | Switch connection tab |
+| Cmd/Ctrl+Shift+W | Close connection |
+| Cmd/Ctrl+1..9, Ctrl+Tab, Ctrl+Shift+Tab | Switch connection (the digits count the open ones) |
 | Cmd/Ctrl+N | New connection |
 | Cmd/Ctrl+S, Cmd/Ctrl+T, Cmd/Ctrl+Enter | In the connection dialog: save, test, save and connect |
 | Cmd/Ctrl+W | Close object tab |
@@ -526,8 +558,8 @@ suppressed while a text field has focus; Cmd/Ctrl shortcuts are not.
   monospace face is the desktop's when fontconfig resolves one
   (`theme/desktop_font.rs`), and the Omarchy look draws grid and row panel
   data in it.
-- macOS: the connection tabs share a unified title bar with the window
-  buttons (`macos.rs`).
+- macOS: the connection bar, or the picker's header, shares a unified title
+  bar with the window buttons (`macos.rs`).
 - Wayland first; app-id `dev.tabletist.Tabletist` and a `.desktop` file so
   Hyprland window rules match.
 - eframe persistence restores window geometry and panel widths.

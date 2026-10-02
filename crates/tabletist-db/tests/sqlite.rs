@@ -443,6 +443,206 @@ async fn filters_match_numbers_in_typeless_and_computed_columns() {
     }
 }
 
+/// A UUID key kept as sixteen bytes, a foreign key to it, the same UUID as
+/// text, and columns whose declared type does not say what they hold.
+async fn uuid_keys() -> (Connection, tempfile::TempDir) {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("uuids.db");
+    {
+        let setup = rusqlite::Connection::open(&path).unwrap();
+        setup
+            .execute_batch(
+                "CREATE TABLE accounts (
+                     id blob(16) PRIMARY KEY, name TEXT NOT NULL, slug TEXT, token BINARY(16), raw
+                 );
+                 INSERT INTO accounts VALUES
+                     (x'0199a3f27c1e7abc8def0123456789ab', 'Acme',
+                      '0199a3f2-7c1e-7abc-8def-0123456789ab',
+                      x'0199a3f27c1e7abc8def0123456789ab', x'cafe'),
+                     (x'0199a3f27c1e7abc8def0123456789ac', 'Globex',
+                      '0199a3f27c1e7abc8def0123456789ac',
+                      x'0199a3f27c1e7abc8def0123456789ac', '0xcafe'),
+                     ('0199a3f2-7c1e-7abc-8def-0123456789ad', 'Initech', '0xcafe', NULL, 7);
+                 CREATE TABLE memberships (
+                     id INTEGER PRIMARY KEY,
+                     account_id blob(16) NOT NULL REFERENCES accounts (id)
+                 );
+                 INSERT INTO memberships VALUES
+                     (1, x'0199a3f27c1e7abc8def0123456789ab'),
+                     (2, x'0199a3f27c1e7abc8def0123456789ac'),
+                     (3, x'0199a3f27c1e7abc8def0123456789ab');",
+            )
+            .unwrap();
+    }
+    let connection = Connection::connect(&ConnectSpec::sqlite(&path), &Secrets::default())
+        .await
+        .unwrap();
+    (connection, dir)
+}
+
+/// The `name` of each row of `accounts` the filter keeps, in key order.
+async fn accounts(connection: &Connection, column: &str, op: FilterOp, value: &str) -> Vec<String> {
+    let mut query = RowQuery::new(ObjectRef::new("main", "accounts"), 50);
+    query.filters = vec![Filter {
+        column: column.into(),
+        op,
+        value: value.into(),
+    }];
+    let page = connection.fetch_rows(&query).await.unwrap();
+    assert_eq!(
+        connection.count_rows(&query).await.unwrap(),
+        page.rows.len() as u64,
+        "{column} {op:?} {value}"
+    );
+    let mut names: Vec<String> = page
+        .rows
+        .iter()
+        .map(|row| match &row[1] {
+            Value::Text(name) => name.to_string(),
+            other => panic!("name is {other:?}"),
+        })
+        .collect();
+    names.sort();
+    names
+}
+
+#[tokio::test]
+async fn a_uuid_or_hex_filter_matches_a_binary_key() {
+    let (connection, _dir) = uuid_keys().await;
+    for (column, op, value, expected) in [
+        // The UUID the grid shows, with or without hyphens, and `0x` hex.
+        (
+            "id",
+            FilterOp::Eq,
+            "0199a3f2-7c1e-7abc-8def-0123456789ab",
+            vec!["Acme"],
+        ),
+        (
+            "id",
+            FilterOp::Eq,
+            " 0199A3F2-7C1E-7ABC-8DEF-0123456789AB ",
+            vec!["Acme"],
+        ),
+        (
+            "id",
+            FilterOp::Eq,
+            "0199a3f27c1e7abc8def0123456789ac",
+            vec!["Globex"],
+        ),
+        (
+            "id",
+            FilterOp::Eq,
+            "0x0199a3f27c1e7abc8def0123456789ab",
+            vec!["Acme"],
+        ),
+        (
+            "id",
+            FilterOp::Ne,
+            "0199a3f2-7c1e-7abc-8def-0123456789ab",
+            vec!["Globex", "Initech"],
+        ),
+        (
+            "id",
+            FilterOp::In,
+            "0199a3f2-7c1e-7abc-8def-0123456789ab, 0x0199a3f27c1e7abc8def0123456789ac, nothing",
+            vec!["Acme", "Globex"],
+        ),
+        // A UUID stored as text in a binary column still matches as text.
+        (
+            "id",
+            FilterOp::Eq,
+            "0199a3f2-7c1e-7abc-8def-0123456789ad",
+            vec!["Initech"],
+        ),
+        // Text columns keep matching as text.
+        (
+            "slug",
+            FilterOp::Eq,
+            "0199a3f2-7c1e-7abc-8def-0123456789ab",
+            vec!["Acme"],
+        ),
+        (
+            "slug",
+            FilterOp::Eq,
+            "0199a3f27c1e7abc8def0123456789ac",
+            vec!["Globex"],
+        ),
+        ("slug", FilterOp::Eq, "0xcafe", vec!["Initech"]),
+        (
+            "slug",
+            FilterOp::In,
+            "0199a3f2-7c1e-7abc-8def-0123456789ab, 0xcafe",
+            vec!["Acme", "Initech"],
+        ),
+        // A declared type SQLite gives no blob affinity, and none at all:
+        // such a column holds bytes or text, and both match.
+        (
+            "token",
+            FilterOp::Eq,
+            "0199a3f2-7c1e-7abc-8def-0123456789ac",
+            vec!["Globex"],
+        ),
+        ("raw", FilterOp::Eq, "0xcafe", vec!["Acme", "Globex"]),
+        ("raw", FilterOp::Eq, "7", vec!["Initech"]),
+    ] {
+        assert_eq!(
+            accounts(&connection, column, op, value).await,
+            expected,
+            "{column} {op:?} {value}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_binary_foreign_key_leads_to_its_row() {
+    let (connection, _dir) = uuid_keys().await;
+    let memberships = ObjectRef::new("main", "memberships");
+    let structure = connection.describe(&memberships).await.unwrap();
+    let foreign = &structure.foreign_keys[0];
+    assert_eq!(foreign.columns, ["account_id"]);
+    assert_eq!(
+        (foreign.ref_table.as_str(), &foreign.ref_columns[0]),
+        ("accounts", &"id".to_owned())
+    );
+    let page = connection
+        .fetch_rows(&RowQuery::new(memberships, 50))
+        .await
+        .unwrap();
+    assert_eq!(page.columns[1].kind, ValueKind::Binary);
+    let Value::Bytes(key) = &page.rows[1][1] else {
+        panic!("account_id is {:?}", page.rows[1][1]);
+    };
+    let hex: String = key.iter().map(|byte| format!("{byte:02x}")).collect();
+    // What the app passes when a key is followed: the UUID it shows, and
+    // `0x` hex for binary of any other length.
+    let uuid = format!(
+        "{}-{}-{}-{}-{}",
+        &hex[..8],
+        &hex[8..12],
+        &hex[12..16],
+        &hex[16..20],
+        &hex[20..]
+    );
+    for value in [uuid, format!("0x{hex}")] {
+        assert_eq!(
+            accounts(&connection, &foreign.ref_columns[0], FilterOp::Eq, &value).await,
+            ["Globex"],
+            "{value}"
+        );
+    }
+    // And back: the rows that point at one account.
+    let mut query = RowQuery::new(ObjectRef::new("main", "memberships"), 50);
+    query.filters = vec![Filter {
+        column: "account_id".into(),
+        op: FilterOp::Eq,
+        value: "0199a3f2-7c1e-7abc-8def-0123456789ab".into(),
+    }];
+    assert_eq!(
+        ids(&connection.fetch_rows(&query).await.unwrap()),
+        vec![1, 3]
+    );
+}
+
 fn script(text: &str) -> Vec<tabletist_db::sql::Statement> {
     tabletist_db::sql::statements(Dialect::Sqlite, text)
 }
@@ -532,9 +732,14 @@ async fn a_script_stops_at_the_first_error_and_keeps_earlier_results() {
 async fn writes_fail_as_read_only_and_refusals_run_nothing() {
     let (connection, _dir) = fixture().await;
     let outcome = run(&connection, "DELETE FROM users").await.unwrap();
+    // SQLITE_READONLY itself, none of its extended codes: the app tells a
+    // refused write by it.
     assert!(matches!(
-        outcome.results[0].outcome,
-        StatementOutcome::Error { .. }
+        &outcome.results[0].outcome,
+        StatementOutcome::Error {
+            error: Error::Query { code: Some(code), .. },
+            ..
+        } if code == "8"
     ));
     let refused = run(&connection, "SELECT 1;\nCOMMIT").await;
     assert!(matches!(refused, Err(Error::Refused { line: 2, .. })));

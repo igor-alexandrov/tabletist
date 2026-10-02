@@ -344,30 +344,34 @@ pub fn show<'a>(
     let gutter = if look.terminal { GUTTER } else { 0.0 };
     let widths_id = id.with(("widths", columns.len()));
     let last_id = id.with("last-selection");
-    let mut widths: Vec<f32> = ui
+    let kept: Option<Vec<f32>> = ui
         .data(|data| data.get_temp::<Vec<f32>>(widths_id))
-        .filter(|widths| widths.len() == columns.len())
-        .unwrap_or_else(|| {
-            let role = data_role(look);
-            let width = |text: &str| text_width(ui, text, role, look);
-            let mut widths = initial_widths(
-                columns,
-                row_count,
-                (pad, key_width(look)),
-                &width,
-                &mut cell,
-            );
-            // When every column fits, a document column takes what is left,
-            // as the design's `1fr`.
-            let room = ui.available_width() - gutter;
-            let used: f32 = widths.iter().sum();
-            if used < room
-                && let Some(flexible) = columns.iter().position(|column| column.flexible)
-            {
-                widths[flexible] += (room - used).floor();
-            }
-            widths
-        });
+        .filter(|widths| widths.len() == columns.len());
+    // Widths measured with no rows fit the headers alone. They are not
+    // kept, so the first page with rows sizes the columns; a width the
+    // user drags is.
+    let mut keep = kept.is_some() || row_count > 0;
+    let mut widths: Vec<f32> = kept.unwrap_or_else(|| {
+        let role = data_role(look);
+        let width = |text: &str| text_width(ui, text, role, look);
+        let mut widths = initial_widths(
+            columns,
+            row_count,
+            (pad, key_width(look)),
+            &width,
+            &mut cell,
+        );
+        // When every column fits, a document column takes what is left,
+        // as the design's `1fr`.
+        let room = ui.available_width() - gutter;
+        let used: f32 = widths.iter().sum();
+        if used < room
+            && let Some(flexible) = columns.iter().position(|column| column.flexible)
+        {
+            widths[flexible] += (room - used).floor();
+        }
+        widths
+    });
     let last: Option<CellPos> = ui
         .data(|data| data.get_temp::<Option<CellPos>>(last_id))
         .flatten();
@@ -529,6 +533,7 @@ pub fn show<'a>(
                 }
                 if drag.dragged() {
                     widths[col] = (widths[col] + drag.drag_delta().x).max(MIN_WIDTH);
+                    keep = true;
                 }
                 x += widths[col];
             }
@@ -625,7 +630,9 @@ pub fn show<'a>(
     }
 
     ui.data_mut(|data| {
-        data.insert_temp(widths_id, widths);
+        if keep {
+            data.insert_temp(widths_id, widths);
+        }
         data.insert_temp(last_id, selection);
         data.insert_temp(
             id,
@@ -1139,6 +1146,12 @@ mod tests {
         // Drawn again, it fits its columns anew.
         frame(&ctx, 10, vec![]);
         assert!(remembered(&ctx, id) && has_widths());
+        // One with no rows keeps no widths, and is forgotten all the same.
+        forget(&ctx, id);
+        frame(&ctx, 0, vec![]);
+        assert!(remembered(&ctx, id) && !has_widths());
+        forget(&ctx, id);
+        assert!(!remembered(&ctx, id) && !scrolled());
     }
 
     #[test]
