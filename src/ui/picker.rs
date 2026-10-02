@@ -9,6 +9,7 @@ use crate::i18n::gettext;
 use crate::model::{Action, ConnTabContent};
 use crate::theme::{self, Icon, Look, Palette};
 use crate::typography::{Text, TextRole};
+use crate::ui::states;
 use crate::ui::widgets::{self, ButtonSpec};
 
 /// The header's height, per look (its rule below included).
@@ -369,14 +370,49 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     let body = Rect::from_min_max(pos2(full.left(), top), pos2(full.right(), footer.top()));
     let mut list = ui.new_child(egui::UiBuilder::new().max_rect(body));
     let found = app.connections.search(&search);
-    if app.connections.connections.is_empty() || found.is_empty() {
-        let text = if app.connections.connections.is_empty() {
-            gettext(locale, "No saved connections yet")
+    if app.connections.connections.is_empty() {
+        // First launch: why the list is empty, and the one next step.
+        let keyring = if look.faces == theme::Faces::Plex {
+            gettext(locale, "Tabletist stores passwords in the macOS Keychain.")
         } else {
-            gettext(locale, "No connections match")
+            gettext(locale, "Tabletist stores passwords in the system keyring.")
         };
+        let text = format!(
+            "{} {keyring}",
+            gettext(
+                locale,
+                "Add a PostgreSQL, MySQL or SQLite database to start browsing."
+            )
+        );
+        let (title, text) = (
+            look.label(&gettext(locale, "No connections yet")),
+            look.label(&text),
+        );
+        let notice = states::Notice {
+            icon: Icon::Database,
+            title: &title,
+            text: &text,
+        };
+        let name = look.label(&gettext(locale, "New connection"));
+        let add = states::button(&name, &look)
+            .label("New connection")
+            .salt("empty");
+        let add = if look.terminal {
+            add.shortcut("n")
+        } else {
+            add.primary()
+                .icon(Icon::Plus)
+                .shortcut(&command_n)
+                .padding(14.0)
+                .gap(8.0)
+        };
+        if states::empty(&mut list, body, &notice, vec![add], &look, &palette).is_some() {
+            actions.push(Action::NewConnection);
+        }
+    } else if found.is_empty() {
         list.add_space(40.0);
         list.vertical_centered(|ui| {
+            let text = gettext(locale, "No connections match");
             Text::one(&look, widgets::body(&look), &text, palette.secondary)
                 .layout(ui.ctx())
                 .label(ui);

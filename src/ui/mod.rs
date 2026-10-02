@@ -467,9 +467,38 @@ mod tests {
     }
 
     #[test]
-    fn the_picker_shows_its_empty_state() {
-        let mut harness = Harness::new();
-        assert!(harness.has("No saved connections yet"));
+    fn first_launch_says_why_the_list_is_empty_and_offers_a_connection() {
+        use egui::accesskit::{self, Role};
+        for look in crate::theme::Look::ALL {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            let title = look.label("No connections yet");
+            assert!(harness.has(&title), "{}", look.name);
+            // The header's button and the empty state's: the lower one is
+            // the empty state's.
+            let tree = harness.settle();
+            let top = |node: &accesskit::Node| node.bounds().map_or(0.0, |rect| rect.y0);
+            let mut buttons: Vec<_> = tree
+                .nodes
+                .iter()
+                .filter(|(_, node)| {
+                    node.label() == Some("New connection") && node.role() == Role::Button
+                })
+                .collect();
+            assert_eq!(buttons.len(), 2, "{}", look.name);
+            buttons.sort_by(|(_, a), (_, b)| top(a).total_cmp(&top(b)));
+            let lower = buttons[1].0;
+            harness.frame(vec![egui::Event::AccessKitActionRequest(
+                accesskit::ActionRequest {
+                    target_tree: accesskit::TreeId::ROOT,
+                    target_node: lower,
+                    action: accesskit::Action::Click,
+                    data: None,
+                },
+            )]);
+            harness.settle();
+            assert!(harness.app.dialog.is_some(), "{}", look.name);
+        }
     }
 
     #[test]
@@ -549,7 +578,8 @@ mod tests {
         add_saved(&mut harness, "Staging");
         assert!(harness.has("Production"));
         assert!(harness.has("Staging"));
-        assert!(!harness.has("No saved connections yet"));
+        let title = harness.app.look.label("No connections yet");
+        assert!(!harness.has(&title));
         if let crate::model::ConnTabContent::Picker(picker) = &mut harness.app.tabs[0].content {
             picker.search = "stag".into();
         }
