@@ -1551,6 +1551,217 @@ mod tests {
         assert!(harness.app.workspace(tab).unwrap().row_panel);
     }
 
+    /// Selects the bytes `range` of the active SQL editor's text, as a
+    /// drag over them would.
+    fn select_sql(
+        harness: &mut Harness,
+        tab: crate::model::ConnTabId,
+        range: std::ops::Range<usize>,
+    ) {
+        // A field without the keys drops its selection when it is drawn.
+        assert!(harness.ctx.text_edit_focused());
+        let sql = active_sql(harness, tab);
+        let chars = |byte: usize| sql.text[..byte].chars().count();
+        let selection = egui::text::CCursorRange::two(
+            egui::text::CCursor::new(chars(range.start)),
+            egui::text::CCursor::new(chars(range.end)),
+        );
+        let id = crate::ui::sql_text::editor_id(tab, sql.id);
+        let mut state = egui::TextEdit::load_state(&harness.ctx, id).unwrap_or_default();
+        state.cursor.set_char_range(Some(selection));
+        egui::TextEdit::store_state(&harness.ctx, id, state);
+        harness.settle();
+    }
+
+    const COMMAND_SHIFT: Modifiers = Modifiers::COMMAND.plus(Modifiers::SHIFT);
+
+    #[test]
+    fn command_shift_f_formats_the_script_and_the_editor_keeps_the_keys() {
+        let mut harness = Harness::new();
+        let tab = harness.connect_fake();
+        harness.press(Key::T, Modifiers::COMMAND);
+        type_text(&mut harness, "select a,b from t");
+        harness.press(Key::F, COMMAND_SHIFT);
+        let formatted = "SELECT a,\n       b\n  FROM t";
+        let sql = active_sql(&harness, tab);
+        assert_eq!(sql.text, formatted);
+        assert_eq!(
+            sql.cursor,
+            formatted.len(),
+            "the cursor is still at the end"
+        );
+        assert!(harness.ctx.text_edit_focused());
+        // Typing goes on where the cursor is.
+        type_text(&mut harness, ";");
+        assert_eq!(active_sql(&harness, tab).text, format!("{formatted};"));
+        // With the keys given up (Esc) it formats too, and takes them back.
+        harness.press(Key::Escape, Modifiers::NONE);
+        assert!(!harness.ctx.text_edit_focused());
+        set_sql(&mut harness, tab, "select 1", 0);
+        harness.press(Key::F, COMMAND_SHIFT);
+        assert_eq!(active_sql(&harness, tab).text, "SELECT 1");
+        assert!(harness.ctx.text_edit_focused());
+    }
+
+    #[test]
+    fn one_undo_gives_back_the_script_as_typed() {
+        let mut harness = Harness::new();
+        let tab = harness.connect_fake();
+        harness.press(Key::T, Modifiers::COMMAND);
+        let typed = "select a,b from t";
+        let formatted = "SELECT a,\n       b\n  FROM t";
+        type_text(&mut harness, typed);
+        harness.press(Key::F, COMMAND_SHIFT);
+        assert_eq!(active_sql(&harness, tab).text, formatted);
+        harness.press(Key::Z, Modifiers::COMMAND);
+        let sql = active_sql(&harness, tab);
+        assert_eq!(sql.text, typed);
+        assert_eq!(sql.cursor, typed.len(), "and the cursor where it was");
+        // Redo formats it again.
+        harness.press(Key::Z, COMMAND_SHIFT);
+        assert_eq!(active_sql(&harness, tab).text, formatted);
+        // Formatting what is formatted adds nothing to undo: one undo is
+        // still all it takes.
+        harness.press(Key::F, COMMAND_SHIFT);
+        harness.press(Key::F, COMMAND_SHIFT);
+        assert_eq!(active_sql(&harness, tab).text, formatted);
+        harness.press(Key::Z, Modifiers::COMMAND);
+        assert_eq!(active_sql(&harness, tab).text, typed);
+    }
+
+    #[test]
+    fn format_leaves_nothing_to_redo_as_an_edit_does() {
+        let mut harness = Harness::new();
+        let tab = harness.connect_fake();
+        harness.press(Key::T, Modifiers::COMMAND);
+        let typed = "select a,b from t";
+        let formatted = "SELECT a,\n       b\n  FROM t";
+        type_text(&mut harness, typed);
+        harness.press(Key::F, COMMAND_SHIFT);
+        harness.press(Key::Z, Modifiers::COMMAND);
+        assert_eq!(active_sql(&harness, tab).text, typed);
+        // Formatted again, what that undo left to redo is gone: a redo
+        // changes nothing, and one undo is still all it takes.
+        harness.press(Key::F, COMMAND_SHIFT);
+        harness.press(Key::Z, COMMAND_SHIFT);
+        assert_eq!(active_sql(&harness, tab).text, formatted);
+        harness.press(Key::Z, Modifiers::COMMAND);
+        assert_eq!(active_sql(&harness, tab).text, typed);
+    }
+
+    #[test]
+    fn format_brings_the_cursor_into_view() {
+        let mut harness = Harness::new();
+        let tab = harness.connect_fake();
+        harness.press(Key::T, Modifiers::COMMAND);
+        // One line that Format lays out as more lines than the pane shows.
+        let columns: Vec<String> = (0..80).map(|n| format!("c{n}")).collect();
+        type_text(
+            &mut harness,
+            &format!("select {} from t", columns.join(",")),
+        );
+        let id = active_sql(&harness, tab).id;
+        let scrolled = |harness: &Harness| {
+            crate::ui::sql_text::scroll_offset(&harness.ctx, tab, id).expect("a scroll area")
+        };
+        assert_eq!(scrolled(&harness).y, 0.0);
+        harness.press(Key::F, COMMAND_SHIFT);
+        harness.finish_animations();
+        let sql = active_sql(&harness, tab);
+        assert_eq!(sql.text.lines().count(), 81);
+        assert_eq!(sql.cursor, sql.text.len(), "the cursor is on the last line");
+        assert!(scrolled(&harness).y > 0.0, "and that line is in view");
+    }
+
+    #[test]
+    fn format_with_a_selection_formats_the_statements_it_touches() {
+        let mut harness = Harness::new();
+        let tab = harness.connect_fake();
+        harness.press(Key::T, Modifiers::COMMAND);
+        // Letters of two bytes each before the selection: egui counts a
+        // cursor in characters, Format in bytes.
+        let typed = "select 'żółw' ;\nselect a,b from t ;\nselect 3 ;";
+        let formatted = "select 'żółw' ;\nSELECT a,\n       b\n  FROM t;\nselect 3 ;";
+        type_text(&mut harness, typed);
+        let list = typed.find("a,b").unwrap();
+        select_sql(&mut harness, tab, list..list + 3);
+        let id = crate::ui::sql_text::editor_id(tab, active_sql(&harness, tab).id);
+        let selection = |harness: &Harness| {
+            let state = egui::TextEdit::load_state(&harness.ctx, id).unwrap();
+            state.cursor.char_range().unwrap()
+        };
+        let selected = selection(&harness);
+        assert!(!selected.is_empty());
+        harness.press(Key::F, COMMAND_SHIFT);
+        let sql = active_sql(&harness, tab);
+        assert_eq!(sql.text, formatted);
+        // The cursor is where the selection ended, after the `b`, and
+        // nothing is selected.
+        let cursor = "select 'żółw' ;\nSELECT a,\n       b";
+        assert_eq!(&sql.text[..sql.cursor], cursor);
+        assert!(selection(&harness).is_empty());
+        // Undo gives the selection back with the text.
+        harness.press(Key::Z, Modifiers::COMMAND);
+        assert_eq!(active_sql(&harness, tab).text, typed);
+        assert_eq!(selection(&harness), selected);
+        // Formatted again (redo), typing adds to the text at the cursor.
+        harness.press(Key::Z, COMMAND_SHIFT);
+        type_text(&mut harness, "2");
+        assert_eq!(
+            active_sql(&harness, tab).text,
+            formatted.replace("       b\n", "       b2\n")
+        );
+    }
+
+    #[test]
+    fn the_format_button_formats_and_gives_the_keys_back() {
+        for look in [crate::theme::Look::standard(), crate::theme::Look::macos()] {
+            let (mut harness, tab) = sql_harness(look);
+            // Wide enough for the buttons' keys.
+            harness.size.x = 1600.0;
+            harness.settle();
+            type_text(&mut harness, "select 1");
+            let keys = if look == crate::theme::Look::macos() {
+                "⇧⌘F"
+            } else {
+                "Ctrl+Shift+F"
+            };
+            assert!(painted(&harness, keys), "{keys} in {}", look.name);
+            // The editor gives the keys up (Esc); the button formats and
+            // gives them back.
+            harness.press(Key::Escape, Modifiers::NONE);
+            assert!(!harness.ctx.text_edit_focused(), "{}", look.name);
+            harness.click("Format");
+            assert_eq!(active_sql(&harness, tab).text, "SELECT 1", "{}", look.name);
+            assert!(harness.ctx.text_edit_focused(), "{}", look.name);
+        }
+        // The terminal has the key alone.
+        let (mut harness, tab) = sql_harness(crate::theme::Look::omarchy());
+        harness.settle();
+        type_text(&mut harness, "select 1");
+        assert!(!harness.has("Format"));
+        harness.press(Key::F, COMMAND_SHIFT);
+        assert_eq!(active_sql(&harness, tab).text, "SELECT 1");
+    }
+
+    #[test]
+    fn command_shift_f_does_nothing_on_a_table_tab() {
+        let mut harness = Harness::new();
+        let tab = harness.connect_fake();
+        harness.app.apply(crate::model::Action::OpenObject {
+            tab,
+            object: tabletist_db::ObjectRef::new("main", "users"),
+            kind: tabletist_db::ObjectKind::Table,
+            pin: true,
+        });
+        harness.answer_rows(crate::testing::page(3, false));
+        // Mod+F would take the press for its own were it not consumed.
+        harness.press(Key::F, COMMAND_SHIFT);
+        assert!(!harness.has("Apply"), "the filter bar stays shut");
+        harness.press(Key::F, Modifiers::COMMAND);
+        assert!(harness.has("Apply"));
+    }
+
     #[test]
     fn command_period_cancels_a_sql_run() {
         let mut harness = Harness::new();
@@ -2021,10 +2232,10 @@ mod tests {
             let (mut harness, _tab) = sql_harness(look);
             // The terminal's toolbar leads with its menus, the others'
             // with Run.
-            let order = if look.terminal {
-                ["Limit", "Timeout", "Run", "Run all"]
+            let order: &[&str] = if look.terminal {
+                &["Limit", "Timeout", "Run", "Run all"]
             } else {
-                ["Run", "Run all", "Limit", "Timeout"]
+                &["Run", "Run all", "Format", "Limit", "Timeout"]
             };
             let role = if look.terminal {
                 egui::accesskit::Role::ComboBox
@@ -3209,6 +3420,12 @@ mod tests {
                     "1,000",
                 )
             };
+            // Format's key, which goes when the run buttons' keys do.
+            let format_keys = if look == crate::theme::Look::macos() {
+                "⇧⌘F"
+            } else {
+                "Ctrl+Shift+F"
+            };
             // Every state the toolbar passes through as the window narrows,
             // in the order it meets them.
             let mut states = Vec::new();
@@ -3219,6 +3436,8 @@ mod tests {
                 let state = [
                     painted(&harness, keys),
                     painted(&harness, note),
+                    // The terminal has no Format button.
+                    look.terminal || has(egui::accesskit::Role::Button, "Format"),
                     painted(&harness, full),
                     // The terminal's title, which the others do not have.
                     !look.terminal || has(egui::accesskit::Role::Label, "query 1"),
@@ -3230,9 +3449,15 @@ mod tests {
                     "the run buttons at {width} in {}",
                     look.name
                 );
+                assert_eq!(
+                    painted(&harness, format_keys),
+                    state[0] && !look.terminal,
+                    "{format_keys} at {width} in {}",
+                    look.name
+                );
                 // A menu reads in full or short, never neither.
                 assert_eq!(
-                    state[4] && !state[2],
+                    state[5] && !state[3],
                     painted(&harness, short),
                     "{short} at {width} in {}",
                     look.name
@@ -3241,20 +3466,23 @@ mod tests {
                     states.push(state);
                 }
             }
-            // keys, note, full labels, title, menus
+            // keys, note, Format, full labels, title, menus
             let mut expected = vec![
-                [true, true, true, true, true],
-                [false, true, true, true, true],
-                [false, false, true, true, true],
+                [true, true, true, true, true, true],
+                [false, true, true, true, true, true],
+                [false, false, true, true, true, true],
             ];
             if look.terminal {
                 // The title goes before the labels shorten: the tab says
                 // it too.
-                expected.push([false, false, true, false, true]);
+                expected.push([false, false, true, true, false, true]);
+            } else {
+                // Format goes before them: its key formats too.
+                expected.push([false, false, false, true, true, true]);
             }
-            let title = !look.terminal;
-            expected.push([false, false, false, title, true]);
-            expected.push([false, false, false, title, false]);
+            let (format, title) = (look.terminal, !look.terminal);
+            expected.push([false, false, format, false, title, true]);
+            expected.push([false, false, format, false, title, false]);
             assert_eq!(states, expected, "{}", look.name);
         }
     }
@@ -5982,6 +6210,7 @@ mod tests {
         harness.frame(vec![egui::Event::Text("?".into())]);
         assert!(harness.has("Keyboard shortcuts"));
         assert!(harness.has("Quick open"));
+        assert!(harness.has("Format SQL"));
         harness.press(Key::Escape, Modifiers::NONE);
         assert!(harness.app.dialog.is_none());
     }

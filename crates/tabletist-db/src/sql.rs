@@ -7,6 +7,8 @@ use std::ops::Range;
 
 use crate::Dialect;
 
+pub mod format;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TokenKind {
     Keyword,

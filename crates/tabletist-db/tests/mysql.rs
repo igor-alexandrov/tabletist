@@ -1500,3 +1500,47 @@ async fn the_server_version_names_the_server() {
         "{version}"
     );
 }
+
+#[tokio::test]
+async fn the_words_format_uppercases_cannot_be_table_aliases() {
+    use tabletist_db::Dialect;
+    use tabletist_db::sql::{self, format::UPPERCASED};
+    // Loads the fixture, or says the test is skipped.
+    let Some(_connection) = connect().await else {
+        return;
+    };
+    let mut conn = admin().await;
+    // A keyword that can be a name is an alias here: Format leaves its
+    // case alone.
+    conn.query_drop("SELECT 1 FROM users first").await.unwrap();
+    // The ones Format uppercases are not: the server reads each as SQL,
+    // not as a name, and the statement ends too soon.
+    let listed = UPPERCASED
+        .iter()
+        .filter(|word| sql::is_keyword(Dialect::MySql, word));
+    for word in listed {
+        let result = conn.query_drop(format!("SELECT 1 FROM users {word}")).await;
+        assert!(
+            matches!(&result, Err(mysql_async::Error::Server(error)) if error.code == 1064),
+            "{word}: {result:?}"
+        );
+    }
+    // After a dot a reserved word is a name, and this server compares
+    // table names by case: Format keeps the case of a word beside a dot,
+    // so the query still finds its table.
+    conn.query_drop("CREATE TEMPORARY TABLE `order` (id INT)")
+        .await
+        .unwrap();
+    let script = "select id from tabletist.order";
+    let formatted = sql::format::format(Dialect::MySql, script, None, 0).unwrap();
+    assert_eq!(formatted.text, "SELECT id\n  FROM tabletist.order");
+    conn.query_drop(&formatted.text).await.unwrap();
+    // A user variable's name touches its `@`. Format leaves it there and as
+    // it is, though it spells a clause: the server reads the two as one.
+    conn.query_drop("SET @from = 1").await.unwrap();
+    let formatted = sql::format::format(Dialect::MySql, "select @from", None, 0).unwrap();
+    assert_eq!(formatted.text, "SELECT @from");
+    let value: Option<i64> = conn.query_first(&formatted.text).await.unwrap();
+    assert_eq!(value, Some(1));
+    conn.disconnect().await.unwrap();
+}

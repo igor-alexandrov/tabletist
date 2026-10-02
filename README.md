@@ -50,7 +50,9 @@ Linux (Omarchy and Hyprland first), macOS and Windows.
   (Cmd/Ctrl+Return) or the whole script, with a row limit and a timeout, and
   read a result row in full in the row panel.
   Every run happens in a read-only transaction that is rolled back, and
-  statements that would leave it are refused.
+  statements that would leave it are refused. Format (Cmd/Ctrl+Shift+F)
+  lays queries out in river style and uppercases reserved words, in the
+  selection's statements or the whole script.
 - Quick open (Cmd/Ctrl+P) and a full keyboard map: press `?` in the app.
 - Looks native on each platform: a macOS look in IBM Plex, and on Linux the
   Omarchy look (square, keyboard first, vim keys, the desktop's monospace

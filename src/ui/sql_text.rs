@@ -5,7 +5,7 @@
 use std::ops::{Range, RangeInclusive};
 use std::sync::Arc;
 
-use egui::text::CCursorRange;
+use egui::text::{CCursor, CCursorRange};
 use egui::{
     Color32, CornerRadius, Galley, Id, Margin, Rect, Sense, Shape, Ui, WidgetInfo, WidgetType,
     pos2, vec2,
@@ -160,6 +160,13 @@ pub fn remembered(ctx: &egui::Context, tab: ConnTabId, id: TabId) -> Vec<&'stati
     .collect()
 }
 
+/// How far the editor `id` is scrolled.
+#[cfg(test)]
+pub fn scroll_offset(ctx: &egui::Context, tab: ConnTabId, id: TabId) -> Option<egui::Vec2> {
+    let ScrollId(area) = ctx.data(|data| data.get_temp(editor_id(tab, id)))?;
+    egui::scroll_area::State::load(ctx, area).map(|state| state.offset)
+}
+
 /// A text edit layouter for the editor `id` that colours `dialect`'s
 /// tokens and never wraps: one galley row per line, so the gutter can
 /// number the rows.
@@ -202,6 +209,54 @@ fn byte_offset(text: &str, chars: usize) -> usize {
     text.char_indices()
         .nth(chars)
         .map_or(text.len(), |(byte, _)| byte)
+}
+
+/// The character index, as egui counts a cursor, of the byte offset
+/// `bytes` in `text`.
+fn char_index(text: &str, bytes: usize) -> usize {
+    text.char_indices()
+        .take_while(|(byte, _)| *byte < bytes)
+        .count()
+}
+
+/// Formats the script, or the statements the field's selection overlaps,
+/// as one step of the field's undo history. Returns whether it changed
+/// the text: it does not when Format has nothing to change.
+fn format_script(ui: &Ui, sql_tab: &mut SqlTab, field: &Field<'_>) -> bool {
+    let mut state = egui::TextEdit::load_state(ui.ctx(), field.id).unwrap_or_default();
+    // A field that never had the keys has no cursor of its own.
+    let typed = state.cursor.char_range();
+    let (selection, cursor) = match typed {
+        Some(range) => {
+            let [start, end] = range.sorted_cursors();
+            let byte = |cursor: CCursor| byte_offset(&sql_tab.text, cursor.index.0);
+            (Some(byte(start)..byte(end)), byte(range.primary))
+        }
+        None => (None, sql_tab.cursor),
+    };
+    let Some(formatted) = sql::format::format(field.dialect, &sql_tab.text, selection, cursor)
+    else {
+        return false;
+    };
+    let at = |text: &str, byte: usize| CCursorRange::one(CCursor::new(char_index(text, byte)));
+    let before = typed.unwrap_or_else(|| at(&sql_tab.text, sql_tab.cursor));
+    let after = at(&formatted.text, formatted.cursor);
+    // The text as typed and the text as formatted, both: undo gives the
+    // first back whole, and redo the second. Between the two the formatted
+    // text is fed as an edit is, which empties what an earlier undo left
+    // to redo: adding an undo point alone would keep it. (The time fed
+    // does not matter: the next line settles the state.)
+    let formatted_state = (after, formatted.text.clone());
+    let mut undoer = state.undoer();
+    undoer.add_undo(&(before, sql_tab.text.clone()));
+    undoer.feed_state(ui.input(|input| input.time), &formatted_state);
+    undoer.add_undo(&formatted_state);
+    state.set_undoer(undoer);
+    state.cursor.set_char_range(Some(after));
+    egui::TextEdit::store_state(ui.ctx(), field.id, state);
+    sql_tab.text = formatted.text;
+    sql_tab.cursor = formatted.cursor;
+    true
 }
 
 /// The number the gutter shows for `line`: its own, or (the terminal's
@@ -420,6 +475,8 @@ struct Field<'a> {
 /// The text field itself: edits the tab's text and reports its cursor.
 fn edit(ui: &mut Ui, sql_tab: &mut SqlTab, field: &Field<'_>) -> Edited {
     let focus = std::mem::take(&mut sql_tab.focus_editor);
+    // Before the field is drawn, so this frame shows the formatted text.
+    let formatted = std::mem::take(&mut sql_tab.format) && format_script(ui, sql_tab, field);
     // The field fills the pane, so a click under the last line lands in
     // it: whole lines, and the rest as bottom padding. (egui sizes a text
     // edit in lines of its font.)
@@ -454,6 +511,17 @@ fn edit(ui: &mut Ui, sql_tab: &mut SqlTab, field: &Field<'_>) -> Edited {
         output.response.request_focus();
         // The keys arrive with the next frame: ask for it, since no event
         // need follow the one that opened the tab.
+        ui.ctx().request_repaint();
+    }
+    if formatted {
+        // The cursor's line moved with the layout. The field scrolls to
+        // its cursor after an edit of its own, not after this one, so
+        // bring it into view here; and ask for the frame that shows the
+        // footer and the gutter the new text.
+        if let Some(range) = output.state.cursor.range(&output.galley) {
+            let cursor = output.galley.pos_from_cursor(range.primary);
+            ui.scroll_to_rect(cursor.translate(output.galley_pos.to_vec2()), None);
+        }
         ui.ctx().request_repaint();
     }
     // egui counts the cursor in characters; a field never focused has
@@ -563,6 +631,21 @@ mod tests {
         let empty = &galleys[1];
         assert_eq!(empty.rows.len(), 1);
         assert_eq!(empty.rows[0].height(), galley.rows[0].height());
+    }
+
+    #[test]
+    fn a_byte_offset_becomes_a_character_index() {
+        assert_eq!(char_index("SELECT 1", 0), 0);
+        assert_eq!(char_index("SELECT 1", 8), 8);
+        // Two bytes each.
+        assert_eq!(char_index("żółw 1", 7), 4);
+        assert_eq!(char_index("żółw 1", 9), 6);
+        // There and back.
+        for chars in 0..=6 {
+            assert_eq!(char_index("żółw 1", byte_offset("żółw 1", chars)), chars);
+        }
+        // Past the end: the end.
+        assert_eq!(char_index("żółw", 99), 4);
     }
 
     #[test]

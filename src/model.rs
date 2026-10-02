@@ -231,6 +231,12 @@ pub enum Action {
         sql_tab: TabId,
         all: bool,
     },
+    /// Format the editor's script, or the statements its selection
+    /// overlaps.
+    FormatSql {
+        tab: ConnTabId,
+        sql_tab: TabId,
+    },
     /// The Limit menu: this editor's row limit, and the one new editors get.
     SetSqlLimit {
         tab: ConnTabId,
@@ -1735,6 +1741,9 @@ pub struct SqlTab {
     pub fields: Option<RowFields>,
     /// Focus the editor on the next frame.
     pub focus_editor: bool,
+    /// Format the script on the next frame: the editor does it, where the
+    /// selection and the undo history are.
+    pub format: bool,
     /// The text the last run that finished started with. Its error mark
     /// names a line of that text, so it holds only while the text is that.
     ran_text: Option<TextPrint>,
@@ -1756,6 +1765,7 @@ impl std::fmt::Debug for SqlTab {
             .field("split", &self.split)
             .field("selection", &self.selection)
             .field("focus_editor", &self.focus_editor)
+            .field("format", &self.format)
             .finish_non_exhaustive()
     }
 }
@@ -1779,6 +1789,7 @@ impl SqlTab {
             selection: None,
             fields: None,
             focus_editor: true,
+            format: false,
             ran_text: None,
         }
     }

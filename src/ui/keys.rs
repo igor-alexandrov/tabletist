@@ -29,6 +29,7 @@ pub const SHORTCUTS: &[(&str, &str)] = &[
     ),
     ("Mod+T", "New SQL editor"),
     ("Mod+Return, Mod+Shift+Return", "Run statement / run all"),
+    ("Mod+Shift+F", "Format SQL"),
     ("Mod+W", "Close tab"),
     ("Mod+Shift+[ / ]", "Previous / next tab"),
     ("Mod+R", "Refresh"),
@@ -118,6 +119,12 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
                     actions.push(Action::RunSql { tab, sql_tab, all });
                 }
             }
+        }
+        // Format is a SQL editor's. The press is taken on every tab, or
+        // Mod+F, below, would take it for its own.
+        let format = consume_press(input, Modifiers::COMMAND | Modifiers::SHIFT, Key::F);
+        if format && let Some((tab, sql_tab)) = sql {
+            actions.push(Action::FormatSql { tab, sql_tab });
         }
         let mut key = |modifiers: Modifiers, key: Key, action: Action| {
             if input.consume_key(modifiers, key) {
@@ -589,6 +596,7 @@ mod tests {
             "New connection",
             "New SQL editor",
             "Run statement / run all",
+            "Format SQL",
             "Close tab",
             "Previous / next tab",
             "Refresh",
@@ -620,6 +628,7 @@ mod tests {
             keys("Run statement / run all"),
             Some("Mod+Return, Mod+Shift+Return")
         );
+        assert_eq!(keys("Format SQL"), Some("Mod+Shift+F"));
     }
 
     #[test]
