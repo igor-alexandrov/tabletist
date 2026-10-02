@@ -189,13 +189,11 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                 egui::UiBuilder::new()
                     .max_rect(Rect::from_center_size(cell.center(), vec2(24.0, 24.0))),
             );
-            let response = icon_button(
-                &mut child,
-                Icon::PanelRight,
-                &gettext(locale, "Show or hide the row panel"),
-                &look,
-                &palette,
-            );
+            let label = gettext(locale, "Show or hide the row panel");
+            let response = icon_button(&mut child, Icon::PanelRight, &label, &look, &palette);
+            // Whether the panel is open is more than the icon's colour.
+            response
+                .widget_info(|| WidgetInfo::selected(WidgetType::Button, true, row_panel, &label));
             // The other looks' strip has the tone a button takes under the
             // pointer: there the button takes the tone a tab does.
             let lit = !look.terminal && response.hovered();

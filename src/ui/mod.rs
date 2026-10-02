@@ -3180,6 +3180,30 @@ mod tests {
         }
     }
 
+    #[test]
+    fn the_strips_toggle_says_whether_the_row_panel_is_open() {
+        use egui::accesskit::{Role, Toggled};
+        for look in crate::theme::Look::ALL {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            with_page(&mut harness);
+            let toggle = "Show or hide the row panel";
+            let state = |harness: &mut Harness| {
+                let tree = harness.settle();
+                let id = crate::testing::node(&tree, toggle, Role::Button);
+                let (_, node) = tree
+                    .nodes
+                    .iter()
+                    .find(|(node, _)| Some(*node) == id)
+                    .unwrap_or_else(|| panic!("{toggle} missing in {}", look.name));
+                node.toggled()
+            };
+            assert_eq!(state(&mut harness), Some(Toggled::True), "{}", look.name);
+            harness.click(toggle);
+            assert_eq!(state(&mut harness), Some(Toggled::False), "{}", look.name);
+        }
+    }
+
     /// The fields of the row panel that shows, by their copy buttons.
     fn panel_shows(harness: &mut Harness) -> bool {
         harness.has("Copy email")
