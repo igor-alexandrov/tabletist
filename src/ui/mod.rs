@@ -1349,6 +1349,10 @@ mod tests {
                 }));
             let tree = harness.settle();
             let window = egui::Rect::from_min_size(egui::Pos2::ZERO, harness.size);
+            // The footer, by the arrow it always has. The terminal look
+            // has no footer.
+            let footer = crate::testing::bounds(&tree, "Previous page", Role::Button);
+            assert_eq!(footer.is_none(), look.terminal, "{}", look.name);
             for name in ["Retry", "Copy details"] {
                 let button = crate::testing::bounds(&tree, name, Role::Button)
                     .unwrap_or_else(|| panic!("{name} is missing in {}", look.name));
@@ -1357,6 +1361,14 @@ mod tests {
                     "{name} at {button:?} in {}",
                     look.name
                 );
+                // In the view's own room, not over what is under it.
+                if let Some(footer) = footer {
+                    assert!(
+                        button.bottom() <= footer.top(),
+                        "{name} at {button:?} over the footer at {footer:?} in {}",
+                        look.name
+                    );
+                }
             }
             // What a frame lays out and names: no piece longer than a
             // message may be, with its label before it.
@@ -1409,6 +1421,14 @@ mod tests {
             assert!(!harness.has(&look.label("Running query…")), "{}", look.name);
             age_fetch(&mut harness, tab);
             assert!(harness.has(&look.label("Running query…")), "{}", look.name);
+            // The time the box shows ticks on the frames its spinner asks
+            // for: the next one at once, with no event to bring it.
+            assert_eq!(
+                harness.repaint_after,
+                std::time::Duration::ZERO,
+                "{}",
+                look.name
+            );
             harness.click("Cancel query");
             assert!(
                 matches!(
@@ -7264,6 +7284,11 @@ mod tests {
                 harness.painted
             );
         }
+        // The key carries the button, in the colour a button without one
+        // has its text in, and the text stands back from it.
+        let key = harness.painted_color("esc");
+        assert_eq!(key, Some(harness.app.palette.text));
+        assert_ne!(harness.painted_color(&look.label("Cancel")), key);
     }
 
     /// Fails what a refresh of `tab` asked for (its rows and, when it had
