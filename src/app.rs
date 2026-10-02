@@ -659,6 +659,34 @@ impl App {
                     self.fetch_rows(tab, object_tab);
                 }
             }
+            Action::SaveValue { tab, id, row, col } => {
+                // The value the row panel showed: it may be gone by now (a
+                // refresh, another page), and then there is nothing to save.
+                let found = self.workspace(tab).and_then(|workspace| {
+                    let (table, columns, rows) = match workspace.tab(id)? {
+                        Tab::Object(object) => {
+                            let page = object.page()?;
+                            (
+                                object.object.name.as_str(),
+                                page.columns.as_slice(),
+                                page.rows.as_slice(),
+                            )
+                        }
+                        Tab::Sql(sql) => {
+                            let (columns, rows, _) = sql.shown_rows()?;
+                            ("query", columns, rows)
+                        }
+                    };
+                    let tabletist_db::Value::Bytes(bytes) = rows.get(row)?.get(col)? else {
+                        return None;
+                    };
+                    let name = crate::ui::format::save_name(table, &columns.get(col)?.name, bytes);
+                    Some((name, bytes.to_vec()))
+                });
+                if let Some((name, bytes)) = found {
+                    self.backend.save_bytes(name, bytes);
+                }
+            }
             Action::GridKeys(tab) => {
                 if let Some(workspace) = self.workspace_mut(tab) {
                     workspace.pane = Pane::Grid;

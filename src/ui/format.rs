@@ -568,6 +568,37 @@ pub fn sniff(bytes: &[u8]) -> Option<&'static str> {
         .map(|(_, name)| *name)
 }
 
+/// The name a binary value's file is offered under: its table and column,
+/// and the extension of what it looks like (`covers-image.jpg`), or `.bin`.
+/// Only letters, digits, `-` and `_` of the names are kept: they come from
+/// the server, and a file name must not lead anywhere.
+pub fn save_name(table: &str, column: &str, bytes: &[u8]) -> String {
+    let safe = |name: &str| -> String {
+        name.chars()
+            .take(64)
+            .map(|character| {
+                if character.is_alphanumeric() || matches!(character, '-' | '_') {
+                    character
+                } else {
+                    '_'
+                }
+            })
+            .collect()
+    };
+    let extension = match sniff(bytes) {
+        Some("JPEG") => "jpg",
+        Some("PNG") => "png",
+        Some("GIF") => "gif",
+        Some("PDF") => "pdf",
+        Some("ZIP") => "zip",
+        Some("gzip") => "gz",
+        Some("WebP") => "webp",
+        Some("SQLite") => "sqlite",
+        _ => "bin",
+    };
+    format!("{}-{}.{extension}", safe(table), safe(column))
+}
+
 /// What a grid cell says of a binary value: its type and its size, never
 /// its bytes. `bytea · 48.2 KB`, or the terminal's `bytea 48.2K`.
 pub fn binary_label(type_name: &str, bytes: usize, terminal: bool) -> String {
@@ -1148,6 +1179,21 @@ mod tests {
         assert_eq!(sniff(b"RIFF\x10\0\0\0WAVE"), None);
         assert_eq!(sniff(b""), None);
         assert_eq!(sniff(b"plain text"), None);
+    }
+
+    #[test]
+    fn a_saved_value_is_named_for_where_it_came_from_and_what_it_looks_like() {
+        assert_eq!(
+            save_name("book_covers", "image", &[0xff, 0xd8, 0xff]),
+            "book_covers-image.jpg"
+        );
+        assert_eq!(save_name("files", "body", b"%PDF-1.7"), "files-body.pdf");
+        assert_eq!(save_name("files", "body", b"\x00\x01"), "files-body.bin");
+        // A name from the server never leads out of the folder chosen.
+        assert_eq!(
+            save_name("../../etc", "pass wd\u{202E}", &[]),
+            "______etc-pass_wd_.bin"
+        );
     }
 
     #[test]

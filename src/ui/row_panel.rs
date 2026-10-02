@@ -972,7 +972,14 @@ fn field(
         // Sixteen bytes are the UUID they hold: text, laid out below.
         Value::Bytes(bytes) if format::uuid(bytes).is_some() => {}
         Value::Bytes(bytes) => {
-            binary(ui, bytes, &formatted.short, look, palette, locale);
+            if binary(ui, bytes, &formatted.short, look, palette, locale) {
+                actions.push(Action::SaveValue {
+                    tab,
+                    id: tab_id,
+                    row,
+                    col,
+                });
+            }
             return;
         }
         Value::Text(text) => {
@@ -1214,8 +1221,9 @@ fn elements(
     });
 }
 
-/// A binary value: its first bytes, and how many more there are. The whole
-/// of it is a file's worth, which Copy gives.
+/// A binary value: its first bytes, how many more there are, and a link
+/// that saves the whole of it to a file (Copy gives it as hex). Returns
+/// whether the link was clicked.
 fn binary(
     ui: &mut egui::Ui,
     bytes: &[u8],
@@ -1223,7 +1231,7 @@ fn binary(
     look: &Look,
     palette: &Palette,
     locale: crate::i18n::Locale,
-) {
+) -> bool {
     let say = |text: &'static str| look.label(&gettext(locale, text));
     if bytes.is_empty() {
         Text::one(
@@ -1234,7 +1242,7 @@ fn binary(
         )
         .layout(ui.ctx())
         .label(ui);
-        return;
+        return false;
     }
     let role = TextRole::pick(look, TextRole::Json, TextRole::OSecondary);
     let more = bytes.len().saturating_sub(format::HEX_PREVIEW);
@@ -1277,6 +1285,12 @@ fn binary(
                 lines(ui);
             });
     }
+    let save = say("Save to file…");
+    let link = Text::one(look, widgets::secondary(look), &save, palette.accent)
+        .layout(ui.ctx())
+        .label_sense(ui, Sense::click());
+    link.widget_info(|| WidgetInfo::labeled(WidgetType::Link, true, &save));
+    link.clicked()
 }
 
 /// `books` becomes `book`, for "Open book →".
@@ -1671,6 +1685,35 @@ mod tests {
             // An array's elements stand after their positions.
             assert!(painted("[1]") && painted("[2]"), "{}", look.name);
         }
+    }
+
+    #[test]
+    fn a_binary_value_is_saved_whole_under_a_name_of_its_own() {
+        for look in Look::ALL {
+            let mut harness = awkward(look);
+            let link = look.label("Save to file…");
+            harness.click(&link);
+            // The dialog is the system's; the backend was asked with the
+            // whole value and a name that says what it is.
+            assert_eq!(
+                harness.app.backend.saves,
+                [("editions-cover.jpg".to_owned(), 100)],
+                "{}",
+                look.name
+            );
+        }
+    }
+
+    #[test]
+    fn a_value_that_is_gone_is_not_saved() {
+        let mut harness = awkward(Look::macos());
+        let tab = harness.app.active_tab_id();
+        let id = harness.app.workspace(tab).unwrap().active_tab.unwrap();
+        // A row the page no longer has, and a column that holds text.
+        for (row, col) in [(7, 3), (0, 0)] {
+            harness.app.apply(Action::SaveValue { tab, id, row, col });
+        }
+        assert!(harness.app.backend.saves.is_empty());
     }
 
     #[test]

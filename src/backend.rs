@@ -283,6 +283,9 @@ pub struct Backend {
     outbox: Outbox,
     #[cfg(test)]
     pub sent: Vec<Command>,
+    /// The names and sizes of the values a test asked to save.
+    #[cfg(test)]
+    pub saves: Vec<(String, usize)>,
     #[cfg(test)]
     watched: Watched,
 }
@@ -343,6 +346,8 @@ impl Backend {
             #[cfg(test)]
             sent: Vec::new(),
             #[cfg(test)]
+            saves: Vec::new(),
+            #[cfg(test)]
             watched,
         }
     }
@@ -361,6 +366,8 @@ impl Backend {
             },
             #[cfg(test)]
             sent: Vec::new(),
+            #[cfg(test)]
+            saves: Vec::new(),
             #[cfg(test)]
             watched: Watched::default(),
         }
@@ -434,6 +441,39 @@ impl Backend {
         runtime.spawn(async move {
             let path = dialog.await.map(|file| file.path().to_path_buf());
             outbox.emit(Event::FilePicked { request, path });
+        });
+    }
+
+    /// Asks where to save `bytes` (a binary value), suggesting `name`, and
+    /// writes them there off the UI thread. A dialog closed without a
+    /// choice saves nothing and says nothing; a write that fails is told as
+    /// any failed save is.
+    pub fn save_bytes(&mut self, name: String, bytes: Vec<u8>) {
+        #[cfg(test)]
+        self.saves.push((name.clone(), bytes.len()));
+        let Some(runtime) = &self.runtime else {
+            return;
+        };
+        let dialog = rfd::AsyncFileDialog::new()
+            .set_title("Save value")
+            .set_file_name(name)
+            .save_file();
+        let outbox = self.outbox.clone();
+        runtime.spawn(async move {
+            let Some(file) = dialog.await else {
+                return;
+            };
+            let path = file.path().to_path_buf();
+            let target = path.clone();
+            let written = tokio::task::spawn_blocking(move || std::fs::write(target, bytes)).await;
+            let result = match written {
+                Ok(result) => result.map_err(|error| error.to_string()),
+                Err(error) => Err(error.to_string()),
+            };
+            if let Err(error) = &result {
+                log::error!("could not save {}: {error}", path.display());
+            }
+            outbox.emit(Event::Saved { path, result });
         });
     }
 
