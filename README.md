@@ -28,7 +28,8 @@ Linux (Omarchy and Hyprland first), macOS and Windows.
 
 - Saved connections grouped in a picker, each tagged with its environment
   (dev, staging, production) and when it was last used.
-  Open more than one and they share a tab bar.
+  Open more than one and each is a chip in the window's header: click one
+  to switch.
 - Direct connections, TLS (libpq's `sslmode` values, with `allow` read as
   `prefer`; `verify-ca` needs a CA file, and MySQL has no `verify-ca` yet),
   and SSH tunnels (password, key file or agent) with host keys trusted on

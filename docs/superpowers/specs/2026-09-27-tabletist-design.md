@@ -21,7 +21,8 @@ PostgreSQL, MySQL, SQLite. No others in v1.
 ### Success criteria for v1
 
 1. A user can save a connection (direct, TLS, or through an SSH tunnel), and
-   open it in a connection tab. Several connection tabs can be open at once.
+   open it in a connection tab. Several can be open at once, each a chip in
+   the connection bar.
 2. The sidebar lists schemas and their tables, views, and materialized views.
 3. Opening a table shows its rows in a virtualized grid, paged 300 at a time,
    sortable by column (server side), with an estimated total row count.
@@ -122,12 +123,11 @@ tabletist/
     testing.rs               headless UI test harness (AccessKit tree + events)
     shots.rs                 screenshots for visual review (`shots` feature)
     ui/mod.rs                panel layout, dialogs
-    ui/conn_tabs.rs          connection tab bar
     ui/picker.rs             saved-connection picker
     ui/connect_dialog.rs     new or edit connection, SSH section
     ui/password_prompt.rs    asks for a password or passphrase
     ui/host_key_prompt.rs    trust an unknown SSH host key
-    ui/workspace.rs          a connected tab: top bar, disconnected banner, body
+    ui/workspace.rs          a connected tab: connection bar, disconnected banner, body
     ui/sidebar.rs            filter, refresh, tree of schemas and objects
     ui/object_tabs.rs        object tab bar (preview tabs in italics)
     ui/data_view.rs          footer and grid, or the error or empty state
@@ -383,8 +383,7 @@ enum Dialog { Connection(..), Password(..), HostKey(..), QuickOpen(..), Help }
 ### 5.2 Layout
 
 ```
-┌ [● prod-db ×] [● staging ×] [○ local.sqlite ×] [+] ───────────────────────────┐  connection tabs
-├ top bar: database ▾ │ via SSH host │ TLS verified │ disconnect ───────────────┤
+┌ [≡] [● prod-db ▾] [● staging] [○ local.sqlite] │ read-only │ disconnect ──────┐  connection bar
 ├ sidebar ──────┬ [users] [orders*] [events] ─────────────┬ row panel ─────────┤  object tabs
 │ filter  ⟳     │ filter bar: [col ▾][op ▾][value] + x ⏎   │ users #42          │
 │ ▾ public      ├─────────────────────────────────────────│ id      int4    42 │
@@ -400,13 +399,22 @@ enum Dialog { Connection(..), Password(..), HostKey(..), QuickOpen(..), Help }
 
 - One tab, one connection (one `Session`). Several tabs can be open at once;
   the same saved connection can be opened in more than one tab.
-- A tab shows the connection's color tag, name, and status (connecting,
-  connected, disconnected).
-- `+`, the connection bar's **Connections** button, or Cmd/Ctrl+O opens a new
-  tab with the **picker**. The app starts with one picker tab.
+- The window has no tab bar. The **connection bar** leads it and shows every
+  open connection as a chip: its environment's colour, its name and
+  environment, and its database, or how its session stands while it is not
+  connected (connecting, disconnected, cancelled). The bar's own chip opens
+  the database switcher; another's switches to that connection. A card
+  under a chip says where the connection points and since when.
+- When the chips outgrow the bar, the TLS, SSH and read-only pills give way,
+  then names shorten, then the row slides to keep the bar's own chip whole.
+- The picker is one tab at most. The bar's **Connections** button or
+  Cmd/Ctrl+O shows it, opening it when there is none. The app starts with
+  one picker tab.
+- Cmd/Ctrl+1..9 switch to an open connection by its place in the bar;
+  Ctrl+Tab visits every tab, the picker too.
 - Closing a tab cancels its running query, closes the connection and the SSH
-  tunnel, and removes the tab. Middle-click closes. The bar scrolls when it
-  overflows.
+  tunnel, and removes the tab. **Disconnect** does the same and shows the
+  picker.
 - When a connection drops, the tab keeps its tree and object tabs and shows a
   "Disconnected: <reason>" banner with **Reconnect**.
 
@@ -414,7 +422,9 @@ enum Dialog { Connection(..), Password(..), HostKey(..), QuickOpen(..), Help }
 
 - Picker: searchable list of saved connections showing color tag, driver icon,
   and `user@host/db` (or the file name for SQLite). Double-click or Enter
-  connects in this tab. New, Edit, Duplicate, Delete.
+  connects in this tab. A connection that is open already is marked
+  **open**, and choosing it shows its tab; Shift+Enter connects once more.
+  New, Edit, Duplicate, Delete.
 - Connection dialog: name; driver; environment (local, dev, staging,
   production, none), which follows where the connection points until one is
   chosen and decides its colour; host, port, database, user, password, or
@@ -497,10 +507,10 @@ read-only table (structure data is small; the data grid is not needed).
 
 | Shortcut | Action |
 |---|---|
-| Cmd/Ctrl+O | New connection tab (picker) |
+| Cmd/Ctrl+O | Connections (the picker) |
 | Cmd/Ctrl+T | New SQL editor (added after v1, see `2026-09-30-sql-editor-core-design.md`) |
-| Cmd/Ctrl+Shift+W | Close connection tab |
-| Cmd/Ctrl+1..9, Ctrl+Tab, Ctrl+Shift+Tab | Switch connection tab |
+| Cmd/Ctrl+Shift+W | Close connection |
+| Cmd/Ctrl+1..9, Ctrl+Tab, Ctrl+Shift+Tab | Switch connection (the digits count the open ones) |
 | Cmd/Ctrl+N | New connection |
 | Cmd/Ctrl+S, Cmd/Ctrl+T, Cmd/Ctrl+Enter | In the connection dialog: save, test, save and connect |
 | Cmd/Ctrl+W | Close object tab |
@@ -535,8 +545,8 @@ suppressed while a text field has focus; Cmd/Ctrl shortcuts are not.
   monospace face is the desktop's when fontconfig resolves one
   (`theme/desktop_font.rs`), and the Omarchy look draws grid and row panel
   data in it.
-- macOS: the connection tabs share a unified title bar with the window
-  buttons (`macos.rs`).
+- macOS: the connection bar, or the picker's header, shares a unified title
+  bar with the window buttons (`macos.rs`).
 - Wayland first; app-id `dev.tabletist.Tabletist` and a `.desktop` file so
   Hyprland window rules match.
 - eframe persistence restores window geometry and panel widths.
