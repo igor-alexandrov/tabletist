@@ -1971,11 +1971,25 @@ impl SqlTab {
 }
 
 impl Workspace {
-    /// Whether the tab has shown its content: its schemas were listed, or
-    /// could not be, at least once. Until then the tab shows how
-    /// connecting goes.
+    /// Whether the tab has content to show now: its schemas are listed, or
+    /// could not be. Until then the tab shows how connecting goes. A switch
+    /// of database starts the tree over, so a tab in use can go back to
+    /// not opened.
     pub fn opened(&self) -> bool {
         self.tree.schemas.value.is_some() || self.tree.schemas.error.is_some()
+    }
+
+    /// Whether giving up the connect loses nothing: the tab has not opened,
+    /// a connect or its schema listing is under way, and no tab is open in
+    /// it. Giving up closes the workspace, and with it the SQL editors a
+    /// switch of database keeps.
+    pub fn can_give_up(&self) -> bool {
+        !self.opened()
+            && matches!(
+                self.status,
+                SessionStatus::Connecting { .. } | SessionStatus::Connected
+            )
+            && self.tabs.is_empty()
     }
 
     /// How long the connect in flight has been going, once it was sent.
@@ -2255,6 +2269,23 @@ mod tests {
         assert_eq!(workspace.connecting_for(), None, "the connect was answered");
         workspace.tree.schemas.value = Some(Vec::new());
         assert!(workspace.opened());
+    }
+
+    #[test]
+    fn a_connect_is_given_up_only_with_nothing_to_lose() {
+        let mut workspace = crate::testing::workspace();
+        assert!(workspace.can_give_up(), "a first connect");
+        workspace.status = SessionStatus::Connected;
+        assert!(workspace.can_give_up(), "its schemas are being listed");
+        // A SQL editor is the user's work: a switch of database keeps it.
+        workspace.tabs.push(sql_tab(1));
+        assert!(!workspace.can_give_up(), "an editor is open");
+        workspace.tabs.clear();
+        workspace.status = SessionStatus::Cancelled;
+        assert!(!workspace.can_give_up(), "nothing is under way");
+        workspace.status = SessionStatus::Connected;
+        workspace.tree.schemas.value = Some(Vec::new());
+        assert!(!workspace.can_give_up(), "the tab opened");
     }
 
     #[test]

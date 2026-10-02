@@ -173,9 +173,9 @@ fn opening(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
         });
 }
 
-/// The steps of a connect, the one under way with its time, and the
-/// button that gives up: in the middle of the tab, or in the terminal
-/// look from its top left.
+/// The steps of a connect, the one under way with its time, and, for a
+/// connect with nothing to lose, the button that gives up: in the middle
+/// of the tab, or in the terminal look from its top left.
 fn connecting(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
     let (locale, palette, look) = (app.locale, app.palette, app.look);
     let Some(workspace) = app.workspace(tab) else {
@@ -222,11 +222,18 @@ fn connecting(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
     let height = states::steps_height(list.len(), &look);
     let button_height = states::button_height(&look);
     let name = say("Cancel");
-    // Named apart from a password prompt's Cancel, which can be open over it.
-    let cancel = states::button(&name, &look)
-        .label("Cancel connecting")
-        .shortcut("esc");
-    let width = cancel.width(ui, &look);
+    // A tab with SQL editors open keeps them through a switch of database:
+    // it has no button that would close them, and the bar's Disconnect is
+    // the way out. Named apart from a password prompt's Cancel, which can
+    // be open over it.
+    let cancel = workspace.can_give_up().then(|| {
+        states::button(&name, &look)
+            .label("Cancel connecting")
+            .shortcut("esc")
+    });
+    let width = cancel
+        .as_ref()
+        .map_or(0.0, |cancel| cancel.width(ui, &look));
     let room = (body.width() - 2.0 * states::INSET).max(0.0);
     let (steps, button) = if look.terminal {
         let top = body.left_top() + vec2(states::INSET, states::INSET);
@@ -252,7 +259,9 @@ fn connecting(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
         )
     };
     states::steps(ui, steps, &list, &look, &palette);
-    if cancel.show_at(ui, button, &look, &palette).clicked() {
+    if let Some(cancel) = cancel
+        && cancel.show_at(ui, button, &look, &palette).clicked()
+    {
         app.actions.push(Action::Disconnect(tab));
     }
 }

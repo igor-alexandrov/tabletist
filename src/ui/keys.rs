@@ -70,15 +70,12 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
     let sql = app.active_sql();
     let any_tab = app.active_workspace_tab();
     let in_workspace = app.workspace(active).is_some();
-    // A tab that is still connecting: Esc gives up, as its Cancel does.
-    let opening = app.workspace(active).is_some_and(|workspace| {
-        !workspace.opened()
-            && matches!(
-                workspace.status,
-                crate::model::SessionStatus::Connecting { .. }
-                    | crate::model::SessionStatus::Connected
-            )
-    });
+    // A connect with nothing to lose: Esc gives up, as its Cancel does. An
+    // open popup keeps its Esc: this runs before the popup is drawn.
+    let give_up = !egui::Popup::is_any_open(ctx)
+        && app
+            .workspace(active)
+            .is_some_and(|workspace| workspace.can_give_up());
     let editing = ctx.text_edit_focused();
     // Grid keys act only on a visible grid: the Data view of the active tab.
     let grid = object.is_some_and(|(tab, id)| {
@@ -136,6 +133,11 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
         if format && let Some((tab, sql_tab)) = sql {
             actions.push(Action::FormatSql { tab, sql_tab });
         }
+        // A fresh press only: an Esc held to close a dialog over the tab
+        // repeats after the dialog is gone.
+        if give_up && consume_press(input, Modifiers::NONE, Key::Escape) {
+            actions.push(Action::Disconnect(active));
+        }
         let mut key = |modifiers: Modifiers, key: Key, action: Action| {
             if input.consume_key(modifiers, key) {
                 actions.push(action);
@@ -146,9 +148,6 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
             Key::W,
             Action::CloseConnTab(active),
         );
-        if opening {
-            key(Modifiers::NONE, Key::Escape, Action::Disconnect(active));
-        }
         // A SQL editor has nothing to refresh or filter, and a row panel
         // only for a selected row of its result.
         let on_sql = sql.is_some();

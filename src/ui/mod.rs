@@ -745,6 +745,79 @@ mod tests {
     }
 
     #[test]
+    fn a_switch_of_database_keeps_its_editors_from_escape_and_cancel() {
+        for look in crate::theme::Look::ALL {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            let tab = harness.connect_fake();
+            let query = harness.add_sql_tab(tab);
+            harness.app.apply(crate::model::Action::SwitchDatabase {
+                tab,
+                database: "other".into(),
+            });
+            // The tab shows the steps of its connect, and nothing that
+            // would close the editor with it.
+            let tree = harness.settle();
+            let labels = crate::testing::labels(&tree);
+            assert!(labels.contains(&look.label("Load schema")), "{}", look.name);
+            assert!(
+                !labels.iter().any(|label| label == "Cancel connecting"),
+                "{}",
+                look.name
+            );
+            harness.press(Key::Escape, Modifiers::NONE);
+            let workspace = harness.app.workspace(tab);
+            assert!(
+                workspace.is_some_and(|workspace| workspace.sql_tab(query).is_some()),
+                "{}",
+                look.name
+            );
+        }
+    }
+
+    #[test]
+    fn escape_closes_an_open_list_before_it_cancels_a_connect() {
+        let mut harness = Harness::new();
+        let tab = harness.connect_fake();
+        with_database_picker(&mut harness, tab);
+        harness.app.apply(crate::model::Action::SwitchDatabase {
+            tab,
+            database: "postgres".into(),
+        });
+        harness.click("Database");
+        assert!(egui::Popup::is_any_open(&harness.ctx), "the list is open");
+        harness.press(Key::Escape, Modifiers::NONE);
+        assert!(!egui::Popup::is_any_open(&harness.ctx), "the list closed");
+        assert!(harness.app.workspace(tab).is_some());
+        // With no list open the key is the connect's again.
+        harness.press(Key::Escape, Modifiers::NONE);
+        assert!(harness.app.workspace(tab).is_none());
+    }
+
+    #[test]
+    fn an_escape_held_to_close_a_dialog_does_not_cancel_the_connect_under_it() {
+        let mut harness = Harness::new();
+        add_saved(&mut harness, "Production");
+        harness.click("Connect to Production");
+        let tab = harness.app.active_tab_id();
+        harness.frame(vec![egui::Event::Text("?".into())]);
+        harness.settle();
+        assert!(harness.app.dialog.is_some(), "the shortcuts are open");
+        let escape = || crate::testing::key(Key::Escape, Modifiers::NONE);
+        harness.frame(vec![escape()]);
+        harness.settle();
+        assert!(harness.app.dialog.is_none(), "the press closed them");
+        // The key is still down: egui reads these as repeats.
+        harness.frame(vec![escape()]);
+        harness.frame(vec![escape()]);
+        assert!(harness.app.workspace(tab).is_some());
+        // Let go and pressed again, it cancels.
+        harness.frame(vec![crate::testing::release(Key::Escape, Modifiers::NONE)]);
+        harness.press(Key::Escape, Modifiers::NONE);
+        assert!(harness.app.workspace(tab).is_none());
+    }
+
+    #[test]
     fn the_top_bar_connections_button_opens_the_picker_in_a_new_tab() {
         for look in crate::theme::Look::ALL {
             let mut harness = Harness::new();
