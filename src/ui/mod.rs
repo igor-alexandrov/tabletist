@@ -1996,19 +1996,23 @@ mod tests {
     }
 
     #[test]
-    fn the_terminal_strip_has_no_row_panel_toggle_on_a_sql_tab() {
+    fn the_terminal_strip_keeps_its_row_panel_toggle_on_a_sql_tab() {
         let (mut harness, tab) = sql_harness(crate::theme::Look::omarchy());
         let toggle = "Show or hide the row panel";
-        assert!(!harness.has(toggle), "an editor has no row panel");
-        let panel = harness.app.workspace(tab).unwrap().row_panel;
-        // A table tab keeps it, and coming back to the editor loses it.
+        let open = |harness: &Harness| harness.app.workspace(tab).unwrap().row_panel;
+        assert!(harness.has(toggle), "a result has a row panel too");
+        assert!(open(&harness));
+        harness.click(toggle);
+        assert!(!open(&harness));
+        // The same toggle as a table tab's: one panel for the workspace.
         harness.click("users");
         harness.answer_rows(crate::testing::page(5, false));
         assert!(harness.has(toggle));
+        assert!(!harness.has("Select a row to see its fields"));
         harness.click(toggle);
-        assert_ne!(harness.app.workspace(tab).unwrap().row_panel, panel);
+        assert!(open(&harness));
         harness.click("Query 1 tab");
-        assert!(!harness.has(toggle));
+        assert!(harness.has(toggle));
     }
 
     /// The fields of the row panel that shows, by their copy buttons.
@@ -2408,6 +2412,26 @@ mod tests {
         assert!(!harness.ctx.text_edit_focused());
         assert!(open(&harness));
         assert!(panel_shows(&mut harness));
+        harness.press(Key::Escape, Modifiers::NONE);
+        assert!(!open(&harness));
+    }
+
+    #[test]
+    fn escape_out_of_the_where_line_leaves_the_row_panel_open() {
+        let mut harness = Harness::new();
+        harness.set_look(crate::theme::Look::omarchy());
+        let tab = with_page(&mut harness);
+        focus_grid(&mut harness, tab);
+        let open = |harness: &Harness| harness.app.workspace(tab).unwrap().row_panel;
+        type_key(&mut harness, Key::Slash, "/");
+        assert!(
+            harness.ctx.text_edit_focused(),
+            "the WHERE line has the keys"
+        );
+        // The first Esc only leaves the field; the next one closes the panel.
+        harness.press(Key::Escape, Modifiers::NONE);
+        assert!(!harness.ctx.text_edit_focused());
+        assert!(open(&harness));
         harness.press(Key::Escape, Modifiers::NONE);
         assert!(!open(&harness));
     }
