@@ -7451,6 +7451,93 @@ mod tests {
         assert!(harness.has("Retry"));
     }
 
+    /// Answers the rows (or, with `structure`, the structure) `tab`'s
+    /// object is fetching with `error`.
+    fn fail_fetch(
+        harness: &mut Harness,
+        tab: crate::model::ConnTabId,
+        structure: bool,
+        error: tabletist_db::Error,
+    ) {
+        use crate::backend::Event;
+        let workspace = harness.app.workspace(tab).unwrap();
+        let session = workspace.session;
+        let object = workspace.active_object_tab().unwrap();
+        let event = if structure {
+            Event::Structure {
+                session,
+                request: object.structure.pending.expect("a structure on its way"),
+                result: Err(error),
+            }
+        } else {
+            Event::Rows {
+                session,
+                request: object.rows.pending.expect("rows on their way"),
+                result: Err(error),
+            }
+        };
+        harness.app.apply(crate::model::Action::Backend(event));
+    }
+
+    #[test]
+    fn a_cancelled_retry_does_not_bring_back_the_page_under_the_error() {
+        let cancelled = tabletist_db::Error::Cancelled.to_string();
+        for look in crate::theme::Look::ALL {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            let tab = with_page(&mut harness);
+            harness.app.apply(crate::model::Action::Refresh(tab));
+            let error = tabletist_db::Error::query("no such column: nope");
+            fail_fetch(&mut harness, tab, false, error);
+            assert!(harness.has("no such column: nope"), "{}", look.name);
+            assert!(!harness.has("Row 1"), "{}", look.name);
+            // The error was the last thing on screen: a retry given up
+            // has no page to go back to.
+            harness.click("Retry");
+            cancel_fetches(&mut harness, tab);
+            assert!(!harness.has("Row 1"), "{}", look.name);
+            assert!(harness.has(&cancelled), "{}", look.name);
+            assert!(harness.has("Retry"), "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn a_cancelled_retry_does_not_bring_back_the_structure_under_the_error() {
+        let cancelled = tabletist_db::Error::Cancelled.to_string();
+        for look in crate::theme::Look::ALL {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            let tab = with_page(&mut harness);
+            harness.click("Structure");
+            harness.answer_structure(tabletist_db::Structure {
+                indexes: vec![tabletist_db::IndexInfo {
+                    name: "users_email_idx".into(),
+                    columns: vec!["email".into()],
+                    unique: true,
+                    primary: false,
+                    method: None,
+                }],
+                ..Default::default()
+            });
+            assert!(harness.has("users_email_idx"), "{}", look.name);
+            harness.app.apply(crate::model::Action::Refresh(tab));
+            harness.answer_rows(crate::testing::page(5, false));
+            let error = tabletist_db::Error::query("permission denied for table users");
+            fail_fetch(&mut harness, tab, true, error);
+            assert!(
+                harness.has("permission denied for table users"),
+                "{}",
+                look.name
+            );
+            assert!(!harness.has("users_email_idx"), "{}", look.name);
+            harness.click("Retry");
+            cancel_fetches(&mut harness, tab);
+            assert!(!harness.has("users_email_idx"), "{}", look.name);
+            assert!(harness.has(&cancelled), "{}", look.name);
+            assert!(harness.has("Retry"), "{}", look.name);
+        }
+    }
+
     #[test]
     fn a_lost_connection_can_be_left() {
         use egui::accesskit;

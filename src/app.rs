@@ -951,10 +951,26 @@ impl App {
                 if bar_changed {
                     self.apply_filters(tab, object_tab);
                 } else {
+                    // A retry answers an error: no older page is on screen
+                    // for a cancelled one to go back to.
+                    if let Some(object) = self.object_tab_mut(tab, object_tab) {
+                        if let Some(page) = object.page() {
+                            object.filter.columns =
+                                page.columns.iter().map(|c| c.name.clone()).collect();
+                        }
+                        object.selection = None;
+                        object.rows.value = None;
+                    }
                     self.fetch_rows(tab, object_tab);
                 }
             }
-            Action::RetryStructure { tab, object_tab } => self.describe(tab, object_tab),
+            Action::RetryStructure { tab, object_tab } => {
+                // As a retry of the rows: the structure under the error goes.
+                if let Some(object) = self.object_tab_mut(tab, object_tab) {
+                    object.structure.value = None;
+                }
+                self.describe(tab, object_tab);
+            }
             Action::SetDriver(driver) => {
                 if let Some(Dialog::Connection(form)) = &mut self.dialog {
                     // A port left at the old driver's default follows the driver.
@@ -8077,6 +8093,41 @@ mod tests {
                 Some(Command::FetchRows { query, .. }) => assert_eq!(query.offset, offset),
                 other => panic!("{other:?}"),
             }
+        }
+
+        #[test]
+        fn retry_drops_the_page_under_the_error_but_keeps_the_columns() {
+            let mut harness = Harness::new();
+            let (tab, id) = open_users(&mut harness);
+            harness.app.apply(Action::SelectCell {
+                tab,
+                id,
+                cell: CellPos { row: 1, col: 0 },
+            });
+            harness.app.apply(Action::Refresh(tab));
+            let (session, request) = match harness.app.backend.sent.last() {
+                Some(Command::FetchRows {
+                    session, request, ..
+                }) => (*session, *request),
+                other => panic!("{other:?}"),
+            };
+            harness.app.apply(Action::Backend(Event::Rows {
+                session,
+                request,
+                result: Err(Error::query("connection reset")),
+            }));
+            assert!(object(&harness, tab, id).page().is_some(), "held");
+            harness.app.apply(Action::RetryRows {
+                tab,
+                object_tab: id,
+            });
+            let object = object(&harness, tab, id);
+            assert!(object.page().is_none(), "no page older than the error");
+            assert_eq!(object.selection, None, "nor a cell of it");
+            assert!(
+                !object.filter.columns.is_empty(),
+                "the bar still lists columns"
+            );
         }
 
         #[test]
