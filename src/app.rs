@@ -710,6 +710,13 @@ impl App {
             }
             Action::NewSqlTab(tab) => self.new_sql_tab(tab),
             Action::RunSql { tab, sql_tab, all } => self.run_sql(tab, sql_tab, all),
+            Action::FormatSql { tab, sql_tab } => {
+                // The keys go back to the editor after a click on the button.
+                if let Some(sql) = self.sql_tab_mut(tab, sql_tab) {
+                    sql.format = true;
+                    sql.focus_editor = true;
+                }
+            }
             Action::SetSqlLimit {
                 tab,
                 sql_tab,
@@ -4922,6 +4929,23 @@ mod tests {
             split: 0.2,
         });
         assert_eq!(sql(&harness, tab, first).split, 1.0);
+        assert_eq!(harness.app.backend.sent.len(), sent);
+    }
+
+    #[test]
+    fn format_sql_asks_the_editor_to_format_and_take_the_keys() {
+        let mut harness = Harness::new();
+        let (tab, id) = new_sql(&mut harness);
+        let sent = harness.app.backend.sent.len();
+        let workspace = harness.app.workspace_mut(tab).unwrap();
+        workspace.sql_tab_mut(id).unwrap().focus_editor = false;
+        harness.app.apply(Action::FormatSql { tab, sql_tab: id });
+        assert!(sql(&harness, tab, id).format);
+        assert!(sql(&harness, tab, id).focus_editor);
+        // Nothing is asked of the backend, and a tab that closed since is
+        // left alone.
+        harness.app.apply(Action::CloseTab { tab, id });
+        harness.app.apply(Action::FormatSql { tab, sql_tab: id });
         assert_eq!(harness.app.backend.sent.len(), sent);
     }
 

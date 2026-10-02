@@ -1495,6 +1495,26 @@ mod tests {
         assert!(harness.app.workspace(tab).unwrap().row_panel);
     }
 
+    const FORMAT: Modifiers = Modifiers::COMMAND.plus(Modifiers::SHIFT);
+
+    #[test]
+    fn command_shift_f_does_nothing_on_a_table_tab() {
+        let mut harness = Harness::new();
+        let tab = harness.connect_fake();
+        harness.app.apply(crate::model::Action::OpenObject {
+            tab,
+            object: tabletist_db::ObjectRef::new("main", "users"),
+            kind: tabletist_db::ObjectKind::Table,
+            pin: true,
+        });
+        harness.answer_rows(crate::testing::page(3, false));
+        // Mod+F would take the press for its own were it not consumed.
+        harness.press(Key::F, FORMAT);
+        assert!(!harness.has("Apply"), "the filter bar stays shut");
+        harness.press(Key::F, Modifiers::COMMAND);
+        assert!(harness.has("Apply"));
+    }
+
     #[test]
     fn command_period_cancels_a_sql_run() {
         let mut harness = Harness::new();
@@ -4963,6 +4983,7 @@ mod tests {
         harness.frame(vec![egui::Event::Text("?".into())]);
         assert!(harness.has("Keyboard shortcuts"));
         assert!(harness.has("Quick open"));
+        assert!(harness.has("Format SQL"));
         harness.press(Key::Escape, Modifiers::NONE);
         assert!(harness.app.dialog.is_none());
     }
