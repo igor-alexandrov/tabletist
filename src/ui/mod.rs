@@ -7037,6 +7037,116 @@ mod tests {
         }
     }
 
+    /// Fails what a refresh of `tab` asked for (its rows and, when it had
+    /// one, its structure) as a connection that is gone does, then reports
+    /// the loss: the order the backend sends them in.
+    fn lose_on_refresh(
+        harness: &mut Harness,
+        tab: crate::model::ConnTabId,
+        error: &tabletist_db::Error,
+    ) {
+        use crate::backend::Event;
+        let workspace = harness.app.workspace(tab).unwrap();
+        let session = workspace.session;
+        let object = workspace.active_object_tab().unwrap();
+        let (rows, structure) = (object.rows.pending, object.structure.pending);
+        let request = rows.expect("the refresh fetched the rows");
+        let result = Err(error.clone());
+        harness
+            .app
+            .apply(crate::model::Action::Backend(Event::Rows {
+                session,
+                request,
+                result,
+            }));
+        if let Some(request) = structure {
+            let result = Err(error.clone());
+            harness
+                .app
+                .apply(crate::model::Action::Backend(Event::Structure {
+                    session,
+                    request,
+                    result,
+                }));
+        }
+        let error = error.clone();
+        harness
+            .app
+            .apply(crate::model::Action::Backend(Event::Disconnected {
+                session,
+                error,
+            }));
+    }
+
+    /// How many times `text` is on screen.
+    fn times_said(harness: &mut Harness, text: &str) -> usize {
+        let tree = harness.settle();
+        let said = crate::testing::labels(&tree);
+        said.iter().filter(|said| *said == text).count()
+    }
+
+    #[test]
+    fn a_refresh_that_finds_the_connection_lost_keeps_the_page() {
+        let error = tabletist_db::Error::ConnectionLost("server closed the connection".into());
+        for look in crate::theme::Look::ALL {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            let tab = harness.connect_fake();
+            harness.click("users");
+            harness.answer_rows(crate::testing::page(3, false));
+            // The keys are the tree's after a click in it.
+            focus_grid(&mut harness, tab);
+            let before = fetches(&harness);
+            harness.press(Key::R, Modifiers::COMMAND);
+            assert_eq!(fetches(&harness), before + 1, "{}", look.name);
+            lose_on_refresh(&mut harness, tab, &error);
+            // The strip says it, once, and the rows stay under it.
+            assert!(harness.has("Reconnect"), "{}", look.name);
+            assert!(harness.has("Row 1"), "{}", look.name);
+            assert_eq!(
+                times_said(&mut harness, &error.to_string()),
+                1,
+                "{}",
+                look.name
+            );
+        }
+    }
+
+    #[test]
+    fn a_refresh_that_finds_the_connection_lost_keeps_the_structure() {
+        let error = tabletist_db::Error::ConnectionLost("server closed the connection".into());
+        let mut harness = Harness::new();
+        let tab = with_page(&mut harness);
+        harness.click("Structure");
+        harness.answer_structure(tabletist_db::Structure {
+            indexes: vec![tabletist_db::IndexInfo {
+                name: "users_email_idx".into(),
+                columns: vec!["email".into()],
+                unique: true,
+                primary: false,
+                method: None,
+            }],
+            ..Default::default()
+        });
+        assert!(harness.has("users_email_idx"));
+        harness.app.apply(crate::model::Action::Refresh(tab));
+        lose_on_refresh(&mut harness, tab, &error);
+        assert!(harness.has("Reconnect"));
+        assert!(harness.has("users_email_idx"));
+        assert_eq!(times_said(&mut harness, &error.to_string()), 1);
+    }
+
+    #[test]
+    fn a_lost_connection_with_no_page_to_show_says_what_failed() {
+        let error = tabletist_db::Error::ConnectionLost("server closed the connection".into());
+        let mut harness = Harness::new();
+        let tab = harness.connect_fake();
+        // The first fetch of the table is what finds the loss.
+        harness.click("users");
+        lose_on_refresh(&mut harness, tab, &error);
+        assert!(harness.has("Retry"));
+    }
+
     #[test]
     fn a_lost_connection_can_be_left() {
         let mut harness = Harness::new();

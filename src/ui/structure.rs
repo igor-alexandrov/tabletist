@@ -40,7 +40,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
         return;
     };
     let mut actions = Vec::new();
-    if let Some(error) = &object.structure.error {
+    if let Some(error) = super::data_view::shown_error(&object.structure) {
         egui::Frame::new()
             .inner_margin(egui::Margin::same(theme::PAD))
             .show(ui, |ui| {

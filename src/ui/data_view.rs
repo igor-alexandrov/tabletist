@@ -957,7 +957,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
     };
     let mut actions = Vec::new();
     let area = ui.max_rect();
-    if let Some(error) = &object.rows.error {
+    if let Some(error) = shown_error(&object.rows) {
         Frame::new().inner_margin(Margin::same(12)).show(ui, |ui| {
             error_box(ui, error, &look, &palette, locale, || {
                 actions.push(Action::RetryRows { tab, object_tab })
@@ -1215,6 +1215,14 @@ pub fn plain_cell<'a>(
         null: false,
         style: Style::Plain,
     }
+}
+
+/// The error a view shows in place of what `fetch` holds. A lost connection
+/// is not one while a value is held: the strip over the tab says it, and
+/// what was on screen stays under it.
+pub fn shown_error<T>(fetch: &crate::model::Fetch<T>) -> Option<&tabletist_db::Error> {
+    let kept = |error: &tabletist_db::Error| error.is_connection_lost() && fetch.value.is_some();
+    fetch.error.as_ref().filter(|error| !kept(error))
 }
 
 /// An error with its code, detail and hint, and a Retry button.
