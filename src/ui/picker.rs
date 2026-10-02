@@ -636,6 +636,15 @@ fn row_response(
         Sense::click(),
     );
     response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, &connection.name));
+    // A row of a list that scrolls: the ring inside it.
+    crate::ui::focus::hint(
+        ui,
+        &response,
+        rect,
+        crate::ui::focus::Ring::Inset {
+            radius: look.radius.saturating_sub(2),
+        },
+    );
     let activated = response.double_clicked()
         || (response.clicked() && !response.clicked_by(egui::PointerButton::Primary));
     if activated {

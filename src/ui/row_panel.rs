@@ -1054,17 +1054,21 @@ fn field(
             let mut layouter = crate::typography::layouter(look, role, color);
             tall = layouter(ui, &shown.as_str(), room).rows.len() > CLAMP_ROWS;
             let mut edit = |ui: &mut egui::Ui| {
-                ui.add(
-                    TextEdit::multiline(&mut shown.as_str())
-                        .font(role.font_id(look.faces))
-                        // Flush with the field name above.
-                        .frame(egui::Frame::NONE)
-                        .margin(egui::Margin::ZERO)
-                        .desired_width(room)
-                        .desired_rows(1)
-                        .layouter(&mut layouter),
-                )
-                .labelled_by(name_id);
+                let value = ui
+                    .add(
+                        TextEdit::multiline(&mut shown.as_str())
+                            .font(role.font_id(look.faces))
+                            // Flush with the field name above.
+                            .frame(egui::Frame::NONE)
+                            .margin(egui::Margin::ZERO)
+                            .desired_width(room)
+                            .desired_rows(1)
+                            .layouter(&mut layouter),
+                    )
+                    .labelled_by(name_id);
+                // A value to read and select, not a field: its caret says
+                // where the keyboard is.
+                crate::ui::focus::hint(ui, &value, value.rect, crate::ui::focus::Ring::Own);
             };
             if tall && !expanded {
                 // The first lines, the last of them fading out (macOS):

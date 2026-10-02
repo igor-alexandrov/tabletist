@@ -6,7 +6,7 @@
 
 use std::time::Duration;
 
-use egui::{CornerRadius, Id, Rect, Sense, StrokeKind, Ui, WidgetInfo, WidgetType, pos2, vec2};
+use egui::{CornerRadius, Id, Rect, Sense, Ui, WidgetInfo, WidgetType, pos2, vec2};
 use tabletist_db::{Error, StatementOutcome, ValueKind};
 
 use crate::app::App;
@@ -486,14 +486,8 @@ fn pane_tabs(
                 palette.accent,
             );
         }
-        if response.has_focus() {
-            ui.painter().rect_stroke(
-                hit.expand(1.0),
-                CornerRadius::same(if look.terminal { 0 } else { look.radius }),
-                widgets::primary_focus_ring(palette),
-                StrokeKind::Outside,
-            );
-        }
+        let radius = if look.terminal { 0 } else { look.radius };
+        crate::ui::focus::hint(ui, &response, hit, crate::ui::focus::Ring::Outer { radius });
         if response.clicked() && !selected {
             actions.push(Action::SetResultPane {
                 tab: place.tab,

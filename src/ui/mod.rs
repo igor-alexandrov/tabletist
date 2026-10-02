@@ -8375,6 +8375,58 @@ mod tests {
     }
 
     #[test]
+    fn every_tab_stop_shows_where_the_keyboard_is() {
+        for look in crate::theme::Look::ALL {
+            let (mut harness, _tab) = tree_harness();
+            harness.set_look(look);
+            harness.click("orders");
+            harness.answer_rows(crate::testing::page(3, true));
+            let accent = harness.app.palette.accent;
+            let mut seen = 0;
+            for _ in 0..60 {
+                harness.press(Key::Tab, Modifiers::NONE);
+                let name = focused_name(&harness.settle());
+                // A text field shows its caret, in a box or not.
+                if harness.ctx.memory(|memory| memory.focused().is_none())
+                    || harness.ctx.text_edit_focused()
+                {
+                    continue;
+                }
+                seen += 1;
+                // A ring, a field's border, or the terminal's reversed
+                // button: something is drawn in the accent for it.
+                let ringed = harness
+                    .outlines
+                    .iter()
+                    .any(|(_, stroke)| stroke.color == accent && stroke.width >= 1.0);
+                let reversed =
+                    look.terminal && harness.fills.iter().any(|(_, fill)| *fill == accent);
+                assert!(ringed || reversed, "{name} in {}", look.name);
+            }
+            assert!(seen > 10, "{}: {seen} stops", look.name);
+        }
+    }
+
+    #[test]
+    fn the_pointer_takes_the_ring_away() {
+        let (mut harness, _tab) = tree_harness();
+        harness.set_look(crate::theme::Look::macos());
+        harness.press(Key::Tab, Modifiers::NONE);
+        assert!(crate::ui::focus::visible(&harness.ctx));
+        let at = egui::pos2(900.0, 500.0);
+        harness.frame(vec![
+            egui::Event::PointerMoved(at),
+            egui::Event::PointerButton {
+                pos: at,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: Modifiers::NONE,
+            },
+        ]);
+        assert!(!crate::ui::focus::visible(&harness.ctx));
+    }
+
+    #[test]
     fn command_r_refreshes_the_tree_from_the_tree() {
         let (mut harness, _tab) = tree_harness();
         harness.click("orders");

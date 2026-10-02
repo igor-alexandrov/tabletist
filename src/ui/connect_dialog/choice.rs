@@ -226,14 +226,12 @@ fn radio_group(
                 }
             }
         };
-        if response.has_focus() {
-            painter.rect_stroke(
-                cell.expand(1.0),
-                corner,
-                widgets::primary_focus_ring(palette),
-                StrokeKind::Outside,
-            );
-        }
+        crate::ui::focus::hint(
+            ui,
+            &response,
+            cell,
+            crate::ui::focus::Ring::Outer { radius: corner.nw },
+        );
         let mut x = cell.left() + pad;
         if dotted(index) {
             let dot = match (group, tint) {

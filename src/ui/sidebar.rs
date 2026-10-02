@@ -10,6 +10,7 @@ use crate::i18n::{Locale, gettext};
 use crate::model::{Action, ConnTabId, TreeNode, TreeRow};
 use crate::theme::{Icon, Look, Palette};
 use crate::typography::{Text, TextRole};
+use crate::ui::focus;
 use crate::ui::format::display_safe;
 use crate::ui::widgets::{self, ButtonSpec, icon_button};
 
@@ -426,6 +427,7 @@ fn recent_section(
         });
         let selected = Some(object) == active;
         widgets::selection(ui, row, selected, response.hovered(), look, palette);
+        row_ring(ui, &response, widgets::selection_rect(row, look), look);
         let (role, color) = if selected {
             (TextRole::UiBodyStrong, palette.accent_hover)
         } else {
@@ -618,6 +620,13 @@ struct Marks<'a> {
     cursor: Option<&'a TreeNode>,
 }
 
+/// A row with the keyboard is ringed inside its highlight: a ring outside
+/// it would be cut by the list it scrolls in.
+fn row_ring(ui: &egui::Ui, response: &egui::Response, highlight: Rect, look: &Look) {
+    let radius = look.radius.saturating_sub(2);
+    focus::hint(ui, response, highlight, focus::Ring::Inset { radius });
+}
+
 /// How rows are drawn: the platform look and the colour palette.
 #[derive(Clone, Copy)]
 struct Skin<'a> {
@@ -713,11 +722,15 @@ fn tree_row(
     };
     widgets::selection(ui, band, selected, response.hovered(), look, palette);
     let highlight = widgets::selection_rect(band, look);
-    if marks.cursor == Some(&row.node) {
+    row_ring(ui, &response, highlight, look);
+    // The row the arrows are on, while the keyboard is in use: the ring a
+    // focused row takes. Apart from the open object's fill: one says where
+    // the keys are, the other what is open.
+    if marks.cursor == Some(&row.node) && focus::visible(ui.ctx()) && !response.has_focus() {
         ui.painter().rect_stroke(
-            highlight.shrink(0.5),
+            highlight,
             CornerRadius::same(look.radius.saturating_sub(2)),
-            egui::Stroke::new(1.0, palette.accent),
+            egui::Stroke::new(2.0, palette.accent),
             egui::StrokeKind::Inside,
         );
     }

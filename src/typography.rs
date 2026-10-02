@@ -595,6 +595,15 @@ impl Laid {
         let (rect, response) = ui.allocate_exact_size(self.size(), sense);
         let text = self.galley.text().to_owned();
         response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, &text));
+        // Text that can be clicked is a link: a tight ring round its words.
+        if sense.senses_click() {
+            crate::ui::focus::hint(
+                ui,
+                &response,
+                rect,
+                crate::ui::focus::Ring::Outer { radius: 3 },
+            );
+        }
         if ui.is_rect_visible(rect) {
             self.paint(ui.painter(), rect.min);
         }

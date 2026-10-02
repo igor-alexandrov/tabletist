@@ -501,6 +501,16 @@ fn shots() {
                 }),
             }));
     });
+    // Where the keyboard is, a few Tab stops in: the ring each control
+    // takes (a button, a chip, the search field, a row, a tab, a segment).
+    for stop in [1, 2, 4, 6, 9, 12, 16, 20] {
+        both(&format!("focus-{stop:02}"), |harness| {
+            workspace(harness);
+            for _ in 0..stop {
+                harness.press(egui::Key::Tab, egui::Modifiers::NONE);
+            }
+        });
+    }
     both("structure", |harness| {
         let tab = workspace(harness);
         let object_tab = harness.app.workspace(tab).unwrap().active_tab.unwrap();

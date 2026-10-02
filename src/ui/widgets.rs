@@ -7,6 +7,7 @@ use egui::{
 
 use crate::theme::{DialogStyle, Icon, Look, Palette, Selection, TabStyle};
 use crate::typography::{Text, TextRole};
+use crate::ui::focus::{self, Ring};
 
 /// The body role in `look`.
 pub fn body(look: &Look) -> TextRole {
@@ -693,15 +694,9 @@ pub fn primary_fill(hovered: bool, focused: bool, pressed: bool, palette: &Palet
     }
 }
 
-/// The ring round a focused primary button: the full accent, 1 pt off the
-/// button so it keeps 3:1 against the background rather than blending into
-/// the fill.
-pub fn primary_focus_ring(palette: &Palette) -> Stroke {
-    Stroke::new(2.0, palette.accent)
-}
-
 /// The one accent-filled button in a dialog or view. Its own fill replaces
-/// egui's state visuals, so it draws hover, press and keyboard focus itself.
+/// egui's state visuals, so it draws hover and press itself; its focus ring
+/// is the one every control gets (see [`crate::ui::focus`]).
 pub fn primary_button(ui: &mut Ui, text: &str, look: &Look, palette: &Palette) -> Response {
     // Last frame's state, read as egui's Button does, picks this frame's fill.
     let state = ui.ctx().read_response(ui.next_auto_id());
@@ -721,18 +716,7 @@ pub fn primary_button(ui: &mut Ui, text: &str, look: &Look, palette: &Palette) -
         // The fill edges itself, not the grey border of other controls.
         button = button.stroke(Stroke::new(1.0, fill));
     }
-    let response = ui.add(button);
-    if response.has_focus() {
-        // One point out, the corners stay concentric (square on Omarchy).
-        let corner = if look.radius == 0 { 0 } else { look.radius + 1 };
-        ui.painter().rect_stroke(
-            response.rect.expand(1.0),
-            CornerRadius::same(corner),
-            primary_focus_ring(palette),
-            StrokeKind::Outside,
-        );
-    }
-    response
+    ui.add(button)
 }
 
 /// A dialog: a soft shadow over a dimmed window, or Omarchy's accent border
@@ -963,6 +947,14 @@ pub fn filter_field(
             .layouter(&mut layouter),
     );
     let focused = response.has_focus();
+    // The box is the field, not the line of text inside it. A bare line
+    // has its caret and its accent mark.
+    let ring = if style.boxed {
+        Ring::Field { radius: corner.nw }
+    } else {
+        Ring::Own
+    };
+    focus::hint(ui, &response, rect, ring);
     let painter = ui.painter();
     if let Some(fill) = style.fill {
         painter.set(
@@ -1075,6 +1067,16 @@ pub fn segmented(
         if response.clicked() {
             clicked = Some(index);
         }
+        // On the segment's own edge: a ring further out would leave the
+        // track.
+        let ring = if look.terminal {
+            Ring::Inset { radius: 0 }
+        } else {
+            Ring::Edge {
+                radius: look.radius.saturating_sub(4),
+            }
+        };
+        focus::hint(ui, &response, cell, ring);
         let active = index == selected;
         if look.terminal && index > 0 {
             vline(ui, cell.left(), cell.y_range(), palette.outline);
@@ -1264,14 +1266,8 @@ impl<'a> ButtonSpec<'a> {
         let name = self.label.unwrap_or(self.text);
         let response = ui.interact(rect, self.id(ui), Sense::click());
         response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, name));
-        if response.has_focus() {
-            ui.painter().rect_stroke(
-                rect,
-                CornerRadius::ZERO,
-                primary_focus_ring(&Palette::light()),
-                StrokeKind::Outside,
-            );
-        }
+        // Not drawn, so the ring is all that shows where the keyboard is.
+        focus::hint(ui, &response, rect, Ring::Outer { radius: 0 });
         response
     }
 
@@ -1421,18 +1417,24 @@ impl<'a> ButtonSpec<'a> {
         } else {
             (fill, border, text)
         };
+        // With the keyboard on it the terminal's button is reversed, as a
+        // terminal marks its cursor; the other looks ring it.
+        let reversed = look.terminal && focus::shown(&response);
+        let (fill, border, text, shortcut) = if reversed {
+            (palette.accent, None, palette.window, palette.window)
+        } else {
+            (fill, border, text, shortcut)
+        };
+        let ring = if reversed {
+            Ring::Own
+        } else {
+            Ring::Outer { radius: corner.nw }
+        };
+        focus::hint(ui, &response, rect, ring);
         let painter = ui.painter();
         painter.rect_filled(rect, corner, fill);
         if let Some(border) = border {
             painter.rect_stroke(rect, corner, border, StrokeKind::Inside);
-        }
-        if response.has_focus() {
-            painter.rect_stroke(
-                rect.expand(1.0),
-                corner,
-                primary_focus_ring(palette),
-                StrokeKind::Outside,
-            );
         }
         let content = self.width(ui, look) - 2.0 * self.padding;
         let mut x = if self.justified {
@@ -1563,46 +1565,6 @@ mod tests {
             let sum = |c: Color32| u32::from(c.r()) + u32::from(c.g()) + u32::from(c.b());
             assert!(sum(pressed) < sum(palette.accent), "pressing darkens");
             assert_eq!(fill(false, true, true), pressed, "pressing wins");
-        }
-    }
-
-    /// Whether `shapes` hold a rectangle outlined with `stroke`.
-    fn has_ring(shapes: &[egui::epaint::ClippedShape], stroke: Stroke) -> bool {
-        shapes.iter().any(|clipped| match &clipped.shape {
-            egui::Shape::Rect(rect) => {
-                rect.stroke == stroke && rect.stroke_kind == StrokeKind::Outside
-            }
-            _ => false,
-        })
-    }
-
-    #[test]
-    fn a_focused_primary_button_draws_a_focus_ring() {
-        for look in crate::theme::Look::ALL {
-            let palette = crate::theme::Palette::dark();
-            let ctx = egui::Context::default();
-            crate::theme::install(&ctx, false, &look);
-            crate::theme::apply(&ctx, &palette, &look);
-            let frame = |ctx: &egui::Context| {
-                let mut id = egui::Id::NULL;
-                let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
-                    id = super::primary_button(ui, "Apply", &look, &palette).id;
-                });
-                output.textures_delta.clear();
-                (output.shapes, id)
-            };
-            let ring = super::primary_focus_ring(&palette);
-            assert_eq!(ring.width, 2.0);
-            let (shapes, id) = frame(&ctx);
-            assert!(!has_ring(&shapes, ring), "{}: no ring unfocused", look.name);
-            ctx.memory_mut(|memory| memory.request_focus(id));
-            frame(&ctx);
-            let (shapes, _) = frame(&ctx);
-            assert!(
-                has_ring(&shapes, ring),
-                "{}: a ring when focused",
-                look.name
-            );
         }
     }
 

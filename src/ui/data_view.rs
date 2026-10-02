@@ -673,6 +673,8 @@ fn where_line(
             .layouter(&mut layouter),
     );
     response.widget_info(|| WidgetInfo::labeled(WidgetType::TextEdit, true, "WHERE"));
+    // A line of the bar, not a box: its caret says where the keyboard is.
+    crate::ui::focus::hint(ui, &response, field, crate::ui::focus::Ring::Own);
     if focus {
         response.request_focus();
     }
