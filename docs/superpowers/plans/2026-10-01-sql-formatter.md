@@ -2503,8 +2503,20 @@ In `src/ui/mod.rs`, in the tests module, after `fn format_with_a_selection_forma
     fn the_format_button_formats_and_gives_the_keys_back() {
         for look in [crate::theme::Look::standard(), crate::theme::Look::macos()] {
             let (mut harness, tab) = sql_harness(look);
+            // Wide enough for the buttons' keys.
+            harness.size.x = 1600.0;
             harness.settle();
             type_text(&mut harness, "select 1");
+            let keys = if look == crate::theme::Look::macos() {
+                "⇧⌘F"
+            } else {
+                "Ctrl+Shift+F"
+            };
+            assert!(painted(&harness, keys), "{keys} in {}", look.name);
+            // The editor gives the keys up (Esc); the button formats and
+            // gives them back.
+            harness.press(Key::Escape, Modifiers::NONE);
+            assert!(!harness.ctx.text_edit_focused(), "{}", look.name);
             harness.click("Format");
             assert_eq!(active_sql(&harness, tab).text, "SELECT 1", "{}", look.name);
             assert!(harness.ctx.text_edit_focused(), "{}", look.name);
@@ -2572,6 +2584,12 @@ Replace `the_toolbar_gives_way_in_order_and_shortens_its_menus_last` with (a six
                     "1,000",
                 )
             };
+            // Format's key, which goes when the run buttons' keys do.
+            let format_keys = if look == crate::theme::Look::macos() {
+                "⇧⌘F"
+            } else {
+                "Ctrl+Shift+F"
+            };
             // Every state the toolbar passes through as the window narrows,
             // in the order it meets them.
             let mut states = Vec::new();
@@ -2593,6 +2611,12 @@ Replace `the_toolbar_gives_way_in_order_and_shortens_its_menus_last` with (a six
                     has(egui::accesskit::Role::Button, "Run")
                         && has(egui::accesskit::Role::Button, "Run all"),
                     "the run buttons at {width} in {}",
+                    look.name
+                );
+                assert_eq!(
+                    painted(&harness, format_keys),
+                    state[0] && !look.terminal,
+                    "{format_keys} at {width} in {}",
                     look.name
                 );
                 // A menu reads in full or short, never neither.
@@ -2665,11 +2689,8 @@ In `show_at`, after the `let (text, shortcut) = if self.hint ...` statement and 
 
 ```rust
         let (fill, border, text) = if self.quiet && self.kind == ButtonKind::Secondary {
-            let fill = if hovered {
-                palette.panel
-            } else {
-                Color32::TRANSPARENT
-            };
+            // Under the pointer, the fill its look gives a secondary button.
+            let fill = if hovered { fill } else { Color32::TRANSPARENT };
             (fill, None, palette.secondary)
         } else {
             (fill, border, text)
@@ -2751,7 +2772,7 @@ fn mac_toolbar(ui: &mut Ui, rect: Rect, bar: &Bar<'_>, actions: &mut Vec<Action>
     let menu_sizes = shapes.map(|shape| menu_widths(ui, shape, bar));
     let widths = [false, true].map(|keys| buttons(keys).map(|b| b.width(ui, look)));
     let room = right - left;
-    // The divider before Format: a rule with 4 at its sides.
+    // The divider before Format: a rule 20 tall with 4 at its sides.
     let divider = 4.0 + 1.0 + 4.0;
     let needs = |shape: usize, badge: bool, keys: bool, format: bool| {
         let [run, all, format_width] = widths[usize::from(keys)];
@@ -2788,15 +2809,15 @@ fn mac_toolbar(ui: &mut Ui, rect: Rect, bar: &Bar<'_>, actions: &mut Vec<Action>
         return;
     };
     if formats {
-        let rule = all_place.right() + 8.0 + 4.5;
+        let rule = all_place.right() + 8.0 + divider / 2.0;
         widgets::vline(
             ui,
             rule,
             egui::Rangef::new(center - 10.0, center + 10.0),
             palette.outline,
         );
-        let rect = place(rule + 4.5 + 8.0, format_width);
-        let response = format.show_at(ui, rect, look, palette);
+        let format_place = place(all_place.right() + 8.0 + divider + 8.0, format_width);
+        let response = format.show_at(ui, format_place, look, palette);
         if response
             .on_hover_text(gettext(locale, "Format the SQL"))
             .clicked()
