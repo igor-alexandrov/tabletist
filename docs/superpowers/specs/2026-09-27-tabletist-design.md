@@ -291,6 +291,16 @@ pub struct RowPage { pub columns: Vec<ColumnMeta>, pub rows: Vec<Vec<Value>>,
   OFFSET ..` per dialect. Identifiers are always quoted (`"x"` or `` `x` ``,
   with embedded quotes doubled). Filter values are bound parameters for SQLite and MySQL, and quoted literals (with `'` doubled, under `standard_conforming_strings = on`) for PostgreSQL, whose rows are read through the simple-query protocol.
   `Contains`/`StartsWith` escape `%` and `_`.
+- A filter value is text, and text never equals the bytes of a binary
+  column. So for `Eq`, `Ne` and `In` on a binary column, a value written as
+  the app shows binary (a UUID, hyphenated or as 32 hex digits, or `0x` hex)
+  is compared as those bytes as well as the text: `"id" IN (?, ?)`, and for
+  PostgreSQL `"id" IN (E'\\x0199..', E'0199..')`. That is what makes a
+  typed or pasted UUID, and a followed foreign key, find a `blob(16)`,
+  `binary(16)` or `bytea` key. The driver looks the table's binary columns
+  up (`bytea`; MySQL's `binary`, `varbinary` and blobs; in SQLite the
+  columns declared as blobs and those whose type says nothing), and only
+  when a filter has such a value. Any other column gets the text alone.
 - With no user sort, rows are ordered by the primary key when there is one, so
   paging is stable. Without a primary key there is no ORDER BY and the footer
   says the order is unstable.

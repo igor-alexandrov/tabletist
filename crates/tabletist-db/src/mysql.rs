@@ -185,6 +185,22 @@ impl Conn {
         .await
     }
 
+    /// The byte string columns a filter of `query` compares as bytes when
+    /// its value reads as bytes; empty, without asking, when no filter has
+    /// such a value.
+    async fn binary_columns(&self, query: &RowQuery) -> Result<Vec<String>> {
+        if !crate::dialect::reads_bytes(query) {
+            return Ok(Vec::new());
+        }
+        self.catalog(
+            "SELECT column_name FROM information_schema.columns \
+             WHERE table_schema = ? AND table_name = ? AND data_type IN \
+                   ('binary', 'varbinary', 'tinyblob', 'blob', 'mediumblob', 'longblob')",
+            (&query.object.schema, &query.object.name),
+        )
+        .await
+    }
+
     pub async fn describe(&self, object: &ObjectRef) -> Result<Structure> {
         let at = (&object.schema, &object.name);
         let columns: Vec<(String, String, String, Option<String>, String)> = self
@@ -281,7 +297,8 @@ impl Conn {
     /// transaction. Reading stops after `limit + 1` rows.
     pub async fn fetch_rows(&self, query: &RowQuery) -> Result<RowPage> {
         let key = self.primary_key(&query.object).await?;
-        let sql = Dialect::MySql.select_rows(query, &key);
+        let binary = self.binary_columns(query).await?;
+        let sql = Dialect::MySql.select_rows(query, &key, &binary);
         let limit = query.limit as usize;
         let mut conn = self.conn.lock().await;
         let started = Instant::now();
@@ -303,7 +320,8 @@ impl Conn {
     }
 
     pub async fn count_rows(&self, query: &RowQuery) -> Result<u64> {
-        let sql = Dialect::MySql.count_rows(query);
+        let binary = self.binary_columns(query).await?;
+        let sql = Dialect::MySql.count_rows(query, &binary);
         let mut conn = self.conn.lock().await;
         let mut transaction = conn
             .start_transaction(read_only())
