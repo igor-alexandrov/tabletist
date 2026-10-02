@@ -2,6 +2,8 @@
 //! state directly.
 
 pub mod about;
+#[cfg(test)]
+mod complete_tests;
 pub mod conn_tabs;
 pub mod connect_dialog;
 pub mod data_view;

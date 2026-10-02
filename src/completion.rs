@@ -65,6 +65,27 @@ pub struct Listed {
     pub more: usize,
 }
 
+impl Listed {
+    /// Whether the list would only say what is already there: one row,
+    /// none more, and it is what is `typed`.
+    pub fn only_repeats(&self, typed: &str) -> bool {
+        self.more == 0 && matches!(self.candidates.as_slice(), [only] if only.is_typed(typed))
+    }
+}
+
+/// Whether a list may open at `site` for the `typed` part of its word,
+/// before any candidate is looked for: always when asked for by hand
+/// (`manual`); by typing, on a word of two characters or more, or right
+/// after a dot, and not where a new name goes (most likely an alias).
+pub fn may_open(site: &Site, typed: &str, manual: bool) -> bool {
+    if manual {
+        return true;
+    }
+    let after_dot = typed.is_empty() && !site.qualifier.is_empty();
+    let new_name = site.expects == Expects::Name && site.qualifier.is_empty();
+    (typed.chars().count() >= 2 || after_dot) && !new_name
+}
+
 /// Where a kind of candidate comes in a site's list: lower first.
 type Group = u8;
 
@@ -344,6 +365,59 @@ mod tests {
         );
         // After a dot: a name of that table or schema, never a keyword.
         assert!(keywords_at("SELECT u.se|", false).is_empty());
+    }
+
+    #[test]
+    fn a_list_may_open_on_two_letters_after_a_dot_or_by_hand() {
+        let opens = |marked: &str, manual: bool| {
+            let (site, typed) = site_at(marked);
+            may_open(&site, &typed, manual)
+        };
+        assert!(!opens("s|", false));
+        assert!(opens("se|", false));
+        // Characters, not bytes.
+        assert!(!opens("ż|", false));
+        assert!(opens("żó|", false));
+        // Right after a dot, before anything is typed. One letter there is
+        // one letter anywhere.
+        assert!(opens("SELECT u.|", false));
+        assert!(!opens("SELECT u.n|", false));
+        assert!(opens("SELECT u.na|", false));
+        // Not after a space, with nothing typed.
+        assert!(!opens("SELECT |", false));
+        // Where a new name goes (most likely an alias): not by typing.
+        assert!(!opens("SELECT * FROM users wh|", false));
+        assert!(!opens("SELECT 1 AS to|", false));
+        // A name after a dot is a name that exists.
+        let (mut site, _) = site_at("SELECT * FROM users wh|");
+        assert_eq!(site.expects, Expects::Name);
+        site.qualifier = vec!["u".to_owned()];
+        assert!(may_open(&site, "", false));
+        assert!(may_open(&site, "wh", false));
+        // By hand: anywhere.
+        for marked in ["|", "s|", "SELECT |", "SELECT * FROM users wh|"] {
+            assert!(opens(marked, true), "{marked}");
+        }
+    }
+
+    #[test]
+    fn a_list_only_repeats_what_is_typed_when_its_one_row_is_that() {
+        let listed = |candidates: Vec<Candidate>, more: usize| Listed { candidates, more };
+        assert!(listed(vec![keyword_row("set")], 0).only_repeats("set"));
+        // A keyword, whatever the case it is typed in.
+        assert!(listed(vec![keyword_row("SET")], 0).only_repeats("Set"));
+        // A name only as spelled.
+        let users = || vec![name_row(Kind::Table, "Users", 0..5)];
+        assert!(listed(users(), 0).only_repeats("Users"));
+        assert!(!listed(users(), 0).only_repeats("users"));
+        // Two rows, the first of them what is typed.
+        let two = vec![keyword_row("as"), keyword_row("asc")];
+        assert!(!listed(two, 0).only_repeats("as"));
+        // One row kept and more counted.
+        assert!(!listed(vec![keyword_row("set")], 1).only_repeats("set"));
+        // One row that goes on from what is typed, and no row.
+        assert!(!listed(vec![keyword_row("select")], 0).only_repeats("sel"));
+        assert!(!listed(Vec::new(), 0).only_repeats(""));
     }
 
     #[test]

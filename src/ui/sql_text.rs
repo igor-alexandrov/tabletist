@@ -77,18 +77,20 @@ thread_local! {
 
 /// What an editor works out from its script, tokenized once for both: the
 /// colours it is drawn in and the statements it holds.
-struct Parsed {
+pub(crate) struct Parsed {
     /// What it was worked out from: the script, the dialect that reads it
     /// and the colours.
     of: (TextPrint, Dialect, Palette),
     runs: Vec<(Range<usize>, Color32)>,
     statements: Vec<Statement>,
+    /// The script's tokens, for the completion list.
+    pub(crate) tokens: Vec<Token>,
 }
 
 /// `text` parsed, from egui's memory for the editor `id` when that is of
 /// the same text, dialect and colours: a frame that changes none of them
 /// tokenizes nothing.
-fn parsed(
+pub(crate) fn parsed(
     ctx: &egui::Context,
     id: Id,
     dialect: Dialect,
@@ -109,6 +111,7 @@ fn parsed(
         of,
         runs: runs(&tokens, text, palette),
         statements: sql::statements_from(text, &tokens),
+        tokens,
     });
     ctx.data_mut(|data| data.insert_temp(id, Arc::clone(&parsed)));
     parsed
@@ -262,6 +265,10 @@ struct Edited {
     /// Where the galley's top left corner is on screen.
     origin: egui::Pos2,
     focused: bool,
+    /// The field's text changed this frame by typing: not by a paste, an
+    /// undo, a deletion or an input method's text while it is composed.
+    /// Only text the field takes counts (see `edit`).
+    typed: bool,
 }
 
 impl Edited {
@@ -345,6 +352,9 @@ pub fn show(app: &mut App, ui: &mut Ui, tab: ConnTabId, id: TabId) {
     if edited.focused && tree_has_arrows {
         app.actions
             .push(Action::SqlEditorFocused { tab, sql_tab: id });
+    }
+    if edited.typed {
+        app.actions.push(Action::SqlTyped { tab, sql_tab: id });
     }
     let across = |x: egui::Rangef, y| Rect::from_x_y_ranges(x, y);
     let fill = |rect, color| Shape::rect_filled(rect, CornerRadius::ZERO, color);
@@ -484,7 +494,18 @@ fn edit(ui: &mut Ui, sql_tab: &mut SqlTab, field: &Field<'_>) -> Edited {
     if let Some(range) = output.state.cursor.range(&output.galley) {
         sql_tab.cursor = byte_offset(&sql_tab.text, range.primary.index.0);
     }
+    // Typed text, as the field takes it: it ignores an empty text and a
+    // line ending (Enter is a key), and an empty commit.
+    let typed = output.response.changed()
+        && ui.input(|input| {
+            input.events.iter().any(|event| match event {
+                egui::Event::Text(text) => !text.is_empty() && text != "\n" && text != "\r",
+                egui::Event::Ime(egui::ImeEvent::Commit(text)) => !text.is_empty(),
+                _ => false,
+            })
+        });
     Edited {
+        typed,
         focused: output.response.has_focus(),
         origin: output.galley_pos,
         galley: output.galley,
