@@ -35,7 +35,8 @@ each with its own spec, plan and pull request:
 
 1. **Core editor** (this spec).
 2. Autocomplete: keywords, tables and views, columns.
-3. Explain and Format.
+3. Explain and Format. Format is built alone, first
+   (`2026-10-01-sql-formatter-design.md`).
 4. History, Copy and Export.
 5. Vim normal mode in the Omarchy editor.
 
