@@ -478,7 +478,10 @@ enum Dialog { Connection(..), Password(..), HostKey(..), QuickOpen(..), Help }
   their order, objects and arrays fold (all open up to 40 lines, else only
   the top level), with Expand all / Collapse all. Larger or invalid JSON is
   plain text. Binary shows its size and a hex
-  preview of the first 4 KiB. Text longer than 20 lines or 4,000 characters
+  preview of the first 4 KiB. A binary value of sixteen bytes is a UUID
+  (SQLite's `blob(16)` and MySQL's `binary(16)` keys): the grid, the panel
+  and the clipboard give it as `0199a3f2-7c1e-7abc-8def-0123456789ab`.
+  Text longer than 20 lines or 4,000 characters
   is collapsed with "Show all". NULL shows a NULL badge.
 - The reducer formats the selected row's text once, when the selection or
   the page changes; drawing only lays that text out.

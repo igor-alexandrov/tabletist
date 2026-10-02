@@ -24,8 +24,27 @@ pub fn cell_text(value: &Value) -> Cow<'_, str> {
         Value::Int(number) => Cow::Owned(number.to_string()),
         Value::Float(number) => Cow::Owned(number.to_string()),
         Value::Text(text) => one_line(text),
-        Value::Bytes(bytes) => Cow::Owned(format!("BLOB · {}", human_size(bytes.len()))),
+        Value::Bytes(bytes) => {
+            Cow::Owned(uuid(bytes).unwrap_or_else(|| format!("BLOB · {}", human_size(bytes.len()))))
+        }
     }
+}
+
+/// Sixteen bytes as the UUID they hold: `0199a3f2-7c1e-7abc-8def-0123456789ab`.
+/// SQLite and MySQL have no UUID type, so a UUID key is kept in a `blob(16)`
+/// or `binary(16)` column and arrives as bytes. The text is the bytes' hex
+/// with four hyphens, so sixteen bytes that are no UUID lose nothing by it.
+/// `None` for any other length.
+pub fn uuid(bytes: &[u8]) -> Option<String> {
+    let bytes: &[u8; 16] = bytes.try_into().ok()?;
+    let mut text = String::with_capacity(36);
+    for (index, byte) in bytes.iter().enumerate() {
+        if matches!(index, 4 | 6 | 8 | 10) {
+            text.push('-');
+        }
+        let _ = write!(text, "{byte:02x}");
+    }
+    Some(text)
 }
 
 /// Text on one line, as a grid cell shows it: line breaks and tabs become
@@ -215,17 +234,18 @@ pub fn ellipsize_middle(text: &str, max: f32, width: impl Fn(&str) -> f32) -> St
     candidate(fits)
 }
 
-/// The whole value as text, for the clipboard. Binary becomes `0x` hex.
+/// The whole value as text, for the clipboard. Binary becomes `0x` hex,
+/// and sixteen bytes the UUID the grid shows.
 pub fn plain_text(value: &Value) -> String {
     match value {
-        Value::Bytes(bytes) => {
+        Value::Bytes(bytes) => uuid(bytes).unwrap_or_else(|| {
             let mut hex = String::with_capacity(2 + bytes.len() * 2);
             hex.push_str("0x");
             for byte in bytes.iter() {
                 let _ = write!(hex, "{byte:02x}");
             }
             hex
-        }
+        }),
         Value::Text(text) => text.to_string(),
         other => cell_text(other).into_owned(),
     }
@@ -238,14 +258,18 @@ thread_local! {
 }
 
 /// The whole value as the row panel shows it as text. JSON the panel can
-/// parse is drawn as a tree instead (`json_view`). Text is borrowed, not
-/// copied.
+/// parse is drawn as a tree instead (`json_view`). Binary is its size and a
+/// hex dump, and sixteen bytes the UUID the grid shows. Text is borrowed,
+/// not copied.
 pub fn full_text(value: &Value) -> Cow<'_, str> {
     #[cfg(test)]
     FULL_TEXTS.with(|count| count.set(count.get() + 1));
     match value {
         Value::Text(text) => Cow::Borrowed(text),
         Value::Bytes(bytes) => {
+            if let Some(uuid) = uuid(bytes) {
+                return Cow::Owned(uuid);
+            }
             let shown = &bytes[..bytes.len().min(HEX_LIMIT)];
             let mut text = format!("{}\n{}", human_size(bytes.len()), hex_dump(shown));
             if bytes.len() > HEX_LIMIT {
@@ -574,6 +598,29 @@ mod tests {
             cell_text(&Value::Bytes(vec![0; 1536].into())),
             "BLOB · 1.5 KB"
         );
+    }
+
+    #[test]
+    fn sixteen_bytes_read_as_a_uuid_everywhere() {
+        let key = Value::Bytes(
+            vec![
+                0x01, 0x99, 0xa3, 0xf2, 0x7c, 0x1e, 0x7a, 0xbc, 0x8d, 0xef, 0x01, 0x23, 0x45, 0x67,
+                0x89, 0xab,
+            ]
+            .into(),
+        );
+        let uuid = "0199a3f2-7c1e-7abc-8def-0123456789ab";
+        assert_eq!(cell_text(&key), uuid);
+        assert_eq!(plain_text(&key), uuid);
+        assert_eq!(full_text(&key), uuid);
+        assert_eq!(tsv_row(&[Value::Int(1), key]), format!("1\t{uuid}"));
+        // Any other length stays a blob.
+        for len in [15, 17] {
+            let blob = Value::Bytes(vec![0xab; len].into());
+            assert_eq!(cell_text(&blob), format!("BLOB · {len} B"));
+            assert!(plain_text(&blob).starts_with("0xabab"));
+            assert!(full_text(&blob).starts_with(&format!("{len} B\n00000000  ab")));
+        }
     }
 
     #[test]
