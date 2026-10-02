@@ -1343,6 +1343,46 @@ mod tests {
     }
 
     #[test]
+    fn a_structure_that_takes_long_says_so_over_the_one_it_has() {
+        for look in crate::theme::Look::ALL {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            let tab = with_page(&mut harness);
+            let loading = look.label("Loading structure…");
+            harness.click("Structure");
+            // The first fetch, with nothing to show yet.
+            age_fetch(&mut harness, tab);
+            assert!(harness.has(&loading), "{}", look.name);
+            harness.answer_structure(tabletist_db::Structure {
+                indexes: vec![tabletist_db::IndexInfo {
+                    name: "users_email_idx".into(),
+                    columns: vec!["email".into()],
+                    unique: true,
+                    primary: false,
+                    method: None,
+                }],
+                ..Default::default()
+            });
+            assert!(!harness.has(&loading), "{}", look.name);
+            // A refresh keeps the structure under its wait, and can be
+            // cancelled as the first fetch can.
+            harness.app.apply(crate::model::Action::Refresh(tab));
+            age_fetch(&mut harness, tab);
+            assert!(harness.has(&loading), "{}", look.name);
+            assert!(harness.has("users_email_idx"), "{}", look.name);
+            harness.click("Cancel query");
+            assert!(
+                matches!(
+                    crate::testing::last_sent(&harness.app),
+                    Command::Cancel { .. }
+                ),
+                "{}",
+                look.name
+            );
+        }
+    }
+
+    #[test]
     fn a_refresh_keeps_the_page_under_the_running_card() {
         let mut harness = Harness::new();
         let tab = with_page(&mut harness);
