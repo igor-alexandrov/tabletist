@@ -65,21 +65,22 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
     }
     let active = workspace.active_tab;
     let view = workspace.active_object_tab().map(|object| object.view);
-    let row_panel = workspace.row_panel;
+    // The tab the row panel shows a row of: a table's Data view, or a SQL
+    // editor with a row of its result selected.
+    let row_panel = workspace.row_panel_tab();
     super::sidebar::show(app, ui, tab);
     if look.terminal
-        && let (Some(object_tab), Some(ObjectView::Data), true) = (active, view, row_panel)
+        && let Some(shown) = row_panel
     {
-        super::row_panel::show(app, ui, tab, object_tab);
+        super::row_panel::show(app, ui, tab, shown);
     }
     egui::CentralPanel::default()
         .frame(Frame::new().fill(app.palette.window))
         .show(ui, |ui| {
             if !look.terminal {
                 super::object_tabs::show(app, ui, tab);
-                if let (Some(object_tab), Some(ObjectView::Data), true) = (active, view, row_panel)
-                {
-                    super::row_panel::show(app, ui, tab, object_tab);
+                if let Some(shown) = row_panel {
+                    super::row_panel::show(app, ui, tab, shown);
                 }
             }
             let sql = app

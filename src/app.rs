@@ -233,17 +233,32 @@ impl App {
     }
 
     /// Formats the row each open row panel shows, once per selection or
-    /// page, so drawing never reads a whole (possibly huge) value.
+    /// page (or SQL result), so drawing never reads a whole (possibly huge)
+    /// value.
     fn format_rows(&mut self) {
         for tab in &mut self.tabs {
             let ConnTabContent::Workspace(workspace) = &mut tab.content else {
                 continue;
             };
-            let (open, active) = (workspace.row_panel, workspace.active_tab);
+            let shown = workspace.row_panel_tab();
+            for sql in workspace.sql_tabs_mut() {
+                let row = sql.selected_row().filter(|_| shown == Some(sql.id));
+                let Some(row) = row else {
+                    // Nothing shows it: free the text.
+                    sql.fields = None;
+                    continue;
+                };
+                if sql.selected_fields().is_some() {
+                    continue;
+                }
+                let request = sql.run.loaded;
+                let values = sql.shown_rows().and_then(|(_, rows, _)| rows.get(row));
+                sql.fields = values.map(|values| row_fields(request, row, values));
+            }
             for object in workspace.object_tabs_mut() {
                 let row = object
                     .selection
-                    .filter(|_| open && active == Some(object.id))
+                    .filter(|_| shown == Some(object.id))
                     .map(|cell| cell.row);
                 let Some((row, page)) = row.zip(object.page()) else {
                     // Nothing shows it: free the text.
@@ -253,11 +268,11 @@ impl App {
                 if object.selected_fields().is_some() {
                     continue;
                 }
-                object.fields = page.rows.get(row).map(|values| crate::model::RowFields {
-                    request: object.rows.loaded,
-                    row,
-                    fields: values.iter().map(crate::ui::format::field_text).collect(),
-                });
+                let request = object.rows.loaded;
+                object.fields = page
+                    .rows
+                    .get(row)
+                    .map(|values| row_fields(request, row, values));
             }
         }
     }
@@ -2791,6 +2806,19 @@ fn opens_messages(
 fn step(index: usize, delta: isize, len: usize) -> usize {
     let moved = (index as i128 + delta as i128).clamp(0, len as i128 - 1);
     moved as usize
+}
+
+/// A row's text for the row panel, formatted once.
+fn row_fields(
+    request: Option<RequestId>,
+    row: usize,
+    values: &[tabletist_db::Value],
+) -> crate::model::RowFields {
+    crate::model::RowFields {
+        request,
+        row,
+        fields: values.iter().map(crate::ui::format::field_text).collect(),
+    }
 }
 
 #[cfg(test)]

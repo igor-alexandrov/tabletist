@@ -681,6 +681,9 @@ fn field(
         texts,
         copy_key,
     } = skin;
+    // The request whose answer holds the row: the same row of another
+    // page or another result keeps no folds and nothing expanded.
+    let request = texts.and_then(|texts| texts.request);
     let label_role = caption(look);
     let text = label(&column.name, &column.type_name, column.kind, info, look);
     let doc = json_doc(ui.ctx(), value, column.kind);
@@ -741,7 +744,7 @@ fn field(
             if copy_button(&mut child, &copy_label, true, look, palette).clicked() {
                 ui.ctx().copy_text(format::plain_text(value));
             }
-            let id = Id::new(("row-panel-json", tab, tab_id, row, col));
+            let id = Id::new(("row-panel-json", tab, tab_id, request, row, col));
             // "Collapse all": a 24 pt button 6 at its sides, 4 before copy.
             let link_right = copy.left() - 4.0 - 6.0;
             json_view::fold_all_link(
@@ -785,13 +788,16 @@ fn field(
     }
     if let Some(doc) = doc {
         if fold {
-            json_view::toggle_fold_all(ui, Id::new(("row-panel-json", tab, tab_id, row, col)));
+            json_view::toggle_fold_all(
+                ui,
+                Id::new(("row-panel-json", tab, tab_id, request, row, col)),
+            );
         }
         if let Some(file) = json_view::attachment(&doc) {
             attachment_card(ui, &file, look, palette);
             ui.add_space(if look.terminal { 10.0 } else { 6.0 });
         }
-        let id = Id::new(("row-panel-json", tab, tab_id, row, col));
+        let id = Id::new(("row-panel-json", tab, tab_id, request, row, col));
         if look.terminal {
             json_view::show(ui, id, &doc, &column_name, locale, palette, look);
         } else {
@@ -812,7 +818,7 @@ fn field(
     let Some(formatted) = texts.and_then(|texts| texts.fields.get(col)) else {
         return;
     };
-    let expanded_id = Id::new(("row-panel-expanded", tab, tab_id, row, col));
+    let expanded_id = Id::new(("row-panel-expanded", tab, tab_id, request, row, col));
     let expanded: bool = ui.data(|data| data.get_temp(expanded_id)).unwrap_or(false);
     let long = formatted.full.is_some();
     let shown = match &formatted.full {
