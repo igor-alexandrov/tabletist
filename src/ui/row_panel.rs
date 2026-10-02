@@ -10,7 +10,7 @@ use tabletist_db::{Value, ValueKind};
 
 use crate::app::App;
 use crate::i18n::gettext;
-use crate::model::{Action, ConnTabId, TabId};
+use crate::model::{Action, CellPos, ConnTabId, RowFields, Tab, TabId, Workspace};
 use crate::theme::{Icon, Look, Palette};
 use crate::typography::{Text, TextRole};
 use crate::ui::format;
@@ -84,13 +84,75 @@ fn label(name: &str, type_name: &str, kind: ValueKind, info: &FieldInfo, look: &
     text
 }
 
-pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId) {
+/// What the panel shows a row of: a table's page, or a SQL editor's result.
+struct Source<'a> {
+    /// The table's name, or "Query 3": under the title in the macOS header.
+    name: String,
+    columns: &'a [tabletist_db::ColumnMeta],
+    rows: &'a [Vec<Value>],
+    selection: Option<CellPos>,
+    /// The table's structure, once described. A result has none: no key
+    /// names its rows, no foreign key links them, and only its booleans
+    /// are tags.
+    structure: Option<&'a tabletist_db::Structure>,
+    /// The rows before the first one here: a table's page offset.
+    offset: u64,
+    /// The selected row's text, formatted by the app.
+    texts: Option<&'a RowFields>,
+    /// Whether the row is a table's. A result's row has no editing
+    /// controls under it, and no `y` key to copy from it.
+    table: bool,
+}
+
+/// The source the tab `id` gives the panel: none for a closed tab, or a
+/// SQL editor that shows no rows.
+fn source(workspace: &Workspace, id: TabId, locale: crate::i18n::Locale) -> Option<Source<'_>> {
+    match workspace.tab(id)? {
+        Tab::Object(object) => {
+            let (columns, rows) = match object.page() {
+                Some(page) => (page.columns.as_slice(), page.rows.as_slice()),
+                None => (&[][..], &[][..]),
+            };
+            Some(Source {
+                name: format::object_title(
+                    &object.object,
+                    workspace.name_is_shared(&object.object),
+                ),
+                columns,
+                rows,
+                selection: object.selection,
+                structure: object.structure.value.as_ref(),
+                offset: object.query.offset,
+                texts: object.selected_fields(),
+                table: true,
+            })
+        }
+        Tab::Sql(sql) => {
+            let (columns, rows, _) = sql.shown_rows()?;
+            Some(Source {
+                name: format!("{} {}", gettext(locale, "Query"), sql.number),
+                columns,
+                rows,
+                // The cell only while its row shows: under the Messages
+                // pane there is no row for the panel to be about.
+                selection: sql.selected_row().and(sql.selection),
+                structure: None,
+                offset: 0,
+                texts: sql.selected_fields(),
+                table: false,
+            })
+        }
+    }
+}
+
+/// Draws the panel for the tab `id`: an object tab, or a SQL editor.
+pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, id: TabId) {
     let locale = app.locale;
     let palette = app.palette;
     let look = app.look;
     // `za` asked to fold the documents.
     let fold = app.workspace_mut(tab).is_some_and(|workspace| {
-        let asked = workspace.fold_documents == Some(object_tab);
+        let asked = workspace.fold_documents == Some(id);
         if asked {
             workspace.fold_documents = None;
         }
@@ -99,11 +161,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
     let Some(workspace) = app.workspace(tab) else {
         return;
     };
-    let Some(object) = workspace.object_tab(object_tab) else {
+    let Some(source) = source(workspace, id, locale) else {
         return;
     };
-    let object_name =
-        format::object_title(&object.object, workspace.name_is_shared(&object.object));
     let mut actions = Vec::new();
     egui::Panel::right(Id::new(("row-panel", tab.0)))
         .resizable(true)
@@ -135,13 +195,12 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
             } else {
                 widgets::vline(ui, full.left() - 0.5, full.y_range(), palette.outline);
             }
-            let selected = object
+            let selected = source
                 .selection
-                .and_then(|cell| object.page().map(|page| (cell, page)))
-                .and_then(|(cell, page)| page.rows.get(cell.row).map(|row| (cell, page, row)));
+                .and_then(|cell| source.rows.get(cell.row).map(|row| (cell, row)));
             // Formatted by the app when the selection changed, never here.
-            let texts = object.selected_fields();
-            let Some((cell, page, row)) = selected else {
+            let texts = source.texts;
+            let Some((cell, row)) = selected else {
                 ui.centered_and_justified(|ui| {
                     Text::one(
                         &look,
@@ -154,7 +213,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
                 });
                 return;
             };
-            let structure = object.structure.value.as_ref();
+            let structure = source.structure;
             let info = |name: &str| {
                 let key =
                     structure.is_some_and(|s| s.primary_key.iter().any(|column| column == name));
@@ -174,20 +233,25 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
                 }
             };
             // Values the grid shows as tags keep their colour here.
-            let tags = crate::ui::value_tags::Tags::of_page(page, structure);
+            let tags: Vec<_> = source
+                .columns
+                .iter()
+                .map(|column| crate::ui::value_tags::Tags::of(column, structure))
+                .collect();
             let tag_of = |col: usize, value: &Value| tags[col].style(value);
             // The row's name: its key, else its number. Both as the grid
             // shows them: short, and nothing hidden.
             let key_column = structure
                 .and_then(|s| (s.primary_key.len() == 1).then(|| s.primary_key[0].as_str()));
             let key_value = key_column.and_then(|key| {
-                page.columns
+                source
+                    .columns
                     .iter()
                     .position(|column| column.name == key)
                     .map(|col| format::cell_text(&row[col]).into_owned())
             });
             let key_column = key_column.map(|key| format::display_safe(key).into_owned());
-            let number = object.query.offset + cell.row as u64 + 1;
+            let number = source.offset + cell.row as u64 + 1;
             let side = side(&look);
             // Header: 52 (macOS) or 40 (terminal), and its rule.
             let header_height = if look.terminal { 41.0 } else { 53.0 };
@@ -199,7 +263,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
                 palette.surface_hover
             };
             widgets::hline(ui, header.x_range(), header.bottom() - 0.5, divider);
-            let rows = page.rows.len();
+            let rows = source.rows.len();
             let can_prev = cell.row > 0;
             let can_next = cell.row + 1 < rows;
             if look.terminal {
@@ -286,7 +350,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
                     if response.clicked() && enabled {
                         actions.push(Action::MoveSelection {
                             tab,
-                            id: object_tab,
+                            id,
                             rows: step,
                             cols: 0,
                         });
@@ -314,7 +378,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
                     ui,
                     header.left() + side,
                     top + title_line + sub_line / 2.0,
-                    Text::one(&look, sub_role, &object_name, palette.dim),
+                    Text::one(&look, sub_role, &source.name, palette.dim),
                 );
                 // Three 30 pt buttons, 4 apart, 8 in from the right.
                 let y = header.top() + 26.0;
@@ -332,7 +396,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
                         can_next,
                         Action::MoveSelection {
                             tab,
-                            id: object_tab,
+                            id,
                             rows: 1,
                             cols: 0,
                         },
@@ -343,7 +407,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
                         can_prev,
                         Action::MoveSelection {
                             tab,
-                            id: object_tab,
+                            id,
                             rows: -1,
                             cols: 0,
                         },
@@ -370,9 +434,12 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
                 }
             }
             // Footer: the editing controls, disabled until editing arrives.
-            // Footer: its rule, the buttons (28 or 32), the note under them.
+            // Its rule, the buttons (28 or 32), the note under them. A SQL
+            // result has none: its rows are no table's to edit.
             let note = line_of(ui, caption(&look), &look);
-            let footer_height = if look.terminal {
+            let footer_height = if !source.table {
+                0.0
+            } else if look.terminal {
                 1.0 + 10.0 + 28.0 + 8.0 + note + 10.0
             } else {
                 1.0 + 12.0 + 32.0 + 8.0 + note + 12.0
@@ -382,13 +449,23 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
                 pos2(full.right(), full.bottom() - footer_height),
             );
             let foot = Rect::from_min_max(pos2(full.left(), body.bottom()), full.max);
-            editing_footer(ui, foot, &look, &palette, locale);
+            if source.table {
+                editing_footer(ui, foot, &look, &palette, locale);
+            }
             let mut body_ui = ui.new_child(egui::UiBuilder::new().max_rect(body));
+            let skin = FieldSkin {
+                look: &look,
+                palette: &palette,
+                locale,
+                fold,
+                texts,
+                copy_key: source.table,
+            };
             egui::ScrollArea::vertical()
                 .auto_shrink([false, false])
                 .show(&mut body_ui, |ui| {
                     ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
-                    let fields: Vec<(usize, &tabletist_db::ColumnMeta, &Value)> = page
+                    let fields: Vec<(usize, &tabletist_db::ColumnMeta, &Value)> = source
                         .columns
                         .iter()
                         .zip(row.iter())
@@ -464,20 +541,14 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
                                             field(
                                                 ui,
                                                 tab,
-                                                object_tab,
+                                                id,
                                                 cell.row,
                                                 *col,
                                                 column,
                                                 value,
                                                 &info,
                                                 tag_of(*col, value),
-                                                FieldSkin {
-                                                    look: &look,
-                                                    palette: &palette,
-                                                    locale,
-                                                    fold,
-                                                    texts,
-                                                },
+                                                skin,
                                                 &mut actions,
                                             );
                                         },
@@ -506,20 +577,14 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
                                     field(
                                         ui,
                                         tab,
-                                        object_tab,
+                                        id,
                                         cell.row,
                                         *col,
                                         column,
                                         value,
                                         &info,
                                         tag_of(*col, value),
-                                        FieldSkin {
-                                            look: &look,
-                                            palette: &palette,
-                                            locale,
-                                            fold,
-                                            texts,
-                                        },
+                                        skin,
                                         &mut actions,
                                     );
                                 });
@@ -542,20 +607,14 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
                                     field(
                                         ui,
                                         tab,
-                                        object_tab,
+                                        id,
                                         cell.row,
                                         *col,
                                         column,
                                         value,
                                         &info,
                                         tag_of(*col, value),
-                                        FieldSkin {
-                                            look: &look,
-                                            palette: &palette,
-                                            locale,
-                                            fold,
-                                            texts,
-                                        },
+                                        skin,
                                         &mut actions,
                                     );
                                 });
@@ -594,6 +653,8 @@ struct FieldSkin<'a> {
     fold: bool,
     /// The selected row's text, formatted by the app.
     texts: Option<&'a crate::model::RowFields>,
+    /// Whether `y` copies the selected cell: in a table, not in a result.
+    copy_key: bool,
 }
 
 /// One field: its label (with a copy button, or a document's controls),
@@ -602,7 +663,7 @@ struct FieldSkin<'a> {
 fn field(
     ui: &mut egui::Ui,
     tab: ConnTabId,
-    object_tab: TabId,
+    tab_id: TabId,
     row: usize,
     col: usize,
     column: &tabletist_db::ColumnMeta,
@@ -618,6 +679,7 @@ fn field(
         locale,
         fold,
         texts,
+        copy_key,
     } = skin;
     let label_role = caption(look);
     let text = label(&column.name, &column.type_name, column.kind, info, look);
@@ -655,16 +717,22 @@ fn field(
         );
         let mut child = ui.new_child(egui::UiBuilder::new().max_rect(copy));
         if look.terminal {
-            // "za fold · y copy", keys in the text colour, at the right.
+            // "za fold · y copy", keys in the text colour, at the right. A
+            // SQL result has no `y`: the hint offers only the fold.
             let role = TextRole::OCaption;
             let hints = Text::new(look)
                 .add(role, "za", palette.text)
-                .space(role, " ")
-                .add(role, "fold ·", palette.dim)
-                .space(role, " ")
-                .add(role, "y", palette.text)
-                .space(role, " ")
-                .add(role, "copy", palette.dim);
+                .space(role, " ");
+            let hints = if copy_key {
+                hints
+                    .add(role, "fold ·", palette.dim)
+                    .space(role, " ")
+                    .add(role, "y", palette.text)
+                    .space(role, " ")
+                    .add(role, "copy", palette.dim)
+            } else {
+                hints.add(role, "fold", palette.dim)
+            };
             widgets::paint_text_right(ui, line.right(), line.center().y, hints);
             if copy_button(&mut child, &copy_label, false, look, palette).clicked() {
                 ui.ctx().copy_text(format::plain_text(value));
@@ -673,7 +741,7 @@ fn field(
             if copy_button(&mut child, &copy_label, true, look, palette).clicked() {
                 ui.ctx().copy_text(format::plain_text(value));
             }
-            let id = Id::new(("row-panel-json", tab, object_tab, row, col));
+            let id = Id::new(("row-panel-json", tab, tab_id, row, col));
             // "Collapse all": a 24 pt button 6 at its sides, 4 before copy.
             let link_right = copy.left() - 4.0 - 6.0;
             json_view::fold_all_link(
@@ -717,13 +785,13 @@ fn field(
     }
     if let Some(doc) = doc {
         if fold {
-            json_view::toggle_fold_all(ui, Id::new(("row-panel-json", tab, object_tab, row, col)));
+            json_view::toggle_fold_all(ui, Id::new(("row-panel-json", tab, tab_id, row, col)));
         }
         if let Some(file) = json_view::attachment(&doc) {
             attachment_card(ui, &file, look, palette);
             ui.add_space(if look.terminal { 10.0 } else { 6.0 });
         }
-        let id = Id::new(("row-panel-json", tab, object_tab, row, col));
+        let id = Id::new(("row-panel-json", tab, tab_id, row, col));
         if look.terminal {
             json_view::show(ui, id, &doc, &column_name, locale, palette, look);
         } else {
@@ -744,7 +812,7 @@ fn field(
     let Some(formatted) = texts.and_then(|texts| texts.fields.get(col)) else {
         return;
     };
-    let expanded_id = Id::new(("row-panel-expanded", tab, object_tab, row, col));
+    let expanded_id = Id::new(("row-panel-expanded", tab, tab_id, row, col));
     let expanded: bool = ui.data(|data| data.get_temp(expanded_id)).unwrap_or(false);
     let long = formatted.full.is_some();
     let shown = match &formatted.full {
