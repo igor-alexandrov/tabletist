@@ -428,8 +428,9 @@ pub fn capped(text: &str) -> Cow<'_, str> {
 
 /// Whether `error` is the read-only session refusing a write: Tabletist's
 /// own guard, or the server's refusal. PostgreSQL and MySQL say SQLSTATE
-/// 25006; SQLite says SQLITE_READONLY (8), which its extended codes keep
-/// in their low byte.
+/// 25006; SQLite says SQLITE_READONLY (8) and no more. Its extended codes
+/// keep the 8 in their low byte and are not a refused write: a journal to
+/// recover, a lock or a directory it cannot have, which a SELECT can meet.
 pub fn refuses_writes(error: &tabletist_db::Error, driver: tabletist_db::Driver) -> bool {
     use tabletist_db::{Driver, Error};
     match error {
@@ -437,7 +438,7 @@ pub fn refuses_writes(error: &tabletist_db::Error, driver: tabletist_db::Driver)
         Error::Query {
             code: Some(code), ..
         } => match driver {
-            Driver::Sqlite => code.parse::<i32>().is_ok_and(|code| code & 0xff == 8),
+            Driver::Sqlite => code == "8",
             Driver::Postgres | Driver::MySql => code == "25006",
         },
         _ => false,
@@ -538,10 +539,18 @@ mod tests {
         assert!(refuses_writes(&coded("25006"), Driver::Postgres));
         assert!(refuses_writes(&coded("25006"), Driver::MySql));
         assert!(!refuses_writes(&coded("42703"), Driver::Postgres));
-        // SQLITE_READONLY is 8; its extended codes keep it in the low byte.
+        // SQLITE_READONLY is 8: what a write on the read-only session gets.
         assert!(refuses_writes(&coded("8"), Driver::Sqlite));
-        assert!(refuses_writes(&coded("1032"), Driver::Sqlite));
         assert!(!refuses_writes(&coded("1"), Driver::Sqlite));
+        // Its extended codes keep the 8 in their low byte and are other
+        // troubles, which a SELECT can meet: RECOVERY, CANTLOCK, ROLLBACK,
+        // DBMOVED, CANTINIT and DIRECTORY.
+        for extended in ["264", "520", "776", "1032", "1288", "1544"] {
+            assert!(
+                !refuses_writes(&coded(extended), Driver::Sqlite),
+                "{extended}"
+            );
+        }
         // A SQLSTATE whose number ends in the same byte is not SQLite's code.
         assert!(!refuses_writes(&coded("23048"), Driver::Postgres));
     }

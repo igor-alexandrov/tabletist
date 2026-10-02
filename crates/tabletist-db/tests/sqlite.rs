@@ -532,9 +532,14 @@ async fn a_script_stops_at_the_first_error_and_keeps_earlier_results() {
 async fn writes_fail_as_read_only_and_refusals_run_nothing() {
     let (connection, _dir) = fixture().await;
     let outcome = run(&connection, "DELETE FROM users").await.unwrap();
+    // SQLITE_READONLY itself, none of its extended codes: the app tells a
+    // refused write by it.
     assert!(matches!(
-        outcome.results[0].outcome,
-        StatementOutcome::Error { .. }
+        &outcome.results[0].outcome,
+        StatementOutcome::Error {
+            error: Error::Query { code: Some(code), .. },
+            ..
+        } if code == "8"
     ));
     let refused = run(&connection, "SELECT 1;\nCOMMIT").await;
     assert!(matches!(refused, Err(Error::Refused { line: 2, .. })));
