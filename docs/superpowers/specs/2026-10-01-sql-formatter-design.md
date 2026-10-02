@@ -217,6 +217,9 @@ from their own column.
   when it was typed (`IN (1, 2)`, `a = b`) and absent when it was not.
 - No tabs: indentation is spaces. Lines end in `\n`, with no whitespace
   before it.
+- On MySQL a token that touches two touching minus signs stays on their
+  line, whatever it is: `--` is a comment there once whitespace follows
+  it, so a line break after them would make one.
 
 ### Comments
 
@@ -358,7 +361,9 @@ next token, or at the end of the text when there is none.
   becomes `x IS NULL`). The rows are the same.
 - A selected statement that does not start its line (the second of
   `SELECT 1; SELECT 2`) is laid out from base column 0 and its first
-  line stays where it stood. Formatting the whole script puts it right.
+  line stays where it stood: its first head is not padded to the river,
+  and columns on that line count from where it stands. Formatting the
+  whole script puts it right.
 - A `\r\n` line ending between tokens becomes `\n`; inside a string or a
   comment it is copied.
 - The formatter runs on the UI thread, as the tokenizer does: one pass
@@ -391,14 +396,16 @@ next token, or at the end of the text when there is none.
   beside a `.` keeps its case; a quoted name and a string that spell a
   keyword are untouched. The list is a subset of the highlighter's
   keywords.
-- Invariants, over every case above and over the tokenizer's own test
-  scripts, in all three dialects: the tokens but whitespace are the same
-  before and after; formatting the result returns `None`; the safety
-  check passes. A case built to fuse tokens (`- -1`, `/ *`, MySQL's
-  `1---- x`) returns the operators unfused. The same holds for scripts
-  built at random, from a fixed seed, out of keywords, names, strings,
-  operators, comments and line breaks. These tests check the layout
-  itself, before the safety check that would hide a fault.
+- Invariants, over every case above and over a list of awkward scripts
+  (unterminated strings and comments, stray parentheses, `\r\n`, every
+  dialect's quotes), in all three dialects: the tokens but whitespace are
+  the same before and after; formatting the result returns `None`; the
+  safety check passes. A case built to fuse tokens (`- -1`, `/ *`,
+  MySQL's `1---- x` and `1--from`) returns the operators unfused. The
+  same holds for scripts built at random, from a fixed seed, out of
+  keywords, names, strings, operators, comments and line breaks. These
+  tests check the layout itself, before the safety check that would hide
+  a fault.
 - The selection: one statement of three is formatted and the others are
   byte for byte the same; a selection across two statements formats both;
   a selection in the whitespace between statements formats nothing.

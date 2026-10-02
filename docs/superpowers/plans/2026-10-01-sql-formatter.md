@@ -12,7 +12,7 @@
 
 ## How this plan was checked
 
-Every piece of code below was compiled and its tests were run in a scratch copy of the repository while planning: `cargo fmt --check`, `cargo clippy -D warnings`, `cargo doc -D warnings` and `cargo test --workspace --all-targets` (735 app tests, 200 `tabletist-db` unit tests) pass with all of it applied. The formatter was also run over 450,000 scripts built at random, with the safety check out of the way: it found one fault (a space added before a `--` comment fused two minus signs into a comment on MySQL), which is fixed and has a test.
+Every piece of code below was compiled and its tests were run in a scratch copy of the repository while planning: `cargo fmt --check`, `cargo clippy -D warnings`, `cargo doc -D warnings` and `cargo test --workspace --all-targets` (735 app tests, 200 `tabletist-db` unit tests) pass with all of it applied. The formatter was also run over more than a million scripts built at random, with the safety check out of the way. That and a review of the plan found three faults, each fixed and under test: a space added before a `--` comment fused two minus signs into a comment on MySQL; a line break after two touching minus signs did the same; and a `WITH` statement formatted through a selection, where it did not start its line, gained two spaces on every press.
 
 Not checked, so check it when you get there:
 
@@ -29,6 +29,8 @@ Found while building the prototype; the spec was changed to say the same.
 - `STRAIGHT_JOIN` is not a head anywhere in the `SELECT` clause, not only before the list's first item.
 - A `,` that would follow a `--` comment goes on the next line, as `)` and `;` do.
 - `UPPERCASED` is public, so the MySQL integration test can ask the server about each word.
+- On MySQL a token that touches two touching minus signs stays on their line, whatever it is: a line break after `--` would make a comment of them.
+- A selected statement that does not start its line goes on from the column it stands at: its first head is not padded to the river, and columns on its first line count from there.
 
 ## Global Constraints
 
@@ -93,6 +95,7 @@ README.md, the spec                     docs
 - `put` writes one token. Where it goes is a `Place`: `Line(column)` starts a line there; `Inline` follows the token before it, unless a list's comma (`broken`) or a comment that ended its line (`ended`) sends it to the content column. Inline spacing is the spec's "Spacing inside a line".
 - `Writer` keeps the output and the current column, counted in characters. `line(column)` starts a line, or uses the current one when it is still empty.
 - `cased` uppercases a keyword that is on `UPPERCASED` (or that `put` was told is structure) and does not stand beside a `.` (`named`).
+- `dashes` is the one MySQL rule: no line starts right after two touching minus signs.
 - `moved` maps the cursor by counting token bytes before it.
 
 - [ ] **Step 1: Declare the module**
@@ -563,6 +566,16 @@ mod tests {
         // before `--` can turn two minus signs into a comment.
         assert_eq!(pg("select 1--x"), "SELECT 1--x");
         assert_eq!(mysql("select 1---- x"), "SELECT 1---- x");
+        // Nor does a line start right after them there: a head that
+        // touches them stays on their line.
+        assert_eq!(
+            mysql("select 1--from t where a--and b"),
+            lines(&["SELECT 1--FROM t", " WHERE a--AND b"])
+        );
+        assert_eq!(
+            pg("select 1 - -from t"),
+            lines(&["SELECT 1 - -", "  FROM t"])
+        );
     }
 
     #[test]
@@ -795,6 +808,7 @@ mod tests {
             "select * from t where a = 1 and b between 2 and 3 and c or d",
             "with a as (select 1), b as (select 2) (select * from a) union (select * from b)",
             "select /*! straight_join */ 1 # x\nfrom t -- y\r\nwhere a",
+            "select 1--from t where a--and b--or c--,d from--(select 1)--union select--case--when 1",
             "insert into t (a, b) select 1, 2 from u on conflict do nothing returning *",
         ];
         for dialect in DIALECTS {
@@ -910,6 +924,17 @@ mod tests {
         let script = "select 1; select a,b";
         let formatted = format(Dialect::Postgres, script, Some(12..13), 0).unwrap();
         assert_eq!(formatted.text, "select 1; SELECT a,\n       b");
+        // It goes on from where it stands: a head the river would pad is
+        // not padded there, so a second press finds nothing to change.
+        let script = "select 1; with a as (select 2) select * from a";
+        let selection = script.find("with").unwrap()..script.len();
+        let formatted = format(Dialect::Postgres, script, Some(selection.clone()), 0).unwrap();
+        assert_eq!(
+            formatted.text,
+            "select 1; WITH a AS (SELECT 2)\nSELECT *\n  FROM a"
+        );
+        let selection = selection.start..formatted.text.len();
+        assert!(format(Dialect::Postgres, &formatted.text, Some(selection), 0).is_none());
     }
 
     #[test]
@@ -1124,11 +1149,17 @@ fn laid_out(
     let region = region(script, tokens, selection)?;
     // The indentation of its first line is Format's to set.
     let region = line_start(script, region.start)..region.end;
+    // A statement that does not start its line goes on from where it
+    // stands: no line is started for it, and nothing is put before it.
+    let line = script[..region.start].rfind('\n').map_or(0, |end| end + 1);
     let mut layout = Layout {
         dialect,
         items: items(script, tokens, &region),
         at: 0,
-        writer: Writer::default(),
+        writer: Writer {
+            out: String::new(),
+            column: script[line..region.start].chars().count(),
+        },
         ended: false,
     };
     layout.run();
@@ -1225,7 +1256,6 @@ fn kept(space: &str) -> Cow<'_, str> {
 }
 
 /// The text laid out so far, and the column the next character lands on.
-#[derive(Default)]
 struct Writer {
     out: String,
     /// In characters, not bytes.
@@ -1596,6 +1626,8 @@ impl<'a> Layout<'a> {
         let at = self.at;
         let item = self.items[at];
         let line = match place {
+            // A line break here would make a comment of two minus signs.
+            _ if self.dashes(at) => None,
             Place::Line(column) => Some(column),
             Place::Inline if block.broken || self.ended => Some(block.content()),
             Place::Inline => None,
@@ -1637,6 +1669,21 @@ impl<'a> Layout<'a> {
         } else {
             Cow::Borrowed(item.text)
         }
+    }
+
+    /// Whether the item at `index` touches two touching minus signs on
+    /// MySQL, which reads `--` as a comment once whitespace follows it.
+    fn dashes(&self, index: usize) -> bool {
+        let minus = |index: usize| {
+            let item = self.items[index];
+            item.kind == TokenKind::Operator && item.text == "-"
+        };
+        self.dialect == Dialect::MySql
+            && index >= 2
+            && self.items[index].space.is_empty()
+            && minus(index - 1)
+            && self.items[index - 1].space.is_empty()
+            && minus(index - 2)
     }
 
     /// Whether the item at `index` stands beside a `.`: a part of a
@@ -1822,15 +1869,15 @@ async fn the_words_format_uppercases_cannot_be_table_aliases() {
 
 - [ ] **Step 2: Run it without a server**
 
-Run: `~/.cargo/bin/cargo test --locked -p tabletist-db --test mysql the_words_format`
-Expected: `skipped: TABLETIST_TEST_MYSQL_URL is not set` and `1 passed`.
+Run: `~/.cargo/bin/cargo test --locked -p tabletist-db --test mysql the_words_format -- --nocapture`
+Expected: `skipped: TABLETIST_TEST_MYSQL_URL is not set` and `1 passed`. (Without `--nocapture` the line is hidden, and a skipped run looks like a real one.)
 
 - [ ] **Step 3: Run it against the server**
 
 ```bash
 docker compose up -d --build --wait mysql
 TABLETIST_TEST_MYSQL_URL=mysql://tabletist:tabletist@localhost:53306/tabletist \
-  ~/.cargo/bin/cargo test --locked -p tabletist-db --test mysql the_words_format
+  ~/.cargo/bin/cargo test --locked -p tabletist-db --test mysql the_words_format -- --nocapture
 ```
 
 Expected: `1 passed`, with no "skipped" line.
@@ -1900,7 +1947,13 @@ In `src/ui/keys.rs`, in `the_shortcut_table_covers_the_spec_map`, add `"Format S
         assert_eq!(keys("Format SQL"), Some("Mod+Shift+F"));
 ```
 
-In `src/ui/mod.rs`, in the tests module, before `fn command_period_cancels_a_sql_run` (the `#[test]` line above it included):
+In `src/ui/mod.rs`, in `question_mark_opens_the_shortcuts_and_escape_closes_them`, after `assert!(harness.has("Quick open"));`:
+
+```rust
+        assert!(harness.has("Format SQL"));
+```
+
+Also in `src/ui/mod.rs`, in the tests module, before `fn command_period_cancels_a_sql_run` (the `#[test]` line above it included):
 
 ```rust
     const FORMAT: Modifiers = Modifiers::COMMAND.plus(Modifiers::SHIFT);
@@ -2007,7 +2060,7 @@ In `handle`, inside `ctx.input_mut`, after the `if let Some((tab, sql_tab)) = sq
 - [ ] **Step 6: Run the tests**
 
 Run: `~/.cargo/bin/cargo test --locked -p tabletist --lib -- format shortcut command_shift_f`
-Expected: all pass, among them `format_sql_asks_the_editor_to_format_and_take_the_keys`, `command_shift_f_does_nothing_on_a_table_tab`, `the_shortcut_table_covers_the_spec_map`, `the_shortcut_table_names_the_keys_that_open_tabs`.
+Expected: all pass, among them `format_sql_asks_the_editor_to_format_and_take_the_keys`, `command_shift_f_does_nothing_on_a_table_tab`, `the_shortcut_table_covers_the_spec_map`, `the_shortcut_table_names_the_keys_that_open_tabs`, `question_mark_opens_the_shortcuts_and_escape_closes_them`.
 
 - [ ] **Step 7: Format, lint, commit**
 
@@ -2659,7 +2712,7 @@ Under "What it does", extend the SQL editor's item:
 
 - [ ] **Step 2: The spec's status**
 
-In `docs/superpowers/specs/2026-10-01-sql-formatter-design.md`, change the second line to:
+In `docs/superpowers/specs/2026-10-01-sql-formatter-design.md`, change the status line (the third line of the file) to:
 
 ```markdown
 Date: 2026-10-01. Status: implemented.
