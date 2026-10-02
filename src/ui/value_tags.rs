@@ -113,7 +113,9 @@ pub fn slot_colors(slot: usize, look: &Look, palette: &Palette) -> (Color32, Opt
 pub fn style_colors(style: Style, look: &Look, palette: &Palette) -> (Color32, Option<Color32>) {
     match style {
         Style::Tag(slot) => slot_colors(slot, look, palette),
-        Style::Plain | Style::Json(_) | Style::Color(_) => (palette.text, None),
+        Style::Quiet => (palette.faint, None),
+        Style::Chip => (palette.secondary, None),
+        Style::Plain | Style::Json(_) | Style::Color(_) | Style::Array => (palette.text, None),
     }
 }
 

@@ -1156,7 +1156,7 @@ fn results(ui: &mut Ui, run: &SqlRun, place: &Place<'_>, env: &Env<'_>, actions:
             data_view::cell(
                 &ctx,
                 &rows[row][col],
-                columns[col].kind,
+                &columns[col],
                 &tags[col],
                 look,
                 full_precision,

@@ -12,7 +12,7 @@ use tabletist_db::SortDir;
 use crate::model::CellPos;
 use crate::theme::{DataFont, Icon, Look, Palette};
 use crate::typography::{Text, TextRole};
-use crate::ui::format::display_safe;
+use crate::ui::format::{Marks, array_items, display_safe};
 use crate::ui::widgets::virtual_rows;
 
 /// The header's height, per look.
@@ -68,6 +68,16 @@ pub enum Style {
     Json(usize),
     /// A colour (`#3a7bd5`): a swatch of it, then the text.
     Color(egui::Color32),
+    /// Text that stands for what the cell holds rather than being it (`''`
+    /// for an empty string, a mark for each space of a blank one, `{}` for
+    /// an empty array): faint.
+    Quiet,
+    /// What is known of a value the cell does not show (a binary value's
+    /// type and size): one outlined chip.
+    Chip,
+    /// A PostgreSQL array, its text as the database writes it: a chip for
+    /// each element that fits, then `+n` for the rest.
+    Array,
 }
 
 pub struct Cell<'a> {
@@ -94,6 +104,20 @@ pub fn data_role(look: &Look) -> TextRole {
         DataFont::Proportional => TextRole::UiBody,
         DataFont::Monospace => TextRole::pick(look, TextRole::GridCell, TextRole::OBody),
     }
+}
+
+/// The marks `look`'s data face writes where text would show nothing: the
+/// design's when the fonts at hand have them (see [`Marks::pick`]). Found
+/// once for each set of faces, not for every cell.
+pub fn marks(ctx: &egui::Context, look: &Look) -> Marks {
+    let id = Id::new(("cell-marks", look.faces));
+    if let Some(marks) = ctx.data(|data| data.get_temp::<Marks>(id)) {
+        return marks;
+    }
+    let font = data_role(look).font_id(look.faces);
+    let marks = ctx.fonts_mut(|fonts| Marks::pick(|character| fonts.has_glyph(&font, character)));
+    ctx.data_mut(|data| data.insert_temp(id, marks));
+    marks
 }
 
 /// Paints `text` in `role` at `x` (its left edge, or its right with
@@ -269,10 +293,18 @@ pub fn initial_widths<'a>(
                 .map(|row| {
                     let cell = cell(row, col);
                     let chip = match cell.style {
-                        Style::Plain => 0.0,
+                        Style::Plain | Style::Quiet => 0.0,
                         Style::Tag(_) => 16.0,
+                        Style::Chip => 2.0 * CHIP_PAD + 2.0,
                         Style::Json(_) => 44.0,
                         Style::Color(_) => SWATCH + SWATCH_GAP,
+                        // Each element's chip adds its sides and the gap
+                        // to the next.
+                        Style::Array => {
+                            let elements =
+                                array_items(&cell.text).map_or(0, |array| array.items.len());
+                            (2.0 * CHIP_PAD + CHIP_GAP) * elements as f32
+                        }
                     };
                     width(&cell.text) + chip
                 })
@@ -752,7 +784,84 @@ fn draw_header(
     );
 }
 
-/// One cell: its text, tag, JSON chip or colour swatch, cut to fit.
+/// Space inside a chip, at each side of its text.
+const CHIP_PAD: f32 = 5.0;
+/// Space between two chips.
+const CHIP_GAP: f32 = 4.0;
+
+/// How a chip draws: NULL is filled, an array's element and a binary
+/// value's size are outlined.
+#[derive(Clone, Copy)]
+struct ChipSkin {
+    role: TextRole,
+    text: egui::Color32,
+    fill: Option<egui::Color32>,
+    border: Option<egui::Color32>,
+}
+
+impl ChipSkin {
+    /// NULL: quieter than any value.
+    fn null(palette: &Palette) -> Self {
+        Self {
+            role: TextRole::JsonChip,
+            text: palette.faint,
+            fill: Some(palette.surface),
+            border: None,
+        }
+    }
+
+    /// A piece of a value, or a note about one, in `role`.
+    fn outlined(role: TextRole, palette: &Palette) -> Self {
+        Self {
+            role,
+            text: palette.secondary,
+            fill: None,
+            border: Some(palette.outline),
+        }
+    }
+}
+
+/// The width of a chip holding `text`.
+fn chip_width(ui: &Ui, text: &str, role: TextRole, look: &Look) -> f32 {
+    text_width(ui, text, role, look) + 2.0 * CHIP_PAD
+}
+
+/// Paints a chip holding `text`, its left edge at `left`, centred on
+/// `center`.
+fn paint_chip(
+    painter: &egui::Painter,
+    ui: &Ui,
+    text: &str,
+    left: f32,
+    center: f32,
+    skin: ChipSkin,
+    look: &Look,
+) {
+    // The text's line, and room for an outline round it.
+    let line = skin.role.row_height(ui.ctx(), look.faces);
+    let height = line + if skin.border.is_some() { 4.0 } else { 2.0 };
+    let rect = Rect::from_min_size(
+        pos2(left, center - height / 2.0),
+        vec2(chip_width(ui, text, skin.role, look), height),
+    );
+    let corner = CornerRadius::same(4);
+    if let Some(fill) = skin.fill {
+        painter.rect_filled(rect, corner, fill);
+    }
+    if let Some(border) = skin.border {
+        painter.rect_stroke(
+            rect,
+            corner,
+            Stroke::new(crate::ui::widgets::hairline(ui), border),
+            StrokeKind::Inside,
+        );
+    }
+    Text::one(look, skin.role, text, skin.text)
+        .layout(ui.ctx())
+        .paint_center(painter, rect.center());
+}
+
+/// One cell: its text, tag, chips or colour swatch, cut to fit.
 fn draw_cell(
     ui: &Ui,
     painter: &egui::Painter,
@@ -769,20 +878,120 @@ fn draw_cell(
     let center = rect.center().y;
     let room = rect.width() - 2.0 * pad;
     if content.null {
-        paint(
-            &clip,
-            ui,
-            role,
-            "NULL",
-            palette.faint,
-            rect.left() + pad,
-            center,
-            false,
-            look,
-        );
+        // With the numbers in a numeric column, as a value would be.
+        let numeric = column.numeric;
+        if look.terminal {
+            let x = if numeric {
+                rect.right() - pad
+            } else {
+                rect.left() + pad
+            };
+            paint(
+                &clip,
+                ui,
+                role,
+                "NULL",
+                palette.faint,
+                x,
+                center,
+                numeric,
+                look,
+            );
+        } else {
+            let skin = ChipSkin::null(palette);
+            let left = if numeric {
+                rect.right() - pad - chip_width(ui, "NULL", skin.role, look)
+            } else {
+                rect.left() + pad
+            };
+            paint_chip(&clip, ui, "NULL", left, center, skin, look);
+        }
         return;
     }
     match content.style {
+        Style::Quiet => {
+            let shown = ellipsize(&content.text, room, false, |text| width(text, role));
+            paint(
+                &clip,
+                ui,
+                role,
+                &shown,
+                palette.faint,
+                rect.left() + pad,
+                center,
+                false,
+                look,
+            );
+        }
+        Style::Chip => {
+            let skin = ChipSkin::outlined(TextRole::FieldLabel, palette);
+            let shown = ellipsize(&content.text, room - 2.0 * CHIP_PAD, false, |text| {
+                width(text, skin.role)
+            });
+            paint_chip(&clip, ui, &shown, rect.left() + pad, center, skin, look);
+        }
+        Style::Array => {
+            // The terminal writes an array as the database does.
+            let Some(array) = array_items(&content.text).filter(|_| !look.terminal) else {
+                let shown = ellipsize(&content.text, room, false, |text| width(text, role));
+                paint(
+                    &clip,
+                    ui,
+                    role,
+                    &shown,
+                    palette.text,
+                    rect.left() + pad,
+                    center,
+                    false,
+                    look,
+                );
+                return;
+            };
+            let skin = ChipSkin::outlined(TextRole::ValueTag, palette);
+            // What stands for the elements that do not fit: how many, or
+            // "…" when the text was cut and nobody counted.
+            let more = |rest: usize| {
+                if array.cut {
+                    "…".to_owned()
+                } else {
+                    format!("+{rest}")
+                }
+            };
+            let right = rect.right() - pad;
+            let mut left = rect.left() + pad;
+            let mut shown = 0;
+            for (index, item) in array.items.iter().enumerate() {
+                let after = array.items.len() - index - 1;
+                let reserve = if after > 0 || array.cut {
+                    CHIP_GAP + chip_width(ui, &more(after), skin.role, look)
+                } else {
+                    0.0
+                };
+                let room = right - left - reserve;
+                let wide = chip_width(ui, item, skin.role, look);
+                if wide <= room {
+                    paint_chip(&clip, ui, item, left, center, skin, look);
+                    left += wide + CHIP_GAP;
+                } else if index == 0 {
+                    // The first element always shows, cut to its room.
+                    let cut = ellipsize(item, (room - 2.0 * CHIP_PAD).max(0.0), false, |text| {
+                        width(text, skin.role)
+                    });
+                    paint_chip(&clip, ui, &cut, left, center, skin, look);
+                    left += chip_width(ui, &cut, skin.role, look) + CHIP_GAP;
+                } else {
+                    break;
+                }
+                shown += 1;
+                if wide > room {
+                    break;
+                }
+            }
+            let rest = array.items.len() - shown;
+            if rest > 0 || array.cut {
+                paint_chip(&clip, ui, &more(rest), left, center, skin, look);
+            }
+        }
         Style::Tag(_) => {
             let (color, fill) = crate::ui::value_tags::style_colors(content.style, look, palette);
             // macOS and Windows: a chip in the value-tag face, 2 above and

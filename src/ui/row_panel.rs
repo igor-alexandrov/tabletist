@@ -88,7 +88,7 @@ fn label(name: &str, type_name: &str, kind: ValueKind, info: &FieldInfo, look: &
     let type_name = match (kind, type_name) {
         (ValueKind::Temporal, "timestamp") => "timestamp · no tz".to_owned(),
         (ValueKind::Temporal, "timestamptz") => "timestamp · tz".to_owned(),
-        _ => format::display_safe(type_name).into_owned(),
+        _ => format::display_safe(&format::type_label(type_name, kind)).into_owned(),
     };
     parts.push(type_name);
     if info.key {
