@@ -18,9 +18,10 @@ pub struct Site {
     /// What belongs at the word when it has no qualifier.
     pub expects: Expects,
     /// Whether a value goes at the word: it follows a comma, an open
-    /// parenthesis, an operator or a word that takes one (`SELECT`,
-    /// `WHERE`, `AND`). A column goes there, and so does the name of a
-    /// table or a view that qualifies one (`accounts.id`).
+    /// parenthesis, an operator other than `*` (read as the star of a
+    /// select list) or a word that takes one (`SELECT`, `WHERE`, `AND`).
+    /// A column goes there, and so does the name of a table or a view that
+    /// qualifies one (`accounts.id`).
     pub value: bool,
     /// The tables the statement names, in order.
     pub sources: Vec<Source>,

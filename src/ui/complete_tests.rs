@@ -2386,6 +2386,24 @@ fn a_table_is_offered_where_a_column_is_chosen() {
 }
 
 #[test]
+fn a_table_accepted_before_the_from_offers_its_columns_after_a_dot() {
+    let (mut harness, tab) = editor();
+    type_text(&mut harness, "select us");
+    assert_eq!(labels(&harness, tab), ["users", "using", "active_users"]);
+    harness.press(Key::Tab, Modifiers::NONE);
+    assert_eq!(sql(&harness, tab).text, "select users");
+    // The statement names no table yet: the one before the dot is asked
+    // for.
+    type_text(&mut harness, ".");
+    assert!(list(&harness, tab).is_some_and(|list| list.loading));
+    assert_eq!(asked_to_describe(&harness, "users"), 1);
+    answer_describe(&mut harness, "users", Ok(users()));
+    assert_eq!(labels(&harness, tab), ["email", "id", "meta"]);
+    harness.press(Key::Tab, Modifiers::NONE);
+    assert_eq!(sql(&harness, tab).text, "select users.email");
+}
+
+#[test]
 fn an_alias_and_a_dot_offer_that_tables_columns() {
     let (mut harness, tab) = editor();
     paste(&mut harness, "select * from users u join orders o on ");

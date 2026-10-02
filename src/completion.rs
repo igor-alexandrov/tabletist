@@ -176,7 +176,8 @@ fn target<'a>(site: &Site, manual: bool, catalog: &Catalog<'a>) -> Target<'a> {
             Expects::Name => Target::Nothing,
             Expects::Tables => Target::Tables,
         },
-        // A source's alias first, then a source's own name, then a schema.
+        // A source's alias first, then a source's own name, then a schema,
+        // then a table the statement does not name.
         [one] => {
             let alias = |source: &&Source| {
                 let alias = source.alias.as_deref();
@@ -201,7 +202,13 @@ fn target<'a>(site: &Site, manual: bool, catalog: &Catalog<'a>) -> Target<'a> {
                 (None, Some(schema)) => Target::SchemaTables(schema),
                 // A table the workspace does not know (yet).
                 (None, None) if found.is_some() => of(None),
-                (None, None) => Target::Nothing,
+                // No source and no schema: a table the statement does not
+                // name, or not yet (`SELECT users.` before its FROM),
+                // unless a CTE of that name hides it.
+                (None, None) => {
+                    let hidden = site.ctes.iter().any(|cte| cte.eq_ignore_ascii_case(one));
+                    of(resolve(None, one, catalog).filter(|_| !hidden))
+                }
             }
         }
         [schema, table] => of(resolve(Some(schema), table, catalog)),
@@ -919,6 +926,20 @@ mod tests {
         assert!(offered_columns("SELECT billing.nope.| FROM users").is_empty());
         // An alias of a table the workspace does not know: nothing.
         assert!(offered_columns("SELECT x.| FROM nope x").is_empty());
+        // A table the statement does not name, or not yet: its FROM may
+        // still be to come.
+        assert_eq!(
+            labels_of(&offered_columns("SELECT users.|")),
+            ["Created At", "id", "name"]
+        );
+        assert_eq!(labels_of(&offered_columns("SELECT USERS.na|")), ["name"]);
+        assert_eq!(
+            labels_of(&offered_columns("SELECT invoices.| FROM users")),
+            ["id", "total"]
+        );
+        // Not a CTE's name, which hides the table, and no name at all.
+        assert!(offered_columns("WITH users AS (SELECT 1) SELECT users.|").is_empty());
+        assert!(offered_columns("SELECT nope.|").is_empty());
         // After a dot there are no keywords.
         assert_eq!(
             labels_of(&offered_columns("SELECT u.na| FROM users u")),
@@ -1067,6 +1088,17 @@ mod tests {
         // schema's objects, which may name it once they are loaded.
         assert_eq!(
             needed("SELECT x.| FROM nope x"),
+            [Need::Objects("public".into())]
+        );
+        // A table the statement does not name (yet): its columns. A name
+        // nothing is called: the objects that may name it once loaded.
+        assert_eq!(
+            needed("SELECT users.|"),
+            [Need::Objects("public".into()), object("public", "users")]
+        );
+        assert_eq!(needed("SELECT nope.|"), [Need::Objects("public".into())]);
+        assert_eq!(
+            needed("WITH users AS (SELECT 1) SELECT users.|"),
             [Need::Objects("public".into())]
         );
 

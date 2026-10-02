@@ -77,6 +77,9 @@ text; where the two disagree, those sections and the code win.
   typed text, then keywords, then tables that only hold it. A table is not
   offered after a `*` (read as the star of a select list), and a table the
   statement names under an alias is offered by its own name.
+  A one-part qualifier that is no source and no schema is a table the
+  workspace knows, so `SELECT users.` offers its columns before the
+  statement has its `FROM`, unless a CTE of that name hides the table.
 - **Waiting.** Nothing is loading on a session that is not connected, so a
   waiting list closes when its session is replaced.
 - **The tree.** A refresh keeps every node and forgets the objects of nodes
