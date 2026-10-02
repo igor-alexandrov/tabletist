@@ -11,7 +11,7 @@ use crate::theme::{Icon, Look, Palette};
 use crate::typography::{Text, TextRole};
 use crate::ui::format::display_safe;
 use crate::ui::states;
-use crate::ui::widgets;
+use crate::ui::widgets::{self, ButtonSpec};
 
 /// The connection bar's height.
 pub fn bar_height(look: &Look) -> f32 {
@@ -48,24 +48,14 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
         return;
     };
     let opened = workspace.opened();
-    // Never opened and no connect on its way: the connect failed, or its
-    // prompt was closed.
-    let failed = matches!(
-        workspace.status,
-        SessionStatus::Disconnected(_) | SessionStatus::Cancelled
-    );
     if look.terminal && opened {
         super::object_tabs::show(app, ui, tab);
         status_line(app, ui, tab);
     }
     if !opened {
-        if failed {
-            // The banner says why, as before. (Task 5 gives it a card.)
-            banner(app, ui, tab);
-        } else {
-            // Nothing of the database to show yet: how connecting goes.
-            opening(app, ui, tab);
-        }
+        // Nothing of the database to show yet: how connecting goes, or
+        // why it failed.
+        opening(app, ui, tab);
         return;
     }
     banner(app, ui, tab);
@@ -157,13 +147,25 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
         });
 }
 
-/// A tab that has not shown its content yet: how connecting goes. (Task 5
-/// adds why it failed.)
+/// A tab that has not shown its content yet: how connecting goes, or why
+/// it failed.
 fn opening(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
     let fill = app.palette.window;
+    let failed = app.workspace(tab).is_some_and(|workspace| {
+        matches!(
+            workspace.status,
+            SessionStatus::Disconnected(_) | SessionStatus::Cancelled
+        )
+    });
     egui::CentralPanel::default()
         .frame(Frame::new().fill(fill))
-        .show(ui, |ui| connecting(app, ui, tab));
+        .show(ui, |ui| {
+            if failed {
+                failure(app, ui, tab);
+            } else {
+                connecting(app, ui, tab);
+            }
+        });
 }
 
 /// The steps of a connect, the one under way with its time, and the
@@ -247,6 +249,165 @@ fn connecting(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
     states::steps(ui, steps, &list, &look, &palette);
     if cancel.show_at(ui, button, &look, &palette).clicked() {
         app.actions.push(Action::Disconnect(tab));
+    }
+}
+
+/// What a connect that failed says first and the sign beside it; `None`
+/// is a prompt the user closed. `say` writes our words as the look does.
+fn failure_title(
+    error: Option<&tabletist_db::Error>,
+    spec: &tabletist_db::ConnectSpec,
+    say: impl Fn(&'static str) -> String,
+) -> (Icon, String) {
+    use tabletist_db::{Driver, Error, SshStage};
+    let Some(error) = error else {
+        return (Icon::CircleAlert, say("Connection cancelled"));
+    };
+    match error {
+        Error::Auth(_) if spec.user.is_empty() => (Icon::Lock, say("Login refused")),
+        Error::Auth(_) => (
+            Icon::Lock,
+            format!("{} {}", say("Password rejected for"), spec.user),
+        ),
+        Error::Connect(_) | Error::Timeout if spec.driver == Driver::Sqlite => (
+            Icon::CircleAlert,
+            format!("{} {}", say("Can't open"), spec.summary()),
+        ),
+        Error::Connect(_) | Error::Timeout => (
+            Icon::WifiOff,
+            format!("{} {}:{}", say("Can't reach"), spec.host, spec.port),
+        ),
+        Error::Tls(_) => (Icon::ShieldAlert, say("TLS or certificate problem")),
+        Error::Ssh {
+            stage: SshStage::HostKeyUnknown { .. } | SshStage::HostKeyMismatch { .. },
+            ..
+        } => (Icon::ShieldAlert, say("SSH host key not trusted")),
+        Error::Ssh { .. } => {
+            let host = spec.ssh.as_ref().map_or("", |ssh| ssh.host.as_str());
+            (
+                Icon::WifiOff,
+                format!("{} {host} {}", say("SSH tunnel to"), say("failed")),
+            )
+        }
+        Error::InvalidSpec(_) => (
+            Icon::CircleAlert,
+            say("The connection's settings are not valid"),
+        ),
+        _ => (Icon::CircleAlert, say("Could not connect")),
+    }
+}
+
+/// A connect that failed before the tab showed anything: what failed in
+/// plain words, the exact error under it, and the buttons, the one that
+/// fixes the cause first.
+fn failure(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
+    use tabletist_db::Error;
+    let (locale, palette, look) = (app.locale, app.palette, app.look);
+    let Some(workspace) = app.workspace(tab) else {
+        return;
+    };
+    let say = |text: &'static str| look.label(&gettext(locale, text));
+    let error = match &workspace.status {
+        SessionStatus::Disconnected(error) => Some(error),
+        _ => None,
+    };
+    let (icon, title) = failure_title(error, &workspace.spec, say);
+    let sentence = error
+        .map(|error| crate::ui::format::describe_error(locale, error))
+        .unwrap_or_default();
+    let raw = error.map(ToString::to_string).unwrap_or_default();
+    // The settings are what is wrong: changing them comes first.
+    let edit_first = matches!(
+        error,
+        Some(Error::Auth(_) | Error::Tls(_) | Error::InvalidSpec(_))
+    );
+    let tls = matches!(error, Some(Error::Tls(_)));
+    let conn = workspace.conn_id.clone();
+    let body = ui.max_rect();
+    // The design's 28 at the sides; the card is no wider than 520.
+    let side = if look.terminal { states::INSET } else { 28.0 };
+    let width = (body.width() - 2.0 * side).clamp(0.0, 520.0);
+    let (left, top) = if look.terminal {
+        (body.left() + side, body.top() + states::INSET)
+    } else {
+        (
+            body.center().x - width / 2.0,
+            body.top() + (body.height() * 0.2).max(24.0),
+        )
+    };
+    let column = Rect::from_min_max(pos2(left, top), pos2(left + width, body.bottom()));
+    let mut ui = ui.new_child(
+        egui::UiBuilder::new()
+            .id_salt("failure")
+            .max_rect(column)
+            .layout(egui::Layout::top_down(egui::Align::Min)),
+    );
+    ui.spacing_mut().item_spacing = vec2(8.0, 10.0);
+    let card = states::Card {
+        tone: states::Tone::Danger,
+        icon,
+        title: &title,
+        text: &sentence,
+    };
+    states::card(&mut ui, &card, &look, &palette);
+    // The exact error when it says more than the sentence: always on
+    // screen, so keyboards and screen readers get it.
+    if !raw.is_empty() && raw != sentence {
+        Text::one(
+            &look,
+            widgets::secondary(&look),
+            &say("Details"),
+            palette.dim,
+        )
+        .layout(ui.ctx())
+        .label(&mut ui);
+        Text::one(&look, widgets::code(&look), &raw, palette.secondary)
+            .wrap(width)
+            .layout(ui.ctx())
+            .label(&mut ui);
+    }
+    let (mut retry, mut edit) = (false, false);
+    let details = format!("{title}\n{raw}");
+    ui.horizontal(|ui| {
+        let height = states::button_height(&look);
+        let (again, change, copy) = (say("Retry"), say("Edit connection"), say("Copy details"));
+        // The button that fixes the cause is the primary one.
+        fn lead(button: ButtonSpec<'_>, first: bool) -> ButtonSpec<'_> {
+            if first { button.primary() } else { button }
+        }
+        let retry_button = lead(states::button(&again, &look).label("Retry"), !edit_first);
+        let edit_button = lead(
+            states::button(&change, &look).label("Edit connection"),
+            edit_first,
+        );
+        if edit_first {
+            edit = edit_button.show(ui, height, &look, &palette).clicked();
+            retry = retry_button.show(ui, height, &look, &palette).clicked();
+        } else {
+            retry = retry_button.show(ui, height, &look, &palette).clicked();
+            edit = edit_button.show(ui, height, &look, &palette).clicked();
+        }
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let copy = states::button(&copy, &look).label("Copy details").quiet();
+            if copy.show(ui, height, &look, &palette).clicked() {
+                ui.ctx().copy_text(details.clone());
+            }
+        });
+    });
+    if tls {
+        let note = say(
+            "There is no \"connect anyway\". Change the TLS mode or the host in the connection.",
+        );
+        Text::one(&look, widgets::secondary(&look), &note, palette.secondary)
+            .wrap(width)
+            .layout(ui.ctx())
+            .label(&mut ui);
+    }
+    if retry {
+        app.actions.push(Action::Reconnect(tab));
+    }
+    if edit {
+        app.actions.push(Action::EditConnection(conn));
     }
 }
 
@@ -1721,6 +1882,54 @@ mod tests {
         assert_eq!(
             connections_hint(&Look::omarchy(), locale),
             "connections · ctrl+o"
+        );
+    }
+
+    #[test]
+    fn a_failed_connects_title_names_what_was_tried() {
+        use tabletist_db::{ConnectSpec, Error, SshStage};
+        let (mut spec, _) = ConnectSpec::from_url("postgres://reader@db.example.com/app").unwrap();
+        let say = |text: &str| text.to_owned();
+        let title = |error: Option<&Error>, spec: &ConnectSpec| failure_title(error, spec, say).1;
+        assert_eq!(title(None, &spec), "Connection cancelled");
+        assert_eq!(
+            title(Some(&Error::Auth("no".into())), &spec),
+            "Password rejected for reader"
+        );
+        assert_eq!(
+            title(Some(&Error::Connect("refused".into())), &spec),
+            "Can't reach db.example.com:5432"
+        );
+        assert_eq!(
+            title(Some(&Error::Timeout), &spec),
+            "Can't reach db.example.com:5432"
+        );
+        assert_eq!(
+            title(Some(&Error::Tls("bad certificate".into())), &spec),
+            "TLS or certificate problem"
+        );
+        spec.user.clear();
+        assert_eq!(
+            title(Some(&Error::Auth("no".into())), &spec),
+            "Login refused"
+        );
+        spec.ssh = Some(tabletist_db::SshSpec {
+            host: "bastion".into(),
+            port: None,
+            user: String::new(),
+            auth: tabletist_db::SshAuth::KeyFile {
+                path: "~/.ssh/id_ed25519".into(),
+            },
+        });
+        let tunnel = Error::Ssh {
+            stage: SshStage::Connect,
+            message: "timed out".into(),
+        };
+        assert_eq!(title(Some(&tunnel), &spec), "SSH tunnel to bastion failed");
+        let file = ConnectSpec::sqlite("/tmp/shop.db");
+        assert_eq!(
+            title(Some(&Error::Connect("unable to open".into())), &file),
+            "Can't open shop.db"
         );
     }
 }

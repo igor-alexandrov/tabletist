@@ -647,7 +647,7 @@ mod tests {
     }
 
     #[test]
-    fn a_disconnected_workspace_offers_reconnect() {
+    fn a_connect_that_was_lost_offers_retry() {
         let mut harness = Harness::new();
         add_saved(&mut harness, "Production");
         harness.click("Connect to Production");
@@ -659,8 +659,8 @@ mod tests {
                 error: tabletist_db::Error::ConnectionLost("server went away".into()),
             },
         ));
-        assert!(harness.has("Reconnect"));
-        harness.click("Reconnect");
+        assert!(harness.has("Retry"));
+        harness.click("Retry");
         assert!(matches!(
             harness.app.workspace(tab).unwrap().status,
             crate::model::SessionStatus::Connecting { .. }
@@ -668,7 +668,7 @@ mod tests {
     }
 
     #[test]
-    fn cancelling_the_password_prompt_says_so_and_offers_reconnect() {
+    fn cancelling_the_password_prompt_says_so_and_offers_retry() {
         let mut harness = Harness::new();
         let (spec, _) = tabletist_db::ConnectSpec::from_url("postgres://me@db.example.com/app")
             .expect("a valid URL");
@@ -686,9 +686,10 @@ mod tests {
             });
         harness.click("Connect to Production");
         harness.click("Cancel");
-        assert!(harness.has("Connection cancelled."));
+        let cancelled = harness.app.look.label("Connection cancelled");
+        assert!(harness.has(&cancelled));
         assert!(!harness.has("The server refused the login. Check the user and password."));
-        assert!(harness.has("Reconnect"));
+        assert!(harness.has("Retry"));
     }
 
     #[test]
@@ -938,6 +939,109 @@ mod tests {
             .iter()
             .filter(|c| matches!(c, Command::FetchRows { .. }))
             .count()
+    }
+
+    /// A saved PostgreSQL connection whose connect fails with `error`.
+    fn fail_connect(harness: &mut Harness, error: tabletist_db::Error) -> crate::model::ConnTabId {
+        let (spec, _) = tabletist_db::ConnectSpec::from_url("postgres://reader@db.example.com/app")
+            .expect("a valid URL");
+        harness
+            .app
+            .connections
+            .upsert(crate::connections::SavedConnection {
+                id: crate::connections::ConnectionId::new(),
+                name: "Production".into(),
+                environment: crate::env::Environment::Production,
+                read_only: None,
+                password: crate::connections::PasswordMode::None,
+                ssh_secret: crate::connections::PasswordMode::None,
+                spec,
+            });
+        harness.click("Connect to Production");
+        let Command::Connect {
+            session, request, ..
+        } = *crate::testing::last_sent(&harness.app)
+        else {
+            panic!("expected Connect");
+        };
+        harness.app.apply(crate::model::Action::Backend(
+            crate::backend::Event::ConnectFailed {
+                session,
+                request,
+                error,
+            },
+        ));
+        harness.app.active_tab_id()
+    }
+
+    #[test]
+    fn an_unreachable_server_says_which_and_retry_connects_again() {
+        let mut harness = Harness::new();
+        harness.set_look(crate::theme::Look::macos());
+        let refused = tabletist_db::Error::Connect("Connection refused (os error 111)".into());
+        let tab = fail_connect(&mut harness, refused);
+        assert!(harness.has("Can't reach db.example.com:5432"));
+        assert!(harness.has(
+            "Could not reach the server. Check the host and port, and that the server is running."
+        ));
+        // The exact error stays on screen.
+        assert!(harness.has("could not connect: Connection refused (os error 111)"));
+        harness.click("Retry");
+        assert!(matches!(
+            harness.app.workspace(tab).unwrap().status,
+            crate::model::SessionStatus::Connecting { .. }
+        ));
+    }
+
+    #[test]
+    fn a_refused_login_names_the_user_and_offers_the_connection() {
+        let mut harness = Harness::new();
+        harness.set_look(crate::theme::Look::macos());
+        let refused =
+            tabletist_db::Error::Auth("password authentication failed for user \"reader\"".into());
+        fail_connect(&mut harness, refused);
+        assert!(harness.has("Password rejected for reader"));
+        harness.click("Edit connection");
+        assert!(matches!(
+            harness.app.dialog,
+            Some(crate::model::Dialog::Connection(_))
+        ));
+    }
+
+    #[test]
+    fn a_tls_failure_says_there_is_no_way_round_it() {
+        let mut harness = Harness::new();
+        harness.set_look(crate::theme::Look::macos());
+        let failed = tabletist_db::Error::Tls("invalid peer certificate: NotValidForName".into());
+        fail_connect(&mut harness, failed);
+        assert!(harness.has("TLS or certificate problem"));
+        // The plain sentence under it is `describe_error`'s.
+        assert!(
+            harness.has(
+                "The secure connection failed. Try another TLS mode, or check the certificate."
+            )
+        );
+        assert!(harness.has(
+            "There is no \"connect anyway\". Change the TLS mode or the host in the connection."
+        ));
+    }
+
+    #[test]
+    fn a_failed_connect_offers_its_buttons_in_every_look() {
+        use egui::accesskit::Role;
+        for look in crate::theme::Look::ALL {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            fail_connect(&mut harness, tabletist_db::Error::Timeout);
+            let tree = harness.settle();
+            for name in ["Retry", "Edit connection", "Copy details"] {
+                assert!(
+                    crate::testing::node(&tree, name, Role::Button).is_some(),
+                    "{name} in {}",
+                    look.name
+                );
+            }
+        }
     }
 
     #[test]
@@ -4582,7 +4686,7 @@ mod tests {
             .apply(crate::model::Action::Connect { tab, conn });
         harness.press(Key::Escape, Modifiers::NONE);
         assert!(harness.app.dialog.is_none());
-        assert!(harness.has("Reconnect"));
+        assert!(harness.has("Retry"));
     }
 
     #[test]
