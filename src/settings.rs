@@ -56,6 +56,81 @@ pub struct Settings {
     pub sql_timeout_secs: Option<u32>,
 }
 
+/// A key of the settings file.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Key {
+    PageSize,
+    Timestamps,
+    GroupDigits,
+    ValueTags,
+    ShowSystemSchemas,
+    SqlLimit,
+    SqlTimeoutSecs,
+    Theme,
+}
+
+impl Key {
+    /// In the order the file has them: a table's keys together.
+    pub const ALL: [Key; 8] = [
+        Self::PageSize,
+        Self::Timestamps,
+        Self::GroupDigits,
+        Self::ValueTags,
+        Self::ShowSystemSchemas,
+        Self::SqlLimit,
+        Self::SqlTimeoutSecs,
+        Self::Theme,
+    ];
+
+    /// The key's table and its name there.
+    pub fn path(self) -> (&'static str, &'static str) {
+        match self {
+            Self::PageSize => ("data", "page_size"),
+            Self::Timestamps => ("data", "timestamps"),
+            Self::GroupDigits => ("data", "group_digits"),
+            Self::ValueTags => ("data", "value_tags"),
+            Self::ShowSystemSchemas => ("sidebar", "show_system_schemas"),
+            Self::SqlLimit => ("editor", "sql_limit"),
+            Self::SqlTimeoutSecs => ("editor", "sql_timeout_secs"),
+            Self::Theme => ("appearance", "theme"),
+        }
+    }
+
+    /// What the file says beside the key: the values of a closed set, or
+    /// what a value that reads oddly means.
+    fn note(self) -> Option<&'static str> {
+        match self {
+            Self::Timestamps => Some("second | full"),
+            Self::SqlTimeoutSecs => Some("0 waits forever"),
+            _ => None,
+        }
+    }
+}
+
+/// The file's first line.
+const HEADER: &str = "# written by tabletist, safe to edit by hand\n";
+
+/// `text` as a TOML basic string.
+fn quote(text: &str) -> String {
+    let mut out = String::with_capacity(text.len() + 2);
+    out.push('"');
+    for character in text.chars() {
+        match character {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            control if control.is_control() => {
+                out.push_str(&format!("\\u{:04X}", u32::from(control)));
+            }
+            other => out.push(other),
+        }
+    }
+    out.push('"');
+    out
+}
+
 impl Settings {
     pub const DEFAULT_PAGE_SIZE: u32 = 300;
     pub const MIN_PAGE_SIZE: u32 = 10;
@@ -87,6 +162,56 @@ impl Settings {
     /// cancel every run at once, so it counts as no timeout.
     pub fn valid_sql_timeout(secs: Option<u32>) -> Option<u32> {
         secs.filter(|secs| *secs > 0)
+    }
+
+    /// `key`'s value as TOML writes it. `None` for a key the file leaves
+    /// out: a theme that is not set.
+    fn literal(&self, key: Key) -> Option<String> {
+        Some(match key {
+            Key::PageSize => self.page_size.to_string(),
+            Key::Timestamps => quote(self.timestamps.name()),
+            Key::GroupDigits => self.group_digits.to_string(),
+            Key::ValueTags => self.value_tags.to_string(),
+            Key::ShowSystemSchemas => self.show_system_schemas.to_string(),
+            Key::SqlLimit => self.sql_limit.to_string(),
+            // TOML has no null: no timeout is no seconds.
+            Key::SqlTimeoutSecs => self.sql_timeout_secs.unwrap_or(0).to_string(),
+            Key::Theme => quote(self.custom_theme.as_deref()?),
+        })
+    }
+
+    /// The file's text: the one form the app writes, the same every time.
+    /// Tables in a fixed order, a table's keys aligned, and a note beside
+    /// the keys that have one.
+    pub fn to_toml(&self) -> String {
+        let written: Vec<(Key, String)> = Key::ALL
+            .into_iter()
+            .filter_map(|key| Some((key, self.literal(key)?)))
+            .collect();
+        let mut out = String::from(HEADER);
+        let mut open = None;
+        for (key, literal) in &written {
+            let (table, name) = key.path();
+            if open != Some(table) {
+                if open.is_some() {
+                    out.push('\n');
+                }
+                out.push_str(&format!("[{table}]\n"));
+                open = Some(table);
+            }
+            let width = written
+                .iter()
+                .filter(|(other, _)| other.path().0 == table)
+                .map(|(other, _)| other.path().1.len())
+                .max()
+                .unwrap_or(0);
+            out.push_str(&format!("{name:width$} = {literal}"));
+            if let Some(note) = key.note() {
+                out.push_str(&format!("  # {note}"));
+            }
+            out.push('\n');
+        }
+        out
     }
 
     /// The settings with every number in its range.
@@ -272,5 +397,58 @@ mod tests {
         assert_eq!(Settings::load(&path).page_size, Settings::MIN_PAGE_SIZE);
         std::fs::write(&path, br#"{"page_size": 999999999}"#).unwrap();
         assert_eq!(Settings::load(&path).page_size, Settings::MAX_PAGE_SIZE);
+    }
+
+    #[test]
+    fn the_defaults_are_written_as_the_canonical_text() {
+        assert_eq!(
+            Settings::default().to_toml(),
+            "\
+# written by tabletist, safe to edit by hand
+[data]
+page_size    = 300
+timestamps   = \"second\"  # second | full
+group_digits = false
+value_tags   = true
+
+[sidebar]
+show_system_schemas = false
+
+[editor]
+sql_limit        = 1000
+sql_timeout_secs = 30  # 0 waits forever
+"
+        );
+    }
+
+    #[test]
+    fn a_theme_gets_its_table_and_no_timeout_is_zero() {
+        let settings = Settings {
+            custom_theme: Some("My \"Nord\".json".into()),
+            sql_timeout_secs: None,
+            timestamps: Timestamps::Full,
+            ..Settings::default()
+        };
+        let text = settings.to_toml();
+        assert!(
+            text.contains("timestamps   = \"full\"  # second | full\n"),
+            "{text}"
+        );
+        assert!(
+            text.contains("sql_timeout_secs = 0  # 0 waits forever\n"),
+            "{text}"
+        );
+        assert!(
+            text.ends_with("\n[appearance]\ntheme = \"My \\\"Nord\\\".json\"\n"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn every_key_has_its_own_place_in_the_file() {
+        let mut paths: Vec<_> = Key::ALL.iter().map(|key| key.path()).collect();
+        paths.sort_unstable();
+        paths.dedup();
+        assert_eq!(paths.len(), Key::ALL.len());
     }
 }
