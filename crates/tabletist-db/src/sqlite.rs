@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use rusqlite::config::DbConfig;
+use rusqlite::types::{FromSql, FromSqlError, FromSqlResult, ValueRef};
 use rusqlite::{ErrorCode, OpenFlags};
 
 use crate::{
@@ -188,16 +189,7 @@ fn statement(
     }
     // prepare refuses a second statement in the text (MultipleStatement).
     let mut statement = connection.prepare(text).map_err(map_error)?;
-    let declared: Vec<(String, String)> = statement
-        .columns()
-        .iter()
-        .map(|column| {
-            (
-                column.name().to_owned(),
-                column.decl_type().unwrap_or_default().to_owned(),
-            )
-        })
-        .collect();
+    let declared = declared_columns(connection, &statement, text)?;
     if declared.is_empty() {
         let changed = statement.raw_execute().map_err(map_error)?;
         return Ok(StatementOutcome::Done {
@@ -254,8 +246,7 @@ fn to_sqlite(value: &Value) -> rusqlite::types::Value {
     }
 }
 
-fn from_sqlite(value: rusqlite::types::ValueRef<'_>) -> Value {
-    use rusqlite::types::ValueRef;
+fn from_sqlite(value: ValueRef<'_>) -> Value {
     match value {
         ValueRef::Null => Value::Null,
         ValueRef::Integer(number) => Value::Int(number),
@@ -263,6 +254,62 @@ fn from_sqlite(value: rusqlite::types::ValueRef<'_>) -> Value {
         ValueRef::Text(bytes) => Value::Text(String::from_utf8_lossy(bytes).into()),
         ValueRef::Blob(bytes) => Value::Bytes(bytes.into()),
     }
+}
+
+/// Text from the catalog, with U+FFFD for bytes that are not UTF-8. SQLite
+/// keeps a name's bytes as they were written, and rusqlite refuses to read
+/// such text as a `String`.
+struct Lossy {
+    text: String,
+    /// Whether no byte was replaced. Otherwise `text` is not the name, and
+    /// no SQL text can spell it.
+    exact: bool,
+}
+
+impl FromSql for Lossy {
+    fn column_result(value: ValueRef<'_>) -> FromSqlResult<Self> {
+        let ValueRef::Text(bytes) = value else {
+            return Err(FromSqlError::InvalidType);
+        };
+        let text = String::from_utf8_lossy(bytes);
+        Ok(Self {
+            exact: matches!(text, Cow::Borrowed(_)),
+            text: text.into_owned(),
+        })
+    }
+}
+
+/// The catalog's text in column `index` of `row`, read as [`Lossy`].
+fn text(row: &rusqlite::Row<'_>, index: usize) -> rusqlite::Result<String> {
+    Ok(row.get::<_, Lossy>(index)?.text)
+}
+
+/// [`text`], for a column that may be NULL.
+fn optional_text(row: &rusqlite::Row<'_>, index: usize) -> rusqlite::Result<Option<String>> {
+    Ok(row.get::<_, Option<Lossy>>(index)?.map(|lossy| lossy.text))
+}
+
+/// The name and the declared type of each result column of `statement`,
+/// which was prepared from `text`. rusqlite's own `columns()` panics on a
+/// name or a type that is not UTF-8, which a file can hold, so they are read
+/// as bytes instead, from a second preparation of `text`.
+fn declared_columns(
+    connection: &rusqlite::Connection,
+    statement: &rusqlite::Statement<'_>,
+    text: &str,
+) -> Result<Vec<(String, String)>> {
+    let columns = tabletist_sqlite_ffi::result_columns(connection, text).map_err(map_error)?;
+    // Another process can change the file's schema between the two
+    // preparations.
+    if columns.len() != statement.column_count() {
+        return Err(Error::query(
+            "The file's schema changed while this was read. Try again.",
+        ));
+    }
+    Ok(columns
+        .into_iter()
+        .map(|column| (column.name, column.decl_type))
+        .collect())
 }
 
 /// The settings every session has from the start: read-only, an untrusted
@@ -489,7 +536,7 @@ impl Conn {
                 .query_map([], |row| {
                     let kind: String = row.get(1)?;
                     Ok(ObjectInfo {
-                        name: row.get(0)?,
+                        name: text(row, 0)?,
                         kind: if kind == "view" {
                             ObjectKind::View
                         } else {
@@ -541,22 +588,13 @@ impl Conn {
         // One blocking job for the key lookup and the select, so a cancel
         // can never fall in a gap between them.
         self.run(move |connection| {
-            let key = primary_key(connection, &query.object)?;
+            let key = ordering_key(connection, &query.object)?;
             let binary = binary_columns(connection, &query)?;
             let sql = Dialect::Sqlite.select_rows(&query, &key, &binary);
             let ordered_by_key = !key.is_empty();
             let started = Instant::now();
             let mut statement = connection.prepare(&sql.text).map_err(map_error)?;
-            let declared: Vec<(String, String)> = statement
-                .columns()
-                .iter()
-                .map(|column| {
-                    (
-                        column.name().to_owned(),
-                        column.decl_type().unwrap_or_default().to_owned(),
-                    )
-                })
-                .collect();
+            let declared = declared_columns(connection, &statement, &sql.text)?;
             let mut rows = statement
                 .query(rusqlite::params_from_iter(sql.params.iter().map(to_sqlite)))
                 .map_err(map_error)?;
@@ -616,10 +654,10 @@ fn columns(connection: &rusqlite::Connection, object: &ObjectRef) -> Result<Vec<
     statement
         .query_map([&object.name, &object.schema], |row| {
             Ok(ColumnInfo {
-                name: row.get(0)?,
-                type_name: row.get::<_, Option<String>>(1)?.unwrap_or_default(),
+                name: text(row, 0)?,
+                type_name: optional_text(row, 1)?.unwrap_or_default(),
                 nullable: row.get::<_, i64>(2)? == 0,
-                default: row.get(3)?,
+                default: optional_text(row, 3)?,
                 comment: None,
                 allowed_values: None,
             })
@@ -651,13 +689,28 @@ fn binary_columns(connection: &rusqlite::Connection, query: &RowQuery) -> Result
 }
 
 fn primary_key(connection: &rusqlite::Connection, object: &ObjectRef) -> Result<Vec<String>> {
+    Ok(key_names(connection, object)?
+        .into_iter()
+        .map(|name| name.text)
+        .collect())
+}
+
+/// The key a page is ordered by: the primary key, or nothing when one of its
+/// names is not UTF-8, since the page's SQL cannot name that column.
+fn ordering_key(connection: &rusqlite::Connection, object: &ObjectRef) -> Result<Vec<String>> {
+    let names = key_names(connection, object)?;
+    if names.iter().any(|name| !name.exact) {
+        return Ok(Vec::new());
+    }
+    Ok(names.into_iter().map(|name| name.text).collect())
+}
+
+fn key_names(connection: &rusqlite::Connection, object: &ObjectRef) -> Result<Vec<Lossy>> {
     let mut statement = connection
         .prepare("SELECT name FROM pragma_table_info(?1, ?2) WHERE pk > 0 ORDER BY pk")
         .map_err(map_error)?;
     statement
-        .query_map([&object.name, &object.schema], |row| {
-            row.get::<_, String>(0)
-        })
+        .query_map([&object.name, &object.schema], |row| row.get(0))
         .map_err(map_error)?
         .collect::<std::result::Result<Vec<_>, _>>()
         .map_err(map_error)
@@ -670,7 +723,7 @@ fn indexes(connection: &rusqlite::Connection, object: &ObjectRef) -> Result<Vec<
     let entries = list
         .query_map([&object.name, &object.schema], |row| {
             Ok((
-                row.get::<_, String>(0)?,
+                row.get_ref(0)?.as_bytes()?.to_vec(),
                 row.get::<_, i64>(1)? != 0,
                 row.get::<_, String>(2)?,
             ))
@@ -683,16 +736,18 @@ fn indexes(connection: &rusqlite::Connection, object: &ObjectRef) -> Result<Vec<
         .map_err(map_error)?;
     let mut indexes = Vec::new();
     for (name, unique, origin) in entries {
+        // The name goes back to SQLite as the bytes it gave: one that is not
+        // UTF-8 would find no index once its bytes were replaced.
         let columns = info
-            .query_map([&name, &object.schema], |row| {
-                row.get::<_, Option<String>>(0)
+            .query_map(rusqlite::params![name, object.schema], |row| {
+                optional_text(row, 0)
             })
             .map_err(map_error)?
             .map(|column| column.map(|c| c.unwrap_or_else(|| "<expression>".into())))
             .collect::<std::result::Result<Vec<_>, _>>()
             .map_err(map_error)?;
         indexes.push(IndexInfo {
-            name,
+            name: String::from_utf8_lossy(&name).into_owned(),
             columns,
             unique,
             primary: origin == "pk",
@@ -716,9 +771,9 @@ fn foreign_keys(
         .query_map([&object.name, &object.schema], |row| {
             Ok((
                 row.get::<_, i64>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, Option<String>>(3)?,
+                text(row, 1)?,
+                text(row, 2)?,
+                optional_text(row, 3)?,
                 row.get::<_, String>(4)?,
                 row.get::<_, String>(5)?,
             ))
