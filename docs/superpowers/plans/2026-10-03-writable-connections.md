@@ -1707,9 +1707,11 @@ SQLite calls a connection's authorizer whenever it prepares a statement, after i
 |---|---|---|
 | `Off` | the app's own statements: `BEGIN`, `ROLLBACK`, `set_session_pragmas`, `still_query_only`, catalog queries | everything |
 | `Script` | a script's statement, in `statements` around the call of `statement` | everything but: `Transaction`, `Savepoint`; `Pragma` named `query_only` or `writable_schema` with a value; `Pragma` named `wal_checkpoint` in any form |
-| `Filter` | the page query and the count query, which hold the raw WHERE | only `Select`, `Read`, `Function`, `Recursive` |
+| `Filter` | the page query and the count query, which hold the raw WHERE | everything but: `Pragma` with a value; `Transaction`, `Savepoint`, `Attach`, `Detach` |
 
-Writes in a script are NOT denied here: `query_only` refuses them with SQLITE_READONLY (code 8), which the app's refused-write card reads. `ATTACH` and other pragmas stay allowed in a script, as the SQL editor spec says.
+A statement hidden behind a filter is only ever prepared (as the tail rusqlite prepares), never run. So `Filter` has to stop what takes effect at prepare time, which is a pragma with a value. A first version allowed a filter only to read; that broke browsing FTS5 tables (FTS5 runs `PRAGMA data_version` itself) and counting R*Tree tables (R*Tree prepares its write statements when a table is first touched).
+
+Writes are NOT denied here, in a script or a filter: `query_only` refuses them with SQLITE_READONLY (code 8), which the app's refused-write card reads. `ATTACH` and other pragmas stay allowed in a script, as the SQL editor spec says.
 
 - [ ] **Step 1: The policy, test first**
 
@@ -1734,13 +1736,18 @@ enum Fence {
 fn authorize(fence: Fence, action: &AuthAction<'_>) -> Authorization {
     let allowed = match fence {
         Fence::Off => true,
-        // A filter only reads.
-        Fence::Filter => matches!(
+        // A filter's text is one SELECT. What must not happen is a
+        // statement hidden behind it taking effect when SQLite prepares
+        // it: a pragma with a value does.
+        Fence::Filter => !matches!(
             action,
-            AuthAction::Select
-                | AuthAction::Read { .. }
-                | AuthAction::Function { .. }
-                | AuthAction::Recursive
+            AuthAction::Pragma {
+                pragma_value: Some(_),
+                ..
+            } | AuthAction::Transaction { .. }
+                | AuthAction::Savepoint { .. }
+                | AuthAction::Attach { .. }
+                | AuthAction::Detach { .. }
         ),
         // A write is left to `query_only`, whose error the app knows as a
         // refused write. What must not happen is the script leaving its
@@ -1767,7 +1774,7 @@ fn authorize(fence: Fence, action: &AuthAction<'_>) -> Authorization {
 }
 ```
 
-The test walks a table of (fence, action, allowed): `Off` allows a pragma with a value and a transaction; `Script` denies `Transaction`, `Savepoint`, `query_only`/`QUERY_ONLY`/`writable_schema` with a value, `wal_checkpoint` with and without one, and allows `query_only` without a value, `foreign_keys` with one, `table_info` with one, `Select`, `Update`, `Attach`; `Filter` allows `Select`, `Read`, `Function`, `Recursive` and denies `Pragma` (with and without a value), `Attach`, `Transaction`, `Update`, `Insert`, `Delete`.
+The test walks a table of (fence, action, allowed): `Off` allows a pragma with a value and a transaction; `Script` denies `Transaction`, `Savepoint`, `query_only`/`QUERY_ONLY`/`writable_schema` with a value, `wal_checkpoint` with and without one, and allows `query_only` without a value, `foreign_keys` with one, `table_info` with one, `Select`, `Update`, `Attach`; `Filter` denies `Pragma` with a value, `Transaction`, `Savepoint`, `Attach`, `Detach`, and allows `Select`, `Read`, `Function`, `Recursive`, `Pragma` without a value, `Update`, `Insert`, `Delete`. FTS5 and R*Tree tables are browsed and counted under the fence, the count as the first statement to touch the R*Tree table.
 
 - [ ] **Step 2: The state and the install**
 

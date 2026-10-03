@@ -189,9 +189,14 @@ pending changes never outlive their page.
     and `wal_checkpoint` in any form. Writes are left to `query_only`,
     whose error the refused-write card recognises. `ATTACH` and other
     pragmas stay, as the SQL editor spec allows them;
-  - a table's page or count, which holds the raw WHERE: only reading is
-    allowed (select, read a column, call a function, recurse). Every
-    pragma, `ATTACH`, transaction statement and write is denied.
+  - a table's page or count, which holds the raw WHERE: a pragma with a
+    value is denied, and so are transaction and savepoint statements,
+    `ATTACH` and `DETACH`. A statement hidden behind the filter is only
+    ever prepared, never run, so what matters is what takes effect at
+    prepare time, and that is a pragma with a value. A pragma without one
+    only reads, and SQLite's own virtual tables need them (FTS5 asks for
+    `data_version`); R*Tree prepares its write statements when a table is
+    first touched. A write is `query_only`'s to refuse here too.
 
   The refusal list and the two checks stay, as the layers in front of
   and behind it: the list gives the user a sentence instead of "not
