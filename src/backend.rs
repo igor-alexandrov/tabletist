@@ -4027,6 +4027,132 @@ mod tests {
         assert!(!texts_until(&mut backend, "[data]\npage_size = 1000\n").is_empty());
     }
 
+    /// Puts a link to `target` at `path`, in place of what is there.
+    #[cfg(unix)]
+    fn link_anew(target: &std::path::Path, path: &std::path::Path) {
+        let _ = std::fs::remove_file(path);
+        std::os::unix::fs::symlink(target, path).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_watcher_watches_where_the_link_leads_each_time_it_turns() {
+        let dir = tempfile::tempdir().unwrap();
+        let (config, dotfiles) = config_and_dotfiles(dir.path());
+        let other = dir.path().join("other");
+        std::fs::create_dir(&other).unwrap();
+        let path = config.join("settings.toml");
+        let mut watch = SettingsWatcher {
+            watcher: notify::recommended_watcher(|_| {}).unwrap(),
+            path: path.clone(),
+            names: Vec::new(),
+            elsewhere: None,
+        };
+        let names = |watch: &SettingsWatcher| -> Vec<String> {
+            let names = watch.names.iter();
+            names
+                .map(|name| name.to_string_lossy().into_owned())
+                .collect()
+        };
+        // As the system has it, which is how the watcher keeps it.
+        let real = |directory: &std::path::Path| Some(std::fs::canonicalize(directory).unwrap());
+
+        // No file yet, then a plain one: only the config directory.
+        assert_eq!(watch.follow(), Ok(()));
+        std::fs::write(&path, "").unwrap();
+        assert_eq!(watch.follow(), Ok(()));
+        assert_eq!(
+            (names(&watch), &watch.elsewhere),
+            (vec!["settings.toml".into()], &None)
+        );
+
+        // A link to another directory, under another name there.
+        link_anew(&dotfiles.join("tabletist.toml"), &path);
+        assert_eq!(watch.follow(), Ok(()));
+        assert_eq!(names(&watch), ["settings.toml", "tabletist.toml"]);
+        assert_eq!(watch.elsewhere, real(&dotfiles));
+
+        // Turned to a third directory: that one, and no longer the second.
+        link_anew(&other.join("settings.toml"), &path);
+        assert_eq!(watch.follow(), Ok(()));
+        assert_eq!(names(&watch), ["settings.toml", "settings.toml"]);
+        assert_eq!(watch.elsewhere, real(&other));
+
+        // Turned to a directory that is not there: said, and nothing kept.
+        link_anew(&dir.path().join("away").join("settings.toml"), &path);
+        assert!(watch.follow().is_err());
+        assert_eq!(
+            (names(&watch), &watch.elsewhere),
+            (vec!["settings.toml".into()], &None)
+        );
+
+        // A link within the config directory: a second name, no second
+        // directory, also when it is reached by another path.
+        link_anew(std::path::Path::new("real.toml"), &path);
+        assert_eq!(watch.follow(), Ok(()));
+        assert_eq!(names(&watch), ["settings.toml", "real.toml"]);
+        assert_eq!(watch.elsewhere, None);
+        link_anew(&dotfiles.join("../config/real.toml"), &path);
+        assert_eq!(watch.follow(), Ok(()));
+        assert_eq!(watch.elsewhere, None);
+
+        // And a plain file again.
+        std::fs::remove_file(&path).unwrap();
+        std::fs::write(&path, "").unwrap();
+        assert_eq!(watch.follow(), Ok(()));
+        assert_eq!(
+            (names(&watch), &watch.elsewhere),
+            (vec!["settings.toml".into()], &None)
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_link_turned_while_the_file_is_watched_is_followed() {
+        let dir = tempfile::tempdir().unwrap();
+        let (config, dotfiles) = config_and_dotfiles(dir.path());
+        let other = dir.path().join("other");
+        std::fs::create_dir(&other).unwrap();
+        let path = config.join("settings.toml");
+        let (first, second) = (dotfiles.join("settings.toml"), other.join("settings.toml"));
+        std::fs::write(&first, "[data]\npage_size = 100\n").unwrap();
+        std::fs::write(&second, "[data]\npage_size = 500\n").unwrap();
+        std::os::unix::fs::symlink(&first, &path).unwrap();
+        let (mut backend, live) = watching(&path);
+        assert!(live);
+
+        // Turned to a file in another directory: read, and watched there.
+        link_anew(&second, &path);
+        assert!(!texts_until(&mut backend, "[data]\npage_size = 500\n").is_empty());
+        std::fs::write(&second, "[data]\npage_size = 1000\n").unwrap();
+        assert!(!texts_until(&mut backend, "[data]\npage_size = 1000\n").is_empty());
+
+        // Turned to a directory that is not there: no longer live.
+        link_anew(&dir.path().join("away").join("settings.toml"), &path);
+        let deadline = std::time::Instant::now() + WAIT;
+        loop {
+            match backend.wait(Duration::from_millis(200)) {
+                Some(Event::SettingsWatch { live }) => break assert!(!live),
+                // The second file's text once more, when its last write
+                // was read in two halves.
+                Some(Event::SettingsFile { .. }) | None => {}
+                other => panic!("expected the watch to be lost, got {other:?}"),
+            }
+            assert!(std::time::Instant::now() < deadline, "never said");
+        }
+
+        // A plain file takes the link's place: live again, and read.
+        std::fs::remove_file(&path).unwrap();
+        crate::util::write_atomic(&path, b"[data]\npage_size = 50\n").unwrap();
+        assert!(matches!(
+            backend.wait(WAIT),
+            Some(Event::SettingsWatch { live: true })
+        ));
+        assert!(!texts_until(&mut backend, "[data]\npage_size = 50\n").is_empty());
+        std::fs::write(&path, "[data]\npage_size = 100\n").unwrap();
+        assert!(!texts_until(&mut backend, "[data]\npage_size = 100\n").is_empty());
+    }
+
     #[cfg(unix)]
     #[test]
     fn a_place_that_appears_behind_a_link_is_found() {
