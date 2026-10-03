@@ -8,8 +8,8 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError, mpsc};
 use std::time::Duration;
 
 use tabletist_db::{
-    CancelHandle, ConnectSpec, Connection, Driver, Error, HostKeys, ObjectInfo, ObjectRef, RowPage,
-    RowQuery, ScriptOutcome, Secrets, StopFlag, Structure,
+    Access, CancelHandle, ConnectSpec, Connection, Driver, Error, HostKeys, ObjectInfo, ObjectRef,
+    RowPage, RowQuery, ScriptOutcome, Secrets, StopFlag, Structure,
 };
 use tokio::sync::mpsc as tokio_mpsc;
 
@@ -829,34 +829,35 @@ impl Worker {
                 let outbox = self.outbox.clone();
                 let ready = self.ready.clone();
                 tokio::spawn(async move {
-                    let outcome = Connection::connect_with(&spec, &secrets, &host_keys)
-                        .await
-                        .map(|connection| {
-                            let driver = connection.driver();
-                            let encrypted = connection.is_encrypted();
-                            let cancel = connection.cancel_handle();
-                            let (queue, commands) = tokio_mpsc::unbounded_channel();
-                            let (stop, stopped) = tokio::sync::oneshot::channel();
-                            let running = Arc::new(Mutex::new(Running::default()));
-                            tokio::spawn(run_session(
-                                session,
-                                connection,
-                                commands,
-                                stopped,
-                                Arc::clone(&running),
-                                outbox,
-                            ));
-                            (
-                                driver,
-                                encrypted,
-                                SessionHandle {
-                                    queue,
-                                    cancel,
-                                    running,
-                                    _stop: stop,
-                                },
-                            )
-                        });
+                    let outcome =
+                        Connection::connect_with(&spec, &secrets, &host_keys, Access::ReadOnly)
+                            .await
+                            .map(|connection| {
+                                let driver = connection.driver();
+                                let encrypted = connection.is_encrypted();
+                                let cancel = connection.cancel_handle();
+                                let (queue, commands) = tokio_mpsc::unbounded_channel();
+                                let (stop, stopped) = tokio::sync::oneshot::channel();
+                                let running = Arc::new(Mutex::new(Running::default()));
+                                tokio::spawn(run_session(
+                                    session,
+                                    connection,
+                                    commands,
+                                    stopped,
+                                    Arc::clone(&running),
+                                    outbox,
+                                ));
+                                (
+                                    driver,
+                                    encrypted,
+                                    SessionHandle {
+                                        queue,
+                                        cancel,
+                                        running,
+                                        _stop: stop,
+                                    },
+                                )
+                            });
                     let _ = ready.send(Ready {
                         session,
                         request,
@@ -872,7 +873,14 @@ impl Worker {
             } => {
                 let outbox = self.outbox.clone();
                 tokio::spawn(async move {
-                    let result = match Connection::connect_with(&spec, &secrets, &host_keys).await {
+                    let result = match Connection::connect_with(
+                        &spec,
+                        &secrets,
+                        &host_keys,
+                        Access::ReadOnly,
+                    )
+                    .await
+                    {
                         Ok(connection) => connection.close().await,
                         Err(error) => Err(error),
                     };

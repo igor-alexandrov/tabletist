@@ -36,10 +36,23 @@ pub use spec::{ConnectSpec, Driver, ParsedUrl, Secrets, SshAuth, SshSpec, TlsMod
 pub use ssh::HostKeys;
 pub use value::{ColumnMeta, Value, ValueKind, value_from_pg_text};
 
+/// Whether a session may write. The app has no writing call yet; a
+/// writable session is the one a later `write` will be allowed on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Access {
+    /// Nothing can write: the session itself is read-only.
+    #[default]
+    ReadOnly,
+    /// The session is read-write. Browsing still reads in read-only
+    /// transactions, and a script still cannot write.
+    Writable,
+}
+
 /// An open, read-only database session, and the SSH tunnel it runs through,
 /// if any.
 pub struct Connection {
     inner: Inner,
+    access: Access,
     /// Declared after `inner`, so the driver closes before its tunnel.
     tunnel: Option<ssh::Tunnel>,
 }
@@ -72,21 +85,25 @@ impl Inner {
 }
 
 impl Connection {
+    /// A read-only session, with no SSH host keys trusted.
     pub async fn connect(spec: &ConnectSpec, secrets: &Secrets) -> Result<Self> {
-        Self::connect_with(spec, secrets, &HostKeys::default()).await
+        Self::connect_with(spec, secrets, &HostKeys::default(), Access::ReadOnly).await
     }
 
     /// Connects, through an SSH tunnel when the spec has one; `host_keys`
-    /// are the SSH host keys the user trusts.
+    /// are the SSH host keys the user trusts, and `access` says whether
+    /// the session may write.
     pub async fn connect_with(
         spec: &ConnectSpec,
         secrets: &Secrets,
         host_keys: &HostKeys,
+        access: Access,
     ) -> Result<Self> {
         let ssh = spec.ssh.as_ref().filter(|_| spec.driver != Driver::Sqlite);
         let Some(ssh) = ssh else {
             return Ok(Self {
                 inner: Inner::connect(spec, secrets, None).await?,
+                access,
                 tunnel: None,
             });
         };
@@ -94,10 +111,16 @@ impl Connection {
         match Inner::connect(spec, secrets, Some(tunnel.port)).await {
             Ok(inner) => Ok(Self {
                 inner,
+                access,
                 tunnel: Some(tunnel),
             }),
             Err(error) => Err(tunnel.forward_error().unwrap_or(error)),
         }
+    }
+
+    /// The access the session was opened with.
+    pub fn access(&self) -> Access {
+        self.access
     }
 
     #[doc(hidden)]
@@ -243,7 +266,7 @@ impl Connection {
     }
 
     pub async fn close(self) -> Result<()> {
-        let Self { inner, tunnel } = self;
+        let Self { inner, tunnel, .. } = self;
         let closed = match inner {
             Inner::Sqlite(conn) => {
                 drop(conn);

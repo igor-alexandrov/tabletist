@@ -6,18 +6,35 @@
 use std::time::Duration;
 
 use tabletist_db::{
-    ConnectSpec, Connection, Dialect, Driver, Error, Filter, FilterOp, ObjectRef, RowQuery,
-    Secrets, Sort, SortDir, StatementOutcome, StopFlag, Value, ValueKind,
+    Access, ConnectSpec, Connection, Dialect, Driver, Error, Filter, FilterOp, HostKeys, ObjectRef,
+    RowQuery, Secrets, Sort, SortDir, StatementOutcome, StopFlag, Value, ValueKind,
 };
 
-async fn fixture() -> (Connection, tempfile::TempDir) {
+async fn fixture_as(access: Access) -> (Connection, tempfile::TempDir) {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("fixture.db");
     tabletist_db::fixtures::write_sqlite_demo(&path).unwrap();
-    let connection = Connection::connect(&ConnectSpec::sqlite(&path), &Secrets::default())
-        .await
-        .unwrap();
+    let connection = Connection::connect_with(
+        &ConnectSpec::sqlite(&path),
+        &Secrets::default(),
+        &HostKeys::default(),
+        access,
+    )
+    .await
+    .unwrap();
     (connection, dir)
+}
+
+async fn fixture() -> (Connection, tempfile::TempDir) {
+    fixture_as(Access::ReadOnly).await
+}
+
+#[tokio::test]
+async fn a_connection_knows_the_access_it_was_opened_with() {
+    let (connection, _dir) = fixture().await;
+    assert_eq!(connection.access(), Access::ReadOnly);
+    let (writable, _dir) = fixture_as(Access::Writable).await;
+    assert_eq!(writable.access(), Access::Writable);
 }
 
 fn users(limit: u32) -> RowQuery {
