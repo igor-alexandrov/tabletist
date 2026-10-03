@@ -242,7 +242,7 @@ widths. In step 1 the options are fixed for a session and nothing is needed.
 
 | Option | Control | Effect |
 |---|---|---|
-| Rows per page | A menu: 100, 300, 500, 1,000, 5,000. A value from the file that is not in the list is shown as an extra entry. | A table's `query.limit` is the size of the page it shows or awaits, and `fetch_rows` brings it to the settings' size each time it fetches, dropping a page of another size first, whoever asked for the fetch (a Refresh and a reconnect keep the page they have otherwise); Next and Previous move by `query.limit` before they fetch, so no row is skipped whichever size comes next. On a change, every table that shows a page or waits for one on a connected session drops the page it shows (as Next does, so a failed fetch leaves no page of the old size on screen) and fetches again from the offset it is at. The others take the size at their next fetch. New tabs open with it. |
+| Rows per page | A menu: 100, 300, 500, 1,000, 5,000. A value from the file that is not in the list is shown as an extra entry. | A table's `query.limit` is the size of the page it shows or awaits, and `fetch_rows` brings it to the settings' size each time it fetches, dropping a page of another size first, whoever asked for the fetch (a Refresh and a reconnect keep the page they have otherwise); Next moves by `query.limit` (the page on screen) and Previous by the settings' size (the page it is about to fetch, which must end where the one on screen begins), so no row is skipped in either direction whichever size comes next. On a change, every table that shows a page or waits for one on a connected session drops the page it shows (as Next does, so a failed fetch leaves no page of the old size on screen) and fetches again from the offset it is at. The others take the size at their next fetch. New tabs open with it. |
 | Timestamps | Two segments: To the second, Full precision. | Sets `full_precision` on every open workspace and on new ones. The grid's own link still switches one workspace until the option changes again. |
 | Numbers | Two segments, each showing a sample: `1,240.50`, `1240.50`. | Grid cells of numeric columns, in the data view and in SQL results. |
 | Value tags | A toggle. | Off: enum, CHECK and boolean columns draw as plain text in the data view and the row panel, and booleans in SQL results (the only tags that view has). |
@@ -410,8 +410,10 @@ Explorer, Show in folder.
 
 `Command::WatchSettings { path }` starts a `notify` watcher on the config
 directory (the directory, not the file: editors replace a file by renaming
-another over it). An event for `settings.toml` waits 100 ms for the writes
-to settle, then the backend reads the file and sends
+another over it). An event for `settings.toml` waits until the file has
+been quiet for 100 ms (each further event starts the wait again: a save is
+several of them, and a read between two would see half a file), then the
+backend reads the file and sends
 `Event::SettingsFile { text }`. A file that is not UTF-8 at that moment is
 logged and nothing is sent: the settings in memory stay.
 
@@ -420,6 +422,16 @@ reports every open, and the backend's own read is one, so a watcher that
 answered them would read the file for ever. The file is matched by its name
 in the directory, since the paths of events come as the system has them.
 The same text is never sent twice in a row.
+
+The file is read once when the watch starts, as if it had just changed:
+the settings were loaded before the window existed, and an edit made in
+between would otherwise go unseen until the next one. The app drops a text
+equal to the one it holds, so an unchanged file costs nothing.
+
+A read that fails for a reason that may pass (an editor still holding the
+file, on Windows) is tried again, waiting 100 ms and then twice as long each
+time up to a second, six reads in all; a change meanwhile starts over, and a
+file that is gone is not retried.
 
 `App` drops an event whose text equals `settings_file.text`: that is its own
 write, or a change that changed nothing. Otherwise it runs
