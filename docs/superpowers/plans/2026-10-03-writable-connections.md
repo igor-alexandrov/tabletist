@@ -155,6 +155,8 @@ Set `access` in both `Self { .. }` literals of `connect_with`, and add:
     }
 ```
 
+`Connection::close` destructures `Self`: it becomes `let Self { inner, tunnel, .. } = self;`.
+
 `Inner::connect` is not touched yet: the drivers take `access` in tasks 2 to 4.
 
 - [ ] **Step 4: Fix the callers**
@@ -347,14 +349,14 @@ Wrap the bodies of `bypasses_cannot_write`, `ddl_is_refused_as_read_only_and_end
 - [ ] **Step 2: Run and see them fail**
 
 Run: `~/.cargo/bin/cargo test --locked -p tabletist-db --test mysql`
-Expected: `a_writable_session_is_read_only_for_a_script_and_read_write_after_it` FAILS on its first assertion (the session is still read-only). The looped tests pass for now.
+Expected: does not compile until `connect_as` has its `Access`; once it does, `a_writable_session_is_read_only_for_a_script_and_read_write_after_it` FAILS on its first assertion (the session is still read-only), and so does the `writes_between_scripts` line added to the DDL test, for `Writable`.
 
 - [ ] **Step 3: The session**
 
 `Inner::connect` passes `access` to `mysql::Conn::connect(spec, secrets, via, access)`. In `mysql.rs` (import `crate::Access`):
 
 - `Conn` gains `/// What the session was opened as: a script puts it back.` `pub(crate) access: Access,` set in `connect`'s `Ok(Self { .. })`.
-- `connect` calls `prepare_session(&mut conn, access).await?`.
+- `connect` calls `prepare_session(&mut conn, access).await?`. The module's own tests call `Conn::connect(&spec, &secrets, None)` (near lines 1005 and 1087): they pass `Access::ReadOnly`.
 - Beside `READ_ONLY`:
 
 ```rust
@@ -470,7 +472,42 @@ async fn open(conn: &mut mysql_async::Conn, limit: u32, access: Access) -> Resul
 
 ```rust
     let prepared = prepare_session(conn, access).await;
+    match ended {
+        Ended::Left => Err(Error::LeftReadOnly),
+        Ended::Broken(error) => Err(error),
+        Ended::Unconfirmed | Ended::Unopened => rolled_back
+            .and(reset)
+            .and(prepared)
+            .map_err(|error| cleanup_failed(&error)),
+    }
 ```
+
+The unit tests at the end of `mysql/script.rs` call `open(&mut conn, 10)` and `close(&mut conn, Ended::Unconfirmed)` directly (six calls): each gains `Access::ReadOnly`. Beside them, with the same setup they use to get a session, add one for the new path:
+
+```rust
+    /// A cancel that landed on a writable session's opening queries: the
+    /// session may still be read-write, and that is not a script that left.
+    #[tokio::test]
+    async fn closing_an_unopened_run_keeps_a_writable_session() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        let conn = session(&url).await;
+        let mut conn = conn.conn.lock().await;
+        execute(&mut conn, "SET SESSION TRANSACTION READ WRITE")
+            .await
+            .unwrap();
+        close(&mut conn, Ended::Unopened, Access::Writable)
+            .await
+            .unwrap();
+        let read_only = read_only_setting(&mut conn, READ_ONLY_SETTINGS)
+            .await
+            .unwrap();
+        assert_eq!(read_only, Some(0));
+    }
+```
+
+(`test_url` and `session` are the helpers the neighbouring tests use, from `super::super::tests`.)
 
 Update the doc comment of `close` ("applies the connect-time settings again") and of `reset` ("until `prepare_session` runs again") only where they now say something untrue.
 
@@ -585,12 +622,16 @@ Expected: does not compile (`open` takes one argument).
 
 Fix the module's opening doc line ("SQLite, opened read-only.") to say "SQLite, opened read-only unless the connection is writable."
 
-- [ ] **Step 4: Run**
+- [ ] **Step 4: Run the existing guard tests in both modes**
+
+In `crates/tabletist-db/tests/sqlite.rs`, wrap the bodies of `a_raw_where_cannot_modify_data` and `writes_fail_as_read_only_and_refusals_run_nothing` in `for access in [Access::ReadOnly, Access::Writable] { let (connection, _dir) = fixture_as(access).await; .. }`, the rest unchanged. The second pins the error code `"8"`, which `format::refuses_writes` in the app reads. If a writable handle under `query_only` gives another code, stop and report it: the app's refused-write card depends on it.
+
+- [ ] **Step 5: Run**
 
 Run: `~/.cargo/bin/cargo test --locked -p tabletist-db`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
 git add -A && git commit -m "Open a writable SQLite file read-write, refusing writes"
@@ -629,6 +670,10 @@ In the test module of `sql.rs`:
             "PRAGMA 'writable_schema'(1)",
             // Not a form SQLite takes, and refused all the same.
             "PRAGMA query_only OFF",
+            // SQLite applies a flag pragma when it prepares the statement,
+            // so EXPLAIN in front does not make it harmless.
+            "EXPLAIN PRAGMA query_only = OFF",
+            "explain query plan PRAGMA 'query_only'(0)",
         ] {
             assert!(refusal(Dialect::Sqlite, refused).is_some(), "{refused}");
         }
@@ -645,6 +690,8 @@ In the test module of `sql.rs`:
             "PRAGMA foreign_keys = ON",
             "SELECT 'PRAGMA query_only = OFF'",
             "SELECT query_only FROM settings",
+            "EXPLAIN SELECT 1",
+            "EXPLAIN PRAGMA query_only",
         ] {
             assert_eq!(refusal(Dialect::Sqlite, allowed), None, "{allowed}");
         }
@@ -673,14 +720,14 @@ Expected: FAIL (`PRAGMA query_only = OFF` is not refused).
 
 - [ ] **Step 3: Implement**
 
-In `sql.rs`, an arm in `refusal`'s `match word(0)` (before `_ => {}`):
+In `sql.rs`, in `refusal`, just before `match word(0)`:
 
 ```rust
-        "PRAGMA" if dialect == Dialect::Sqlite => {
-            if let Some(name) = guarded_pragma(statement, &tokens) {
-                return Some(format!("PRAGMA {name}"));
-            }
-        }
+    if dialect == Dialect::Sqlite
+        && let Some(name) = guarded_pragma(statement, &tokens)
+    {
+        return Some(format!("PRAGMA {name}"));
+    }
 ```
 
 and below `is_guarded_setting`:
@@ -715,14 +762,28 @@ fn guarded_pragma(statement: &str, tokens: &[Token]) -> Option<&'static str> {
     let code: Vec<&Token> = tokens
         .iter()
         .filter(|token| !matches!(token.kind, TokenKind::Whitespace | TokenKind::Comment))
-        .skip(1)
         .collect();
+    // EXPLAIN [QUERY PLAN] in front changes nothing: SQLite applies a flag
+    // pragma when it prepares the statement, explained or not.
+    let explained = code
+        .iter()
+        .take_while(|token| {
+            word_of(statement, token)
+                .is_some_and(|word| matches!(word.as_str(), "EXPLAIN" | "QUERY" | "PLAN"))
+        })
+        .count();
+    let [pragma, code @ ..] = &code[explained..] else {
+        return None;
+    };
+    if word_of(statement, pragma).as_deref() != Some("PRAGMA") {
+        return None;
+    }
     let guarded = code
         .iter()
         .filter_map(|token| pragma_name(statement, token))
         .find_map(|name| GUARDED_PRAGMAS.into_iter().find(|guarded| *guarded == name))?;
     let is_name = |token: &Token| pragma_name(statement, token).is_some();
-    let reads = match code.as_slice() {
+    let reads = match code {
         [name] => is_name(name),
         [schema, dot, name] => {
             is_name(schema) && &statement[dot.range.clone()] == "." && is_name(name)
@@ -963,8 +1024,8 @@ In the test module of `src/app.rs`, after `connect`:
 
 - [ ] **Step 2: Run and see them fail**
 
-Run: `~/.cargo/bin/cargo test --locked -p tabletist --lib a_session_opens_with a_connection_opens_with`
-Expected: does not compile (`access` is unknown).
+Run: `~/.cargo/bin/cargo test --locked -p tabletist --lib a_session_opens_with`
+Expected: does not compile (`access` is unknown). After step 3 run it again, and `a_connection_opens_with` the same way.
 
 - [ ] **Step 3: Implement**
 
@@ -1090,16 +1151,28 @@ Replace `the_dialog_shows_every_connection_read_only` with:
                 assert!(!node.is_disabled(), "{}", look.name);
                 node.toggled() == Some(egui::accesskit::Toggled::True)
             };
+            let click_box = |harness: &mut Harness| {
+                let tree = harness.settle();
+                let place = crate::testing::bounds(
+                    &tree,
+                    "Open read-only",
+                    egui::accesskit::Role::CheckBox,
+                )
+                .expect("the read-only box");
+                click_at(harness, place.center());
+            };
             // A new connection is not production: writable, nothing set.
             assert!(!read_only(&mut harness), "{}", look.name);
-            harness.click("Production");
+            // The terminal look names its choices in lower case.
+            harness.click(&look.label("Production"));
             assert!(read_only(&mut harness), "{}", look.name);
             assert_eq!(form(&harness).read_only, None, "the default, not a choice");
-            // The box is the user's from the first click.
-            harness.click("Open read-only");
+            // The box is the user's from the first click. Clicked by its
+            // role: the sheet's title beside it has the same name.
+            click_box(&mut harness);
             assert!(!read_only(&mut harness), "{}", look.name);
             assert_eq!(form(&harness).read_only, Some(false), "{}", look.name);
-            harness.click("Open read-only");
+            click_box(&mut harness);
             assert_eq!(form(&harness).read_only, Some(true), "{}", look.name);
             // And what a connection was saved with comes back as it was.
             let mut harness = Harness::new();
@@ -1218,12 +1291,17 @@ and `draw` toggles the form:
 
 Update the doc comment of `terminal_check` if "`None` locks it" has no caller left; if it has none, drop the `Option` rather than keep a dead branch.
 
-- [ ] **Step 5: Run**
+- [ ] **Step 5: Two tests that quote what changed**
+
+- `a_tall_form_that_fits_the_window_opens_whole` (`src/ui/mod.rs`, near line 5989) finds the form's last line by the old notes. They become `"· default for production"` and the new sheet sentence.
+- `the_connection_dialog_takes_the_chosen_environments_colours` (`src/ui/env_tests.rs`, near line 176) expects the box filled in each environment's colour. The box now follows the environment, so only production fills it: the test sets `read_only = Some(true)` on the form it draws, so the box is on for every environment it walks.
+
+- [ ] **Step 6: Run**
 
 Run: `~/.cargo/bin/cargo test --locked -p tabletist --lib`
 Expected: PASS, with `the_dialog_says_the_connection_opens_read_only` and `the_dialog_draws_each_looks_own_form` untouched.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
 git add -A && git commit -m "Let the dialog's read-only box be turned off"
@@ -1269,7 +1347,7 @@ In the test module of `src/ui/mod.rs`, beside the footer tests (it uses the help
     }
 ```
 
-If a mark is painted without an accessible label in some look (the Omarchy status line's tag is), check it through `harness.painted` the way `the_terminal_footer_fits_a_narrow_row_panel` reads painted text, in the same test.
+The Omarchy status line's tag is painted without an accessible label, so the labels alone do not cover step 4. In the same test, for the Omarchy look, also read `harness.painted` the way `the_terminal_footer_fits_a_narrow_row_panel` does and assert that a piece equal to `read-only` is painted for the read-only connection and none for the writable one.
 
 - [ ] **Step 2: Run and see it fail**
 
@@ -1340,13 +1418,20 @@ fn state_note(selected: bool, read_only: bool, locale: crate::i18n::Locale) -> S
 
 - [ ] **Step 6: The row panel's note**
 
-In `row_panel.rs`, `editing_footer`'s terminal note says the app's version is read-only, which a writable connection now contradicts:
+In `row_panel.rs`, `editing_footer`'s terminal note says the app's version is read-only, which a writable connection now contradicts. `editing_footer` takes `read_only: bool` from its caller (the panel's workspace), and:
 
 ```rust
-        let note = gettext(locale, "editing arrives in a later version");
+        let note = if read_only {
+            gettext(
+                locale,
+                "read-only connection · editing arrives in a later version",
+            )
+        } else {
+            gettext(locale, "editing arrives in a later version")
+        };
 ```
 
-`the_terminal_footer_fits_a_narrow_row_panel` (`src/ui/mod.rs`, near line 3972) quotes the old text twice: its `note` becomes `"editing arrives in a later version"` and its `starts_with("read-only in 0.1.0")` becomes `starts_with("editing arrives")`.
+`the_terminal_footer_fits_a_narrow_row_panel` (`src/ui/mod.rs`, near line 3972) quotes the old text twice. Its connection is the read-only fixture, so its `note` becomes `"read-only connection · editing arrives in a later version"` and its `starts_with("read-only in 0.1.0")` becomes `starts_with("read-only connection")`. The note is about as long as before, so the test still sees it cut.
 
 - [ ] **Step 7: Run**
 
@@ -1423,6 +1508,10 @@ The card keeps the wording it shipped with ("this statement was refused"): it ne
     }
 ```
 
+Add to the same test, after the loop over `writable`, that the editor's own refusal reads as the editor's on a read-only connection: run a script whose answer is `Err(Error::Refused { line: 1, what: "COMMIT".into() })` (through `harness.answer_sql`, as the tests of a failed run in this module do) and assert the title is `"The SQL editor only reads data"` and there is no `"Edit connection"`. A run that fails as a whole opens the Messages pane, so show the Results pane first (`show_pane(&mut harness, tab, ResultPane::Results)`).
+
+`another_error_keeps_its_own_words_in_the_results` (near line 1845) asserts that "This version only reads data" is absent, a text that no longer exists: it asserts the absence of both new titles instead.
+
 In `a_refused_write_in_a_short_pane_scrolls_to_its_last_line`, the fixture connection is read-only, so `title` becomes `look.label("This connection opens read-only")` and `last` becomes `look.label("To write, turn off Open read-only in the connection.")`.
 
 - [ ] **Step 2: Run and see them fail**
@@ -1444,7 +1533,12 @@ Expected: FAIL on the titles.
 
 ```rust
             let workspace = place.workspace;
-            let read_only = workspace.access == tabletist_db::Access::ReadOnly;
+            // The connection's box refused it only when the server did. A
+            // statement the editor's own guard refuses (`COMMIT`, a guarded
+            // `PRAGMA`) is refused on every connection, and turning the box
+            // off would not make it run.
+            let read_only = workspace.access == tabletist_db::Access::ReadOnly
+                && !matches!(error, Error::Refused { .. });
             let title = env.said(|words| {
                 words.say(if read_only {
                     "This connection opens read-only"
@@ -1456,13 +1550,16 @@ Expected: FAIL on the titles.
                 if read_only {
                     // Whose box it is: the name, and the environment when
                     // it has one.
-                    let whose = match workspace.environment {
-                        crate::env::Environment::None => workspace.name.clone(),
-                        environment => format!(
+                    // An `if`, not a `match`: environments are matched
+                    // only in `env.rs`, and a test there holds us to it.
+                    let whose = if workspace.environment == crate::env::Environment::None {
+                        workspace.name.clone()
+                    } else {
+                        format!(
                             "{} · {}",
                             workspace.name,
-                            environment.label(crate::env::Platform::Native)
-                        ),
+                            workspace.environment.label(crate::env::Platform::Native)
+                        )
                     };
                     format!(
                         "{whose} {}",
@@ -1587,4 +1684,5 @@ git add -A && git commit -m "Restate the read-only promise for writable connecti
 ## What this plan leaves for step 2
 
 - A script's other SQLite pragmas (`journal_mode`, `synchronous`, `foreign_keys`) and its `ATTACH`es still last for the session, as the SQL editor spec says. Harmless while nothing writes; `Connection::write` must put its own house in order before it writes on a handle a script has used.
+- `mysql_async` opens a read-only transaction as `SET TRANSACTION READ ONLY` then `START TRANSACTION`. A cancel between the two can leave "next transaction read-only" pending on the session, which `Connection::write` must not inherit.
 - `Connection::write`, the statement builder, `ColumnInfo.generated`, `IndexInfo.partial` and the row key rule.
