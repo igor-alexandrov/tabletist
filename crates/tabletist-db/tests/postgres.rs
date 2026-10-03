@@ -56,7 +56,13 @@ async fn connections_report_postgres_and_list_databases() {
     };
     assert_eq!(connection.driver(), Driver::Postgres);
     let databases = connection.list_databases().await.unwrap();
-    assert!(databases.contains(&"tabletist".to_owned()), "{databases:?}");
+    let (spec, _) = spec().unwrap();
+    let configured = if spec.database.is_empty() {
+        spec.user
+    } else {
+        spec.database
+    };
+    assert!(databases.contains(&configured), "{databases:?}");
     assert!(!databases.contains(&"template0".to_owned()));
 }
 
