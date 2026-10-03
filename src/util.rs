@@ -65,22 +65,26 @@ const MAX_LINKS: usize = 40;
 /// lead back to themselves are an error.
 pub fn resolve_link(path: &Path) -> std::io::Result<PathBuf> {
     let mut file = path.to_path_buf();
-    for _ in 0..MAX_LINKS {
+    let mut followed = 0;
+    loop {
         let linked = file
             .symlink_metadata()
             .is_ok_and(|metadata| metadata.file_type().is_symlink());
         if !linked {
             return Ok(file);
         }
+        if followed == MAX_LINKS {
+            return Err(std::io::Error::other(format!(
+                "{} is a symbolic link that never ends",
+                path.display()
+            )));
+        }
         // A relative target starts at the link's directory; an absolute
         // one replaces it.
         let target = std::fs::read_link(&file)?;
         file = directory_of(&file).join(target);
+        followed += 1;
     }
-    Err(std::io::Error::other(format!(
-        "{} is a symbolic link that never ends",
-        path.display()
-    )))
 }
 
 /// Writes `bytes` to a new temporary file beside `path`, flushes it to disk,
@@ -400,6 +404,28 @@ mod tests {
         assert!(write_atomic(&one, b"lost").is_err());
         assert_eq!(std::fs::read_link(&one).unwrap(), other);
         assert_eq!(std::fs::read_link(&other).unwrap(), one);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn forty_links_are_followed_and_one_more_is_not() {
+        let dir = tempfile::tempdir().unwrap();
+        let link = |n: usize| dir.path().join(format!("link-{n}"));
+        // link-1 -> link-2 -> ... -> link-40 -> file: forty links.
+        let file = dir.path().join("file");
+        std::fs::write(&file, b"first").unwrap();
+        std::os::unix::fs::symlink("file", link(MAX_LINKS)).unwrap();
+        for n in (1..MAX_LINKS).rev() {
+            std::os::unix::fs::symlink(format!("link-{}", n + 1), link(n)).unwrap();
+        }
+        assert_eq!(resolve_link(&link(1)).unwrap(), file);
+        write_atomic(&link(1), b"second").unwrap();
+        assert_eq!(std::fs::read(&file).unwrap(), b"second");
+        // One more is one too many.
+        std::os::unix::fs::symlink("link-1", link(0)).unwrap();
+        assert!(resolve_link(&link(0)).is_err());
+        assert!(write_atomic(&link(0), b"lost").is_err());
+        assert_eq!(std::fs::read(&file).unwrap(), b"second");
     }
 
     #[cfg(unix)]
