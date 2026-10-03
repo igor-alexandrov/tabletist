@@ -1448,6 +1448,8 @@ git add -A && git commit -m "Say read-only only of a connection that is"
 
 ### Task 10: The refused-write card names the reason
 
+> **As built:** this task was cut down while it was being done. The card it describes for a read-only connection tells the user to turn off Open read-only, and that does not make the statement run: the SQL editor only reads on every connection until slice 6. So the card says one thing everywhere ("The SQL editor only reads data", the shipped sentence, the database's own words), has no last line and no button, and `blocked` does not need the workspace. The steps below are the first draft, kept for the record.
+
 **Files:**
 - Modify: `src/ui/sql_results.rs` (`Place`, `draw`, `blocked`, its two callers near lines 245 and 1065, the tests near line 1771)
 

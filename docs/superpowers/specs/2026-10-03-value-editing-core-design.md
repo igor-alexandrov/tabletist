@@ -91,18 +91,15 @@ pending changes never outlive their page.
 - Every "read-only" mark the app draws (the header's pill or tag, the
   footer's "· read-only", the Omarchy status line's tag) shows only for a
   read-only connection.
-- A write the SQL editor refuses:
-  - read-only connection: "This connection opens read-only", "<name> ·
-    <environment> blocks writes, so this statement was refused. Nothing
-    changed.", "To write, turn off Open read-only in the connection.", with
-    an **Edit connection** action. The per-tab switch of the artboard is
-    slice 6.
-  - writable connection: "The SQL editor only reads data", "Every query
-    runs in a read-only transaction, so this statement was refused.
-    Nothing changed.", and, from step 3 on, "Edit values in a table's
-    grid."
-  - The card keeps the shipped wording ("this statement was refused"); it
-    never named the server or the statement.
+- A write the SQL editor refuses reads the same on every connection:
+  "The SQL editor only reads data", "Every query runs in a read-only
+  transaction, so this statement was refused. Nothing changed.", and the
+  database's own words. The artboard's card for a read-only connection
+  ("This connection opens read-only", "turn off Open read-only", **Edit
+  connection**, the per-tab switch) belongs to slice 6: until the SQL
+  editor can write, turning the box off would not make the statement run,
+  and the card must not say it would. From step 3 on, the card adds "Edit
+  values in a table's grid." on a writable connection.
 
 ### Sessions (`tabletist-db`)
 
