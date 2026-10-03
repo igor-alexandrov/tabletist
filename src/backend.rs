@@ -755,8 +755,9 @@ impl Saves {
     }
 }
 
-/// How long the settings file is left to settle before it is read: a save
-/// is several changes (a temporary file, a rename, a truncate and a write).
+/// How long the settings file must have been left alone before it is read:
+/// a save is several changes (a temporary file, a rename, a truncate and a
+/// write), and a read between two of them finds the file half-written.
 const SETTLE: Duration = Duration::from_millis(100);
 
 /// The watch on the settings file, held by the task that reads it. The
@@ -771,8 +772,9 @@ struct SettingsWatcher {
     /// The settings file, as the app names it.
     path: PathBuf,
     /// The names a change of the settings comes under: the file's own and,
-    /// behind a link, the name of the file it leads to.
-    names: Vec<OsString>,
+    /// behind a link, the name of the file it leads to. The watcher's
+    /// callback reads them.
+    names: Arc<Mutex<Vec<OsString>>>,
     /// The directory watched for a link's sake, while there is one.
     elsewhere: Option<PathBuf>,
 }
@@ -795,7 +797,7 @@ impl SettingsWatcher {
             _ => (None, None),
         };
         let own = self.path.file_name().map(OsStr::to_owned);
-        self.names = own.into_iter().chain(name).collect();
+        *lock(&self.names) = own.into_iter().chain(name).collect();
         if directory != self.elsewhere {
             if let Some(left) = self.elsewhere.take() {
                 // Best effort: a directory that is gone is not watched any
@@ -842,15 +844,23 @@ impl Drop for SettingsReader {
 }
 
 /// Watches the settings file `path` and starts the task that reads it
-/// whenever it changes. Says too whether every place an edit can be made
-/// is watched (see [`SettingsWatcher::follow`]).
+/// whenever it changes, and once at the start. Says too whether every
+/// place an edit can be made is watched (see [`SettingsWatcher::follow`]).
 fn watch_settings(path: PathBuf, outbox: Outbox) -> notify::Result<(SettingsReader, bool)> {
     use notify::Watcher as _;
     let (changed, changes) = tokio_mpsc::unbounded_channel();
+    // The file as it is now: it was loaded before there was a watch, and a
+    // save made in between raised no event. The app drops a text it holds
+    // already.
+    let _ = changed.send(());
+    let names = Arc::new(Mutex::new(Vec::new()));
+    let known = Arc::clone(&names);
     let mut watcher =
         notify::recommended_watcher(move |event: notify::Result<notify::Event>| match event {
             Ok(event) => {
-                let _ = changed.send(event);
+                if concerns(&event, &lock(&known)) {
+                    let _ = changed.send(());
+                }
             }
             Err(error) => log::warn!("watching the settings file: {error}"),
         })?;
@@ -860,8 +870,8 @@ fn watch_settings(path: PathBuf, outbox: Outbox) -> notify::Result<(SettingsRead
     )?;
     let mut watch = SettingsWatcher {
         watcher,
-        path,
-        names: Vec::new(),
+        path: path.clone(),
+        names,
         elsewhere: None,
     };
     let live = match watch.follow() {
@@ -871,8 +881,21 @@ fn watch_settings(path: PathBuf, outbox: Outbox) -> notify::Result<(SettingsRead
             false
         }
     };
-    let reader = tokio::spawn(read_settings(watch, live, changes, outbox));
+    // The reader holds the watcher from here on, to turn it with the link.
+    let follow = move || tokio::task::block_in_place(|| watch.follow());
+    let reader = tokio::spawn(read_settings(
+        path, live, changes, outbox, follow, read_file,
+    ));
     Ok((SettingsReader(reader.abort_handle()), live))
+}
+
+/// Reads `path` on the blocking pool: a disk can be slow, and the runtime's
+/// threads serve every session.
+async fn read_file(path: PathBuf) -> std::io::Result<Vec<u8>> {
+    match tokio::task::spawn_blocking(move || std::fs::read(path)).await {
+        Ok(read) => read,
+        Err(error) => Err(std::io::Error::other(error)),
+    }
 }
 
 /// Whether `event` says a file named as one of `names` may have changed.
@@ -889,20 +912,51 @@ fn concerns(event: &notify::Event, names: &[OsString]) -> bool {
             .any(|name| names.iter().any(|known| known == name))
 }
 
+/// Waits until the changes have been quiet for `SETTLE`: a save is several
+/// of them, and each starts the wait again. False when the watch has ended.
+async fn settled(changes: &mut tokio_mpsc::UnboundedReceiver<()>) -> bool {
+    loop {
+        match tokio::time::timeout(SETTLE, changes.recv()).await {
+            Ok(Some(())) => {}
+            Ok(None) => return false,
+            Err(_) => return true,
+        }
+    }
+}
+
+/// How many times the settings file is read for one change before the
+/// reader leaves it until the next: a file that cannot be read at all (its
+/// permissions, say) is not tried for ever.
+const READ_TRIES: u32 = 6;
+
+/// The longest wait between two of those reads. The first wait is `SETTLE`
+/// and each after it twice as long: an editor that still holds the file
+/// lets go within moments, and one that does not is asked less and less.
+const READ_AGAIN_MAX: Duration = Duration::from_secs(1);
+
 /// How often a watcher that is not live looks again for the place its link
 /// leads to: nothing that is watched says when that place appears.
 const LOOK_AGAIN: Duration = Duration::from_secs(2);
 
 /// Sends the settings file's text each time it changes, once the changes
 /// have settled, and says so when it can no longer see every change, or
-/// can again ([`Event::SettingsWatch`]). Runs until it is stopped
-/// ([`SettingsReader`]).
-async fn read_settings(
-    mut watch: SettingsWatcher,
+/// can again ([`Event::SettingsWatch`]). A read that fails is tried again,
+/// `READ_TRIES` times in all. Runs until it is stopped ([`SettingsReader`])
+/// or nothing is left that could wake it. `follow` looks where the file is
+/// now ([`SettingsWatcher::follow`]) and `read` reads it: the tests have a
+/// read that fails.
+async fn read_settings<W, R, F>(
+    path: PathBuf,
     mut live: bool,
-    mut events: tokio_mpsc::UnboundedReceiver<notify::Event>,
+    mut changes: tokio_mpsc::UnboundedReceiver<()>,
     outbox: Outbox,
-) {
+    mut follow: W,
+    read: R,
+) where
+    W: FnMut() -> Result<(), String>,
+    R: Fn(PathBuf) -> F,
+    F: Future<Output = std::io::Result<Vec<u8>>>,
+{
     // What was sent last: the same text is not news, whatever woke us.
     let mut sent: Option<String> = None;
     let mut look_again = tokio::time::Instant::now() + LOOK_AGAIN;
@@ -911,63 +965,71 @@ async fn read_settings(
         // is not there yet, a volume not mounted) is looked at again from
         // time to time: no event comes when the place appears.
         let woken = if live {
-            Ok(events.recv().await)
+            Ok(changes.recv().await)
         } else {
-            tokio::time::timeout_at(look_again, events.recv()).await
+            tokio::time::timeout_at(look_again, changes.recv()).await
         };
-        let looking_again = match woken {
-            Ok(Some(event)) => {
-                if !concerns(&event, &watch.names) {
-                    continue;
-                }
-                tokio::time::sleep(SETTLE).await;
-                while events.try_recv().is_ok() {}
-                false
-            }
+        let mut changed = match woken {
+            Ok(Some(())) => true,
             Ok(None) => return,
-            Err(_) => true,
+            Err(_) => false,
         };
-        // Before the file is read, so that no edit falls between the read
-        // and the watch on a place the file has just moved to.
-        let follows = tokio::task::block_in_place(|| watch.follow());
-        look_again = tokio::time::Instant::now() + LOOK_AGAIN;
-        if follows.is_ok() != live {
-            // Logged when it changes, not at every look.
-            if let Err(why) = &follows {
-                log::warn!("{why}");
+        let bytes = 'settle: loop {
+            if changed && !settled(&mut changes).await {
+                return;
             }
-            live = follows.is_ok();
-            outbox.emit(Event::SettingsWatch { live });
-        }
-        if looking_again && !live {
+            // Before the file is read, so that no edit falls between the
+            // read and the watch on a place the file has just moved to.
+            let follows = follow();
+            look_again = tokio::time::Instant::now() + LOOK_AGAIN;
+            if follows.is_ok() != live {
+                // Logged when it changes, not at every look.
+                if let Err(why) = &follows {
+                    log::warn!("{why}");
+                }
+                live = follows.is_ok();
+                outbox.emit(Event::SettingsWatch { live });
+            }
+            // Looked again, and the place is still not there: no change
+            // was reported, so there is nothing new to read.
+            if !changed && !live {
+                break 'settle None;
+            }
+            let mut tries = 1;
+            let mut wait = SETTLE;
+            loop {
+                match read(path.clone()).await {
+                    Ok(bytes) => break 'settle Some(bytes),
+                    // Deleted: the settings in memory stay, and the next
+                    // change made in the app writes the file again. No
+                    // wait brings it back.
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                        break 'settle None;
+                    }
+                    Err(error) if tries == READ_TRIES => {
+                        log::warn!("could not read {}: {error}", path.display());
+                        break 'settle None;
+                    }
+                    Err(_) => tries += 1,
+                }
+                // An editor may still hold the file (a sharing violation on
+                // Windows), and its letting go is not a change: nothing
+                // would wake us. So the change stays pending, and the file
+                // is tried again once the editor has had the time.
+                match tokio::time::timeout(wait, changes.recv()).await {
+                    // Changed meanwhile: a new save, to be left to settle
+                    // and read from the first try.
+                    Ok(Some(())) => {
+                        changed = true;
+                        continue 'settle;
+                    }
+                    Ok(None) => return,
+                    Err(_) => wait = (wait * 2).min(READ_AGAIN_MAX),
+                }
+            }
+        };
+        let Some(bytes) = bytes else {
             continue;
-        }
-        let path = &watch.path;
-        let read = || {
-            let file = path.clone();
-            tokio::task::spawn_blocking(move || std::fs::read(file))
-        };
-        let mut bytes = read().await;
-        // An editor may still hold the file (a sharing violation on
-        // Windows), and nothing says another change follows to wake us:
-        // one more try, once it has had the time to let go.
-        if matches!(&bytes, Ok(Err(error)) if error.kind() != std::io::ErrorKind::NotFound) {
-            tokio::time::sleep(SETTLE).await;
-            bytes = read().await;
-        }
-        let bytes = match bytes {
-            Ok(Ok(bytes)) => bytes,
-            // Deleted: the settings in memory stay, and the next change
-            // made in the app writes the file again.
-            Ok(Err(error)) if error.kind() == std::io::ErrorKind::NotFound => continue,
-            Ok(Err(error)) => {
-                log::warn!("could not read {}: {error}", path.display());
-                continue;
-            }
-            Err(error) => {
-                log::warn!("could not read {}: {error}", path.display());
-                continue;
-            }
         };
         match String::from_utf8(bytes) {
             Ok(text) if sent.as_deref() == Some(text.as_str()) => {}
@@ -3868,6 +3930,176 @@ mod tests {
         // An editor that saves by renaming another file over it.
         crate::util::write_atomic(&path, b"[data]\npage_size = 100\n").unwrap();
         assert!(!texts_until(&mut backend, "[data]\npage_size = 100\n").is_empty());
+        // And one that writes in place. The first write above was that
+        // too, but so soon after the watch began that the read it starts
+        // with may have been the one to find it.
+        std::fs::write(&path, "[data]\npage_size = 300\n").unwrap();
+        assert!(!texts_until(&mut backend, "[data]\npage_size = 300\n").is_empty());
+    }
+
+    #[test]
+    fn the_settings_file_is_read_when_the_watch_starts() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.toml");
+        // Saved after the app loaded its settings and before it watched
+        // the file: no change follows to say so.
+        std::fs::write(&path, PAGE_500).unwrap();
+        let (mut backend, live) = watching(&path);
+        assert!(live);
+        assert_eq!(texts_until(&mut backend, PAGE_500), [PAGE_500]);
+        // Once: the watch starting is not a change of the file.
+        assert!(backend.wait(Duration::from_millis(600)).is_none());
+    }
+
+    #[test]
+    fn the_settings_file_settles_from_its_last_change() {
+        paused().block_on(async {
+            let (changed, mut changes) = tokio_mpsc::unbounded_channel();
+            let start = tokio::time::Instant::now();
+            // A save in three steps, 80 ms apart: truncated at 80, written
+            // at 160. Read 100 ms after the first, the file would be empty.
+            let editor = changed.clone();
+            tokio::spawn(async move {
+                for _ in 0..3 {
+                    let _ = editor.send(());
+                    tokio::time::sleep(Duration::from_millis(80)).await;
+                }
+            });
+            assert!(settled(&mut changes).await);
+            assert_eq!(start.elapsed(), Duration::from_millis(260));
+            // The watcher is gone: there is nothing left to read for.
+            drop(changed);
+            assert!(!settled(&mut changes).await);
+        });
+    }
+
+    /// The reader of a settings file whose read number `n`, from 0, answers
+    /// with `answer(n)`: the channel that wakes it, what it sends, and when
+    /// each read was.
+    fn reader(
+        answer: impl Fn(usize) -> std::io::Result<Vec<u8>> + Send + 'static,
+    ) -> (
+        tokio_mpsc::UnboundedSender<()>,
+        mpsc::Receiver<Event>,
+        Arc<Mutex<Vec<tokio::time::Instant>>>,
+    ) {
+        let (outbox, events) = quiet_outbox();
+        let (changed, changes) = tokio_mpsc::unbounded_channel();
+        let reads = Arc::new(Mutex::new(Vec::new()));
+        let noted = Arc::clone(&reads);
+        let read = move |_: PathBuf| {
+            let mut reads = lock(&noted);
+            reads.push(tokio::time::Instant::now());
+            std::future::ready(answer(reads.len() - 1))
+        };
+        // A plain file that is watched: there is no link to follow.
+        let follow = || Ok(());
+        let path = PathBuf::from("settings.toml");
+        tokio::spawn(read_settings(path, true, changes, outbox, follow, read));
+        (changed, events, reads)
+    }
+
+    /// What a read answers while an editor holds the file.
+    fn held() -> std::io::Error {
+        std::io::ErrorKind::PermissionDenied.into()
+    }
+
+    /// The texts of the settings file sent so far.
+    fn texts(events: &mpsc::Receiver<Event>) -> Vec<String> {
+        let text = |event| match event {
+            Event::SettingsFile { text } => Some(text),
+            _ => None,
+        };
+        events.try_iter().filter_map(text).collect()
+    }
+
+    const PAGE_500: &str = "[data]\npage_size = 500\n";
+
+    #[test]
+    fn a_settings_file_that_cannot_be_read_is_tried_again() {
+        paused().block_on(async {
+            // An editor holds the file through two reads, and lets go
+            // without another change to say so.
+            let (changed, events, reads) = reader(|read| match read {
+                0 | 1 => Err(held()),
+                _ => Ok(PAGE_500.into()),
+            });
+            let start = tokio::time::Instant::now();
+            changed.send(()).unwrap();
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            assert_eq!(texts(&events), [PAGE_500]);
+            // Once the change has settled, then after a wait that doubles.
+            assert_eq!(sent_at(&reads, start), [100, 200, 400]);
+        });
+    }
+
+    #[test]
+    fn a_settings_file_that_stays_unreadable_is_left_until_it_changes() {
+        paused().block_on(async {
+            let (changed, events, reads) = reader(|read| match read {
+                0..6 => Err(held()),
+                _ => Ok(PAGE_500.into()),
+            });
+            let start = tokio::time::Instant::now();
+            changed.send(()).unwrap();
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            // Six reads, the waits between them doubling up to a second,
+            // and no more: the reader does not ask for ever.
+            assert_eq!(sent_at(&reads, start), [100, 200, 400, 800, 1_600, 2_600]);
+            assert!(texts(&events).is_empty());
+            // The next change is read as any other.
+            changed.send(()).unwrap();
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            assert_eq!(sent_at(&reads, start).len(), 7);
+            assert_eq!(texts(&events), [PAGE_500]);
+        });
+    }
+
+    #[test]
+    fn a_settings_file_that_is_gone_is_read_once() {
+        paused().block_on(async {
+            let (changed, events, reads) = reader(|_| Err(std::io::ErrorKind::NotFound.into()));
+            let start = tokio::time::Instant::now();
+            changed.send(()).unwrap();
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            // Waiting does not bring a deleted file back.
+            assert_eq!(sent_at(&reads, start), [100]);
+            assert!(texts(&events).is_empty());
+        });
+    }
+
+    #[test]
+    fn a_change_while_a_read_waits_starts_over() {
+        paused().block_on(async {
+            let (changed, events, reads) = reader(|read| match read {
+                0..4 => Err(held()),
+                _ => Ok(PAGE_500.into()),
+            });
+            let start = tokio::time::Instant::now();
+            changed.send(()).unwrap();
+            // The third read has failed, and the fourth is due at 800.
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            changed.send(()).unwrap();
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            // The file changed again: it is left to settle, and the waits
+            // begin again from the shortest.
+            assert_eq!(sent_at(&reads, start), [100, 200, 400, 600, 700]);
+            assert_eq!(texts(&events), [PAGE_500]);
+        });
+    }
+
+    #[test]
+    fn a_read_that_waits_ends_with_the_watch() {
+        paused().block_on(async {
+            let (changed, events, reads) = reader(|_| Err(held()));
+            let start = tokio::time::Instant::now();
+            changed.send(()).unwrap();
+            tokio::time::sleep(Duration::from_millis(150)).await;
+            drop(changed);
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            assert_eq!(sent_at(&reads, start), [100]);
+            assert!(texts(&events).is_empty());
+        });
     }
 
     #[test]
@@ -4045,11 +4277,12 @@ mod tests {
         let mut watch = SettingsWatcher {
             watcher: notify::recommended_watcher(|_| {}).unwrap(),
             path: path.clone(),
-            names: Vec::new(),
+            names: Arc::default(),
             elsewhere: None,
         };
         let names = |watch: &SettingsWatcher| -> Vec<String> {
-            let names = watch.names.iter();
+            let names = lock(&watch.names);
+            let names = names.iter();
             names
                 .map(|name| name.to_string_lossy().into_owned())
                 .collect()
