@@ -61,8 +61,8 @@ const MAX_LINKS: usize = 40;
 /// The file `path` names once the symbolic links at its end are followed
 /// (a dotfiles manager keeps the file in its repository and a link here):
 /// `path` itself when it is not a link. The file need not be there. Links
-/// among the directories on the way are the system's to follow. Links that
-/// lead back to themselves are an error.
+/// among the directories on the way are the system's to follow. More links
+/// than the limit, as links that lead back to themselves are, is an error.
 pub fn resolve_link(path: &Path) -> std::io::Result<PathBuf> {
     let mut file = path.to_path_buf();
     let mut followed = 0;
@@ -75,7 +75,7 @@ pub fn resolve_link(path: &Path) -> std::io::Result<PathBuf> {
         }
         if followed == MAX_LINKS {
             return Err(std::io::Error::other(format!(
-                "{} is a symbolic link that never ends",
+                "{} leads through more than {MAX_LINKS} symbolic links",
                 path.display()
             )));
         }
@@ -162,7 +162,7 @@ pub fn load_json<T: DeserializeOwned + Default>(path: &Path) -> T {
 /// file the link leads to that is renamed, beside itself: the link stays,
 /// and the next save writes a new file where it leads.
 pub fn keep_aside(path: &Path, problem: &str) {
-    // A link that never ends has no file to move: the link itself goes.
+    // Links without an end have no file to move: the link itself goes.
     let file = resolve_link(path).unwrap_or_else(|_| path.to_path_buf());
     let path = file.as_path();
     let Some(aside) = (0..1000)
@@ -423,7 +423,11 @@ mod tests {
         assert_eq!(std::fs::read(&file).unwrap(), b"second");
         // One more is one too many.
         std::os::unix::fs::symlink("link-1", link(0)).unwrap();
-        assert!(resolve_link(&link(0)).is_err());
+        let error = resolve_link(&link(0)).unwrap_err().to_string();
+        assert!(
+            error.ends_with("leads through more than 40 symbolic links"),
+            "{error}"
+        );
         assert!(write_atomic(&link(0), b"lost").is_err());
         assert_eq!(std::fs::read(&file).unwrap(), b"second");
     }
