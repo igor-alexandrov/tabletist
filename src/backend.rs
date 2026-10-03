@@ -834,8 +834,9 @@ const READ_AGAIN_MAX: Duration = Duration::from_secs(1);
 
 /// Sends the settings file's text each time it changes, once the changes
 /// have settled. A read that fails is tried again, `READ_TRIES` times in
-/// all. Ends when the watcher is dropped. `read` reads the file: the tests
-/// have one that fails.
+/// all, and one the file changed under is not sent. Ends when the watcher
+/// is dropped. `read` reads the file: the tests have ones that fail, and
+/// ones that take their time.
 async fn read_settings<R, F>(
     path: PathBuf,
     mut changes: tokio_mpsc::UnboundedReceiver<()>,
@@ -856,7 +857,17 @@ async fn read_settings<R, F>(
             let mut wait = SETTLE;
             loop {
                 match read(path.clone()).await {
-                    Ok(bytes) => break 'settle Some(bytes),
+                    Ok(bytes) => match changes.try_recv() {
+                        // Changed while it was read (an editor truncating
+                        // it, say): what was read may be half of that save,
+                        // and sending it would have the app apply it until
+                        // the next read. It is left to settle and read
+                        // again.
+                        Ok(()) => continue 'settle,
+                        // The end of the watch is not a change: this text
+                        // is whole, and the task ends at its next wait.
+                        Err(_) => break 'settle Some(bytes),
+                    },
                     // Deleted: the settings in memory stay, and the next
                     // change made in the app writes the file again. No
                     // wait brings it back.
@@ -3785,8 +3796,8 @@ mod tests {
     }
 
     /// The reader of a settings file whose read number `n`, from 0, answers
-    /// with `answer(n)`: the channel that wakes it, what it sends, and when
-    /// each read was.
+    /// at once with `answer(n)`: the channel that wakes it, what it sends,
+    /// and when each read was.
     fn reader(
         answer: impl Fn(usize) -> std::io::Result<Vec<u8>> + Send + 'static,
     ) -> (
@@ -3794,6 +3805,22 @@ mod tests {
         mpsc::Receiver<Event>,
         Arc<Mutex<Vec<tokio::time::Instant>>>,
     ) {
+        slow_reader(move |read| std::future::ready(answer(read)))
+    }
+
+    /// As `reader`, with reads that may take their time: read number `n` is
+    /// the future `read(n)`, and the file can change while it runs. The
+    /// times are those the reads began at.
+    fn slow_reader<F>(
+        read: impl Fn(usize) -> F + Send + 'static,
+    ) -> (
+        tokio_mpsc::UnboundedSender<()>,
+        mpsc::Receiver<Event>,
+        Arc<Mutex<Vec<tokio::time::Instant>>>,
+    )
+    where
+        F: Future<Output = std::io::Result<Vec<u8>>> + Send + 'static,
+    {
         let (outbox, events) = quiet_outbox();
         let (changed, changes) = tokio_mpsc::unbounded_channel();
         let reads = Arc::new(Mutex::new(Vec::new()));
@@ -3801,7 +3828,7 @@ mod tests {
         let read = move |_: PathBuf| {
             let mut reads = lock(&noted);
             reads.push(tokio::time::Instant::now());
-            std::future::ready(answer(reads.len() - 1))
+            read(reads.len() - 1)
         };
         tokio::spawn(read_settings("settings.toml".into(), changes, outbox, read));
         (changed, events, reads)
@@ -3892,6 +3919,51 @@ mod tests {
             // The file changed again: it is left to settle, and the waits
             // begin again from the shortest.
             assert_eq!(sent_at(&reads, start), [100, 200, 400, 600, 700]);
+            assert_eq!(texts(&events), [PAGE_500]);
+        });
+    }
+
+    /// A read that takes 50 ms to answer with `answer`.
+    async fn after_50_ms(answer: Vec<u8>) -> std::io::Result<Vec<u8>> {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        Ok(answer)
+    }
+
+    #[test]
+    fn a_read_overtaken_by_a_change_is_not_sent() {
+        paused().block_on(async {
+            // An editor truncates the file and writes it again while the
+            // first read runs: that read finds the file empty.
+            let (changed, events, reads) = slow_reader(|read| {
+                after_50_ms(match read {
+                    0 => Vec::new(),
+                    _ => PAGE_500.into(),
+                })
+            });
+            let start = tokio::time::Instant::now();
+            changed.send(()).unwrap();
+            // The first read began at 100 and answers at 150.
+            tokio::time::sleep(Duration::from_millis(120)).await;
+            changed.send(()).unwrap();
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            // What it found is dropped when it answers, and the file is
+            // read again once it has been left alone since.
+            assert_eq!(sent_at(&reads, start), [100, 250]);
+            assert_eq!(texts(&events), [PAGE_500]);
+        });
+    }
+
+    #[test]
+    fn a_read_that_outlasts_the_watch_is_sent() {
+        paused().block_on(async {
+            let (changed, events, reads) = slow_reader(|_| after_50_ms(PAGE_500.into()));
+            let start = tokio::time::Instant::now();
+            changed.send(()).unwrap();
+            tokio::time::sleep(Duration::from_millis(120)).await;
+            // The end of the watch is not a change of the file.
+            drop(changed);
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            assert_eq!(sent_at(&reads, start), [100]);
             assert_eq!(texts(&events), [PAGE_500]);
         });
     }
