@@ -131,6 +131,83 @@ fn quote(text: &str) -> String {
     out
 }
 
+/// Where the settings a start has came from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Source {
+    /// `settings.toml`.
+    Toml,
+    /// An older version's `settings.json`: the TOML is still to be written.
+    Json,
+    /// No file.
+    Defaults,
+}
+
+/// The settings as a file gave them, and what the file looked like.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Loaded {
+    pub settings: Settings,
+    /// The file's text as read. With no TOML file, what would be written.
+    pub text: String,
+    /// The lines that were ignored, counted from 1, each once, in order.
+    pub invalid: Vec<usize>,
+    /// The line each key was read from, in the order of [`Key::ALL`].
+    pub lines: Vec<(Key, usize)>,
+    pub source: Source,
+}
+
+impl Loaded {
+    /// Settings that came from no TOML file.
+    pub fn of(settings: Settings, source: Source) -> Self {
+        let text = settings.to_toml();
+        let lines = Settings::from_toml(&text).lines;
+        Self {
+            settings,
+            text,
+            invalid: Vec::new(),
+            lines,
+            source,
+        }
+    }
+}
+
+impl From<Settings> for Loaded {
+    fn from(settings: Settings) -> Self {
+        Self::of(settings, Source::Defaults)
+    }
+}
+
+/// The line `offset` is on in `text`, counted from 1.
+fn line_of(text: &str, offset: usize) -> usize {
+    let before = &text.as_bytes()[..offset.min(text.len())];
+    before.iter().filter(|byte| **byte == b'\n').count() + 1
+}
+
+/// The last line of `text` that is not blank, counted from 1.
+fn last_line(text: &str) -> Option<usize> {
+    text.lines()
+        .enumerate()
+        .filter(|(_, line)| !line.trim().is_empty())
+        .map(|(index, _)| index + 1)
+        .last()
+}
+
+/// `text` with the lines numbered in `lines` (from 1) emptied. Their line
+/// breaks stay, so every other line keeps its number.
+fn without_lines(text: &str, lines: &[usize]) -> String {
+    text.split_inclusive('\n')
+        .enumerate()
+        .map(|(index, line)| {
+            if !lines.contains(&(index + 1)) {
+                line
+            } else if line.ends_with('\n') {
+                "\n"
+            } else {
+                ""
+            }
+        })
+        .collect()
+}
+
 impl Settings {
     pub const DEFAULT_PAGE_SIZE: u32 = 300;
     pub const MIN_PAGE_SIZE: u32 = 10;
@@ -222,6 +299,105 @@ impl Settings {
         self.sql_limit = Self::valid_sql_limit(self.sql_limit);
         self.sql_timeout_secs = Self::valid_sql_timeout(self.sql_timeout_secs);
         self
+    }
+
+    /// Takes `key`'s value from the file. False when it is no value the key
+    /// can have: the setting stays as it was.
+    fn take(&mut self, key: Key, value: &toml::de::DeValue<'_>) -> bool {
+        // Any integer is a number here: `validated` brings it into range.
+        let number = value
+            .as_integer()
+            .and_then(|integer| i64::from_str_radix(integer.as_str(), integer.radix()).ok())
+            .and_then(|number| u32::try_from(number.clamp(0, i64::from(u32::MAX))).ok());
+        let flag = value.as_bool();
+        let text = value.as_str();
+        match key {
+            Key::PageSize => number.map(|number| self.page_size = number),
+            Key::Timestamps => text
+                .and_then(Timestamps::from_name)
+                .map(|choice| self.timestamps = choice),
+            Key::GroupDigits => flag.map(|flag| self.group_digits = flag),
+            Key::ValueTags => flag.map(|flag| self.value_tags = flag),
+            Key::ShowSystemSchemas => flag.map(|flag| self.show_system_schemas = flag),
+            Key::SqlLimit => number.map(|number| self.sql_limit = number),
+            Key::SqlTimeoutSecs => number.map(|number| self.sql_timeout_secs = Some(number)),
+            Key::Theme => text.map(|name| self.custom_theme = Some(name.to_owned())),
+        }
+        .is_some()
+    }
+
+    /// Reads the file's text, keeping everything it can. A line that is not
+    /// TOML, and a value its key cannot have, are ignored and remembered by
+    /// line; the key keeps its default. A key or a table this version does
+    /// not know is ignored without a word: a newer one may have written it.
+    pub fn from_toml(text: &str) -> Loaded {
+        // The parser recovers from a bad line in two ways that are not
+        // "ignored": it stops reading at some (a key with no `=`), and
+        // reads past others with a guess at the value (`full` unquoted).
+        // So a line it rejects is emptied and the text read again, until
+        // it rejects nothing more.
+        let mut working = text.to_owned();
+        let mut invalid: Vec<usize> = Vec::new();
+        loop {
+            let (_, errors) = toml::de::DeTable::parse_recoverable(&working);
+            let mut rejected = Vec::new();
+            for error in &errors {
+                match error.span() {
+                    // The parser blames the end of the text for a value
+                    // that never closes (`"""` with no end). That is no
+                    // line of the file, so the last line with anything on
+                    // it goes: the lines are emptied from the bottom up
+                    // until the opening one is. With every line blank the
+                    // error marks none.
+                    Some(span) if span.start >= working.len() => {
+                        rejected.extend(last_line(&working));
+                    }
+                    Some(span) => rejected.push(line_of(&working, span.start)),
+                    None => log::warn!("settings: {}", error.message()),
+                }
+            }
+            // A line already emptied has nothing left to reject: an error
+            // that still names one ends the loop.
+            rejected.retain(|line| !invalid.contains(line));
+            rejected.sort_unstable();
+            rejected.dedup();
+            if rejected.is_empty() {
+                break;
+            }
+            working = without_lines(&working, &rejected);
+            invalid.extend(rejected);
+        }
+        let (document, _) = toml::de::DeTable::parse_recoverable(&working);
+        let document = document.into_inner();
+        let mut settings = Settings::default();
+        let mut lines = Vec::new();
+        for key in Key::ALL {
+            let (table, name) = key.path();
+            let Some((found, value)) = document
+                .get(table)
+                .and_then(|table| table.get_ref().as_table())
+                .and_then(|table| table.get_key_value(name))
+            else {
+                continue;
+            };
+            // Emptied lines kept their breaks: a line has the same number
+            // in `working` as in `text`.
+            let line = line_of(&working, found.span().start);
+            if settings.take(key, value.get_ref()) {
+                lines.push((key, line));
+            } else {
+                invalid.push(line);
+            }
+        }
+        invalid.sort_unstable();
+        invalid.dedup();
+        Loaded {
+            settings: settings.validated(),
+            text: text.to_owned(),
+            invalid,
+            lines,
+            source: Source::Toml,
+        }
     }
 
     pub fn load(path: &Path) -> Self {
@@ -450,5 +626,187 @@ sql_timeout_secs = 30  # 0 waits forever
         paths.sort_unstable();
         paths.dedup();
         assert_eq!(paths.len(), Key::ALL.len());
+    }
+
+    #[test]
+    fn what_is_written_reads_back_the_same() {
+        let settings = Settings {
+            page_size: 500,
+            timestamps: Timestamps::Full,
+            group_digits: true,
+            value_tags: false,
+            show_system_schemas: true,
+            custom_theme: Some("My \"Nord\".json".into()),
+            sql_limit: 100,
+            sql_timeout_secs: None,
+        };
+        let text = settings.to_toml();
+        let loaded = Settings::from_toml(&text);
+        assert_eq!(loaded.settings, settings);
+        assert_eq!(loaded.text, text);
+        assert_eq!(loaded.invalid, Vec::<usize>::new());
+        assert_eq!(loaded.source, Source::Toml);
+        // Writing it again changes nothing.
+        assert_eq!(loaded.settings.to_toml(), text);
+    }
+
+    #[test]
+    fn each_key_is_found_on_its_line() {
+        let loaded = Settings::from_toml(&Settings::default().to_toml());
+        assert_eq!(
+            loaded.lines,
+            vec![
+                (Key::PageSize, 3),
+                (Key::Timestamps, 4),
+                (Key::GroupDigits, 5),
+                (Key::ValueTags, 6),
+                (Key::ShowSystemSchemas, 9),
+                (Key::SqlLimit, 12),
+                (Key::SqlTimeoutSecs, 13),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_missing_key_keeps_its_default_and_an_unknown_one_is_ignored() {
+        let loaded = Settings::from_toml(
+            "[data]\npage_size = 100\nfrom_the_future = true\n\n[tomorrow]\nkey = 1\n",
+        );
+        assert_eq!(
+            loaded.settings,
+            Settings {
+                page_size: 100,
+                ..Settings::default()
+            }
+        );
+        assert_eq!(loaded.invalid, Vec::<usize>::new());
+        assert_eq!(loaded.lines, vec![(Key::PageSize, 2)]);
+    }
+
+    #[test]
+    fn a_value_the_key_cannot_have_is_ignored_by_its_line() {
+        let loaded = Settings::from_toml(
+            "[data]\npage_size = \"lots\"\ntimestamps = \"minute\"\ngroup_digits = \"yes\"\nvalue_tags = false\n",
+        );
+        assert_eq!(loaded.invalid, vec![2, 3, 4]);
+        assert_eq!(
+            loaded.settings,
+            Settings {
+                value_tags: false,
+                ..Settings::default()
+            }
+        );
+        assert_eq!(loaded.lines, vec![(Key::ValueTags, 5)]);
+    }
+
+    #[test]
+    fn a_line_that_is_not_toml_is_ignored_and_the_rest_applies() {
+        let text = "[data]\npage_size = 100\nthis is not toml\ngroup_digits = true\n\n\
+                    [editor]\nsql_limit = 100\n";
+        let loaded = Settings::from_toml(text);
+        assert_eq!(loaded.invalid, vec![3]);
+        assert_eq!(loaded.settings.page_size, 100);
+        // The lines and the tables under the bad one are still read.
+        assert!(loaded.settings.group_digits);
+        assert_eq!(loaded.settings.sql_limit, 100);
+        assert_eq!(
+            loaded.lines,
+            vec![
+                (Key::PageSize, 2),
+                (Key::GroupDigits, 4),
+                (Key::SqlLimit, 7)
+            ]
+        );
+        // What the pane will show is the file, not what was parsed.
+        assert_eq!(loaded.text, text);
+    }
+
+    #[test]
+    fn a_line_the_parser_rejects_is_not_applied_on_a_guess() {
+        // Each of these the parser reports and still gives a value for.
+        let loaded = Settings::from_toml(
+            "[data]\ntimestamps = full\nvalue_tags = False\n\n[appearance]\ntheme = Nord.json\n",
+        );
+        assert_eq!(loaded.invalid, vec![2, 3, 6]);
+        assert_eq!(loaded.settings, Settings::default());
+        assert!(loaded.lines.is_empty());
+    }
+
+    #[test]
+    fn a_key_given_twice_keeps_its_first_value() {
+        let loaded = Settings::from_toml("[data]\npage_size = 100\npage_size = 500\n");
+        assert_eq!(loaded.invalid, vec![3]);
+        assert_eq!(loaded.settings.page_size, 100);
+        assert_eq!(loaded.lines, vec![(Key::PageSize, 2)]);
+    }
+
+    #[test]
+    fn numbers_out_of_range_are_clamped_and_not_invalid() {
+        let loaded = Settings::from_toml(
+            "[data]\npage_size = 0\n\n[editor]\nsql_limit = 999999999\nsql_timeout_secs = 0\n",
+        );
+        assert_eq!(loaded.invalid, Vec::<usize>::new());
+        assert_eq!(loaded.settings.page_size, Settings::MIN_PAGE_SIZE);
+        assert_eq!(loaded.settings.sql_limit, Settings::MAX_SQL_LIMIT);
+        assert_eq!(loaded.settings.sql_timeout_secs, None);
+        let loaded = Settings::from_toml("[data]\npage_size = -5\n");
+        assert_eq!(loaded.invalid, Vec::<usize>::new());
+        assert_eq!(loaded.settings.page_size, Settings::MIN_PAGE_SIZE);
+        let loaded = Settings::from_toml("[data]\npage_size = 999999999\n");
+        assert_eq!(loaded.settings.page_size, Settings::MAX_PAGE_SIZE);
+        // The editor's own floor, and a timeout that is one.
+        let loaded = Settings::from_toml("[editor]\nsql_limit = 0\nsql_timeout_secs = 1\n");
+        assert_eq!(loaded.settings.sql_limit, 1);
+        assert_eq!(loaded.settings.sql_timeout_secs, Some(1));
+        let loaded = Settings::from_toml("[editor]\nsql_timeout_secs = 0\n");
+        assert_eq!(loaded.settings.sql_timeout(), None);
+    }
+
+    #[test]
+    fn an_empty_text_is_the_defaults() {
+        let loaded = Settings::from_toml("");
+        assert_eq!(loaded.settings, Settings::default());
+        assert_eq!(loaded.invalid, Vec::<usize>::new());
+        assert!(loaded.lines.is_empty());
+    }
+
+    #[test]
+    fn settings_from_no_toml_file_carry_the_text_that_would_be_written() {
+        let settings = Settings {
+            page_size: 500,
+            ..Settings::default()
+        };
+        let loaded = Loaded::of(settings.clone(), Source::Json);
+        assert_eq!(loaded.source, Source::Json);
+        assert_eq!(loaded.text, settings.to_toml());
+        assert_eq!(loaded.lines.first(), Some(&(Key::PageSize, 3)));
+        let defaults: Loaded = Settings::default().into();
+        assert_eq!(defaults.source, Source::Defaults);
+        assert_eq!(defaults.settings, Settings::default());
+    }
+
+    #[test]
+    fn a_string_left_open_is_not_applied_and_costs_the_lines_under_it() {
+        // The parser blames the end of the text and guesses a theme of
+        // everything under the quotes.
+        let text = "[data]\npage_size = 100\n[appearance]\ntheme = \"\"\"Nord\n\
+                    [editor]\nsql_limit = 100\n";
+        let loaded = Settings::from_toml(text);
+        assert_eq!(loaded.invalid, vec![4, 5, 6]);
+        assert_eq!(loaded.settings.custom_theme, None);
+        assert_eq!(loaded.settings.page_size, 100);
+        assert_eq!(loaded.settings.sql_limit, Settings::default().sql_limit);
+        assert_eq!(loaded.lines, vec![(Key::PageSize, 2)]);
+        // Only lines the file has.
+        let count = text.lines().count();
+        assert!(
+            loaded.invalid.iter().all(|line| *line <= count),
+            "{:?}",
+            loaded.invalid
+        );
+        // The same on a last line with no break after it.
+        let loaded = Settings::from_toml("[appearance]\ntheme = \"\"\"Nord");
+        assert_eq!(loaded.invalid, vec![2]);
+        assert_eq!(loaded.settings.custom_theme, None);
     }
 }
