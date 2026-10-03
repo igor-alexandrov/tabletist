@@ -433,6 +433,21 @@ and demo mode never watch. The backend answers with
 watches left) the failure is logged and the pane's header does not say
 `live`; everything else works.
 
+`settings.toml` may be a symbolic link: GNU stow, dotbot and chezmoi in
+symlink mode keep the file in a repository and a link in the config
+directory. An edit made in the repository raises its events there and none
+beside the link, so the watcher resolves the link (`util::resolve_link`,
+the links at the end of the path, one after another) and, when the file is
+in another directory, watches that directory too. The reader wakes for
+either name: the link's in the config directory, the file's where it is.
+Each time it wakes it resolves the link again before it reads, so a link
+made, turned elsewhere or replaced by a plain file while the app runs is
+followed. A link that leads where nothing can be watched (the directory is
+not there, or no watch can be had on it) is logged and
+`Event::SettingsWatch { live: false }` is sent, then `true` again once it
+can. A link turned by hand among the directories on the way, with nothing
+changing beside `settings.toml`, is not seen until the next change that is.
+
 When the file is deleted while the app runs, the settings in memory stay,
 and the next change writes the file again.
 
@@ -455,9 +470,6 @@ footer: "2 lines in the file could not be read and were ignored".
   app's own writes, the very text the backend sent last is not seen: the
   reader never sends the same text twice in a row. The app then holds the
   newer settings and the disk the older, until the next change of either.
-- `settings.toml` as a symbolic link (a dotfiles manager) is not followed
-  by the watcher yet: an edit made through the link's target is not noticed,
-  though the file is said to be watched. It is a task of its own.
 - A state file that is a symbolic link (`settings.toml`, and
   `connections.json` and `known_hosts.json` alike) is saved through the
   link: `util::write_atomic` resolves it and makes its temporary file beside
