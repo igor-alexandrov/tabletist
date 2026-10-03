@@ -550,6 +550,27 @@ mod tests {
     }
 
     #[test]
+    fn a_grid_is_fitted_again_when_an_option_widens_its_cells() {
+        let mut harness = Harness::new();
+        harness.connect_fake();
+        harness.click("users");
+        let mut page = crate::testing::page(1, false);
+        page.rows[0][0] = tabletist_db::Value::Int(i64::MAX);
+        harness.answer_rows(page);
+        harness.settle();
+        assert!(harness.painted_color("9223372036854775807").is_some());
+        let settings = crate::settings::Settings {
+            group_digits: true,
+            ..harness.app.settings.clone()
+        };
+        harness.app.apply_settings(settings);
+        harness.settle();
+        // Six commas wider. With the widths of the plain number the cell
+        // would be cut short and this text never painted whole.
+        assert!(harness.painted_color("9,223,372,036,854,775,807").is_some());
+    }
+
+    #[test]
     fn numbers_are_grouped_when_the_settings_say_so_but_keys_never_are() {
         let mut harness = Harness::new();
         harness.app.settings.group_digits = true;

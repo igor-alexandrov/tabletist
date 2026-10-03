@@ -1561,7 +1561,8 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
             // The columns in view first, while some are out of it.
             let columns = (object.view == ObjectView::Data)
                 .then(|| {
-                    super::data_view::columns_note(ui.ctx(), workspace, tab, object, &look, locale)
+                    let fit = super::data_view::Fit::of(workspace, &app.settings);
+                    super::data_view::columns_note(ui.ctx(), tab, object, fit, &look, locale)
                 })
                 .flatten();
             Some(match columns {

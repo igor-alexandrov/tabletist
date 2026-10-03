@@ -759,10 +759,32 @@ fn dashed_rect(ui: &egui::Ui, rect: Rect, radius: f32, color: egui::Color32) {
     }
 }
 
-/// The id of a table's grid. Full precision widens timestamps: the columns
-/// are fitted again, as a grid of its own.
-fn grid_id(tab: ConnTabId, object_tab: TabId, full_precision: bool) -> Id {
-    Id::new(("grid", tab.0, object_tab.0, full_precision))
+/// What decides how wide a grid's cells are, beside its rows. A grid keeps
+/// the widths it fitted under its id, so these are part of the id: when one
+/// changes the columns are fitted again, as a grid of its own.
+#[derive(Clone, Copy, Debug, Default, Hash, PartialEq, Eq)]
+pub struct Fit {
+    /// Timestamps with their fraction.
+    pub full_precision: bool,
+    /// Numbers with their digits in threes.
+    pub grouped: bool,
+    /// Values of a closed set as tags, which pad their text.
+    pub value_tags: bool,
+}
+
+impl Fit {
+    pub fn of(workspace: &crate::model::Workspace, settings: &crate::settings::Settings) -> Self {
+        Self {
+            full_precision: workspace.full_precision,
+            grouped: settings.group_digits,
+            value_tags: settings.value_tags,
+        }
+    }
+}
+
+/// The id of a table's grid, one per [`Fit`].
+fn grid_id(tab: ConnTabId, object_tab: TabId, fit: Fit) -> Id {
+    Id::new(("grid", tab.0, object_tab.0, fit))
 }
 
 /// What a status line says of the columns while some are out of view:
@@ -771,13 +793,13 @@ fn grid_id(tab: ConnTabId, object_tab: TabId, full_precision: bool) -> Id {
 /// it is a frame behind a scroll.
 pub fn columns_note(
     ctx: &egui::Context,
-    workspace: &crate::model::Workspace,
     tab: ConnTabId,
     object: &ObjectTab,
+    fit: Fit,
     look: &Look,
     locale: crate::i18n::Locale,
 ) -> Option<String> {
-    let id = grid_id(tab, object.id, workspace.full_precision);
+    let id = grid_id(tab, object.id, fit);
     let shown = grid::columns_shown(ctx, id).filter(grid::ColumnsShown::partial)?;
     let say = |text: &'static str| look.label(&gettext(locale, text));
     let noun = if look.terminal { "cols" } else { "Columns" };
@@ -838,7 +860,10 @@ pub fn footer(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabI
     let columns = app
         .workspace(tab)
         .filter(|_| view == ObjectView::Data)
-        .and_then(|workspace| columns_note(ui.ctx(), workspace, tab, object, &look, locale));
+        .and_then(|workspace| {
+            let fit = Fit::of(workspace, &app.settings);
+            columns_note(ui.ctx(), tab, object, fit, &look, locale)
+        });
     let mut actions = Vec::new();
     egui::Panel::bottom(Id::new(("object-footer", tab.0, object_tab.0)))
         .exact_size(33.0)
@@ -1056,12 +1081,10 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
     let locale = app.locale;
     let palette = app.palette;
     let look = app.look;
-    let group_digits = app.settings.group_digits;
-    let value_tags = app.settings.value_tags;
     let Some(workspace) = app.workspace(tab) else {
         return;
     };
-    let full_precision = workspace.full_precision;
+    let fit = Fit::of(workspace, &app.settings);
     let Some(object) = workspace.object_tab(object_tab) else {
         return;
     };
@@ -1104,20 +1127,20 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
         let ctx = ui.ctx().clone();
         let tags: Vec<_> = crate::ui::value_tags::Tags::of_page(page, structure)
             .into_iter()
-            .map(|tags| tags.when(value_tags))
+            .map(|tags| tags.when(fit.value_tags))
             .collect();
         // Grouping is for amounts: a key reads as the name it is.
         let shown: Vec<Shown> = page
             .columns
             .iter()
             .map(|column| Shown {
-                full_precision,
-                grouped: group_digits && !is_key(&column.name, structure),
+                full_precision: fit.full_precision,
+                grouped: fit.grouped && !is_key(&column.name, structure),
             })
             .collect();
         let output = grid::show(
             ui,
-            grid_id(tab, object_tab, full_precision),
+            grid_id(tab, object_tab, fit),
             &columns,
             page.rows.len(),
             object.query.offset,

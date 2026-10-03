@@ -110,16 +110,10 @@ fn state(sql: &SqlTab) -> State<'_> {
     }
 }
 
-/// The id of the grid that shows the result of `run`: one per run, so the
-/// widths that fit one result's columns are not another's.
-fn grid_id(tab: ConnTabId, id: TabId, run: Option<RequestId>, full_precision: bool) -> Id {
-    Id::new((
-        "sql-grid",
-        tab.0,
-        id.0,
-        run.map(|run| run.0),
-        full_precision,
-    ))
+/// The id of the grid that shows the result of `run`: one per run and per
+/// fit, so the widths that fit one result's columns are not another's.
+fn grid_id(tab: ConnTabId, id: TabId, run: Option<RequestId>, fit: data_view::Fit) -> Id {
+    Id::new(("sql-grid", tab.0, id.0, run.map(|run| run.0), fit))
 }
 
 /// Where egui's memory keeps what the results of the editor `id` were
@@ -193,12 +187,8 @@ pub fn show(app: &mut App, ui: &mut Ui, tab: ConnTabId, id: TabId) {
 struct Place<'a> {
     tab: ConnTabId,
     sql: &'a SqlTab,
-    /// Timestamps in full, as the workspace's tables show them.
-    full_precision: bool,
-    /// Numbers in threes, as the settings ask.
-    grouped: bool,
-    /// Booleans as tags, as the settings ask.
-    value_tags: bool,
+    /// How the cells are drawn, as the workspace's tables draw them.
+    fit: data_view::Fit,
     /// Whose error codes the results read.
     driver: tabletist_db::Driver,
     /// Whether the arrow keys move in the result's grid.
@@ -221,9 +211,7 @@ fn draw(app: &App, ui: &mut Ui, tab: ConnTabId, id: TabId, actions: &mut Vec<Act
     let place = Place {
         tab,
         sql,
-        full_precision: workspace.full_precision,
-        grouped: app.settings.group_digits,
-        value_tags: app.settings.value_tags,
+        fit: data_view::Fit::of(workspace, &app.settings),
         driver: workspace.driver,
         keys: workspace.pane == crate::model::Pane::Grid,
     };
@@ -1051,9 +1039,7 @@ fn results(ui: &mut Ui, run: &SqlRun, place: &Place<'_>, env: &Env<'_>, actions:
     let Place {
         tab,
         sql,
-        full_precision,
-        grouped,
-        value_tags,
+        fit,
         keys,
         ..
     } = *place;
@@ -1137,7 +1123,7 @@ fn results(ui: &mut Ui, run: &SqlRun, place: &Place<'_>, env: &Env<'_>, actions:
             }
         })
         .collect();
-    let id = grid_id(tab, sql.id, sql.run.loaded, full_precision);
+    let id = grid_id(tab, sql.id, sql.run.loaded, fit);
     keep_grid(ui.ctx(), results_id(tab, sql.id), id);
     let mut child = ui.new_child(egui::UiBuilder::new().id_salt("grid").max_rect(area));
     child.set_clip_rect(area.intersect(ui.clip_rect()));
@@ -1146,7 +1132,7 @@ fn results(ui: &mut Ui, run: &SqlRun, place: &Place<'_>, env: &Env<'_>, actions:
     // booleans draw as tags, as a table's do.
     let tags: Vec<Tags<'_>> = columns
         .iter()
-        .map(|column| Tags::of(column, None).when(value_tags))
+        .map(|column| Tags::of(column, None).when(fit.value_tags))
         .collect();
     // The grid asks for the cells in view only.
     let output = grid::show(
@@ -1167,9 +1153,9 @@ fn results(ui: &mut Ui, run: &SqlRun, place: &Place<'_>, env: &Env<'_>, actions:
                 &tags[col],
                 look,
                 data_view::Shown {
-                    full_precision,
+                    full_precision: fit.full_precision,
                     // A result has no key to leave alone.
-                    grouped,
+                    grouped: fit.grouped,
                 },
             )
         },
@@ -2310,8 +2296,9 @@ mod tests {
         run(&mut harness);
         harness.answer_sql(Ok(script_outcome(vec![result_with("email")])), None);
         let narrow = width(&mut harness, "email");
+        let fit = data_view::Fit::of(harness.app.workspace(tab).unwrap(), &harness.app.settings);
         let first = sql(&harness, tab).run.loaded;
-        let first = grid_id(tab, sql(&harness, tab).id, first, false);
+        let first = grid_id(tab, sql(&harness, tab).id, first, fit);
         assert!(crate::ui::grid::remembered(&harness.ctx, first));
         // As many columns, one with a far longer name: widths kept from
         // the run before would cut it.
@@ -2322,7 +2309,7 @@ mod tests {
         assert!(wide > narrow + 40.0, "{narrow} then {wide}");
         // What egui kept for the older run's grid is dropped.
         let second = sql(&harness, tab).run.loaded;
-        let second = grid_id(tab, sql(&harness, tab).id, second, false);
+        let second = grid_id(tab, sql(&harness, tab).id, second, fit);
         assert_ne!(first, second);
         assert!(!crate::ui::grid::remembered(&harness.ctx, first));
         assert!(crate::ui::grid::remembered(&harness.ctx, second));
