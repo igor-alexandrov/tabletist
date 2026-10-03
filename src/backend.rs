@@ -3237,6 +3237,50 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn a_state_file_saved_through_a_symbolic_link_keeps_the_link() {
+        let dir = tempfile::tempdir().unwrap();
+        let (config, dotfiles) = config_and_dotfiles(dir.path());
+        let mut backend = Backend::start_with(Waker::default(), Keyring::memory());
+        let files = [
+            (
+                "settings.toml",
+                StateFile::Settings(crate::settings::Settings::default()),
+            ),
+            (
+                "connections.json",
+                StateFile::Connections(SavedConnections::default()),
+            ),
+            (
+                "known_hosts.json",
+                StateFile::KnownHosts(HostKeys::default()),
+            ),
+        ];
+        for (name, file) in files {
+            // As a dotfiles manager leaves it: the file in its repository
+            // and a link in the config directory.
+            let (path, target) = (config.join(name), dotfiles.join(name));
+            std::fs::write(&target, "from the repository").unwrap();
+            std::os::unix::fs::symlink(&target, &path).unwrap();
+            backend.send(Command::Save {
+                path: path.clone(),
+                file,
+            });
+            match backend.wait(WAIT) {
+                Some(Event::Saved { result: Ok(()), .. }) => {}
+                other => panic!("expected {name} to be written, got {other:?}"),
+            }
+            assert_eq!(std::fs::read_link(&path).unwrap(), target, "{name}");
+            assert!(!target.symlink_metadata().unwrap().file_type().is_symlink());
+            assert_ne!(
+                std::fs::read_to_string(&target).unwrap(),
+                "from the repository",
+                "{name} is written where the link leads"
+            );
+        }
+    }
+
     #[test]
     fn a_cancelled_queued_request_never_runs() {
         let (_dir, spec) = fixture();
@@ -3757,6 +3801,15 @@ mod tests {
         assert!(!texts_until(&mut backend, "[data]\npage_size = 500\n").is_empty());
         std::fs::remove_file(&path).unwrap();
         assert!(backend.wait(Duration::from_millis(600)).is_none());
+    }
+
+    /// A config directory and a dotfiles directory under `root`.
+    #[cfg(unix)]
+    fn config_and_dotfiles(root: &std::path::Path) -> (PathBuf, PathBuf) {
+        let (config, dotfiles) = (root.join("config"), root.join("dotfiles"));
+        std::fs::create_dir_all(&config).unwrap();
+        std::fs::create_dir_all(&dotfiles).unwrap();
+        (config, dotfiles)
     }
 
     #[test]

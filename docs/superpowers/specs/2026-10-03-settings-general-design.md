@@ -455,10 +455,24 @@ footer: "2 lines in the file could not be read and were ignored".
   app's own writes, the very text the backend sent last is not seen: the
   reader never sends the same text twice in a row. The app then holds the
   newer settings and the disk the older, until the next change of either.
-- `settings.toml` as a symbolic link (a dotfiles manager) is not supported
-  yet: an edit made through the link's target is not noticed, though the
-  file is said to be watched, and a save from the app replaces the link with
-  a plain file. Both are one task of their own.
+- `settings.toml` as a symbolic link (a dotfiles manager) is not followed
+  by the watcher yet: an edit made through the link's target is not noticed,
+  though the file is said to be watched. It is a task of its own.
+- A state file that is a symbolic link (`settings.toml`, and
+  `connections.json` and `known_hosts.json` alike) is saved through the
+  link: `util::write_atomic` resolves it and makes its temporary file beside
+  the file the link leads to, so the rename replaces that file and the link
+  stays. The write is as atomic as before, the temporary file still has a
+  random name and is made exclusively (a link planted under a temporary
+  name is not followed, in either directory), and on Unix the new file is
+  0600 where it lands, in the repository too. What no longer holds is that
+  a link at the path itself is never written through: that is now the
+  point, and whoever can put a link in the config directory (0700, the
+  user's) decides which file a save replaces. A link to a directory that is
+  not there is not followed by making the directory: the save fails, is
+  reported in the notice, and the link stays. So does a save where the
+  repository cannot be written. A file behind a link that cannot be loaded
+  is renamed to `.bad` beside itself, not the link.
 - The config directory is read-only: the change applies for the session and
   the failed save is reported in the notice, as today.
 - `page_size = 250` by hand: honoured, and shown in the menu as its own
