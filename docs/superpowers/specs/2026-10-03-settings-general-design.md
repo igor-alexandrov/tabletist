@@ -48,8 +48,12 @@ say what a value may be); drawing the unbacked rows disabled (controls that
 do nothing).
 
 Both new direct dependencies are already in `Cargo.lock`: `toml` 1.1.6
-(through `egui_kittest`) and `notify` 8.2 (through `fastframe-theme`). Their
-entries are added to the lock by hand and checked with `--locked`.
+(through `egui_kittest`) and `notify` 8.2 (through `fastframe-theme`). The
+lock resolved `toml` with `parse` and `serde` only, so the app asks for
+`default-features = false, features = ["parse"]`: the default `display`
+feature would pull in `toml_writer`, which is not in the lock and is not
+needed, since the app writes the file itself. Their entries are added to the
+lock by hand and checked with `--locked`.
 
 ## Out of scope
 
@@ -129,6 +133,8 @@ writer. `StateFile::Settings` saves that text through `util::write_atomic`.
         pub invalid: Vec<usize>,
         /// The line each known key was read from.
         pub lines: Vec<(Key, usize)>,
+        /// Where the settings came from.
+        pub source: Source,   // Toml, Json, Defaults
     }
 
     impl Settings {
@@ -139,8 +145,10 @@ writer. `StateFile::Settings` saves that text through `util::write_atomic`.
 `Key` names the eight keys above.
 
 `from_toml` parses with `toml::de::DeTable::parse_recoverable`, which
-returns what it could read and one error per line it could not. Then, for
-each known key:
+returns what it could read and the errors for what it could not. Keys,
+values and errors carry byte spans; a line number is one more than the count
+of newlines before a span's start, and `invalid` holds each line once. An error without
+a span marks no line and is logged. Then, for each known key:
 
 - A value of the wrong type, or a string outside a closed set
   (`timestamps = "minute"`), is ignored: the key keeps its default and its
@@ -149,39 +157,66 @@ each known key:
 - An unknown key or table is ignored and is not invalid: a newer version may
   have written it.
 
-Lines the parser rejected join `invalid` too.
+Lines the parser rejected join `invalid` too. Every ignored line is logged
+with its number when the file is read, so a typo is never silent, even
+before a window shows it.
 
 `load` picks the source:
 
-1. `settings.toml` exists: read it. A file that is not UTF-8 or cannot be
-   read gives the defaults with a logged warning.
+1. `settings.toml` exists: read it (`Source::Toml`). A file that is not
+   UTF-8 is moved aside as `settings.toml.bad`, as `util::load_json` does
+   with damaged JSON, and the defaults are used. One that cannot be read at
+   all gives the defaults with a logged warning.
 2. Else `settings.json` exists: read it as today (`util::load_json`, so a
-   damaged one is still moved aside as `.bad`), and write `settings.toml`
-   from it at startup. The JSON is not removed or changed, so an older
-   Tabletist still finds its file.
-3. Else: the defaults. Nothing is written until a setting changes or an
-   action needs the file (Reveal, the editor key).
+   damaged one is still moved aside as `.bad`), giving `Source::Json`. The
+   JSON is not removed or changed, so an older Tabletist still finds its
+   file.
+3. Else: the defaults (`Source::Defaults`).
 
-When no file exists yet, `Loaded::text` is `to_toml()` of the defaults: what
-would be written.
+`load` only reads. `App::new` takes the `Loaded`; when its source is `Json`
+it sends `Command::Save` with `StateFile::Settings` once, which writes
+`settings.toml`. With `Source::Defaults` nothing is written until a setting
+changes or an action needs the file (Reveal, the editor key).
+
+For `Json` and `Defaults`, `Loaded::text` is `to_toml()` of the settings:
+what is, or would be, written.
 
 A file with invalid lines is left as the user wrote it until the app next
 writes a setting. That write is the canonical text, so the invalid lines go.
 
 ## The options
 
-`App::change_settings(&mut self, change: impl FnOnce(&mut Settings))` is the
-one path a change takes, whether it comes from the window, the SQL editor's
-menus or the file: it applies the change, runs the effects below for the
-fields that differ, renders the text, keeps it as `App::settings_text`, and
-saves. `App::save_settings` goes through it.
+Two functions, one inside the other:
+
+- `App::apply_settings(&mut self, new: Settings)` replaces the settings and
+  runs the effects below for the fields that differ. It writes nothing.
+  Every change goes through it, wherever it comes from.
+- `App::change_settings(&mut self, change: impl FnOnce(&mut Settings))` is
+  a change made in the app (the window, the SQL editor's menus): it calls
+  `apply_settings`, renders the canonical text, keeps it as
+  `App::settings_text`, clears the invalid lines, takes the key lines of the
+  new text, and saves. `App::save_settings` is replaced by it.
+
+A change that arrives from the file (Live reload) calls `apply_settings`
+only, and keeps the file's own text, invalid lines and key lines.
 
 | Option | Control | Effect |
 |---|---|---|
-| Rows per page | A menu: 100, 300, 500, 1,000, 5,000. A value from the file that is not in the list is shown as an extra entry. | The next page any tab fetches. Pages already shown are not fetched again. |
+| Rows per page | A menu: 100, 300, 500, 1,000, 5,000. A value from the file that is not in the list is shown as an extra entry. | Every open table tab takes the new size as its `query.limit` and fetches its page again from the offset it is at, so Next and Previous keep moving by the size of the page shown and no row is skipped. Only a tab that holds a page on a connected session fetches; the others take the size and use it when they next load. New tabs open with it. |
 | Timestamps | Two segments: To the second, Full precision. | Sets `full_precision` on every open workspace and on new ones. The grid's own link still switches one workspace until the option changes again. |
 | Numbers | Two segments, each showing a sample: `1,240.50`, `1240.50`. | Grid cells of numeric columns, in the data view and in SQL results. |
-| Value tags | A toggle. | Off: enum, CHECK and boolean columns draw as plain text in the data view, the row panel and SQL results. |
+| Value tags | A toggle. | Off: enum, CHECK and boolean columns draw as plain text in the data view and the row panel, and booleans in SQL results (the only tags that view has). |
+
+The keys without a control have effects too, for a change that comes from
+the file: `show_system_schemas` is read when the sidebar draws and when
+objects are listed, so it shows at the next frame and the next listing;
+`sql_limit` and `sql_timeout_secs` reach the SQL tabs opened afterwards, as
+today; `appearance.theme` restarts the theme catalog with the new selection
+and resolves the palette again. Restarting the catalog needs the egui
+context, which `apply_settings` does not have: it sets a flag that
+`App::logic` reads beside `themes.needs_reload()`. Where the desktop is not
+followed (tests, demo mode) the catalog never starts and only the palette
+is resolved.
 
 ### Grouping
 
@@ -196,6 +231,8 @@ It applies to a cell when the option is on, the column's kind is
 a column in the described structure's `primary_key` or in one of its
 `foreign_keys`; until the structure is described no column counts as a key.
 SQL results have no structure, so every numeric column is grouped there.
+A numeric column that holds years shows `2,024` with the option on; that is
+what the option means, and it is off by default.
 
 Grouping is display only: Copy, the row panel's field and an export give the
 value as the server sent it.
@@ -304,16 +341,30 @@ handles it. Either way one press opens the window once.
 
 All three run on the backend, as disk and process work does.
 
-- **Reveal** (macOS, Windows): `open -R <path>`, `explorer /select,<path>`.
-- **Export…**: a save dialog (`rfd`, as saving a binary value does) with
-  the name `tabletist-settings.toml`, then the canonical text written to the
-  chosen path.
-- **Open in the editor** (Omarchy): `omarchy-launch-editor <path>` when that
-  command is on `PATH`, else `xdg-open <path>`. The child is not waited for.
+- **Reveal**: `Command::OpenSettingsFile { path, text, how: Reveal }`.
+- **Open in the editor**: the same command with `how: Editor`.
+- **Export…**: `Backend::save_bytes`, the path a binary value is saved by
+  (its dialog title becomes a parameter), with the name
+  `tabletist-settings.toml` and the canonical text.
 
-Reveal and the editor key save the file first when it does not exist yet.
-A command that cannot be started, or an export that cannot be written, is
-reported in the app's notice, as a failed save is.
+`OpenSettingsFile` carries the canonical text: the backend writes it to
+`path` when no file is there, then starts the program, so the UI thread
+never looks at the disk and the write always comes first. The child is not
+waited for. `Event::SettingsFileOpened { result }` puts a failure in the
+app's notice, as a failed save is; a failed export is already reported that
+way.
+
+The program follows the operating system the app was built for (`cfg`), not
+the look, so a macOS look drawn in a Linux test still compiles and runs:
+
+| | Reveal | Editor |
+|---|---|---|
+| macOS | `open -R <path>` | `open -t <path>` |
+| Windows | `explorer /select,<path>` | `explorer <path>` |
+| Linux | `xdg-open <the directory>` | `omarchy-launch-editor <path>` when it is on `PATH`, else `xdg-open <path>` |
+
+The Reveal link's words follow the same `cfg`: Reveal in Finder, Show in
+Explorer, Show in folder.
 
 ## Live reload
 
@@ -321,7 +372,8 @@ reported in the app's notice, as a failed save is.
 directory (the directory, not the file: editors replace a file by renaming
 another over it). An event for `settings.toml` waits 100 ms for the writes
 to settle, then the backend reads the file and sends
-`Event::SettingsFile { text }`.
+`Event::SettingsFile { text }`. A file that is not UTF-8 at that moment is
+logged and nothing is sent: the settings in memory stay.
 
 `App` drops an event whose text equals `settings_text`: that is its own
 write, or a change that changed nothing. Otherwise it runs
@@ -330,9 +382,10 @@ and applies the settings through the same effects a change in the window
 has, without writing the file back.
 
 The watcher starts in `App::attach` when `follow_desktop` is true, so tests
-and demo mode never watch. If it cannot start (no inotify watches left) the
-failure is logged and the pane's header does not say `live`; everything else
-works.
+and demo mode never watch. The backend answers with
+`Event::SettingsWatch { live: bool }`. If it cannot start (no inotify
+watches left) the failure is logged and the pane's header does not say
+`live`; everything else works.
 
 When the file is deleted while the app runs, the settings in memory stay,
 and the next change writes the file again.
@@ -369,14 +422,20 @@ Every behaviour gets a focused test; UI behaviour goes through
 - Options: `group_number` on integers, decimals, negatives and the forms it
   leaves alone; a key column is not grouped and its neighbour is; SQL
   results group; Copy gives the raw value; tags off draws an enum, a CHECK
-  column and a boolean plain in all three views; the timestamps option sets
-  open and new workspaces; the page size reaches the next `FetchRows`.
-- Window, in every look: `Mod+,` and the shortcuts dialog's button open it;
+  column and a boolean plain in the data view and the row panel, and a
+  boolean plain in SQL results; the timestamps option sets open and new
+  workspaces; a new page size fetches an open tab's page again from its
+  offset with the new limit, and Next then moves by that limit.
+- Window, in every look (once both layouts exist): `Mod+,` and the
+  shortcuts dialog's button open it;
   each control changes its setting and saves; `Escape` closes; Reset asks,
   then resets only the four options. Omarchy: each key; the pane shows the
   text, highlights the cursor's line and is hidden in a narrow window.
-- File actions: each pushes its command with the right path; a failure
-  reaches the notice.
+- File actions: Reveal and the editor key push `OpenSettingsFile` with the
+  path, the text and the right `how`; Export reaches `Backend::save_bytes`
+  with the name and the text; a failure reaches the notice. A backend test
+  in a temporary directory checks that a missing file is written before the
+  program starts.
 - Reload: an `Event::SettingsFile` with new text changes the settings and
   writes nothing; one with the app's own text is dropped; invalid lines
   reach `App`. A backend test in a temporary directory writes the file and
@@ -385,21 +444,27 @@ Every behaviour gets a focused test; UI behaviour goes through
   item is inserted after About, carries `⌘,`, calls back, and is removed on
   drop. It runs in CI's macOS job; from Linux it can only be compile-checked.
 
-`README.md` and `AGENTS.md` are updated where they name the settings file,
-and the first design spec's list of files is left as the record it is.
+Neither `README.md` nor `AGENTS.md` names the settings file, so neither
+changes; the first design spec's list of files is left as the record it is.
 
 ## Delivery
 
 Four steps, each one a pull request that passes the checks and is worth
-having without the next:
+having without the next. Reload comes before either window, so the first
+window to ship can already say `live` and mean it.
 
 1. **The store and the options.** `settings.toml`, the migration, tolerant
-   reading, the three new fields and their effects. No window: the options
-   are set by editing the file and take effect at the next start.
-2. **The window on macOS and Windows.** `Dialog::Settings`, the General tab,
-   `Mod+,`, the shortcuts dialog's button, the macOS menu item, and the
-   footer's Reveal, Export and Reset.
-3. **The Omarchy screen.** The rows, the keys, the file pane, and the
-   editor key.
-4. **Live reload.** The watcher, the event, the red lines on Omarchy and the
-   footer's count elsewhere.
+   reading with ignored lines logged, the three new fields and their
+   effects. No window: the options are set by editing the file and take
+   effect at the next start.
+2. **Live reload.** The watcher, `Event::SettingsFile`, `apply_settings` for
+   every key. An edit to the file takes effect in the running app.
+3. **The Omarchy screen.** `Dialog::Settings`, the rows, the keys, the file
+   pane with its highlighted and red lines, the editor key, `Mod+,` and the
+   shortcuts dialog's button. The key's line in `SHORTCUTS` waits for step
+   4, so no look lists a key that does nothing there. Until step 4, both ways in are offered only
+   in the terminal look: in the other looks the key does nothing and the
+   button is not drawn.
+4. **The window on macOS and Windows.** The sheet, the toggle, the footer's
+   Reveal, Export, Reset and count of ignored lines, the macOS menu item,
+   the ways in for every look, and the `SHORTCUTS` line.
