@@ -234,6 +234,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, id: TabId) {
     let locale = app.locale;
     let palette = app.palette;
     let look = app.look;
+    let value_tags = app.settings.value_tags;
     // `za` asked to fold the documents.
     let fold = app.workspace_mut(tab).is_some_and(|workspace| {
         let asked = workspace.fold_documents == Some(id);
@@ -342,7 +343,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, id: TabId) {
             let tags: Vec<_> = source
                 .columns
                 .iter()
-                .map(|column| crate::ui::value_tags::Tags::of(column, structure))
+                .map(|column| crate::ui::value_tags::Tags::of(column, structure).when(value_tags))
                 .collect();
             let tag_of = |col: usize, value: &Value| tags[col].style(value);
             // The row's name: its key, else its number. Both as the grid

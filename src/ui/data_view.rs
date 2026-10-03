@@ -1057,6 +1057,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
     let palette = app.palette;
     let look = app.look;
     let group_digits = app.settings.group_digits;
+    let value_tags = app.settings.value_tags;
     let Some(workspace) = app.workspace(tab) else {
         return;
     };
@@ -1101,7 +1102,10 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
             })
             .collect();
         let ctx = ui.ctx().clone();
-        let tags = crate::ui::value_tags::Tags::of_page(page, structure);
+        let tags: Vec<_> = crate::ui::value_tags::Tags::of_page(page, structure)
+            .into_iter()
+            .map(|tags| tags.when(value_tags))
+            .collect();
         // Grouping is for amounts: a key reads as the name it is.
         let shown: Vec<Shown> = page
             .columns

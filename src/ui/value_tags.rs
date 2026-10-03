@@ -45,6 +45,11 @@ impl<'a> Tags<'a> {
             .collect()
     }
 
+    /// These tags when the settings draw value tags (`on`), else none.
+    pub fn when(self, on: bool) -> Self {
+        if on { self } else { Self::None }
+    }
+
     /// How `value` draws, or `None` for plain text. NULL is never a tag,
     /// nor is a value the list does not name (the constraint changed).
     pub fn style(&self, value: &Value) -> Option<Style> {
@@ -307,6 +312,14 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn tags_that_are_turned_off_are_none() {
+        let allowed = ["print".to_owned(), "ebook".to_owned()];
+        assert_eq!(Tags::Values(&allowed).when(true), Tags::Values(&allowed));
+        assert_eq!(Tags::Values(&allowed).when(false), Tags::None);
+        assert_eq!(Tags::Bool.when(false), Tags::None);
     }
 
     #[test]
