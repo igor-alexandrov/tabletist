@@ -242,7 +242,7 @@ widths. In step 1 the options are fixed for a session and nothing is needed.
 
 | Option | Control | Effect |
 |---|---|---|
-| Rows per page | A menu: 100, 300, 500, 1,000, 5,000. A value from the file that is not in the list is shown as an extra entry. | A table's `query.limit` is the size of the page it shows or awaits, and `fetch_rows` brings it to the settings' size each time it fetches, dropping a page of another size first, whoever asked for the fetch (a Refresh and a reconnect keep the page they have otherwise); Next moves by `query.limit` (the page on screen) and Previous by the settings' size (the page it is about to fetch, which must end where the one on screen begins), so no row is skipped in either direction whichever size comes next. On a change, every table that shows a page or waits for one on a connected session drops the page it shows (as Next does, so a failed fetch leaves no page of the old size on screen) and fetches again from the offset it is at. The others take the size at their next fetch. New tabs open with it. |
+| Rows per page | A menu: 100, 300, 500, 1,000, 5,000. A value from the file that is not in the list is shown as an extra entry. | A table's `query.limit` is the size of the page it shows or awaits, and `fetch_rows` brings it to the settings' size each time it fetches, dropping a page of another size first, whoever asked for the fetch (a Refresh and a reconnect keep the page they have otherwise); Next moves by `query.limit` (the page on screen) and Previous by the settings' size (the page it is about to fetch, which must end where the one on screen begins), so no row is skipped in either direction whichever size comes next. Nearer the start than one page, Previous fetches only the rows before the page on screen: a shorter leading page, whose limit is its own size, so Next from it comes back to where the user was. On a change, every table that shows a page or waits for one on a connected session drops the page it shows (as Next does, so a failed fetch leaves no page of the old size on screen) and fetches again from the offset it is at. The others take the size at their next fetch. New tabs open with it. |
 | Timestamps | Two segments: To the second, Full precision. | Sets `full_precision` on every open workspace and on new ones. The grid's own link still switches one workspace until the option changes again. |
 | Numbers | Two segments, each showing a sample: `1,240.50`, `1240.50`. | Grid cells of numeric columns, in the data view and in SQL results. |
 | Value tags | A toggle. | Off: enum, CHECK and boolean columns draw as plain text in the data view and the row panel, and booleans in SQL results (the only tags that view has). |
@@ -413,7 +413,8 @@ directory (the directory, not the file: editors replace a file by renaming
 another over it). An event for `settings.toml` waits until the file has
 been quiet for 100 ms (each further event starts the wait again: a save is
 several of them, and a read between two would see half a file), then the
-backend reads the file and sends
+backend reads the file (a read that another change overtook is thrown
+away, and the wait starts over: what was read may be half a save) and sends
 `Event::SettingsFile { text }`. A file that is not UTF-8 at that moment is
 logged and nothing is sent: the settings in memory stay.
 

@@ -638,23 +638,29 @@ impl App {
             }
             Action::PrevPage { tab, object_tab } => {
                 // Back by the size of the page about to be fetched, which
-                // is the settings' and must end where the one on screen
-                // begins. That one may be of another size (the size
-                // changed while its session was down): back by its limit,
-                // the rows between the two would be skipped.
-                let page_size = u64::from(self.settings.page_size);
-                let moved = self.object_tab_mut(tab, object_tab).is_some_and(|object| {
+                // must end where the one on screen begins. That one may be
+                // of another size (the size changed while its session was
+                // down): back by its limit, the rows between the two would
+                // be skipped. The page fetched has the settings' size, or
+                // is only the rows before this one when they are fewer (the
+                // size grew on a page near the start): a whole page from
+                // the start would show the first rows of this one a second
+                // time, and Next from it would not come back here.
+                let page_size = self.settings.page_size;
+                let step = self.object_tab_mut(tab, object_tab).and_then(|object| {
                     if object.query.offset == 0 {
-                        return false;
+                        return None;
                     }
-                    object.query.offset = object.query.offset.saturating_sub(page_size);
+                    let step = u32::try_from(object.query.offset)
+                        .map_or(page_size, |before| before.min(page_size));
+                    object.query.offset -= u64::from(step);
                     object.pinned = true;
                     object.selection = None;
                     object.rows.value = None;
-                    true
+                    Some(step)
                 });
-                if moved {
-                    self.fetch_rows(tab, object_tab);
+                if let Some(step) = step {
+                    self.fetch_page(tab, object_tab, step);
                 }
             }
             Action::SortBy {
@@ -2924,8 +2930,14 @@ impl App {
     /// any load still pending. A page of another size does not stay on
     /// screen meanwhile, whatever the caller kept.
     pub fn fetch_rows(&mut self, tab: ConnTabId, id: TabId) {
+        self.fetch_page(tab, id, self.settings.page_size);
+    }
+
+    /// Loads a page of `limit` rows, as [`App::fetch_rows`] does at the
+    /// settings' size. Only Previous asks for another: the rows before a
+    /// page that begins less than a page from the start.
+    fn fetch_page(&mut self, tab: ConnTabId, id: TabId, limit: u32) {
         let request = RequestId(self.next_id());
-        let page_size = self.settings.page_size;
         let Some(workspace) = self.workspace_mut(tab) else {
             return;
         };
@@ -2935,13 +2947,14 @@ impl App {
         };
         // Until here the limit was the size of the page on screen. Next
         // has just moved past that page by it. Previous has moved back by
-        // the settings' size, so that the page fetched here ends where
-        // that one begins. From here the limit is the settings'. A page of
-        // another size cannot stay under the new limit: were this fetch
-        // cancelled, Next would move past it by the wrong size.
-        if object.query.limit != page_size {
+        // the size it asks for here, so that the page fetched ends where
+        // that one begins. From here the limit is the size of the page
+        // awaited. A page of another size cannot stay under the new limit:
+        // were this fetch cancelled, Next would move past it by the wrong
+        // size.
+        if object.query.limit != limit {
             object.drop_page();
-            object.query.limit = page_size;
+            object.query.limit = limit;
         }
         let superseded = object.rows.pending;
         object.rows.start(request);
