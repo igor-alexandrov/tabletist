@@ -186,11 +186,17 @@ fn line_of(text: &str, offset: usize) -> usize {
     before.iter().filter(|byte| **byte == b'\n').count() + 1
 }
 
-/// The last line of `text` that is not blank, counted from 1.
+/// The last line of `text` that is not blank, counted from 1. Blank as TOML
+/// has it: nothing but spaces and tabs before the line's break. What only
+/// Rust calls whitespace (a carriage return with no newline after it, a
+/// no-break space) is what the parser rejected, so skipping it would blame
+/// the good line above.
 fn last_line(text: &str) -> Option<usize> {
+    // `lines` takes a line's `\n` or `\r\n` with it: an empty line is blank
+    // with either ending.
     text.lines()
         .enumerate()
-        .filter(|(_, line)| !line.trim().is_empty())
+        .filter(|(_, line)| !line.trim_matches([' ', '\t']).is_empty())
         .map(|(index, _)| index + 1)
         .last()
 }
@@ -731,6 +737,40 @@ sql_timeout_secs = 30  # 0 waits forever
         let loaded = Settings::from_toml("[appearance]\ntheme = \"\"\"Nord");
         assert_eq!(loaded.invalid, vec![2]);
         assert_eq!(loaded.settings.custom_theme, None);
+    }
+
+    #[test]
+    fn a_string_left_open_costs_the_same_lines_with_crlf_endings() {
+        // The empty lines at the end are blank with either ending.
+        let loaded = Settings::from_toml(
+            "[data]\r\npage_size = 100\r\n[appearance]\r\ntheme = \"\"\"Nord\r\n\
+             [editor]\r\nsql_limit = 100\r\n\r\n\r\n",
+        );
+        assert_eq!(loaded.invalid, vec![4, 5, 6]);
+        assert_eq!(loaded.settings.custom_theme, None);
+        assert_eq!(loaded.settings.page_size, 100);
+        assert_eq!(loaded.lines, vec![(Key::PageSize, 2)]);
+    }
+
+    #[test]
+    fn a_lone_carriage_return_at_the_end_costs_only_its_line() {
+        // The parser blames the end of the text for it.
+        let loaded = Settings::from_toml("[data]\npage_size = 100\ngroup_digits = true\n\r");
+        assert_eq!(loaded.invalid, vec![4]);
+        assert_eq!(loaded.settings.page_size, 100);
+        assert!(loaded.settings.group_digits);
+        let loaded = Settings::from_toml("\r");
+        assert_eq!(loaded.invalid, vec![1]);
+        assert_eq!(loaded.settings, Settings::default());
+    }
+
+    #[test]
+    fn a_last_line_of_space_toml_does_not_know_costs_only_itself() {
+        // A no-break space is blank to Rust and a stray character to TOML.
+        let loaded = Settings::from_toml("[data]\npage_size = 100\ngroup_digits = true\n\u{a0}");
+        assert_eq!(loaded.invalid, vec![4]);
+        assert_eq!(loaded.settings.page_size, 100);
+        assert!(loaded.settings.group_digits);
     }
 
     fn dirs() -> (crate::paths::AppDirs, tempfile::TempDir) {
