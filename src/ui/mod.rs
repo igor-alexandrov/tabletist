@@ -571,6 +571,25 @@ mod tests {
     }
 
     #[test]
+    fn an_edit_of_the_file_changes_what_an_open_grid_shows() {
+        let mut harness = Harness::new();
+        harness.connect_fake();
+        harness.click("users");
+        let mut page = crate::testing::page(1, false);
+        page.rows[0][0] = tabletist_db::Value::Int(1_234_567);
+        harness.answer_rows(page);
+        harness.settle();
+        assert!(harness.painted_color("1234567").is_some());
+        harness.app.apply(crate::model::Action::Backend(
+            crate::backend::Event::SettingsFile {
+                text: "[data]\ngroup_digits = true\n".into(),
+            },
+        ));
+        harness.settle();
+        assert!(harness.painted_color("1,234,567").is_some());
+    }
+
+    #[test]
     fn numbers_are_grouped_when_the_settings_say_so_but_keys_never_are() {
         let mut harness = Harness::new();
         harness.app.settings.group_digits = true;

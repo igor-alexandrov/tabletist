@@ -2048,8 +2048,22 @@ impl App {
                     self.notice = Some(format!("Could not save {}: {error}.", path.display()));
                 }
             }
-            // Nothing asks for the watch yet, so neither comes.
-            Event::SettingsWatch { .. } | Event::SettingsFile { .. } => {}
+            Event::SettingsWatch { live } => self.settings_file.live = live,
+            Event::SettingsFile { text } => {
+                // The app's own write coming back from the disk, or a save
+                // that changed nothing.
+                if text == self.settings_file.text {
+                    return;
+                }
+                let loaded = Settings::from_toml(&text);
+                loaded.warn_invalid(&self.dirs.settings_file());
+                let live = self.settings_file.live;
+                let (settings, file) = loaded.into_parts();
+                // The file as its writer left it: not written back, so a
+                // line that was ignored stays where they can see it.
+                self.settings_file = SettingsFile { live, ..file };
+                self.apply_settings(settings);
+            }
             Event::Databases {
                 session,
                 request,
@@ -2205,6 +2219,14 @@ impl App {
         self.backend.send(Command::Save {
             path: self.dirs.settings_file(),
             file: StateFile::Settings(self.settings.clone()),
+        });
+    }
+
+    /// Asks the backend to watch the settings file, so an edit made outside
+    /// the app reaches it (`Event::SettingsFile`).
+    pub fn watch_settings(&mut self) {
+        self.backend.send(Command::WatchSettings {
+            path: self.dirs.settings_file(),
         });
     }
 
@@ -3122,6 +3144,9 @@ impl App {
                 self.settings.custom_theme.clone(),
                 &fastframe_theme::Waker::new(move || repaint.request_repaint()),
             );
+            // Not in tests or the demo, which must not watch the user's
+            // directories any more than they scan them.
+            self.watch_settings();
         }
         self.system_theme = ctx.system_theme();
         self.palette = self.resolve_palette();
@@ -3989,6 +4014,65 @@ mod tests {
         app.change_settings(|settings| settings.page_size = 5);
         assert_eq!(app.settings.page_size, Settings::MIN_PAGE_SIZE);
         assert_eq!(settings_saves(&app).len(), 1);
+    }
+
+    #[test]
+    fn a_change_of_the_file_is_applied_and_not_written_back() {
+        let (mut app, _dir) = app();
+        let text = "[data]\npage_size = 500\ngroup_digits = \"yes\"\ntimestamps = \"full\"\n";
+        app.apply(Action::Backend(Event::SettingsFile { text: text.into() }));
+        assert_eq!(app.settings.page_size, 500);
+        assert_eq!(app.settings.timestamps, crate::settings::Timestamps::Full);
+        assert!(!app.settings.group_digits);
+        // The file as the user wrote it, with the line that was ignored.
+        assert_eq!(app.settings_file.text, text);
+        assert_eq!(app.settings_file.invalid, vec![3]);
+        assert_eq!(
+            app.settings_file.lines,
+            vec![
+                (crate::settings::Key::PageSize, 2),
+                (crate::settings::Key::Timestamps, 4)
+            ]
+        );
+        assert!(settings_saves(&app).is_empty(), "the user's file is theirs");
+    }
+
+    #[test]
+    fn the_apps_own_text_coming_back_is_not_read_again() {
+        let (mut app, _dir) = app();
+        app.change_settings(|settings| settings.sql_limit = 100);
+        let saved = settings_saves(&app).len();
+        // Something only a second reading would change.
+        app.settings_file.invalid = vec![9];
+        let text = app.settings_file.text.clone();
+        app.apply(Action::Backend(Event::SettingsFile { text }));
+        assert_eq!(app.settings_file.invalid, vec![9]);
+        assert_eq!(app.settings.sql_limit, 100);
+        assert_eq!(settings_saves(&app).len(), saved);
+    }
+
+    #[test]
+    fn a_change_of_the_file_keeps_whether_it_is_watched() {
+        let (mut app, _dir) = app();
+        app.apply(Action::Backend(Event::SettingsWatch { live: true }));
+        assert!(app.settings_file.live);
+        app.apply(Action::Backend(Event::SettingsFile {
+            text: "[data]\npage_size = 500\n".into(),
+        }));
+        assert!(app.settings_file.live);
+        app.change_settings(|settings| settings.sql_limit = 100);
+        assert!(app.settings_file.live);
+    }
+
+    #[test]
+    fn the_settings_file_is_watched_through_the_backend() {
+        let (mut app, _dir) = app();
+        app.watch_settings();
+        let path = app.dirs.settings_file();
+        assert!(matches!(
+            app.backend.sent.last(),
+            Some(Command::WatchSettings { path: watched }) if *watched == path
+        ));
     }
 
     #[test]
