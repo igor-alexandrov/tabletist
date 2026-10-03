@@ -1840,8 +1840,8 @@ checksum = "7360491ce676a36bf9bb3c56c1aa791658183a54d2744120f27285738d90465a"
 
 [[package]]
 name = "fastframe-fonts"
-version = "0.2.3"
-source = "git+https://github.com/crmne/fastframe?tag=v0.2.3#5202e4a4aaebe94dc08ddd90e7c1320b6ec473e6"
+version = "0.4.1"
+source = "git+https://github.com/crmne/fastframe?tag=v0.4.1#23d87e048185ef317f272e2a67416f516b2f2b04"
 dependencies = [
  "directories",
  "egui",
@@ -1853,8 +1853,8 @@ dependencies = [
 
 [[package]]
 name = "fastframe-i18n"
-version = "0.2.3"
-source = "git+https://github.com/crmne/fastframe?tag=v0.2.3#5202e4a4aaebe94dc08ddd90e7c1320b6ec473e6"
+version = "0.4.1"
+source = "git+https://github.com/crmne/fastframe?tag=v0.4.1#23d87e048185ef317f272e2a67416f516b2f2b04"
 dependencies = [
  "include-po",
  "polib",
@@ -1864,16 +1864,16 @@ dependencies = [
 
 [[package]]
 name = "fastframe-icons"
-version = "0.2.3"
-source = "git+https://github.com/crmne/fastframe?tag=v0.2.3#5202e4a4aaebe94dc08ddd90e7c1320b6ec473e6"
+version = "0.4.1"
+source = "git+https://github.com/crmne/fastframe?tag=v0.4.1#23d87e048185ef317f272e2a67416f516b2f2b04"
 dependencies = [
  "egui",
 ]
 
 [[package]]
 name = "fastframe-log"
-version = "0.2.3"
-source = "git+https://github.com/crmne/fastframe?tag=v0.2.3#5202e4a4aaebe94dc08ddd90e7c1320b6ec473e6"
+version = "0.4.1"
+source = "git+https://github.com/crmne/fastframe?tag=v0.4.1#23d87e048185ef317f272e2a67416f516b2f2b04"
 dependencies = [
  "env_logger",
  "jiff",
@@ -1882,8 +1882,8 @@ dependencies = [
 
 [[package]]
 name = "fastframe-text"
-version = "0.2.3"
-source = "git+https://github.com/crmne/fastframe?tag=v0.2.3#5202e4a4aaebe94dc08ddd90e7c1320b6ec473e6"
+version = "0.4.1"
+source = "git+https://github.com/crmne/fastframe?tag=v0.4.1#23d87e048185ef317f272e2a67416f516b2f2b04"
 dependencies = [
  "egui",
  "zbus",
@@ -1891,8 +1891,8 @@ dependencies = [
 
 [[package]]
 name = "fastframe-theme"
-version = "0.2.3"
-source = "git+https://github.com/crmne/fastframe?tag=v0.2.3#5202e4a4aaebe94dc08ddd90e7c1320b6ec473e6"
+version = "0.4.1"
+source = "git+https://github.com/crmne/fastframe?tag=v0.4.1#23d87e048185ef317f272e2a67416f516b2f2b04"
 dependencies = [
  "directories",
  "egui",
