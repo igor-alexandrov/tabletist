@@ -68,8 +68,10 @@ unsafe fn lossy<'a>(text: *const c_char) -> Option<Cow<'a, str>> {
     Some(text.to_string_lossy())
 }
 
-/// What SQLite calls for every action: asks the `F` at `callback`. A panic
-/// in it denies the action and does not unwind into SQLite.
+/// What SQLite calls for every action: asks the `F` at `callback`. Where a
+/// panic unwinds, one in the callback is caught here and denies the action,
+/// so it never unwinds into SQLite. Where a panic aborts, as in the app's
+/// release build, it aborts here as anywhere else.
 ///
 /// # Safety
 ///
@@ -129,9 +131,12 @@ unsafe extern "C" fn free<F>(callback: *mut c_void) {
 /// on `connection`, in place of the authorizer it had.
 ///
 /// The authorizer is dropped when another one takes its place, when
-/// [`remove_authorizer`] takes it off and when the connection closes. A
-/// panic in it denies the action. On an error the connection is left without
-/// an authorizer.
+/// [`remove_authorizer`] takes it off and when the connection closes. On an
+/// error the connection is left without an authorizer.
+///
+/// The authorizer should not panic. In a build where a panic unwinds, one is
+/// caught and denies the action. The app's release build aborts on a panic,
+/// and one in the authorizer is no exception: nothing can catch it there.
 ///
 /// rusqlite takes off whatever authorizer is installed when it closes a
 /// connection, so one that fails to close has none afterwards.
@@ -355,8 +360,9 @@ mod tests {
         );
     }
 
+    // Tests unwind. Nothing catches a panic in a build that aborts on one.
     #[test]
-    fn an_authorizer_that_panics_denies_the_action() {
+    fn an_authorizer_that_panics_denies_the_action_where_a_panic_unwinds() {
         let connection = database(b"CREATE TABLE t (id INTEGER)");
         set_authorizer(&connection, |action| {
             assert_ne!(action.code, ffi::SQLITE_READ, "no column is read");
