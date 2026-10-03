@@ -14,6 +14,8 @@ use std::ptr;
 
 use rusqlite::ffi;
 
+use crate::failure;
+
 /// A result column of a statement.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResultColumn {
@@ -50,10 +52,6 @@ unsafe fn lossy(text: *const c_char) -> Option<String> {
     // contract. It is copied before this returns.
     let text = unsafe { CStr::from_ptr(text) };
     Some(text.to_string_lossy().into_owned())
-}
-
-fn failure(code: c_int, message: Option<String>) -> rusqlite::Error {
-    rusqlite::Error::SqliteFailure(ffi::Error::new(code), message)
 }
 
 /// The result columns of the first statement in `sql`, in order. None for a
@@ -121,27 +119,7 @@ pub fn result_columns(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// A database in memory after running `sql`, which SQLite takes as
-    /// bytes. rusqlite only runs a `str`.
-    fn database(sql: &[u8]) -> rusqlite::Connection {
-        let connection = rusqlite::Connection::open_in_memory().unwrap();
-        let sql = std::ffi::CString::new(sql).unwrap();
-        // SAFETY: the connection is open and `sql` is a NUL-terminated
-        // string. No callback, no callback argument and no place for an
-        // error message are passed.
-        let code = unsafe {
-            ffi::sqlite3_exec(
-                connection.handle(),
-                sql.as_ptr(),
-                None,
-                ptr::null_mut(),
-                ptr::null_mut(),
-            )
-        };
-        assert_eq!(code, ffi::SQLITE_OK);
-        connection
-    }
+    use crate::testing::database;
 
     fn column(name: &str, decl_type: &str) -> ResultColumn {
         ResultColumn {

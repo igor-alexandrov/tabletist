@@ -1,5 +1,7 @@
-//! SQLite, opened read-only. rusqlite is blocking, so every call runs on
-//! tokio's blocking pool.
+//! SQLite, opened read-only unless the connection is writable. rusqlite is
+//! blocking, so every call runs on tokio's blocking pool. What a script or
+//! a filter may do is SQLite's to refuse: it asks the connection's
+//! authorizer whenever it prepares their text (see `fence`).
 
 use std::borrow::Cow;
 use std::path::Path;
@@ -11,15 +13,20 @@ use rusqlite::types::{FromSql, FromSqlError, FromSqlResult, ValueRef};
 use rusqlite::{ErrorCode, OpenFlags};
 
 use crate::{
-    ColumnInfo, ColumnMeta, Dialect, Error, ForeignKeyInfo, IndexInfo, MAX_LISTED, ObjectInfo,
-    ObjectKind, ObjectRef, Result, RowPage, RowQuery, ScriptOutcome, StatementOutcome,
+    Access, ColumnInfo, ColumnMeta, Dialect, Error, ForeignKeyInfo, IndexInfo, MAX_LISTED,
+    ObjectInfo, ObjectKind, ObjectRef, Result, RowPage, RowQuery, ScriptOutcome, StatementOutcome,
     StatementResult, StopFlag, Structure, Value, ValueKind,
 };
+
+mod fence;
+
+use fence::{Fence, Fences, authorize};
 
 /// An open SQLite database.
 pub struct Conn {
     inner: Arc<Mutex<rusqlite::Connection>>,
     interrupt: Arc<rusqlite::InterruptHandle>,
+    fences: Fences,
 }
 
 /// Maps rusqlite's errors onto ours.
@@ -60,9 +67,25 @@ impl Drop for InterruptOnDrop {
     }
 }
 
-/// Runs `texts` between `BEGIN` and a `ROLLBACK` that always happens.
+/// Whether the session still refuses writes. The authorizer denies a
+/// script every way of turning `query_only` off; this is the check behind
+/// it, since on a writable handle nothing else would stop the script's next
+/// statement.
+fn still_query_only(connection: &rusqlite::Connection) -> Result<bool> {
+    connection
+        .query_row("PRAGMA query_only", [], |row| row.get::<_, i64>(0))
+        .map(|on| on == 1)
+        .map_err(map_error)
+}
+
+/// Runs `texts` between `BEGIN` and a `ROLLBACK` that always happens, each
+/// behind `Fence::Script`, which denies it leaving the transaction or
+/// turning `query_only` off. Behind the fence, a run that finds `query_only`
+/// off, before a statement or at its end, or its transaction gone before a
+/// statement, ends with `LeftReadOnly` after that rollback.
 fn script(
     connection: &rusqlite::Connection,
+    fences: &Fences,
     texts: &[String],
     limit: usize,
     stop: &StopFlag,
@@ -92,13 +115,23 @@ fn script(
     // the running statement, which fails with SQLITE_INTERRUPT (Cancelled).
     let watching = stop.clone();
     connection.progress_handler(1_000, Some(move || watching.is_stopped()));
-    let ran = statements(connection, texts, limit, stop, &mut outcome);
+    let ran = statements(connection, fences, texts, limit, stop, &mut outcome);
     // Removed before the cleanup, so a stop cannot interrupt it.
     connection.progress_handler(0, None::<fn() -> bool>);
     stop.finish();
+    // Asked before the rollback, which puts the setting back: a last
+    // statement that turned it off must not pass unseen. A cancel can land
+    // on the question, so it is asked once more; no answer counts as left.
+    let left = ran.is_ok()
+        && !still_query_only(connection)
+            .or_else(|_| still_query_only(connection))
+            .unwrap_or(false);
     let ended = end_transaction(connection);
     ran?;
     ended.map_err(|error| crate::script::cleanup_failed(&error))?;
+    if left {
+        return Err(Error::LeftReadOnly);
+    }
     Ok(outcome)
 }
 
@@ -119,6 +152,7 @@ fn end_transaction(connection: &rusqlite::Connection) -> Result<()> {
 
 fn statements(
     connection: &rusqlite::Connection,
+    fences: &Fences,
     texts: &[String],
     limit: usize,
     stop: &StopFlag,
@@ -133,8 +167,36 @@ fn statements(
             });
             break;
         }
+        // The open transaction is what stops what `query_only` lets
+        // through (a change of journal mode, the empty file a VACUUM INTO
+        // leaves). The statement before this one succeeded, so SQLite did
+        // not end it over an error: the script did.
+        if connection.is_autocommit() {
+            return Err(Error::LeftReadOnly);
+        }
+        match still_query_only(connection) {
+            Ok(true) => {}
+            // A stop that landed on the check: this statement is the
+            // cancelled one.
+            Err(Error::Cancelled) => {
+                outcome.stopped = true;
+                outcome.results.push(StatementResult {
+                    elapsed: std::time::Duration::ZERO,
+                    outcome: StatementOutcome::Cancelled,
+                });
+                break;
+            }
+            // No answer counts as left, as at the end of the run.
+            Ok(false) | Err(_) => return Err(Error::LeftReadOnly),
+        }
         let started = Instant::now();
-        let result = match statement(connection, text, limit) {
+        // Only the script's own text is fenced: the checks above and the
+        // rollback after the run are the app's.
+        let result = {
+            let _fenced = fences.fence(Fence::Script);
+            statement(connection, text, limit)
+        };
+        let result = match result {
             Ok(result) => result,
             Err(error) => crate::script::statement_failed(error, None)?,
         };
@@ -187,7 +249,10 @@ fn statement(
     if text.is_empty() {
         return Ok(StatementOutcome::Done { affected: None });
     }
-    // prepare refuses a second statement in the text (MultipleStatement).
+    // A second statement in the text is refused (MultipleStatement), but
+    // only after rusqlite prepared it. SQLite asks the authorizer for it as
+    // for the first, and the run's checks cover what a pragma that got past
+    // would have done by then.
     let mut statement = connection.prepare(text).map_err(map_error)?;
     let declared = declared_columns(connection, &statement, text)?;
     if declared.is_empty() {
@@ -366,19 +431,57 @@ fn column_metas(declared: Vec<(String, String)>, rows: &[Vec<Value>]) -> Vec<Col
         .collect()
 }
 
-/// Refuses a raw WHERE that ends inside a `/*` comment, which SQLite would
-/// accept and which would hide the page's ORDER BY, LIMIT and OFFSET.
+/// Refuses a raw WHERE that would end the page's statement early. One that
+/// holds a NUL, where SQLite stops reading, or that ends inside a `/*`
+/// comment, which SQLite accepts, would hide the page's ORDER BY, LIMIT and
+/// OFFSET. One that holds a `;` has a second statement after it, and
+/// rusqlite prepares that before it refuses the text (see `Conn::browse`).
+/// A `;` our tokenizer does not see where SQLite does is left to
+/// `Fence::Filter`.
 fn check_raw_where(query: &RowQuery) -> Result<()> {
-    if query
-        .raw_where
-        .as_deref()
-        .is_some_and(crate::dialect::sqlite_ends_in_block_comment)
-    {
+    let Some(raw) = query.raw_where.as_deref() else {
+        return Ok(());
+    };
+    if raw.contains('\0') {
+        return Err(Error::query(
+            "The WHERE text holds a NUL character. Remove it.",
+        ));
+    }
+    if crate::dialect::sqlite_ends_in_block_comment(raw) {
         return Err(Error::query(
             "The WHERE text ends inside a /* comment. Close it with */.",
         ));
     }
+    if crate::sql::tokenize(Dialect::Sqlite, raw)
+        .iter()
+        .any(|token| token.kind == crate::sql::TokenKind::Semicolon)
+    {
+        return Err(Error::query(
+            "The WHERE text holds a `;`. A filter is one condition, not a statement.",
+        ));
+    }
     Ok(())
+}
+
+/// What `Fence::Filter` refused a filter, in words. SQLite says only "not
+/// authorized", or "authorization denied" when the refusal comes from
+/// inside a running statement, and an honest filter can get there: a pragma
+/// read as a table takes its argument as the pragma's value. The code stays
+/// SQLite's (SQLITE_AUTH), which tells this refusal from `check_raw_where`'s.
+fn filter_denied(error: Error) -> Error {
+    match error {
+        Error::Query {
+            code: Some(code), ..
+        } if code == "23" => Error::Query {
+            code: Some(code),
+            message: "A filter cannot use a PRAGMA with an argument, ATTACH or a transaction \
+                      statement."
+                .into(),
+            detail: None,
+            hint: None,
+        },
+        other => other,
+    }
 }
 
 /// `path` as a name SQLite takes for a file and nothing else. The bundled
@@ -397,14 +500,21 @@ fn plain_file_name(path: &Path) -> Cow<'_, Path> {
 }
 
 impl Conn {
-    /// Opens `path` read-only. Never creates a file.
-    pub async fn open(path: &Path) -> Result<Self> {
+    /// Opens `path`: read-only, or read-write for a writable connection.
+    /// Never creates a file. Either way the session refuses writes
+    /// (`PRAGMA query_only`, see `set_session_pragmas`).
+    pub async fn open(path: &Path, access: Access) -> Result<Self> {
         let path = path.to_path_buf();
-        let connection = tokio::task::spawn_blocking(move || -> Result<rusqlite::Connection> {
+        let opened = move || -> Result<(rusqlite::Connection, Fences)> {
             if !path.is_file() {
                 return Err(Error::Connect(format!("{} does not exist", path.display())));
             }
-            let flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX;
+            let mode = match access {
+                Access::ReadOnly => OpenFlags::SQLITE_OPEN_READ_ONLY,
+                // Without SQLITE_OPEN_CREATE: a missing file stays missing.
+                Access::Writable => OpenFlags::SQLITE_OPEN_READ_WRITE,
+            };
+            let flags = mode | OpenFlags::SQLITE_OPEN_NO_MUTEX;
             let connection = rusqlite::Connection::open_with_flags(plain_file_name(&path), flags)
                 .map_err(map_error)?;
             // A double-quoted name that matches no column is an error, not a
@@ -429,14 +539,24 @@ impl Conn {
                     Error::Query { message, .. } => Error::Connect(message),
                     other => other,
                 })?;
-            Ok(connection)
-        })
-        .await
-        .map_err(|error| Error::Io(error.to_string()))??;
+            // From here on SQLite asks before it prepares anything: what
+            // it may do depends on whose text it is (see `Fence`).
+            let fences = Fences::default();
+            let asked = fences.clone();
+            tabletist_sqlite_ffi::set_authorizer(&connection, move |action| {
+                authorize(asked.current(), action)
+            })
+            .map_err(map_error)?;
+            Ok((connection, fences))
+        };
+        let (connection, fences) = tokio::task::spawn_blocking(opened)
+            .await
+            .map_err(|error| Error::Io(error.to_string()))??;
         let interrupt = Arc::new(connection.get_interrupt_handle());
         Ok(Self {
             inner: Arc::new(Mutex::new(connection)),
             interrupt,
+            fences,
         })
     }
 
@@ -468,6 +588,38 @@ impl Conn {
         })?
     }
 
+    /// `run` for a page or a count, whose SQL holds the user's WHERE text.
+    /// rusqlite finds a second statement in a text by preparing it, and
+    /// SQLite applies a flag pragma as soon as it is prepared: a WHERE that
+    /// got `; PRAGMA query_only = 0` past `check_raw_where` and past
+    /// `Fence::Filter`, which denies a filter every pragma with a value,
+    /// would fail and still leave the session open to writes. So, as the
+    /// layer behind both, a failure puts the session's settings back, and a
+    /// session that cannot take them counts as lost. What the fence refused
+    /// is worded for the user (see `filter_denied`).
+    async fn browse<T: Send + 'static>(
+        &self,
+        work: impl FnOnce(&rusqlite::Connection) -> Result<T> + Send + 'static,
+    ) -> Result<T> {
+        self.run(move |connection| {
+            let result = work(connection);
+            if result.is_err() {
+                // A cancel meant for the statement can land here instead,
+                // so this gets one more try.
+                set_session_pragmas(connection)
+                    .or_else(|_| set_session_pragmas(connection))
+                    .map_err(|error| {
+                        Error::ConnectionLost(format!(
+                            "could not put the session's settings back: {}",
+                            map_error(error)
+                        ))
+                    })?;
+            }
+            result.map_err(filter_denied)
+        })
+        .await
+    }
+
     /// See [`crate::Connection::run_script`]. The whole script is one
     /// blocking job; a progress handler checks `stop` while a statement
     /// runs.
@@ -482,8 +634,9 @@ impl Conn {
         // If the caller drops this future, `run` interrupts the statement
         // that is running; this stops the ones that have not begun.
         let guard = StopOnDrop(Some(stop.clone()));
+        let fences = self.fences.clone();
         let outcome = self
-            .run(move |connection| script(connection, &texts, limit, &stop))
+            .run(move |connection| script(connection, &fences, &texts, limit, &stop))
             .await;
         guard.disarm();
         outcome
@@ -585,14 +738,19 @@ impl Conn {
         check_raw_where(query)?;
         let query = query.clone();
         let limit = query.limit as usize;
+        let fences = self.fences.clone();
         // One blocking job for the key lookup and the select, so a cancel
         // can never fall in a gap between them.
-        self.run(move |connection| {
+        self.browse(move |connection| {
             let key = ordering_key(connection, &query.object)?;
             let binary = binary_columns(connection, &query)?;
             let sql = Dialect::Sqlite.select_rows(&query, &key, &binary);
             let ordered_by_key = !key.is_empty();
             let started = Instant::now();
+            // The lookups above are the app's own, and the fence would
+            // refuse them: a table-valued pragma's argument is a pragma's
+            // value. From here to the last row the text holds the raw WHERE.
+            let _fenced = fences.fence(Fence::Filter);
             let mut statement = connection.prepare(&sql.text).map_err(map_error)?;
             let declared = declared_columns(connection, &statement, &sql.text)?;
             let mut rows = statement
@@ -628,9 +786,12 @@ impl Conn {
     pub async fn count_rows(&self, query: &RowQuery) -> Result<u64> {
         check_raw_where(query)?;
         let query = query.clone();
-        self.run(move |connection| {
+        let fences = self.fences.clone();
+        self.browse(move |connection| {
             let binary = binary_columns(connection, &query)?;
             let sql = Dialect::Sqlite.count_rows(&query, &binary);
+            // As in `fetch_rows`: only the text with the raw WHERE.
+            let _fenced = fences.fence(Fence::Filter);
             let count: i64 = connection
                 .query_row(
                     &sql.text,
@@ -844,19 +1005,397 @@ mod tests {
     }
     use super::*;
 
-    async fn fixture() -> (Conn, tempfile::TempDir) {
+    async fn fixture_as(access: Access) -> (Conn, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("fixture.db");
         crate::fixtures::write_sqlite_demo(&path).unwrap();
-        (Conn::open(&path).await.unwrap(), dir)
+        (Conn::open(&path, access).await.unwrap(), dir)
+    }
+
+    async fn fixture() -> (Conn, tempfile::TempDir) {
+        fixture_as(Access::ReadOnly).await
     }
 
     #[tokio::test]
     async fn a_missing_file_is_a_connect_error_and_is_not_created() {
+        for access in [Access::ReadOnly, Access::Writable] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("missing.db");
+            assert!(matches!(
+                Conn::open(&path, access).await,
+                Err(Error::Connect(_))
+            ));
+            assert!(!path.exists(), "{access:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn only_a_writable_handle_writes_and_only_with_query_only_lifted() {
+        for access in [Access::ReadOnly, Access::Writable] {
+            let (conn, _dir) = fixture_as(access).await;
+            // The standing state refuses a write on both.
+            let standing = conn
+                .run(|connection| {
+                    connection
+                        .execute("UPDATE users SET email = email WHERE id = 1", [])
+                        .map_err(map_error)
+                })
+                .await;
+            assert!(standing.is_err(), "{access:?}");
+            // Lifted, as a save will lift it: only the writable handle
+            // writes.
+            let lifted = conn
+                .run(|connection| {
+                    connection
+                        .execute_batch("PRAGMA query_only = OFF")
+                        .map_err(map_error)?;
+                    let updated = connection
+                        .execute("UPDATE users SET email = email WHERE id = 1", [])
+                        .map_err(map_error);
+                    set_session_pragmas(connection).map_err(map_error)?;
+                    updated
+                })
+                .await;
+            assert_eq!(lifted.is_ok(), access == Access::Writable, "{access:?}");
+        }
+    }
+
+    /// Takes the authorizer off, for a test of the checks behind it.
+    async fn without_the_authorizer(conn: &Conn) {
+        conn.run(|connection| {
+            tabletist_sqlite_ffi::remove_authorizer(connection).map_err(map_error)
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_script_that_gets_query_only_off_is_stopped_and_writes_nothing() {
+        for access in [Access::ReadOnly, Access::Writable] {
+            for texts in [
+                vec!["PRAGMA query_only = OFF", "UPDATE users SET email = 'x'"],
+                // In last position, where no statement follows to be checked.
+                vec!["SELECT 1", "PRAGMA query_only = OFF"],
+            ] {
+                let (conn, _dir) = fixture_as(access).await;
+                without_the_authorizer(&conn).await;
+                let script = texts.iter().map(|text| (*text).to_owned()).collect();
+                let ran = conn.run_script(script, 10, &StopFlag::new()).await;
+                assert!(
+                    matches!(ran, Err(Error::LeftReadOnly)),
+                    "{access:?} {texts:?}: {ran:?}"
+                );
+                let (query_only, changed) = conn
+                    .run(|connection| {
+                        let one = |sql: &str| {
+                            connection
+                                .query_row(sql, [], |row| row.get::<_, i64>(0))
+                                .map_err(map_error)
+                        };
+                        Ok((
+                            one("PRAGMA query_only")?,
+                            one("SELECT count(*) FROM users WHERE email = 'x'")?,
+                        ))
+                    })
+                    .await
+                    .unwrap();
+                assert_eq!((query_only, changed), (1, 0), "{access:?} {texts:?}");
+            }
+        }
+    }
+
+    /// Runs `texts` past the refusal list, which only
+    /// `Connection::run_script` applies.
+    async fn run_unrefused(conn: &Conn, texts: &[&str]) -> Result<ScriptOutcome> {
+        let script = texts.iter().map(|text| (*text).to_owned()).collect();
+        conn.run_script(script, 10, &StopFlag::new()).await
+    }
+
+    /// The session's `query_only` and whether it is out of a transaction.
+    async fn standing(conn: &Conn) -> (i64, bool) {
+        conn.run(|connection| {
+            let query_only = connection
+                .query_row("PRAGMA query_only", [], |row| row.get::<_, i64>(0))
+                .map_err(map_error)?;
+            Ok((query_only, connection.is_autocommit()))
+        })
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn sqlite_denies_a_script_what_would_end_its_transaction_or_lift_query_only() {
+        for access in [Access::ReadOnly, Access::Writable] {
+            let (conn, _dir) = fixture_as(access).await;
+            for text in [
+                "PRAGMA query_only = OFF",
+                "PRAGMA 'query_only' = 0",
+                // SQLite hands the name over in these letters.
+                "PRAGMA QUERY_ONLY = 0",
+                "EXPLAIN PRAGMA query_only = 0",
+                "PRAGMA main.query_only(0)",
+                "PRAGMA writable_schema = ON",
+                "PRAGMA wal_checkpoint",
+                "PRAGMA wal_checkpoint(TRUNCATE)",
+                "COMMIT",
+                "END",
+                "ROLLBACK",
+                "SAVEPOINT s",
+                // A byte-order mark is whitespace to SQLite.
+                "\u{feff}COMMIT",
+                // Two statements: to SQLite `:a(')` is one variable, to our
+                // tokenizer the rest is a string.
+                "SELECT :a('); PRAGMA query_only = 0; --'",
+            ] {
+                // A statement's error, not a closed session.
+                let ran = run_unrefused(&conn, &[text]).await.unwrap();
+                assert!(
+                    matches!(
+                        ran.results.last().map(|result| &result.outcome),
+                        Some(StatementOutcome::Error {
+                            error: Error::Query { code: Some(code), message, .. },
+                            ..
+                        }) if code == "23" && message.contains("not authorized")
+                    ),
+                    "{access:?} {text}: {ran:?}"
+                );
+                assert_eq!(standing(&conn).await, (1, true), "{access:?} {text}");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_script_still_reads_and_sets_what_the_fence_leaves_it() {
+        for access in [Access::ReadOnly, Access::Writable] {
+            let (conn, _dir) = fixture_as(access).await;
+            for text in [
+                "PRAGMA query_only",
+                "PRAGMA table_info(users)",
+                // Asks for the pragma while it runs, not when it is prepared.
+                "SELECT name FROM pragma_table_info('users')",
+                "SELECT count(*) FROM users",
+            ] {
+                let ran = run_unrefused(&conn, &[text]).await.unwrap();
+                assert!(
+                    matches!(
+                        ran.results.last().map(|result| &result.outcome),
+                        Some(StatementOutcome::Rows { .. })
+                    ),
+                    "{access:?} {text}: {ran:?}"
+                );
+            }
+            // A setting that is the script's to change, read back in the
+            // same script.
+            let ran = run_unrefused(&conn, &["PRAGMA cache_size = 1234", "PRAGMA cache_size"])
+                .await
+                .unwrap();
+            assert!(
+                matches!(
+                    ran.results.last().map(|result| &result.outcome),
+                    Some(StatementOutcome::Rows { rows, .. }) if rows[0][0] == Value::Int(1234)
+                ),
+                "{access:?}: {ran:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_scripts_write_is_refused_by_query_only_not_by_the_authorizer() {
+        for access in [Access::ReadOnly, Access::Writable] {
+            let (conn, _dir) = fixture_as(access).await;
+            let ran = run_unrefused(&conn, &["UPDATE users SET email = 'x'"])
+                .await
+                .unwrap();
+            // SQLITE_READONLY: the app tells a refused write by it.
+            assert!(
+                matches!(
+                    &ran.results[0].outcome,
+                    StatementOutcome::Error {
+                        error: Error::Query { code: Some(code), message, .. },
+                        ..
+                    } if code == "8" && !message.contains("not authorized")
+                ),
+                "{access:?}: {ran:?}"
+            );
+        }
+    }
+
+    /// A writable session on a file with an FTS5 and an R*Tree table.
+    async fn virtual_tables() -> (Conn, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("missing.db");
-        assert!(matches!(Conn::open(&path).await, Err(Error::Connect(_))));
-        assert!(!path.exists());
+        let path = dir.path().join("virtual.db");
+        rusqlite::Connection::open(&path)
+            .unwrap()
+            .execute_batch(
+                "CREATE VIRTUAL TABLE notes USING fts5(body);
+                 INSERT INTO notes (body) VALUES ('a quiet shelf'), ('a loud shelf'), ('the till');
+                 CREATE VIRTUAL TABLE areas USING rtree(id, min_x, max_x);
+                 INSERT INTO areas VALUES (1, 0, 1), (2, 5, 6), (3, 8, 9);",
+            )
+            .unwrap();
+        (Conn::open(&path, Access::Writable).await.unwrap(), dir)
+    }
+
+    #[tokio::test]
+    async fn virtual_tables_are_browsed_behind_the_filters_fence() {
+        for (table, raw) in [("areas", "min_x >= 5"), ("notes", "notes MATCH 'shelf'")] {
+            // Each in a session of its own, and the count first, so that
+            // nothing of the app's has touched the table before the fence
+            // is up: R*Tree prepares its write statements when the table
+            // connects, and FTS5 asks for `PRAGMA data_version` when it
+            // first reads.
+            let (conn, _dir) = virtual_tables().await;
+            let mut query = RowQuery::new(ObjectRef::new("main", table), 10);
+            let rows = |page: Result<RowPage>| page.map(|page| page.rows.len());
+            assert_eq!(conn.count_rows(&query).await, Ok(3), "{table}");
+            assert_eq!(rows(conn.fetch_rows(&query).await), Ok(3), "{table}");
+            query.raw_where = Some(raw.into());
+            assert_eq!(conn.count_rows(&query).await, Ok(2), "{table} {raw}");
+            assert_eq!(rows(conn.fetch_rows(&query).await), Ok(2), "{table} {raw}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_script_that_ended_its_transaction_runs_nothing_after_it() {
+        let (conn, dir) = fixture_as(Access::Writable).await;
+        without_the_authorizer(&conn).await;
+        let path = dir.path().join("fixture.db");
+        let before = std::fs::read(&path).unwrap();
+        // query_only is still on after the COMMIT, and does not stop a
+        // change of journal mode: only the open transaction does.
+        let ran = run_unrefused(&conn, &["COMMIT", "PRAGMA journal_mode = WAL"]).await;
+        // Not assert_eq: it would print both files.
+        assert!(std::fs::read(&path).unwrap() == before, "the file changed");
+        assert!(!dir.path().join("fixture.db-wal").exists());
+        assert!(matches!(ran, Err(Error::LeftReadOnly)), "{ran:?}");
+    }
+
+    #[test]
+    fn a_raw_where_holding_a_statement_separator_is_refused() {
+        let mut query = RowQuery::new(ObjectRef::new("main", "users"), 10);
+        for raw in [
+            "1 = 1; DELETE FROM users",
+            "1=1); PRAGMA query_only = 0; SELECT (1",
+            "1=1;",
+        ] {
+            query.raw_where = Some(raw.into());
+            let checked = check_raw_where(&query);
+            assert!(
+                matches!(&checked, Err(Error::Query { message, .. }) if message.contains("`;`")),
+                "{raw}: {checked:?}"
+            );
+        }
+        // In a string, a name or a comment it separates nothing.
+        for raw in [
+            "email LIKE '%;%'",
+            "\"a;b\" = 1 OR [a;b] = 1 OR `a;b` = 1",
+            "id = 1 /* one; only */",
+        ] {
+            query.raw_where = Some(raw.into());
+            assert_eq!(check_raw_where(&query), Ok(()), "{raw}");
+        }
+    }
+
+    #[test]
+    fn what_the_fence_refuses_a_filter_is_put_in_words() {
+        let coded = |code: &str, message: &str| Error::Query {
+            code: Some(code.into()),
+            message: message.into(),
+            detail: None,
+            hint: None,
+        };
+        // The second is what SQLite says when the refusal comes from inside
+        // a running statement.
+        for message in ["not authorized", "authorization denied"] {
+            assert_eq!(
+                filter_denied(coded("23", message)),
+                coded(
+                    "23",
+                    "A filter cannot use a PRAGMA with an argument, ATTACH or a transaction \
+                     statement."
+                )
+            );
+        }
+        for other in [
+            coded("8", "attempt to write a readonly database"),
+            coded("1", "no such column: nope"),
+            Error::query("not authorized"),
+            Error::Cancelled,
+        ] {
+            assert_eq!(filter_denied(other.clone()), other);
+        }
+    }
+
+    #[test]
+    fn a_raw_where_holding_a_nul_is_refused() {
+        let mut query = RowQuery::new(ObjectRef::new("main", "users"), 10);
+        // In a string too: SQLite stops reading there whatever it is in.
+        for raw in ["1=1) \0", "\0", "email = 'a\0b'"] {
+            query.raw_where = Some(raw.into());
+            let checked = check_raw_where(&query);
+            assert!(
+                matches!(&checked, Err(Error::Query { message, .. }) if message.contains("NUL")),
+                "{raw:?}: {checked:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn failed_browsing_puts_the_session_settings_back() {
+        for access in [Access::ReadOnly, Access::Writable] {
+            let (conn, _dir) = fixture_as(access).await;
+            // What a WHERE text would do if its `;` got past
+            // `check_raw_where` and the fence, which this closure does not
+            // put up: rusqlite prepares the second statement, which is all
+            // a flag pragma needs, and then refuses the text.
+            let failed = conn
+                .browse(|connection| {
+                    connection
+                        .prepare("SELECT 1; PRAGMA query_only = 0")
+                        .map(|_| ())
+                        .map_err(map_error)
+                })
+                .await;
+            assert!(matches!(failed, Err(Error::Query { .. })), "{failed:?}");
+            let query_only = conn
+                .run(|connection| {
+                    connection
+                        .query_row("PRAGMA query_only", [], |row| row.get::<_, i64>(0))
+                        .map_err(map_error)
+                })
+                .await
+                .unwrap();
+            assert_eq!(query_only, 1, "{access:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_statement_after_query_only_went_off_does_not_run() {
+        // The COMMIT would keep the UPDATE whatever the end of the run did,
+        // so the UPDATE must not run at all.
+        let (conn, _dir) = fixture_as(Access::Writable).await;
+        without_the_authorizer(&conn).await;
+        let ran = run_unrefused(
+            &conn,
+            &[
+                "PRAGMA query_only = OFF",
+                "UPDATE users SET email = 'x' WHERE id = 1",
+                "COMMIT",
+            ],
+        )
+        .await;
+        let changed = conn
+            .run(|connection| {
+                connection
+                    .query_row("SELECT count(*) FROM users WHERE email = 'x'", [], |row| {
+                        row.get::<_, i64>(0)
+                    })
+                    .map_err(map_error)
+            })
+            .await
+            .unwrap();
+        assert_eq!(changed, 0);
+        assert!(matches!(ran, Err(Error::LeftReadOnly)), "{ran:?}");
     }
 
     #[test]
@@ -892,7 +1431,10 @@ mod tests {
             "these are not the tables you are looking for, not at all",
         )
         .unwrap();
-        assert!(matches!(Conn::open(&path).await, Err(Error::Connect(_))));
+        assert!(matches!(
+            Conn::open(&path, Access::ReadOnly).await,
+            Err(Error::Connect(_))
+        ));
     }
 
     #[tokio::test]

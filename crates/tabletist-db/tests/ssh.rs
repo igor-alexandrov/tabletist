@@ -8,8 +8,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use tabletist_db::{
-    ConnectSpec, Connection, Driver, Error, HostKeys, ObjectRef, RowQuery, Secrets, SshAuth,
-    SshSpec, SshStage, TlsMode,
+    Access, ConnectSpec, Connection, Driver, Error, HostKeys, ObjectRef, RowQuery, Secrets,
+    SshAuth, SshSpec, SshStage, TlsMode,
 };
 
 /// The SSH server and its password, or `None` (test skipped).
@@ -70,7 +70,13 @@ fn secrets_with_db(mut secrets: Secrets) -> Secrets {
 
 /// Connects to PostgreSQL through the tunnel.
 async fn open(ssh: &SshSpec, secrets: &Secrets, keys: &HostKeys) -> Result<Connection, Error> {
-    Connection::connect_with(&pg_via(ssh), &secrets_with_db(secrets.clone()), keys).await
+    Connection::connect_with(
+        &pg_via(ssh),
+        &secrets_with_db(secrets.clone()),
+        keys,
+        Access::ReadOnly,
+    )
+    .await
 }
 
 /// Learns the server's fingerprint the way the app does: from the refusal.
@@ -214,8 +220,13 @@ async fn postgres_tls_works_through_the_tunnel() {
     let keys = trusted(&ssh).await;
     let mut spec = pg_via(&ssh);
     spec.tls = TlsMode::Require;
-    let connection =
-        Connection::connect_with(&spec, &secrets_with_db(with_password(&password)), &keys).await;
+    let connection = Connection::connect_with(
+        &spec,
+        &secrets_with_db(with_password(&password)),
+        &keys,
+        Access::ReadOnly,
+    )
+    .await;
     assert!(connection.is_ok(), "{:?}", connection.err());
 }
 
@@ -227,7 +238,14 @@ async fn a_database_the_ssh_server_cannot_reach_is_a_forward_error() {
     let keys = trusted(&ssh).await;
     let mut spec = pg_via(&ssh);
     spec.host = "nowhere.invalid".into();
-    match Connection::connect_with(&spec, &secrets_with_db(with_password(&password)), &keys).await {
+    match Connection::connect_with(
+        &spec,
+        &secrets_with_db(with_password(&password)),
+        &keys,
+        Access::ReadOnly,
+    )
+    .await
+    {
         Err(Error::Ssh {
             stage: SshStage::Forward,
             message,
@@ -280,6 +298,7 @@ async fn mysql_through_the_tunnel_reads_and_cancels() {
         &mysql_via(&ssh),
         &secrets_with_db(with_password(&password)),
         &keys,
+        Access::ReadOnly,
     )
     .await
     .unwrap();
@@ -322,9 +341,13 @@ async fn a_database_host_that_never_answers_times_out_like_a_direct_connect() {
         // Routable nowhere: the SSH server's own connect hangs.
         spec.host = "10.255.255.1".into();
         let started = Instant::now();
-        let result =
-            Connection::connect_with(&spec, &secrets_with_db(with_password(&password)), &keys)
-                .await;
+        let result = Connection::connect_with(
+            &spec,
+            &secrets_with_db(with_password(&password)),
+            &keys,
+            Access::ReadOnly,
+        )
+        .await;
         assert!(result.is_err());
         assert!(
             started.elapsed() < Duration::from_secs(15),

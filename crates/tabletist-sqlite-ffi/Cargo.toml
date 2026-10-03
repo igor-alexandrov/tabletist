@@ -8,11 +8,12 @@ publish = false
 
 # The workspace forbids unsafe code. rusqlite reads a result column's name and
 # declared type as `str` and panics when their bytes are not UTF-8, which a
-# file can hold, and it keeps the statement's pointer to itself. The bytes can
+# file can hold, and it keeps the statement's pointer to itself. Its
+# authorizer reads the names SQLite asks about the same way. The bytes can
 # only be read through SQLite's C API, so this crate carries the workspace's
-# lints with `unsafe_code` lowered to `deny`, allowed only in `columns.rs` and
-# its tests, each use with a SAFETY note. The app and the database layer keep
-# `forbid`.
+# lints with `unsafe_code` lowered to `deny`, allowed only in the files that
+# make those calls (`columns.rs`, `authorizer.rs` and the tests' `testing.rs`),
+# each use with a SAFETY note. The app and the database layer keep `forbid`.
 [lints.rust]
 unsafe_code = "deny"
 

@@ -171,6 +171,11 @@ fn next(dialect: Dialect, text: &str, start: usize) -> (TokenKind, usize) {
     let peek = |offset: usize| bytes.get(start + offset).copied();
     match byte {
         b if is_space(b) => (TokenKind::Whitespace, scan(bytes, start, is_space)),
+        // SQLite reads a byte-order mark where a token starts as a space,
+        // so the word after it is a word of its own.
+        0xEF if dialect == Dialect::Sqlite && peek(1) == Some(0xBB) && peek(2) == Some(0xBF) => {
+            (TokenKind::Whitespace, start + 3)
+        }
         b'-' if peek(1) == Some(b'-') && dash_comment(dialect, peek(2)) => {
             (TokenKind::Comment, line_end(dialect, bytes, start))
         }
@@ -613,6 +618,11 @@ pub fn refusal(dialect: Dialect, statement: &str) -> Option<String> {
     let word = |index: usize| words.get(index).map(String::as_str).unwrap_or_default();
     let guarded_name = || words.iter().skip(1).find(|name| is_guarded_setting(name));
     let postgres_or_mysql = dialect != Dialect::Sqlite;
+    if dialect == Dialect::Sqlite
+        && let Some(name) = refused_pragma(statement, &tokens)
+    {
+        return Some(format!("PRAGMA {name}"));
+    }
     match word(0) {
         first @ ("BEGIN" | "START" | "COMMIT" | "END" | "ROLLBACK" | "ABORT" | "SAVEPOINT"
         | "RELEASE") => return Some(first.to_owned()),
@@ -709,6 +719,79 @@ fn is_guarded_setting(name: &str) -> bool {
         || name == "STANDARD_CONFORMING_STRINGS"
         || name == "CLIENT_ENCODING"
         || name.starts_with("CHARACTER_SET")
+}
+
+/// The SQLite pragmas a script may not set. `query_only` is what keeps a
+/// writable handle from writing. `writable_schema` would open the schema
+/// table to writes; SQLite ignores it in defensive mode, which every
+/// session is opened in, so refusing it is belt and braces.
+const GUARDED_PRAGMAS: [&str; 2] = ["QUERY_ONLY", "WRITABLE_SCHEMA"];
+
+/// The SQLite pragmas a script may not name in any form, since the bare
+/// form acts too. `wal_checkpoint` rewrites a file in WAL mode, and neither
+/// `query_only` nor a transaction that has read nothing stops it.
+const REFUSED_PRAGMAS: [&str; 1] = ["WAL_CHECKPOINT"];
+
+/// The name a token spells in a `PRAGMA`, upper-cased. SQLite reads a
+/// pragma's name as a bare word, a quoted name or a string, which is why
+/// this does not go through `word_of`: that skips strings.
+fn pragma_name(statement: &str, token: &Token) -> Option<String> {
+    matches!(
+        token.kind,
+        TokenKind::Keyword
+            | TokenKind::Identifier
+            | TokenKind::QuotedIdentifier
+            | TokenKind::String
+    )
+    .then(|| {
+        statement[token.range.clone()]
+            .trim_matches(['"', '`', '[', ']', '\''])
+            .to_ascii_uppercase()
+    })
+}
+
+/// The pragma a SQLite `PRAGMA` statement may not name: one of
+/// `REFUSED_PRAGMAS`, or one of `GUARDED_PRAGMAS` unless the statement only
+/// reads it (`PRAGMA name`, `PRAGMA schema.name`, nothing after). It errs
+/// toward refusing: such a name anywhere in a longer statement counts.
+fn refused_pragma(statement: &str, tokens: &[Token]) -> Option<&'static str> {
+    let code: Vec<&Token> = tokens
+        .iter()
+        .filter(|token| !matches!(token.kind, TokenKind::Whitespace | TokenKind::Comment))
+        .collect();
+    // EXPLAIN [QUERY PLAN] in front changes nothing: SQLite applies a flag
+    // pragma when it prepares the statement, explained or not.
+    let explained = code
+        .iter()
+        .take_while(|token| {
+            word_of(statement, token)
+                .is_some_and(|word| matches!(word.as_str(), "EXPLAIN" | "QUERY" | "PLAN"))
+        })
+        .count();
+    let [pragma, code @ ..] = &code[explained..] else {
+        return None;
+    };
+    if word_of(statement, pragma).as_deref() != Some("PRAGMA") {
+        return None;
+    }
+    let named = |list: &[&'static str]| {
+        code.iter()
+            .filter_map(|token| pragma_name(statement, token))
+            .find_map(|name| list.iter().copied().find(|listed| *listed == name))
+    };
+    if let Some(refused) = named(&REFUSED_PRAGMAS) {
+        return Some(refused);
+    }
+    let guarded = named(&GUARDED_PRAGMAS)?;
+    let is_name = |token: &Token| pragma_name(statement, token).is_some();
+    let reads = match code {
+        [name] => is_name(name),
+        [schema, dot, name] => {
+            is_name(schema) && &statement[dot.range.clone()] == "." && is_name(name)
+        }
+        _ => false,
+    };
+    (!reads).then_some(guarded)
 }
 
 /// The refusal for a `SET` statement, if any. Everything here errs toward
@@ -1131,6 +1214,29 @@ mod tests {
             assert_eq!(
                 kinds(dialect, "\x0bCOMMIT"),
                 vec![(TokenKind::Keyword, "COMMIT")]
+            );
+        }
+    }
+
+    #[test]
+    fn a_byte_order_mark_is_whitespace_for_sqlite_only() {
+        // SQLite reads one at the start of a token as a space. In a word it
+        // is a letter like any other byte past ASCII.
+        assert_eq!(
+            kinds(
+                Dialect::Sqlite,
+                "\u{feff}COMMIT \u{feff}\u{feff}x a\u{feff}b"
+            ),
+            vec![
+                (TokenKind::Keyword, "COMMIT"),
+                (TokenKind::Identifier, "x"),
+                (TokenKind::Identifier, "a\u{feff}b"),
+            ]
+        );
+        for dialect in [Dialect::Postgres, Dialect::MySql] {
+            assert_eq!(
+                kinds(dialect, "\u{feff}COMMIT"),
+                vec![(TokenKind::Identifier, "\u{feff}COMMIT")]
             );
         }
     }
@@ -1752,6 +1858,82 @@ mod tests {
         // Not a statement of the others.
         assert_eq!(refusal(Dialect::Postgres, "USE other"), None);
         assert_eq!(refusal(Dialect::Sqlite, "USE other"), None);
+    }
+
+    #[test]
+    fn sqlite_refuses_setting_the_pragmas_that_keep_a_handle_from_writing() {
+        for refused in [
+            "PRAGMA query_only = OFF",
+            "pragma Query_Only=0",
+            "PRAGMA query_only(0)",
+            "PRAGMA main.query_only = 0",
+            "PRAGMA \"query_only\" = 0",
+            "PRAGMA 'query_only' = 0",
+            "PRAGMA `query_only` = 0",
+            "PRAGMA [query_only] = 0",
+            "PRAGMA main.'query_only'(0)",
+            "PRAGMA 'main'.\"query_only\" = 0",
+            "PRAGMA /* x */ query_only /* y */ = 0",
+            "PRAGMA writable_schema = ON",
+            "PRAGMA 'writable_schema'(1)",
+            // Not a form SQLite takes, and refused all the same.
+            "PRAGMA query_only OFF",
+            // SQLite applies a flag pragma when it prepares the statement,
+            // so EXPLAIN in front does not make it harmless.
+            "EXPLAIN PRAGMA query_only = OFF",
+            "explain query plan PRAGMA 'query_only'(0)",
+            // SQLite reads a byte-order mark in front of a token as a space.
+            "\u{feff}PRAGMA query_only = 0",
+            "PRAGMA \u{feff}query_only = 0",
+        ] {
+            assert!(refusal(Dialect::Sqlite, refused).is_some(), "{refused}");
+        }
+        assert_eq!(
+            refusal(Dialect::Sqlite, "PRAGMA 'query_only' = 0").as_deref(),
+            Some("PRAGMA QUERY_ONLY")
+        );
+        // Reading one is fine, and so is every other pragma.
+        for allowed in [
+            "PRAGMA query_only",
+            "PRAGMA main.query_only",
+            "PRAGMA 'query_only'",
+            "PRAGMA table_info(users)",
+            "PRAGMA foreign_keys = ON",
+            "SELECT 'PRAGMA query_only = OFF'",
+            "SELECT query_only FROM settings",
+            "EXPLAIN SELECT 1",
+            "EXPLAIN PRAGMA query_only",
+        ] {
+            assert_eq!(refusal(Dialect::Sqlite, allowed), None, "{allowed}");
+        }
+    }
+
+    #[test]
+    fn sqlite_refuses_a_statement_behind_a_byte_order_mark() {
+        assert_eq!(
+            refusal(Dialect::Sqlite, "\u{feff}COMMIT").as_deref(),
+            Some("COMMIT")
+        );
+    }
+
+    #[test]
+    fn sqlite_refuses_a_checkpoint_in_every_form() {
+        // The bare form checkpoints too: there is nothing to only read.
+        for refused in [
+            "PRAGMA wal_checkpoint",
+            "PRAGMA wal_checkpoint(TRUNCATE)",
+            "PRAGMA main.wal_checkpoint",
+            "PRAGMA 'wal_checkpoint'",
+            "EXPLAIN PRAGMA wal_checkpoint",
+        ] {
+            assert_eq!(
+                refusal(Dialect::Sqlite, refused).as_deref(),
+                Some("PRAGMA WAL_CHECKPOINT"),
+                "{refused}"
+            );
+        }
+        // A setting of its own, and not a checkpoint.
+        assert_eq!(refusal(Dialect::Sqlite, "PRAGMA wal_autocheckpoint"), None);
     }
 
     #[test]
