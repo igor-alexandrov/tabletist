@@ -412,6 +412,18 @@ fn fixture_connection() -> SavedConnection {
     }
 }
 
+/// What the newest Connect asked its session to be opened as. A faked
+/// `Connected` says so, as the backend says what the session it opened is.
+pub fn asked_access(app: &App) -> tabletist_db::Access {
+    let sent = app.backend.sent.iter().rev();
+    sent.filter_map(|command| match command {
+        Command::Connect { access, .. } => Some(*access),
+        _ => None,
+    })
+    .next()
+    .expect("a Connect was sent")
+}
+
 /// A workspace for the fixture connection, still connecting and with no
 /// tabs, for tests that need one without an app.
 pub fn workspace() -> Workspace {
@@ -444,6 +456,7 @@ impl Harness {
             request,
             driver: Driver::Sqlite,
             encrypted: false,
+            access: crate::testing::asked_access(&self.app),
         }));
         let Command::ListSchemas { request, .. } = *last_sent(&self.app) else {
             panic!("expected ListSchemas");

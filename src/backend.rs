@@ -172,6 +172,8 @@ pub enum Event {
         /// Whether the session runs over TLS (`prefer` may have fallen back
         /// to plain text).
         encrypted: bool,
+        /// What the session was opened as, as the session itself says.
+        access: Access,
     },
     ConnectFailed {
         session: SessionId,
@@ -675,7 +677,7 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 struct Ready {
     session: SessionId,
     request: RequestId,
-    outcome: Result<(Driver, bool, SessionHandle), Error>,
+    outcome: Result<(Driver, bool, Access, SessionHandle), Error>,
 }
 
 /// State files being written. A file is here while its writer runs, with
@@ -799,7 +801,7 @@ impl Worker {
         match done.outcome {
             // Dropping the handle stops the session task, which closes it.
             Ok(_) if closed => {}
-            Ok((driver, encrypted, handle)) => {
+            Ok((driver, encrypted, access, handle)) => {
                 #[cfg(test)]
                 lock(&self.watched).insert(done.session, Arc::clone(&handle.running));
                 self.sessions.insert(done.session, handle);
@@ -808,6 +810,7 @@ impl Worker {
                     request: done.request,
                     driver,
                     encrypted,
+                    access,
                 });
             }
             Err(error) => self.outbox.emit(Event::ConnectFailed {
@@ -837,6 +840,9 @@ impl Worker {
                         .map(|connection| {
                             let driver = connection.driver();
                             let encrypted = connection.is_encrypted();
+                            // What the session says it is, not what was
+                            // asked for: the UI shows and trusts this.
+                            let opened = connection.access();
                             let cancel = connection.cancel_handle();
                             let (queue, commands) = tokio_mpsc::unbounded_channel();
                             let (stop, stopped) = tokio::sync::oneshot::channel();
@@ -852,6 +858,7 @@ impl Worker {
                             (
                                 driver,
                                 encrypted,
+                                opened,
                                 SessionHandle {
                                     queue,
                                     cancel,
@@ -1558,6 +1565,27 @@ mod tests {
             seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         });
         (waker, count)
+    }
+
+    #[test]
+    fn a_session_says_what_it_was_opened_as() {
+        for access in [Access::ReadOnly, Access::Writable] {
+            let (_dir, spec) = fixture();
+            let (waker, _wakes) = woken();
+            let mut backend = Backend::start_with(waker, Keyring::memory());
+            backend.send(Command::Connect {
+                session: SessionId(1),
+                request: RequestId(10),
+                spec,
+                secrets: Secrets::default(),
+                host_keys: HostKeys::default(),
+                access,
+            });
+            match backend.wait(WAIT) {
+                Some(Event::Connected { access: opened, .. }) => assert_eq!(opened, access),
+                other => panic!("expected a session opened {access:?}, got {other:?}"),
+            }
+        }
     }
 
     #[test]

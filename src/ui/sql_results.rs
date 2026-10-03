@@ -1773,16 +1773,23 @@ mod tests {
 
     #[test]
     fn a_refused_write_says_the_editor_only_reads() {
-        // The card as a look says it, and nothing about the connection:
-        // the editor reads on a writable one as on a read-only one.
+        // The card, whole, as a look says it.
         let says_so = |harness: &mut Harness, look: &Look, case: &str| {
-            let title = look.label("The SQL editor only reads data");
-            assert!(harness.has(&title), "{title}, {case} in {}", look.name);
-            let other = look.label("This connection opens read-only");
-            assert!(!harness.has(&other), "{other}, {case} in {}", look.name);
-            assert!(!harness.has("Edit connection"), "{case} in {}", look.name);
+            for ours in [
+                "The SQL editor only reads data",
+                "Every query runs in a read-only transaction, so this statement was refused. \
+                 Nothing changed.",
+            ] {
+                let said = look.label(ours);
+                assert!(harness.has(&said), "{said}, {case} in {}", look.name);
+            }
         };
         for look in Look::ALL {
+            // The card does not read the connection's access: the editor
+            // reads on a writable connection as on a read-only one. Both
+            // are walked so that a card which starts to tell them apart,
+            // and to promise a read-only connection what turning its box
+            // off would not give, fails here.
             for writable in [false, true] {
                 let (mut harness, tab) = editor(look, "UPDATE users SET email = 'x'");
                 let workspace = harness.app.workspace_mut(tab).unwrap();
@@ -1823,16 +1830,27 @@ mod tests {
             let workspace = harness.app.workspace_mut(tab).unwrap();
             workspace.driver = tabletist_db::Driver::Postgres;
             // The editor takes most of the height: the results have room
-            // for the card's title, where the wheel is turned, and not for
-            // its last line.
+            // for the card's first lines and not for its last.
             let id = workspace.active_tab.unwrap();
-            workspace.sql_tab_mut(id).unwrap().split = 0.84;
+            workspace.sql_tab_mut(id).unwrap().split = 0.8;
             run(&mut harness);
-            harness.answer_sql(Ok(script_outcome(vec![read_only_refusal()])), None);
+            // The card ends in the database's own words, and a database
+            // may say a lot: enough here to wrap to several lines, so the
+            // card overflows the pane by lines and not by a few points.
+            let message = "cannot execute UPDATE in a read-only transaction; ".repeat(12);
+            let refusal = StatementOutcome::Error {
+                error: Error::Query {
+                    code: Some("25006".into()),
+                    message: message.clone(),
+                    detail: None,
+                    hint: None,
+                },
+                position: None,
+            };
+            harness.answer_sql(Ok(script_outcome(vec![refusal])), None);
             show_pane(&mut harness, tab, ResultPane::Results);
             let title = look.label("The SQL editor only reads data");
-            // The card ends in the database's own words, as it said them.
-            let last = "25006 · cannot execute UPDATE in a read-only transaction".to_owned();
+            let last = format!("25006 · {message}");
             // The card's title and its last line, and how far down the
             // pane shows anything: to the footer under it, or to the
             // window's end in the terminal look, which has none.

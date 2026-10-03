@@ -1,10 +1,7 @@
 //! The connection dialog as the terminal look draws it: a two-column form
 //! of labels and fields under headings, with its keys in the footer.
 
-use egui::{
-    Color32, CornerRadius, Rect, Response, Sense, Stroke, StrokeKind, Ui, WidgetInfo, WidgetType,
-    pos2, vec2,
-};
+use egui::{Color32, CornerRadius, Rect, Response, Sense, Ui, WidgetInfo, WidgetType, pos2, vec2};
 use tabletist_db::Driver;
 
 use crate::connections::PasswordMode;
@@ -260,14 +257,6 @@ fn terminal_check(
     let (rect, mut response) = ui.allocate_exact_size(laid.size(), Sense::click());
     response.widget_info(|| WidgetInfo::selected(WidgetType::Checkbox, true, on, name));
     laid.paint(ui.painter(), rect.min);
-    if response.has_focus() {
-        ui.painter().rect_stroke(
-            rect.expand(2.0),
-            CornerRadius::same(3),
-            Stroke::new(1.0, palette.accent),
-            StrokeKind::Outside,
-        );
-    }
     if response.clicked() {
         *checked = !*checked;
         response.mark_changed();

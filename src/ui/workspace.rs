@@ -1660,9 +1660,12 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
             }
             // A read-only connection's tag ends the keys. Without one,
             // neither it nor the gap before it takes room from them.
-            let tag = read_only.then(|| gettext(locale, "read-only"));
-            let tag_width = tag.as_ref().map_or(0.0, |tag| measure(tag) + 12.0 + 2.0);
-            let tag_room = if tag.is_some() { tag_width + gap } else { 0.0 };
+            let tag = read_only.then(|| {
+                let tag = gettext(locale, "read-only");
+                let width = measure(&tag) + 12.0 + 2.0;
+                (tag, width)
+            });
+            let tag_room = tag.as_ref().map_or(0.0, |(_, width)| width + gap);
             let limit = rect.right() - 12.0 - summary_width - gap - tag_room;
             let disabled = ["e edit", "o new row", "dd delete", ":w write"];
             let disabled_width = disabled.iter().map(|text| measure(text)).sum::<f32>()
@@ -1690,8 +1693,8 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                 }
                 x += gap;
             }
-            if let Some(tag) = &tag {
-                let pill = Rect::from_min_size(pos2(x, y - 9.0), vec2(tag_width, 18.0));
+            if let Some((tag, width)) = &tag {
+                let pill = Rect::from_min_size(pos2(x, y - 9.0), vec2(*width, 18.0));
                 ui.painter().rect_stroke(
                     pill,
                     CornerRadius::same(3),

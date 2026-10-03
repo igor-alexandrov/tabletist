@@ -683,11 +683,15 @@ fn safety(ui: &mut Ui, form: &mut ConnectionForm, skin: &Skin) {
             ui.horizontal_top(|ui| {
                 ui.spacing_mut().item_spacing.x = 10.0;
                 let on = form.read_only();
-                if env_check(ui, on, &title, skin).clicked() {
-                    form.read_only = Some(!on);
-                }
+                let mut toggled = env_check(ui, on, &title, skin).clicked();
                 ui.vertical(|ui| {
-                    widgets::label(ui, TextRole::UiBodyStrong, &title, palette.text, look);
+                    // The title toggles the box under the pointer, as a
+                    // check box's own label does. It takes clicks alone:
+                    // the box stays the one check box and the one Tab stop.
+                    let label = Text::one(look, TextRole::UiBodyStrong, &title, palette.text)
+                        .layout(ui.ctx())
+                        .label_sense(ui, Sense::CLICK);
+                    toggled |= label.clicked();
                     ui.add_space(2.0);
                     // The secondary colour, warmed by the environment's
                     // text colour: 0.4 is the share at which production's
@@ -702,6 +706,9 @@ fn safety(ui: &mut Ui, form: &mut ConnectionForm, skin: &Skin) {
                         look,
                     );
                 });
+                if toggled {
+                    form.read_only = Some(!on);
+                }
             });
         });
 }

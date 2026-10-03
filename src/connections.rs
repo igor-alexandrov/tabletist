@@ -60,11 +60,18 @@ impl SavedConnection {
 
     /// The access its sessions open with.
     pub fn access(&self) -> tabletist_db::Access {
-        if self.read_only() {
-            tabletist_db::Access::ReadOnly
-        } else {
-            tabletist_db::Access::Writable
-        }
+        access(self.read_only, self.environment)
+    }
+}
+
+/// The access a session opens with: read-only as the box says, else as
+/// `environment` has it by default. An open tab asks with its own
+/// environment, which a relabelled saved entry does not change.
+pub fn access(read_only: Option<bool>, environment: Environment) -> tabletist_db::Access {
+    if read_only.unwrap_or(environment.read_only_by_default()) {
+        tabletist_db::Access::ReadOnly
+    } else {
+        tabletist_db::Access::Writable
     }
 }
 
