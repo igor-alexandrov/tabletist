@@ -1691,7 +1691,200 @@ The review of tasks 4 to 6 found the SQLite fence short in four places. They wer
 - `PRAGMA wal_checkpoint` rewrites a file in WAL mode under `query_only`. It is refused in every form.
 - A NUL in a raw WHERE ended the statement for SQLite and dropped the page's ORDER BY, LIMIT and OFFSET. `check_raw_where` refuses it.
 
-Left open, on purpose: a second review showed that SQLite's variable tokens (`:a(')`) hide a `;` from `check_raw_where`, so a crafted raw WHERE can still leave `foreign_keys` or `synchronous` changed on a session (never the file, never `query_only`). Teaching `tokenize` SQLite's variables closes it but changes highlighting, splitting and completion in the SQL editor, and one such fix opened another hole (`$` inside a name) before it was caught. A rusqlite authorizer would close the whole class. To decide before step 2.
+The second review showed one more: SQLite's variable tokens (`:a(')`) hide a `;` from `check_raw_where`, and the fix for it in `tokenize` opened another (`$` inside a name) and reached into the editor's highlighting and completion. So the tokenizer is left alone and SQLite's own parse becomes the backstop: task 6b.
+
+---
+
+### Task 6b: The SQLite authorizer
+
+**Files:**
+- Modify: `crates/tabletist-db/src/sqlite.rs`
+- Test: `crates/tabletist-db/src/sqlite.rs` (unit), `crates/tabletist-db/tests/sqlite.rs`
+
+SQLite calls a connection's authorizer whenever it prepares a statement, after its own parse, the tail rusqlite prepares to detect a second statement included, and before a flag pragma is applied. No spelling gets past it. It needs to know whose text is being prepared:
+
+| Fence | When | Allowed |
+|---|---|---|
+| `Off` | the app's own statements: `BEGIN`, `ROLLBACK`, `set_session_pragmas`, `still_query_only`, catalog queries | everything |
+| `Script` | a script's statement, in `statements` around the call of `statement` | everything but: `Transaction`, `Savepoint`; `Pragma` named `query_only` or `writable_schema` with a value; `Pragma` named `wal_checkpoint` in any form |
+| `Filter` | the page query and the count query, which hold the raw WHERE | only `Select`, `Read`, `Function`, `Recursive` |
+
+Writes in a script are NOT denied here: `query_only` refuses them with SQLITE_READONLY (code 8), which the app's refused-write card reads. `ATTACH` and other pragmas stay allowed in a script, as the SQL editor spec says.
+
+- [ ] **Step 1: The policy, test first**
+
+A pure function and its test (rusqlite's `hooks` feature is already on; the types are `rusqlite::hooks::{AuthAction, AuthContext, Authorization, TransactionOperation}`):
+
+```rust
+/// Whose text SQLite is preparing, which decides what it may do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+enum Fence {
+    /// The app's own statements.
+    Off = 0,
+    /// A statement of a SQL editor script.
+    Script = 1,
+    /// A table's page or count, which holds the raw WHERE.
+    Filter = 2,
+}
+
+/// What SQLite may do for text behind `fence`. Asked after SQLite's own
+/// parse, so no spelling gets past it; that is why it does not go through
+/// `sql::refusal`, whose tokenizer and SQLite's do not always agree.
+fn authorize(fence: Fence, action: &AuthAction<'_>) -> Authorization {
+    let allowed = match fence {
+        Fence::Off => true,
+        // A filter only reads.
+        Fence::Filter => matches!(
+            action,
+            AuthAction::Select
+                | AuthAction::Read { .. }
+                | AuthAction::Function { .. }
+                | AuthAction::Recursive
+        ),
+        // A write is left to `query_only`, whose error the app knows as a
+        // refused write. What must not happen is the script leaving its
+        // transaction or lifting what refuses the write.
+        Fence::Script => match action {
+            AuthAction::Transaction { .. } | AuthAction::Savepoint { .. } => false,
+            AuthAction::Pragma {
+                pragma_name,
+                pragma_value,
+            } => {
+                let name = pragma_name.to_ascii_lowercase();
+                name != "wal_checkpoint"
+                    && !(pragma_value.is_some()
+                        && matches!(name.as_str(), "query_only" | "writable_schema"))
+            }
+            _ => true,
+        },
+    };
+    if allowed {
+        Authorization::Allow
+    } else {
+        Authorization::Deny
+    }
+}
+```
+
+The test walks a table of (fence, action, allowed): `Off` allows a pragma with a value and a transaction; `Script` denies `Transaction`, `Savepoint`, `query_only`/`QUERY_ONLY`/`writable_schema` with a value, `wal_checkpoint` with and without one, and allows `query_only` without a value, `foreign_keys` with one, `table_info` with one, `Select`, `Update`, `Attach`; `Filter` allows `Select`, `Read`, `Function`, `Recursive` and denies `Pragma` (with and without a value), `Attach`, `Transaction`, `Update`, `Insert`, `Delete`.
+
+- [ ] **Step 2: The state and the install**
+
+```rust
+/// Which fence is up, shared with the authorizer SQLite calls.
+#[derive(Clone, Default)]
+struct Guard(Arc<AtomicU8>);
+
+impl Guard {
+    /// Puts `fence` up until the returned value drops.
+    fn fence(&self, fence: Fence) -> Fenced<'_> {
+        self.0.store(fence as u8, Ordering::SeqCst);
+        Fenced(self)
+    }
+
+    fn current(&self) -> Fence {
+        match self.0.load(Ordering::SeqCst) {
+            1 => Fence::Script,
+            2 => Fence::Filter,
+            _ => Fence::Off,
+        }
+    }
+}
+
+/// Takes the fence down when dropped, on every path.
+struct Fenced<'a>(&'a Guard);
+
+impl Drop for Fenced<'_> {
+    fn drop(&mut self) {
+        self.0.0.store(Fence::Off as u8, Ordering::SeqCst);
+    }
+}
+```
+
+`Conn` gains `guard: Guard`. In `open`, after `set_session_pragmas` and the first read succeeded:
+
+```rust
+            let guard = Guard::default();
+            let asked = guard.clone();
+            connection.authorizer(Some(move |context: AuthContext<'_>| {
+                authorize(asked.current(), &context.action)
+            }));
+```
+
+(the blocking closure returns the connection and the guard together).
+
+- [ ] **Step 3: The failing tests for the fences**
+
+In the test module of `sqlite.rs`, through `Conn::run_script` directly (which skips `sql::refusal`), on both accesses. Each denied text is a statement error, not a closed session: the run is `Ok`, its last result is `StatementOutcome::Error` whose message holds "not authorized", `PRAGMA query_only` reads 1 afterwards and the connection is in autocommit again.
+
+- Denied: `PRAGMA query_only = OFF`, `PRAGMA 'query_only' = 0`, `EXPLAIN PRAGMA query_only = 0`, `PRAGMA main.query_only(0)`, `PRAGMA writable_schema = ON`, `PRAGMA wal_checkpoint`, `PRAGMA wal_checkpoint(TRUNCATE)`, `COMMIT`, `END`, `ROLLBACK`, `SAVEPOINT s`, `"\u{feff}COMMIT"`, and one text holding two statements whose second is hidden from our tokenizer: `SELECT :a('); PRAGMA query_only = 0; --'`.
+- Allowed, each `Rows` or `Done`: `PRAGMA query_only`, `PRAGMA table_info(users)`, `SELECT name FROM pragma_table_info('users')`, `PRAGMA foreign_keys = ON`, `SELECT count(*) FROM users`.
+- A write is still `query_only`'s to refuse: `UPDATE users SET email = 'x'` fails with code `8`, not "not authorized".
+
+In `crates/tabletist-db/tests/sqlite.rs`, in `a_raw_where_cannot_modify_data`, for both accesses: read `PRAGMA foreign_keys` and `PRAGMA synchronous` through a script, then for each of these raw WHERE texts call `fetch_rows` and `count_rows` (each must fail), and read the two pragmas again: they must equal what they were.
+
+    1=1 OR :a(') IS NULL); PRAGMA foreign_keys = 0; PRAGMA synchronous = 0; SELECT ('
+    1=1 OR $a(') IS NULL); PRAGMA foreign_keys = 0; SELECT ('
+    1=1 OR @a(") IS NULL); PRAGMA foreign_keys = 0; SELECT ("
+    1=1 OR #a(--) IS NULL); PRAGMA foreign_keys = 0; SELECT (1
+    1=1 OR :a(/*) IS NULL); PRAGMA foreign_keys = 0; SELECT (1 /* */
+    1=1 OR EXISTS (WITH a$b(')') AS (SELECT 1) SELECT 1 FROM a$b)); PRAGMA foreign_keys = 0; SELECT ('
+
+(`foreign_keys` must first be made different from what the texts set, in a way the test can do: if the fixture's session has it off already, the texts set it to 1 instead.) And a filter that only reads still works under the fence: `id IN (SELECT id FROM users WHERE id < 3)` returns two rows.
+
+Run them: the denied script texts FAIL (the pragmas are applied or the run ends `LeftReadOnly`), and the variable-token WHEREs FAIL (the pragma reads changed).
+
+- [ ] **Step 4: Put the fences up**
+
+- `script`, `statements` and `end_transaction` are free functions over `&rusqlite::Connection`: `script` and `statements` take `guard: &Guard`, and `statements` wraps only the user's statement:
+
+```rust
+        let result = {
+            let _fenced = guard.fence(Fence::Script);
+            statement(connection, text, limit)
+        };
+```
+
+  `run_script` clones `self.guard` into its blocking closure.
+- `fetch_rows` and `count_rows`: the fence goes up, as `Fence::Filter`, around the prepare and the stepping of the page query and of the count query only. `check_raw_where` and the lookups of the key and of the binary columns before them run unfenced: they are the app's own and use `pragma_table_xinfo`.
+- Nothing else changes mode: `BEGIN`, `ROLLBACK`, `set_session_pragmas`, `still_query_only`, the catalog and `server_version` run with the fence off.
+
+- [ ] **Step 5: The tests of the layers behind it**
+
+Three existing tests reach the runner's own checks by running `PRAGMA query_only = OFF` or `COMMIT` through `Conn::run_script`: `a_script_that_gets_query_only_off_is_stopped_and_writes_nothing`, `a_script_that_ended_its_transaction_runs_nothing_after_it`, `a_statement_after_query_only_went_off_does_not_run`. The authorizer now stops those texts first. The checks stay as the layer behind it, and their tests test them alone: each takes the authorizer off its connection first, through a helper:
+
+```rust
+    /// Takes the authorizer off, for a test of the checks behind it.
+    async fn without_the_authorizer(conn: &Conn) {
+        conn.run(|connection| {
+            connection.authorizer(None::<fn(AuthContext<'_>) -> Authorization>);
+            Ok(())
+        })
+        .await
+        .unwrap();
+    }
+```
+
+`failed_browsing_puts_the_session_settings_back` does the same if it needs to. No other existing test may change. If one fails, stop and report it: in particular browsing a view, a filter with a function or a subquery, `PRAGMA table_info` in a script, and the refused-write code `8`.
+
+- [ ] **Step 6: Run**
+
+    ~/.cargo/bin/cargo test --locked -p tabletist-db --test sqlite   (three times)
+    ~/.cargo/bin/cargo test --locked -p tabletist-db --lib           (three times)
+    ~/.cargo/bin/cargo fmt --all --check
+    ~/.cargo/bin/cargo clippy --locked --workspace --all-targets -- -D warnings
+    ~/.cargo/bin/cargo test --locked --workspace --all-targets
+
+Expected: PASS, the app's suite included (its demo and fixtures browse SQLite through this code).
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add -A && git commit -m "Let SQLite itself refuse what a script and a filter may not do"
+```
+
+---
 
 ## What this plan leaves for step 2
 

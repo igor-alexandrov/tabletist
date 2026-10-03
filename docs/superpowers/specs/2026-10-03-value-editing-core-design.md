@@ -173,14 +173,29 @@ pending changes never outlive their page.
   holding a NUL is refused too: SQLite stops reading there, which dropped
   the page's ORDER BY, LIMIT and OFFSET.
 
-  Known gap, to close before step 2 writes anything: the `;` check trusts
-  our tokenizer to agree with SQLite's, and it does not for SQLite's
-  variable tokens (`:a(')` is one token to SQLite and the start of a
-  string to us). A raw WHERE built on that still has its tail prepared,
-  and can leave `foreign_keys` or `synchronous` changed for the session;
-  the file and `query_only` are unaffected. A rusqlite authorizer, which
-  SQLite consults when it prepares any statement, would close this class
-  without depending on the tokenizer.
+  Every check above that reads text trusts our tokenizer to agree with
+  SQLite's, and review kept finding places where it does not (a pragma
+  name written as a string, `EXPLAIN` in front, a byte-order mark,
+  SQLite's variable tokens such as `:a(')`). So SQLite's own parse is
+  the backstop: the connection has an **authorizer**, which SQLite
+  consults whenever it prepares a statement, the tail rusqlite prepares
+  to detect a second statement included. It knows whose text is being
+  prepared:
+  - the app's own statements (the transaction around a script, the
+    session's settings, the catalog, later the save): everything is
+    allowed;
+  - a script's statement: transaction and savepoint statements are
+    denied, and so are `query_only` and `writable_schema` with a value
+    and `wal_checkpoint` in any form. Writes are left to `query_only`,
+    whose error the refused-write card recognises. `ATTACH` and other
+    pragmas stay, as the SQL editor spec allows them;
+  - a table's page or count, which holds the raw WHERE: only reading is
+    allowed (select, read a column, call a function, recurse). Every
+    pragma, `ATTACH`, transaction statement and write is denied.
+
+  The refusal list and the two checks stay, as the layers in front of
+  and behind it: the list gives the user a sentence instead of "not
+  authorized", and the checks hold if the authorizer is ever wrong.
 
 The promise, restated: on a read-only connection no action in the app can
 modify data. On a writable connection only Save can; browsing, a raw WHERE
@@ -532,7 +547,9 @@ statements.
   - `write` on a `ReadOnly` connection sends nothing;
   - on a `Writable` connection a script and a raw WHERE still cannot
     write: the existing guard tests run again in both modes; MySQL gains
-    one for DDL; SQLite gains a raw WHERE that tries to turn `query_only`
+    one for DDL; SQLite gains the authorizer's three modes, raw WHEREs
+    that hide a second statement from the tokenizer (they leave every
+    session setting as it was), a raw WHERE that tries to turn `query_only`
     off, a script that ends its transaction behind a byte-order mark, the
     refusal of a checkpoint, the refusal of `PRAGMA query_only` in each
     spelling (bare, `"..."`, `'...'`, backticks, brackets, with a schema,
