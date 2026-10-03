@@ -160,8 +160,10 @@ pub struct Loaded {
 }
 
 impl Loaded {
-    /// Settings that came from no TOML file.
+    /// Settings that came from no TOML file, brought into range first: the
+    /// text is what a file would read back as, and the settings are the same.
     pub fn of(settings: Settings, source: Source) -> Self {
+        let settings = settings.validated();
         let text = settings.to_toml();
         let lines = Settings::from_toml(&text).lines;
         Self {
@@ -314,7 +316,9 @@ impl Settings {
     /// Takes `key`'s value from the file. False when it is no value the key
     /// can have: the setting stays as it was.
     fn take(&mut self, key: Key, value: &toml::de::DeValue<'_>) -> bool {
-        // Any integer is a number here: `validated` brings it into range.
+        // An integer of any size an `i64` holds is a number here: it is cut
+        // to a `u32` and `validated` brings it into range. One an `i64`
+        // cannot hold is no value for the key.
         let number = value
             .as_integer()
             .and_then(|integer| i64::from_str_radix(integer.as_str(), integer.radix()).ok())
@@ -340,6 +344,9 @@ impl Settings {
     /// TOML, and a value its key cannot have, are ignored and remembered by
     /// line; the key keeps its default. A key or a table this version does
     /// not know is ignored without a word: a newer one may have written it.
+    /// A table header that is rejected costs the keys under it too, and
+    /// those without a mark: they are read into the table above (or into
+    /// none), where they are keys nobody knows.
     pub fn from_toml(text: &str) -> Loaded {
         // The parser recovers from a bad line in two ways that are not
         // "ignored": it stops reading at some (a key with no `=`), and
@@ -438,8 +445,7 @@ impl Settings {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 let legacy = dirs.legacy_settings_file();
                 if legacy.exists() {
-                    let settings = crate::util::load_json::<Settings>(&legacy).validated();
-                    Loaded::of(settings, Source::Json)
+                    Loaded::of(crate::util::load_json::<Settings>(&legacy), Source::Json)
                 } else {
                     Self::default().into()
                 }
@@ -712,6 +718,47 @@ sql_timeout_secs = 30  # 0 waits forever
         let defaults: Loaded = Settings::default().into();
         assert_eq!(defaults.source, Source::Defaults);
         assert_eq!(defaults.settings, Settings::default());
+    }
+
+    #[test]
+    fn settings_from_no_toml_file_are_in_range_like_their_text() {
+        let loaded = Loaded::of(
+            Settings {
+                page_size: 5,
+                sql_timeout_secs: Some(0),
+                ..Settings::default()
+            },
+            Source::Json,
+        );
+        assert_eq!(loaded.settings.page_size, Settings::MIN_PAGE_SIZE);
+        assert_eq!(loaded.settings.sql_timeout_secs, None);
+        // The text says what the settings are.
+        assert_eq!(Settings::from_toml(&loaded.text).settings, loaded.settings);
+    }
+
+    #[test]
+    fn a_file_with_crlf_endings_is_read_line_by_line() {
+        let loaded = Settings::from_toml(
+            "[data]\r\npage_size = 100\r\nthis is not toml\r\ngroup_digits = true\r\n",
+        );
+        assert_eq!(loaded.invalid, vec![3]);
+        assert_eq!(loaded.settings.page_size, 100);
+        assert!(loaded.settings.group_digits);
+        assert_eq!(
+            loaded.lines,
+            vec![(Key::PageSize, 2), (Key::GroupDigits, 4)]
+        );
+    }
+
+    #[test]
+    fn a_header_that_is_rejected_costs_the_keys_under_it() {
+        let loaded = Settings::from_toml("[data]\npage_size = 100\n[editor\nsql_limit = 100\n");
+        assert_eq!(loaded.invalid, vec![3]);
+        assert_eq!(loaded.settings.page_size, 100);
+        // With its header gone the key is read into the table above, where
+        // it is one this version does not know: dropped, and not marked.
+        assert_eq!(loaded.settings.sql_limit, Settings::default().sql_limit);
+        assert_eq!(loaded.lines, vec![(Key::PageSize, 2)]);
     }
 
     #[test]
