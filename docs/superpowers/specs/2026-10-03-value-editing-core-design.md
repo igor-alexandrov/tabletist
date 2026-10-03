@@ -237,11 +237,14 @@ apply, by the column's affinity.
 | Integer | A whole number within the type's range | "int8 expects a whole number" |
 | Decimal | A number, within the digits and scale the type states | "Up to 2 decimals. 12.505 would be stored as 12.51." |
 | Float | A number (`NaN` and `Infinity` on PostgreSQL) | "float8 expects a number" |
-| Boolean | `true` or `false` | "boolean expects true or false" |
+| Boolean | `true` or `false`; also `1` or `0` | "boolean expects true or false" |
 | Enum, CHECK list | One of `allowed_values` | "Not one of: print, ebook, audio" |
 | JSON | It parses | "Expected , or } at 3:23" |
 | Text with a length | Within the length, shown as `27 / 200` | "At most 200 characters" |
 | NOT NULL | Never NULL | the NULL key does nothing |
+
+A boolean column's editor starts from `true` or `false` whatever the
+driver loaded (SQLite and MySQL hold 1 and 0).
 
 Every rule blocks: a decimal with more digits than the scale is refused
 with what the database would have stored, never rounded silently. Every
@@ -458,7 +461,8 @@ Only when the workspace's environment is production, every Save first asks:
   some row was answered Overwrite and none Keep mine: a row the user kept
   to look at again is never written by another row's Overwrite. Otherwise
   what is left stays pending until the user saves. On production that
-  second save asks its confirmation again.
+  second save asks its confirmation again. When the answers left nothing
+  pending, no save runs.
 - Esc is Keep mine for the row shown.
 
 ## Steps
@@ -474,7 +478,9 @@ Each step ends compiling, tested and shippable, and gets its own plan run:
    bar without Review SQL, the keys but `:diff`, Save, the leaving guard,
    and the production confirmation with its statements in both looks.
    A conflict here is a plain message: "Row id 2 changed on the server.
-   Nothing was written."
+   Nothing was written." (or "Row id 2 no longer exists on the server.").
+   The pending set stays as it was, with no rebase: the user refreshes,
+   which discards it, and edits again.
 4. Review SQL: the drawer and `:diff`; the Omarchy PROD box opens the
    panel and points to it.
 5. The conflict dialog.
