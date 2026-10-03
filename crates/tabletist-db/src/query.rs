@@ -86,8 +86,11 @@ pub struct RowQuery {
     /// Combined with AND.
     pub filters: Vec<Filter>,
     /// Appended as `AND (<raw>)`, on lines of its own so a trailing `--`
-    /// comment ends there. Sessions are read-only, so it cannot write; on
-    /// SQLite, text ending inside a `/*` comment is refused.
+    /// comment ends there. It cannot write, in a writable session either:
+    /// PostgreSQL and MySQL run it inside a read-only transaction; SQLite
+    /// runs it under `query_only`, refuses a `;` and a NUL in it, and has
+    /// its authorizer's filter fence behind those. On SQLite, text ending
+    /// inside a `/*` comment is refused too.
     pub raw_where: Option<String>,
     pub sort: Vec<Sort>,
     pub offset: u64,

@@ -28,7 +28,9 @@ PostgreSQL, MySQL, SQLite. No others in v1.
    sortable by column (server side), with an estimated total row count.
 4. Selecting a row shows every field of that row, in full, in the row panel.
 5. The Structure view lists columns, indexes, and foreign keys.
-6. No action in the app can modify data in the connected database.
+6. On a read-only connection no action in the app can modify data in the
+   connected database. On a writable one browsing, a raw WHERE and the SQL
+   editor still cannot (see `2026-10-03-value-editing-core-design.md`).
 7. The UI thread never blocks on the database, network, or disk; any running
    query can be cancelled.
 8. The app follows the Omarchy theme live, and the OS light/dark setting
@@ -100,6 +102,7 @@ tabletist/
     src/tls.rs               rustls config per TlsMode (libpq sslmode meanings)
     src/ssh.rs               russh tunnel, host key check
     src/pg.rs  src/mysql.rs  src/sqlite.rs   adapters
+    src/sqlite/fence.rs      what SQLite's authorizer lets a script and a raw WHERE do
     src/fixtures.rs          fixture scripts; writes the SQLite demo database
     fixtures/                postgres.sql, mysql.sql, sqlite.sql
     tests/                   integration tests per driver and SSH; ssh/ test keys
@@ -241,12 +244,24 @@ pub enum ValueKind { Numeric, Text, Json, Temporal, Binary, Bool, Other }
 
 ### 4.3 Read-only sessions
 
-Every session is opened read-only, so nothing in the app, including a raw
-WHERE clause, can modify data:
+A session is opened read-only unless its saved connection is writable
+(`Access`, given to `Connection::connect_with`). In a read-only session
+nothing in the app, including a raw WHERE clause, can modify data:
 
 - PostgreSQL: `SET default_transaction_read_only = on` right after connect.
 - MySQL: `SET SESSION TRANSACTION READ ONLY` right after connect.
 - SQLite: `SQLITE_OPEN_READ_ONLY`.
+
+A writable session, for a connection whose "Open read-only" box is off, is
+read-write: PostgreSQL keeps the server's default, MySQL gets `SET SESSION
+TRANSACTION READ WRITE`, and SQLite is opened `SQLITE_OPEN_READ_WRITE`
+(never creating the file) with `PRAGMA query_only = ON` as its standing
+state. Browsing, a raw WHERE and the SQL editor still cannot write there:
+row fetches and counts run in read-only transactions on PostgreSQL and
+MySQL, and on SQLite under `query_only` with an authorizer fencing the raw
+WHERE; a script runs behind the SQL editor's guard, which makes a MySQL
+session read-only for the run. Nothing in the app writes yet. The detail is
+in `2026-10-03-value-editing-core-design.md`, "Sessions".
 
 ### 4.4 Catalog
 
@@ -441,10 +456,10 @@ enum Dialog { Connection(..), Password(..), HostKey(..), QuickOpen(..), Help }
   SQLite file picker; SSL mode, with a CA certificate for the modes that
   check one; SSH tunnel (host, with the Host aliases of `~/.ssh/config` to
   pick from and their values as hints; port, user, auth method, password or
-  key file + passphrase); the read-only note; a URL that fills the fields;
-  **Test**; **Save**; **Save & Connect**. macOS draws it as a sheet of
-  grouped fields, with **Delete** when editing; the terminal look as a
-  two-column form with its keys in the footer.
+  key file + passphrase); the read-only box (on by default for production);
+  a URL that fills the fields; **Test**; **Save**; **Save & Connect**. macOS
+  draws it as a sheet of grouped fields, with **Delete** when editing; the
+  terminal look as a two-column form with its keys in the footer.
 - Password storage per secret: saved in the keyring (default) or asked for
   every time. Secrets live only in the keyring, keyed by connection id.
 

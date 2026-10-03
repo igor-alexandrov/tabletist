@@ -37,6 +37,9 @@ Linux (Omarchy and Hyprland first), macOS and Windows.
   (`IdentityAgent`, as for 1Password), else `SSH_AUTH_SOCK`.
 - Passwords live in the system keyring, or are asked for once per
   connection tab (reconnecting in that tab reuses them).
+- A connection opens read-only when its "Open read-only" box says so, which
+  is the default for production. A writable one opens a read-write session,
+  in which browsing, a raw WHERE and the SQL editor still only read.
 - A sidebar of recent objects and one schema's tables and views, folded into
   prefix groups (`book_`) or listed flat; each table opens with a data grid
   (keys, foreign keys, value tags, JSON at a glance), a row panel showing
