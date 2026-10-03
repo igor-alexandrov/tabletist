@@ -165,8 +165,11 @@ only if that table knows them.
 
 The JSON is read at every start that finds no `settings.toml`, not only the
 first: after the TOML is deleted, or kept aside as `.bad`, the next start
-carries the old JSON over again. Whether a reset should ignore it is left
-to step 2.
+carries the old JSON over again. That is kept: the reset a user reaches for
+is the window's Reset to defaults (step 4), which writes a `settings.toml` of
+defaults, so the JSON does not come back that way; and a user who deletes
+the TOML by hand gets the settings they had before the TOML existed, which
+is a defensible reading of "start over".
 
 Then, for each known key:
 
@@ -221,8 +224,11 @@ Two functions, one inside the other:
 - `App::change_settings(&mut self, change: impl FnOnce(&mut Settings))` is
   a change made in the app (the window, the SQL editor's menus): it calls
   `apply_settings`, renders the canonical text, keeps it as
-  `App::settings_text`, clears the invalid lines, takes the key lines of the
-  new text, and saves. `App::save_settings` is replaced by it.
+  `App::settings_file` (`SettingsFile { text, invalid, lines, live }`, what
+  the app holds of the file), with no invalid lines and the key lines of the
+  new text, and saves. A change that changes nothing writes nothing.
+  `App::save_settings` becomes private: only `change_settings` and the start
+  that read the old JSON call it.
 
 A change that arrives from the file (Live reload) calls `apply_settings`
 only, and keeps the file's own text, invalid lines and key lines.
@@ -236,7 +242,7 @@ widths. In step 1 the options are fixed for a session and nothing is needed.
 
 | Option | Control | Effect |
 |---|---|---|
-| Rows per page | A menu: 100, 300, 500, 1,000, 5,000. A value from the file that is not in the list is shown as an extra entry. | Every open table tab takes the new size as its `query.limit` and fetches its page again from the offset it is at, so Next and Previous keep moving by the size of the page shown and no row is skipped. Only a tab that holds a page on a connected session fetches; the others take the size and use it when they next load. New tabs open with it. |
+| Rows per page | A menu: 100, 300, 500, 1,000, 5,000. A value from the file that is not in the list is shown as an extra entry. | A table's `query.limit` is the size of the page it shows or awaits, and `fetch_rows` brings it to the settings' size each time it fetches; Next and Previous move by `query.limit` before they fetch, so no row is skipped whichever size comes next. On a change, every table that shows a page or waits for one on a connected session drops the page it shows (as Next does, so a failed fetch leaves no page of the old size on screen) and fetches again from the offset it is at. The others take the size at their next fetch. New tabs open with it. |
 | Timestamps | Two segments: To the second, Full precision. | Sets `full_precision` on every open workspace and on new ones. The grid's own link still switches one workspace until the option changes again. |
 | Numbers | Two segments, each showing a sample: `1,240.50`, `1240.50`. | Grid cells of numeric columns, in the data view and in SQL results. |
 | Value tags | A toggle. | Off: enum, CHECK and boolean columns draw as plain text in the data view and the row panel, and booleans in SQL results (the only tags that view has). |
@@ -336,7 +342,7 @@ The artboard's screen, over the whole window:
   filled, `[x]` and `[ ]`.
 - The file pane, 620 wide or 40% of the window if that is less, hidden when
   the window is narrower than 1100. Its header is the path and `live` while
-  the file is watched. Its body is `App::settings_text`, coloured by a small
+  the file is watched. Its body is `App::settings_file.text`, coloured by a small
   line classifier (comment, table header, key, string, number or boolean),
   with the line of the cursor's option highlighted (from `Loaded::lines`)
   and the lines in `Loaded::invalid` in red. Under it: "edits in the file
@@ -409,7 +415,13 @@ to settle, then the backend reads the file and sends
 `Event::SettingsFile { text }`. A file that is not UTF-8 at that moment is
 logged and nothing is sent: the settings in memory stay.
 
-`App` drops an event whose text equals `settings_text`: that is its own
+The watcher ignores events that only say the file was looked at: Linux
+reports every open, and the backend's own read is one, so a watcher that
+answered them would read the file for ever. The file is matched by its name
+in the directory, since the paths of events come as the system has them.
+The same text is never sent twice in a row.
+
+`App` drops an event whose text equals `settings_file.text`: that is its own
 write, or a change that changed nothing. Otherwise it runs
 `Settings::from_toml`, keeps the text, the invalid lines and the key lines,
 and applies the settings through the same effects a change in the window
