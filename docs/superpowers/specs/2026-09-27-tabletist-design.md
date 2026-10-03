@@ -197,13 +197,16 @@ Rules:
 ### 4.1 API
 
 ```rust
-pub struct Connection { inner: Inner, tunnel: Option<ssh::Tunnel> }
+pub enum Access { ReadOnly, Writable }
+pub struct Connection { inner: Inner, access: Access, tunnel: Option<ssh::Tunnel> }
 enum Inner { Sqlite(sqlite::Conn), Postgres(Box<pg::Conn>), MySql(Box<mysql::Conn>) }
 
 impl Connection {
+    /// Read-only, with no SSH host keys trusted.
     pub async fn connect(spec: &ConnectSpec, secrets: &Secrets) -> Result<Connection>;
-    pub async fn connect_with(spec: &ConnectSpec, secrets: &Secrets, host_keys: &HostKeys)
-        -> Result<Connection>;
+    pub async fn connect_with(spec: &ConnectSpec, secrets: &Secrets, host_keys: &HostKeys,
+        access: Access) -> Result<Connection>;
+    pub fn access(&self) -> Access;
     pub fn driver(&self) -> Driver;
     pub fn dialect(&self) -> Dialect;
     pub async fn list_databases(&self) -> Result<Vec<String>>;
@@ -219,7 +222,8 @@ impl Connection {
 
 A closed enum, not a trait object: there are exactly three drivers, and the
 enum avoids boxed async trait methods. The public `Connection` wraps it with
-the SSH tunnel, declared after the driver so the driver closes first.
+the SSH tunnel, declared after the driver so the driver closes first, and
+keeps the access the session was opened with (see 4.3).
 
 ### 4.2 Values
 
