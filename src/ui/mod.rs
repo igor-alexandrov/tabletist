@@ -5252,41 +5252,59 @@ mod tests {
     }
 
     #[test]
-    fn the_dialog_shows_every_connection_read_only() {
+    fn the_read_only_box_follows_the_environment_until_it_is_set() {
         // The sheet says it under the box; the terminal look after it.
         for (look, said) in [
             (
                 crate::theme::Look::standard(),
-                "Blocks every write from this app. Every connection is read-only in 0.1.0.",
+                "Blocks every write from this app. On by default for production; turn off to edit.",
             ),
             (
                 crate::theme::Look::macos(),
-                "Blocks every write from this app. Every connection is read-only in 0.1.0.",
+                "Blocks every write from this app. On by default for production; turn off to edit.",
             ),
-            (crate::theme::Look::omarchy(), "· always on in 0.1.0"),
+            (crate::theme::Look::omarchy(), "· default for production"),
         ] {
             let mut harness = Harness::new();
             harness.set_look(look);
             harness.press(Key::N, Modifiers::COMMAND);
-            let tree = harness.settle();
-            let (_, node) = tree
-                .nodes
-                .iter()
-                .find(|(_, node)| {
-                    node.role() == egui::accesskit::Role::CheckBox
-                        && node.label() == Some("Open read-only")
-                })
-                .expect("the read-only box");
-            assert_eq!(
-                node.toggled(),
-                Some(egui::accesskit::Toggled::True),
-                "{}",
-                look.name
-            );
-            assert!(node.is_disabled(), "{}", look.name);
             assert!(harness.has(said), "{}", look.name);
-            // The box is locked: a new connection has nothing set.
-            assert_eq!(form(&harness).read_only, None, "{}", look.name);
+            let read_only = |harness: &mut Harness| {
+                let tree = harness.settle();
+                let (_, node) = tree
+                    .nodes
+                    .iter()
+                    .find(|(_, node)| {
+                        node.role() == egui::accesskit::Role::CheckBox
+                            && node.label() == Some("Open read-only")
+                    })
+                    .expect("the read-only box");
+                assert!(!node.is_disabled(), "{}", look.name);
+                node.toggled() == Some(egui::accesskit::Toggled::True)
+            };
+            let click_box = |harness: &mut Harness| {
+                let tree = harness.settle();
+                let place = crate::testing::bounds(
+                    &tree,
+                    "Open read-only",
+                    egui::accesskit::Role::CheckBox,
+                )
+                .expect("the read-only box");
+                click_at(harness, place.center());
+            };
+            // A new connection is not production: writable, nothing set.
+            assert!(!read_only(&mut harness), "{}", look.name);
+            // The terminal look names its choices in lower case.
+            harness.click(&look.label("Production"));
+            assert!(read_only(&mut harness), "{}", look.name);
+            assert_eq!(form(&harness).read_only, None, "the default, not a choice");
+            // The box is the user's from the first click. Clicked by its
+            // role: the sheet's title beside it has the same name.
+            click_box(&mut harness);
+            assert!(!read_only(&mut harness), "{}", look.name);
+            assert_eq!(form(&harness).read_only, Some(false), "{}", look.name);
+            click_box(&mut harness);
+            assert_eq!(form(&harness).read_only, Some(true), "{}", look.name);
             // And what a connection was saved with comes back as it was.
             let mut harness = Harness::new();
             harness.set_look(look);
@@ -5297,6 +5315,9 @@ mod tests {
             harness
                 .app
                 .apply(crate::model::Action::EditConnection(id.clone()));
+            // The dialog is measured, unseen, before it is shown.
+            harness.settle();
+            assert!(!read_only(&mut harness), "{}", look.name);
             harness.click("Save");
             assert!(harness.app.dialog.is_none(), "{}", look.name);
             assert_eq!(
@@ -6258,9 +6279,9 @@ mod tests {
             harness.settle();
             let title = look.label("Edit connection");
             let last = if look.terminal {
-                "· always on in 0.1.0"
+                "· default for production"
             } else {
-                "Blocks every write from this app. Every connection is read-only in 0.1.0."
+                "Blocks every write from this app. On by default for production; turn off to edit."
             };
             // The first time, and again: egui remembers the dialog's size.
             for opening in ["first", "second"] {

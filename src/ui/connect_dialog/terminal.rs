@@ -235,10 +235,10 @@ fn terminal_section(ui: &mut Ui, text: &str, skin: &Skin) {
 }
 
 /// The terminal look's check box: `[x]` and what it turns on. `mark` is
-/// the colour of a set mark; `None` locks it.
+/// the colour of a set mark.
 fn terminal_check(
     ui: &mut Ui,
-    checked: Option<&mut bool>,
+    checked: &mut bool,
     text: &str,
     name: &str,
     mark: Color32,
@@ -246,8 +246,7 @@ fn terminal_check(
 ) -> Response {
     let Skin { look, palette, .. } = *skin;
     let role = TextRole::OBody;
-    let on = checked.as_deref().copied().unwrap_or(true);
-    let locked = checked.is_none();
+    let on = *checked;
     let (glyph, color) = if on {
         ("[x]", mark)
     } else {
@@ -255,18 +254,11 @@ fn terminal_check(
     };
     let mut laid = Text::new(look).add(role, glyph, color);
     if !text.is_empty() {
-        laid =
-            laid.space(role, " ")
-                .add(role, text, if locked { palette.text } else { palette.dim });
+        laid = laid.space(role, " ").add(role, text, palette.dim);
     }
     let laid = laid.layout(ui.ctx());
-    let sense = if locked {
-        Sense::hover()
-    } else {
-        Sense::click()
-    };
-    let (rect, mut response) = ui.allocate_exact_size(laid.size(), sense);
-    response.widget_info(|| WidgetInfo::selected(WidgetType::Checkbox, !locked, on, name));
+    let (rect, mut response) = ui.allocate_exact_size(laid.size(), Sense::click());
+    response.widget_info(|| WidgetInfo::selected(WidgetType::Checkbox, true, on, name));
     laid.paint(ui.painter(), rect.min);
     if response.has_focus() {
         ui.painter().rect_stroke(
@@ -276,9 +268,7 @@ fn terminal_check(
             StrokeKind::Outside,
         );
     }
-    if response.clicked()
-        && let Some(checked) = checked
-    {
+    if response.clicked() {
         *checked = !*checked;
         response.mark_changed();
     }
@@ -297,16 +287,7 @@ fn terminal_keyring(ui: &mut Ui, mode: &mut PasswordMode, name: &'static str, sk
     let mut keep = keeps(*mode);
     let text = skin.say(skin.keyring());
     let name = gettext(skin.locale, name);
-    if terminal_check(
-        ui,
-        Some(&mut keep),
-        &text,
-        &name,
-        skin.palette.success,
-        skin,
-    )
-    .changed()
-    {
+    if terminal_check(ui, &mut keep, &text, &name, skin.palette.success, skin).changed() {
         set_keeps(mode, keep);
     }
 }
@@ -374,16 +355,19 @@ pub(super) fn terminal_body(
             terminal_row_of(ui, &skin.say("Read-only"), line, skin, |ui, _| {
                 let name = gettext(skin.locale, "Open read-only");
                 let promise = skin.say("Block every write from this app");
-                let note = format!("· {}", skin.say("Always on in 0.1.0"));
+                let note = format!("· {}", skin.say("Default for production"));
                 // The note goes under the promise where one line has no
                 // room for both: no row may widen the dialog.
                 let width = |text: &str| role.width(ui.ctx(), look.faces, text);
                 let one_line =
                     width(&format!("[x] {promise}")) + 8.0 + width(&note) <= ui.available_width();
-                let draw = |ui: &mut Ui| {
+                let mut draw = |ui: &mut Ui| {
                     // The environment's colour, as text can take it.
                     let mark = skin.env_ink(&skin.env);
-                    terminal_check(ui, None, &promise, &name, mark, skin);
+                    let mut on = form.read_only();
+                    if terminal_check(ui, &mut on, &promise, &name, mark, skin).changed() {
+                        form.read_only = Some(on);
+                    }
                     widgets::label(ui, role, &note, palette.dim, look);
                 };
                 if one_line {
@@ -477,7 +461,7 @@ fn terminal_security(
         let name = gettext(skin.locale, "Connect through SSH tunnel");
         terminal_check(
             ui,
-            Some(&mut form.ssh),
+            &mut form.ssh,
             &skin.say("Connect through SSH"),
             &name,
             skin.palette.success,

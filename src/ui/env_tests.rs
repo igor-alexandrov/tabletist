@@ -182,6 +182,9 @@ fn the_connection_dialog_takes_the_chosen_environments_colours() {
                 // the environment's name alone.
                 form.name = "Bookshop".into();
                 form.environment = Some(env);
+                // The box follows the environment: set, it is filled in
+                // each one's colour.
+                form.read_only = Some(true);
             }
             let tree = harness.finish_animations();
             let colors = colors(&harness, env);
