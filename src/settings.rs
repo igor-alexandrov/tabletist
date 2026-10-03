@@ -4,15 +4,47 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
+/// How much of a timestamp the grid shows.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Timestamps {
+    /// `2026-01-12 09:14:03`.
+    #[default]
+    Second,
+    /// With the fraction the server sent.
+    Full,
+}
+
+impl Timestamps {
+    /// As the file says it.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Second => "second",
+            Self::Full => "full",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        [Self::Second, Self::Full]
+            .into_iter()
+            .find(|choice| choice.name() == name)
+    }
+}
+
 /// Everything the user can set. New fields need a default so older files
 /// keep loading; unknown fields (from newer versions) are ignored.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
-    /// File format version, for future migrations.
-    pub version: u32,
     /// Rows fetched per page in the data grid.
     pub page_size: u32,
+    /// Timestamps in grid cells: to the second, or as the server sent them.
+    pub timestamps: Timestamps,
+    /// Numbers in grid cells with their integer digits in threes. Display
+    /// only: a copy gives the value as it is.
+    pub group_digits: bool,
+    /// Enum, CHECK and boolean values drawn as coloured tags.
+    pub value_tags: bool,
     /// Show `pg_catalog`, `information_schema`, `mysql`, `sys` and friends.
     pub show_system_schemas: bool,
     /// A palette file name in the themes directory. `None` follows the
@@ -25,7 +57,6 @@ pub struct Settings {
 }
 
 impl Settings {
-    pub const CURRENT_VERSION: u32 = 1;
     pub const DEFAULT_PAGE_SIZE: u32 = 300;
     pub const MIN_PAGE_SIZE: u32 = 10;
     pub const MAX_PAGE_SIZE: u32 = 10_000;
@@ -58,15 +89,18 @@ impl Settings {
         secs.filter(|secs| *secs > 0)
     }
 
-    pub fn load(path: &Path) -> Self {
-        let mut settings: Settings = crate::util::load_json(path);
-        settings.page_size = settings
+    /// The settings with every number in its range.
+    fn validated(mut self) -> Self {
+        self.page_size = self
             .page_size
             .clamp(Self::MIN_PAGE_SIZE, Self::MAX_PAGE_SIZE);
-        settings.sql_limit = Self::valid_sql_limit(settings.sql_limit);
-        settings.sql_timeout_secs = Self::valid_sql_timeout(settings.sql_timeout_secs);
-        settings.version = Self::CURRENT_VERSION;
-        settings
+        self.sql_limit = Self::valid_sql_limit(self.sql_limit);
+        self.sql_timeout_secs = Self::valid_sql_timeout(self.sql_timeout_secs);
+        self
+    }
+
+    pub fn load(path: &Path) -> Self {
+        crate::util::load_json::<Settings>(path).validated()
     }
 
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
@@ -77,8 +111,10 @@ impl Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            version: Self::CURRENT_VERSION,
             page_size: Self::DEFAULT_PAGE_SIZE,
+            timestamps: Timestamps::Second,
+            group_digits: false,
+            value_tags: true,
             show_system_schemas: false,
             custom_theme: None,
             sql_limit: 1_000,
@@ -94,8 +130,10 @@ mod tests {
     #[test]
     fn defaults_match_the_spec() {
         let settings = Settings::default();
-        assert_eq!(settings.version, Settings::CURRENT_VERSION);
         assert_eq!(settings.page_size, 300);
+        assert_eq!(settings.timestamps, Timestamps::Second);
+        assert!(!settings.group_digits);
+        assert!(settings.value_tags);
         assert!(!settings.show_system_schemas);
         assert_eq!(settings.custom_theme, None);
         assert_eq!(settings.sql_limit, 1_000);
@@ -104,6 +142,26 @@ mod tests {
             settings.sql_timeout(),
             Some(std::time::Duration::from_secs(30))
         );
+    }
+
+    #[test]
+    fn an_older_file_with_a_version_gets_the_new_defaults() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        std::fs::write(&path, br#"{"version": 1, "page_size": 100}"#).unwrap();
+        let settings = Settings::load(&path);
+        assert_eq!(settings.page_size, 100);
+        assert_eq!(settings.timestamps, Timestamps::Second);
+        assert!(!settings.group_digits);
+        assert!(settings.value_tags);
+    }
+
+    #[test]
+    fn a_timestamps_choice_has_a_name() {
+        for choice in [Timestamps::Second, Timestamps::Full] {
+            assert_eq!(Timestamps::from_name(choice.name()), Some(choice));
+        }
+        assert_eq!(Timestamps::from_name("minute"), None);
     }
 
     #[test]
