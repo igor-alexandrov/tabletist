@@ -1,4 +1,4 @@
-//! SQLite, opened read-only. rusqlite is blocking, so every call runs on
+//! SQLite, opened read-only unless the connection is writable. rusqlite is blocking, so every call runs on
 //! tokio's blocking pool.
 
 use std::borrow::Cow;
@@ -11,8 +11,8 @@ use rusqlite::types::{FromSql, FromSqlError, FromSqlResult, ValueRef};
 use rusqlite::{ErrorCode, OpenFlags};
 
 use crate::{
-    ColumnInfo, ColumnMeta, Dialect, Error, ForeignKeyInfo, IndexInfo, MAX_LISTED, ObjectInfo,
-    ObjectKind, ObjectRef, Result, RowPage, RowQuery, ScriptOutcome, StatementOutcome,
+    Access, ColumnInfo, ColumnMeta, Dialect, Error, ForeignKeyInfo, IndexInfo, MAX_LISTED,
+    ObjectInfo, ObjectKind, ObjectRef, Result, RowPage, RowQuery, ScriptOutcome, StatementOutcome,
     StatementResult, StopFlag, Structure, Value, ValueKind,
 };
 
@@ -397,14 +397,21 @@ fn plain_file_name(path: &Path) -> Cow<'_, Path> {
 }
 
 impl Conn {
-    /// Opens `path` read-only. Never creates a file.
-    pub async fn open(path: &Path) -> Result<Self> {
+    /// Opens `path`: read-only, or read-write for a writable connection.
+    /// Never creates a file. Either way the session refuses writes
+    /// (`PRAGMA query_only`, see `set_session_pragmas`).
+    pub async fn open(path: &Path, access: Access) -> Result<Self> {
         let path = path.to_path_buf();
         let connection = tokio::task::spawn_blocking(move || -> Result<rusqlite::Connection> {
             if !path.is_file() {
                 return Err(Error::Connect(format!("{} does not exist", path.display())));
             }
-            let flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX;
+            let mode = match access {
+                Access::ReadOnly => OpenFlags::SQLITE_OPEN_READ_ONLY,
+                // Without SQLITE_OPEN_CREATE: a missing file stays missing.
+                Access::Writable => OpenFlags::SQLITE_OPEN_READ_WRITE,
+            };
+            let flags = mode | OpenFlags::SQLITE_OPEN_NO_MUTEX;
             let connection = rusqlite::Connection::open_with_flags(plain_file_name(&path), flags)
                 .map_err(map_error)?;
             // A double-quoted name that matches no column is an error, not a
@@ -844,19 +851,59 @@ mod tests {
     }
     use super::*;
 
-    async fn fixture() -> (Conn, tempfile::TempDir) {
+    async fn fixture_as(access: Access) -> (Conn, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("fixture.db");
         crate::fixtures::write_sqlite_demo(&path).unwrap();
-        (Conn::open(&path).await.unwrap(), dir)
+        (Conn::open(&path, access).await.unwrap(), dir)
+    }
+
+    async fn fixture() -> (Conn, tempfile::TempDir) {
+        fixture_as(Access::ReadOnly).await
     }
 
     #[tokio::test]
     async fn a_missing_file_is_a_connect_error_and_is_not_created() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("missing.db");
-        assert!(matches!(Conn::open(&path).await, Err(Error::Connect(_))));
-        assert!(!path.exists());
+        for access in [Access::ReadOnly, Access::Writable] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("missing.db");
+            assert!(matches!(
+                Conn::open(&path, access).await,
+                Err(Error::Connect(_))
+            ));
+            assert!(!path.exists(), "{access:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn only_a_writable_handle_writes_and_only_with_query_only_lifted() {
+        for access in [Access::ReadOnly, Access::Writable] {
+            let (conn, _dir) = fixture_as(access).await;
+            // The standing state refuses a write on both.
+            let standing = conn
+                .run(|connection| {
+                    connection
+                        .execute("UPDATE users SET email = email WHERE id = 1", [])
+                        .map_err(map_error)
+                })
+                .await;
+            assert!(standing.is_err(), "{access:?}");
+            // Lifted, as a save will lift it: only the writable handle
+            // writes.
+            let lifted = conn
+                .run(|connection| {
+                    connection
+                        .execute_batch("PRAGMA query_only = OFF")
+                        .map_err(map_error)?;
+                    let updated = connection
+                        .execute("UPDATE users SET email = email WHERE id = 1", [])
+                        .map_err(map_error);
+                    set_session_pragmas(connection).map_err(map_error)?;
+                    updated
+                })
+                .await;
+            assert_eq!(lifted.is_ok(), access == Access::Writable, "{access:?}");
+        }
     }
 
     #[test]
@@ -892,7 +939,10 @@ mod tests {
             "these are not the tables you are looking for, not at all",
         )
         .unwrap();
-        assert!(matches!(Conn::open(&path).await, Err(Error::Connect(_))));
+        assert!(matches!(
+            Conn::open(&path, Access::ReadOnly).await,
+            Err(Error::Connect(_))
+        ));
     }
 
     #[tokio::test]

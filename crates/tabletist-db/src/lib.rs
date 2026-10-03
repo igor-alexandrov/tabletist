@@ -77,7 +77,7 @@ impl Inner {
                     .sqlite_path
                     .as_ref()
                     .ok_or_else(|| Error::InvalidSpec("choose a SQLite file".into()))?;
-                Ok(Self::Sqlite(sqlite::Conn::open(path).await?))
+                Ok(Self::Sqlite(sqlite::Conn::open(path, access).await?))
             }
             Driver::Postgres => Ok(Self::Postgres(Box::new(
                 pg::Conn::connect(spec, secrets, via, access).await?,

@@ -183,18 +183,23 @@ async fn contains_matches_literal_percent_signs() {
 
 #[tokio::test]
 async fn a_raw_where_cannot_modify_data() {
-    let (connection, _dir) = fixture().await;
-    let mut query = users(50);
-    // A plain syntax error, and one that closes the parenthesis to chain a
-    // real second statement (rusqlite refuses to prepare more than one).
-    for raw in [
-        "1 = 1; DELETE FROM users",
-        "1=1) ; DELETE FROM users; SELECT (1",
-    ] {
-        query.raw_where = Some(raw.into());
-        assert!(connection.fetch_rows(&query).await.is_err(), "{raw}");
+    for access in [Access::ReadOnly, Access::Writable] {
+        let (connection, _dir) = fixture_as(access).await;
+        let mut query = users(50);
+        // A plain syntax error, and one that closes the parenthesis to chain a
+        // real second statement (rusqlite refuses to prepare more than one).
+        for raw in [
+            "1 = 1; DELETE FROM users",
+            "1=1) ; DELETE FROM users; SELECT (1",
+        ] {
+            query.raw_where = Some(raw.into());
+            assert!(
+                connection.fetch_rows(&query).await.is_err(),
+                "{access:?} {raw}"
+            );
+        }
+        assert_eq!(connection.count_rows(&users(50)).await.unwrap(), 5);
     }
-    assert_eq!(connection.count_rows(&users(50)).await.unwrap(), 5);
 }
 
 #[tokio::test]
@@ -747,21 +752,29 @@ async fn a_script_stops_at_the_first_error_and_keeps_earlier_results() {
 
 #[tokio::test]
 async fn writes_fail_as_read_only_and_refusals_run_nothing() {
-    let (connection, _dir) = fixture().await;
-    let outcome = run(&connection, "DELETE FROM users").await.unwrap();
-    // SQLITE_READONLY itself, none of its extended codes: the app tells a
-    // refused write by it.
-    assert!(matches!(
-        &outcome.results[0].outcome,
-        StatementOutcome::Error {
-            error: Error::Query { code: Some(code), .. },
-            ..
-        } if code == "8"
-    ));
-    let refused = run(&connection, "SELECT 1;\nCOMMIT").await;
-    assert!(matches!(refused, Err(Error::Refused { line: 2, .. })));
-    let count = connection.count_rows(&users(10)).await.unwrap();
-    assert_eq!(count, 5);
+    for access in [Access::ReadOnly, Access::Writable] {
+        let (connection, _dir) = fixture_as(access).await;
+        let outcome = run(&connection, "DELETE FROM users").await.unwrap();
+        // SQLITE_READONLY itself, none of its extended codes: the app tells a
+        // refused write by it.
+        assert!(
+            matches!(
+                &outcome.results[0].outcome,
+                StatementOutcome::Error {
+                    error: Error::Query { code: Some(code), .. },
+                    ..
+                } if code == "8"
+            ),
+            "{access:?}"
+        );
+        let refused = run(&connection, "SELECT 1;\nCOMMIT").await;
+        assert!(
+            matches!(refused, Err(Error::Refused { line: 2, .. })),
+            "{access:?}"
+        );
+        let count = connection.count_rows(&users(10)).await.unwrap();
+        assert_eq!(count, 5, "{access:?}");
+    }
 }
 
 #[tokio::test]
