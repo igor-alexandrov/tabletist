@@ -65,7 +65,12 @@ enum Inner {
 }
 
 impl Inner {
-    async fn connect(spec: &ConnectSpec, secrets: &Secrets, via: Option<u16>) -> Result<Self> {
+    async fn connect(
+        spec: &ConnectSpec,
+        secrets: &Secrets,
+        via: Option<u16>,
+        access: Access,
+    ) -> Result<Self> {
         match spec.driver {
             Driver::Sqlite => {
                 let path = spec
@@ -75,7 +80,7 @@ impl Inner {
                 Ok(Self::Sqlite(sqlite::Conn::open(path).await?))
             }
             Driver::Postgres => Ok(Self::Postgres(Box::new(
-                pg::Conn::connect(spec, secrets, via).await?,
+                pg::Conn::connect(spec, secrets, via, access).await?,
             ))),
             Driver::MySql => Ok(Self::MySql(Box::new(
                 mysql::Conn::connect(spec, secrets, via).await?,
@@ -102,13 +107,13 @@ impl Connection {
         let ssh = spec.ssh.as_ref().filter(|_| spec.driver != Driver::Sqlite);
         let Some(ssh) = ssh else {
             return Ok(Self {
-                inner: Inner::connect(spec, secrets, None).await?,
+                inner: Inner::connect(spec, secrets, None, access).await?,
                 access,
                 tunnel: None,
             });
         };
         let tunnel = ssh::Tunnel::open(ssh, &spec.host, spec.port, secrets, host_keys).await?;
-        match Inner::connect(spec, secrets, Some(tunnel.port)).await {
+        match Inner::connect(spec, secrets, Some(tunnel.port), access).await {
             Ok(inner) => Ok(Self {
                 inner,
                 access,

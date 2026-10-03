@@ -4,7 +4,9 @@
 
 #![allow(clippy::unwrap_used)]
 
-use tabletist_db::{ConnectSpec, Connection, Driver, Error, ObjectKind, Secrets, TlsMode};
+use tabletist_db::{
+    Access, ConnectSpec, Connection, Driver, Error, HostKeys, ObjectKind, Secrets, TlsMode,
+};
 use tokio::sync::OnceCell;
 
 static FIXTURE: OnceCell<()> = OnceCell::const_new();
@@ -39,14 +41,23 @@ async fn load_fixture() {
         .await;
 }
 
-/// A read-only connection to the fixture, or `None` (test skipped).
-async fn connect() -> Option<Connection> {
+/// A connection to the fixture with the given access, or `None` (test skipped).
+async fn connect_as(access: Access) -> Option<Connection> {
     let Some((spec, secrets)) = spec() else {
         eprintln!("skipped: TABLETIST_TEST_PG_URL is not set");
         return None;
     };
     load_fixture().await;
-    Some(Connection::connect(&spec, &secrets).await.unwrap())
+    Some(
+        Connection::connect_with(&spec, &secrets, &HostKeys::default(), access)
+            .await
+            .unwrap(),
+    )
+}
+
+/// A read-only connection to the fixture, or `None` (test skipped).
+async fn connect() -> Option<Connection> {
+    connect_as(Access::ReadOnly).await
 }
 
 #[tokio::test]
@@ -473,26 +484,28 @@ async fn quotes_and_backslashes_in_filter_values_are_just_text() {
 
 #[tokio::test]
 async fn a_raw_where_cannot_write_or_leave_read_only_mode() {
-    let Some(connection) = connect().await else {
-        return;
-    };
-    for raw in [
-        "1 = 1; DELETE FROM users",
-        "1=1) ; COMMIT; DELETE FROM users; SELECT (1",
-        "nextval('tick') > 0",
-    ] {
+    for access in [Access::ReadOnly, Access::Writable] {
+        let Some(connection) = connect_as(access).await else {
+            return;
+        };
+        for raw in [
+            "1 = 1; DELETE FROM users",
+            "1=1) ; COMMIT; DELETE FROM users; SELECT (1",
+            "nextval('tick') > 0",
+        ] {
+            let mut query = users(50);
+            query.raw_where = Some(raw.into());
+            assert!(connection.fetch_rows(&query).await.is_err(), "{raw}");
+        }
+        // Turning the session default off does not open a writable transaction.
         let mut query = users(50);
-        query.raw_where = Some(raw.into());
-        assert!(connection.fetch_rows(&query).await.is_err(), "{raw}");
+        query.raw_where =
+            Some("set_config('default_transaction_read_only', 'off', false) IS NOT NULL".into());
+        let _ = connection.fetch_rows(&query).await;
+        query.raw_where = Some("nextval('tick') > 0".into());
+        assert!(connection.fetch_rows(&query).await.is_err());
+        assert_eq!(connection.count_rows(&users(1)).await.unwrap(), 5);
     }
-    // Turning the session default off does not open a writable transaction.
-    let mut query = users(50);
-    query.raw_where =
-        Some("set_config('default_transaction_read_only', 'off', false) IS NOT NULL".into());
-    let _ = connection.fetch_rows(&query).await;
-    query.raw_where = Some("nextval('tick') > 0".into());
-    assert!(connection.fetch_rows(&query).await.is_err());
-    assert_eq!(connection.count_rows(&users(1)).await.unwrap(), 5);
 }
 
 #[tokio::test]
@@ -752,6 +765,29 @@ async fn run(
 }
 
 #[tokio::test]
+async fn a_writable_session_keeps_the_servers_default_and_a_script_still_runs_read_only() {
+    for (access, default) in [(Access::ReadOnly, "on"), (Access::Writable, "off")] {
+        let Some(connection) = connect_as(access).await else {
+            return;
+        };
+        let outcome = run(
+            &connection,
+            "SHOW default_transaction_read_only; SHOW transaction_read_only",
+            10,
+        )
+        .await
+        .unwrap();
+        let shown = |index: usize| match &outcome.results[index].outcome {
+            StatementOutcome::Rows { rows, .. } => rows[0][0].clone(),
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(shown(0), Value::Text(default.into()), "{access:?}");
+        // The script's own transaction is read-only whatever the session.
+        assert_eq!(shown(1), Value::Text("on".into()), "{access:?}");
+    }
+}
+
+#[tokio::test]
 async fn a_script_has_typed_columns_and_truncates_at_the_limit() {
     let Some(connection) = connect().await else {
         return;
@@ -901,50 +937,52 @@ async fn probe_rows(admin: &tokio_postgres::Client) -> i64 {
 
 #[tokio::test]
 async fn bypasses_cannot_write() {
-    let Some(connection) = connect().await else {
-        return;
-    };
-    let admin = admin().await;
-    admin
-        .batch_execute("CREATE TABLE IF NOT EXISTS probe (n int); TRUNCATE probe;")
-        .await
-        .unwrap();
-    // The refusal stops these before anything runs. What the driver does
-    // with them past the refusal is tested next to it (`pg/script.rs`).
-    for attempt in [
-        "SET TRANSACTION READ WRITE; INSERT INTO probe VALUES (1)",
-        "ROLLBACK; SET default_transaction_read_only = off; INSERT INTO probe VALUES (1)",
-        "SET \"default_transaction_read_only\" = off; INSERT INTO probe VALUES (1)",
-        "SELECT set_config('default_transaction_read_only', 'off', false); INSERT INTO probe VALUES (1)",
-        "COPY probe FROM STDIN",
-        "PREPARE s AS INSERT INTO probe VALUES (1); EXECUTE s",
-    ] {
-        let ran = run(&connection, attempt, 10).await;
-        assert!(
-            matches!(ran, Err(Error::Refused { .. })),
-            "{attempt}: {ran:?}"
-        );
-        assert_eq!(probe_rows(&admin).await, 0, "{attempt}");
+    for access in [Access::ReadOnly, Access::Writable] {
+        let Some(connection) = connect_as(access).await else {
+            return;
+        };
+        let admin = admin().await;
+        admin
+            .batch_execute("CREATE TABLE IF NOT EXISTS probe (n int); TRUNCATE probe;")
+            .await
+            .unwrap();
+        // The refusal stops these before anything runs. What the driver does
+        // with them past the refusal is tested next to it (`pg/script.rs`).
+        for attempt in [
+            "SET TRANSACTION READ WRITE; INSERT INTO probe VALUES (1)",
+            "ROLLBACK; SET default_transaction_read_only = off; INSERT INTO probe VALUES (1)",
+            "SET \"default_transaction_read_only\" = off; INSERT INTO probe VALUES (1)",
+            "SELECT set_config('default_transaction_read_only', 'off', false); INSERT INTO probe VALUES (1)",
+            "COPY probe FROM STDIN",
+            "PREPARE s AS INSERT INTO probe VALUES (1); EXECUTE s",
+        ] {
+            let ran = run(&connection, attempt, 10).await;
+            assert!(
+                matches!(ran, Err(Error::Refused { .. })),
+                "{attempt}: {ran:?}"
+            );
+            assert_eq!(probe_rows(&admin).await, 0, "{attempt}");
+        }
+        // These reach the server, which refuses the write.
+        for attempt in [
+            "INSERT INTO probe VALUES (1)",
+            "DO $$ BEGIN INSERT INTO probe VALUES (1); END $$",
+        ] {
+            let outcome = run(&connection, attempt, 10).await.unwrap();
+            assert_eq!(outcome.results.len(), 1, "{attempt}");
+            assert!(
+                matches!(
+                    &outcome.results[0].outcome,
+                    StatementOutcome::Error { error: Error::Query { code: Some(code), .. }, .. }
+                        if code == "25006"
+                ),
+                "{attempt}: {outcome:?}"
+            );
+            assert_eq!(probe_rows(&admin).await, 0, "{attempt}");
+        }
+        // And browsing still reads, read-only.
+        assert!(connection.fetch_rows(&users(1)).await.is_ok());
     }
-    // These reach the server, which refuses the write.
-    for attempt in [
-        "INSERT INTO probe VALUES (1)",
-        "DO $$ BEGIN INSERT INTO probe VALUES (1); END $$",
-    ] {
-        let outcome = run(&connection, attempt, 10).await.unwrap();
-        assert_eq!(outcome.results.len(), 1, "{attempt}");
-        assert!(
-            matches!(
-                &outcome.results[0].outcome,
-                StatementOutcome::Error { error: Error::Query { code: Some(code), .. }, .. }
-                    if code == "25006"
-            ),
-            "{attempt}: {outcome:?}"
-        );
-        assert_eq!(probe_rows(&admin).await, 0, "{attempt}");
-    }
-    // And browsing still reads, read-only.
-    assert!(connection.fetch_rows(&users(1)).await.is_ok());
 }
 
 /// Waits until a statement holding `marker` runs on the server.
