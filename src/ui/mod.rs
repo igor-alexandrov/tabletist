@@ -546,6 +546,41 @@ mod tests {
     }
 
     #[test]
+    fn previous_near_the_start_fetches_only_the_rows_before_the_page() {
+        let mut harness = Harness::new();
+        let tab = harness.connect_fake();
+        harness.click("users");
+        harness.answer_rows(crate::testing::page(3, true));
+        let object_tab = harness.app.workspace(tab).unwrap().active_tab.unwrap();
+        harness
+            .app
+            .apply(crate::model::Action::NextPage { tab, object_tab });
+        assert_eq!(last_fetch(&harness), (300, 300));
+        harness.answer_rows(crate::testing::page(3, true));
+        // The size grows: the page on screen is rows 300 to 799.
+        let settings = crate::settings::Settings {
+            page_size: 500,
+            ..harness.app.settings.clone()
+        };
+        harness.app.apply_settings(settings);
+        assert_eq!(last_fetch(&harness), (300, 500));
+        harness.answer_rows(crate::testing::page(3, true));
+        harness
+            .app
+            .apply(crate::model::Action::PrevPage { tab, object_tab });
+        // Only 300 rows are before that page. A whole page from the start
+        // would show rows 300 to 499 a second time.
+        assert_eq!(last_fetch(&harness), (0, 300));
+        harness.answer_rows(crate::testing::page(3, true));
+        // Next moves by the short page, back to where the user was, and the
+        // page fetched there has the settings' size again.
+        harness
+            .app
+            .apply(crate::model::Action::NextPage { tab, object_tab });
+        assert_eq!(last_fetch(&harness), (300, 500));
+    }
+
+    #[test]
     fn a_refresh_at_a_new_page_size_leaves_no_page_of_the_old_size_to_move_from() {
         let mut harness = Harness::new();
         let tab = harness.connect_fake();
