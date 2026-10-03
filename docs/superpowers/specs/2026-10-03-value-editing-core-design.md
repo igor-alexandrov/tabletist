@@ -1,0 +1,443 @@
+# Editing values, slice 1: the core and its safety surfaces
+
+Date: 2026-10-03. Status: design, not yet planned.
+
+## Intent
+
+Tabletist reads data and cannot change it. This slice lets a user change
+the values of existing rows in a table's grid: edit cells, see them pending,
+review the SQL, and save them in one transaction that never overwrites a row
+someone else changed.
+
+Success: on each driver, a user opens a table on a writable connection,
+edits cells in several rows, reads the statements that will run, saves, and
+sees the values the database now holds; a value the column cannot take is
+caught before anything is sent or comes back as the database's own message
+with nothing applied; a row that changed on the server since it was loaded
+is never overwritten without the user choosing to; and on a read-only
+connection nothing in the app can change data, as today.
+
+The designs are the "Editing values" artboards (macOS flow, macOS editors by
+type, Omarchy) and the "Changes to shipped screens" artboards in the design
+canvas Artifact. They are not copied into the repository.
+
+## Editing as a whole
+
+The designs describe more than this slice. Editing is split into
+sub-projects, each with its own spec, plan and pull request:
+
+1. **Core and safety surfaces** (this spec): writable connections, editing
+   cells as text, pending changes, one-transaction save, Review SQL, the
+   production confirmation, conflicts.
+2. Editors by type: enum and CHECK pickers, boolean cycling, foreign key
+   search, the calendar, JSON highlighting, array chips, binary from a
+   file, `DEFAULT`.
+3. The inspector as a row form.
+4. Power keys: undo and redo, pasting a TSV block, `.`, the rest of the vim
+   set, `$EDITOR`.
+5. Rows: add, duplicate, delete (the "Editing a row" artboards).
+6. Writes from the SQL editor, and allowing writes for one tab of a
+   read-only connection.
+
+## Decisions
+
+| Question | Decision |
+|---|---|
+| Scope | Values of existing rows, edited in the grid. Slices 2 to 6 follow separately. |
+| Who may write | A connection whose saved "Open read-only" box is off. On for production by default, off elsewhere. Fixed when the session connects. |
+| Session | A writable connection gets a read-write session. Browsing keeps its explicit read-only transactions, and the script runner fences itself. |
+| Commit model | Edits are pending in the tab until Save; Save writes every pending change of the tab in one transaction. |
+| Stale rows | Inside the transaction each edited row is locked and read by its key, and the changed columns are compared with what the page loaded. A difference writes nothing. |
+| Row identity | The primary key, else a unique index whose columns are all NOT NULL. No such key: the table is view-only. |
+| Editors | Text only: on the cell, or in a popover for long, multi-line and JSON values. |
+| Confirmation | Only on a production connection: the statements are shown and the save is confirmed (Omarchy: by typing `write`). |
+| Omarchy keys | `i` and Enter edit the cell. The inspector keeps Space and `Mod+Shift+R`. |
+
+Rejected: sessions that stay read-only with one read-write transaction for
+the save (chosen against: a writable connection is meant to grow SQL editor
+writes in slice 6); the old values as a guard in the `WHERE`, as one
+artboard draws it (SQL equality is not reliable for every type: PostgreSQL
+`json`, `xml` and geometric types have no `=`, MySQL compares a `DECIMAL`
+with a string as floats, and a miss shows as a conflict that Overwrite
+cannot get past); last write wins; writing a JSON edit as `jsonb_set(...)`,
+as one artboard sketches (PostgreSQL only, and it needs a JSON diff);
+locking a column the user has no `UPDATE` privilege on before the save
+(per-driver privilege queries; the save's failure says it instead);
+editing auto-updatable views.
+
+## Out of scope
+
+Everything in slices 2 to 6. Editing key columns, binary values, values
+over 256 KiB, views, materialized views and SQL results. Editing in the
+inspector: its Edit, Duplicate and Delete buttons stay disabled and say
+"arrives in a later version". Rows of a page that is no longer loaded:
+pending changes never outlive their page.
+
+## Writable connections
+
+### The connection dialog and the shipped screens
+
+- "Open read-only" is no longer locked. Its default is what
+  `SavedConnection::read_only()` computes today: on for production, off for
+  every other environment, until the user sets it. Its note reads "Blocks
+  every write from this app. On by default for production; turn off to
+  edit." (Omarchy: "block every write from this app · default for
+  production").
+- A saved connection that never chose and is not production therefore
+  becomes writable on its next connect after the upgrade.
+- The access is fixed when the session connects. `Workspace` keeps it
+  (`access: Access`); a changed box applies from the next connect or
+  reconnect.
+- Every "read-only" mark (the header's pill, the chip's card, the picker's
+  row, the footer's "· read-only") shows only for a read-only connection.
+- A write the SQL editor refuses:
+  - read-only connection: "This connection opens read-only", "<name> ·
+    <environment> blocks writes, so <server> refused the UPDATE. Nothing
+    changed.", "To write, turn off Open read-only in the connection.", with
+    an **Edit connection** action. The per-tab switch of the artboard is
+    slice 6.
+  - writable connection: "The SQL editor only reads data", "Every query
+    runs in a read-only transaction, so <server> refused the UPDATE.
+    Nothing changed.", "Edit values in a table's grid."
+
+### Sessions (`tabletist-db`)
+
+    pub enum Access { ReadOnly, Writable }
+
+    Connection::connect_with(spec, secrets, host_keys, access)
+
+`Access::ReadOnly` is every session as it is today, unchanged. A
+`Writable` session differs only in this:
+
+- PostgreSQL: `SET default_transaction_read_only = on` is not sent
+  (`standard_conforming_strings` still is). Row fetches, counts and the
+  script runner already open explicit `READ ONLY` transactions, and the
+  script guard's snapshot, savepoint and final check do not read the
+  session default.
+- MySQL: `SET SESSION TRANSACTION READ ONLY` is not sent. Row fetches and
+  counts already run in `START TRANSACTION READ ONLY`. The script runner
+  does lean on the session setting: MySQL commits implicitly before DDL,
+  and only the session's read-only setting refuses the DDL that follows;
+  its checks read `@@session.transaction_read_only`. So a script run on a
+  writable session sends `SET SESSION TRANSACTION READ ONLY` before it
+  begins, and its cleanup, which already replays the connect-time
+  statements after the reset, ends with `SET SESSION TRANSACTION READ
+  WRITE`. A cleanup that fails closes the session, as today.
+- SQLite: the file is opened `SQLITE_OPEN_READ_WRITE`, never
+  `SQLITE_OPEN_CREATE`. `PRAGMA query_only = ON` stays the session's
+  standing state (it is set at open and again after every script); only a
+  save turns it off, for its own transaction, and turns it back on on every
+  path. The script guard's refusal list gains `PRAGMA query_only` and
+  `PRAGMA writable_schema` for SQLite. A file the operating system protects
+  still opens, and a save to it fails with SQLite's message. Opening
+  read-write may create `-wal` and `-shm` files or recover a journal.
+
+The promise, restated: on a read-only connection no action in the app can
+modify data. On a writable connection only Save can; browsing, a raw WHERE
+and the SQL editor still cannot.
+
+## What can be edited
+
+- **Tables with a row key.** The key is the primary key, else the first
+  unique index (by name) whose columns are all real columns (no
+  expressions) and all NOT NULL. A table without one is view-only, and its
+  cells say "<table> has no primary key or unique index, so a row can't be
+  targeted safely". Until the tab's structure has loaded, nothing is
+  editable.
+- **Never editable:** views, materialized views, SQL results, and anything
+  on a read-only connection ("This connection opens read-only").
+- **Locked cells** in an editable table:
+  - identity-always and generated columns. The catalog gains
+    `ColumnInfo.generated: bool` (PostgreSQL `attgenerated` and
+    `attidentity = 'a'`, MySQL `EXTRA`, SQLite `table_xinfo`'s hidden
+    values 2 and 3);
+  - the row key's own columns, so a save finds and re-reads the row by the
+    same key;
+  - binary values, and values over 256 KiB.
+- A locked or uneditable cell is drawn as the design's "locked" (macOS and
+  Windows) and looks as today on Omarchy. Enter (and `i` on Omarchy) on it
+  says why, in a note at the cell or in the Omarchy mode line. Typing on it
+  does nothing.
+
+## Editing in the grid
+
+### The cell lifecycle
+
+1. **Active.** The selected cell. Enter, F2 or a double-click opens the
+   editor on the value, the cursor at its end. On macOS and Windows typing
+   a character opens it with that character as the new text. Editing pins
+   a preview tab.
+2. **Editing.** The editor sits on the cell, at the cell's size.
+3. **Pending.** The cell shows the new value in amber with the left bar;
+   hovering it shows "was <loaded value>". Nothing has been sent.
+4. **Saving.** Pending cells are locked and the grid stays usable for
+   looking. The actions the leaving guard covers are disabled until the
+   save ends.
+5. **Saved.** Green for 1.2 seconds, then the value as re-read from the
+   database.
+6. **Failed.** The cells of the row whose statement failed turn red with
+   the database's code and message; the other pending cells stay amber.
+   Nothing was applied.
+
+### Editors
+
+Every editable type is edited as text.
+
+- **On the cell:** one line, for a value without line breaks of at most
+  256 characters (the grid's cut) in a column that is not JSON.
+- **In a popover anchored to the cell:** every other value, and every JSON
+  column. It shows the character and line count. `Mod+Enter` applies and
+  Esc cancels. `Alt+Enter` in the one-line editor adds a line break and
+  moves the text into the popover.
+- The editor starts from the value's full text as the database gave it,
+  never from the shortened text a cell or the inspector shows.
+- **NULL:** `Mod+Backspace` on a nullable column makes the cell NULL.
+  Opening the editor on a NULL cell starts empty. Clearing the text gives
+  the empty string, never NULL.
+- A cell is pending when its new value differs from the loaded one: typing
+  the loaded text back, or NULL on a cell that was NULL, takes it out of
+  the pending set.
+
+### Checks before sending
+
+Checked as the user types, from the column's entry in the tab's structure:
+
+| Column | Rule | Message |
+|---|---|---|
+| Integer | A whole number within the type's range | "int8 expects a whole number" |
+| Decimal | A number, within the digits and scale the type states | "Up to 2 decimals. 12.505 would be stored as 12.51." |
+| Float | A number (`NaN` and `Infinity` on PostgreSQL) | "float8 expects a number" |
+| Boolean | `true` or `false` | "boolean expects true or false" |
+| Enum, CHECK list | One of `allowed_values` | "Not one of: print, ebook, audio" |
+| JSON | It parses | "Expected , or } at 3:23" |
+| Text with a length | Within the length, shown as `27 / 200` | "At most 200 characters" |
+| NOT NULL | Never NULL | the NULL key does nothing |
+
+Every other rule is the database's, and its rejection is the Failed state.
+
+While the text fails its check the editor is red and shows the message;
+Enter, Tab and `Mod+Enter` do not leave it. Clicking elsewhere keeps the
+text as a pending cell marked "to fix", so typing is never lost. Save is
+disabled while any cell is to fix, with "Fix 1 value to save".
+
+### Pending changes
+
+- `ObjectTab` holds the pending set of its loaded page: per cell (row
+  index, column) the new value (`Text` or `Null`) and its state (pending,
+  to fix, failed with a message), and the editor that is open, if any. Only
+  the text being typed lives in the field itself.
+- **The bar** above the footer, shown while the set is not empty: "3
+  changes in 2 rows", "1 to fix", **Review SQL**, **Discard all**, **Save**
+  (`Mod+S`). Omarchy shows the same counts in its mode line.
+- The tab carries the unsaved dot (`[+]` on Omarchy). A changed row carries
+  the gutter mark: `~`, or `!` when one of its cells is to fix or failed.
+- **Revert one cell:** `Mod+Z` on a pending cell that is active puts back
+  the loaded value. The undo and redo stack is slice 4.
+
+### Keys
+
+| | macOS, Windows | Omarchy |
+|---|---|---|
+| Edit the cell | Enter, F2, double-click, typing | `i` and Enter (cursor at the end), `cc` (replace) |
+| Commit and move down | Enter | Enter |
+| Commit and move right, left | Tab, Shift+Tab | Tab, Shift+Tab |
+| Leave the editor | Esc drops the edit | Esc keeps it, Ctrl+C drops it |
+| Set NULL | `Mod+Backspace` | `x` |
+| Revert the cell | `Mod+Z` | `u` |
+| Review SQL | the bar's button | `:diff` |
+| Save all | `Mod+S` | `:w`, Ctrl+S |
+| Discard all | `Mod+Alt+Backspace` | `:e!` |
+
+- Typing opens the editor on macOS and Windows except for Space (the
+  inspector) and `?` (the shortcuts), which keep their meaning.
+- On Omarchy `i` and Enter no longer open the inspector; Space and
+  `Mod+Shift+R` do. `s` stays Structure. In insert mode the mode line reads
+  `-- INSERT --`, the column and its type, the pending counts, and "esc
+  normal · tab next cell"; Esc there leaves insert mode and does not close
+  the inspector.
+- Omarchy gains a `:` prompt in the mode line. It takes `w`, `diff` and
+  `e!`, and nothing else in this slice; any other text is "not a command".
+- All of it is handled in `ui/keys.rs` and listed in the shortcuts table.
+
+### Leaving with pending changes
+
+- **Guarded actions**, the ones that drop the page or the tab: previous and
+  next page, sorting, applying or clearing filters, refresh, closing the
+  tab, closing or disconnecting the connection, switching database,
+  reconnecting, and closing the window.
+- The action is held and a prompt asks. When one tab is affected: **Save**,
+  **Discard**, **Cancel** (Omarchy: `[w]` write, `[d]` discard, `[esc]`
+  stay). Save runs the save and performs the held action only if everything
+  was written; a failure, a conflict or a cancelled production confirmation
+  drops the held action. When several tabs with pending changes are
+  affected (a connection, the window): **Discard** and **Cancel** only.
+- Not guarded: switching tabs or connections, and the Data and Structure
+  switch. Pending changes wait in their tab.
+- While the session is disconnected the pending set is kept and Save is
+  disabled with the reason.
+
+## Saving (`tabletist-db` and the backend)
+
+    pub struct ChangeSet { pub object: ObjectRef, pub rows: Vec<RowChange> }
+    pub struct RowChange {
+        /// The row key's columns and their loaded values.
+        pub key: Vec<(String, Value)>,
+        pub set: Vec<CellChange>,
+    }
+    pub struct CellChange { pub column: String, pub loaded: Value, pub new: NewValue }
+    pub enum NewValue { Null, Text(String) }
+
+    pub enum WriteOutcome {
+        Written { rows: Vec<Vec<Value>>, elapsed: Duration },
+        /// Nothing was written. `server` is the row now, `None` when gone.
+        Conflicts(Vec<Conflict>),
+        /// Nothing was written: the statement of `rows[row]` failed.
+        Failed { row: usize, error: Error },
+    }
+    pub struct Conflict { pub row: usize, pub server: Option<Vec<Value>> }
+
+    Connection::write(&self, changes: &ChangeSet) -> Result<WriteOutcome>
+
+`write` is the crate's only writing call. On a `ReadOnly` connection it
+returns `Error::ReadOnly` without contacting the server. An `Err` is a
+failure of the session or the run (lost connection, cancelled); nothing was
+committed unless the connection was lost while committing.
+
+One transaction, for every row of the set:
+
+1. Begin, read-write (`BEGIN IMMEDIATE` on SQLite, with `query_only` off).
+2. For each row, read it whole by its key, locked (`SELECT * ... WHERE
+   <key> FOR UPDATE` on PostgreSQL and MySQL). The key is matched with its
+   loaded values in the driver's own form (a binary key as its bytes). No
+   row is a conflict with `server: None`; more than one is an error.
+3. Compare each changed column's value in that row with `loaded`, as
+   decoded `Value`s (floats by their bits, so NaN equals NaN). Any
+   difference is a conflict carrying the row as read.
+4. With any conflict: roll back and return `Conflicts`.
+5. For each row, `UPDATE <table> SET <column> = <new>, ... WHERE <key>`.
+   It must touch exactly one row on PostgreSQL and SQLite; MySQL reports
+   changed rather than matched rows, so there none or one. A statement
+   that fails, touches more, or on MySQL raises a warning (a truncated or
+   adjusted value) rolls everything back and returns `Failed` with the
+   database's error or the warning's text.
+6. Read each row whole again by its key, commit, and return the rows.
+
+New values travel as text and the database converts them to the column's
+type: a quoted literal on PostgreSQL, a bound string on MySQL. Where the
+database would store the text as it is, the driver converts first, from
+the column's type as the locked read reports it: on SQLite integers and
+reals are bound as numbers, and on SQLite and MySQL a boolean as 1 or 0.
+
+The backend gains `Command::Write { session, request, tab, changes }` and
+`Event::Written { .. outcome }`, queued and answered like every request.
+`Mod+.` cancels a running save, which rolls back. A connection lost during
+the save leaves the pending set as it was and says "The connection was lost
+while saving. Reload to see what was written."
+
+After `Written` the reducer replaces those rows in the page, in place even
+when the sort or the filters would now move or hide them, clears their
+pending cells, and formats the inspector's row again. The status reads
+"written 2 changes · 1 row · 14 ms".
+
+## Review SQL
+
+- One `UPDATE` per changed row, by key, with the values as literals, under
+  "runs in one transaction". The check of step 3 is a comment line above
+  the statement: `-- only if kind is still 'print' and alt_text is still
+  NULL`.
+- The text is the statement that runs: PostgreSQL sends it as written, and
+  MySQL and SQLite send the same statement with the values bound. One
+  builder in `dialect.rs` produces both forms from a `ChangeSet`, so they
+  cannot drift.
+- A row with a cell to fix appears as a comment only: `-- row id 4 ·
+  blocked: fix publisher_id first`.
+- A literal longer than 60 characters is shortened with `…` where it is
+  shown. That is display only.
+- macOS and Windows: a drawer above the pending bar, toggled by **Review
+  SQL** and **Hide SQL**. Omarchy: the `:diff` panel, closed with Esc.
+- The reducer builds the text when the pending set changes; drawing only
+  lays it out.
+
+## Saving to production
+
+Only when the workspace's environment is production, every Save first asks:
+
+- macOS and Windows: "Save 2 changes to production?", the connection's name
+  and database, "1 row in book_covers", the statements, "One transaction",
+  **Cancel** and **Save to production**.
+- Omarchy: the red PROD box with the same facts and "sql shown with
+  :diff", and a field that takes the word `write`; Enter confirms only when
+  it holds exactly that, Esc cancels.
+
+## Conflicts
+
+`Conflicts` opens a dialog for the first conflicting row:
+
+- "Row id 2 changed on the server", "Someone saved it after you loaded it.
+  Nothing was written.", and a table of the columns the user changed:
+  loaded, now on server, yours.
+- Three choices (Omarchy `[k]`, `[s]`, `[o]`):
+  - **Keep mine, reload row.** The server's row replaces the loaded row in
+    the page and the pending cells stay on top of it. A pending cell whose
+    new value now equals the server's leaves the set.
+  - **Use server values.** The server's row replaces the loaded row and the
+    row's pending cells are dropped.
+  - **Overwrite.** As Keep mine, and the save runs again once every
+    conflict is answered. A row that changed once more conflicts once more.
+- With `server: None`: "Row id 2 no longer exists on the server", and one
+  choice, **Discard my changes**, which drops the row's pending cells and
+  marks the row as gone until the page is reloaded.
+- Several conflicts are asked one after another ("1 of 2"). The save runs
+  again after the last answer only if some row was answered Overwrite;
+  otherwise what is left stays pending. On production that second save
+  asks its confirmation again.
+- Esc is Keep mine for the row shown.
+
+## Steps
+
+Each step ends compiling, tested and shippable, and gets its own plan run:
+
+1. Writable connections: `Access`, the sessions, the script runner's fence,
+   the dialog's box, the shipped screens. Nothing writes yet.
+2. `Connection::write`, the statement builder, `ColumnInfo.generated`, the
+   backend command and event.
+3. Editing in the grid: the lifecycle, the editors, the checks, the pending
+   bar, the keys, Save, the leaving guard, and the production confirmation.
+   A conflict here is a plain message: "Row id 2 changed on the server.
+   Nothing was written."
+4. Review SQL: the drawer and `:diff`.
+5. The conflict dialog.
+
+No step ships a production save without its confirmation.
+
+## Testing
+
+- `tabletist-db`, each driver, over the shared fixtures:
+  - for every column type the fixtures hold, a value that is loaded,
+    changed and saved is written, read back, and never conflicts with
+    itself;
+  - a row changed by another session, a row deleted by another session and
+    a failing statement in the middle of a set each leave every row of the
+    set untouched and return `Conflicts` or `Failed` with the right row;
+  - a MySQL value the server would truncate is `Failed` and not stored;
+  - `write` on a `ReadOnly` connection sends nothing;
+  - on a `Writable` connection a script and a raw WHERE still cannot
+    write: the existing guard tests run again in both modes, and MySQL
+    gains one for DDL;
+  - the statement builder's two forms agree for every fixture type.
+- Reducer tests: the pending set, the checks, the leaving guard and its
+  held action, rows replaced after a save, rebasing after each conflict
+  choice.
+- Headless UI tests, in every look: the lifecycle, the keys, the popover,
+  the bar, the three dialogs, locked cells saying why, the shipped screens'
+  new texts.
+- `src/shots.rs` gains scenes for review, on the Bookshop demo data, whose
+  SQLite file is a throwaway and writable. No test compares a screen with
+  the design.
+
+## Documents this changes
+
+The main spec's success criterion 6, its section 4.3 and its keyboard
+table; the SQL editor spec's intent, restated for writable connections; the
+crate documentation of `tabletist-db` ("nothing in this crate writes");
+the README; the shortcuts table in `ui/keys.rs`.
