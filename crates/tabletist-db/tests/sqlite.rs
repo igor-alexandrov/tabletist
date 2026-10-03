@@ -259,6 +259,24 @@ async fn a_raw_where_cannot_drop_the_page_limit() {
 }
 
 #[tokio::test]
+async fn a_raw_where_cannot_end_the_statement_at_a_nul() {
+    let (connection, _dir) = fixture().await;
+    // SQLite stops reading at a NUL, and rusqlite takes what follows for
+    // an empty second statement: the page would lose its ORDER BY, LIMIT
+    // and OFFSET, and the second page would repeat the first.
+    let mut query = users(2);
+    query.offset = 2;
+    query.raw_where = Some("1=1) \0".into());
+    let page = connection.fetch_rows(&query).await;
+    assert!(
+        matches!(&page, Err(Error::Query { message, .. }) if message.contains("NUL")),
+        "{:?}",
+        page.as_ref().map(ids)
+    );
+    assert!(connection.count_rows(&query).await.is_err());
+}
+
+#[tokio::test]
 async fn a_filter_on_a_missing_column_fails_instead_of_matching_everything() {
     let (connection, _dir) = fixture().await;
     // Legacy SQLite read "renamed" as the string 'renamed' when no column

@@ -156,10 +156,10 @@ fn statements(
             });
             break;
         }
-        // The open transaction is what stops a statement `query_only`
-        // lets through (a change of journal mode, VACUUM INTO). The
-        // statement before this one succeeded, so SQLite did not end it
-        // over an error: the script did.
+        // The open transaction is what stops what `query_only` lets
+        // through (a change of journal mode, the empty file a VACUUM INTO
+        // leaves). The statement before this one succeeded, so SQLite did
+        // not end it over an error: the script did.
         if connection.is_autocommit() {
             return Err(Error::LeftReadOnly);
         }
@@ -413,14 +413,20 @@ fn column_metas(declared: Vec<(String, String)>, rows: &[Vec<Value>]) -> Vec<Col
         .collect()
 }
 
-/// Refuses a raw WHERE that ends inside a `/*` comment, which SQLite would
-/// accept and which would hide the page's ORDER BY, LIMIT and OFFSET, and
-/// one that holds a `;`: what follows it is a second statement, and
+/// Refuses a raw WHERE that would end the page's statement early. One that
+/// holds a NUL, where SQLite stops reading, or that ends inside a `/*`
+/// comment, which SQLite accepts, would hide the page's ORDER BY, LIMIT and
+/// OFFSET. One that holds a `;` has a second statement after it, and
 /// rusqlite prepares that before it refuses the text (see `Conn::browse`).
 fn check_raw_where(query: &RowQuery) -> Result<()> {
     let Some(raw) = query.raw_where.as_deref() else {
         return Ok(());
     };
+    if raw.contains('\0') {
+        return Err(Error::query(
+            "The WHERE text holds a NUL character. Remove it.",
+        ));
+    }
     if crate::dialect::sqlite_ends_in_block_comment(raw) {
         return Err(Error::query(
             "The WHERE text ends inside a /* comment. Close it with */.",
@@ -1070,6 +1076,20 @@ mod tests {
         ] {
             query.raw_where = Some(raw.into());
             assert_eq!(check_raw_where(&query), Ok(()), "{raw}");
+        }
+    }
+
+    #[test]
+    fn a_raw_where_holding_a_nul_is_refused() {
+        let mut query = RowQuery::new(ObjectRef::new("main", "users"), 10);
+        // In a string too: SQLite stops reading there whatever it is in.
+        for raw in ["1=1) \0", "\0", "email = 'a\0b'"] {
+            query.raw_where = Some(raw.into());
+            let checked = check_raw_where(&query);
+            assert!(
+                matches!(&checked, Err(Error::Query { message, .. }) if message.contains("NUL")),
+                "{raw:?}: {checked:?}"
+            );
         }
     }
 

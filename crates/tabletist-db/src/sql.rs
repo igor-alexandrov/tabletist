@@ -619,7 +619,7 @@ pub fn refusal(dialect: Dialect, statement: &str) -> Option<String> {
     let guarded_name = || words.iter().skip(1).find(|name| is_guarded_setting(name));
     let postgres_or_mysql = dialect != Dialect::Sqlite;
     if dialect == Dialect::Sqlite
-        && let Some(name) = guarded_pragma(statement, &tokens)
+        && let Some(name) = refused_pragma(statement, &tokens)
     {
         return Some(format!("PRAGMA {name}"));
     }
@@ -754,7 +754,7 @@ fn pragma_name(statement: &str, token: &Token) -> Option<String> {
 /// `REFUSED_PRAGMAS`, or one of `GUARDED_PRAGMAS` unless the statement only
 /// reads it (`PRAGMA name`, `PRAGMA schema.name`, nothing after). It errs
 /// toward refusing: such a name anywhere in a longer statement counts.
-fn guarded_pragma(statement: &str, tokens: &[Token]) -> Option<&'static str> {
+fn refused_pragma(statement: &str, tokens: &[Token]) -> Option<&'static str> {
     let code: Vec<&Token> = tokens
         .iter()
         .filter(|token| !matches!(token.kind, TokenKind::Whitespace | TokenKind::Comment))
