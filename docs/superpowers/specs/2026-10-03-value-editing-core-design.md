@@ -191,12 +191,20 @@ pending changes never outlive their page.
     pragmas stay, as the SQL editor spec allows them;
   - a table's page or count, which holds the raw WHERE: a pragma with a
     value is denied, and so are transaction and savepoint statements,
-    `ATTACH` and `DETACH`. A statement hidden behind the filter is only
-    ever prepared, never run, so what matters is what takes effect at
-    prepare time, and that is a pragma with a value. A pragma without one
-    only reads, and SQLite's own virtual tables need them (FTS5 asks for
-    `data_version`); R*Tree prepares its write statements when a table is
-    first touched. A write is `query_only`'s to refuse here too.
+    `ATTACH` and `DETACH` (also with a computed name). A statement hidden
+    behind the filter is only ever prepared, never run, so what matters
+    is what takes effect at prepare time, and that is a pragma with a
+    value. A pragma without one changes nothing when it is prepared, and
+    SQLite's own virtual tables need them (FTS5 asks for `data_version`).
+    Those that act when run are never run, except `optimize` read as a
+    table, which `query_only` refuses; `wal_checkpoint` and
+    `incremental_vacuum` are denied by name all the same, in case a later
+    SQLite makes them readable as tables. R*Tree prepares its write
+    statements when a table is first touched, so writes are not denied
+    here: a write is `query_only`'s to refuse, as in a script. A filter
+    the authorizer denies says so in a sentence ("A filter cannot use a
+    PRAGMA with an argument, ATTACH or a transaction statement."), since
+    an honest one can reach it with `pragma_table_info('users')`.
 
   The refusal list and the two checks stay, as the layers in front of
   and behind it: the list gives the user a sentence instead of "not

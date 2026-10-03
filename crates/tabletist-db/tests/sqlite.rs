@@ -222,11 +222,10 @@ async fn a_raw_where_cannot_modify_data() {
             assert_eq!(query_only(&connection).await, Value::Int(1), "{raw}");
         }
         // To SQLite `:a(')` is one variable token, and so is each of the
-        // next four up to its `)`; to our tokenizer a string or a comment
-        // starts inside it and hides the `;` after it. Only SQLite, asked
-        // when it prepares the pragma, stops these, and nothing would put
-        // these two settings back. The last has a `$` inside a name, which
-        // a tokenizer that knew those variables would take for one.
+        // other four spellings up to its `)`; to our tokenizer a string or
+        // a comment starts inside it and hides the `;` after it. Only
+        // SQLite, asked when it prepares what follows, stops these, and
+        // nothing would put these two settings back.
         let settings = async || {
             (
                 setting(&connection, "foreign_keys").await,
@@ -236,26 +235,57 @@ async fn a_raw_where_cannot_modify_data() {
         let before = settings().await;
         // The texts set both to 0, which only shows on another value.
         assert_eq!(before, (Value::Int(1), Value::Int(2)), "{access:?}");
+        // What the fence refuses, as `Conn::browse` words it.
+        let fenced = |refused: &tabletist_db::Result<()>| {
+            matches!(
+                refused,
+                Err(Error::Query { code: Some(code), message, .. })
+                    if code == "23" && message == "A filter cannot use a PRAGMA \
+                        with an argument, ATTACH or a transaction statement."
+            )
+        };
         for raw in [
             "1=1 OR :a(') IS NULL); PRAGMA foreign_keys = 0; PRAGMA synchronous = 0; SELECT ('",
             "1=1 OR $a(') IS NULL); PRAGMA foreign_keys = 0; SELECT ('",
             "1=1 OR @a(\") IS NULL); PRAGMA foreign_keys = 0; SELECT (\"",
             "1=1 OR #a(--) IS NULL); PRAGMA foreign_keys = 0; SELECT (1",
             "1=1 OR :a(/*) IS NULL); PRAGMA foreign_keys = 0; SELECT (1 /* */",
-            "1=1 OR EXISTS (WITH a$b(')') AS (SELECT 1) SELECT 1 FROM a$b)); \
-             PRAGMA foreign_keys = 0; SELECT ('",
+            // Hidden the same way, what else a filter may not hold. The
+            // second ATTACH names its file by an expression, and reaches
+            // the authorizer without the name.
+            "1=1 OR :a(') IS NULL); BEGIN; SELECT ('",
+            "1=1 OR :a(') IS NULL); SAVEPOINT x; SELECT ('",
+            "1=1 OR :a(') IS NULL); ATTACH 'x' AS y; SELECT ('",
+            "1=1 OR :a(') IS NULL); ATTACH 'x' || '' AS y; SELECT ('",
+            "1=1 OR :a(') IS NULL); PRAGMA wal_checkpoint; SELECT ('",
         ] {
             query.raw_where = Some(raw.into());
-            assert!(
-                connection.fetch_rows(&query).await.is_err(),
-                "{access:?} {raw}"
-            );
+            let page = connection.fetch_rows(&query).await.map(|_| ());
+            assert!(fenced(&page), "{access:?} {raw}: {page:?}");
             assert_eq!(settings().await, before, "{access:?} {raw}");
-            assert!(
-                connection.count_rows(&query).await.is_err(),
-                "{access:?} {raw}"
-            );
+            let count = connection.count_rows(&query).await.map(|_| ());
+            assert!(fenced(&count), "{access:?} {raw}: {count:?}");
             assert_eq!(settings().await, before, "{access:?} {raw}");
+        }
+        // A `$` inside a name is where a tokenizer that knew those variables
+        // would see one. Ours sees the `;`, and refuses the text itself.
+        query.raw_where = Some(
+            "1=1 OR EXISTS (WITH a$b(')') AS (SELECT 1) SELECT 1 FROM a$b)); \
+             PRAGMA foreign_keys = 0; SELECT ('"
+                .into(),
+        );
+        for refused in [
+            connection.fetch_rows(&query).await.map(|_| ()),
+            connection.count_rows(&query).await.map(|_| ()),
+        ] {
+            assert!(
+                matches!(
+                    &refused,
+                    Err(Error::Query { code: None, message, .. }) if message.contains("`;`")
+                ),
+                "{access:?}: {refused:?}"
+            );
+            assert_eq!(settings().await, before, "{access:?}");
         }
         assert_eq!(connection.count_rows(&users(50)).await.unwrap(), 5);
         // A filter that only reads is none of the fence's business.
@@ -268,20 +298,12 @@ async fn a_raw_where_cannot_modify_data() {
         // A pragma read as a table is none of its business either, unless
         // it takes an argument: that reaches SQLite as the pragma's value,
         // and behind a filter a pragma with a value is what sets something.
-        query.raw_where = Some("EXISTS (SELECT 1 FROM pragma_table_info('users'))".into());
-        for refused in [
-            connection.fetch_rows(&query).await.map(|_| ()),
-            connection.count_rows(&query).await.map(|_| ()),
-        ] {
-            assert!(
-                matches!(
-                    &refused,
-                    Err(Error::Query { code: Some(code), message, .. })
-                        if code == "23" && message == "not authorized"
-                ),
-                "{access:?}: {refused:?}"
-            );
-        }
+        // An honest filter can do this, so it is told what it may not use.
+        query.raw_where = Some("name IN (SELECT name FROM pragma_table_info('users'))".into());
+        let page = connection.fetch_rows(&query).await.map(|_| ());
+        assert!(fenced(&page), "{access:?}: {page:?}");
+        let count = connection.count_rows(&query).await.map(|_| ());
+        assert!(fenced(&count), "{access:?}: {count:?}");
         // A write a filter reaches is `query_only`'s to refuse, with the
         // code the app tells a refused write by: `PRAGMA optimize` would
         // run ANALYZE on `users`, whose index has no statistics.

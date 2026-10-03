@@ -1,16 +1,15 @@
 //! SQLite, opened read-only unless the connection is writable. rusqlite is
 //! blocking, so every call runs on tokio's blocking pool. What a script or
 //! a filter may do is SQLite's to refuse: it asks the connection's
-//! authorizer whenever it prepares their text (see `Fence`).
+//! authorizer whenever it prepares their text (see `fence`).
 
 use std::borrow::Cow;
 use std::path::Path;
-use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use rusqlite::config::DbConfig;
-use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
+use rusqlite::hooks::AuthContext;
 use rusqlite::types::{FromSql, FromSqlError, FromSqlResult, ValueRef};
 use rusqlite::{ErrorCode, OpenFlags};
 
@@ -20,11 +19,15 @@ use crate::{
     StatementResult, StopFlag, Structure, Value, ValueKind,
 };
 
+mod fence;
+
+use fence::{Fence, Fences, authorize};
+
 /// An open SQLite database.
 pub struct Conn {
     inner: Arc<Mutex<rusqlite::Connection>>,
     interrupt: Arc<rusqlite::InterruptHandle>,
-    guard: Guard,
+    fences: Fences,
 }
 
 /// Maps rusqlite's errors onto ours.
@@ -65,97 +68,6 @@ impl Drop for InterruptOnDrop {
     }
 }
 
-/// Whose text SQLite is preparing, which decides what it may do.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u8)]
-enum Fence {
-    /// The app's own statements.
-    Off = 0,
-    /// A statement of a SQL editor script.
-    Script = 1,
-    /// A table's page or count, which holds the raw WHERE.
-    Filter = 2,
-}
-
-/// What SQLite may do for text behind `fence`. Asked after SQLite's own
-/// parse, so no spelling gets past it; that is why it does not go through
-/// `sql::refusal`, whose tokenizer and SQLite's do not always agree.
-fn authorize(fence: Fence, action: &AuthAction<'_>) -> Authorization {
-    let allowed = match fence {
-        Fence::Off => true,
-        // A filter's text is one SELECT, and a statement hidden behind it
-        // is only ever prepared (rusqlite prepares the tail to find it). So
-        // what must not happen is what takes effect when SQLite prepares
-        // it, and a pragma with a value does. One without a value only
-        // reads, and SQLite's own virtual tables ask for them (FTS5 for
-        // `data_version`); the write statements R*Tree prepares when a
-        // table connects are never run by a SELECT, and `query_only`
-        // refuses a write whoever tries one.
-        Fence::Filter => !matches!(
-            action,
-            AuthAction::Pragma {
-                pragma_value: Some(_),
-                ..
-            } | AuthAction::Transaction { .. }
-                | AuthAction::Savepoint { .. }
-                | AuthAction::Attach { .. }
-                | AuthAction::Detach { .. }
-        ),
-        // A write is left to `query_only`, whose error the app knows as a
-        // refused write. What must not happen is the script leaving its
-        // transaction or lifting what refuses the write.
-        Fence::Script => match action {
-            AuthAction::Transaction { .. } | AuthAction::Savepoint { .. } => false,
-            // The name comes without its schema and unquoted, in the
-            // letters the script wrote it in.
-            AuthAction::Pragma {
-                pragma_name,
-                pragma_value,
-            } => {
-                let name = pragma_name.to_ascii_lowercase();
-                name != "wal_checkpoint"
-                    && !(pragma_value.is_some()
-                        && matches!(name.as_str(), "query_only" | "writable_schema"))
-            }
-            _ => true,
-        },
-    };
-    if allowed {
-        Authorization::Allow
-    } else {
-        Authorization::Deny
-    }
-}
-
-/// Which fence is up, shared with the authorizer SQLite calls.
-#[derive(Clone, Default)]
-struct Guard(Arc<AtomicU8>);
-
-impl Guard {
-    /// Puts `fence` up until the returned value drops.
-    fn fence(&self, fence: Fence) -> Fenced<'_> {
-        self.0.store(fence as u8, Ordering::SeqCst);
-        Fenced(self)
-    }
-
-    fn current(&self) -> Fence {
-        match self.0.load(Ordering::SeqCst) {
-            1 => Fence::Script,
-            2 => Fence::Filter,
-            _ => Fence::Off,
-        }
-    }
-}
-
-/// Takes the fence down when dropped, on every path.
-struct Fenced<'a>(&'a Guard);
-
-impl Drop for Fenced<'_> {
-    fn drop(&mut self) {
-        self.0.0.store(Fence::Off as u8, Ordering::SeqCst);
-    }
-}
-
 /// Whether the session still refuses writes. The authorizer denies a
 /// script every way of turning `query_only` off; this is the check behind
 /// it, since on a writable handle nothing else would stop the script's next
@@ -174,7 +86,7 @@ fn still_query_only(connection: &rusqlite::Connection) -> Result<bool> {
 /// statement, ends with `LeftReadOnly` after that rollback.
 fn script(
     connection: &rusqlite::Connection,
-    guard: &Guard,
+    fences: &Fences,
     texts: &[String],
     limit: usize,
     stop: &StopFlag,
@@ -204,7 +116,7 @@ fn script(
     // the running statement, which fails with SQLITE_INTERRUPT (Cancelled).
     let watching = stop.clone();
     connection.progress_handler(1_000, Some(move || watching.is_stopped()));
-    let ran = statements(connection, guard, texts, limit, stop, &mut outcome);
+    let ran = statements(connection, fences, texts, limit, stop, &mut outcome);
     // Removed before the cleanup, so a stop cannot interrupt it.
     connection.progress_handler(0, None::<fn() -> bool>);
     stop.finish();
@@ -241,7 +153,7 @@ fn end_transaction(connection: &rusqlite::Connection) -> Result<()> {
 
 fn statements(
     connection: &rusqlite::Connection,
-    guard: &Guard,
+    fences: &Fences,
     texts: &[String],
     limit: usize,
     stop: &StopFlag,
@@ -282,7 +194,7 @@ fn statements(
         // Only the script's own text is fenced: the checks above and the
         // rollback after the run are the app's.
         let result = {
-            let _fenced = guard.fence(Fence::Script);
+            let _fenced = fences.fence(Fence::Script);
             statement(connection, text, limit)
         };
         let result = match result {
@@ -552,6 +464,27 @@ fn check_raw_where(query: &RowQuery) -> Result<()> {
     Ok(())
 }
 
+/// What `Fence::Filter` refused a filter, in words. SQLite says only "not
+/// authorized", or "authorization denied" when the refusal comes from
+/// inside a running statement, and an honest filter can get there: a pragma
+/// read as a table takes its argument as the pragma's value. The code stays
+/// SQLite's (SQLITE_AUTH), which tells this refusal from `check_raw_where`'s.
+fn filter_denied(error: Error) -> Error {
+    match error {
+        Error::Query {
+            code: Some(code), ..
+        } if code == "23" => Error::Query {
+            code: Some(code),
+            message: "A filter cannot use a PRAGMA with an argument, ATTACH or a transaction \
+                      statement."
+                .into(),
+            detail: None,
+            hint: None,
+        },
+        other => other,
+    }
+}
+
 /// `path` as a name SQLite takes for a file and nothing else. The bundled
 /// SQLite is built with SQLITE_USE_URI, so it reads every name starting with
 /// `file:` as a URI, with or without SQLITE_OPEN_URI. It would then open
@@ -573,7 +506,7 @@ impl Conn {
     /// (`PRAGMA query_only`, see `set_session_pragmas`).
     pub async fn open(path: &Path, access: Access) -> Result<Self> {
         let path = path.to_path_buf();
-        let opened = move || -> Result<(rusqlite::Connection, Guard)> {
+        let opened = move || -> Result<(rusqlite::Connection, Fences)> {
             if !path.is_file() {
                 return Err(Error::Connect(format!("{} does not exist", path.display())));
             }
@@ -609,21 +542,21 @@ impl Conn {
                 })?;
             // From here on SQLite asks before it prepares anything: what
             // it may do depends on whose text it is (see `Fence`).
-            let guard = Guard::default();
-            let asked = guard.clone();
+            let fences = Fences::default();
+            let asked = fences.clone();
             connection.authorizer(Some(move |context: AuthContext<'_>| {
                 authorize(asked.current(), &context.action)
             }));
-            Ok((connection, guard))
+            Ok((connection, fences))
         };
-        let (connection, guard) = tokio::task::spawn_blocking(opened)
+        let (connection, fences) = tokio::task::spawn_blocking(opened)
             .await
             .map_err(|error| Error::Io(error.to_string()))??;
         let interrupt = Arc::new(connection.get_interrupt_handle());
         Ok(Self {
             inner: Arc::new(Mutex::new(connection)),
             interrupt,
-            guard,
+            fences,
         })
     }
 
@@ -662,7 +595,8 @@ impl Conn {
     /// `Fence::Filter`, which denies a filter every pragma with a value,
     /// would fail and still leave the session open to writes. So, as the
     /// layer behind both, a failure puts the session's settings back, and a
-    /// session that cannot take them counts as lost.
+    /// session that cannot take them counts as lost. What the fence refused
+    /// is worded for the user (see `filter_denied`).
     async fn browse<T: Send + 'static>(
         &self,
         work: impl FnOnce(&rusqlite::Connection) -> Result<T> + Send + 'static,
@@ -681,7 +615,7 @@ impl Conn {
                         ))
                     })?;
             }
-            result
+            result.map_err(filter_denied)
         })
         .await
     }
@@ -700,7 +634,7 @@ impl Conn {
         // If the caller drops this future, `run` interrupts the statement
         // that is running; this stops the ones that have not begun.
         let guard = StopOnDrop(Some(stop.clone()));
-        let fences = self.guard.clone();
+        let fences = self.fences.clone();
         let outcome = self
             .run(move |connection| script(connection, &fences, &texts, limit, &stop))
             .await;
@@ -804,7 +738,7 @@ impl Conn {
         check_raw_where(query)?;
         let query = query.clone();
         let limit = query.limit as usize;
-        let fences = self.guard.clone();
+        let fences = self.fences.clone();
         // One blocking job for the key lookup and the select, so a cancel
         // can never fall in a gap between them.
         self.browse(move |connection| {
@@ -852,7 +786,7 @@ impl Conn {
     pub async fn count_rows(&self, query: &RowQuery) -> Result<u64> {
         check_raw_where(query)?;
         let query = query.clone();
-        let fences = self.guard.clone();
+        let fences = self.fences.clone();
         self.browse(move |connection| {
             let binary = binary_columns(connection, &query)?;
             let sql = Dialect::Sqlite.count_rows(&query, &binary);
@@ -1070,7 +1004,7 @@ mod tests {
         );
     }
     use super::*;
-    use rusqlite::hooks::TransactionOperation;
+    use rusqlite::hooks::Authorization;
 
     async fn fixture_as(access: Access) -> (Conn, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
@@ -1198,6 +1132,8 @@ mod tests {
             for text in [
                 "PRAGMA query_only = OFF",
                 "PRAGMA 'query_only' = 0",
+                // SQLite hands the name over in these letters.
+                "PRAGMA QUERY_ONLY = 0",
                 "EXPLAIN PRAGMA query_only = 0",
                 "PRAGMA main.query_only(0)",
                 "PRAGMA writable_schema = ON",
@@ -1239,18 +1175,29 @@ mod tests {
                 "PRAGMA table_info(users)",
                 // Asks for the pragma while it runs, not when it is prepared.
                 "SELECT name FROM pragma_table_info('users')",
-                "PRAGMA foreign_keys = ON",
                 "SELECT count(*) FROM users",
             ] {
                 let ran = run_unrefused(&conn, &[text]).await.unwrap();
                 assert!(
                     matches!(
                         ran.results.last().map(|result| &result.outcome),
-                        Some(StatementOutcome::Rows { .. } | StatementOutcome::Done { .. })
+                        Some(StatementOutcome::Rows { .. })
                     ),
                     "{access:?} {text}: {ran:?}"
                 );
             }
+            // A setting that is the script's to change, read back in the
+            // same script.
+            let ran = run_unrefused(&conn, &["PRAGMA cache_size = 1234", "PRAGMA cache_size"])
+                .await
+                .unwrap();
+            assert!(
+                matches!(
+                    ran.results.last().map(|result| &result.outcome),
+                    Some(StatementOutcome::Rows { rows, .. }) if rows[0][0] == Value::Int(1234)
+                ),
+                "{access:?}: {ran:?}"
+            );
         }
     }
 
@@ -1352,6 +1299,36 @@ mod tests {
     }
 
     #[test]
+    fn what_the_fence_refuses_a_filter_is_put_in_words() {
+        let coded = |code: &str, message: &str| Error::Query {
+            code: Some(code.into()),
+            message: message.into(),
+            detail: None,
+            hint: None,
+        };
+        // The second is what SQLite says when the refusal comes from inside
+        // a running statement.
+        for message in ["not authorized", "authorization denied"] {
+            assert_eq!(
+                filter_denied(coded("23", message)),
+                coded(
+                    "23",
+                    "A filter cannot use a PRAGMA with an argument, ATTACH or a transaction \
+                     statement."
+                )
+            );
+        }
+        for other in [
+            coded("8", "attempt to write a readonly database"),
+            coded("1", "no such column: nope"),
+            Error::query("not authorized"),
+            Error::Cancelled,
+        ] {
+            assert_eq!(filter_denied(other.clone()), other);
+        }
+    }
+
+    #[test]
     fn a_raw_where_holding_a_nul_is_refused() {
         let mut query = RowQuery::new(ObjectRef::new("main", "users"), 10);
         // In a string too: SQLite stops reading there whatever it is in.
@@ -1421,94 +1398,6 @@ mod tests {
             .unwrap();
         assert_eq!(changed, 0);
         assert!(matches!(ran, Err(Error::LeftReadOnly)), "{ran:?}");
-    }
-
-    #[test]
-    fn each_fence_allows_what_its_text_may_do() {
-        let pragma = |pragma_name, pragma_value| AuthAction::Pragma {
-            pragma_name,
-            pragma_value,
-        };
-        let transaction = AuthAction::Transaction {
-            operation: TransactionOperation::Unknown,
-        };
-        let savepoint = AuthAction::Savepoint {
-            operation: TransactionOperation::Begin,
-            savepoint_name: "s",
-        };
-        let read = AuthAction::Read {
-            table_name: "users",
-            column_name: "email",
-        };
-        let function = AuthAction::Function {
-            function_name: "count",
-        };
-        let update = AuthAction::Update {
-            table_name: "users",
-            column_name: "email",
-        };
-        let insert = AuthAction::Insert {
-            table_name: "users",
-        };
-        let delete = AuthAction::Delete {
-            table_name: "users",
-        };
-        let attach = AuthAction::Attach {
-            filename: "other.db",
-        };
-        let detach = AuthAction::Detach {
-            database_name: "other",
-        };
-        for (fence, action, allowed) in [
-            (Fence::Off, pragma("query_only", Some("0")), true),
-            (Fence::Off, transaction, true),
-            (Fence::Script, transaction, false),
-            (Fence::Script, savepoint, false),
-            (Fence::Script, pragma("query_only", Some("0")), false),
-            // SQLite hands the name over as it was written.
-            (Fence::Script, pragma("QUERY_ONLY", Some("OFF")), false),
-            (Fence::Script, pragma("writable_schema", Some("ON")), false),
-            (Fence::Script, pragma("wal_checkpoint", None), false),
-            (
-                Fence::Script,
-                pragma("wal_checkpoint", Some("TRUNCATE")),
-                false,
-            ),
-            (Fence::Script, pragma("query_only", None), true),
-            (Fence::Script, pragma("foreign_keys", Some("ON")), true),
-            (Fence::Script, pragma("table_info", Some("users")), true),
-            (Fence::Script, AuthAction::Select, true),
-            (Fence::Script, update, true),
-            (Fence::Script, attach, true),
-            (Fence::Filter, AuthAction::Select, true),
-            (Fence::Filter, read, true),
-            (Fence::Filter, function, true),
-            (Fence::Filter, AuthAction::Recursive, true),
-            // With a value, whatever the name: a table-valued pragma's
-            // argument arrives as one too.
-            (Fence::Filter, pragma("foreign_keys", Some("0")), false),
-            (Fence::Filter, pragma("query_only", Some("0")), false),
-            (Fence::Filter, pragma("table_info", Some("users")), false),
-            (Fence::Filter, transaction, false),
-            (Fence::Filter, savepoint, false),
-            (Fence::Filter, attach, false),
-            (Fence::Filter, detach, false),
-            // What FTS5 asks for while it reads.
-            (Fence::Filter, pragma("data_version", None), true),
-            (Fence::Filter, pragma("query_only", None), true),
-            // What R*Tree prepares when a table connects; running one is
-            // `query_only`'s to refuse.
-            (Fence::Filter, insert, true),
-            (Fence::Filter, update, true),
-            (Fence::Filter, delete, true),
-        ] {
-            let expected = if allowed {
-                Authorization::Allow
-            } else {
-                Authorization::Deny
-            };
-            assert_eq!(authorize(fence, &action), expected, "{fence:?} {action:?}");
-        }
     }
 
     #[test]

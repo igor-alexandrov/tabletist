@@ -1707,9 +1707,11 @@ SQLite calls a connection's authorizer whenever it prepares a statement, after i
 |---|---|---|
 | `Off` | the app's own statements: `BEGIN`, `ROLLBACK`, `set_session_pragmas`, `still_query_only`, catalog queries | everything |
 | `Script` | a script's statement, in `statements` around the call of `statement` | everything but: `Transaction`, `Savepoint`; `Pragma` named `query_only` or `writable_schema` with a value; `Pragma` named `wal_checkpoint` in any form |
-| `Filter` | the page query and the count query, which hold the raw WHERE | everything but: `Pragma` with a value; `Transaction`, `Savepoint`, `Attach`, `Detach` |
+| `Filter` | the page query and the count query, which hold the raw WHERE | everything but: `Pragma` with a value; `Pragma` named `wal_checkpoint` or `incremental_vacuum` in any form; `Transaction`, `Savepoint`, `Attach`, `Detach` (also as `Unknown` with their codes, which is how a computed name arrives) |
 
 A statement hidden behind a filter is only ever prepared (as the tail rusqlite prepares), never run. So `Filter` has to stop what takes effect at prepare time, which is a pragma with a value. A first version allowed a filter only to read; that broke browsing FTS5 tables (FTS5 runs `PRAGMA data_version` itself) and counting R*Tree tables (R*Tree prepares its write statements when a table is first touched).
+
+A pragma without a value changes nothing when it is prepared; the ones that act when run (`wal_checkpoint`, `incremental_vacuum`, `optimize`) are never run from a filter, except `optimize` read as a table, which `query_only` refuses. The first two are denied by name all the same. The fences live in `crates/tabletist-db/src/sqlite/fence.rs`.
 
 Writes are NOT denied here, in a script or a filter: `query_only` refuses them with SQLITE_READONLY (code 8), which the app's refused-write card reads. `ATTACH` and other pragmas stay allowed in a script, as the SQL editor spec says.
 
