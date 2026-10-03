@@ -582,7 +582,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, id: TabId) {
             );
             let foot = Rect::from_min_max(pos2(full.left(), body.bottom()), full.max);
             if source.table {
-                editing_footer(ui, foot, &look, &palette, locale);
+                let read_only = workspace.access == tabletist_db::Access::ReadOnly;
+                editing_footer(ui, foot, read_only, &look, &palette, locale);
             }
             let mut body_ui = ui.new_child(egui::UiBuilder::new().max_rect(body));
             let skin = FieldSkin {
@@ -1427,6 +1428,7 @@ fn attachment_card(
 fn editing_footer(
     ui: &mut egui::Ui,
     rect: Rect,
+    read_only: bool,
     look: &Look,
     palette: &Palette,
     locale: crate::i18n::Locale,
@@ -1509,10 +1511,14 @@ fn editing_footer(
     let note_role = caption(look);
     let y = top + height + 8.0 + line_of(ui, note_role, look) / 2.0;
     if look.terminal {
-        let note = gettext(
-            locale,
-            "read-only in 0.1.0 · editing arrives in a later version",
-        );
+        let note = if read_only {
+            gettext(
+                locale,
+                "read-only connection · editing arrives in a later version",
+            )
+        } else {
+            gettext(locale, "editing arrives in a later version")
+        };
         // Cut at the panel's side, as a field's label is.
         let shown = crate::ui::grid::ellipsize(&note, inner.width(), false, |text| {
             note_role.width(ui.ctx(), look.faces, text)

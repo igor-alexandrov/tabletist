@@ -4240,7 +4240,7 @@ mod tests {
         let tab = with_page(&mut harness);
         focus_grid(&mut harness, tab);
         harness.click("Row 1");
-        let note = "read-only in 0.1.0 · editing arrives in a later version";
+        let note = "read-only connection · editing arrives in a later version";
         let pieces = |harness: &mut Harness| -> Vec<String> {
             harness.settle();
             let painted = harness.painted.iter();
@@ -4258,7 +4258,7 @@ mod tests {
         assert!(
             narrow
                 .iter()
-                .any(|piece| piece.starts_with("read-only in 0.1.0") && piece.ends_with('…')),
+                .any(|piece| piece.starts_with("read-only connection") && piece.ends_with('…')),
             "{narrow:?}"
         );
         // And a cell too narrow for its words keeps its key alone.
@@ -4267,6 +4267,38 @@ mod tests {
             !narrow.iter().any(|piece| piece.contains("duplicate")),
             "{narrow:?}"
         );
+    }
+
+    #[test]
+    fn only_a_read_only_connection_carries_the_mark() {
+        for look in crate::theme::Look::ALL {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            let tab = with_page(&mut harness);
+            focus_grid(&mut harness, tab);
+            harness.click("Row 1");
+            let marks = |harness: &mut Harness| -> Vec<String> {
+                let tree = harness.settle();
+                crate::testing::labels(&tree)
+                    .into_iter()
+                    .filter(|label| label.to_lowercase().contains("read-only"))
+                    .collect()
+            };
+            // The status line's tag has no accessible name: it is read as
+            // the last frame painted it.
+            let painted = |harness: &Harness| {
+                let mut painted = harness.painted.iter();
+                painted.any(|(text, _)| text == "read-only")
+            };
+            // The fixture connection is read-only.
+            assert!(!marks(&mut harness).is_empty(), "{}", look.name);
+            if look.terminal {
+                assert!(painted(&harness), "{}", look.name);
+            }
+            harness.app.workspace_mut(tab).unwrap().access = tabletist_db::Access::Writable;
+            assert_eq!(marks(&mut harness), Vec::<String>::new(), "{}", look.name);
+            assert!(!painted(&harness), "{}", look.name);
+        }
     }
 
     #[test]
