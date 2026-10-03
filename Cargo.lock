@@ -5628,12 +5628,20 @@ dependencies = [
  "rustls-pki-types",
  "serde",
  "serde_json",
+ "tabletist-sqlite-ffi",
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
  "tokio-postgres",
  "tokio-postgres-rustls",
  "url",
+]
+
+[[package]]
+name = "tabletist-sqlite-ffi"
+version = "0.1.0"
+dependencies = [
+ "rusqlite",
 ]
 
 [[package]]

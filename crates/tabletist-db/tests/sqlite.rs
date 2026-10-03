@@ -1006,3 +1006,185 @@ async fn the_server_version_names_sqlite() {
     let version = within(connection.server_version()).await.unwrap();
     assert!(version.starts_with("SQLite 3."), "{version}");
 }
+
+/// `caf\xe9` ("café" in Latin-1) the way it reads once the byte that is not
+/// UTF-8 is replaced.
+const LOSSY: &str = "caf\u{FFFD}";
+
+/// A file with names that are not UTF-8: SQLite keeps a name's bytes as they
+/// were written. `t` has a column and a declared type named `caf\xe9`, `v`
+/// gives that column another name, `keyed` has it as its key and one table
+/// is named `caf\xe9s`. SQL text is a `str` here, so the file is written
+/// with `caf~` and the byte is put in afterwards.
+async fn latin1_names() -> (Connection, tempfile::TempDir) {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("latin1.db");
+    rusqlite::Connection::open(&path)
+        .unwrap()
+        .execute_batch(
+            r#"CREATE TABLE t (id INTEGER PRIMARY KEY, "caf~" TEXT, price "caf~");
+               INSERT INTO t VALUES (1, 'x', 2.5);
+               CREATE VIEW v AS SELECT id, "caf~" AS cafe FROM t;
+               CREATE TABLE keyed ("caf~" TEXT PRIMARY KEY, note TEXT);
+               INSERT INTO keyed VALUES ('b', 'second'), ('a', 'first');
+               CREATE TABLE "caf~s" (id INTEGER PRIMARY KEY);"#,
+        )
+        .unwrap();
+    let mut bytes = std::fs::read(&path).unwrap();
+    let mut replaced = 0;
+    for start in 0..bytes.len() - 3 {
+        if &bytes[start..start + 4] == b"caf~" {
+            bytes[start + 3] = 0xE9;
+            replaced += 1;
+        }
+    }
+    assert!(replaced >= 6, "{replaced} names were replaced");
+    std::fs::write(&path, bytes).unwrap();
+    let connection = Connection::connect(&ConnectSpec::sqlite(&path), &Secrets::default())
+        .await
+        .unwrap();
+    (connection, dir)
+}
+
+fn names(page: &tabletist_db::RowPage) -> Vec<&str> {
+    page.columns
+        .iter()
+        .map(|column| column.name.as_str())
+        .collect()
+}
+
+#[tokio::test]
+async fn a_table_with_names_that_are_not_utf8_is_browsed_and_described() {
+    let (connection, _dir) = latin1_names().await;
+    let object = ObjectRef::new("main", "t");
+    let query = RowQuery::new(object.clone(), 50);
+    let page = connection.fetch_rows(&query).await.unwrap();
+    assert_eq!(names(&page), ["id", LOSSY, "price"]);
+    assert_eq!(page.columns[2].type_name, LOSSY);
+    assert_eq!(
+        page.rows,
+        vec![vec![
+            Value::Int(1),
+            Value::Text("x".into()),
+            Value::Float(2.5)
+        ]]
+    );
+    assert!(page.ordered_by_key);
+    assert_eq!(connection.count_rows(&query).await.unwrap(), 1);
+    let structure = connection.describe(&object).await.unwrap();
+    let columns: Vec<(&str, &str)> = structure
+        .columns
+        .iter()
+        .map(|column| (column.name.as_str(), column.type_name.as_str()))
+        .collect();
+    assert_eq!(
+        columns,
+        [("id", "INTEGER"), (LOSSY, "TEXT"), ("price", LOSSY)]
+    );
+    assert_eq!(structure.primary_key, ["id"]);
+}
+
+#[tokio::test]
+async fn a_view_over_a_name_that_is_not_utf8_is_browsed_and_described() {
+    let (connection, _dir) = latin1_names().await;
+    let object = ObjectRef::new("main", "v");
+    let query = RowQuery::new(object.clone(), 50);
+    let page = connection.fetch_rows(&query).await.unwrap();
+    assert_eq!(names(&page), ["id", "cafe"]);
+    assert_eq!(
+        page.rows,
+        vec![vec![Value::Int(1), Value::Text("x".into())]]
+    );
+    assert_eq!(connection.count_rows(&query).await.unwrap(), 1);
+    assert_eq!(connection.describe(&object).await.unwrap().columns.len(), 2);
+}
+
+#[tokio::test]
+async fn a_key_that_is_not_utf8_is_described_but_orders_no_page() {
+    let (connection, _dir) = latin1_names().await;
+    let object = ObjectRef::new("main", "keyed");
+    let page = connection
+        .fetch_rows(&RowQuery::new(object.clone(), 50))
+        .await
+        .unwrap();
+    assert_eq!(names(&page), [LOSSY, "note"]);
+    assert_eq!(page.rows.len(), 2);
+    assert!(!page.ordered_by_key);
+    let structure = connection.describe(&object).await.unwrap();
+    assert_eq!(structure.primary_key, [LOSSY]);
+    assert!(
+        structure
+            .indexes
+            .iter()
+            .any(|index| index.primary && index.columns == [LOSSY])
+    );
+}
+
+#[tokio::test]
+async fn a_name_that_is_not_utf8_is_listed_and_using_it_is_a_query_error() {
+    let (connection, _dir) = latin1_names().await;
+    let listed: Vec<String> = connection
+        .list_objects("main")
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|object| object.name)
+        .collect();
+    assert_eq!(listed, [format!("{LOSSY}s").as_str(), "keyed", "t", "v"]);
+    // The name as listed is not the table's name, and no text is.
+    let object = ObjectRef::new("main", format!("{LOSSY}s"));
+    let query = RowQuery::new(object.clone(), 50);
+    let fetched = connection.fetch_rows(&query).await;
+    assert!(matches!(fetched, Err(Error::Query { .. })), "{fetched:?}");
+    let counted = connection.count_rows(&query).await;
+    assert!(matches!(counted, Err(Error::Query { .. })), "{counted:?}");
+    let described = connection.describe(&object).await;
+    assert!(
+        matches!(described, Err(Error::Query { .. })),
+        "{described:?}"
+    );
+    let mut sorted = RowQuery::new(ObjectRef::new("main", "t"), 50);
+    sorted.sort = vec![Sort {
+        column: LOSSY.into(),
+        dir: SortDir::Asc,
+    }];
+    let fetched = connection.fetch_rows(&sorted).await;
+    assert!(matches!(fetched, Err(Error::Query { .. })), "{fetched:?}");
+}
+
+#[tokio::test]
+async fn a_script_reads_names_that_are_not_utf8() {
+    let (connection, _dir) = latin1_names().await;
+    let outcome = run(
+        &connection,
+        "SELECT * FROM t; SELECT count(*) FROM v; SELECT cafe FROM v",
+    )
+    .await
+    .unwrap();
+    let results: Vec<(Vec<&str>, &Vec<Vec<Value>>)> = outcome
+        .results
+        .iter()
+        .map(|result| match &result.outcome {
+            StatementOutcome::Rows { columns, rows, .. } => (
+                columns.iter().map(|column| column.name.as_str()).collect(),
+                rows,
+            ),
+            other => panic!("rows, not {other:?}"),
+        })
+        .collect();
+    assert_eq!(
+        results,
+        [
+            (
+                vec!["id", LOSSY, "price"],
+                &vec![vec![
+                    Value::Int(1),
+                    Value::Text("x".into()),
+                    Value::Float(2.5)
+                ]]
+            ),
+            (vec!["count(*)"], &vec![vec![Value::Int(1)]]),
+            (vec!["cafe"], &vec![vec![Value::Text("x".into())]]),
+        ]
+    );
+}

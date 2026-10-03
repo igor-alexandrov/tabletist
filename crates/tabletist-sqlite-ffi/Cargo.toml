@@ -1,0 +1,25 @@
+[package]
+name = "tabletist-sqlite-ffi"
+version = "0.1.0"
+description = "The SQLite calls Tabletist cannot make without unsafe code"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+# The workspace forbids unsafe code. rusqlite reads a result column's name and
+# declared type as `str` and panics when their bytes are not UTF-8, which a
+# file can hold, and it keeps the statement's pointer to itself. The bytes can
+# only be read through SQLite's C API, so this crate carries the workspace's
+# lints with `unsafe_code` lowered to `deny`, allowed only in `columns.rs` and
+# its tests, each use with a SAFETY note. The app and the database layer keep
+# `forbid`.
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+unwrap_used = "warn"
+
+[dependencies]
+# The connection type and the bindings to SQLite's C API. `bundled` as in the
+# database layer, so this crate builds and tests by itself too.
+rusqlite = { version = "0.37", features = ["bundled"] }
