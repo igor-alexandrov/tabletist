@@ -1422,6 +1422,7 @@ pub fn plain_cell<'a>(
             Style::Json(count),
         );
     }
+    let grouped = kind == ValueKind::Numeric && shown.grouped;
     let text = match value {
         tabletist_db::Value::Text(text) => {
             let marks = grid::marks(ctx, look);
@@ -1429,7 +1430,14 @@ pub fn plain_cell<'a>(
             if let Some(blank) = format::blank_text(text, marks) {
                 return styled(blank.into(), Style::Quiet);
             }
-            let line = format::cell_line(text, marks);
+            // A number is grouped before it is cut to a cell's length: one
+            // cut first ends in an ellipsis, which is no number to group.
+            let line = match grouped.then(|| format::group_number(text)) {
+                Some(std::borrow::Cow::Owned(number)) => {
+                    format::cell_line(&number, marks).into_owned().into()
+                }
+                _ => format::cell_line(text, marks),
+            };
             if format::is_array(&column.type_name, kind) {
                 if line == "{}" {
                     return styled(line, Style::Quiet);
@@ -1440,17 +1448,18 @@ pub fn plain_cell<'a>(
             }
             line
         }
-        other => format::cell_text(other),
+        other => {
+            let text = format::cell_text(other);
+            match grouped.then(|| format::group_number(&text)) {
+                Some(std::borrow::Cow::Owned(number)) => number.into(),
+                _ => text,
+            }
+        }
     };
     let text = if kind == ValueKind::Temporal && !shown.full_precision {
         match format::to_the_second(&text) {
             std::borrow::Cow::Borrowed(_) => text,
             std::borrow::Cow::Owned(short) => short.into(),
-        }
-    } else if kind == ValueKind::Numeric && shown.grouped {
-        match format::group_number(&text) {
-            std::borrow::Cow::Borrowed(_) => text,
-            std::borrow::Cow::Owned(grouped) => grouped.into(),
         }
     } else {
         text
@@ -1824,6 +1833,22 @@ mod tests {
             text(&Value::Text("1234567".into()), ValueKind::Text, grouped),
             "1234567"
         );
+    }
+
+    #[test]
+    fn a_number_too_long_for_a_cell_is_grouped_before_it_is_cut() {
+        let ctx = context();
+        let look = Look::macos();
+        let grouped = Shown {
+            grouped: true,
+            ..Shown::default()
+        };
+        // An exact numeric of more digits than a cell shows.
+        let long = Value::Text("1".repeat(format::CELL_MAX_CHARS + 44).into());
+        let cell = plain_cell(&ctx, &long, &meta("", ValueKind::Numeric), &look, grouped);
+        assert!(cell.text.starts_with("111,111,111,"), "{}", cell.text);
+        assert!(cell.text.ends_with('…'), "{}", cell.text);
+        assert_eq!(cell.text.chars().count(), format::CELL_MAX_CHARS + 1);
     }
 
     #[test]
