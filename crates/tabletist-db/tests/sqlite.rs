@@ -1012,10 +1012,11 @@ async fn the_server_version_names_sqlite() {
 const LOSSY: &str = "caf\u{FFFD}";
 
 /// A file with names that are not UTF-8: SQLite keeps a name's bytes as they
-/// were written. `t` has a column and a declared type named `caf\xe9`, `v`
-/// gives that column another name, `keyed` has it as its key and one table
-/// is named `caf\xe9s`. SQL text is a `str` here, so the file is written
-/// with `caf~` and the byte is put in afterwards.
+/// were written. `t` has a column and a declared type named `caf\xe9` and an
+/// index named `caf\xe9_idx` on that column, `v` gives the column another
+/// name, `keyed` has it as its key and one table is named `caf\xe9s`. SQL
+/// text is a `str` here, so the file is written with `caf~` and the byte is
+/// put in afterwards.
 async fn latin1_names() -> (Connection, tempfile::TempDir) {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("latin1.db");
@@ -1024,6 +1025,7 @@ async fn latin1_names() -> (Connection, tempfile::TempDir) {
         .execute_batch(
             r#"CREATE TABLE t (id INTEGER PRIMARY KEY, "caf~" TEXT, price "caf~");
                INSERT INTO t VALUES (1, 'x', 2.5);
+               CREATE INDEX "caf~_idx" ON t ("caf~");
                CREATE VIEW v AS SELECT id, "caf~" AS cafe FROM t;
                CREATE TABLE keyed ("caf~" TEXT PRIMARY KEY, note TEXT);
                INSERT INTO keyed VALUES ('b', 'second'), ('a', 'first');
@@ -1082,6 +1084,18 @@ async fn a_table_with_names_that_are_not_utf8_is_browsed_and_described() {
         [("id", "INTEGER"), (LOSSY, "TEXT"), ("price", LOSSY)]
     );
     assert_eq!(structure.primary_key, ["id"]);
+    let indexes: Vec<(&str, &[String])> = structure
+        .indexes
+        .iter()
+        .map(|index| (index.name.as_str(), index.columns.as_slice()))
+        .collect();
+    assert_eq!(
+        indexes,
+        [(
+            format!("{LOSSY}_idx").as_str(),
+            [LOSSY.to_owned()].as_slice()
+        )]
+    );
 }
 
 #[tokio::test]

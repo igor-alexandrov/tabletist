@@ -723,7 +723,7 @@ fn indexes(connection: &rusqlite::Connection, object: &ObjectRef) -> Result<Vec<
     let entries = list
         .query_map([&object.name, &object.schema], |row| {
             Ok((
-                text(row, 0)?,
+                row.get_ref(0)?.as_bytes()?.to_vec(),
                 row.get::<_, i64>(1)? != 0,
                 row.get::<_, String>(2)?,
             ))
@@ -736,14 +736,18 @@ fn indexes(connection: &rusqlite::Connection, object: &ObjectRef) -> Result<Vec<
         .map_err(map_error)?;
     let mut indexes = Vec::new();
     for (name, unique, origin) in entries {
+        // The name goes back to SQLite as the bytes it gave: one that is not
+        // UTF-8 would find no index once its bytes were replaced.
         let columns = info
-            .query_map([&name, &object.schema], |row| optional_text(row, 0))
+            .query_map(rusqlite::params![name, object.schema], |row| {
+                optional_text(row, 0)
+            })
             .map_err(map_error)?
             .map(|column| column.map(|c| c.unwrap_or_else(|| "<expression>".into())))
             .collect::<std::result::Result<Vec<_>, _>>()
             .map_err(map_error)?;
         indexes.push(IndexInfo {
-            name,
+            name: String::from_utf8_lossy(&name).into_owned(),
             columns,
             unique,
             primary: origin == "pk",
