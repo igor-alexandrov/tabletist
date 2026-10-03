@@ -3282,6 +3282,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let dirs = AppDirs::at(dir.path());
         let path = dirs.settings_file();
+        let settings = Settings {
+            page_size: 100,
+            ..Settings::default()
+        };
+        // Saves of these settings to the TOML file, and of nothing else.
         let saves = |app: &App| {
             app.backend
                 .sent
@@ -3289,14 +3294,11 @@ mod tests {
                 .filter(|command| {
                     matches!(
                         command,
-                        Command::Save { path: to, file: StateFile::Settings(_) } if *to == path
+                        Command::Save { path: to, file: StateFile::Settings(saved) }
+                            if *to == path && *saved == settings
                     )
                 })
                 .count()
-        };
-        let settings = Settings {
-            page_size: 100,
-            ..Settings::default()
         };
         let app = App::new(
             dirs.clone(),

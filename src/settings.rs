@@ -550,7 +550,7 @@ sql_timeout_secs = 30  # 0 waits forever
             "{text}"
         );
         assert!(
-            text.ends_with("\n[appearance]\ntheme = \"My \\\"Nord\\\".json\"\n"),
+            text.ends_with("\n\n[appearance]\ntheme = \"My \\\"Nord\\\".json\"\n"),
             "{text}"
         );
     }
@@ -888,12 +888,26 @@ sql_timeout_secs = 30  # 0 waits forever
         let settings = Settings::load(&dirs).settings;
         assert_eq!(settings.page_size, Settings::MIN_PAGE_SIZE);
         assert_eq!(settings.sql_limit, Settings::MAX_SQL_LIMIT);
+        assert_eq!(Settings::MAX_SQL_LIMIT, 10_000);
         assert_eq!(settings.sql_timeout_secs, None);
         assert!(
             Settings::SQL_LIMITS
                 .iter()
                 .all(|limit| (1..=Settings::MAX_SQL_LIMIT).contains(limit)),
             "every choice of the Limit menu loads as it was saved"
+        );
+    }
+
+    #[test]
+    fn an_old_json_with_keys_missing_gets_their_defaults() {
+        let (dirs, _root) = dirs();
+        std::fs::write(dirs.legacy_settings_file(), br#"{"page_size": 100}"#).unwrap();
+        assert_eq!(
+            Settings::load(&dirs).settings,
+            Settings {
+                page_size: 100,
+                ..Settings::default()
+            }
         );
     }
 
