@@ -1,7 +1,9 @@
 //! Access to PostgreSQL, MySQL and SQLite for Tabletist.
 //!
-//! Nothing in this crate writes to a connected database: every session is
-//! opened read-only.
+//! Nothing in this crate writes to a connected database yet. A session is
+//! read-only unless it is opened [`Access::Writable`], and then it is
+//! fenced: row fetches and counts run in read-only transactions (on SQLite
+//! under `query_only`), and a SQL editor script still cannot write.
 
 mod catalog;
 mod check;
@@ -48,8 +50,7 @@ pub enum Access {
     Writable,
 }
 
-/// An open, read-only database session, and the SSH tunnel it runs through,
-/// if any.
+/// An open database session, and the SSH tunnel it runs through, if any.
 pub struct Connection {
     inner: Inner,
     access: Access,
