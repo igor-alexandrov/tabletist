@@ -26,7 +26,11 @@
       export TABLETIST_TEST_MYSQL_URL=mysql://tabletist:tabletist@localhost:53306/tabletist
 
 - The PostgreSQL and MySQL fixtures are loaded once and shared by every test of a suite. **A write test never changes a fixture table.** It creates a table of its own through the suite's `admin()` connection, under a name no other test uses, and drops it when done. SQLite tests each get their own file and may change it freely.
-- **The code moved after this plan was written.** `main` taught the SQLite driver to read names that are not UTF-8, and brought the crate `tabletist-sqlite-ffi` for the calls that need `unsafe`. In `crates/tabletist-db/src/sqlite.rs` the mutex now holds a `tabletist_sqlite_ffi::Authorized` (which derefs to `rusqlite::Connection`), a page's columns come from `declared_columns` (through `tabletist_sqlite_ffi::result_columns`), and names are read as lossy text. Read each function before you edit it; where this plan's SQLite code names a column or an index, follow what the driver does now. Never read a statement's column names through rusqlite (`column_names`, `column_name`): they panic on bytes that are not UTF-8.
+- **This plan runs on the branch `claude/connection-write`,** which sits on top of pull request #71 (the app half of step 1: `Workspace::access`, `Command::Connect { access }`, `Event::Connected { access }`). The database half of step 1 is in `main`.
+- **How the SQLite driver stands, which the SQLite tasks build on.** Read each function before you edit it.
+  - `Conn` holds `inner: Arc<Mutex<rusqlite::Connection>>`, the interrupt handle and `fences`. `open` installs the authorizer with `tabletist_sqlite_ffi::set_authorizer(&connection, ..)` after `set_session_pragmas` and the first read. A save's statements are the app's own: they run with no fence up.
+  - Names can hold bytes that are not UTF-8, and rusqlite panics on them. So the catalog reads text through `text` and `optional_text` (as `Lossy`, which also says whether the name is exact), an index is looked up by the bytes of its name, and a statement's columns come from `declared_columns` (through `tabletist_sqlite_ffi::result_columns`). **Never read a statement's column names through rusqlite** (`column_names`, `column_name`, `columns`).
+  - `ordering_key` gives a page no key when one of the key's names is not exact, since no SQL can spell that column. A save cannot name it either.
 - House rules that bite here: no em dashes anywhere; comments say why, in the surrounding code's voice; no `unsafe`; do not weaken a lint or delete a test to get green.
 - Commit after every task. Subjects are plain sentences, each ending with:
 
@@ -774,7 +778,7 @@ async fn a_read_only_connection_refuses_a_save_before_it_reads_it() {
     let (connection, dir) = fixture().await;
     let before = std::fs::read(dir.path().join("fixture.db")).unwrap();
     assert_eq!(
-        connection.write(&rename(1, "Ada", "Grace")).await,
+        connection.write(&rename(1, "Ada Lovelace", "Grace")).await,
         Err(Error::ReadOnly)
     );
     // Not even looked at: a set that could never be written gets the same.
@@ -800,7 +804,7 @@ async fn a_writable_connection_refuses_a_set_it_cannot_write() {
 }
 ```
 
-(Use a name the fixture's first user really has in place of "Ada"; read `fixtures/sqlite.sql`.)
+(The fixture's first user is `(1, 'ada@example.com', 'Ada Lovelace', ..)`.)
 
 - [ ] **Step 2: Run and see them fail**
 
@@ -1419,7 +1423,7 @@ git add -A && git commit -m "Build a row's UPDATE once, to be read and to be run
 
 **Files:**
 - Create: `crates/tabletist-db/src/sqlite/write.rs`
-- Modify: `crates/tabletist-db/src/sqlite.rs` (`mod write;`, `Conn::journal_mode`, `Conn::write`, what the module needs made `pub(super)`), `crates/tabletist-db/src/lib.rs` (the SQLite arm of `Connection::write`)
+- Modify: `crates/tabletist-db/src/sqlite.rs` (`mod write;`, `Conn::journal_mode`, `Conn::write`), `crates/tabletist-db/src/lib.rs` (the SQLite arm of `Connection::write`)
 - Test: `crates/tabletist-db/tests/sqlite.rs`
 
 The six steps of the spec's "Saving" section, on SQLite: `BEGIN IMMEDIATE` holds the file, so reading a row inside it is reading it locked.
@@ -1778,7 +1782,7 @@ Two more, short:
 - `a_save_writes_a_decimal_as_a_number`: `orders.total` is `NUMERIC(10,2)` in the fixture. Save `"19.90"` into one order's `total` (key `id`, type name `NUMERIC(10,2)`) and expect `Written` with the cell read back as `Value::Float(19.9)`; then `"20"` and expect `Value::Int(20)`.
 - `a_table_of_an_attached_database_is_refused`: a save whose `object.schema` is not `main` is `Err(Error::Unsupported(..))`, before anything is sent.
 
-(`query_only` and `setting` are helpers the authorizer's tests added to this file; `Conflict`, `WriteOutcome` and the change types need importing. Check the fixture for the ids, the foreign key from `orders`, and whether user 5 exists; adjust the ids, not the assertions.)
+(`query_only` and `setting` are helpers already in this file; `Conflict`, `WriteOutcome` and the change types need importing. The fixture has users 1 to 5: user 2 is `Bob`, user 5 has a NULL name and no orders, and `orders` rows belong to users 1 and 3 with `ON DELETE CASCADE`.)
 
 - [ ] **Step 2: Run and see them fail**
 
@@ -1823,7 +1827,7 @@ pub(crate) fn changed_since_loaded(
 }
 ```
 
-`Conn` gains `/// main's journal mode as the session found it, which a save puts back.` `journal_mode: String`, read in `open` after `set_session_pragmas` with `connection.query_row("PRAGMA main.journal_mode", [], |row| row.get::<_, String>(0))`, before the authorizer is installed. In `sqlite.rs`: `mod write;`, make `end_transaction`, `from_sqlite` and `map_error` reachable from the child module, and:
+`Conn` gains `/// main's journal mode as the session found it, which a save puts back.` `journal_mode: String`, read in `open` after `set_session_pragmas` with `connection.query_row("PRAGMA main.journal_mode", [], |row| row.get::<_, String>(0))`, before the authorizer is installed. `open`'s blocking closure returns the connection and the fences today; it returns the journal mode with them. In `sqlite.rs`: `mod write;` beside `mod fence;` (a child module reaches its parent's private functions through `super::`, so `end_transaction`, `from_sqlite`, `map_error` and `declared_columns` need no change), and:
 
 ```rust
     /// See [`crate::Connection::write`]. One blocking job, so a cancel can
@@ -2389,7 +2393,7 @@ In the test module of `src/backend.rs`, beside the tests that connect the SQLite
                     column: "name".into(),
                     type_name: "TEXT".into(),
                     // What the fixture's first user is called.
-                    loaded: Value::Text(FIRST_USER.into()),
+                    loaded: Value::Text("Ada Lovelace".into()),
                     new: tabletist_db::NewValue::Text(new.into()),
                 }],
             }],
@@ -2397,7 +2401,7 @@ In the test module of `src/backend.rs`, beside the tests that connect the SQLite
     }
 ```
 
-1. `a_save_on_a_writable_session_is_written`: connect with `Access::Writable`, send `Command::Write { session, request: RequestId(11), changes: rename("Grace") }`, expect `Event::Written { session, request: RequestId(11), result: Ok(WriteOutcome::Written { .. }) }`, and a following `FetchRows` shows the new name.
+1. `a_save_on_a_writable_session_is_written`: connect with `Access::Writable` (the backend test `a_session_says_what_it_was_opened_as` shows how), send `Command::Write { session, request: RequestId(11), changes: rename("Grace") }`, expect `Event::Written { session, request: RequestId(11), result: Ok(WriteOutcome::Written { .. }) }`, and a following `FetchRows` shows the new name.
 2. `a_save_on_a_read_only_session_is_refused_and_the_session_lives`: connect with `Access::ReadOnly`; expect `Event::Written { result: Err(Error::ReadOnly), .. }`, then a `CountRows` on the same session still answers.
 3. `a_save_that_is_skipped_or_fails_with_its_session_says_so`: the patterns the neighbouring tests use for a request cancelled while queued (`skip`) and for a command sent to a session that is gone (`fail`) hold for `Write` too: each answers with an `Event::Written` carrying `Err`.
 
