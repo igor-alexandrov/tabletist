@@ -62,6 +62,10 @@ waits for it.
 
 - The paths that start `packaging.yml` are listed twice: in its `pull_request`
   trigger and in its `push` trigger. Change them together.
+- The ruleset asks for the review in the author's name, so it skips an author
+  without a Copilot plan. `copilot-review.yml` asks in the owner's name for
+  every pull request the owner did not open. It files the request and nothing
+  else, and needs the `COPILOT_REVIEW_TOKEN` secret.
 
 ## Style
 
