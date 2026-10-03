@@ -88,18 +88,21 @@ pending changes never outlive their page.
 - The access is fixed when the session connects. `Workspace` keeps it
   (`access: Access`); a changed box applies from the next connect or
   reconnect.
-- Every "read-only" mark (the header's pill, the chip's card, the picker's
-  row, the footer's "· read-only") shows only for a read-only connection.
+- Every "read-only" mark the app draws (the header's pill or tag, the
+  footer's "· read-only", the Omarchy status line's tag) shows only for a
+  read-only connection.
 - A write the SQL editor refuses:
   - read-only connection: "This connection opens read-only", "<name> ·
-    <environment> blocks writes, so <server> refused the UPDATE. Nothing
+    <environment> blocks writes, so this statement was refused. Nothing
     changed.", "To write, turn off Open read-only in the connection.", with
     an **Edit connection** action. The per-tab switch of the artboard is
     slice 6.
   - writable connection: "The SQL editor only reads data", "Every query
-    runs in a read-only transaction, so <server> refused the UPDATE.
+    runs in a read-only transaction, so this statement was refused.
     Nothing changed.", and, from step 3 on, "Edit values in a table's
     grid."
+  - The card keeps the shipped wording ("this statement was refused"); it
+    never named the server or the statement.
 
 ### Sessions (`tabletist-db`)
 
