@@ -140,7 +140,8 @@ pending changes never outlive their page.
   The read-only open was the script guard's independent layer on SQLite,
   and the SQL editor spec says SQLite "has no such mode to leave, so it
   needs no check". On a writable session that is no longer true, so the
-  guard gains two things there:
+  guard gains these there (they run for both accesses: the refusal knows
+  the dialect, not the session):
   - The refusal list refuses `PRAGMA query_only` and `PRAGMA
     writable_schema` whenever the statement sets them. SQLite takes a
     pragma's name as an identifier, a quoted identifier or a string
@@ -149,10 +150,37 @@ pending changes never outlive their page.
     (`PRAGMA 'query_only' = 0`, `PRAGMA main."query_only"(0)`), so it
     reads the name token itself and not only `sql::words`, which skips
     strings.
-  - A check, as PostgreSQL and MySQL have: the runner reads `PRAGMA
-    query_only` before every statement and before its rollback. Anything
-    but 1 ends the run with `Error::LeftReadOnly`, after the `ROLLBACK`
-    that always happens.
+  - It also refuses `PRAGMA wal_checkpoint` in every form, the bare one
+    included: `query_only` does not stop a checkpoint, which rewrites a
+    file in WAL mode.
+  - SQLite reads a byte-order mark at the start of a token as whitespace,
+    so the tokenizer does too for SQLite. Read as part of a word it hid
+    `COMMIT` and `PRAGMA` from the refusal list.
+  - Two checks before every statement, as PostgreSQL and MySQL have. The
+    runner reads `PRAGMA query_only`, and asks whether its transaction is
+    still open: `query_only` stops writes to tables, but only the open
+    transaction stops `PRAGMA journal_mode = WAL` and `VACUUM INTO`. Either
+    check failing ends the run with `Error::LeftReadOnly`, after the
+    `ROLLBACK` that always happens. `query_only` is read once more before
+    that rollback.
+
+  Browsing needs a fence of its own on SQLite. rusqlite finds a second
+  statement in a text by preparing it, and SQLite applies a flag pragma
+  when it prepares one, so a raw WHERE holding `; PRAGMA query_only = 0;`
+  fails as it should and still turns the setting off. So a raw WHERE that
+  holds a `;` token is refused before anything is prepared, and a row
+  fetch or count that fails puts the session's settings back. A raw WHERE
+  holding a NUL is refused too: SQLite stops reading there, which dropped
+  the page's ORDER BY, LIMIT and OFFSET.
+
+  Known gap, to close before step 2 writes anything: the `;` check trusts
+  our tokenizer to agree with SQLite's, and it does not for SQLite's
+  variable tokens (`:a(')` is one token to SQLite and the start of a
+  string to us). A raw WHERE built on that still has its tail prepared,
+  and can leave `foreign_keys` or `synchronous` changed for the session;
+  the file and `query_only` are unaffected. A rusqlite authorizer, which
+  SQLite consults when it prepares any statement, would close this class
+  without depending on the tokenizer.
 
 The promise, restated: on a read-only connection no action in the app can
 modify data. On a writable connection only Save can; browsing, a raw WHERE
@@ -504,7 +532,9 @@ statements.
   - `write` on a `ReadOnly` connection sends nothing;
   - on a `Writable` connection a script and a raw WHERE still cannot
     write: the existing guard tests run again in both modes; MySQL gains
-    one for DDL; SQLite gains the refusal of `PRAGMA query_only` in each
+    one for DDL; SQLite gains a raw WHERE that tries to turn `query_only`
+    off, a script that ends its transaction behind a byte-order mark, the
+    refusal of a checkpoint, the refusal of `PRAGMA query_only` in each
     spelling (bare, `"..."`, `'...'`, backticks, brackets, with a schema,
     `=` and `()`), a script that gets `query_only` off by a spelling the
     list misses (forced in the test) ending with `LeftReadOnly` and

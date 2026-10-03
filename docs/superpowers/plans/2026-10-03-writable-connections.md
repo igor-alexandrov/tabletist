@@ -1681,6 +1681,18 @@ git add -A && git commit -m "Restate the read-only promise for writable connecti
 
 ---
 
+## Found in review, built after task 6
+
+The review of tasks 4 to 6 found the SQLite fence short in four places. They were fixed in one change after task 6, and the spec now says so:
+
+- A byte-order mark is whitespace to SQLite and was part of a word to `tokenize`: `<BOM>COMMIT` got past the refusal list. For SQLite the tokenizer now reads it as whitespace.
+- The runner did not check that its transaction was still open. `query_only` does not stop `PRAGMA journal_mode = WAL` or `VACUUM INTO`; only the transaction does. `statements` now ends the run with `LeftReadOnly` when the session is in autocommit before a statement.
+- A raw WHERE holding `; PRAGMA query_only = 0;` turned the setting off, because rusqlite prepares the tail to find a second statement. `check_raw_where` refuses a `;` token, and `Conn::browse` puts the session's settings back when a fetch or count fails.
+- `PRAGMA wal_checkpoint` rewrites a file in WAL mode under `query_only`. It is refused in every form.
+- A NUL in a raw WHERE ended the statement for SQLite and dropped the page's ORDER BY, LIMIT and OFFSET. `check_raw_where` refuses it.
+
+Left open, on purpose: a second review showed that SQLite's variable tokens (`:a(')`) hide a `;` from `check_raw_where`, so a crafted raw WHERE can still leave `foreign_keys` or `synchronous` changed on a session (never the file, never `query_only`). Teaching `tokenize` SQLite's variables closes it but changes highlighting, splitting and completion in the SQL editor, and one such fix opened another hole (`$` inside a name) before it was caught. A rusqlite authorizer would close the whole class. To decide before step 2.
+
 ## What this plan leaves for step 2
 
 - A script's other SQLite pragmas (`journal_mode`, `synchronous`, `foreign_keys`) and its `ATTACH`es still last for the session, as the SQL editor spec says. Harmless while nothing writes; `Connection::write` must put its own house in order before it writes on a handle a script has used.
