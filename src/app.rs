@@ -91,6 +91,10 @@ pub struct App {
     pub titlebar: TitleBar,
     /// The OS theme seen last frame, to notice light/dark switches.
     system_theme: Option<egui::Theme>,
+    /// Whether the desktop's themes are followed (not in tests or the demo).
+    follow_desktop: bool,
+    /// The settings named another theme since the last `logic`.
+    theme_changed: bool,
     /// The window title last sent, so it is sent only when it changes.
     window_title: String,
     /// SQL editors closed since the last frame: what egui keeps for each
@@ -134,6 +138,8 @@ impl App {
             host_keys_error,
             titlebar: TitleBar::default(),
             system_theme: None,
+            follow_desktop: false,
+            theme_changed: false,
             window_title: "Tabletist".into(),
             closed_editors: Vec::new(),
             next_id: 1,
@@ -2204,6 +2210,60 @@ impl App {
         });
     }
 
+    /// Replaces the settings and does what the ones that changed ask for.
+    /// Every change comes through here, from the app or from the file, and
+    /// nothing is written here.
+    pub fn apply_settings(&mut self, new: Settings) {
+        let old = std::mem::replace(&mut self.settings, new);
+        if old.timestamps != self.settings.timestamps {
+            let full = self.settings.timestamps == crate::settings::Timestamps::Full;
+            for tab in &mut self.tabs {
+                if let ConnTabContent::Workspace(workspace) = &mut tab.content {
+                    workspace.full_precision = full;
+                }
+            }
+        }
+        if old.page_size != self.settings.page_size {
+            self.resize_pages();
+        }
+        if old.custom_theme != self.settings.custom_theme {
+            // Reading a theme needs the window: `logic` has it.
+            self.theme_changed = true;
+        }
+    }
+
+    /// Fetches again, at the settings' page size, every table that shows a
+    /// page or waits for one on a session that can answer. The page it shows
+    /// goes first, as when Next moves on: left on screen while a fetch
+    /// fails, a page of the old size would be moved past by the new one.
+    /// The others take the size when they next fetch (see `fetch_rows`).
+    fn resize_pages(&mut self) {
+        let size = self.settings.page_size;
+        let mut again = Vec::new();
+        for tab in &self.tabs {
+            let ConnTabContent::Workspace(workspace) = &tab.content else {
+                continue;
+            };
+            if !matches!(workspace.status, SessionStatus::Connected) {
+                continue;
+            }
+            again.extend(
+                workspace
+                    .object_tabs()
+                    .filter(|object| object.query.limit != size)
+                    .filter(|object| object.page().is_some() || object.rows.pending.is_some())
+                    .map(|object| (tab.id, object.id)),
+            );
+        }
+        for (tab, id) in again {
+            if let Some(object) = self.object_tab_mut(tab, id) {
+                object.selection = None;
+                object.rows.value = None;
+            }
+            self.fetch_rows(tab, id);
+        }
+    }
+
     fn save_dialog(&mut self, connect: bool) {
         let Some(Dialog::Connection(form)) = &mut self.dialog else {
             return;
@@ -2825,6 +2885,7 @@ impl App {
     /// Loads the object tab's rows, replacing any load still pending.
     pub fn fetch_rows(&mut self, tab: ConnTabId, id: TabId) {
         let request = RequestId(self.next_id());
+        let page_size = self.settings.page_size;
         let Some(workspace) = self.workspace_mut(tab) else {
             return;
         };
@@ -2834,6 +2895,10 @@ impl App {
         };
         let superseded = object.rows.pending;
         object.rows.start(request);
+        // Until here the limit was the size of the page on screen, which
+        // Next and Previous have just moved by. From here it is the
+        // settings': a size that changed in between costs no row.
+        object.query.limit = page_size;
         let query = object.query.clone();
         self.cancel(session, superseded);
         self.backend.send(Command::FetchRows {
@@ -3031,6 +3096,7 @@ impl App {
     /// Called once the window exists. `follow_desktop` is false in demo mode
     /// and tests, which must not scan the user's themes or Omarchy.
     pub fn attach(&mut self, ctx: &egui::Context, follow_desktop: bool) {
+        self.follow_desktop = follow_desktop;
         theme::install(ctx, follow_desktop, &self.look);
         if follow_desktop {
             theme::enable_desktop_themes(&mut self.themes);
@@ -3056,7 +3122,10 @@ impl App {
 
     /// Work that does not draw: theme changes on disk or in the OS.
     pub fn logic(&mut self, ctx: &egui::Context) {
-        if self.themes.needs_reload() {
+        // The settings named another theme: where the desktop is followed
+        // the catalog reads that file first, as it does at the start.
+        let renamed = std::mem::take(&mut self.theme_changed);
+        if self.themes.needs_reload() || (renamed && self.follow_desktop) {
             let repaint = ctx.clone();
             self.themes.start(
                 self.dirs.themes_dir(),
@@ -3066,7 +3135,7 @@ impl App {
         }
         let scanned = self.themes.poll();
         let system = ctx.system_theme();
-        if scanned || system != self.system_theme {
+        if scanned || renamed || system != self.system_theme {
             self.system_theme = system;
             let palette = self.resolve_palette();
             if palette != self.palette {
@@ -3338,6 +3407,21 @@ mod tests {
             vec![(crate::settings::Key::PageSize, 2)]
         );
         assert!(!app.settings_file.live);
+    }
+
+    #[test]
+    fn a_new_theme_name_is_resolved_at_the_next_logic_pass() {
+        let mut harness = Harness::new();
+        let settings = Settings {
+            custom_theme: Some("Nord.json".into()),
+            ..harness.app.settings.clone()
+        };
+        harness.app.apply_settings(settings);
+        assert!(harness.app.theme_changed);
+        harness.app.logic(&harness.ctx.clone());
+        assert!(!harness.app.theme_changed);
+        // Tests do not follow the desktop: no scan of the themes directory.
+        assert!(!harness.app.themes.loading());
     }
 
     fn ids(app: &App) -> Vec<u64> {
