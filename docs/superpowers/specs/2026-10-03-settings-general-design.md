@@ -443,6 +443,22 @@ footer: "2 lines in the file could not be read and were ignored".
 
 - Two writers: the user saves the file in an editor while changing an
   option in the window. The last write wins; neither is merged.
+- Two quick changes in the app can be read from the disk between their two
+  writes. The first text then comes back as if from outside and is applied
+  for a moment, until the second follows; nothing is written by either. A
+  third change made in the app inside that moment would be built on the
+  older settings and lose the second. Menus cannot be clicked that fast, but
+  a key held down on an option can: steps 3 and 4 must close this before
+  they let a key change a setting (hold the newest text until its own write
+  has come back, or step a value no faster than its save).
+- A change from outside that restores, within the settle after one of the
+  app's own writes, the very text the backend sent last is not seen: the
+  reader never sends the same text twice in a row. The app then holds the
+  newer settings and the disk the older, until the next change of either.
+- `settings.toml` as a symbolic link (a dotfiles manager) is not supported
+  yet: an edit made through the link's target is not noticed, though the
+  file is said to be watched, and a save from the app replaces the link with
+  a plain file. Both are one task of their own.
 - The config directory is read-only: the change applies for the session and
   the failed save is reported in the notice, as today.
 - `page_size = 250` by hand: honoured, and shown in the menu as its own
