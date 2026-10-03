@@ -25,6 +25,8 @@ pub struct Conn {
     pub(crate) client: tokio::sync::Mutex<tokio_postgres::Client>,
     pub(crate) cancel: tokio_postgres::CancelToken,
     pub(crate) tls: MakeRustlsConnect,
+    config: tokio_postgres::Config,
+    requested_database: String,
     /// Whether the session runs over TLS: under `prefer` a server that
     /// declines TLS gets plain text.
     pub(crate) encrypted: bool,
@@ -104,11 +106,7 @@ pub(crate) fn config(
         .port(via.unwrap_or(spec.port))
         .user(&spec.user)
         // libpq's default database is the user's name.
-        .dbname(if spec.database.is_empty() {
-            &spec.user
-        } else {
-            &spec.database
-        })
+        .dbname(database_name(spec))
         .application_name("Tabletist")
         .connect_timeout(Duration::from_secs(10))
         .ssl_mode(crate::tls::ssl_mode(spec.tls));
@@ -119,6 +117,14 @@ pub(crate) fn config(
         config.password(password);
     }
     config
+}
+
+fn database_name(spec: &ConnectSpec) -> &str {
+    if spec.database.is_empty() {
+        &spec.user
+    } else {
+        &spec.database
+    }
 }
 
 pub(crate) fn connect_error(error: tokio_postgres::Error) -> Error {
@@ -258,6 +264,8 @@ impl Conn {
             client: tokio::sync::Mutex::new(client),
             cancel,
             tls,
+            config,
+            requested_database: database_name(spec).to_owned(),
             encrypted: handshake.load(Ordering::Relaxed),
         })
     }
@@ -273,6 +281,9 @@ impl Conn {
     }
 
     pub async fn list_databases(&self) -> Result<Vec<String>> {
+        if let Some(aliases) = self.database_listing(Duration::from_secs(10)).await {
+            return Ok(aliases);
+        }
         let rows = self
             .catalog(
                 "SELECT datname::text FROM pg_database \
@@ -281,6 +292,79 @@ impl Conn {
             )
             .await?;
         rows.iter().map(|row| column(row, 0)).collect()
+    }
+
+    /// PgBouncer's reserved admin database is the protocol-level source of
+    /// its routing aliases. A stats/admin user can list them. PostgreSQL's
+    /// missing-database response allows the ordinary catalog listing. If
+    /// the probe is denied or inconclusive, keep only the working alias.
+    async fn database_listing(&self, timeout: Duration) -> Option<Vec<String>> {
+        // Bound both startup and SHOW. Driving the connection in this future
+        // also closes the probe socket when it finishes or is cancelled.
+        tokio::time::timeout(timeout, self.pgbouncer_databases())
+            .await
+            .unwrap_or_else(|_| Some(vec![self.requested_database.clone()]))
+    }
+
+    async fn pgbouncer_databases(&self) -> Option<Vec<String>> {
+        let mut config = self.config.clone();
+        config.dbname("pgbouncer");
+        let connecting = config.connect(Noted {
+            inner: self.tls.clone(),
+            handshake: Arc::new(AtomicBool::new(false)),
+        });
+        let (client, connection) = match connecting.await {
+            Ok(pair) => pair,
+            Err(error)
+                if error
+                    .as_db_error()
+                    .is_some_and(|error| error.code() == &SqlState::INVALID_CATALOG_NAME) =>
+            {
+                return None;
+            }
+            // An auth, transport or proxy error does not establish that the
+            // backend catalog's names are valid routes on this endpoint.
+            Err(_) => return Some(vec![self.requested_database.clone()]),
+        };
+        let messages = tokio::select! {
+            result = client.simple_query("SHOW DATABASES") => match result {
+                Ok(messages) => messages,
+                Err(error) if error.as_db_error().is_some_and(|error| {
+                    // A real PostgreSQL database named pgbouncer has no
+                    // configuration parameter named databases.
+                    error.code() == &SqlState::UNDEFINED_OBJECT
+                }) => return None,
+                Err(_) => return Some(vec![self.requested_database.clone()]),
+            },
+            _ = connection => return Some(vec![self.requested_database.clone()]),
+        };
+        let has_database_columns = messages.iter().any(|message| {
+            matches!(message, SimpleQueryMessage::RowDescription(columns)
+                if columns.iter().any(|column| column.name() == "name")
+                    && columns.iter().any(|column| column.name() == "database"))
+        });
+        if !has_database_columns {
+            return Some(vec![self.requested_database.clone()]);
+        }
+        let mut aliases: Vec<String> = messages
+            .iter()
+            .filter_map(|message| match message {
+                SimpleQueryMessage::Row(row)
+                    if row.try_get("disabled").ok().flatten() != Some("1") =>
+                {
+                    row.try_get("name").ok().flatten()
+                }
+                _ => None,
+            })
+            .filter(|name| *name != "pgbouncer" && *name != "*")
+            .map(str::to_owned)
+            .collect();
+        // Keep the alias that already connected, including after a reload
+        // removes or disables its entry in the console's listing.
+        aliases.push(self.requested_database.clone());
+        aliases.sort();
+        aliases.dedup();
+        Some(aliases)
     }
 
     pub async fn list_schemas(&self) -> Result<Vec<String>> {
@@ -597,6 +681,183 @@ mod tests {
         let direct = config(&spec, &secrets, None);
         assert!(direct.get_hostaddrs().is_empty());
         assert_eq!(direct.get_ports(), &[5432]);
+    }
+
+    enum ProbeReply {
+        StartupError(&'static str, &'static str),
+        Databases(Vec<[&'static str; 4]>),
+        QueryError(&'static str, &'static str),
+        Hang,
+    }
+
+    /// A protocol peer for the extra connection. It checks the requested
+    /// database and the simple-query command, and waits for socket cleanup.
+    async fn probe_server(reply: ProbeReply) -> (Conn, tokio::task::JoinHandle<()>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        fn packet(kind: u8, body: &[u8]) -> Vec<u8> {
+            let mut packet = vec![kind];
+            packet.extend_from_slice(&((body.len() + 4) as u32).to_be_bytes());
+            packet.extend_from_slice(body);
+            packet
+        }
+
+        fn error(code: &str, message: &str) -> Vec<u8> {
+            packet(b'E', format!("SFATAL\0C{code}\0M{message}\0\0").as_bytes())
+        }
+
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let task =
+            tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut ssl = [0; 8];
+                socket.read_exact(&mut ssl).await.unwrap();
+                socket.write_all(b"N").await.unwrap();
+                let length = socket.read_u32().await.unwrap() as usize;
+                let mut startup = vec![0; length - 4];
+                socket.read_exact(&mut startup).await.unwrap();
+                assert!(
+                    startup
+                        .windows(19)
+                        .any(|part| part == b"database\0pgbouncer\0")
+                );
+                if let ProbeReply::StartupError(code, message) = reply {
+                    socket.write_all(&error(code, message)).await.unwrap();
+                    return;
+                }
+                socket
+                    .write_all(b"R\0\0\0\x08\0\0\0\0Z\0\0\0\x05I")
+                    .await
+                    .unwrap();
+                assert_eq!(socket.read_u8().await.unwrap(), b'Q');
+                let length = socket.read_u32().await.unwrap() as usize;
+                let mut query = vec![0; length - 4];
+                socket.read_exact(&mut query).await.unwrap();
+                assert_eq!(query, b"SHOW DATABASES\0");
+                match reply {
+                    ProbeReply::Databases(rows) => {
+                        let mut description = 4u16.to_be_bytes().to_vec();
+                        for name in ["name", "database", "disabled", "force_user"] {
+                            description.extend_from_slice(name.as_bytes());
+                            description.push(0);
+                            description.extend_from_slice(&0u32.to_be_bytes());
+                            description.extend_from_slice(&0u16.to_be_bytes());
+                            description.extend_from_slice(&25u32.to_be_bytes());
+                            description.extend_from_slice(&(-1i16).to_be_bytes());
+                            description.extend_from_slice(&(-1i32).to_be_bytes());
+                            description.extend_from_slice(&0u16.to_be_bytes());
+                        }
+                        socket.write_all(&packet(b'T', &description)).await.unwrap();
+                        for row in rows {
+                            let mut body = 4u16.to_be_bytes().to_vec();
+                            for value in row {
+                                body.extend_from_slice(&(value.len() as u32).to_be_bytes());
+                                body.extend_from_slice(value.as_bytes());
+                            }
+                            socket.write_all(&packet(b'D', &body)).await.unwrap();
+                        }
+                        socket.write_all(&packet(b'C', b"SHOW\0")).await.unwrap();
+                        socket.write_all(&packet(b'Z', b"I")).await.unwrap();
+                    }
+                    ProbeReply::QueryError(code, message) => {
+                        socket.write_all(&error(code, message)).await.unwrap();
+                        socket.write_all(&packet(b'Z', b"I")).await.unwrap();
+                    }
+                    ProbeReply::Hang => {}
+                    ProbeReply::StartupError(_, _) => unreachable!(),
+                }
+                // The probe must release its connection, even on timeout.
+                let mut rest = Vec::new();
+                let closed =
+                    tokio::time::timeout(Duration::from_secs(2), socket.read_to_end(&mut rest))
+                        .await
+                        .expect("the probe socket must close");
+                assert!(closed.is_ok() || closed.is_err_and(|error|
+                error.kind() == std::io::ErrorKind::ConnectionReset));
+            });
+        let main_port = plain_server().await;
+        let (mut spec, secrets) =
+            ConnectSpec::from_url(&format!("postgres://me@127.0.0.1:{main_port}/app_pool"))
+                .unwrap();
+        spec.tls = crate::TlsMode::Prefer;
+        let mut conn = Conn::connect(&spec, &secrets, None).await.unwrap();
+        spec.port = port;
+        conn.config = config(&spec, &secrets, None);
+        (conn, task)
+    }
+
+    #[tokio::test]
+    async fn a_denied_console_keeps_only_the_working_alias() {
+        let (conn, task) = probe_server(ProbeReply::StartupError("08P01", "not allowed")).await;
+        assert_eq!(conn.list_databases().await.unwrap(), vec!["app_pool"]);
+        task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_postgres_missing_database_response_uses_the_catalog() {
+        let (conn, task) =
+            probe_server(ProbeReply::StartupError("3D000", "database does not exist")).await;
+        assert_eq!(conn.database_listing(Duration::from_secs(2)).await, None);
+        task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_accessible_console_lists_routes_and_keeps_the_working_alias() {
+        let (conn, task) = probe_server(ProbeReply::Databases(vec![
+            ["jobs_pool", "jobs", "0", "backend_user"],
+            ["pgbouncer", "pgbouncer", "0", ""],
+            ["*", "", "0", ""],
+            ["disabled_pool", "archive", "1", ""],
+            ["jobs_pool", "jobs", "0", "backend_user"],
+        ]))
+        .await;
+        assert_eq!(
+            conn.list_databases().await.unwrap(),
+            vec!["app_pool", "jobs_pool"]
+        );
+        task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_empty_console_does_not_offer_physical_database_names() {
+        let (conn, task) = probe_server(ProbeReply::Databases(Vec::new())).await;
+        assert_eq!(conn.list_databases().await.unwrap(), vec!["app_pool"]);
+        task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_real_postgres_database_named_pgbouncer_uses_the_catalog() {
+        let (conn, task) = probe_server(ProbeReply::QueryError(
+            "42704",
+            "unrecognized configuration parameter",
+        ))
+        .await;
+        assert_eq!(conn.database_listing(Duration::from_secs(2)).await, None);
+        task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_inconclusive_probe_keeps_only_the_working_alias() {
+        let (conn, task) = probe_server(ProbeReply::StartupError(
+            "28P01",
+            "password authentication failed",
+        ))
+        .await;
+        assert_eq!(conn.list_databases().await.unwrap(), vec!["app_pool"]);
+        task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_stalled_console_times_out_and_releases_its_socket() {
+        let (conn, task) = probe_server(ProbeReply::Hang).await;
+        assert_eq!(
+            conn.database_listing(Duration::from_millis(100)).await,
+            Some(vec!["app_pool".to_owned()])
+        );
+        task.await.unwrap();
     }
 
     /// The test server's URL, or `None` (test skipped). See
