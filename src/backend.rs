@@ -136,6 +136,12 @@ pub enum Command {
         path: PathBuf,
         file: StateFile,
     },
+    /// Watches the settings file `path` for changes made outside the app.
+    /// Answered with [`Event::SettingsWatch`]; each change is then an
+    /// [`Event::SettingsFile`].
+    WatchSettings {
+        path: PathBuf,
+    },
     /// Signals `done` once every save sent before it is on disk.
     Flush {
         done: mpsc::Sender<()>,
@@ -250,6 +256,11 @@ pub enum Event {
         path: PathBuf,
         result: Result<(), String>,
     },
+    /// Whether the settings file is being watched.
+    SettingsWatch { live: bool },
+    /// The settings file changed on disk: its text. The app's own writes
+    /// come this way too, and it knows them by their text.
+    SettingsFile { text: String },
 }
 
 /// Who stopped a SQL editor run.
@@ -740,6 +751,88 @@ impl Saves {
     }
 }
 
+/// How long the settings file is left to settle before it is read: a save
+/// is several changes (a temporary file, a rename, a truncate and a write).
+const SETTLE: Duration = Duration::from_millis(100);
+
+/// Watches the directory of the settings file `path` and starts the task
+/// that reads the file whenever it changes. The directory and not the
+/// file: an editor saves by renaming another file over it, and a watch on
+/// the file would stay with the one that was replaced.
+fn watch_settings(path: PathBuf, outbox: Outbox) -> notify::Result<notify::RecommendedWatcher> {
+    use notify::Watcher as _;
+    let (changed, changes) = tokio_mpsc::unbounded_channel();
+    let name = path.file_name().map(std::ffi::OsStr::to_owned);
+    let mut watcher =
+        notify::recommended_watcher(move |event: notify::Result<notify::Event>| match event {
+            Ok(event) => {
+                if concerns(&event, name.as_deref()) {
+                    let _ = changed.send(());
+                }
+            }
+            Err(error) => log::warn!("watching the settings file: {error}"),
+        })?;
+    let directory = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or(std::path::Path::new("."));
+    watcher.watch(directory, notify::RecursiveMode::NonRecursive)?;
+    tokio::spawn(read_settings(path, changes, outbox));
+    Ok(watcher)
+}
+
+/// Whether `event` says the file named `name` may have changed. Not when it
+/// was only looked at: Linux reports every open, and the reader below opens
+/// the file, so answering those would have it read again for ever. The file
+/// is known by its name: the paths come as the system has them, which is
+/// not always as the directory was given.
+fn concerns(event: &notify::Event, name: Option<&std::ffi::OsStr>) -> bool {
+    !event.kind.is_access()
+        && name.is_some()
+        && event.paths.iter().any(|path| path.file_name() == name)
+}
+
+/// Sends the settings file's text each time it changes, once the changes
+/// have settled. Ends when the watcher is dropped.
+async fn read_settings(
+    path: PathBuf,
+    mut changes: tokio_mpsc::UnboundedReceiver<()>,
+    outbox: Outbox,
+) {
+    // What was sent last: the same text is not news, whatever woke us.
+    let mut sent: Option<String> = None;
+    while changes.recv().await.is_some() {
+        tokio::time::sleep(SETTLE).await;
+        while changes.try_recv().is_ok() {}
+        let file = path.clone();
+        let read = tokio::task::spawn_blocking(move || std::fs::read(file)).await;
+        let bytes = match read {
+            Ok(Ok(bytes)) => bytes,
+            // Deleted: the settings in memory stay, and the next change
+            // made in the app writes the file again.
+            Ok(Err(error)) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Ok(Err(error)) => {
+                log::warn!("could not read {}: {error}", path.display());
+                continue;
+            }
+            Err(error) => {
+                log::warn!("could not read {}: {error}", path.display());
+                continue;
+            }
+        };
+        match String::from_utf8(bytes) {
+            Ok(text) if sent.as_deref() == Some(text.as_str()) => {}
+            Ok(text) => {
+                sent = Some(text.clone());
+                outbox.emit(Event::SettingsFile { text });
+            }
+            // Half-written, or not a settings file at all: the settings in
+            // memory stay, and nothing on disk is touched.
+            Err(_) => log::warn!("{} is not text; it is not read", path.display()),
+        }
+    }
+}
+
 /// Runs on the backend runtime. Owns every session.
 struct Worker {
     outbox: Outbox,
@@ -751,6 +844,9 @@ struct Worker {
     /// Sessions closed before they finished connecting.
     closed_early: std::collections::HashSet<SessionId>,
     connecting: std::collections::HashSet<SessionId>,
+    /// Watches the config directory for the settings file. Dropping it
+    /// ends the watch and the task that reads the file.
+    settings_watch: Option<notify::RecommendedWatcher>,
     #[cfg(test)]
     watched: Watched,
 }
@@ -766,6 +862,7 @@ impl Worker {
             ready,
             closed_early: Default::default(),
             connecting: Default::default(),
+            settings_watch: None,
             #[cfg(test)]
             watched: Watched::default(),
         };
@@ -953,6 +1050,19 @@ impl Worker {
                 });
             }
             Command::Save { path, file } => self.saves.save(path, file, &self.outbox),
+            Command::WatchSettings { path } => {
+                let live = match watch_settings(path, self.outbox.clone()) {
+                    Ok(watcher) => {
+                        self.settings_watch = Some(watcher);
+                        true
+                    }
+                    Err(error) => {
+                        log::warn!("could not watch the settings file: {error}");
+                        false
+                    }
+                };
+                self.outbox.emit(Event::SettingsWatch { live });
+            }
             Command::Flush { done } => {
                 let saves = self.saves.clone();
                 tokio::spawn(async move {
@@ -996,6 +1106,7 @@ fn session_of(command: &Command) -> SessionId {
         | Command::LoadSecret { .. }
         | Command::StoreSecret { .. }
         | Command::Save { .. }
+        | Command::WatchSettings { .. }
         | Command::Flush { .. } => SessionId(0),
     }
 }
@@ -1018,6 +1129,7 @@ fn request_of(command: &Command) -> Option<RequestId> {
         | Command::LoadSecret { .. }
         | Command::StoreSecret { .. }
         | Command::Save { .. }
+        | Command::WatchSettings { .. }
         | Command::Flush { .. } => None,
     }
 }
@@ -1086,6 +1198,7 @@ fn fail(outbox: &Outbox, command: Command, error: Error) {
         | Command::LoadSecret { .. }
         | Command::StoreSecret { .. }
         | Command::Save { .. }
+        | Command::WatchSettings { .. }
         | Command::Flush { .. } => return,
     };
     outbox.emit(event);
@@ -1320,6 +1433,7 @@ async fn run_session(
             | Command::LoadSecret { .. }
             | Command::StoreSecret { .. }
             | Command::Save { .. }
+            | Command::WatchSettings { .. }
             | Command::Flush { .. } => None,
         };
         end.command = None;
@@ -3520,5 +3634,120 @@ mod tests {
             Some(Event::SshHosts { request, .. }) => assert_eq!(request, RequestId(9)),
             other => panic!("{other:?}"),
         }
+    }
+
+    /// Starts a backend watching `path`, and says whether it could.
+    fn watching(path: &std::path::Path) -> (Backend, bool) {
+        let mut backend = Backend::start_with(Waker::default(), Keyring::memory());
+        backend.send(Command::WatchSettings {
+            path: path.to_path_buf(),
+        });
+        match backend.wait(WAIT) {
+            Some(Event::SettingsWatch { live }) => (backend, live),
+            other => panic!("expected to hear whether the file is watched, got {other:?}"),
+        }
+    }
+
+    /// The texts of the settings file the backend sends until `expected`
+    /// comes, that one included; empty when it never does.
+    fn texts_until(backend: &mut Backend, expected: &str) -> Vec<String> {
+        let deadline = std::time::Instant::now() + WAIT;
+        let mut texts = Vec::new();
+        while std::time::Instant::now() < deadline {
+            if let Some(Event::SettingsFile { text }) = backend.wait(Duration::from_millis(200)) {
+                let done = text == expected;
+                texts.push(text);
+                if done {
+                    return texts;
+                }
+            }
+        }
+        Vec::new()
+    }
+
+    #[test]
+    fn the_settings_file_is_read_when_it_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.toml");
+        let (mut backend, live) = watching(&path);
+        assert!(live);
+        std::fs::write(&path, "[data]\npage_size = 500\n").unwrap();
+        assert!(!texts_until(&mut backend, "[data]\npage_size = 500\n").is_empty());
+        // An editor that saves by renaming another file over it.
+        crate::util::write_atomic(&path, b"[data]\npage_size = 100\n").unwrap();
+        assert!(!texts_until(&mut backend, "[data]\npage_size = 100\n").is_empty());
+    }
+
+    #[test]
+    fn only_a_change_of_the_settings_file_wakes_the_reader() {
+        use notify::event::{AccessKind, CreateKind, ModifyKind, RenameMode};
+        use notify::{Event, EventKind};
+        let name = std::ffi::OsStr::new("settings.toml");
+        let at = |kind: EventKind, path: &str| Event::new(kind).add_path(path.into());
+        let data = EventKind::Modify(ModifyKind::Any);
+        assert!(concerns(&at(data, "/config/settings.toml"), Some(name)));
+        assert!(concerns(
+            &at(EventKind::Create(CreateKind::File), "/config/settings.toml"),
+            Some(name)
+        ));
+        // A rename carries both names: the temporary file's and ours.
+        let renamed = Event::new(EventKind::Modify(ModifyKind::Name(RenameMode::Both)))
+            .add_path("/config/.tabletist-x.tmp".into())
+            .add_path("/private/config/settings.toml".into());
+        assert!(concerns(&renamed, Some(name)));
+        // Another file of the directory, and a look at ours: Linux reports
+        // every open, and the reader's own read is one.
+        assert!(!concerns(&at(data, "/config/connections.json"), Some(name)));
+        assert!(!concerns(
+            &at(EventKind::Access(AccessKind::Any), "/config/settings.toml"),
+            Some(name)
+        ));
+        assert!(!concerns(&at(data, "/config/settings.toml"), None));
+    }
+
+    #[test]
+    fn a_settings_file_that_is_not_text_sends_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.toml");
+        let (mut backend, _) = watching(&path);
+        std::fs::write(&path, [0xff, 0xfe, 0x00]).unwrap();
+        std::thread::sleep(Duration::from_millis(400));
+        std::fs::write(&path, "[data]\npage_size = 500\n").unwrap();
+        // The first text to come is the readable one.
+        assert_eq!(
+            texts_until(&mut backend, "[data]\npage_size = 500\n"),
+            vec!["[data]\npage_size = 500\n".to_owned()]
+        );
+    }
+
+    #[test]
+    fn reading_the_file_does_not_send_it_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.toml");
+        let (mut backend, _) = watching(&path);
+        std::fs::write(&path, "[data]\npage_size = 500\n").unwrap();
+        assert!(!texts_until(&mut backend, "[data]\npage_size = 500\n").is_empty());
+        // Whatever else the system reports of the file, its text is the
+        // same: nothing more is sent.
+        assert!(backend.wait(Duration::from_millis(600)).is_none());
+    }
+
+    #[test]
+    fn a_settings_file_that_is_deleted_sends_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.toml");
+        let (mut backend, _) = watching(&path);
+        std::fs::write(&path, "[data]\npage_size = 500\n").unwrap();
+        assert!(!texts_until(&mut backend, "[data]\npage_size = 500\n").is_empty());
+        std::fs::remove_file(&path).unwrap();
+        assert!(backend.wait(Duration::from_millis(600)).is_none());
+    }
+
+    #[test]
+    fn a_directory_that_is_not_there_cannot_be_watched() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("missing").join("settings.toml");
+        let (_backend, live) = watching(&path);
+        assert!(!live);
     }
 }

@@ -2048,6 +2048,8 @@ impl App {
                     self.notice = Some(format!("Could not save {}: {error}.", path.display()));
                 }
             }
+            // Nothing asks for the watch yet, so neither comes.
+            Event::SettingsWatch { .. } | Event::SettingsFile { .. } => {}
             Event::Databases {
                 session,
                 request,
