@@ -637,14 +637,17 @@ impl App {
                 }
             }
             Action::PrevPage { tab, object_tab } => {
+                // Back by the size of the page about to be fetched, which
+                // is the settings' and must end where the one on screen
+                // begins. That one may be of another size (the size
+                // changed while its session was down): back by its limit,
+                // the rows between the two would be skipped.
+                let page_size = u64::from(self.settings.page_size);
                 let moved = self.object_tab_mut(tab, object_tab).is_some_and(|object| {
                     if object.query.offset == 0 {
                         return false;
                     }
-                    object.query.offset = object
-                        .query
-                        .offset
-                        .saturating_sub(u64::from(object.query.limit));
+                    object.query.offset = object.query.offset.saturating_sub(page_size);
                     object.pinned = true;
                     object.selection = None;
                     object.rows.value = None;
@@ -2930,11 +2933,12 @@ impl App {
         let Some(object) = workspace.object_tab_mut(id) else {
             return;
         };
-        // Until here the limit was the size of the page on screen, which
-        // Next and Previous have just moved by. From here it is the
-        // settings'. A page of another size cannot stay under the new
-        // limit: were this fetch cancelled, Next would move past it by the
-        // wrong size.
+        // Until here the limit was the size of the page on screen. Next
+        // has just moved past that page by it. Previous has moved back by
+        // the settings' size, so that the page fetched here ends where
+        // that one begins. From here the limit is the settings'. A page of
+        // another size cannot stay under the new limit: were this fetch
+        // cancelled, Next would move past it by the wrong size.
         if object.query.limit != page_size {
             object.drop_page();
             object.query.limit = page_size;

@@ -515,6 +515,37 @@ mod tests {
     }
 
     #[test]
+    fn previous_moves_by_the_size_of_the_page_it_fetches() {
+        let mut harness = Harness::new();
+        let tab = harness.connect_fake();
+        harness.click("users");
+        harness.answer_rows(crate::testing::page(3, true));
+        let object_tab = harness.app.workspace(tab).unwrap().active_tab.unwrap();
+        for _ in 0..3 {
+            harness
+                .app
+                .apply(crate::model::Action::NextPage { tab, object_tab });
+            harness.answer_rows(crate::testing::page(3, true));
+        }
+        assert_eq!(last_fetch(&harness), (900, 300));
+        // The size changes while the session is down: the page keeps its own.
+        harness.app.workspace_mut(tab).unwrap().status =
+            crate::model::SessionStatus::Disconnected(tabletist_db::Error::query("gone"));
+        let settings = crate::settings::Settings {
+            page_size: 100,
+            ..harness.app.settings.clone()
+        };
+        harness.app.apply_settings(settings);
+        harness.app.workspace_mut(tab).unwrap().status = crate::model::SessionStatus::Connected;
+        harness
+            .app
+            .apply(crate::model::Action::PrevPage { tab, object_tab });
+        // The page fetched has the new size and ends where the one that was
+        // shown begins. Back by the old size, rows 700 to 899 are skipped.
+        assert_eq!(last_fetch(&harness), (800, 100));
+    }
+
+    #[test]
     fn a_refresh_at_a_new_page_size_leaves_no_page_of_the_old_size_to_move_from() {
         let mut harness = Harness::new();
         let tab = harness.connect_fake();
