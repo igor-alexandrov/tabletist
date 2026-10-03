@@ -64,8 +64,9 @@ Linux (Omarchy and Hyprland first), macOS and Windows.
 
 ## Install
 
-- **Arch Linux / Omarchy:** `yay -S tabletist-bin` (release binary) or
-  `yay -S tabletist` (built from source).
+- **Arch Linux / Omarchy:** the AUR packages (`tabletist-bin` and
+  `tabletist`) are not published yet. Until they are, use the release
+  `.tar.gz` (see Other Linux below).
 - **macOS:** download `tabletist-v<version>-macos-universal.dmg` from the
   [releases](https://github.com/igor-alexandrov/tabletist/releases) and drag
   Tabletist to Applications. Releases are signed and notarized only when
@@ -78,11 +79,9 @@ Linux (Omarchy and Hyprland first), macOS and Windows.
 - **Other Linux:** the release `.tar.gz` holds the binary, a `.desktop` file
   and the icon.
 
-The Linux release binaries, in the `.tar.gz` and in `tabletist-bin`, are
-built on Ubuntu 24.04 and need glibc 2.39 or newer (Ubuntu 24.04, Debian 13,
-Fedora 40 or later). On an older system, [build from
-source](#build-from-source); on an Arch-based one, `yay -S tabletist` does
-that for you.
+The Linux release binaries are built on Ubuntu 24.04 and need glibc 2.39 or
+newer (Ubuntu 24.04, Debian 13, Fedora 40 or later). On an older system,
+[build from source](#build-from-source).
 
 ## Build from source
 
