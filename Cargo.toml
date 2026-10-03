@@ -86,6 +86,11 @@ keyring-core = "1"
 # file created exclusively (0600 on Unix) and renamed into place
 # (src/util.rs), and --demo runs in a private, self-removing directory.
 tempfile = "3"
+# Reads settings.toml: `DeTable::parse_recoverable` keeps what it could read
+# of a file with a bad line and says where each key and each error is. The
+# app writes the file itself (src/settings.rs), so only the parser is built:
+# the default `display` feature would bring in toml_writer.
+toml = { version = "1.1", default-features = false, features = ["parse"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # The desktop's Secret Service (GNOME Keyring, KWallet) over D-Bus.

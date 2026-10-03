@@ -5597,6 +5597,7 @@ dependencies = [
  "tabletist-db",
  "tempfile",
  "tokio",
+ "toml",
  "uuid",
  "windows-native-keyring-store",
  "winresource",

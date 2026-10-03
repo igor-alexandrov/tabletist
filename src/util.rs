@@ -108,7 +108,7 @@ pub fn load_json<T: DeserializeOwned + Default>(path: &Path) -> T {
 /// Renames a file that could not be loaded to `<name>.bad`, or to
 /// `<name>.bad.1`, `<name>.bad.2`... when earlier ones exist, so a second
 /// failure never replaces the first copy.
-fn keep_aside(path: &Path, problem: &str) {
+pub fn keep_aside(path: &Path, problem: &str) {
     let Some(aside) = (0..1000)
         .map(|n| match n {
             0 => with_suffix(path, ".bad"),

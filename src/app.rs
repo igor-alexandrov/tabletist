@@ -21,7 +21,7 @@ use crate::model::{
 };
 use crate::paths::AppDirs;
 use crate::secrets::{SecretString, password_account, ssh_account};
-use crate::settings::Settings;
+use crate::settings::{Loaded, Settings, Source};
 use crate::theme::{self, Catalog, Palette};
 
 /// What a keyring read is for; each names the exact request it serves, so
@@ -99,7 +99,10 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(dirs: AppDirs, settings: Settings, backend: Backend) -> Self {
+    pub fn new(dirs: AppDirs, loaded: Loaded, backend: Backend) -> Self {
+        let Loaded {
+            settings, source, ..
+        } = loaded;
         let (connections, upgraded) = SavedConnections::load_upgrading(&dirs.connections_file());
         let (host_keys, host_keys_error) = match crate::known_hosts::load(&dirs.known_hosts_file())
         {
@@ -138,6 +141,10 @@ impl App {
         // An older file is written in this version once, off the UI thread.
         if upgraded {
             app.save_connections();
+        }
+        // So are settings that were read from the old settings.json.
+        if source == Source::Json {
+            app.save_settings();
         }
         app
     }
@@ -1360,11 +1367,14 @@ impl App {
     fn open_workspace(&mut self, tab: ConnTabId, saved: SavedConnection, typed: Secrets) {
         let session = SessionId(self.next_id());
         let request = RequestId(self.next_id());
+        // Where the option puts it; the grid's link switches it from there.
+        let full_precision = self.settings.timestamps == crate::settings::Timestamps::Full;
         let Some(entry) = self.tabs.iter_mut().find(|t| t.id == tab) else {
             return;
         };
-        entry.content =
-            ConnTabContent::Workspace(Box::new(Workspace::new(session, request, saved, typed)));
+        let mut workspace = Workspace::new(session, request, saved, typed);
+        workspace.full_precision = full_precision;
+        entry.content = ConnTabContent::Workspace(Box::new(workspace));
     }
 
     /// Fills the tab's secrets one at a time (the database password, then
@@ -3226,7 +3236,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let app = App::new(
             AppDirs::at(dir.path()),
-            Settings::default(),
+            Settings::default().into(),
             Backend::recording(),
         );
         (app, dir)
@@ -3240,7 +3250,7 @@ mod tests {
         std::fs::write(&path, include_str!("../tests/fixtures/connections-v1.json")).unwrap();
         let app = App::new(
             AppDirs::at(dir.path()),
-            Settings::default(),
+            Settings::default().into(),
             Backend::recording(),
         );
         let saves = |app: &App| {
@@ -3261,10 +3271,52 @@ mod tests {
         app.connections.save(&path).unwrap();
         let app = App::new(
             AppDirs::at(dir.path()),
-            Settings::default(),
+            Settings::default().into(),
             Backend::recording(),
         );
         assert_eq!(saves(&app), 0);
+    }
+
+    #[test]
+    fn settings_read_from_the_old_json_are_written_as_toml_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let dirs = AppDirs::at(dir.path());
+        let path = dirs.settings_file();
+        let settings = Settings {
+            page_size: 100,
+            ..Settings::default()
+        };
+        // Saves of these settings to the TOML file, and of nothing else.
+        let saves = |app: &App| {
+            app.backend
+                .sent
+                .iter()
+                .filter(|command| {
+                    matches!(
+                        command,
+                        Command::Save { path: to, file: StateFile::Settings(saved) }
+                            if *to == path && *saved == settings
+                    )
+                })
+                .count()
+        };
+        let app = App::new(
+            dirs.clone(),
+            Loaded::of(settings.clone(), Source::Json),
+            Backend::recording(),
+        );
+        assert_eq!(app.settings, settings);
+        assert_eq!(saves(&app), 1);
+        assert!(!path.exists(), "the UI thread writes nothing");
+        // A TOML file, or none, is not written at a start.
+        for source in [Source::Toml, Source::Defaults] {
+            let app = App::new(
+                dirs.clone(),
+                Loaded::of(settings.clone(), source),
+                Backend::recording(),
+            );
+            assert_eq!(saves(&app), 0, "{source:?}");
+        }
     }
 
     fn ids(app: &App) -> Vec<u64> {
@@ -7873,7 +7925,7 @@ mod tests {
                 "{ \"hosts\": { \"a:22\": \"SHA256:x\", } }",
             )
             .unwrap();
-            let mut app = App::new(dirs, Settings::default(), Backend::recording());
+            let mut app = App::new(dirs, Settings::default().into(), Backend::recording());
             let conn = ssh_saved(&mut app);
             let tab = app.active_tab_id();
             app.apply(Action::Connect { tab, conn });

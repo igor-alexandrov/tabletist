@@ -394,6 +394,130 @@ mod tests {
     }
 
     #[test]
+    fn a_workspace_starts_with_the_timestamps_the_settings_ask_for() {
+        let mut harness = Harness::new();
+        harness.app.settings.timestamps = crate::settings::Timestamps::Full;
+        let tab = harness.connect_fake();
+        assert!(harness.app.workspace(tab).unwrap().full_precision);
+        harness.click("users");
+        let mut page = crate::testing::page(1, false);
+        page.columns[1].kind = tabletist_db::ValueKind::Temporal;
+        page.rows[0][1] = tabletist_db::Value::Text("2026-01-12 09:14:03.482915".into());
+        harness.answer_rows(page);
+        harness.settle();
+        assert!(
+            harness
+                .painted_color("2026-01-12 09:14:03.482915")
+                .is_some()
+        );
+        // The grid's own link still switches this workspace.
+        harness
+            .app
+            .apply(crate::model::Action::ToggleFullPrecision(tab));
+        assert!(!harness.app.workspace(tab).unwrap().full_precision);
+    }
+
+    #[test]
+    fn numbers_are_grouped_when_the_settings_say_so_but_keys_never_are() {
+        let mut harness = Harness::new();
+        harness.app.settings.group_digits = true;
+        let tab = harness.connect_fake();
+        harness.click("users");
+        let mut page = crate::testing::page(1, false);
+        page.rows[0][0] = tabletist_db::Value::Int(1_234_567);
+        page.columns[1].name = "amount".into();
+        page.columns[1].kind = tabletist_db::ValueKind::Numeric;
+        page.rows[0][1] = tabletist_db::Value::Text("1240.50".into());
+        harness.answer_rows(page);
+        harness.settle();
+        // Not described yet: no column is known to be a key.
+        assert!(harness.painted_color("1,234,567").is_some());
+        assert!(harness.painted_color("1,240.50").is_some());
+        harness.answer_structure(tabletist_db::Structure {
+            primary_key: vec!["id".into()],
+            ..Default::default()
+        });
+        harness.settle();
+        assert!(harness.painted_color("1234567").is_some());
+        assert!(harness.painted_color("1,234,567").is_none());
+        assert!(harness.painted_color("1,240.50").is_some());
+        assert!(harness.painted_color("1240.50").is_none());
+        let object_tab = harness.app.workspace(tab).unwrap().active_tab.unwrap();
+        harness.app.apply(crate::model::Action::SelectCell {
+            tab,
+            id: object_tab,
+            cell: crate::model::CellPos { row: 0, col: 1 },
+        });
+        harness.settle();
+        // The row panel's field gives the value as it is, beside the cell
+        // that groups it.
+        assert!(harness.painted_color("1240.50").is_some());
+        assert!(harness.painted_color("1,240.50").is_some());
+        // So does a copy.
+        harness.app.workspace_mut(tab).unwrap().pane = crate::model::Pane::Grid;
+        harness.copy(false);
+        assert_eq!(harness.copied.as_deref(), Some("1240.50"));
+    }
+
+    #[test]
+    fn numbers_are_plain_when_the_settings_do_not_group() {
+        let mut harness = Harness::new();
+        harness.connect_fake();
+        harness.click("users");
+        let mut page = crate::testing::page(1, false);
+        page.rows[0][0] = tabletist_db::Value::Int(1_234_567);
+        harness.answer_rows(page);
+        harness.settle();
+        assert!(harness.painted_color("1234567").is_some());
+    }
+
+    /// The colours a table's grid paints `true` and a plain text cell in,
+    /// with the row selected so the row panel shows the value too: every
+    /// `true` the frame painted, then the plain cell.
+    fn true_and_plain(value_tags: bool) -> (Vec<egui::Color32>, egui::Color32) {
+        let mut harness = Harness::new();
+        harness.app.settings.value_tags = value_tags;
+        let tab = harness.connect_fake();
+        harness.click("users");
+        let mut page = crate::testing::page(1, false);
+        page.columns[2].name = "active".into();
+        page.columns[2].kind = tabletist_db::ValueKind::Bool;
+        page.rows[0][2] = tabletist_db::Value::Bool(true);
+        harness.answer_rows(page);
+        let object_tab = harness.app.workspace(tab).unwrap().active_tab.unwrap();
+        harness.app.apply(crate::model::Action::SelectCell {
+            tab,
+            id: object_tab,
+            cell: crate::model::CellPos { row: 0, col: 1 },
+        });
+        harness.settle();
+        let trues = harness
+            .painted
+            .iter()
+            .filter(|(text, _)| text == "true")
+            .map(|(_, color)| *color)
+            .collect();
+        let plain = harness
+            .painted_color("user1@example.com")
+            .expect("the email cell");
+        (trues, plain)
+    }
+
+    #[test]
+    fn value_tags_colour_a_boolean_until_the_settings_turn_them_off() {
+        let (on, plain) = true_and_plain(true);
+        assert!(!on.is_empty());
+        assert!(
+            on.iter().any(|color| *color != plain),
+            "a tag has its colour"
+        );
+        let (off, plain) = true_and_plain(false);
+        // The grid's cell and the row panel's field.
+        assert!(off.len() >= 2, "{off:?}");
+        assert!(off.iter().all(|color| *color == plain), "{off:?}");
+    }
+
+    #[test]
     fn the_timestamp_hint_gives_way_to_the_filter_chips() {
         use egui::accesskit::Role;
         for look in [crate::theme::Look::standard(), crate::theme::Look::macos()] {
@@ -3453,6 +3577,59 @@ mod tests {
         assert!(fields(&harness));
         harness.click("Close the row panel");
         assert!(!fields(&harness));
+    }
+
+    #[test]
+    fn a_result_groups_every_number_when_the_settings_say_so() {
+        let mut harness = Harness::new();
+        harness.app.settings.group_digits = true;
+        let tab = harness.connect_fake();
+        let mut page = crate::testing::page(1, false);
+        page.rows[0][0] = tabletist_db::Value::Int(1_234_567);
+        with_sql_outcome(
+            &mut harness,
+            tab,
+            tabletist_db::StatementOutcome::Rows {
+                columns: page.columns,
+                rows: page.rows,
+                truncated: false,
+            },
+        );
+        harness.settle();
+        // No structure to name a key: `id` is grouped here.
+        assert!(harness.painted_color("1,234,567").is_some());
+    }
+
+    #[test]
+    fn a_result_draws_a_boolean_plain_when_value_tags_are_off() {
+        let painted = |value_tags: bool| {
+            let mut harness = Harness::new();
+            harness.app.settings.value_tags = value_tags;
+            let tab = harness.connect_fake();
+            let mut page = crate::testing::page(1, false);
+            page.columns[2].kind = tabletist_db::ValueKind::Bool;
+            page.rows[0][2] = tabletist_db::Value::Bool(true);
+            with_sql_outcome(
+                &mut harness,
+                tab,
+                tabletist_db::StatementOutcome::Rows {
+                    columns: page.columns,
+                    rows: page.rows,
+                    truncated: false,
+                },
+            );
+            harness.settle();
+            (
+                harness.painted_color("true").expect("the boolean cell"),
+                harness
+                    .painted_color("user1@example.com")
+                    .expect("the email cell"),
+            )
+        };
+        let (tag, plain) = painted(true);
+        assert_ne!(tag, plain);
+        let (flat, plain) = painted(false);
+        assert_eq!(flat, plain);
     }
 
     #[test]

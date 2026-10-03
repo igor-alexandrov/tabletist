@@ -1056,6 +1056,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
     let locale = app.locale;
     let palette = app.palette;
     let look = app.look;
+    let group_digits = app.settings.group_digits;
+    let value_tags = app.settings.value_tags;
     let Some(workspace) = app.workspace(tab) else {
         return;
     };
@@ -1100,7 +1102,19 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
             })
             .collect();
         let ctx = ui.ctx().clone();
-        let tags = crate::ui::value_tags::Tags::of_page(page, structure);
+        let tags: Vec<_> = crate::ui::value_tags::Tags::of_page(page, structure)
+            .into_iter()
+            .map(|tags| tags.when(value_tags))
+            .collect();
+        // Grouping is for amounts: a key reads as the name it is.
+        let shown: Vec<Shown> = page
+            .columns
+            .iter()
+            .map(|column| Shown {
+                full_precision,
+                grouped: group_digits && !is_key(&column.name, structure),
+            })
+            .collect();
         let output = grid::show(
             ui,
             grid_id(tab, object_tab, full_precision),
@@ -1119,7 +1133,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
                     &page.columns[col],
                     &tags[col],
                     &look,
-                    full_precision,
+                    shown[col],
                 )
             },
         );
@@ -1306,6 +1320,28 @@ fn empty_rows(
     }
 }
 
+/// How a cell writes its value out.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Shown {
+    /// Timestamps with the fraction the server sent.
+    pub full_precision: bool,
+    /// A number's integer digits in threes.
+    pub grouped: bool,
+}
+
+/// Whether `name` is a column of the table's primary key or of one of its
+/// foreign keys: a number that names a row, which grouping would only make
+/// harder to read. Nothing is, until the table is described.
+fn is_key(name: &str, structure: Option<&tabletist_db::Structure>) -> bool {
+    structure.is_some_and(|structure| {
+        structure.primary_key.iter().any(|column| column == name)
+            || structure
+                .foreign_keys
+                .iter()
+                .any(|foreign| foreign.columns.iter().any(|column| column == name))
+    })
+}
+
 /// A cell of a result grid, a table's or a SQL editor's: a value from its
 /// column's closed set (`tags`) as its tag, and anything else as
 /// [`plain_cell`] reads it. NULL is never a tag, and a colour is a colour
@@ -1316,7 +1352,7 @@ pub fn cell<'a>(
     column: &tabletist_db::ColumnMeta,
     tags: &crate::ui::value_tags::Tags<'_>,
     look: &Look,
-    full_precision: bool,
+    shown: Shown,
 ) -> Cell<'a> {
     if let Some(style) = tags.style(value)
         && format::color(value).is_none()
@@ -1327,19 +1363,19 @@ pub fn cell<'a>(
             style,
         };
     }
-    plain_cell(ctx, value, column, look, full_precision)
+    plain_cell(ctx, value, column, look, shown)
 }
 
 /// A cell's text and style when it is no tag: NULL, a binary value's type
 /// and size, a colour's swatch, a document at a glance, what stands for
 /// text with nothing to see, an array's elements, a timestamp to the second
-/// unless `full_precision`, and anything else as it reads.
+/// and a number in threes as `shown` asks, and anything else as it reads.
 pub fn plain_cell<'a>(
     ctx: &egui::Context,
     value: &'a tabletist_db::Value,
     column: &tabletist_db::ColumnMeta,
     look: &Look,
-    full_precision: bool,
+    shown: Shown,
 ) -> Cell<'a> {
     let kind = column.kind;
     let styled = |text: std::borrow::Cow<'a, str>, style| Cell {
@@ -1376,16 +1412,17 @@ pub fn plain_cell<'a>(
         crate::ui::json_view::document(ctx, kind, value, crate::ui::json_view::CELL_MAX)
     {
         let (count, strings) = crate::ui::json_view::summary(&doc);
-        let shown = if look.terminal {
+        let glance = if look.terminal {
             strings.join(" · ")
         } else {
             strings.into_iter().next().unwrap_or_default()
         };
         return styled(
-            format::one_line(&shown).into_owned().into(),
+            format::one_line(&glance).into_owned().into(),
             Style::Json(count),
         );
     }
+    let grouped = kind == ValueKind::Numeric && shown.grouped;
     let text = match value {
         tabletist_db::Value::Text(text) => {
             let marks = grid::marks(ctx, look);
@@ -1393,7 +1430,14 @@ pub fn plain_cell<'a>(
             if let Some(blank) = format::blank_text(text, marks) {
                 return styled(blank.into(), Style::Quiet);
             }
-            let line = format::cell_line(text, marks);
+            // A number is grouped before it is cut to a cell's length: one
+            // cut first ends in an ellipsis, which is no number to group.
+            let line = match grouped.then(|| format::group_number(text)) {
+                Some(std::borrow::Cow::Owned(number)) => {
+                    format::cell_line(&number, marks).into_owned().into()
+                }
+                _ => format::cell_line(text, marks),
+            };
             if format::is_array(&column.type_name, kind) {
                 if line == "{}" {
                     return styled(line, Style::Quiet);
@@ -1404,9 +1448,15 @@ pub fn plain_cell<'a>(
             }
             line
         }
-        other => format::cell_text(other),
+        other => {
+            let text = format::cell_text(other);
+            match grouped.then(|| format::group_number(&text)) {
+                Some(std::borrow::Cow::Owned(number)) => number.into(),
+                _ => text,
+            }
+        }
     };
-    let text = if kind == ValueKind::Temporal && !full_precision {
+    let text = if kind == ValueKind::Temporal && !shown.full_precision {
         match format::to_the_second(&text) {
             std::borrow::Cow::Borrowed(_) => text,
             std::borrow::Cow::Owned(short) => short.into(),
@@ -1628,7 +1678,7 @@ mod tests {
         // Without the system's fonts the marks are the plain ones.
         let ctx = context();
         let cell = |value: &Value, column: &tabletist_db::ColumnMeta, look: &Look| {
-            let cell = plain_cell(&ctx, value, column, look, false);
+            let cell = plain_cell(&ctx, value, column, look, Shown::default());
             (cell.text.into_owned(), cell.style)
         };
         let text = |text: &str| Value::Text(text.into());
@@ -1657,7 +1707,7 @@ mod tests {
     fn an_array_and_a_binary_value_are_told_by_their_column() {
         let ctx = context();
         let cell = |value: &Value, column: &tabletist_db::ColumnMeta, look: &Look| {
-            let cell = plain_cell(&ctx, value, column, look, false);
+            let cell = plain_cell(&ctx, value, column, look, Shown::default());
             (cell.text.into_owned(), cell.style)
         };
         let text = |text: &str| Value::Text(text.into());
@@ -1700,7 +1750,11 @@ mod tests {
         let ctx = context();
         let mac = Look::macos();
         let cell = |value: &Value, kind, look: &Look, full| {
-            let cell = plain_cell(&ctx, value, &meta("", kind), look, full);
+            let shown = Shown {
+                full_precision: full,
+                ..Shown::default()
+            };
+            let cell = plain_cell(&ctx, value, &meta("", kind), look, shown);
             (cell.text.into_owned(), cell.null, cell.style)
         };
         assert_eq!(
@@ -1752,6 +1806,69 @@ mod tests {
     }
 
     #[test]
+    fn a_number_is_grouped_only_when_asked() {
+        let ctx = context();
+        let look = Look::macos();
+        let text = |value: &Value, kind, shown| {
+            plain_cell(&ctx, value, &meta("", kind), &look, shown)
+                .text
+                .into_owned()
+        };
+        let grouped = Shown {
+            grouped: true,
+            ..Shown::default()
+        };
+        let amount = Value::Text("1240.50".into());
+        assert_eq!(
+            text(&Value::Int(1_234_567), ValueKind::Numeric, grouped),
+            "1,234,567"
+        );
+        assert_eq!(text(&amount, ValueKind::Numeric, grouped), "1,240.50");
+        assert_eq!(
+            text(&Value::Int(1_234_567), ValueKind::Numeric, Shown::default()),
+            "1234567"
+        );
+        // Digits that are not a number's: a text column's stay as they are.
+        assert_eq!(
+            text(&Value::Text("1234567".into()), ValueKind::Text, grouped),
+            "1234567"
+        );
+    }
+
+    #[test]
+    fn a_number_too_long_for_a_cell_is_grouped_before_it_is_cut() {
+        let ctx = context();
+        let look = Look::macos();
+        let grouped = Shown {
+            grouped: true,
+            ..Shown::default()
+        };
+        // An exact numeric of more digits than a cell shows.
+        let long = Value::Text("1".repeat(format::CELL_MAX_CHARS + 44).into());
+        let cell = plain_cell(&ctx, &long, &meta("", ValueKind::Numeric), &look, grouped);
+        assert!(cell.text.starts_with("111,111,111,"), "{}", cell.text);
+        assert!(cell.text.ends_with('…'), "{}", cell.text);
+        assert_eq!(cell.text.chars().count(), format::CELL_MAX_CHARS + 1);
+    }
+
+    #[test]
+    fn a_key_is_a_column_of_the_primary_key_or_of_a_foreign_one() {
+        let structure = tabletist_db::Structure {
+            primary_key: vec!["id".into()],
+            foreign_keys: vec![tabletist_db::ForeignKeyInfo {
+                columns: vec!["publisher_id".into()],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        assert!(is_key("id", Some(&structure)));
+        assert!(is_key("publisher_id", Some(&structure)));
+        assert!(!is_key("price", Some(&structure)));
+        // Not described yet: nothing is known to be a key.
+        assert!(!is_key("id", None));
+    }
+
+    #[test]
     fn a_tag_comes_after_null_and_a_colour_and_before_the_rest() {
         use crate::ui::value_tags::Tags;
         let ctx = context();
@@ -1759,7 +1876,7 @@ mod tests {
         let allowed = ["#fff".to_owned(), "cover".to_owned(), "{}".to_owned()];
         let tags = Tags::Values(&allowed);
         let style = |value: &Value, kind, tags: &Tags<'_>| {
-            let cell = cell(&ctx, value, &meta("", kind), tags, &look, false);
+            let cell = cell(&ctx, value, &meta("", kind), tags, &look, Shown::default());
             (cell.null, cell.style)
         };
         let text = |text: &str| Value::Text(text.into());
