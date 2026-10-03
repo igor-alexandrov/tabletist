@@ -804,9 +804,19 @@ async fn read_settings(
     while changes.recv().await.is_some() {
         tokio::time::sleep(SETTLE).await;
         while changes.try_recv().is_ok() {}
-        let file = path.clone();
-        let read = tokio::task::spawn_blocking(move || std::fs::read(file)).await;
-        let bytes = match read {
+        let read = || {
+            let file = path.clone();
+            tokio::task::spawn_blocking(move || std::fs::read(file))
+        };
+        let mut bytes = read().await;
+        // An editor may still hold the file (a sharing violation on
+        // Windows), and nothing says another change follows to wake us:
+        // one more try, once it has had the time to let go.
+        if matches!(&bytes, Ok(Err(error)) if error.kind() != std::io::ErrorKind::NotFound) {
+            tokio::time::sleep(SETTLE).await;
+            bytes = read().await;
+        }
+        let bytes = match bytes {
             Ok(Ok(bytes)) => bytes,
             // Deleted: the settings in memory stay, and the next change
             // made in the app writes the file again.
@@ -3710,9 +3720,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("settings.toml");
         let (mut backend, _) = watching(&path);
-        std::fs::write(&path, [0xff, 0xfe, 0x00]).unwrap();
+        // Each write is all or nothing: one that truncates and then writes
+        // could be read in between, as an empty text.
+        crate::util::write_atomic(&path, &[0xff, 0xfe, 0x00]).unwrap();
         std::thread::sleep(Duration::from_millis(400));
-        std::fs::write(&path, "[data]\npage_size = 500\n").unwrap();
+        crate::util::write_atomic(&path, b"[data]\npage_size = 500\n").unwrap();
         // The first text to come is the readable one.
         assert_eq!(
             texts_until(&mut backend, "[data]\npage_size = 500\n"),
@@ -3727,8 +3739,12 @@ mod tests {
         let (mut backend, _) = watching(&path);
         std::fs::write(&path, "[data]\npage_size = 500\n").unwrap();
         assert!(!texts_until(&mut backend, "[data]\npage_size = 500\n").is_empty());
-        // Whatever else the system reports of the file, its text is the
-        // same: nothing more is sent.
+        // The reader's own look at the file does not wake it: nothing more
+        // is sent.
+        assert!(backend.wait(Duration::from_millis(600)).is_none());
+        // And a save of the same text wakes it, but is not news. Renamed
+        // into place, so that no read finds the file empty on the way.
+        crate::util::write_atomic(&path, b"[data]\npage_size = 500\n").unwrap();
         assert!(backend.wait(Duration::from_millis(600)).is_none());
     }
 

@@ -2225,7 +2225,7 @@ impl App {
 
     /// Asks the backend to watch the settings file, so an edit made outside
     /// the app reaches it (`Event::SettingsFile`).
-    pub fn watch_settings(&mut self) {
+    fn watch_settings(&mut self) {
         self.backend.send(Command::WatchSettings {
             path: self.dirs.settings_file(),
         });
@@ -4100,6 +4100,20 @@ mod tests {
             app.backend.sent.last(),
             Some(Command::WatchSettings { path: watched }) if *watched == path
         ));
+    }
+
+    #[test]
+    fn a_start_that_does_not_follow_the_desktop_does_not_watch_the_users_directories() {
+        // The harness attaches as the demo does.
+        let harness = crate::testing::Harness::new();
+        assert!(
+            !harness
+                .app
+                .backend
+                .sent
+                .iter()
+                .any(|command| matches!(command, Command::WatchSettings { .. }))
+        );
     }
 
     #[test]
