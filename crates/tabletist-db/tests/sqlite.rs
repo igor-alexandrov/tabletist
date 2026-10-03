@@ -181,22 +181,40 @@ async fn contains_matches_literal_percent_signs() {
     assert_eq!(ids(&connection.fetch_rows(&query).await.unwrap()), vec![4]);
 }
 
+/// The session's `query_only`, as a script reads it.
+async fn query_only(connection: &Connection) -> Value {
+    let outcome = run(connection, "PRAGMA query_only").await.unwrap();
+    match &outcome.results[0].outcome {
+        StatementOutcome::Rows { rows, .. } => rows[0][0].clone(),
+        other => panic!("{other:?}"),
+    }
+}
+
 #[tokio::test]
 async fn a_raw_where_cannot_modify_data() {
     for access in [Access::ReadOnly, Access::Writable] {
         let (connection, _dir) = fixture_as(access).await;
         let mut query = users(50);
-        // A plain syntax error, and one that closes the parenthesis to chain a
-        // real second statement (rusqlite refuses to prepare more than one).
+        // Each chains a second statement: a plain one, one that closes the
+        // parenthesis first, and a pragma SQLite applies as soon as it is
+        // prepared (rusqlite prepares what follows the first statement, and
+        // only then refuses the text). The `;` is refused before that.
         for raw in [
             "1 = 1; DELETE FROM users",
             "1=1) ; DELETE FROM users; SELECT (1",
+            "1=1); PRAGMA query_only = 0; SELECT (1",
         ] {
             query.raw_where = Some(raw.into());
             assert!(
                 connection.fetch_rows(&query).await.is_err(),
                 "{access:?} {raw}"
             );
+            assert_eq!(query_only(&connection).await, Value::Int(1), "{raw}");
+            assert!(
+                connection.count_rows(&query).await.is_err(),
+                "{access:?} {raw}"
+            );
+            assert_eq!(query_only(&connection).await, Value::Int(1), "{raw}");
         }
         assert_eq!(connection.count_rows(&users(50)).await.unwrap(), 5);
     }
@@ -908,6 +926,8 @@ async fn a_script_on_a_writable_file_changes_no_file() {
         format!("ATTACH 'file:{}?mode=rwc' AS other", missing.display()),
         format!("VACUUM INTO '{}'", copy.display()),
         "PRAGMA journal_mode = WAL".to_owned(),
+        // Refused, not harmless: it does nothing to this file, which is
+        // not in WAL mode, and would rewrite one that is.
         "PRAGMA wal_checkpoint(TRUNCATE)".to_owned(),
         "UPDATE users SET email = 'x'".to_owned(),
         "CREATE TABLE made (n)".to_owned(),

@@ -71,8 +71,9 @@ fn still_query_only(connection: &rusqlite::Connection) -> Result<bool> {
 }
 
 /// Runs `texts` between `BEGIN` and a `ROLLBACK` that always happens. A
-/// run that finds `query_only` off, before a statement or at its end, ends
-/// with `LeftReadOnly` after that rollback.
+/// run that finds `query_only` off, before a statement or at its end, or
+/// its transaction gone before a statement, ends with `LeftReadOnly` after
+/// that rollback.
 fn script(
     connection: &rusqlite::Connection,
     texts: &[String],
@@ -155,9 +156,15 @@ fn statements(
             });
             break;
         }
+        // The open transaction is what stops a statement `query_only`
+        // lets through (a change of journal mode, VACUUM INTO). The
+        // statement before this one succeeded, so SQLite did not end it
+        // over an error: the script did.
+        if connection.is_autocommit() {
+            return Err(Error::LeftReadOnly);
+        }
         match still_query_only(connection) {
             Ok(true) => {}
-            Ok(false) => return Err(Error::LeftReadOnly),
             // A stop that landed on the check: this statement is the
             // cancelled one.
             Err(Error::Cancelled) => {
@@ -168,7 +175,8 @@ fn statements(
                 });
                 break;
             }
-            Err(error) => return Err(error),
+            // No answer counts as left, as at the end of the run.
+            Ok(false) | Err(_) => return Err(Error::LeftReadOnly),
         }
         let started = Instant::now();
         let result = match statement(connection, text, limit) {
@@ -224,7 +232,9 @@ fn statement(
     if text.is_empty() {
         return Ok(StatementOutcome::Done { affected: None });
     }
-    // prepare refuses a second statement in the text (MultipleStatement).
+    // A second statement in the text is refused (MultipleStatement), but
+    // only after rusqlite prepared it: the run's checks cover what a pragma
+    // does by then.
     let mut statement = connection.prepare(text).map_err(map_error)?;
     let declared = declared_columns(connection, &statement, text)?;
     if declared.is_empty() {
@@ -404,15 +414,24 @@ fn column_metas(declared: Vec<(String, String)>, rows: &[Vec<Value>]) -> Vec<Col
 }
 
 /// Refuses a raw WHERE that ends inside a `/*` comment, which SQLite would
-/// accept and which would hide the page's ORDER BY, LIMIT and OFFSET.
+/// accept and which would hide the page's ORDER BY, LIMIT and OFFSET, and
+/// one that holds a `;`: what follows it is a second statement, and
+/// rusqlite prepares that before it refuses the text (see `Conn::browse`).
 fn check_raw_where(query: &RowQuery) -> Result<()> {
-    if query
-        .raw_where
-        .as_deref()
-        .is_some_and(crate::dialect::sqlite_ends_in_block_comment)
-    {
+    let Some(raw) = query.raw_where.as_deref() else {
+        return Ok(());
+    };
+    if crate::dialect::sqlite_ends_in_block_comment(raw) {
         return Err(Error::query(
             "The WHERE text ends inside a /* comment. Close it with */.",
+        ));
+    }
+    if crate::sql::tokenize(Dialect::Sqlite, raw)
+        .iter()
+        .any(|token| token.kind == crate::sql::TokenKind::Semicolon)
+    {
+        return Err(Error::query(
+            "The WHERE text holds a `;`. A filter is one condition, not a statement.",
         ));
     }
     Ok(())
@@ -510,6 +529,36 @@ impl Conn {
                 Error::Io(error.to_string())
             }
         })?
+    }
+
+    /// `run` for a page or a count, whose SQL holds the user's WHERE text.
+    /// rusqlite finds a second statement in a text by preparing it, and
+    /// SQLite applies a flag pragma as soon as it is prepared: a WHERE that
+    /// got `; PRAGMA query_only = 0` past `check_raw_where` would fail and
+    /// still leave the session open to writes. So a failure puts the
+    /// session's settings back, and a session that cannot take them counts
+    /// as lost.
+    async fn browse<T: Send + 'static>(
+        &self,
+        work: impl FnOnce(&rusqlite::Connection) -> Result<T> + Send + 'static,
+    ) -> Result<T> {
+        self.run(move |connection| {
+            let result = work(connection);
+            if result.is_err() {
+                // A cancel meant for the statement can land here instead,
+                // so this gets one more try.
+                set_session_pragmas(connection)
+                    .or_else(|_| set_session_pragmas(connection))
+                    .map_err(|error| {
+                        Error::ConnectionLost(format!(
+                            "could not put the session's settings back: {}",
+                            map_error(error)
+                        ))
+                    })?;
+            }
+            result
+        })
+        .await
     }
 
     /// See [`crate::Connection::run_script`]. The whole script is one
@@ -631,7 +680,7 @@ impl Conn {
         let limit = query.limit as usize;
         // One blocking job for the key lookup and the select, so a cancel
         // can never fall in a gap between them.
-        self.run(move |connection| {
+        self.browse(move |connection| {
             let key = ordering_key(connection, &query.object)?;
             let binary = binary_columns(connection, &query)?;
             let sql = Dialect::Sqlite.select_rows(&query, &key, &binary);
@@ -672,7 +721,7 @@ impl Conn {
     pub async fn count_rows(&self, query: &RowQuery) -> Result<u64> {
         check_raw_where(query)?;
         let query = query.clone();
-        self.run(move |connection| {
+        self.browse(move |connection| {
             let binary = binary_columns(connection, &query)?;
             let sql = Dialect::Sqlite.count_rows(&query, &binary);
             let count: i64 = connection
@@ -975,6 +1024,109 @@ mod tests {
                 assert_eq!((query_only, changed), (1, 0), "{access:?} {texts:?}");
             }
         }
+    }
+
+    /// Runs `texts` past the refusal list, which only
+    /// `Connection::run_script` applies.
+    async fn run_unrefused(conn: &Conn, texts: &[&str]) -> Result<ScriptOutcome> {
+        let script = texts.iter().map(|text| (*text).to_owned()).collect();
+        conn.run_script(script, 10, &StopFlag::new()).await
+    }
+
+    #[tokio::test]
+    async fn a_script_that_ended_its_transaction_runs_nothing_after_it() {
+        let (conn, dir) = fixture_as(Access::Writable).await;
+        let path = dir.path().join("fixture.db");
+        let before = std::fs::read(&path).unwrap();
+        // query_only is still on after the COMMIT, and does not stop a
+        // change of journal mode: only the open transaction does.
+        let ran = run_unrefused(&conn, &["COMMIT", "PRAGMA journal_mode = WAL"]).await;
+        // Not assert_eq: it would print both files.
+        assert!(std::fs::read(&path).unwrap() == before, "the file changed");
+        assert!(!dir.path().join("fixture.db-wal").exists());
+        assert!(matches!(ran, Err(Error::LeftReadOnly)), "{ran:?}");
+    }
+
+    #[test]
+    fn a_raw_where_holding_a_statement_separator_is_refused() {
+        let mut query = RowQuery::new(ObjectRef::new("main", "users"), 10);
+        for raw in [
+            "1 = 1; DELETE FROM users",
+            "1=1); PRAGMA query_only = 0; SELECT (1",
+            "1=1;",
+        ] {
+            query.raw_where = Some(raw.into());
+            let checked = check_raw_where(&query);
+            assert!(
+                matches!(&checked, Err(Error::Query { message, .. }) if message.contains("`;`")),
+                "{raw}: {checked:?}"
+            );
+        }
+        // In a string, a name or a comment it separates nothing.
+        for raw in [
+            "email LIKE '%;%'",
+            "\"a;b\" = 1 OR [a;b] = 1 OR `a;b` = 1",
+            "id = 1 /* one; only */",
+        ] {
+            query.raw_where = Some(raw.into());
+            assert_eq!(check_raw_where(&query), Ok(()), "{raw}");
+        }
+    }
+
+    #[tokio::test]
+    async fn failed_browsing_puts_the_session_settings_back() {
+        for access in [Access::ReadOnly, Access::Writable] {
+            let (conn, _dir) = fixture_as(access).await;
+            // What a WHERE text does when its `;` gets past
+            // `check_raw_where`: rusqlite prepares the second statement,
+            // which is all a flag pragma needs, and then refuses the text.
+            let failed = conn
+                .browse(|connection| {
+                    connection
+                        .prepare("SELECT 1; PRAGMA query_only = 0")
+                        .map(|_| ())
+                        .map_err(map_error)
+                })
+                .await;
+            assert!(matches!(failed, Err(Error::Query { .. })), "{failed:?}");
+            let query_only = conn
+                .run(|connection| {
+                    connection
+                        .query_row("PRAGMA query_only", [], |row| row.get::<_, i64>(0))
+                        .map_err(map_error)
+                })
+                .await
+                .unwrap();
+            assert_eq!(query_only, 1, "{access:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_statement_after_query_only_went_off_does_not_run() {
+        // The COMMIT would keep the UPDATE whatever the end of the run did,
+        // so the UPDATE must not run at all.
+        let (conn, _dir) = fixture_as(Access::Writable).await;
+        let ran = run_unrefused(
+            &conn,
+            &[
+                "PRAGMA query_only = OFF",
+                "UPDATE users SET email = 'x' WHERE id = 1",
+                "COMMIT",
+            ],
+        )
+        .await;
+        let changed = conn
+            .run(|connection| {
+                connection
+                    .query_row("SELECT count(*) FROM users WHERE email = 'x'", [], |row| {
+                        row.get::<_, i64>(0)
+                    })
+                    .map_err(map_error)
+            })
+            .await
+            .unwrap();
+        assert_eq!(changed, 0);
+        assert!(matches!(ran, Err(Error::LeftReadOnly)), "{ran:?}");
     }
 
     #[test]
