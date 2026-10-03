@@ -778,8 +778,17 @@ fn watch_settings(path: PathBuf, outbox: Outbox) -> notify::Result<notify::Recom
         .filter(|parent| !parent.as_os_str().is_empty())
         .unwrap_or(std::path::Path::new("."));
     watcher.watch(directory, notify::RecursiveMode::NonRecursive)?;
-    tokio::spawn(read_settings(path, changes, outbox));
+    tokio::spawn(read_settings(path, changes, outbox, read_file));
     Ok(watcher)
+}
+
+/// Reads `path` on the blocking pool: a disk can be slow, and the runtime's
+/// threads serve every session.
+async fn read_file(path: PathBuf) -> std::io::Result<Vec<u8>> {
+    match tokio::task::spawn_blocking(move || std::fs::read(path)).await {
+        Ok(read) => read,
+        Err(error) => Err(std::io::Error::other(error)),
+    }
 }
 
 /// Whether `event` says the file named `name` may have changed. Not when it
@@ -805,44 +814,68 @@ async fn settled(changes: &mut tokio_mpsc::UnboundedReceiver<()>) -> bool {
     }
 }
 
+/// How many times the settings file is read for one change before the
+/// reader leaves it until the next: a file that cannot be read at all (its
+/// permissions, say) is not tried for ever.
+const READ_TRIES: u32 = 6;
+
+/// The longest wait between two of those reads. The first wait is `SETTLE`
+/// and each after it twice as long: an editor that still holds the file
+/// lets go within moments, and one that does not is asked less and less.
+const READ_AGAIN_MAX: Duration = Duration::from_secs(1);
+
 /// Sends the settings file's text each time it changes, once the changes
-/// have settled. Ends when the watcher is dropped.
-async fn read_settings(
+/// have settled. A read that fails is tried again, `READ_TRIES` times in
+/// all. Ends when the watcher is dropped. `read` reads the file: the tests
+/// have one that fails.
+async fn read_settings<R, F>(
     path: PathBuf,
     mut changes: tokio_mpsc::UnboundedReceiver<()>,
     outbox: Outbox,
-) {
+    read: R,
+) where
+    R: Fn(PathBuf) -> F,
+    F: Future<Output = std::io::Result<Vec<u8>>>,
+{
     // What was sent last: the same text is not news, whatever woke us.
     let mut sent: Option<String> = None;
     while changes.recv().await.is_some() {
-        if !settled(&mut changes).await {
-            return;
-        }
-        let read = || {
-            let file = path.clone();
-            tokio::task::spawn_blocking(move || std::fs::read(file))
+        let bytes = 'settle: loop {
+            if !settled(&mut changes).await {
+                return;
+            }
+            let mut tries = 1;
+            let mut wait = SETTLE;
+            loop {
+                match read(path.clone()).await {
+                    Ok(bytes) => break 'settle Some(bytes),
+                    // Deleted: the settings in memory stay, and the next
+                    // change made in the app writes the file again. No
+                    // wait brings it back.
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                        break 'settle None;
+                    }
+                    Err(error) if tries == READ_TRIES => {
+                        log::warn!("could not read {}: {error}", path.display());
+                        break 'settle None;
+                    }
+                    Err(_) => tries += 1,
+                }
+                // An editor may still hold the file (a sharing violation on
+                // Windows), and its letting go is not a change: nothing
+                // would wake us. So the change stays pending, and the file
+                // is tried again once the editor has had the time.
+                match tokio::time::timeout(wait, changes.recv()).await {
+                    // Changed meanwhile: a new save, to be left to settle
+                    // and read from the first try.
+                    Ok(Some(())) => continue 'settle,
+                    Ok(None) => return,
+                    Err(_) => wait = (wait * 2).min(READ_AGAIN_MAX),
+                }
+            }
         };
-        let mut bytes = read().await;
-        // An editor may still hold the file (a sharing violation on
-        // Windows), and nothing says another change follows to wake us:
-        // one more try, once it has had the time to let go.
-        if matches!(&bytes, Ok(Err(error)) if error.kind() != std::io::ErrorKind::NotFound) {
-            tokio::time::sleep(SETTLE).await;
-            bytes = read().await;
-        }
-        let bytes = match bytes {
-            Ok(Ok(bytes)) => bytes,
-            // Deleted: the settings in memory stay, and the next change
-            // made in the app writes the file again.
-            Ok(Err(error)) if error.kind() == std::io::ErrorKind::NotFound => continue,
-            Ok(Err(error)) => {
-                log::warn!("could not read {}: {error}", path.display());
-                continue;
-            }
-            Err(error) => {
-                log::warn!("could not read {}: {error}", path.display());
-                continue;
-            }
+        let Some(bytes) = bytes else {
+            continue;
         };
         match String::from_utf8(bytes) {
             Ok(text) if sent.as_deref() == Some(text.as_str()) => {}
@@ -3721,6 +3754,132 @@ mod tests {
             // The watcher is gone: there is nothing left to read for.
             drop(changed);
             assert!(!settled(&mut changes).await);
+        });
+    }
+
+    /// The reader of a settings file whose read number `n`, from 0, answers
+    /// with `answer(n)`: the channel that wakes it, what it sends, and when
+    /// each read was.
+    fn reader(
+        answer: impl Fn(usize) -> std::io::Result<Vec<u8>> + Send + 'static,
+    ) -> (
+        tokio_mpsc::UnboundedSender<()>,
+        mpsc::Receiver<Event>,
+        Arc<Mutex<Vec<tokio::time::Instant>>>,
+    ) {
+        let (outbox, events) = quiet_outbox();
+        let (changed, changes) = tokio_mpsc::unbounded_channel();
+        let reads = Arc::new(Mutex::new(Vec::new()));
+        let noted = Arc::clone(&reads);
+        let read = move |_: PathBuf| {
+            let mut reads = lock(&noted);
+            reads.push(tokio::time::Instant::now());
+            std::future::ready(answer(reads.len() - 1))
+        };
+        tokio::spawn(read_settings("settings.toml".into(), changes, outbox, read));
+        (changed, events, reads)
+    }
+
+    /// What a read answers while an editor holds the file.
+    fn held() -> std::io::Error {
+        std::io::ErrorKind::PermissionDenied.into()
+    }
+
+    /// The texts of the settings file sent so far.
+    fn texts(events: &mpsc::Receiver<Event>) -> Vec<String> {
+        let text = |event| match event {
+            Event::SettingsFile { text } => Some(text),
+            _ => None,
+        };
+        events.try_iter().filter_map(text).collect()
+    }
+
+    const PAGE_500: &str = "[data]\npage_size = 500\n";
+
+    #[test]
+    fn a_settings_file_that_cannot_be_read_is_tried_again() {
+        paused().block_on(async {
+            // An editor holds the file through two reads, and lets go
+            // without another change to say so.
+            let (changed, events, reads) = reader(|read| match read {
+                0 | 1 => Err(held()),
+                _ => Ok(PAGE_500.into()),
+            });
+            let start = tokio::time::Instant::now();
+            changed.send(()).unwrap();
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            assert_eq!(texts(&events), [PAGE_500]);
+            // Once the change has settled, then after a wait that doubles.
+            assert_eq!(sent_at(&reads, start), [100, 200, 400]);
+        });
+    }
+
+    #[test]
+    fn a_settings_file_that_stays_unreadable_is_left_until_it_changes() {
+        paused().block_on(async {
+            let (changed, events, reads) = reader(|read| match read {
+                0..6 => Err(held()),
+                _ => Ok(PAGE_500.into()),
+            });
+            let start = tokio::time::Instant::now();
+            changed.send(()).unwrap();
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            // Six reads, the waits between them doubling up to a second,
+            // and no more: the reader does not ask for ever.
+            assert_eq!(sent_at(&reads, start), [100, 200, 400, 800, 1_600, 2_600]);
+            assert!(texts(&events).is_empty());
+            // The next change is read as any other.
+            changed.send(()).unwrap();
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            assert_eq!(sent_at(&reads, start).len(), 7);
+            assert_eq!(texts(&events), [PAGE_500]);
+        });
+    }
+
+    #[test]
+    fn a_settings_file_that_is_gone_is_read_once() {
+        paused().block_on(async {
+            let (changed, events, reads) = reader(|_| Err(std::io::ErrorKind::NotFound.into()));
+            let start = tokio::time::Instant::now();
+            changed.send(()).unwrap();
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            // Waiting does not bring a deleted file back.
+            assert_eq!(sent_at(&reads, start), [100]);
+            assert!(texts(&events).is_empty());
+        });
+    }
+
+    #[test]
+    fn a_change_while_a_read_waits_starts_over() {
+        paused().block_on(async {
+            let (changed, events, reads) = reader(|read| match read {
+                0..4 => Err(held()),
+                _ => Ok(PAGE_500.into()),
+            });
+            let start = tokio::time::Instant::now();
+            changed.send(()).unwrap();
+            // The third read has failed, and the fourth is due at 800.
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            changed.send(()).unwrap();
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            // The file changed again: it is left to settle, and the waits
+            // begin again from the shortest.
+            assert_eq!(sent_at(&reads, start), [100, 200, 400, 600, 700]);
+            assert_eq!(texts(&events), [PAGE_500]);
+        });
+    }
+
+    #[test]
+    fn a_read_that_waits_ends_with_the_watch() {
+        paused().block_on(async {
+            let (changed, events, reads) = reader(|_| Err(held()));
+            let start = tokio::time::Instant::now();
+            changed.send(()).unwrap();
+            tokio::time::sleep(Duration::from_millis(150)).await;
+            drop(changed);
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            assert_eq!(sent_at(&reads, start), [100]);
+            assert!(texts(&events).is_empty());
         });
     }
 
