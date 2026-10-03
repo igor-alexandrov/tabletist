@@ -675,8 +675,12 @@ pub fn range_label(
 
 /// `1234567` as `1,234,567`.
 pub fn group_digits(number: u64) -> String {
-    let digits = number.to_string();
-    let mut out = String::new();
+    grouped(&number.to_string())
+}
+
+/// A run of digits with a comma between every three, counted from the end.
+fn grouped(digits: &str) -> String {
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
     for (index, digit) in digits.chars().enumerate() {
         if index > 0 && (digits.len() - index).is_multiple_of(3) {
             out.push(',');
@@ -684,6 +688,31 @@ pub fn group_digits(number: u64) -> String {
         out.push(digit);
     }
     out
+}
+
+/// A plain decimal number with its integer digits in threes: `1240.50` as
+/// `1,240.50`. Anything else (an exponent, `NaN`, a currency sign) comes
+/// back as it is, and so does a number with nothing to group. The fraction
+/// is never touched.
+pub fn group_number(text: &str) -> Cow<'_, str> {
+    let (sign, rest) = match text.strip_prefix('-') {
+        Some(rest) => ("-", rest),
+        None => ("", text),
+    };
+    let (whole, fraction) = match rest.split_once('.') {
+        Some((whole, fraction)) => (whole, Some(fraction)),
+        None => (rest, None),
+    };
+    let digits = |part: &str| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit());
+    if !digits(whole) || fraction.is_some_and(|fraction| !digits(fraction)) || whole.len() <= 3 {
+        return Cow::Borrowed(text);
+    }
+    let mut out = format!("{sign}{}", grouped(whole));
+    if let Some(fraction) = fraction {
+        out.push('.');
+        out.push_str(fraction);
+    }
+    Cow::Owned(out)
 }
 
 /// What went wrong, in words for someone who is not reading driver
@@ -1444,5 +1473,47 @@ mod tests {
             describe_error(Marked, &Error::query("syntax error at \"x\"")),
             "syntax error at \"x\""
         );
+    }
+
+    #[test]
+    fn a_number_groups_its_integer_digits_in_threes() {
+        use super::group_number;
+        assert_eq!(group_number("1240.50"), "1,240.50");
+        assert_eq!(group_number("-9100000"), "-9,100,000");
+        assert_eq!(group_number("1234567.891011"), "1,234,567.891011");
+        // More digits than any integer type holds: it is text all the way.
+        assert_eq!(
+            group_number("123456789012345678901234567890"),
+            "123,456,789,012,345,678,901,234,567,890"
+        );
+    }
+
+    #[test]
+    fn what_is_not_a_plain_number_is_left_as_it_is() {
+        use super::group_number;
+        use std::borrow::Cow;
+        for text in [
+            "999",
+            "-999",
+            "0.5",
+            "1e21",
+            "NaN",
+            "inf",
+            "-inf",
+            "$1240.50",
+            "1,240",
+            "1240.",
+            ".5",
+            "",
+            "-",
+            "1.2.3",
+            "１２３４",
+            " 1240",
+        ] {
+            assert!(
+                matches!(group_number(text), Cow::Borrowed(same) if same == text),
+                "{text:?}"
+            );
+        }
     }
 }
