@@ -897,7 +897,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 ### Task 5: The file is `settings.toml`
 
-> **After review.** The listings in Tasks 4 and 5 are as first written. What was built differs where the reviews found something: an error at the end of the text blames the last line TOML does not call blank (`last_line`); `Loaded::of` brings the settings into range itself, so the JSON arm of `load` does not; a `settings.toml` that cannot be read is kept aside like one that is not UTF-8; and `take`'s comment says an integer an `i64` cannot hold is no value. `src/settings.rs` is the record.
+> **After review.** The listings in Tasks 4 and 5 are as first written. What was built differs where the reviews found something: an error at the end of the text blames the last line TOML does not call blank (`last_line`); `Loaded::of` brings the settings into range itself, so the JSON arm of `load` does not; a `settings.toml` that cannot be read is kept aside like one that is not UTF-8; and `take`'s comment says an integer an `i64` cannot hold is no value. A text longer than a settings file can be (`MAX_LINES`, `MAX_BYTES`) is not read at all, since the reader takes a pass per bad line at worst; and more than twenty ignored lines are told in the log by their number. `src/settings.rs` is the record.
 
 **Files:**
 - Modify: `src/paths.rs`, `src/util.rs`, `src/settings.rs`, `src/backend.rs` (test near line 3090), `src/entrypoint.rs:111`, `src/app.rs`
@@ -1358,6 +1358,8 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 - Test: `src/ui/data_view.rs`, `src/ui/mod.rs`
 
 `cell` and `plain_cell` take one more thing to know. Their last parameter `full_precision: bool` becomes `shown: Shown`.
+
+> **After review.** The ending of `plain_cell` listed in Step 3 groups a `Value::Text` after `cell_line` has cut it to a cell's length, so a number longer than a cell shows ended in an ellipsis and was left ungrouped. What was built groups first and cuts after, for a text value and for the rest alike (test `a_number_too_long_for_a_cell_is_grouped_before_it_is_cut`). The listing stays as first written; `src/ui/data_view.rs` is the record, and its ending is not to be put back.
 
 - [ ] **Step 1: Write the failing tests**
 

@@ -181,6 +181,12 @@ Lines the parser rejected join `invalid` too. Every ignored line is logged
 with its number when the file is read, so a typo is never silent, even
 before a window shows it.
 
+The reader takes a pass over the text for each bad line at worst, so it is
+bounded by what a settings file can be: a text of more than 1,000 lines or
+64 KiB is not read at all. The defaults are used and every line of it that
+says something is marked ignored. The log names up to twenty ignored lines;
+more are told by their number.
+
 `load` picks the source:
 
 1. `settings.toml` exists: read it (`Source::Toml`). A file that is not
