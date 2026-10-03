@@ -53,8 +53,8 @@ impl AppDirs {
         self.config.join("settings.toml")
     }
 
-    /// Where versions before the TOML file kept the settings. Read once,
-    /// when there is no `settings.toml`, and never written.
+    /// Where versions before the TOML file kept the settings. Read at a
+    /// start that finds no `settings.toml`, and never written.
     pub fn legacy_settings_file(&self) -> PathBuf {
         self.config.join("settings.json")
     }

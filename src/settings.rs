@@ -135,7 +135,7 @@ fn quote(text: &str) -> String {
     out
 }
 
-/// Where the settings a start has came from.
+/// Where a start's settings came from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Source {
     /// `settings.toml`.
