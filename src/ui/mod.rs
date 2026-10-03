@@ -564,6 +564,33 @@ mod tests {
     }
 
     #[test]
+    fn an_option_that_is_not_the_page_size_fetches_no_page_again() {
+        let mut harness = Harness::new();
+        let tab = harness.connect_fake();
+        harness.click("users");
+        harness.answer_rows(crate::testing::page(3, true));
+        // A page of the old size on a session that answers again: the size
+        // changed while it was down, and nothing was fetched since.
+        harness.app.workspace_mut(tab).unwrap().status =
+            crate::model::SessionStatus::Disconnected(tabletist_db::Error::query("gone"));
+        let settings = crate::settings::Settings {
+            page_size: 500,
+            ..harness.app.settings.clone()
+        };
+        harness.app.apply_settings(settings);
+        harness.app.workspace_mut(tab).unwrap().status = crate::model::SessionStatus::Connected;
+        let before = fetches(&harness);
+        // A new page size would fetch this page again. Another option is no
+        // reason to.
+        let settings = crate::settings::Settings {
+            group_digits: true,
+            ..harness.app.settings.clone()
+        };
+        harness.app.apply_settings(settings);
+        assert_eq!(fetches(&harness), before);
+    }
+
+    #[test]
     fn a_change_of_the_timestamps_option_reaches_every_open_workspace() {
         let mut harness = Harness::new();
         let tab = harness.connect_fake();
@@ -602,6 +629,7 @@ mod tests {
         };
         harness.app.apply_settings(settings);
         harness.settle();
+        // Not described yet: `id` is not known to be a key, so it is grouped.
         // Six commas wider. With the widths of the plain number the cell
         // would be cut short and this text never painted whole.
         assert!(harness.painted_color("9,223,372,036,854,775,807").is_some());

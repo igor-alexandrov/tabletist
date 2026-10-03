@@ -61,7 +61,8 @@ pub struct TitleBar {
 pub struct App {
     pub dirs: AppDirs,
     pub settings: Settings,
-    /// The settings file as the app last read or wrote it.
+    /// The settings file as the app last read or wrote it or, before any
+    /// file exists, as it would be written.
     pub settings_file: SettingsFile,
     pub locale: Locale,
     pub palette: Palette,
@@ -3456,14 +3457,26 @@ mod tests {
     #[test]
     fn a_new_theme_name_is_resolved_at_the_next_logic_pass() {
         let mut harness = Harness::new();
+        // A catalog that holds the theme already: no directory is read.
+        let mut nord = Palette::dark();
+        nord.accent = egui::Color32::from_rgb(0x88, 0xc0, 0xd0);
+        harness.app.themes = Catalog::preview(
+            vec![crate::theme::CustomTheme {
+                filename: "Nord.json".into(),
+                palette: nord,
+            }],
+            false,
+        );
         let settings = Settings {
             custom_theme: Some("Nord.json".into()),
             ..harness.app.settings.clone()
         };
         harness.app.apply_settings(settings);
         assert!(harness.app.theme_changed);
+        assert_ne!(harness.app.palette, nord, "not before `logic`");
         harness.app.logic(&harness.ctx.clone());
         assert!(!harness.app.theme_changed);
+        assert_eq!(harness.app.palette, nord.with_readable_labels());
         // Tests do not follow the desktop: no scan of the themes directory.
         assert!(!harness.app.themes.loading());
     }
@@ -4017,6 +4030,17 @@ mod tests {
         app.change_settings(|settings| settings.page_size = 5);
         assert_eq!(app.settings.page_size, Settings::MIN_PAGE_SIZE);
         assert_eq!(settings_saves(&app).len(), 1);
+    }
+
+    #[test]
+    fn a_change_that_is_brought_back_to_what_was_set_is_not_written() {
+        let (mut app, _dir) = app();
+        app.change_settings(|settings| settings.page_size = Settings::MIN_PAGE_SIZE);
+        let saved = settings_saves(&app).len();
+        // Below the range: brought up to the size already set.
+        app.change_settings(|settings| settings.page_size = 5);
+        assert_eq!(app.settings.page_size, Settings::MIN_PAGE_SIZE);
+        assert_eq!(settings_saves(&app).len(), saved);
     }
 
     #[test]
