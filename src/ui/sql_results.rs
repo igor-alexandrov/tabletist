@@ -195,6 +195,8 @@ struct Place<'a> {
     sql: &'a SqlTab,
     /// Timestamps in full, as the workspace's tables show them.
     full_precision: bool,
+    /// Numbers in threes, as the settings ask.
+    grouped: bool,
     /// Whose error codes the results read.
     driver: tabletist_db::Driver,
     /// Whether the arrow keys move in the result's grid.
@@ -218,6 +220,7 @@ fn draw(app: &App, ui: &mut Ui, tab: ConnTabId, id: TabId, actions: &mut Vec<Act
         tab,
         sql,
         full_precision: workspace.full_precision,
+        grouped: app.settings.group_digits,
         driver: workspace.driver,
         keys: workspace.pane == crate::model::Pane::Grid,
     };
@@ -1046,6 +1049,7 @@ fn results(ui: &mut Ui, run: &SqlRun, place: &Place<'_>, env: &Env<'_>, actions:
         tab,
         sql,
         full_precision,
+        grouped,
         keys,
         ..
     } = *place;
@@ -1158,7 +1162,11 @@ fn results(ui: &mut Ui, run: &SqlRun, place: &Place<'_>, env: &Env<'_>, actions:
                 &columns[col],
                 &tags[col],
                 look,
-                full_precision,
+                data_view::Shown {
+                    full_precision,
+                    // A result has no key to leave alone.
+                    grouped,
+                },
             )
         },
     );

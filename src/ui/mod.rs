@@ -418,6 +418,54 @@ mod tests {
     }
 
     #[test]
+    fn numbers_are_grouped_when_the_settings_say_so_but_keys_never_are() {
+        let mut harness = Harness::new();
+        harness.app.settings.group_digits = true;
+        let tab = harness.connect_fake();
+        harness.click("users");
+        let mut page = crate::testing::page(1, false);
+        page.rows[0][0] = tabletist_db::Value::Int(1_234_567);
+        page.columns[1].name = "amount".into();
+        page.columns[1].kind = tabletist_db::ValueKind::Numeric;
+        page.rows[0][1] = tabletist_db::Value::Text("1240.50".into());
+        harness.answer_rows(page);
+        harness.settle();
+        // Not described yet: no column is known to be a key.
+        assert!(harness.painted_color("1,234,567").is_some());
+        assert!(harness.painted_color("1,240.50").is_some());
+        harness.answer_structure(tabletist_db::Structure {
+            primary_key: vec!["id".into()],
+            ..Default::default()
+        });
+        harness.settle();
+        assert!(harness.painted_color("1234567").is_some());
+        assert!(harness.painted_color("1,234,567").is_none());
+        assert!(harness.painted_color("1,240.50").is_some());
+        // A copy gives the value as it is.
+        let object_tab = harness.app.workspace(tab).unwrap().active_tab.unwrap();
+        harness.app.apply(crate::model::Action::SelectCell {
+            tab,
+            id: object_tab,
+            cell: crate::model::CellPos { row: 0, col: 1 },
+        });
+        harness.app.workspace_mut(tab).unwrap().pane = crate::model::Pane::Grid;
+        harness.copy(false);
+        assert_eq!(harness.copied.as_deref(), Some("1240.50"));
+    }
+
+    #[test]
+    fn numbers_are_plain_when_the_settings_do_not_group() {
+        let mut harness = Harness::new();
+        harness.connect_fake();
+        harness.click("users");
+        let mut page = crate::testing::page(1, false);
+        page.rows[0][0] = tabletist_db::Value::Int(1_234_567);
+        harness.answer_rows(page);
+        harness.settle();
+        assert!(harness.painted_color("1234567").is_some());
+    }
+
+    #[test]
     fn the_timestamp_hint_gives_way_to_the_filter_chips() {
         use egui::accesskit::Role;
         for look in [crate::theme::Look::standard(), crate::theme::Look::macos()] {
@@ -3477,6 +3525,27 @@ mod tests {
         assert!(fields(&harness));
         harness.click("Close the row panel");
         assert!(!fields(&harness));
+    }
+
+    #[test]
+    fn a_result_groups_every_number_when_the_settings_say_so() {
+        let mut harness = Harness::new();
+        harness.app.settings.group_digits = true;
+        let tab = harness.connect_fake();
+        let mut page = crate::testing::page(1, false);
+        page.rows[0][0] = tabletist_db::Value::Int(1_234_567);
+        with_sql_outcome(
+            &mut harness,
+            tab,
+            tabletist_db::StatementOutcome::Rows {
+                columns: page.columns,
+                rows: page.rows,
+                truncated: false,
+            },
+        );
+        harness.settle();
+        // No structure to name a key: `id` is grouped here.
+        assert!(harness.painted_color("1,234,567").is_some());
     }
 
     #[test]
