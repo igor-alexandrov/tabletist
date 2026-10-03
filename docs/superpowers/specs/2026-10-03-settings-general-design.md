@@ -83,7 +83,7 @@ kept as `AppDirs::legacy_settings_file()` for the migration.
     # written by tabletist, safe to edit by hand
     [data]
     page_size    = 300
-    timestamps   = "second"    # second | full
+    timestamps   = "second"  # second | full
     group_digits = false
     value_tags   = true
 
@@ -92,7 +92,7 @@ kept as `AppDirs::legacy_settings_file()` for the migration.
 
     [editor]
     sql_limit        = 1000
-    sql_timeout_secs = 30      # 0 waits forever
+    sql_timeout_secs = 30  # 0 waits forever
 
     [appearance]
     theme = "Nord.json"
@@ -120,8 +120,8 @@ the old JSON still deserializes; fields the JSON lacks take their defaults.
 
 `Settings::to_toml(&self) -> String` renders the text above: the header
 comment, the tables in that order, keys aligned within a table, and the
-comment that lists a key's values where it has a closed set. It is the only
-writer. `StateFile::Settings` saves that text through `util::write_atomic`.
+comment that lists a key's values where it has a closed set, two spaces
+after the value. It is the only writer. `StateFile::Settings` saves that text through `util::write_atomic`.
 
 ### Reading
 
@@ -145,10 +145,19 @@ writer. `StateFile::Settings` saves that text through `util::write_atomic`.
 `Key` names the eight keys above.
 
 `from_toml` parses with `toml::de::DeTable::parse_recoverable`, which
-returns what it could read and the errors for what it could not. Keys,
-values and errors carry byte spans; a line number is one more than the count
-of newlines before a span's start, and `invalid` holds each line once. An error without
-a span marks no line and is logged. Then, for each known key:
+returns a document and its errors. Keys, values and errors carry byte spans;
+a line number is one more than the count of newlines before a span's start,
+and `invalid` holds each line once. An error without a span marks no line
+and is logged.
+
+The parser's own recovery is not enough: after a line with a key and no `=`
+it reads nothing more, and for a value it rejects (`timestamps = full`,
+unquoted) it still returns a guess. So `from_toml` empties every line the
+parser rejected, keeping its line break, and parses again until nothing more
+is rejected. One bad line then costs that line and nothing else, and a
+rejected line is never applied. `Loaded::text` stays the file's own text.
+
+Then, for each known key:
 
 - A value of the wrong type, or a string outside a closed set
   (`timestamps = "minute"`), is ignored: the key keeps its default and its
