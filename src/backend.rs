@@ -3437,9 +3437,11 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
     #[test]
     fn a_state_file_saved_through_a_symbolic_link_keeps_the_link() {
+        if !crate::util::can_symlink() {
+            return;
+        }
         let dir = tempfile::tempdir().unwrap();
         let (config, dotfiles) = config_and_dotfiles(dir.path());
         let mut backend = Backend::start_with(Waker::default(), Keyring::memory());
@@ -3462,7 +3464,7 @@ mod tests {
             // and a link in the config directory.
             let (path, target) = (config.join(name), dotfiles.join(name));
             std::fs::write(&target, "from the repository").unwrap();
-            std::os::unix::fs::symlink(&target, &path).unwrap();
+            crate::util::symlink_file(&target, &path);
             backend.send(Command::Save {
                 path: path.clone(),
                 file,
@@ -4181,7 +4183,6 @@ mod tests {
     }
 
     /// A config directory and a dotfiles directory under `root`.
-    #[cfg(unix)]
     fn config_and_dotfiles(root: &std::path::Path) -> (PathBuf, PathBuf) {
         let (config, dotfiles) = (root.join("config"), root.join("dotfiles"));
         std::fs::create_dir_all(&config).unwrap();
@@ -4189,9 +4190,11 @@ mod tests {
         (config, dotfiles)
     }
 
-    #[cfg(unix)]
     #[test]
     fn an_edit_behind_a_symbolic_link_is_read() {
+        if !crate::util::can_symlink() {
+            return;
+        }
         let dir = tempfile::tempdir().unwrap();
         let (config, dotfiles) = config_and_dotfiles(dir.path());
         // As a dotfiles manager leaves it: the file in its repository,
@@ -4201,7 +4204,7 @@ mod tests {
             dotfiles.join("tabletist.toml"),
         );
         std::fs::write(&target, "[data]\npage_size = 100\n").unwrap();
-        std::os::unix::fs::symlink(&target, &path).unwrap();
+        crate::util::symlink_file(&target, &path);
         let (mut backend, live) = watching(&path);
         assert!(live);
         // An edit of the file in the repository, in place.
@@ -4216,9 +4219,11 @@ mod tests {
         assert_eq!(std::fs::read_link(&path).unwrap(), target);
     }
 
-    #[cfg(unix)]
     #[test]
     fn a_link_made_while_the_file_is_watched_is_followed() {
+        if !crate::util::can_symlink() {
+            return;
+        }
         let dir = tempfile::tempdir().unwrap();
         let (config, dotfiles) = config_and_dotfiles(dir.path());
         let (path, target) = (config.join("settings.toml"), dotfiles.join("settings.toml"));
@@ -4228,28 +4233,30 @@ mod tests {
         // The file moves to the repository and a link takes its place.
         std::fs::write(&target, "[data]\npage_size = 500\n").unwrap();
         std::fs::remove_file(&path).unwrap();
-        std::os::unix::fs::symlink(&target, &path).unwrap();
+        crate::util::symlink_file(&target, &path);
         assert!(!texts_until(&mut backend, "[data]\npage_size = 500\n").is_empty());
         // From then on an edit made there is seen.
         std::fs::write(&target, "[data]\npage_size = 1000\n").unwrap();
         assert!(!texts_until(&mut backend, "[data]\npage_size = 1000\n").is_empty());
     }
 
-    #[cfg(unix)]
     #[test]
     fn a_link_to_where_nothing_can_be_watched_is_not_live() {
+        if !crate::util::can_symlink() {
+            return;
+        }
         let dir = tempfile::tempdir().unwrap();
         let (config, dotfiles) = config_and_dotfiles(dir.path());
         let path = config.join("settings.toml");
         // The directory the link leads to is not there.
-        std::os::unix::fs::symlink(dir.path().join("away").join("settings.toml"), &path).unwrap();
+        crate::util::symlink_file(dir.path().join("away").join("settings.toml"), &path);
         let (mut backend, live) = watching(&path);
         assert!(!live, "an edit made there would not be seen");
         // The link is turned to a directory that is: said, and followed.
         let target = dotfiles.join("settings.toml");
         std::fs::write(&target, "[data]\npage_size = 500\n").unwrap();
         std::fs::remove_file(&path).unwrap();
-        std::os::unix::fs::symlink(&target, &path).unwrap();
+        crate::util::symlink_file(&target, &path);
         assert!(matches!(
             backend.wait(WAIT),
             Some(Event::SettingsWatch { live: true })
@@ -4260,15 +4267,16 @@ mod tests {
     }
 
     /// Puts a link to `target` at `path`, in place of what is there.
-    #[cfg(unix)]
     fn link_anew(target: &std::path::Path, path: &std::path::Path) {
         let _ = std::fs::remove_file(path);
-        std::os::unix::fs::symlink(target, path).unwrap();
+        crate::util::symlink_file(target, path);
     }
 
-    #[cfg(unix)]
     #[test]
     fn the_watcher_watches_where_the_link_leads_each_time_it_turns() {
+        if !crate::util::can_symlink() {
+            return;
+        }
         let dir = tempfile::tempdir().unwrap();
         let (config, dotfiles) = config_and_dotfiles(dir.path());
         let other = dir.path().join("other");
@@ -4325,7 +4333,7 @@ mod tests {
         assert_eq!(watch.follow(), Ok(()));
         assert_eq!(names(&watch), ["settings.toml", "real.toml"]);
         assert_eq!(watch.elsewhere, None);
-        link_anew(&dotfiles.join("../config/real.toml"), &path);
+        link_anew(&dotfiles.join("..").join("config").join("real.toml"), &path);
         assert_eq!(watch.follow(), Ok(()));
         assert_eq!(watch.elsewhere, None);
 
@@ -4339,9 +4347,11 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
     #[test]
     fn a_link_turned_while_the_file_is_watched_is_followed() {
+        if !crate::util::can_symlink() {
+            return;
+        }
         let dir = tempfile::tempdir().unwrap();
         let (config, dotfiles) = config_and_dotfiles(dir.path());
         let other = dir.path().join("other");
@@ -4350,7 +4360,7 @@ mod tests {
         let (first, second) = (dotfiles.join("settings.toml"), other.join("settings.toml"));
         std::fs::write(&first, "[data]\npage_size = 100\n").unwrap();
         std::fs::write(&second, "[data]\npage_size = 500\n").unwrap();
-        std::os::unix::fs::symlink(&first, &path).unwrap();
+        crate::util::symlink_file(&first, &path);
         let (mut backend, live) = watching(&path);
         assert!(live);
 
@@ -4386,9 +4396,11 @@ mod tests {
         assert!(!texts_until(&mut backend, "[data]\npage_size = 100\n").is_empty());
     }
 
-    #[cfg(unix)]
     #[test]
     fn a_place_that_appears_behind_a_link_is_found() {
+        if !crate::util::can_symlink() {
+            return;
+        }
         let dir = tempfile::tempdir().unwrap();
         let (config, _) = config_and_dotfiles(dir.path());
         let path = config.join("settings.toml");
@@ -4396,7 +4408,7 @@ mod tests {
         // is not mounted).
         let away = dir.path().join("away");
         let target = away.join("settings.toml");
-        std::os::unix::fs::symlink(&target, &path).unwrap();
+        crate::util::symlink_file(&target, &path);
         let (mut backend, live) = watching(&path);
         assert!(!live);
         // It appears, and nothing changes beside the link: no event says so.
