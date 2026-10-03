@@ -403,7 +403,9 @@ fn fixture_connection() -> SavedConnection {
         id: ConnectionId::new(),
         name: "Fixture".into(),
         environment: crate::env::Environment::Dev,
-        read_only: None,
+        // Read-only, as every connection was when most tests were written.
+        // A test of a writable connection says so itself.
+        read_only: Some(true),
         password: crate::connections::PasswordMode::None,
         ssh_secret: crate::connections::PasswordMode::None,
         spec: ConnectSpec::sqlite("/tmp/fixture.db"),

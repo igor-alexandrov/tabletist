@@ -1437,15 +1437,25 @@ impl App {
 
     /// Sends the Connect for the tab's current session and request.
     fn send_connect(&mut self, tab: ConnTabId, secrets: Secrets) {
+        // The saved connection's box as it stands now: a session's access
+        // is fixed when it connects, so a reconnect picks up a change. A
+        // connection deleted since keeps what the tab opened with.
+        let saved = self
+            .workspace(tab)
+            .and_then(|workspace| self.connections.get(&workspace.conn_id))
+            .map(SavedConnection::access);
         let Some(workspace) = self.workspace_mut(tab) else {
             return;
         };
         let SessionStatus::Connecting { request } = workspace.status else {
             return;
         };
+        if let Some(access) = saved {
+            workspace.access = access;
+        }
         workspace.secrets = secrets.clone();
         workspace.connect_started = Some(std::time::Instant::now());
-        let (session, spec) = (workspace.session, workspace.spec.clone());
+        let (session, spec, access) = (workspace.session, workspace.spec.clone(), workspace.access);
         // A blank answer means "no password" to the server.
         let mut secrets = secrets;
         for slot in [
@@ -1463,6 +1473,7 @@ impl App {
             spec,
             secrets,
             host_keys: self.host_keys.clone(),
+            access,
         });
     }
 
@@ -3519,6 +3530,30 @@ mod tests {
             }) => (tab, *session, *request),
             other => panic!("expected a Connect command, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn a_session_opens_with_the_access_its_saved_connection_asks_for() {
+        use tabletist_db::Access;
+        let sent = |app: &App| match app.backend.sent.last() {
+            Some(Command::Connect { access, .. }) => *access,
+            other => panic!("expected a Connect command, got {other:?}"),
+        };
+        let (mut app, _dir) = app();
+        // Dev, its box never set: writable.
+        let (tab, _, _) = connect(&mut app);
+        assert_eq!(sent(&app), Access::Writable);
+        assert_eq!(app.workspace(tab).unwrap().access, Access::Writable);
+        // The box turned on meanwhile changes nothing until the tab
+        // connects again.
+        let id = app.workspace(tab).unwrap().conn_id.clone();
+        let mut saved = app.connections.get(&id).unwrap().clone();
+        saved.read_only = Some(true);
+        app.connections.upsert(saved);
+        assert_eq!(app.workspace(tab).unwrap().access, Access::Writable);
+        app.apply(Action::Reconnect(tab));
+        assert_eq!(sent(&app), Access::ReadOnly);
+        assert_eq!(app.workspace(tab).unwrap().access, Access::ReadOnly);
     }
 
     #[test]

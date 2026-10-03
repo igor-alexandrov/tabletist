@@ -55,6 +55,8 @@ pub enum Command {
         secrets: Secrets,
         /// The SSH host keys the user trusts.
         host_keys: HostKeys,
+        /// Whether the session may write.
+        access: Access,
     },
     /// Connect and close again, for the dialog's Test button.
     Test {
@@ -824,40 +826,40 @@ impl Worker {
                 spec,
                 secrets,
                 host_keys,
+                access,
             } => {
                 self.connecting.insert(session);
                 let outbox = self.outbox.clone();
                 let ready = self.ready.clone();
                 tokio::spawn(async move {
-                    let outcome =
-                        Connection::connect_with(&spec, &secrets, &host_keys, Access::ReadOnly)
-                            .await
-                            .map(|connection| {
-                                let driver = connection.driver();
-                                let encrypted = connection.is_encrypted();
-                                let cancel = connection.cancel_handle();
-                                let (queue, commands) = tokio_mpsc::unbounded_channel();
-                                let (stop, stopped) = tokio::sync::oneshot::channel();
-                                let running = Arc::new(Mutex::new(Running::default()));
-                                tokio::spawn(run_session(
-                                    session,
-                                    connection,
-                                    commands,
-                                    stopped,
-                                    Arc::clone(&running),
-                                    outbox,
-                                ));
-                                (
-                                    driver,
-                                    encrypted,
-                                    SessionHandle {
-                                        queue,
-                                        cancel,
-                                        running,
-                                        _stop: stop,
-                                    },
-                                )
-                            });
+                    let outcome = Connection::connect_with(&spec, &secrets, &host_keys, access)
+                        .await
+                        .map(|connection| {
+                            let driver = connection.driver();
+                            let encrypted = connection.is_encrypted();
+                            let cancel = connection.cancel_handle();
+                            let (queue, commands) = tokio_mpsc::unbounded_channel();
+                            let (stop, stopped) = tokio::sync::oneshot::channel();
+                            let running = Arc::new(Mutex::new(Running::default()));
+                            tokio::spawn(run_session(
+                                session,
+                                connection,
+                                commands,
+                                stopped,
+                                Arc::clone(&running),
+                                outbox,
+                            ));
+                            (
+                                driver,
+                                encrypted,
+                                SessionHandle {
+                                    queue,
+                                    cancel,
+                                    running,
+                                    _stop: stop,
+                                },
+                            )
+                        });
                     let _ = ready.send(Ready {
                         session,
                         request,
@@ -1570,6 +1572,7 @@ mod tests {
             spec,
             secrets: Secrets::default(),
             host_keys: HostKeys::default(),
+            access: Access::ReadOnly,
         });
         assert!(matches!(
             backend.wait(WAIT),
@@ -1624,6 +1627,7 @@ mod tests {
             spec: ConnectSpec::sqlite("/definitely/not/here.db"),
             secrets: Secrets::default(),
             host_keys: HostKeys::default(),
+            access: Access::ReadOnly,
         });
         assert!(matches!(
             backend.wait(WAIT),
@@ -1679,6 +1683,7 @@ mod tests {
             spec,
             secrets: Secrets::default(),
             host_keys: HostKeys::default(),
+            access: Access::ReadOnly,
         });
         assert!(matches!(backend.wait(WAIT), Some(Event::Connected { .. })));
         let mut slow = RowQuery::new(ObjectRef::new("main", "big"), 10);
@@ -1735,6 +1740,7 @@ mod tests {
             spec,
             secrets: Secrets::default(),
             host_keys: HostKeys::default(),
+            access: Access::ReadOnly,
         });
         assert!(matches!(backend.wait(WAIT), Some(Event::Connected { .. })));
         (backend, session)
@@ -3292,6 +3298,7 @@ mod tests {
             spec,
             secrets: Secrets::default(),
             host_keys: HostKeys::default(),
+            access: Access::ReadOnly,
         });
         assert!(matches!(backend.wait(WAIT), Some(Event::Connected { .. })));
         backend.send(Command::Close { session });
@@ -3318,6 +3325,7 @@ mod tests {
             spec,
             secrets: Secrets::default(),
             host_keys: HostKeys::default(),
+            access: Access::ReadOnly,
         });
         assert!(matches!(backend.wait(WAIT), Some(Event::Connected { .. })));
         let mut slow = RowQuery::new(ObjectRef::new("main", "big"), 10);
@@ -3508,6 +3516,7 @@ mod tests {
             spec,
             secrets: Secrets::default(),
             host_keys: HostKeys::default(),
+            access: Access::ReadOnly,
         });
         assert!(matches!(backend.wait(WAIT), Some(Event::Connected { .. })));
         backend.send(Command::ListDatabases {
