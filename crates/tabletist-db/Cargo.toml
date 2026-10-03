@@ -21,9 +21,9 @@ russh = { version = "0.63", default-features = false, features = ["ring", "rsa",
 # SQLite, compiled in so every platform gets the same, recent version. hooks
 # gives the progress handler that stops a SQL editor script.
 rusqlite = { version = "0.37", features = ["bundled", "hooks"] }
-# A result column's name and declared type as bytes: rusqlite panics on ones
-# that are not UTF-8, and reading them past it needs unsafe code, which this
-# crate forbids.
+# A result column's name and declared type, and the names SQLite asks its
+# authorizer about, as bytes: rusqlite panics on ones that are not UTF-8, and
+# reading them past it needs unsafe code, which this crate forbids.
 tabletist-sqlite-ffi = { path = "../tabletist-sqlite-ffi" }
 # Parsing postgres:// and mysql:// connection URLs.
 url = "2"

@@ -9,7 +9,6 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use rusqlite::config::DbConfig;
-use rusqlite::hooks::AuthContext;
 use rusqlite::types::{FromSql, FromSqlError, FromSqlResult, ValueRef};
 use rusqlite::{ErrorCode, OpenFlags};
 
@@ -544,9 +543,10 @@ impl Conn {
             // it may do depends on whose text it is (see `Fence`).
             let fences = Fences::default();
             let asked = fences.clone();
-            connection.authorizer(Some(move |context: AuthContext<'_>| {
-                authorize(asked.current(), &context.action)
-            }));
+            tabletist_sqlite_ffi::set_authorizer(&connection, move |action| {
+                authorize(asked.current(), action)
+            })
+            .map_err(map_error)?;
             Ok((connection, fences))
         };
         let (connection, fences) = tokio::task::spawn_blocking(opened)
@@ -1004,7 +1004,6 @@ mod tests {
         );
     }
     use super::*;
-    use rusqlite::hooks::Authorization;
 
     async fn fixture_as(access: Access) -> (Conn, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
@@ -1064,8 +1063,7 @@ mod tests {
     /// Takes the authorizer off, for a test of the checks behind it.
     async fn without_the_authorizer(conn: &Conn) {
         conn.run(|connection| {
-            connection.authorizer(None::<fn(AuthContext<'_>) -> Authorization>);
-            Ok(())
+            tabletist_sqlite_ffi::remove_authorizer(connection).map_err(map_error)
         })
         .await
         .unwrap();

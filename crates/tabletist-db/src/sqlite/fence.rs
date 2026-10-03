@@ -5,12 +5,18 @@
 //! text. `Conn::open` installs the authorizer; a fence goes up around a
 //! script's statement and around a page or count query, and is down for
 //! everything the app runs itself.
+//!
+//! The authorizer is `tabletist-sqlite-ffi`'s, not rusqlite's, which panics
+//! on a name that is not UTF-8, whatever the fence. Here such a name arrives
+//! with U+FFFD for those bytes and is judged like any other. It cannot pass
+//! for a name a fence refuses: those are ASCII, and so is every pragma's
+//! name that SQLite knows.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
 
 use rusqlite::ffi;
-use rusqlite::hooks::{AuthAction, Authorization};
+use tabletist_sqlite_ffi::{Action, Authorization};
 
 /// Whose text SQLite is preparing, which decides what it may do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -27,7 +33,7 @@ pub(super) enum Fence {
 /// What SQLite may do for text behind `fence`. Asked after SQLite's own
 /// parse, so no spelling gets past it; that is why it does not go through
 /// `sql::refusal`, whose tokenizer and SQLite's do not always agree.
-pub(super) fn authorize(fence: Fence, action: &AuthAction<'_>) -> Authorization {
+pub(super) fn authorize(fence: Fence, action: &Action<'_>) -> Authorization {
     let allowed = match fence {
         Fence::Off => true,
         // A filter's text is one SELECT, and a statement hidden behind it
@@ -41,43 +47,32 @@ pub(super) fn authorize(fence: Fence, action: &AuthAction<'_>) -> Authorization 
         // refuses; the two that would rewrite a file are denied by name all
         // the same. The write statements R*Tree prepares when a table
         // connects are not run by a SELECT either.
-        Fence::Filter => match action {
-            AuthAction::Transaction { .. }
-            | AuthAction::Savepoint { .. }
-            | AuthAction::Attach { .. }
-            | AuthAction::Detach { .. } => false,
-            // ATTACH and DETACH again: SQLite hands over the name only when
-            // it is a plain string, and without one rusqlite does not know
-            // the action.
-            AuthAction::Unknown { code, .. } => {
-                !matches!(*code, ffi::SQLITE_ATTACH | ffi::SQLITE_DETACH)
-            }
-            AuthAction::Pragma {
-                pragma_name,
-                pragma_value,
-            } => {
-                pragma_value.is_none()
+        Fence::Filter => match action.code {
+            // ATTACH and DETACH by their code alone: SQLite hands over the
+            // name only when it is a plain string.
+            ffi::SQLITE_TRANSACTION
+            | ffi::SQLITE_SAVEPOINT
+            | ffi::SQLITE_ATTACH
+            | ffi::SQLITE_DETACH => false,
+            ffi::SQLITE_PRAGMA => {
+                action.second.is_none()
                     && !["wal_checkpoint", "incremental_vacuum"]
                         .iter()
-                        .any(|name| pragma_name.eq_ignore_ascii_case(name))
+                        .any(|name| pragma_is(action, name))
             }
             _ => true,
         },
         // A write is left to `query_only`, whose error the app knows as a
         // refused write. What must not happen is the script leaving its
         // transaction or lifting what refuses the write.
-        Fence::Script => match action {
-            AuthAction::Transaction { .. } | AuthAction::Savepoint { .. } => false,
-            // The name comes without its schema and unquoted, in the
-            // letters the script wrote it in.
-            AuthAction::Pragma {
-                pragma_name,
-                pragma_value,
-            } => {
-                let name = pragma_name.to_ascii_lowercase();
-                name != "wal_checkpoint"
-                    && !(pragma_value.is_some()
-                        && matches!(name.as_str(), "query_only" | "writable_schema"))
+        Fence::Script => match action.code {
+            ffi::SQLITE_TRANSACTION | ffi::SQLITE_SAVEPOINT => false,
+            ffi::SQLITE_PRAGMA => {
+                !pragma_is(action, "wal_checkpoint")
+                    && !(action.second.is_some()
+                        && ["query_only", "writable_schema"]
+                            .iter()
+                            .any(|name| pragma_is(action, name)))
             }
             _ => true,
         },
@@ -87,6 +82,14 @@ pub(super) fn authorize(fence: Fence, action: &AuthAction<'_>) -> Authorization 
     } else {
         Authorization::Deny
     }
+}
+
+/// Whether the pragma SQLite asks about is `name`. Its name comes without
+/// its schema and unquoted, in the letters the text wrote it in.
+fn pragma_is(action: &Action<'_>, name: &str) -> bool {
+    action
+        .first
+        .is_some_and(|asked| asked.eq_ignore_ascii_case(name))
 }
 
 /// Which fence is up, shared with the authorizer SQLite calls.
@@ -126,54 +129,38 @@ impl Drop for Fenced<'_> {
 
 #[cfg(test)]
 mod tests {
-    use rusqlite::hooks::TransactionOperation;
-
     use super::*;
+
+    /// An action on `main` from the statement's own text.
+    fn action<'a>(code: i32, first: Option<&'a str>, second: Option<&'a str>) -> Action<'a> {
+        Action {
+            code,
+            first,
+            second,
+            database: Some("main"),
+            source: None,
+        }
+    }
 
     #[test]
     fn each_fence_allows_what_its_text_may_do() {
-        let pragma = |pragma_name, pragma_value| AuthAction::Pragma {
-            pragma_name,
-            pragma_value,
-        };
-        let transaction = AuthAction::Transaction {
-            operation: TransactionOperation::Unknown,
-        };
-        let savepoint = AuthAction::Savepoint {
-            operation: TransactionOperation::Begin,
-            savepoint_name: "s",
-        };
-        let read = AuthAction::Read {
-            table_name: "users",
-            column_name: "email",
-        };
-        let function = AuthAction::Function {
-            function_name: "count",
-        };
-        let update = AuthAction::Update {
-            table_name: "users",
-            column_name: "email",
-        };
-        let insert = AuthAction::Insert {
-            table_name: "users",
-        };
-        let delete = AuthAction::Delete {
-            table_name: "users",
-        };
-        let attach = AuthAction::Attach {
-            filename: "other.db",
-        };
-        let detach = AuthAction::Detach {
-            database_name: "other",
-        };
+        let pragma = |name, value| action(ffi::SQLITE_PRAGMA, Some(name), value);
+        let transaction = action(ffi::SQLITE_TRANSACTION, Some("BEGIN"), None);
+        let savepoint = action(ffi::SQLITE_SAVEPOINT, Some("BEGIN"), Some("s"));
+        let select = action(ffi::SQLITE_SELECT, None, None);
+        let read = action(ffi::SQLITE_READ, Some("users"), Some("email"));
+        let function = action(ffi::SQLITE_FUNCTION, None, Some("count"));
+        let recursive = action(ffi::SQLITE_RECURSIVE, None, None);
+        let update = action(ffi::SQLITE_UPDATE, Some("users"), Some("email"));
+        let insert = action(ffi::SQLITE_INSERT, Some("users"), None);
+        let delete = action(ffi::SQLITE_DELETE, Some("users"), None);
+        let attach = action(ffi::SQLITE_ATTACH, Some("other.db"), None);
+        let detach = action(ffi::SQLITE_DETACH, Some("other"), None);
         // ATTACH or DETACH with a name that is not a plain string, as in
-        // `ATTACH 'x' || '' AS y`: SQLite hands over no name, and without
-        // one rusqlite does not know the action.
-        let unnamed = |code| AuthAction::Unknown {
-            code,
-            arg1: None,
-            arg2: None,
-        };
+        // `ATTACH 'x' || '' AS y`: SQLite hands over no name.
+        let unnamed = |code| action(code, None, None);
+        // Names that are not UTF-8, as they arrive.
+        let lossy_read = action(ffi::SQLITE_READ, Some("t"), Some("caf\u{FFFD}"));
         let table = [
             (Fence::Off, pragma("query_only", Some("0")), true),
             (Fence::Off, transaction, true),
@@ -192,14 +179,16 @@ mod tests {
             (Fence::Script, pragma("query_only", None), true),
             (Fence::Script, pragma("foreign_keys", Some("ON")), true),
             (Fence::Script, pragma("table_info", Some("users")), true),
-            (Fence::Script, AuthAction::Select, true),
+            (Fence::Script, select, true),
             (Fence::Script, update, true),
             (Fence::Script, attach, true),
             (Fence::Script, unnamed(ffi::SQLITE_ATTACH), true),
-            (Fence::Filter, AuthAction::Select, true),
+            (Fence::Script, lossy_read, true),
+            (Fence::Script, pragma("caf\u{FFFD}", Some("1")), true),
+            (Fence::Filter, select, true),
             (Fence::Filter, read, true),
             (Fence::Filter, function, true),
-            (Fence::Filter, AuthAction::Recursive, true),
+            (Fence::Filter, recursive, true),
             // With a value, whatever the name: a table-valued pragma's
             // argument arrives as one too.
             (Fence::Filter, pragma("foreign_keys", Some("0")), false),
@@ -225,6 +214,9 @@ mod tests {
             (Fence::Filter, insert, true),
             (Fence::Filter, update, true),
             (Fence::Filter, delete, true),
+            (Fence::Filter, lossy_read, true),
+            (Fence::Filter, pragma("caf\u{FFFD}", None), true),
+            (Fence::Filter, pragma("caf\u{FFFD}", Some("1")), false),
         ];
         for (fence, action, allowed) in table {
             let expected = if allowed {

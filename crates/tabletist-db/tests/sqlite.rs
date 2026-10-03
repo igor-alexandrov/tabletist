@@ -1412,3 +1412,61 @@ async fn a_script_reads_names_that_are_not_utf8() {
         ]
     );
 }
+
+#[tokio::test]
+async fn the_fence_stands_over_names_that_are_not_utf8() {
+    let (connection, _dir) = latin1_names().await;
+    for name in ["t", "v"] {
+        // SQLite asks about the column that is not UTF-8 for each of these,
+        // with the filter's fence up.
+        let mut query = RowQuery::new(ObjectRef::new("main", name), 50);
+        query.raw_where = Some("id = 1".into());
+        assert_eq!(connection.fetch_rows(&query).await.unwrap().rows.len(), 1);
+        assert_eq!(connection.count_rows(&query).await.unwrap(), 1);
+        // To SQLite `:a(')` is one variable token; to our tokenizer a string
+        // starts inside it and hides the `;`. Only the fence stops these.
+        for raw in [
+            "1=1 OR :a(') IS NULL); PRAGMA foreign_keys = 0; SELECT ('",
+            "1=1 OR :a(') IS NULL); BEGIN; SELECT ('",
+        ] {
+            query.raw_where = Some(raw.into());
+            for refused in [
+                connection.fetch_rows(&query).await.map(|_| ()),
+                connection.count_rows(&query).await.map(|_| ()),
+            ] {
+                assert!(
+                    matches!(
+                        &refused,
+                        Err(Error::Query { code: Some(code), message, .. })
+                            if code == "23" && message.starts_with("A filter cannot use")
+                    ),
+                    "{name} {raw}: {refused:?}"
+                );
+            }
+        }
+    }
+    // A script's fence, around a statement that reads such a column too.
+    let outcome = run(
+        &connection,
+        "SELECT * FROM t; SELECT :a('); PRAGMA query_only = 0; --'",
+    )
+    .await
+    .unwrap();
+    assert!(
+        matches!(
+            outcome.results.first().map(|result| &result.outcome),
+            Some(StatementOutcome::Rows { rows, .. }) if rows.len() == 1
+        ),
+        "{outcome:?}"
+    );
+    assert!(
+        matches!(
+            outcome.results.last().map(|result| &result.outcome),
+            Some(StatementOutcome::Error {
+                error: Error::Query { code: Some(code), message, .. },
+                ..
+            }) if code == "23" && message.contains("not authorized")
+        ),
+        "{outcome:?}"
+    );
+}
