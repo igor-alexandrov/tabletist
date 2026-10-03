@@ -757,12 +757,14 @@ impl Saves {
 const SETTLE: Duration = Duration::from_millis(100);
 
 /// Watches the directory of the settings file `path` and starts the task
-/// that reads the file whenever it changes. The directory and not the
-/// file: an editor saves by renaming another file over it, and a watch on
-/// the file would stay with the one that was replaced.
+/// that reads the file whenever it changes, and once at the start. The
+/// directory and not the file: an editor saves by renaming another file
+/// over it, and a watch on the file would stay with the one that was
+/// replaced.
 fn watch_settings(path: PathBuf, outbox: Outbox) -> notify::Result<notify::RecommendedWatcher> {
     use notify::Watcher as _;
     let (changed, changes) = tokio_mpsc::unbounded_channel();
+    let first = changed.clone();
     let name = path.file_name().map(std::ffi::OsStr::to_owned);
     let mut watcher =
         notify::recommended_watcher(move |event: notify::Result<notify::Event>| match event {
@@ -778,6 +780,12 @@ fn watch_settings(path: PathBuf, outbox: Outbox) -> notify::Result<notify::Recom
         .filter(|parent| !parent.as_os_str().is_empty())
         .unwrap_or(std::path::Path::new("."));
     watcher.watch(directory, notify::RecursiveMode::NonRecursive)?;
+    // The file as it is now: it was loaded before there was a watch, and a
+    // save made in between raised no event. The app drops a text it holds
+    // already. The sender goes at once: the reader ends when the last one
+    // does, and that must be the watcher's.
+    let _ = first.send(());
+    drop(first);
     tokio::spawn(read_settings(path, changes, outbox, read_file));
     Ok(watcher)
 }
@@ -3733,6 +3741,25 @@ mod tests {
         // An editor that saves by renaming another file over it.
         crate::util::write_atomic(&path, b"[data]\npage_size = 100\n").unwrap();
         assert!(!texts_until(&mut backend, "[data]\npage_size = 100\n").is_empty());
+        // And one that writes in place. The first write above was that
+        // too, but so soon after the watch began that the read it starts
+        // with may have been the one to find it.
+        std::fs::write(&path, "[data]\npage_size = 300\n").unwrap();
+        assert!(!texts_until(&mut backend, "[data]\npage_size = 300\n").is_empty());
+    }
+
+    #[test]
+    fn the_settings_file_is_read_when_the_watch_starts() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.toml");
+        // Saved after the app loaded its settings and before it watched
+        // the file: no change follows to say so.
+        std::fs::write(&path, PAGE_500).unwrap();
+        let (mut backend, live) = watching(&path);
+        assert!(live);
+        assert_eq!(texts_until(&mut backend, PAGE_500), [PAGE_500]);
+        // Once: the watch starting is not a change of the file.
+        assert!(backend.wait(Duration::from_millis(600)).is_none());
     }
 
     #[test]
