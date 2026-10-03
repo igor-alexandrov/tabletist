@@ -751,8 +751,9 @@ impl Saves {
     }
 }
 
-/// How long the settings file is left to settle before it is read: a save
-/// is several changes (a temporary file, a rename, a truncate and a write).
+/// How long the settings file must have been left alone before it is read:
+/// a save is several changes (a temporary file, a rename, a truncate and a
+/// write), and a read between two of them finds the file half-written.
 const SETTLE: Duration = Duration::from_millis(100);
 
 /// Watches the directory of the settings file `path` and starts the task
@@ -792,6 +793,18 @@ fn concerns(event: &notify::Event, name: Option<&std::ffi::OsStr>) -> bool {
         && event.paths.iter().any(|path| path.file_name() == name)
 }
 
+/// Waits until the changes have been quiet for `SETTLE`: a save is several
+/// of them, and each starts the wait again. False when the watch has ended.
+async fn settled(changes: &mut tokio_mpsc::UnboundedReceiver<()>) -> bool {
+    loop {
+        match tokio::time::timeout(SETTLE, changes.recv()).await {
+            Ok(Some(())) => {}
+            Ok(None) => return false,
+            Err(_) => return true,
+        }
+    }
+}
+
 /// Sends the settings file's text each time it changes, once the changes
 /// have settled. Ends when the watcher is dropped.
 async fn read_settings(
@@ -802,8 +815,9 @@ async fn read_settings(
     // What was sent last: the same text is not news, whatever woke us.
     let mut sent: Option<String> = None;
     while changes.recv().await.is_some() {
-        tokio::time::sleep(SETTLE).await;
-        while changes.try_recv().is_ok() {}
+        if !settled(&mut changes).await {
+            return;
+        }
         let read = || {
             let file = path.clone();
             tokio::task::spawn_blocking(move || std::fs::read(file))
@@ -3686,6 +3700,28 @@ mod tests {
         // An editor that saves by renaming another file over it.
         crate::util::write_atomic(&path, b"[data]\npage_size = 100\n").unwrap();
         assert!(!texts_until(&mut backend, "[data]\npage_size = 100\n").is_empty());
+    }
+
+    #[test]
+    fn the_settings_file_settles_from_its_last_change() {
+        paused().block_on(async {
+            let (changed, mut changes) = tokio_mpsc::unbounded_channel();
+            let start = tokio::time::Instant::now();
+            // A save in three steps, 80 ms apart: truncated at 80, written
+            // at 160. Read 100 ms after the first, the file would be empty.
+            let editor = changed.clone();
+            tokio::spawn(async move {
+                for _ in 0..3 {
+                    let _ = editor.send(());
+                    tokio::time::sleep(Duration::from_millis(80)).await;
+                }
+            });
+            assert!(settled(&mut changes).await);
+            assert_eq!(start.elapsed(), Duration::from_millis(260));
+            // The watcher is gone: there is nothing left to read for.
+            drop(changed);
+            assert!(!settled(&mut changes).await);
+        });
     }
 
     #[test]
