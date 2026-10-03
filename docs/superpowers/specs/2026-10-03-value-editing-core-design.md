@@ -250,7 +250,10 @@ other rule is the database's, and its rejection is the Failed state.
 While the text fails its check the editor is red and shows the message;
 Enter, Tab and `Mod+Enter` do not leave it. Clicking elsewhere keeps the
 text as a pending cell marked "to fix", so typing is never lost. Save is
-disabled while any cell is to fix, with "Fix 1 value to save".
+disabled while any cell is to fix, with "Fix 1 value to save". A failed
+cell does not block: it is an ordinary pending cell that carries the
+database's message until it is edited or saved, and the next Save sends it
+again.
 
 ### Pending changes
 
@@ -314,9 +317,13 @@ disabled while any cell is to fix, with "Fix 1 value to save".
   page through the reconnect (it is not fetched again, as other tabs are),
   and Save works afterwards. The page may be stale by then; the save's
   check against the loaded values covers that. The same holds after a
-  script closed the session and after a connection lost while saving.
-- While disconnected, a guarded action's prompt has no Save: **Discard**
-  and **Cancel** only.
+  script closed the session and after a connection lost while saving. If
+  the reconnect comes back read-only (the box was turned on meanwhile),
+  the set is still kept and Save is disabled with "This connection opens
+  read-only".
+- A guarded action's prompt has no Save, only **Discard** and **Cancel**,
+  whenever Save itself is disabled: while disconnected, on a session that
+  came back read-only, and while a cell is to fix.
 
 ## Saving (`tabletist-db` and the backend)
 
@@ -326,7 +333,13 @@ disabled while any cell is to fix, with "Fix 1 value to save".
         pub key: Vec<(String, Value)>,
         pub set: Vec<CellChange>,
     }
-    pub struct CellChange { pub column: String, pub loaded: Value, pub new: NewValue }
+    pub struct CellChange {
+        pub column: String,
+        /// The structure's type name, which decides how `new` is sent.
+        pub type_name: String,
+        pub loaded: Value,
+        pub new: NewValue,
+    }
     pub enum NewValue { Null, Text(String) }
 
     pub enum WriteOutcome {
@@ -368,9 +381,12 @@ One transaction, for every row of the set:
 
 New values travel as text and the database converts them to the column's
 type: a quoted literal on PostgreSQL, a bound string on MySQL. Where the
-database would store the text as it is, the driver converts first, from
-the column's type as the locked read reports it: on SQLite integers and
-reals are bound as numbers, and on SQLite and MySQL a boolean as 1 or 0.
+database would store the text as it is, the statement builder converts
+first, by the column's class, which it takes from `CellChange::type_name`
+with the same function the checks use: on SQLite integers and reals are
+numbers, and on SQLite and MySQL a boolean is 1 or 0. The builder is the
+only place that decides a value's form, so the literal Review SQL shows
+(`12`, `1`) is the value the driver binds.
 
 The backend gains `Command::Write { session, request, tab, changes }` and
 `Event::Written { .. outcome }`, queued and answered like every request.
@@ -413,8 +429,10 @@ Only when the workspace's environment is production, every Save first asks:
   **Cancel** and **Save to production**.
 - Omarchy: the red PROD box with the same facts and "sql shown with
   :diff", and a field that takes the word `write`; Enter confirms only when
-  it holds exactly that, Esc cancels. Until `:diff` exists (step 3), the
-  box lists the statements itself in place of that line.
+  it holds exactly that, Esc cancels. A production save opens the `:diff`
+  panel if it is closed and the box sits beside it, so the statements are
+  on screen while `write` is typed. Until `:diff` exists (step 3), the box
+  lists the statements itself in place of that line.
 
 ## Conflicts
 
@@ -429,15 +447,18 @@ Only when the workspace's environment is production, every Save first asks:
     new value now equals the server's leaves the set.
   - **Use server values.** The server's row replaces the loaded row and the
     row's pending cells are dropped.
-  - **Overwrite.** As Keep mine, and the save runs again once every
-    conflict is answered. A row that changed once more conflicts once more.
+  - **Overwrite.** As Keep mine, and the save may run again once every
+    conflict is answered (see below). A row that changed once more
+    conflicts once more.
 - With `server: None`: "Row id 2 no longer exists on the server", and one
   choice, **Discard my changes**, which drops the row's pending cells and
   marks the row as gone until the page is reloaded.
-- Several conflicts are asked one after another ("1 of 2"). The save runs
-  again after the last answer only if some row was answered Overwrite;
-  otherwise what is left stays pending. On production that second save
-  asks its confirmation again.
+- Several conflicts are asked one after another ("1 of 2"). A save writes
+  the whole pending set, so it runs again after the last answer only when
+  some row was answered Overwrite and none Keep mine: a row the user kept
+  to look at again is never written by another row's Overwrite. Otherwise
+  what is left stays pending until the user saves. On production that
+  second save asks its confirmation again.
 - Esc is Keep mine for the row shown.
 
 ## Steps
@@ -446,14 +467,16 @@ Each step ends compiling, tested and shippable, and gets its own plan run:
 
 1. Writable connections: `Access`, the sessions, the script runner's fence,
    the dialog's box, the shipped screens. Nothing writes yet.
-2. `Connection::write`, the statement builder, `ColumnInfo.generated`, the
-   backend command and event.
+2. `Connection::write`, the statement builder and the column classes, the
+   catalog's `ColumnInfo.generated` and `IndexInfo.partial`, the row key
+   rule, the backend command and event.
 3. Editing in the grid: the lifecycle, the editors, the checks, the pending
    bar without Review SQL, the keys but `:diff`, Save, the leaving guard,
    and the production confirmation with its statements in both looks.
    A conflict here is a plain message: "Row id 2 changed on the server.
    Nothing was written."
-4. Review SQL: the drawer and `:diff`; the Omarchy PROD box points to it.
+4. Review SQL: the drawer and `:diff`; the Omarchy PROD box opens the
+   panel and points to it.
 5. The conflict dialog.
 
 No step ships a production save without its confirmation and its
@@ -473,15 +496,17 @@ statements.
   - on a `Writable` connection a script and a raw WHERE still cannot
     write: the existing guard tests run again in both modes; MySQL gains
     one for DDL; SQLite gains the refusal of `PRAGMA query_only` in each
-    spelling, and a script that gets `query_only` off by a spelling the
-    list misses (forced in the test) ends with `LeftReadOnly` and nothing
-    written;
-  - a tab with pending changes keeps its page across a reconnect and saves
-    afterwards;
+    spelling (bare, `"..."`, `'...'`, backticks, brackets, with a schema,
+    `=` and `()`), a script that gets `query_only` off by a spelling the
+    list misses (forced in the test) ending with `LeftReadOnly` and
+    nothing written, and proof that what the read-only open used to stop
+    still changes no file from a script: `ATTACH` of a missing file,
+    `VACUUM INTO`, `PRAGMA journal_mode`, `PRAGMA wal_checkpoint`;
   - the statement builder's two forms agree for every fixture type.
 - Reducer tests: the pending set, the checks, the leaving guard and its
   held action, rows replaced after a save, rebasing after each conflict
-  choice.
+  choice, mixed conflict answers, and a tab with pending changes keeping
+  its page across a reconnect and saving afterwards.
 - Headless UI tests, in every look: the lifecycle, the keys, the popover,
   the bar, the three dialogs, locked cells saying why, the shipped screens'
   new texts.
