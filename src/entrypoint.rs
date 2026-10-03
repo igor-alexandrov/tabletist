@@ -108,7 +108,7 @@ pub fn main() -> anyhow::Result<()> {
     }
     logging.init()?;
 
-    let settings = Settings::load(&dirs.settings_file());
+    let settings = Settings::load(&dirs).settings;
     let demo = cli.demo;
     let shot = cli.demo_shot.clone().map(Shot::new);
     eframe::run_native(

@@ -3091,7 +3091,7 @@ mod tests {
     #[test]
     fn settings_are_saved_as_a_state_file() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("config").join("settings.json");
+        let path = dir.path().join("config").join("settings.toml");
         let settings = crate::settings::Settings {
             page_size: 50,
             ..Default::default()
@@ -3105,7 +3105,12 @@ mod tests {
             Some(Event::Saved { result: Ok(()), .. }) => {}
             other => panic!("expected the save to be written, got {other:?}"),
         }
-        assert_eq!(crate::settings::Settings::load(&path), settings);
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(text, settings.to_toml());
+        assert_eq!(
+            crate::settings::Settings::from_toml(&text).settings,
+            settings
+        );
     }
 
     #[test]

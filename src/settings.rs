@@ -1,11 +1,13 @@
-//! User settings, stored as `settings.json` in the config directory.
+//! User settings, stored as `settings.toml` in the config directory.
 
 use std::path::Path;
 
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+
+use crate::paths::AppDirs;
 
 /// How much of a timestamp the grid shows.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Timestamps {
     /// `2026-01-12 09:14:03`.
@@ -31,9 +33,11 @@ impl Timestamps {
     }
 }
 
-/// Everything the user can set. New fields need a default so older files
-/// keep loading; unknown fields (from newer versions) are ignored.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// Everything the user can set. A key the file lacks takes its default and
+/// one this version does not know is ignored, so older and newer files both
+/// load. The serde derive reads the `settings.json` of versions before the
+/// TOML file.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
 #[serde(default)]
 pub struct Settings {
     /// Rows fetched per page in the data grid.
@@ -400,12 +404,53 @@ impl Settings {
         }
     }
 
-    pub fn load(path: &Path) -> Self {
-        crate::util::load_json::<Settings>(path).validated()
+    /// The settings a start has: from `settings.toml`, else from an older
+    /// version's `settings.json`, else the defaults. It only reads; what
+    /// came from the JSON is written as TOML by the app (see [`Source`]).
+    pub fn load(dirs: &AppDirs) -> Loaded {
+        let path = dirs.settings_file();
+        match std::fs::read(&path) {
+            Ok(bytes) => match String::from_utf8(bytes) {
+                Ok(text) => {
+                    let loaded = Self::from_toml(&text);
+                    // Until a window shows them, the log is where a typo is told.
+                    for line in &loaded.invalid {
+                        log::warn!(
+                            "{}: line {line} could not be read and is ignored",
+                            path.display()
+                        );
+                    }
+                    loaded
+                }
+                Err(error) => {
+                    // Not text at all: kept aside like a damaged JSON file,
+                    // so the next save cannot replace it.
+                    crate::util::keep_aside(&path, &error.to_string());
+                    Self::default().into()
+                }
+            },
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                let legacy = dirs.legacy_settings_file();
+                if legacy.exists() {
+                    let settings = crate::util::load_json::<Settings>(&legacy).validated();
+                    Loaded::of(settings, Source::Json)
+                } else {
+                    Self::default().into()
+                }
+            }
+            Err(error) => {
+                log::warn!(
+                    "could not read {} ({error}); using defaults",
+                    path.display()
+                );
+                Self::default().into()
+            }
+        }
     }
 
+    /// Writes the canonical text, atomically.
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
-        crate::util::save_json(path, self)
+        crate::util::write_atomic(path, self.to_toml().as_bytes())
     }
 }
 
@@ -446,133 +491,11 @@ mod tests {
     }
 
     #[test]
-    fn an_older_file_with_a_version_gets_the_new_defaults() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("settings.json");
-        std::fs::write(&path, br#"{"version": 1, "page_size": 100}"#).unwrap();
-        let settings = Settings::load(&path);
-        assert_eq!(settings.page_size, 100);
-        assert_eq!(settings.timestamps, Timestamps::Second);
-        assert!(!settings.group_digits);
-        assert!(settings.value_tags);
-    }
-
-    #[test]
     fn a_timestamps_choice_has_a_name() {
         for choice in [Timestamps::Second, Timestamps::Full] {
             assert_eq!(Timestamps::from_name(choice.name()), Some(choice));
         }
         assert_eq!(Timestamps::from_name("minute"), None);
-    }
-
-    #[test]
-    fn settings_round_trip() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("settings.json");
-        let settings = Settings {
-            page_size: 500,
-            show_system_schemas: true,
-            custom_theme: Some("Nord.json".into()),
-            sql_limit: 100,
-            sql_timeout_secs: None,
-            ..Settings::default()
-        };
-        settings.save(&path).unwrap();
-        assert_eq!(Settings::load(&path), settings);
-    }
-
-    #[test]
-    fn older_files_with_missing_and_unknown_fields_still_load() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("settings.json");
-        std::fs::write(&path, br#"{"page_size": 100, "from_the_future": true}"#).unwrap();
-        let settings = Settings::load(&path);
-        assert_eq!(settings.page_size, 100);
-        assert_eq!(settings.custom_theme, None);
-    }
-
-    #[test]
-    fn older_files_get_the_sql_defaults() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("settings.json");
-        std::fs::write(&path, br#"{"page_size": 100}"#).unwrap();
-        let settings = Settings::load(&path);
-        assert_eq!(settings.sql_limit, 1_000);
-        assert_eq!(settings.sql_timeout_secs, Some(30));
-    }
-
-    #[test]
-    fn the_sql_limit_is_clamped() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("settings.json");
-        std::fs::write(&path, br#"{"sql_limit": 0, "sql_timeout_secs": null}"#).unwrap();
-        let settings = Settings::load(&path);
-        assert_eq!(settings.sql_limit, 1);
-        assert_eq!(settings.sql_timeout_secs, None);
-    }
-
-    #[test]
-    fn the_sql_limit_has_its_own_ceiling() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("settings.json");
-        std::fs::write(&path, br#"{"sql_limit": 999999999}"#).unwrap();
-        assert_eq!(Settings::load(&path).sql_limit, Settings::MAX_SQL_LIMIT);
-        assert_eq!(Settings::MAX_SQL_LIMIT, 10_000);
-        assert!(
-            Settings::SQL_LIMITS
-                .iter()
-                .all(|limit| (1..=Settings::MAX_SQL_LIMIT).contains(limit)),
-            "every choice of the Limit menu loads as it was saved"
-        );
-    }
-
-    #[test]
-    fn a_timeout_of_no_seconds_loads_as_no_timeout() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("settings.json");
-        std::fs::write(&path, br#"{"sql_timeout_secs": 0}"#).unwrap();
-        let settings = Settings::load(&path);
-        assert_eq!(settings.sql_timeout_secs, None);
-        assert_eq!(settings.sql_timeout(), None);
-        std::fs::write(&path, br#"{"sql_timeout_secs": 1}"#).unwrap();
-        assert_eq!(Settings::load(&path).sql_timeout_secs, Some(1));
-    }
-
-    #[test]
-    fn no_timeout_is_written_as_null_and_the_old_keys_stay() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("settings.json");
-        let settings = Settings {
-            sql_timeout_secs: None,
-            ..Settings::default()
-        };
-        settings.save(&path).unwrap();
-        let json: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        assert!(json["sql_timeout_secs"].is_null());
-        assert_eq!(json["sql_limit"], 1_000);
-        assert_eq!(json["page_size"], 300);
-        assert_eq!(json["show_system_schemas"], false);
-        assert!(json["custom_theme"].is_null());
-    }
-
-    #[test]
-    fn damaged_settings_are_kept_aside_and_defaults_used() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("settings.json");
-        std::fs::write(&path, br#"{"page_size": "lots"}"#).unwrap();
-        assert_eq!(Settings::load(&path), Settings::default());
-        assert!(dir.path().join("settings.json.bad").exists());
-    }
-
-    #[test]
-    fn page_size_is_clamped_to_a_sane_range() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("settings.json");
-        std::fs::write(&path, br#"{"page_size": 0}"#).unwrap();
-        assert_eq!(Settings::load(&path).page_size, Settings::MIN_PAGE_SIZE);
-        std::fs::write(&path, br#"{"page_size": 999999999}"#).unwrap();
-        assert_eq!(Settings::load(&path).page_size, Settings::MAX_PAGE_SIZE);
     }
 
     #[test]
@@ -808,5 +731,125 @@ sql_timeout_secs = 30  # 0 waits forever
         let loaded = Settings::from_toml("[appearance]\ntheme = \"\"\"Nord");
         assert_eq!(loaded.invalid, vec![2]);
         assert_eq!(loaded.settings.custom_theme, None);
+    }
+
+    fn dirs() -> (crate::paths::AppDirs, tempfile::TempDir) {
+        let root = tempfile::tempdir().unwrap();
+        let dirs = crate::paths::AppDirs::at(root.path());
+        dirs.ensure().unwrap();
+        (dirs, root)
+    }
+
+    #[test]
+    fn no_file_gives_the_defaults_and_writes_nothing() {
+        let (dirs, _root) = dirs();
+        let loaded = Settings::load(&dirs);
+        assert_eq!(loaded.settings, Settings::default());
+        assert_eq!(loaded.source, Source::Defaults);
+        assert_eq!(loaded.text, Settings::default().to_toml());
+        assert!(!dirs.settings_file().exists());
+    }
+
+    #[test]
+    fn what_is_saved_is_loaded() {
+        let (dirs, _root) = dirs();
+        let settings = Settings {
+            page_size: 500,
+            group_digits: true,
+            sql_timeout_secs: None,
+            ..Settings::default()
+        };
+        settings.save(&dirs.settings_file()).unwrap();
+        let loaded = Settings::load(&dirs);
+        assert_eq!(loaded.settings, settings);
+        assert_eq!(loaded.source, Source::Toml);
+        assert_eq!(loaded.text, settings.to_toml());
+    }
+
+    #[test]
+    fn only_the_old_json_is_read_and_left_as_it_was() {
+        let (dirs, _root) = dirs();
+        let json = br#"{"version": 1, "page_size": 100, "show_system_schemas": true,
+            "custom_theme": "Nord.json", "sql_limit": 100, "sql_timeout_secs": null,
+            "from_the_future": true}"#;
+        std::fs::write(dirs.legacy_settings_file(), json).unwrap();
+        let loaded = Settings::load(&dirs);
+        let expected = Settings {
+            page_size: 100,
+            show_system_schemas: true,
+            custom_theme: Some("Nord.json".into()),
+            sql_limit: 100,
+            sql_timeout_secs: None,
+            ..Settings::default()
+        };
+        assert_eq!(loaded.settings, expected);
+        assert_eq!(loaded.source, Source::Json);
+        assert_eq!(loaded.text, expected.to_toml());
+        // Reading writes nothing, and an older Tabletist still finds its file.
+        assert!(!dirs.settings_file().exists());
+        assert_eq!(std::fs::read(dirs.legacy_settings_file()).unwrap(), json);
+    }
+
+    #[test]
+    fn the_old_json_is_brought_into_range_as_before() {
+        let (dirs, _root) = dirs();
+        std::fs::write(
+            dirs.legacy_settings_file(),
+            br#"{"page_size": 0, "sql_limit": 999999999, "sql_timeout_secs": 0}"#,
+        )
+        .unwrap();
+        let settings = Settings::load(&dirs).settings;
+        assert_eq!(settings.page_size, Settings::MIN_PAGE_SIZE);
+        assert_eq!(settings.sql_limit, Settings::MAX_SQL_LIMIT);
+        assert_eq!(settings.sql_timeout_secs, None);
+        assert!(
+            Settings::SQL_LIMITS
+                .iter()
+                .all(|limit| (1..=Settings::MAX_SQL_LIMIT).contains(limit)),
+            "every choice of the Limit menu loads as it was saved"
+        );
+    }
+
+    #[test]
+    fn with_both_files_the_toml_is_the_one_read() {
+        let (dirs, _root) = dirs();
+        std::fs::write(dirs.legacy_settings_file(), br#"{"page_size": 100}"#).unwrap();
+        std::fs::write(dirs.settings_file(), "[data]\npage_size = 500\n").unwrap();
+        let loaded = Settings::load(&dirs);
+        assert_eq!(loaded.settings.page_size, 500);
+        assert_eq!(loaded.source, Source::Toml);
+        assert_eq!(loaded.text, "[data]\npage_size = 500\n");
+    }
+
+    #[test]
+    fn a_damaged_old_json_is_kept_aside_and_the_defaults_used() {
+        let (dirs, _root) = dirs();
+        std::fs::write(dirs.legacy_settings_file(), br#"{"page_size": "lots"}"#).unwrap();
+        let loaded = Settings::load(&dirs);
+        assert_eq!(loaded.settings, Settings::default());
+        assert_eq!(loaded.source, Source::Json);
+        assert!(dirs.config.join("settings.json.bad").exists());
+    }
+
+    #[test]
+    fn a_file_that_is_not_text_is_kept_aside_and_the_defaults_used() {
+        let (dirs, _root) = dirs();
+        std::fs::write(dirs.settings_file(), [0xff, 0xfe, 0x00]).unwrap();
+        let loaded = Settings::load(&dirs);
+        assert_eq!(loaded.settings, Settings::default());
+        assert_eq!(loaded.source, Source::Defaults);
+        assert!(dirs.config.join("settings.toml.bad").exists());
+        assert!(!dirs.settings_file().exists());
+    }
+
+    #[test]
+    fn a_file_with_a_bad_line_is_left_as_the_user_wrote_it() {
+        let (dirs, _root) = dirs();
+        let text = "[data]\npage_size = 100\ngroup_digits = \"yes\"\n";
+        std::fs::write(dirs.settings_file(), text).unwrap();
+        let loaded = Settings::load(&dirs);
+        assert_eq!(loaded.invalid, vec![3]);
+        assert_eq!(loaded.settings.page_size, 100);
+        assert_eq!(std::fs::read_to_string(dirs.settings_file()).unwrap(), text);
     }
 }
