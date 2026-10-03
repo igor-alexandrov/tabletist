@@ -880,20 +880,14 @@ impl App {
                 if let Some(sql) = self.sql_tab_mut(tab, sql_tab) {
                     sql.limit = limit;
                 }
-                if self.settings.sql_limit != limit {
-                    self.settings.sql_limit = limit;
-                    self.save_settings();
-                }
+                self.change_settings(|settings| settings.sql_limit = limit);
             }
             Action::SetSqlTimeout { tab, sql_tab, secs } => {
                 let secs = Settings::valid_sql_timeout(secs);
                 if let Some(sql) = self.sql_tab_mut(tab, sql_tab) {
                     sql.timeout = Settings::timeout_of(secs);
                 }
-                if self.settings.sql_timeout_secs != secs {
-                    self.settings.sql_timeout_secs = secs;
-                    self.save_settings();
-                }
+                self.change_settings(|settings| settings.sql_timeout_secs = secs);
             }
             Action::SetResultPane { tab, sql_tab, pane } => {
                 if let Some(sql) = self.sql_tab_mut(tab, sql_tab) {
@@ -2202,17 +2196,37 @@ impl App {
         });
     }
 
-    /// Writes the settings (the SQL editor's menus change them).
-    pub fn save_settings(&mut self) {
+    /// Sends the settings to the backend to be written. Only
+    /// [`App::change_settings`] and the start that read the old
+    /// settings.json call it.
+    fn save_settings(&mut self) {
         self.backend.send(Command::Save {
             path: self.dirs.settings_file(),
             file: StateFile::Settings(self.settings.clone()),
         });
     }
 
+    /// A change made in the app (a menu, the Settings window): applied, and
+    /// written as the canonical text, which is the file from then on. The
+    /// lines the reader had ignored are gone with the text they were in.
+    /// A change that changes nothing writes nothing.
+    pub fn change_settings(&mut self, change: impl FnOnce(&mut Settings)) {
+        let mut changed = self.settings.clone();
+        change(&mut changed);
+        let loaded = Loaded::of(changed, Source::Toml);
+        if loaded.settings == self.settings {
+            return;
+        }
+        let live = self.settings_file.live;
+        let (settings, file) = loaded.into_parts();
+        self.settings_file = SettingsFile { live, ..file };
+        self.apply_settings(settings);
+        self.save_settings();
+    }
+
     /// Replaces the settings and does what the ones that changed ask for.
     /// Every change comes through here, from the app or from the file, and
-    /// nothing is written here.
+    /// nothing is written here: saving is [`App::change_settings`]'s.
     pub fn apply_settings(&mut self, new: Settings) {
         let old = std::mem::replace(&mut self.settings, new);
         if old.timestamps != self.settings.timestamps {
@@ -3920,15 +3934,59 @@ mod tests {
         }
     }
 
+    fn settings_saves(app: &App) -> Vec<&Settings> {
+        app.backend
+            .sent
+            .iter()
+            .filter_map(|command| match command {
+                Command::Save {
+                    file: StateFile::Settings(settings),
+                    ..
+                } => Some(settings),
+                _ => None,
+            })
+            .collect()
+    }
+
     #[test]
-    fn saving_settings_sends_them_to_the_backend() {
-        let mut harness = Harness::new();
-        harness.app.settings.sql_limit = 100;
-        harness.app.save_settings();
-        assert!(matches!(
-            crate::testing::last_sent(&harness.app),
-            Command::Save { file: StateFile::Settings(settings), .. } if settings.sql_limit == 100
-        ));
+    fn a_change_made_in_the_app_is_applied_written_and_kept_as_the_files_text() {
+        let dir = tempfile::tempdir().unwrap();
+        // A file the user wrote, with a line the reader ignored.
+        let text = "[data]\npage_size = 100\ngroup_digits = \"yes\"\n";
+        let mut app = App::new(
+            AppDirs::at(dir.path()),
+            Settings::from_toml(text),
+            Backend::recording(),
+        );
+        app.change_settings(|settings| settings.sql_limit = 100);
+        assert_eq!(app.settings.sql_limit, 100);
+        assert_eq!(app.settings.page_size, 100, "what the file set stays");
+        let saved = settings_saves(&app);
+        assert_eq!(saved.len(), 1);
+        assert_eq!(*saved[0], app.settings);
+        // The file is the canonical text now: nothing in it is invalid.
+        assert_eq!(app.settings_file.text, app.settings.to_toml());
+        assert!(app.settings_file.invalid.is_empty());
+        assert_eq!(
+            app.settings_file.lines,
+            Settings::from_toml(&app.settings.to_toml()).lines
+        );
+    }
+
+    #[test]
+    fn a_change_that_changes_nothing_is_not_written() {
+        let (mut app, _dir) = app();
+        let limit = app.settings.sql_limit;
+        app.change_settings(|settings| settings.sql_limit = limit);
+        assert!(settings_saves(&app).is_empty());
+    }
+
+    #[test]
+    fn a_change_made_in_the_app_is_brought_into_range() {
+        let (mut app, _dir) = app();
+        app.change_settings(|settings| settings.page_size = 5);
+        assert_eq!(app.settings.page_size, Settings::MIN_PAGE_SIZE);
+        assert_eq!(settings_saves(&app).len(), 1);
     }
 
     #[test]
