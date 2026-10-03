@@ -9,11 +9,13 @@ use mysql_async::prelude::Queryable;
 use mysql_common::named_params::ParsedNamedParams;
 
 use super::{
-    Conn, UNKNOWN_SYSTEM_VARIABLE, column_metas, execute, from_row, prepare_session, query_error,
-    row_values, status,
+    Conn, READ_ONLY, UNKNOWN_SYSTEM_VARIABLE, column_metas, execute, from_row, prepare_session,
+    query_error, row_values, status,
 };
 use crate::script::{cleanup_failed, retry_cancelled, statement_failed};
-use crate::{Dialect, Error, Result, ScriptOutcome, StatementOutcome, StatementResult, StopFlag};
+use crate::{
+    Access, Dialect, Error, Result, ScriptOutcome, StatementOutcome, StatementResult, StopFlag,
+};
 
 impl Conn {
     /// See [`crate::Connection::run_script`]. Statements run through the
@@ -41,13 +43,13 @@ impl Conn {
             ));
         }
         let mut outcome = ScriptOutcome::default();
-        let ended = match open(&mut conn, limit).await {
+        let ended = match open(&mut conn, limit, self.access).await {
             // A lost session ends the run here: nothing to close.
             Ok(()) => statements(&mut conn, texts, limit as usize, stop, &mut outcome).await?,
             // A cancel landed on the opening queries: no results.
             Err(Error::Cancelled) => {
                 outcome.stopped = true;
-                Ended::Unconfirmed
+                Ended::Unopened
             }
             Err(error) if error.is_connection_lost() => return Err(error),
             // The transaction could not start. The next run would fail the
@@ -58,7 +60,7 @@ impl Conn {
         // From here on a cancel would land on the cleanup: tell the
         // backend to stop repeating its cancel.
         stop.finish();
-        close(&mut conn, ended).await?;
+        close(&mut conn, ended, self.access).await?;
         Ok(outcome)
     }
 }
@@ -83,6 +85,11 @@ enum Ended {
     /// Nothing the run saw says the session left read-only. The close asks
     /// the server before it trusts this.
     Unconfirmed,
+    /// A cancel landed on the opening queries: no statement of the script
+    /// ran, so there is nothing to confirm. On a writable session the
+    /// cancel may have landed before the fence, where the session is
+    /// rightly read-write.
+    Unopened,
     /// The check before a statement found the session read-write.
     Left,
     /// A check could not be made, or a transaction could not start: the
@@ -137,11 +144,19 @@ fn started(status: StatusFlags) -> Result<()> {
     Ok(())
 }
 
-/// Starts the script's transaction and sets its row limit: with
-/// `sql_select_limit` the server stops producing rows, and the close's
-/// reset puts the default back. `Err` is a cancel that landed on these
-/// queries, a lost session, or a transaction that could not start.
-async fn open(conn: &mut mysql_async::Conn, limit: u32) -> Result<()> {
+/// Starts the script's transaction, in a session that is read-only for
+/// the run, and sets its row limit: with `sql_select_limit` the server
+/// stops producing rows, and the close's reset puts the default back.
+/// `Err` is a cancel that landed on these queries, a lost session, or a
+/// transaction that could not start.
+async fn open(conn: &mut mysql_async::Conn, limit: u32, access: Access) -> Result<()> {
+    // A writable session is read-write between scripts. The checks read
+    // the session's own setting, and only that setting makes the server
+    // refuse DDL after the commit DDL implies: so a run makes the session
+    // read-only first, and the close puts read-write back.
+    if access == Access::Writable {
+        retry_cancelled!(execute(conn, READ_ONLY))?;
+    }
     begin(conn).await?;
     // One row more than the limit, to know whether more exist.
     let rows = u64::from(limit) + 1;
@@ -281,11 +296,12 @@ fn stands(read_only: Option<i64>, status: StatusFlags) -> Result<Standing> {
 }
 
 /// Ends a script's run, whatever state it is in: confirms the session is
-/// still read-only, rolls back, resets the session and applies the
-/// connect-time settings again. A step a cancel interrupted runs once
-/// more. `LeftReadOnly` or any step that fails closes the session (they
-/// count as a lost connection).
-async fn close(conn: &mut mysql_async::Conn, ended: Ended) -> Result<()> {
+/// still read-only, unless no statement ran, rolls back, resets the session
+/// and applies the connect-time settings again. Those make a writable
+/// session read-write, but only after a run that ended cleanly. A step a
+/// cancel interrupted runs once more. `LeftReadOnly` or any step that fails
+/// closes the session (they count as a lost connection).
+async fn close(conn: &mut mysql_async::Conn, ended: Ended, access: Access) -> Result<()> {
     let ended = match ended {
         Ended::Unconfirmed => match retry_cancelled!(standing(conn)) {
             Ok(Standing::Left) => Ended::Left,
@@ -298,11 +314,18 @@ async fn close(conn: &mut mysql_async::Conn, ended: Ended) -> Result<()> {
     // when the session is closed anyway.
     let rolled_back = retry_cancelled!(execute(conn, "ROLLBACK"));
     let reset = retry_cancelled!(reset(conn));
-    let prepared = prepare_session(conn).await;
+    // A run that did not end cleanly leaves the session read-only, whatever
+    // it was opened as: it is about to be closed, and until then nothing
+    // may write on it.
+    let clean = matches!(ended, Ended::Unconfirmed | Ended::Unopened)
+        && rolled_back.is_ok()
+        && reset.is_ok();
+    let access = if clean { access } else { Access::ReadOnly };
+    let prepared = prepare_session(conn, access).await;
     match ended {
         Ended::Left => Err(Error::LeftReadOnly),
         Ended::Broken(error) => Err(error),
-        Ended::Unconfirmed => rolled_back
+        Ended::Unconfirmed | Ended::Unopened => rolled_back
             .and(reset)
             .and(prepared)
             .map_err(|error| cleanup_failed(&error)),
@@ -312,8 +335,8 @@ async fn close(conn: &mut mysql_async::Conn, ended: Ended) -> Result<()> {
 /// Resets the session (`COM_RESET_CONNECTION`): every session setting goes
 /// back to the server's default, and user variables, temporary tables,
 /// prepared statements and named locks are dropped. The connection id the
-/// cancel uses stays. The session is read-write until `prepare_session`
-/// runs again.
+/// cancel uses stays. A read-only session is read-write until
+/// `prepare_session` runs again.
 async fn reset(conn: &mut mysql_async::Conn) -> Result<()> {
     if conn.reset().await.map_err(query_error)? {
         Ok(())
@@ -880,7 +903,7 @@ mod tests {
             let mut conn = conn.conn.lock().await;
             assert_eq!(standing(&mut conn).await, Ok(Standing::Outside));
             // The server marks the transaction read-only, or this fails.
-            open(&mut conn, 10).await.unwrap();
+            open(&mut conn, 10, Access::ReadOnly).await.unwrap();
             assert_eq!(standing(&mut conn).await, Ok(Standing::Inside));
             assert_eq!(ready(&mut conn).await, Ok(Standing::Inside));
 
@@ -906,13 +929,13 @@ mod tests {
             assert_eq!(standing(&mut conn).await, Ok(Standing::Left));
             assert_eq!(ready(&mut conn).await, Ok(Standing::Left));
             assert_eq!(
-                close(&mut conn, Ended::Unconfirmed).await,
+                close(&mut conn, Ended::Unconfirmed, Access::ReadOnly).await,
                 Err(Error::LeftReadOnly)
             );
             assert_eq!(standing(&mut conn).await, Ok(Standing::Outside));
 
             // A script's own sql_select_limit does not blind the check.
-            open(&mut conn, 10).await.unwrap();
+            open(&mut conn, 10, Access::ReadOnly).await.unwrap();
             conn.query_drop("SET SESSION sql_select_limit = 0")
                 .await
                 .unwrap();
@@ -922,7 +945,7 @@ mod tests {
                 .unwrap();
             assert_eq!(standing(&mut conn).await, Ok(Standing::Left));
             assert_eq!(
-                close(&mut conn, Ended::Unconfirmed).await,
+                close(&mut conn, Ended::Unconfirmed, Access::ReadOnly).await,
                 Err(Error::LeftReadOnly)
             );
         }
@@ -944,7 +967,7 @@ mod tests {
         let connected = settings(&conn).await;
         {
             let mut conn = conn.conn.lock().await;
-            open(&mut conn, 10).await.unwrap();
+            open(&mut conn, 10, Access::ReadOnly).await.unwrap();
             // What the first statement of the script would have done.
             conn.query_drop("SET SESSION TRANSACTION READ WRITE")
                 .await
@@ -960,7 +983,7 @@ mod tests {
             assert_eq!(outcome.results[0].outcome, StatementOutcome::Cancelled);
             assert!(outcome.stopped);
             assert_eq!(
-                close(&mut conn, Ended::Unconfirmed).await,
+                close(&mut conn, Ended::Unconfirmed, Access::ReadOnly).await,
                 Err(Error::LeftReadOnly)
             );
         }
@@ -1178,6 +1201,51 @@ mod tests {
             read_only_setting(&mut conn, ["sql_mode + nope", name]).await,
             Err(Error::Query { .. })
         ));
+    }
+
+    /// A cancel that landed on a writable session's opening queries: the
+    /// session may still be read-write, and that is not a script that left.
+    #[tokio::test]
+    async fn closing_an_unopened_run_keeps_a_writable_session() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        let conn = session(&url).await;
+        let mut conn = conn.conn.lock().await;
+        execute(&mut conn, "SET SESSION TRANSACTION READ WRITE")
+            .await
+            .unwrap();
+        close(&mut conn, Ended::Unopened, Access::Writable)
+            .await
+            .unwrap();
+        let read_only = read_only_setting(&mut conn, READ_ONLY_SETTINGS)
+            .await
+            .unwrap();
+        assert_eq!(read_only, Some(0));
+    }
+
+    /// A run that left read-only on a writable session does not make it
+    /// read-write again: the backend closes the session, and until then
+    /// nothing may write on it.
+    #[tokio::test]
+    async fn closing_a_run_that_left_keeps_a_writable_session_read_only() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        let conn = session(&url).await;
+        let mut conn = conn.conn.lock().await;
+        // What a statement past the refusal would have done.
+        execute(&mut conn, "SET SESSION TRANSACTION READ WRITE")
+            .await
+            .unwrap();
+        assert_eq!(
+            close(&mut conn, Ended::Left, Access::Writable).await,
+            Err(Error::LeftReadOnly)
+        );
+        assert_eq!(
+            read_only_setting(&mut conn, READ_ONLY_SETTINGS).await,
+            Ok(Some(1))
+        );
     }
 
     /// A transaction that cannot start is not a query error to show and

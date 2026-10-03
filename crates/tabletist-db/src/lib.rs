@@ -83,7 +83,7 @@ impl Inner {
                 pg::Conn::connect(spec, secrets, via, access).await?,
             ))),
             Driver::MySql => Ok(Self::MySql(Box::new(
-                mysql::Conn::connect(spec, secrets, via).await?,
+                mysql::Conn::connect(spec, secrets, via, access).await?,
             ))),
         }
     }

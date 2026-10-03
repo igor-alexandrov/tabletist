@@ -7,7 +7,9 @@
 use std::time::Duration;
 
 use mysql_async::prelude::Queryable;
-use tabletist_db::{ConnectSpec, Connection, Driver, Error, ObjectKind, Secrets, TlsMode};
+use tabletist_db::{
+    Access, ConnectSpec, Connection, Driver, Error, HostKeys, ObjectKind, Secrets, TlsMode,
+};
 use tokio::sync::OnceCell;
 
 static FIXTURE: OnceCell<()> = OnceCell::const_new();
@@ -57,13 +59,23 @@ async fn load_fixture() {
         .await;
 }
 
-async fn connect() -> Option<Connection> {
+/// A connection to the fixture with the given access, or `None` (test skipped).
+async fn connect_as(access: Access) -> Option<Connection> {
     let Some((spec, secrets)) = spec() else {
         eprintln!("skipped: TABLETIST_TEST_MYSQL_URL is not set");
         return None;
     };
     load_fixture().await;
-    Some(Connection::connect(&spec, &secrets).await.unwrap())
+    Some(
+        Connection::connect_with(&spec, &secrets, &HostKeys::default(), access)
+            .await
+            .unwrap(),
+    )
+}
+
+/// A read-only connection to the fixture, or `None` (test skipped).
+async fn connect() -> Option<Connection> {
+    connect_as(Access::ReadOnly).await
 }
 
 #[tokio::test]
@@ -584,19 +596,21 @@ async fn quotes_backslashes_and_wildcards_are_just_text() {
 
 #[tokio::test]
 async fn a_raw_where_cannot_write_or_chain_statements() {
-    let Some(connection) = connect().await else {
-        return;
-    };
-    for raw in [
-        "1 = 1; DELETE FROM users",
-        "1=1) ; COMMIT; DELETE FROM users; SELECT (1",
-    ] {
-        let mut query = users(50);
-        query.raw_where = Some(raw.into());
-        assert!(connection.fetch_rows(&query).await.is_err(), "{raw}");
-        assert!(connection.count_rows(&query).await.is_err(), "{raw}");
+    for access in [Access::ReadOnly, Access::Writable] {
+        let Some(connection) = connect_as(access).await else {
+            return;
+        };
+        for raw in [
+            "1 = 1; DELETE FROM users",
+            "1=1) ; COMMIT; DELETE FROM users; SELECT (1",
+        ] {
+            let mut query = users(50);
+            query.raw_where = Some(raw.into());
+            assert!(connection.fetch_rows(&query).await.is_err(), "{raw}");
+            assert!(connection.count_rows(&query).await.is_err(), "{raw}");
+        }
+        assert_eq!(connection.count_rows(&users(1)).await.unwrap(), 5);
     }
-    assert_eq!(connection.count_rows(&users(1)).await.unwrap(), 5);
 }
 
 #[tokio::test]
@@ -876,7 +890,9 @@ async fn rows_of(connection: &Connection, text: &str) -> Vec<Vec<Value>> {
 /// session is read-only, in the server's time zone, without a mode that
 /// changes how text is lexed, in the character set of the handshake, and
 /// without a variable an earlier script set. (`mysql/script.rs` compares a
-/// session with itself at connect, setting by setting.)
+/// session with itself at connect, setting by setting.) On a writable
+/// connection the read-only it sees is the script's fence, not a
+/// connect-time setting.
 async fn assert_connect_time_settings(connection: &Connection) {
     let rows = rows_of(
         connection,
@@ -1332,110 +1348,146 @@ async fn probe_rows(admin: &mut mysql_async::Conn) -> i64 {
 
 #[tokio::test]
 async fn bypasses_cannot_write() {
-    let Some(connection) = connect().await else {
+    for access in [Access::ReadOnly, Access::Writable] {
+        let Some(connection) = connect_as(access).await else {
+            return;
+        };
+        let mut admin = admin().await;
+        admin
+            .query_drop("CREATE TABLE IF NOT EXISTS probe (n int)")
+            .await
+            .unwrap();
+        admin.query_drop("TRUNCATE probe").await.unwrap();
+        // The refusal stops these before anything runs. What the driver does
+        // with transaction statements past the refusal is tested next to it
+        // (`mysql/script.rs`).
+        for attempt in [
+            "COMMIT; SET SESSION TRANSACTION READ WRITE; INSERT INTO probe VALUES (1)",
+            "SET @@session.transaction_read_only = 0; INSERT INTO probe VALUES (1)",
+            "SET TRANSACTION READ WRITE; INSERT INTO probe VALUES (1)",
+            "CALL nothing()",
+            "/*!50000 COMMIT */ SELECT 1",
+            "CREATE USER sneaky",
+            "GRANT ALL ON *.* TO tabletist",
+            "SELECT 1 INTO OUTFILE '/tmp/tabletist-probe'",
+            "PREPARE s FROM 'INSERT INTO probe VALUES (1)'; EXECUTE s",
+            "EXECUTE IMMEDIATE 'INSERT INTO probe VALUES (1)'",
+            "SET @a = 1, NAMES gbk",
+            "SET sql_mode = 'ANSI_QUOTES'; SELECT \"; INSERT INTO probe VALUES (1); \"",
+            "SET GLOBAL read_only = 0",
+            "USE billing; INSERT INTO probe VALUES (1)",
+        ] {
+            // Checked before it is run: an account or server statement the
+            // guard let through must fail here, not reach the server.
+            let statements = script(attempt);
+            assert!(
+                statements
+                    .iter()
+                    .any(
+                        |statement| tabletist_db::sql::refusal(Dialect::MySql, &statement.text)
+                            .is_some()
+                    ),
+                "{attempt}"
+            );
+            let ran = within(connection.run_script(&statements, 10, &StopFlag::new())).await;
+            assert!(
+                matches!(ran, Err(Error::Refused { .. })),
+                "{attempt}: {ran:?}"
+            );
+            assert_eq!(probe_rows(&mut admin).await, 0, "{attempt}");
+        }
+        // These reach the server, which refuses the write.
+        for attempt in [
+            "INSERT INTO probe VALUES (1)",
+            "SELECT 1; REPLACE INTO probe VALUES (1)",
+            "DELETE FROM users",
+            "INSERT INTO probe SELECT 1 FROM users",
+        ] {
+            let outcome = run(&connection, attempt, 10).await.unwrap();
+            assert!(
+                matches!(
+                    &outcome.results.last().unwrap().outcome,
+                    StatementOutcome::Error { error: Error::Query { code: Some(code), .. }, .. }
+                        if code == "25006"
+                ),
+                "{attempt}: {outcome:?}"
+            );
+            assert_eq!(probe_rows(&mut admin).await, 0, "{attempt}");
+        }
+        // And browsing still reads, read-only.
+        assert_eq!(connection.count_rows(&users(1)).await.unwrap(), 5);
+        assert_connect_time_settings(&connection).await;
+    }
+}
+
+/// Whether the session is read-write between scripts. Asked through a
+/// count, which runs outside any script: its WHERE reads the session's
+/// own setting.
+async fn writes_between_scripts(connection: &Connection) -> bool {
+    let mut query = users(1);
+    query.raw_where = Some("@@session.transaction_read_only = 0".into());
+    connection.count_rows(&query).await.unwrap() == 5
+}
+
+#[tokio::test]
+async fn a_writable_session_is_read_only_for_a_script_and_read_write_after_it() {
+    let Some(writable) = connect_as(Access::Writable).await else {
         return;
     };
-    let mut admin = admin().await;
-    admin
-        .query_drop("CREATE TABLE IF NOT EXISTS probe (n int)")
-        .await
-        .unwrap();
-    admin.query_drop("TRUNCATE probe").await.unwrap();
-    // The refusal stops these before anything runs. What the driver does
-    // with transaction statements past the refusal is tested next to it
-    // (`mysql/script.rs`).
-    for attempt in [
-        "COMMIT; SET SESSION TRANSACTION READ WRITE; INSERT INTO probe VALUES (1)",
-        "SET @@session.transaction_read_only = 0; INSERT INTO probe VALUES (1)",
-        "SET TRANSACTION READ WRITE; INSERT INTO probe VALUES (1)",
-        "CALL nothing()",
-        "/*!50000 COMMIT */ SELECT 1",
-        "CREATE USER sneaky",
-        "GRANT ALL ON *.* TO tabletist",
-        "SELECT 1 INTO OUTFILE '/tmp/tabletist-probe'",
-        "PREPARE s FROM 'INSERT INTO probe VALUES (1)'; EXECUTE s",
-        "EXECUTE IMMEDIATE 'INSERT INTO probe VALUES (1)'",
-        "SET @a = 1, NAMES gbk",
-        "SET sql_mode = 'ANSI_QUOTES'; SELECT \"; INSERT INTO probe VALUES (1); \"",
-        "SET GLOBAL read_only = 0",
-        "USE billing; INSERT INTO probe VALUES (1)",
-    ] {
-        // Checked before it is run: an account or server statement the
-        // guard let through must fail here, not reach the server.
-        let statements = script(attempt);
-        assert!(
-            statements
-                .iter()
-                .any(
-                    |statement| tabletist_db::sql::refusal(Dialect::MySql, &statement.text)
-                        .is_some()
-                ),
-            "{attempt}"
-        );
-        let ran = within(connection.run_script(&statements, 10, &StopFlag::new())).await;
-        assert!(
-            matches!(ran, Err(Error::Refused { .. })),
-            "{attempt}: {ran:?}"
-        );
-        assert_eq!(probe_rows(&mut admin).await, 0, "{attempt}");
-    }
-    // These reach the server, which refuses the write.
-    for attempt in [
-        "INSERT INTO probe VALUES (1)",
-        "SELECT 1; REPLACE INTO probe VALUES (1)",
-        "DELETE FROM users",
-        "INSERT INTO probe SELECT 1 FROM users",
-    ] {
-        let outcome = run(&connection, attempt, 10).await.unwrap();
-        assert!(
-            matches!(
-                &outcome.results.last().unwrap().outcome,
-                StatementOutcome::Error { error: Error::Query { code: Some(code), .. }, .. }
-                    if code == "25006"
-            ),
-            "{attempt}: {outcome:?}"
-        );
-        assert_eq!(probe_rows(&mut admin).await, 0, "{attempt}");
-    }
-    // And browsing still reads, read-only.
-    assert_eq!(connection.count_rows(&users(1)).await.unwrap(), 5);
-    assert_connect_time_settings(&connection).await;
+    assert!(writes_between_scripts(&writable).await);
+    let rows = rows_of(&writable, "SELECT @@session.transaction_read_only").await;
+    assert_eq!(rows[0], [Value::Int(1)]);
+    assert!(writes_between_scripts(&writable).await);
+    // A read-only session never is.
+    let Some(read_only) = connect().await else {
+        return;
+    };
+    assert!(!writes_between_scripts(&read_only).await);
+    rows_of(&read_only, "SELECT 1").await;
+    assert!(!writes_between_scripts(&read_only).await);
 }
 
 #[tokio::test]
 async fn ddl_is_refused_as_read_only_and_ends_the_script() {
-    let Some(connection) = connect().await else {
-        return;
-    };
-    let mut admin = admin().await;
-    // The server commits before it refuses DDL, so this ends the script's
-    // transaction; the session is read-only all the same, and the script
-    // stops at the error.
-    let outcome = run(
-        &connection,
-        "SELECT 1; CREATE TABLE tabletist_ddl_probe (n int); SELECT 3",
-        10,
-    )
-    .await
-    .unwrap();
-    let made: Option<i64> = admin
-        .query_first(
-            "SELECT count(*) FROM information_schema.tables \
-             WHERE table_schema = 'tabletist' AND table_name = 'tabletist_ddl_probe'",
+    for access in [Access::ReadOnly, Access::Writable] {
+        let Some(connection) = connect_as(access).await else {
+            return;
+        };
+        let mut admin = admin().await;
+        // The server commits before it refuses DDL, so this ends the script's
+        // transaction; the session is read-only all the same, and the script
+        // stops at the error.
+        let outcome = run(
+            &connection,
+            "SELECT 1; CREATE TABLE tabletist_ddl_probe (n int); SELECT 3",
+            10,
         )
         .await
         .unwrap();
-    admin
-        .query_drop("DROP TABLE IF EXISTS tabletist_ddl_probe")
-        .await
-        .unwrap();
-    assert_eq!(made, Some(0));
-    assert_eq!(outcome.results.len(), 2, "{outcome:?}");
-    assert!(matches!(
-        &outcome.results[1].outcome,
-        StatementOutcome::Error { error: Error::Query { code: Some(code), .. }, .. } if code == "25006"
-    ));
-    assert_connect_time_settings(&connection).await;
+        let made: Option<i64> = admin
+            .query_first(
+                "SELECT count(*) FROM information_schema.tables \
+                 WHERE table_schema = 'tabletist' AND table_name = 'tabletist_ddl_probe'",
+            )
+            .await
+            .unwrap();
+        admin
+            .query_drop("DROP TABLE IF EXISTS tabletist_ddl_probe")
+            .await
+            .unwrap();
+        assert_eq!(made, Some(0));
+        assert_eq!(outcome.results.len(), 2, "{outcome:?}");
+        assert!(matches!(
+            &outcome.results[1].outcome,
+            StatementOutcome::Error { error: Error::Query { code: Some(code), .. }, .. } if code == "25006"
+        ));
+        assert_connect_time_settings(&connection).await;
+        assert_eq!(
+            writes_between_scripts(&connection).await,
+            access == Access::Writable,
+            "{access:?}"
+        );
+    }
 }
 
 /// Waits until a statement holding `marker` runs on the server.

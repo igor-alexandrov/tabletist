@@ -21,9 +21,9 @@ use mysql_common::named_params::ParsedNamedParams;
 
 use crate::script::retry_cancelled;
 use crate::{
-    ColumnInfo, ColumnMeta, ConnectSpec, Dialect, Error, ForeignKeyInfo, IndexInfo, MAX_LISTED,
-    ObjectInfo, ObjectKind, ObjectRef, Result, RowPage, RowQuery, Secrets, Structure, TlsMode,
-    Value, ValueKind,
+    Access, ColumnInfo, ColumnMeta, ConnectSpec, Dialect, Error, ForeignKeyInfo, IndexInfo,
+    MAX_LISTED, ObjectInfo, ObjectKind, ObjectRef, Result, RowPage, RowQuery, Secrets, Structure,
+    TlsMode, Value, ValueKind,
 };
 
 /// MySQL's `binary` character set: bytes, not text.
@@ -50,6 +50,8 @@ pub struct Conn {
     /// `SELECT VERSION()` at connect, like `8.4.3` or
     /// `10.11.6-MariaDB-1:10.11.6+maria~ubu2204`.
     pub(crate) version: String,
+    /// What the session was opened as: a script puts it back.
+    pub(crate) access: Access,
 }
 
 impl Conn {
@@ -59,7 +61,12 @@ impl Conn {
     }
 
     /// Connects to the spec's server, or through a tunnel's local port `via`.
-    pub async fn connect(spec: &ConnectSpec, secrets: &Secrets, via: Option<u16>) -> Result<Self> {
+    pub async fn connect(
+        spec: &ConnectSpec,
+        secrets: &Secrets,
+        via: Option<u16>,
+        access: Access,
+    ) -> Result<Self> {
         if spec.user.trim().is_empty() {
             return Err(Error::InvalidSpec("enter a user name".into()));
         }
@@ -106,7 +113,7 @@ impl Conn {
                 }
                 Ok(Err(error)) => return Err(connect_error(error)),
             };
-        prepare_session(&mut conn).await?;
+        prepare_session(&mut conn, access).await?;
         let id = conn.id();
         // mysql_async fails rather than go on in plain text when it was
         // given TLS options, so the options that connected say it.
@@ -124,6 +131,7 @@ impl Conn {
             encrypted,
             server,
             version,
+            access,
         })
     }
 
@@ -474,6 +482,11 @@ async fn finish<T>(transaction: mysql_async::Transaction<'_>, outcome: Result<T>
 /// Makes the session read-only: no transaction of its own can write.
 const READ_ONLY: &str = "SET SESSION TRANSACTION READ ONLY";
 
+/// Makes a writable session read-write: at connect, also on a server whose
+/// default is read-only, and again after a script, whose fence made it
+/// read-only and whose reset put the server's default back.
+const READ_WRITE: &str = "SET SESSION TRANSACTION READ WRITE";
+
 /// The character set and collation of the driver's handshake. A session
 /// reset puts the server's defaults in their place, while the driver goes
 /// on sending and reading UTF-8.
@@ -496,19 +509,25 @@ const LEXING_MODES: [&str; 8] = [
 ];
 
 /// The session settings every connection runs with, set at connect and
-/// again after a SQL editor script's reset, which undoes them. Read-only
-/// comes first. After a reset a cancel meant for a statement can land
-/// here, so a statement it interrupts runs once more: the session is not
-/// left read-write because a `SET` was interrupted.
-async fn prepare_session(conn: &mut mysql_async::Conn) -> Result<()> {
+/// again after a SQL editor script's reset, which undoes them. A read-only
+/// session says so first, so nothing here runs in a session that could
+/// write; a writable one says read-write last. After a reset a cancel
+/// meant for a statement can land here, so a statement it interrupts runs
+/// once more: the session is not left in the wrong mode because a `SET`
+/// was interrupted.
+async fn prepare_session(conn: &mut mysql_async::Conn, access: Access) -> Result<()> {
     let sql_mode = LEXING_MODES
         .iter()
         .fold("@@SESSION.sql_mode".to_owned(), |mode, name| {
             format!("REPLACE({mode}, '{name}', '')")
         });
     let sql_mode = format!("SET SESSION sql_mode = {sql_mode}");
+    let statements = match access {
+        Access::ReadOnly => [READ_ONLY, NAMES, sql_mode.as_str()],
+        Access::Writable => [NAMES, sql_mode.as_str(), READ_WRITE],
+    };
     // Fixed statements: safe to send through the text protocol.
-    for statement in [READ_ONLY, NAMES, sql_mode.as_str()] {
+    for statement in statements {
         retry_cancelled!(execute(conn, statement))?;
     }
     Ok(())
@@ -1002,7 +1021,7 @@ mod tests {
         let (mut spec, secrets) =
             ConnectSpec::from_url("mysql://me@127.0.0.1:1/app?ssl-mode=REQUIRED").unwrap();
         spec.ca_file = Some(ca);
-        match Conn::connect(&spec, &secrets, None).await {
+        match Conn::connect(&spec, &secrets, None, Access::ReadOnly).await {
             Err(Error::Tls(message)) => assert!(message.contains("verify-full"), "{message}"),
             other => panic!("{:?}", other.map(|_| ())),
         }
@@ -1084,7 +1103,9 @@ mod tests {
     pub(super) async fn session(url: &str) -> Conn {
         let (mut spec, secrets) = ConnectSpec::from_url(url).unwrap();
         spec.tls = TlsMode::Disable;
-        Conn::connect(&spec, &secrets, None).await.unwrap()
+        Conn::connect(&spec, &secrets, None, Access::ReadOnly)
+            .await
+            .unwrap()
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1149,7 +1170,7 @@ mod tests {
                 .await
                 .unwrap();
             conn.query_drop("SET NAMES latin1").await.unwrap();
-            prepare_session(&mut conn).await.unwrap();
+            prepare_session(&mut conn, Access::ReadOnly).await.unwrap();
             let (read_only, sql_mode, client, collation): (i64, String, String, String) = conn
                 .query_first(
                     "SELECT @@session.transaction_read_only, @@session.sql_mode, \
@@ -1176,6 +1197,14 @@ mod tests {
             let texts: Option<(String, String)> =
                 conn.exec_first(r#"SELECT "a", 'b\'c'"#, ()).await.unwrap();
             assert_eq!(texts, Some(("a".into(), "b'c".into())), "{mode}");
+            prepare_session(&mut conn, Access::Writable).await.unwrap();
+            let (read_only, sql_mode): (i64, String) = conn
+                .query_first("SELECT @@session.transaction_read_only, @@session.sql_mode")
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(read_only, 0, "{mode}");
+            assert!(!sql_mode.contains("ANSI"), "{mode}: {sql_mode}");
         }
     }
 
