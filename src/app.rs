@@ -21,7 +21,7 @@ use crate::model::{
 };
 use crate::paths::AppDirs;
 use crate::secrets::{SecretString, password_account, ssh_account};
-use crate::settings::{Loaded, Settings, Source};
+use crate::settings::{Loaded, Settings, SettingsFile, Source};
 use crate::theme::{self, Catalog, Palette};
 
 /// What a keyring read is for; each names the exact request it serves, so
@@ -61,6 +61,8 @@ pub struct TitleBar {
 pub struct App {
     pub dirs: AppDirs,
     pub settings: Settings,
+    /// The settings file as the app last read or wrote it.
+    pub settings_file: SettingsFile,
     pub locale: Locale,
     pub palette: Palette,
     pub look: crate::theme::Look,
@@ -100,9 +102,8 @@ pub struct App {
 
 impl App {
     pub fn new(dirs: AppDirs, loaded: Loaded, backend: Backend) -> Self {
-        let Loaded {
-            settings, source, ..
-        } = loaded;
+        let source = loaded.source;
+        let (settings, settings_file) = loaded.into_parts();
         let (connections, upgraded) = SavedConnections::load_upgrading(&dirs.connections_file());
         let (host_keys, host_keys_error) = match crate::known_hosts::load(&dirs.known_hosts_file())
         {
@@ -115,6 +116,7 @@ impl App {
         let mut app = Self {
             dirs,
             settings,
+            settings_file,
             locale: Locale::default(),
             palette: Palette::dark(),
             look: crate::theme::Look::for_platform(),
@@ -3317,6 +3319,25 @@ mod tests {
             );
             assert_eq!(saves(&app), 0, "{source:?}");
         }
+    }
+
+    #[test]
+    fn the_app_keeps_the_text_and_the_lines_it_started_with() {
+        let dir = tempfile::tempdir().unwrap();
+        let text = "[data]\npage_size = 100\ngroup_digits = \"yes\"\n";
+        let app = App::new(
+            AppDirs::at(dir.path()),
+            Settings::from_toml(text),
+            Backend::recording(),
+        );
+        assert_eq!(app.settings.page_size, 100);
+        assert_eq!(app.settings_file.text, text);
+        assert_eq!(app.settings_file.invalid, vec![3]);
+        assert_eq!(
+            app.settings_file.lines,
+            vec![(crate::settings::Key::PageSize, 2)]
+        );
+        assert!(!app.settings_file.live);
     }
 
     fn ids(app: &App) -> Vec<u64> {
