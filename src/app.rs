@@ -1367,11 +1367,14 @@ impl App {
     fn open_workspace(&mut self, tab: ConnTabId, saved: SavedConnection, typed: Secrets) {
         let session = SessionId(self.next_id());
         let request = RequestId(self.next_id());
+        // Where the option puts it; the grid's link switches it from there.
+        let full_precision = self.settings.timestamps == crate::settings::Timestamps::Full;
         let Some(entry) = self.tabs.iter_mut().find(|t| t.id == tab) else {
             return;
         };
-        entry.content =
-            ConnTabContent::Workspace(Box::new(Workspace::new(session, request, saved, typed)));
+        let mut workspace = Workspace::new(session, request, saved, typed);
+        workspace.full_precision = full_precision;
+        entry.content = ConnTabContent::Workspace(Box::new(workspace));
     }
 
     /// Fills the tab's secrets one at a time (the database password, then

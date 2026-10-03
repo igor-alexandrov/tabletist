@@ -394,6 +394,30 @@ mod tests {
     }
 
     #[test]
+    fn a_workspace_starts_with_the_timestamps_the_settings_ask_for() {
+        let mut harness = Harness::new();
+        harness.app.settings.timestamps = crate::settings::Timestamps::Full;
+        let tab = harness.connect_fake();
+        assert!(harness.app.workspace(tab).unwrap().full_precision);
+        harness.click("users");
+        let mut page = crate::testing::page(1, false);
+        page.columns[1].kind = tabletist_db::ValueKind::Temporal;
+        page.rows[0][1] = tabletist_db::Value::Text("2026-01-12 09:14:03.482915".into());
+        harness.answer_rows(page);
+        harness.settle();
+        assert!(
+            harness
+                .painted_color("2026-01-12 09:14:03.482915")
+                .is_some()
+        );
+        // The grid's own link still switches this workspace.
+        harness
+            .app
+            .apply(crate::model::Action::ToggleFullPrecision(tab));
+        assert!(!harness.app.workspace(tab).unwrap().full_precision);
+    }
+
+    #[test]
     fn the_timestamp_hint_gives_way_to_the_filter_chips() {
         use egui::accesskit::Role;
         for look in [crate::theme::Look::standard(), crate::theme::Look::macos()] {
