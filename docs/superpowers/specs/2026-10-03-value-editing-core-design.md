@@ -32,7 +32,7 @@ sub-projects, each with its own spec, plan and pull request:
 2. Editors by type: enum and CHECK pickers, boolean cycling, foreign key
    search, the calendar, JSON highlighting, array chips, binary from a
    file, `DEFAULT`.
-3. The inspector as a row form.
+3. The row panel (the design's inspector) as a row form.
 4. Power keys: undo and redo, pasting a TSV block, `.`, the rest of the vim
    set, `$EDITOR`.
 5. Rows: add, duplicate, delete (the "Editing a row" artboards).
@@ -51,7 +51,7 @@ sub-projects, each with its own spec, plan and pull request:
 | Row identity | The primary key, else a unique index whose columns are all NOT NULL. No such key: the table is view-only. |
 | Editors | Text only: on the cell, or in a popover for long, multi-line and JSON values. |
 | Confirmation | Only on a production connection: the statements are shown and the save is confirmed (Omarchy: by typing `write`). |
-| Omarchy keys | `i` and Enter edit the cell. The inspector keeps Space and `Mod+Shift+R`. |
+| Omarchy keys | `i` and Enter edit the cell. The row panel keeps Space and `Mod+Shift+R`. |
 
 Rejected: sessions that stay read-only with one read-write transaction for
 the save (chosen against: a writable connection is meant to grow SQL editor
@@ -69,7 +69,7 @@ editing auto-updatable views.
 
 Everything in slices 2 to 6. Editing key columns, binary values, values
 over 256 KiB, views, materialized views and SQL results. Editing in the
-inspector: its Edit, Duplicate and Delete buttons stay disabled and say
+row panel: its Edit, Duplicate and Delete buttons stay disabled and say
 "arrives in a later version". Rows of a page that is no longer loaded:
 pending changes never outlive their page.
 
@@ -98,7 +98,8 @@ pending changes never outlive their page.
     slice 6.
   - writable connection: "The SQL editor only reads data", "Every query
     runs in a read-only transaction, so <server> refused the UPDATE.
-    Nothing changed.", "Edit values in a table's grid."
+    Nothing changed.", and, from step 3 on, "Edit values in a table's
+    grid."
 
 ### Sessions (`tabletist-db`)
 
@@ -122,15 +123,33 @@ pending changes never outlive their page.
   writable session sends `SET SESSION TRANSACTION READ ONLY` before it
   begins, and its cleanup, which already replays the connect-time
   statements after the reset, ends with `SET SESSION TRANSACTION READ
-  WRITE`. A cleanup that fails closes the session, as today.
+  WRITE`. A cancel meant for a statement can land on either `SET`, so both
+  are sent again when interrupted, as the connect-time statements are. A
+  cleanup that fails closes the session, as today.
 - SQLite: the file is opened `SQLITE_OPEN_READ_WRITE`, never
   `SQLITE_OPEN_CREATE`. `PRAGMA query_only = ON` stays the session's
   standing state (it is set at open and again after every script); only a
   save turns it off, for its own transaction, and turns it back on on every
-  path. The script guard's refusal list gains `PRAGMA query_only` and
-  `PRAGMA writable_schema` for SQLite. A file the operating system protects
-  still opens, and a save to it fails with SQLite's message. Opening
-  read-write may create `-wal` and `-shm` files or recover a journal.
+  path. A file the operating system protects still opens, and a save to it
+  fails with SQLite's message. Opening read-write may create `-wal` and
+  `-shm` files or recover a journal.
+
+  The read-only open was the script guard's independent layer on SQLite,
+  and the SQL editor spec says SQLite "has no such mode to leave, so it
+  needs no check". On a writable session that is no longer true, so the
+  guard gains two things there:
+  - The refusal list refuses `PRAGMA query_only` and `PRAGMA
+    writable_schema` whenever the statement sets them. SQLite takes a
+    pragma's name as an identifier, a quoted identifier or a string
+    literal, with or without a schema in front, and a value after `=` or
+    in parentheses; the match covers all of those spellings
+    (`PRAGMA 'query_only' = 0`, `PRAGMA main."query_only"(0)`), so it
+    reads the name token itself and not only `sql::words`, which skips
+    strings.
+  - A check, as PostgreSQL and MySQL have: the runner reads `PRAGMA
+    query_only` before every statement and before its rollback. Anything
+    but 1 ends the run with `Error::LeftReadOnly`, after the `ROLLBACK`
+    that always happens.
 
 The promise, restated: on a read-only connection no action in the app can
 modify data. On a writable connection only Save can; browsing, a raw WHERE
@@ -139,11 +158,16 @@ and the SQL editor still cannot.
 ## What can be edited
 
 - **Tables with a row key.** The key is the primary key, else the first
-  unique index (by name) whose columns are all real columns (no
-  expressions) and all NOT NULL. A table without one is view-only, and its
+  unique index (by name) that is not partial and whose entries are all
+  columns of the table (no expressions; a name the catalog gives quoted is
+  matched unquoted) and all NOT NULL. The catalog gains
+  `IndexInfo.partial: bool` (PostgreSQL `indpred`, SQLite `index_list`'s
+  `partial`; never on MySQL). A table without a key is view-only, and its
   cells say "<table> has no primary key or unique index, so a row can't be
   targeted safely". Until the tab's structure has loaded, nothing is
   editable.
+- A row whose key holds a NULL (a SQLite primary key that is not an
+  integer can) is locked: "this row's key is NULL".
 - **Never editable:** views, materialized views, SQL results, and anything
   on a read-only connection ("This connection opens read-only").
 - **Locked cells** in an editable table:
@@ -190,17 +214,23 @@ Every editable type is edited as text.
   Esc cancels. `Alt+Enter` in the one-line editor adds a line break and
   moves the text into the popover.
 - The editor starts from the value's full text as the database gave it,
-  never from the shortened text a cell or the inspector shows.
-- **NULL:** `Mod+Backspace` on a nullable column makes the cell NULL.
-  Opening the editor on a NULL cell starts empty. Clearing the text gives
-  the empty string, never NULL.
+  never from the shortened text a cell or the row panel shows.
+- **NULL:** `Mod+Backspace` on the active cell of a nullable column, while
+  no editor is open, makes the cell NULL. Inside an open editor the key
+  stays the text field's own. Opening the editor on a NULL cell starts
+  empty. Clearing the text gives the empty string, never NULL.
 - A cell is pending when its new value differs from the loaded one: typing
   the loaded text back, or NULL on a cell that was NULL, takes it out of
   the pending set.
 
 ### Checks before sending
 
-Checked as the user types, from the column's entry in the tab's structure:
+Checked as the user types. The column's class comes from one function in
+`tabletist-db`, from the dialect and the structure's `type_name`
+(`numeric(10,2)`, `varchar(200)`, `bigint unsigned`); a type it does not
+know has no check. SQLite enforces neither ranges nor lengths, so there
+only the integer (as `i64`), float, boolean, CHECK-list and JSON rules
+apply, by the column's affinity.
 
 | Column | Rule | Message |
 |---|---|---|
@@ -213,7 +243,9 @@ Checked as the user types, from the column's entry in the tab's structure:
 | Text with a length | Within the length, shown as `27 / 200` | "At most 200 characters" |
 | NOT NULL | Never NULL | the NULL key does nothing |
 
-Every other rule is the database's, and its rejection is the Failed state.
+Every rule blocks: a decimal with more digits than the scale is refused
+with what the database would have stored, never rounded silently. Every
+other rule is the database's, and its rejection is the Failed state.
 
 While the text fails its check the editor is red and shows the message;
 Enter, Tab and `Mod+Enter` do not leave it. Clicking elsewhere keeps the
@@ -233,6 +265,9 @@ disabled while any cell is to fix, with "Fix 1 value to save".
   the gutter mark: `~`, or `!` when one of its cells is to fix or failed.
 - **Revert one cell:** `Mod+Z` on a pending cell that is active puts back
   the loaded value. The undo and redo stack is slice 4.
+- The row panel shows a pending cell's new value with the pending mark and
+  "was <loaded value>", so it never disagrees with the grid. It stays
+  read-only.
 
 ### Keys
 
@@ -248,13 +283,13 @@ disabled while any cell is to fix, with "Fix 1 value to save".
 | Save all | `Mod+S` | `:w`, Ctrl+S |
 | Discard all | `Mod+Alt+Backspace` | `:e!` |
 
-- Typing opens the editor on macOS and Windows except for Space (the
-  inspector) and `?` (the shortcuts), which keep their meaning.
-- On Omarchy `i` and Enter no longer open the inspector; Space and
+- Typing opens the editor on macOS and Windows except for Space (the row
+  panel) and `?` (the shortcuts), which keep their meaning.
+- On Omarchy `i` and Enter no longer open the row panel; Space and
   `Mod+Shift+R` do. `s` stays Structure. In insert mode the mode line reads
   `-- INSERT --`, the column and its type, the pending counts, and "esc
   normal · tab next cell"; Esc there leaves insert mode and does not close
-  the inspector.
+  the row panel.
 - Omarchy gains a `:` prompt in the mode line. It takes `w`, `diff` and
   `e!`, and nothing else in this slice; any other text is "not a command".
 - All of it is handled in `ui/keys.rs` and listed in the shortcuts table.
@@ -263,8 +298,8 @@ disabled while any cell is to fix, with "Fix 1 value to save".
 
 - **Guarded actions**, the ones that drop the page or the tab: previous and
   next page, sorting, applying or clearing filters, refresh, closing the
-  tab, closing or disconnecting the connection, switching database,
-  reconnecting, and closing the window.
+  tab, closing or disconnecting the connection, switching database, and
+  closing the window.
 - The action is held and a prompt asks. When one tab is affected: **Save**,
   **Discard**, **Cancel** (Omarchy: `[w]` write, `[d]` discard, `[esc]`
   stay). Save runs the save and performs the held action only if everything
@@ -273,8 +308,15 @@ disabled while any cell is to fix, with "Fix 1 value to save".
   affected (a connection, the window): **Discard** and **Cancel** only.
 - Not guarded: switching tabs or connections, and the Data and Structure
   switch. Pending changes wait in their tab.
-- While the session is disconnected the pending set is kept and Save is
-  disabled with the reason.
+- **A dropped connection never costs the pending set.** While the session
+  is disconnected the set is kept and Save is disabled with the reason.
+  Reconnecting is not guarded: a tab with pending changes keeps its loaded
+  page through the reconnect (it is not fetched again, as other tabs are),
+  and Save works afterwards. The page may be stale by then; the save's
+  check against the loaded values covers that. The same holds after a
+  script closed the session and after a connection lost while saving.
+- While disconnected, a guarded action's prompt has no Save: **Discard**
+  and **Cancel** only.
 
 ## Saving (`tabletist-db` and the backend)
 
@@ -299,9 +341,11 @@ disabled while any cell is to fix, with "Fix 1 value to save".
     Connection::write(&self, changes: &ChangeSet) -> Result<WriteOutcome>
 
 `write` is the crate's only writing call. On a `ReadOnly` connection it
-returns `Error::ReadOnly` without contacting the server. An `Err` is a
-failure of the session or the run (lost connection, cancelled); nothing was
-committed unless the connection was lost while committing.
+returns `Error::ReadOnly` without contacting the server, and it refuses a
+set with no rows, a row with an empty `key` or an empty `set`, before
+anything is sent. An `Err` is a failure of the session or the run (lost
+connection, cancelled); nothing was committed unless the connection was
+lost while committing.
 
 One transaction, for every row of the set:
 
@@ -317,9 +361,9 @@ One transaction, for every row of the set:
 5. For each row, `UPDATE <table> SET <column> = <new>, ... WHERE <key>`.
    It must touch exactly one row on PostgreSQL and SQLite; MySQL reports
    changed rather than matched rows, so there none or one. A statement
-   that fails, touches more, or on MySQL raises a warning (a truncated or
-   adjusted value) rolls everything back and returns `Failed` with the
-   database's error or the warning's text.
+   that fails, touches another number of rows, or on MySQL raises a
+   warning (a truncated or adjusted value) rolls everything back and
+   returns `Failed` with the database's error or the warning's text.
 6. Read each row whole again by its key, commit, and return the rows.
 
 New values travel as text and the database converts them to the column's
@@ -330,13 +374,15 @@ reals are bound as numbers, and on SQLite and MySQL a boolean as 1 or 0.
 
 The backend gains `Command::Write { session, request, tab, changes }` and
 `Event::Written { .. outcome }`, queued and answered like every request.
-`Mod+.` cancels a running save, which rolls back. A connection lost during
+`Mod+.` cancels a running save through the session's cancel handle; the
+`write` future is awaited to its end, never dropped, and rolls back. Once
+`COMMIT` is sent a cancel is no longer honoured. A connection lost during
 the save leaves the pending set as it was and says "The connection was lost
 while saving. Reload to see what was written."
 
 After `Written` the reducer replaces those rows in the page, in place even
 when the sort or the filters would now move or hide them, clears their
-pending cells, and formats the inspector's row again. The status reads
+pending cells, and formats the row panel's fields again. The status reads
 "written 2 changes · 1 row · 14 ms".
 
 ## Review SQL
@@ -367,7 +413,8 @@ Only when the workspace's environment is production, every Save first asks:
   **Cancel** and **Save to production**.
 - Omarchy: the red PROD box with the same facts and "sql shown with
   :diff", and a field that takes the word `write`; Enter confirms only when
-  it holds exactly that, Esc cancels.
+  it holds exactly that, Esc cancels. Until `:diff` exists (step 3), the
+  box lists the statements itself in place of that line.
 
 ## Conflicts
 
@@ -402,13 +449,15 @@ Each step ends compiling, tested and shippable, and gets its own plan run:
 2. `Connection::write`, the statement builder, `ColumnInfo.generated`, the
    backend command and event.
 3. Editing in the grid: the lifecycle, the editors, the checks, the pending
-   bar, the keys, Save, the leaving guard, and the production confirmation.
+   bar without Review SQL, the keys but `:diff`, Save, the leaving guard,
+   and the production confirmation with its statements in both looks.
    A conflict here is a plain message: "Row id 2 changed on the server.
    Nothing was written."
-4. Review SQL: the drawer and `:diff`.
+4. Review SQL: the drawer and `:diff`; the Omarchy PROD box points to it.
 5. The conflict dialog.
 
-No step ships a production save without its confirmation.
+No step ships a production save without its confirmation and its
+statements.
 
 ## Testing
 
@@ -422,8 +471,13 @@ No step ships a production save without its confirmation.
   - a MySQL value the server would truncate is `Failed` and not stored;
   - `write` on a `ReadOnly` connection sends nothing;
   - on a `Writable` connection a script and a raw WHERE still cannot
-    write: the existing guard tests run again in both modes, and MySQL
-    gains one for DDL;
+    write: the existing guard tests run again in both modes; MySQL gains
+    one for DDL; SQLite gains the refusal of `PRAGMA query_only` in each
+    spelling, and a script that gets `query_only` off by a spelling the
+    list misses (forced in the test) ends with `LeftReadOnly` and nothing
+    written;
+  - a tab with pending changes keeps its page across a reconnect and saves
+    afterwards;
   - the statement builder's two forms agree for every fixture type.
 - Reducer tests: the pending set, the checks, the leaving guard and its
   held action, rows replaced after a save, rebasing after each conflict
@@ -437,7 +491,9 @@ No step ships a production save without its confirmation.
 
 ## Documents this changes
 
-The main spec's success criterion 6, its section 4.3 and its keyboard
-table; the SQL editor spec's intent, restated for writable connections; the
-crate documentation of `tabletist-db` ("nothing in this crate writes");
-the README; the shortcuts table in `ui/keys.rs`.
+The main spec's success criterion 6, its sections 4.3 and 5.7 (Enter and
+`i` on Omarchy) and its keyboard table; the SQL editor spec's intent, its
+guard layers 2 and 3 and its cleanup list, restated for writable
+connections; the crate documentation of `tabletist-db` ("nothing in this
+crate writes") and the comment on `RowQuery::raw_where`; the README; the
+shortcuts table in `ui/keys.rs`.
