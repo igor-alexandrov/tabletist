@@ -854,15 +854,24 @@ async fn a_failing_statement_still_rolls_the_transaction_back() {
 
 #[tokio::test]
 async fn a_script_cannot_change_the_sessions_settings_for_later() {
+    // Setting query_only is refused outright: on a writable file it is
+    // what keeps a script from writing.
+    for access in [Access::ReadOnly, Access::Writable] {
+        let (connection, _dir) = fixture_as(access).await;
+        let refused = run(&connection, "SELECT 1;\nPRAGMA 'query_only' = OFF").await;
+        assert!(
+            matches!(refused, Err(Error::Refused { line: 2, .. })),
+            "{access:?}: {refused:?}"
+        );
+    }
     let (connection, _dir) = fixture().await;
     let changed = run(
         &connection,
-        "PRAGMA query_only = OFF; PRAGMA trusted_schema = ON; PRAGMA busy_timeout = 0; \
-         PRAGMA case_sensitive_like = ON",
+        "PRAGMA trusted_schema = ON; PRAGMA busy_timeout = 0; PRAGMA case_sensitive_like = ON",
     )
     .await
     .unwrap();
-    assert_eq!(changed.results.len(), 4, "{changed:?}");
+    assert_eq!(changed.results.len(), 3, "{changed:?}");
     assert!(
         !changed
             .results
