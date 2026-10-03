@@ -451,10 +451,10 @@ impl Settings {
                 }
             }
             Err(error) => {
-                log::warn!(
-                    "could not read {} ({error}); using defaults",
-                    path.display()
-                );
+                // There and not readable (permissions, an I/O error): kept
+                // aside too, or the next save would rename a new file over
+                // one nobody has read.
+                crate::util::keep_aside(&path, &error.to_string());
                 Self::default().into()
             }
         }
@@ -922,6 +922,18 @@ sql_timeout_secs = 30  # 0 waits forever
     fn a_file_that_is_not_text_is_kept_aside_and_the_defaults_used() {
         let (dirs, _root) = dirs();
         std::fs::write(dirs.settings_file(), [0xff, 0xfe, 0x00]).unwrap();
+        let loaded = Settings::load(&dirs);
+        assert_eq!(loaded.settings, Settings::default());
+        assert_eq!(loaded.source, Source::Defaults);
+        assert!(dirs.config.join("settings.toml.bad").exists());
+        assert!(!dirs.settings_file().exists());
+    }
+
+    #[test]
+    fn a_file_that_cannot_be_read_is_kept_aside_and_the_defaults_used() {
+        let (dirs, _root) = dirs();
+        // A directory is a file no platform can read.
+        std::fs::create_dir(dirs.settings_file()).unwrap();
         let loaded = Settings::load(&dirs);
         assert_eq!(loaded.settings, Settings::default());
         assert_eq!(loaded.source, Source::Defaults);
