@@ -897,6 +897,35 @@ async fn a_script_cannot_change_the_sessions_settings_for_later() {
 }
 
 #[tokio::test]
+async fn a_script_on_a_writable_file_changes_no_file() {
+    let (connection, dir) = fixture_as(Access::Writable).await;
+    let path = dir.path().join("fixture.db");
+    let before = std::fs::read(&path).unwrap();
+    let missing = dir.path().join("missing.db");
+    let copy = dir.path().join("copy.db");
+    for text in [
+        format!("ATTACH '{}' AS other", missing.display()),
+        format!("ATTACH 'file:{}?mode=rwc' AS other", missing.display()),
+        format!("VACUUM INTO '{}'", copy.display()),
+        "PRAGMA journal_mode = WAL".to_owned(),
+        "PRAGMA wal_checkpoint(TRUNCATE)".to_owned(),
+        "UPDATE users SET email = 'x'".to_owned(),
+        "CREATE TABLE made (n)".to_owned(),
+    ] {
+        // Refused, failed or harmless: each is fine, a changed file is not.
+        let _ = run(&connection, &text).await;
+        assert_eq!(std::fs::read(&path).unwrap(), before, "{text}");
+        assert!(!missing.exists() && !copy.exists(), "{text}");
+    }
+    let mut names: Vec<_> = std::fs::read_dir(dir.path())
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect();
+    names.sort();
+    assert_eq!(names, ["fixture.db"]);
+}
+
+#[tokio::test]
 async fn an_empty_script_is_not_cancelled_but_a_stopped_one_is() {
     let (connection, _dir) = fixture().await;
     let empty = within(connection.run_script(&[], 10, &StopFlag::new()))

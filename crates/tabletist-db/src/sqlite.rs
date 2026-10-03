@@ -1,5 +1,5 @@
-//! SQLite, opened read-only unless the connection is writable. rusqlite is blocking, so every call runs on
-//! tokio's blocking pool.
+//! SQLite, opened read-only unless the connection is writable. rusqlite is
+//! blocking, so every call runs on tokio's blocking pool.
 
 use std::borrow::Cow;
 use std::path::Path;
@@ -60,7 +60,19 @@ impl Drop for InterruptOnDrop {
     }
 }
 
-/// Runs `texts` between `BEGIN` and a `ROLLBACK` that always happens.
+/// Whether the session still refuses writes. A script can turn
+/// `query_only` off by a spelling the refusal list does not know, and on a
+/// writable handle nothing else would stop its next statement.
+fn still_query_only(connection: &rusqlite::Connection) -> Result<bool> {
+    connection
+        .query_row("PRAGMA query_only", [], |row| row.get::<_, i64>(0))
+        .map(|on| on == 1)
+        .map_err(map_error)
+}
+
+/// Runs `texts` between `BEGIN` and a `ROLLBACK` that always happens. A
+/// run that finds `query_only` off, before a statement or at its end, ends
+/// with `LeftReadOnly` after that rollback.
 fn script(
     connection: &rusqlite::Connection,
     texts: &[String],
@@ -96,9 +108,19 @@ fn script(
     // Removed before the cleanup, so a stop cannot interrupt it.
     connection.progress_handler(0, None::<fn() -> bool>);
     stop.finish();
+    // Asked before the rollback, which puts the setting back: a last
+    // statement that turned it off must not pass unseen. A cancel can land
+    // on the question, so it is asked once more; no answer counts as left.
+    let left = ran.is_ok()
+        && !still_query_only(connection)
+            .or_else(|_| still_query_only(connection))
+            .unwrap_or(false);
     let ended = end_transaction(connection);
     ran?;
     ended.map_err(|error| crate::script::cleanup_failed(&error))?;
+    if left {
+        return Err(Error::LeftReadOnly);
+    }
     Ok(outcome)
 }
 
@@ -132,6 +154,21 @@ fn statements(
                 outcome: StatementOutcome::Cancelled,
             });
             break;
+        }
+        match still_query_only(connection) {
+            Ok(true) => {}
+            Ok(false) => return Err(Error::LeftReadOnly),
+            // A stop that landed on the check: this statement is the
+            // cancelled one.
+            Err(Error::Cancelled) => {
+                outcome.stopped = true;
+                outcome.results.push(StatementResult {
+                    elapsed: std::time::Duration::ZERO,
+                    outcome: StatementOutcome::Cancelled,
+                });
+                break;
+            }
+            Err(error) => return Err(error),
         }
         let started = Instant::now();
         let result = match statement(connection, text, limit) {
@@ -903,6 +940,40 @@ mod tests {
                 })
                 .await;
             assert_eq!(lifted.is_ok(), access == Access::Writable, "{access:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_script_that_gets_query_only_off_is_stopped_and_writes_nothing() {
+        for access in [Access::ReadOnly, Access::Writable] {
+            for texts in [
+                vec!["PRAGMA query_only = OFF", "UPDATE users SET email = 'x'"],
+                // In last position, where no statement follows to be checked.
+                vec!["SELECT 1", "PRAGMA query_only = OFF"],
+            ] {
+                let (conn, _dir) = fixture_as(access).await;
+                let script = texts.iter().map(|text| (*text).to_owned()).collect();
+                let ran = conn.run_script(script, 10, &StopFlag::new()).await;
+                assert!(
+                    matches!(ran, Err(Error::LeftReadOnly)),
+                    "{access:?} {texts:?}: {ran:?}"
+                );
+                let (query_only, changed) = conn
+                    .run(|connection| {
+                        let one = |sql: &str| {
+                            connection
+                                .query_row(sql, [], |row| row.get::<_, i64>(0))
+                                .map_err(map_error)
+                        };
+                        Ok((
+                            one("PRAGMA query_only")?,
+                            one("SELECT count(*) FROM users WHERE email = 'x'")?,
+                        ))
+                    })
+                    .await
+                    .unwrap();
+                assert_eq!((query_only, changed), (1, 0), "{access:?} {texts:?}");
+            }
         }
     }
 
