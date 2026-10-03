@@ -441,13 +441,19 @@ mod tests {
         assert!(harness.painted_color("1234567").is_some());
         assert!(harness.painted_color("1,234,567").is_none());
         assert!(harness.painted_color("1,240.50").is_some());
-        // A copy gives the value as it is.
+        assert!(harness.painted_color("1240.50").is_none());
         let object_tab = harness.app.workspace(tab).unwrap().active_tab.unwrap();
         harness.app.apply(crate::model::Action::SelectCell {
             tab,
             id: object_tab,
             cell: crate::model::CellPos { row: 0, col: 1 },
         });
+        harness.settle();
+        // The row panel's field gives the value as it is, beside the cell
+        // that groups it.
+        assert!(harness.painted_color("1240.50").is_some());
+        assert!(harness.painted_color("1,240.50").is_some());
+        // So does a copy.
         harness.app.workspace_mut(tab).unwrap().pane = crate::model::Pane::Grid;
         harness.copy(false);
         assert_eq!(harness.copied.as_deref(), Some("1240.50"));

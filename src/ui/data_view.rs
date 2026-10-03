@@ -1412,13 +1412,13 @@ pub fn plain_cell<'a>(
         crate::ui::json_view::document(ctx, kind, value, crate::ui::json_view::CELL_MAX)
     {
         let (count, strings) = crate::ui::json_view::summary(&doc);
-        let shown = if look.terminal {
+        let glance = if look.terminal {
             strings.join(" · ")
         } else {
             strings.into_iter().next().unwrap_or_default()
         };
         return styled(
-            format::one_line(&shown).into_owned().into(),
+            format::one_line(&glance).into_owned().into(),
             Style::Json(count),
         );
     }
