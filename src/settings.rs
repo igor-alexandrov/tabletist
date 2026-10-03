@@ -142,7 +142,7 @@ pub enum Source {
     Toml,
     /// An older version's `settings.json`: the TOML is still to be written.
     Json,
-    /// No file.
+    /// No file, or one that could not be read and was kept aside.
     Defaults,
 }
 
@@ -160,8 +160,9 @@ pub struct Loaded {
 }
 
 impl Loaded {
-    /// Settings that came from no TOML file, brought into range first: the
-    /// text is what a file would read back as, and the settings are the same.
+    /// Settings that were not read from a TOML text, brought into range
+    /// first: the text is what a file would read back as, and the settings
+    /// are the same.
     pub fn of(settings: Settings, source: Source) -> Self {
         let settings = settings.validated();
         let text = settings.to_toml();
@@ -344,9 +345,9 @@ impl Settings {
     /// TOML, and a value its key cannot have, are ignored and remembered by
     /// line; the key keeps its default. A key or a table this version does
     /// not know is ignored without a word: a newer one may have written it.
-    /// A table header that is rejected costs the keys under it too, and
+    /// A table header that is rejected can cost the keys under it too, and
     /// those without a mark: they are read into the table above (or into
-    /// none), where they are keys nobody knows.
+    /// none), and count only if that table knows them.
     pub fn from_toml(text: &str) -> Loaded {
         // The parser recovers from a bad line in two ways that are not
         // "ignored": it stops reading at some (a key with no `=`), and
@@ -418,8 +419,9 @@ impl Settings {
     }
 
     /// The settings a start has: from `settings.toml`, else from an older
-    /// version's `settings.json`, else the defaults. It only reads; what
-    /// came from the JSON is written as TOML by the app (see [`Source`]).
+    /// version's `settings.json`, else the defaults. It writes no
+    /// settings (a file it cannot use is moved aside); what came from the
+    /// JSON is written as TOML by the app (see [`Source`]).
     pub fn load(dirs: &AppDirs) -> Loaded {
         let path = dirs.settings_file();
         match std::fs::read(&path) {
@@ -734,6 +736,15 @@ sql_timeout_secs = 30  # 0 waits forever
         assert_eq!(loaded.settings.sql_timeout_secs, None);
         // The text says what the settings are.
         assert_eq!(Settings::from_toml(&loaded.text).settings, loaded.settings);
+    }
+
+    #[test]
+    fn a_byte_order_mark_is_not_a_bad_line() {
+        // Windows editors write one; the parser takes it in its stride.
+        let loaded = Settings::from_toml("\u{feff}[data]\npage_size = 100\n");
+        assert_eq!(loaded.invalid, Vec::<usize>::new());
+        assert_eq!(loaded.settings.page_size, 100);
+        assert_eq!(loaded.lines, vec![(Key::PageSize, 2)]);
     }
 
     #[test]
