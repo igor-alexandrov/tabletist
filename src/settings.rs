@@ -114,6 +114,14 @@ impl Key {
 /// The file's first line.
 const HEADER: &str = "# written by tabletist, safe to edit by hand\n";
 
+/// The most a settings file is read to: about a hundred times what the app
+/// writes. The reader takes a pass over the text for each bad line at worst
+/// (the parser stops at a key with no `=`), which is nothing for a file a
+/// person wrote and minutes, before the window opens, for a large file that
+/// is something else.
+const MAX_LINES: usize = 1_000;
+const MAX_BYTES: usize = 64 * 1024;
+
 /// `text` as a TOML basic string.
 fn quote(text: &str) -> String {
     let mut out = String::with_capacity(text.len() + 2);
@@ -173,6 +181,29 @@ impl Loaded {
             invalid: Vec::new(),
             lines,
             source,
+        }
+    }
+}
+
+impl Loaded {
+    /// Says in the log which lines of `path` were ignored. Until a window
+    /// shows them, the log is where a typo is told. More of them than
+    /// anyone would look up are told by their number alone.
+    pub fn warn_invalid(&self, path: &Path) {
+        const NAMED: usize = 20;
+        if self.invalid.len() > NAMED {
+            log::warn!(
+                "{}: {} lines could not be read and are ignored",
+                path.display(),
+                self.invalid.len()
+            );
+            return;
+        }
+        for line in &self.invalid {
+            log::warn!(
+                "{}: line {line} could not be read and is ignored",
+                path.display()
+            );
         }
     }
 }
@@ -347,8 +378,25 @@ impl Settings {
     /// not know is ignored without a word: a newer one may have written it.
     /// A table header that is rejected can cost the keys under it too, and
     /// those without a mark: they are read into the table above (or into
-    /// none), and count only if that table knows them.
+    /// none), and count only if that table knows them. A text longer than a
+    /// settings file can be (`MAX_LINES`, `MAX_BYTES`) is not read at all:
+    /// every line of it that says something is one that was ignored.
     pub fn from_toml(text: &str) -> Loaded {
+        if text.len() > MAX_BYTES || text.lines().count() > MAX_LINES {
+            let invalid = text
+                .lines()
+                .enumerate()
+                .filter(|(_, line)| !line.trim_matches([' ', '\t']).is_empty())
+                .map(|(index, _)| index + 1)
+                .collect();
+            return Loaded {
+                settings: Settings::default(),
+                text: text.to_owned(),
+                invalid,
+                lines: Vec::new(),
+                source: Source::Toml,
+            };
+        }
         // The parser recovers from a bad line in two ways that are not
         // "ignored": it stops reading at some (a key with no `=`), and
         // reads past others with a guess at the value (`full` unquoted).
@@ -428,13 +476,7 @@ impl Settings {
             Ok(bytes) => match String::from_utf8(bytes) {
                 Ok(text) => {
                     let loaded = Self::from_toml(&text);
-                    // Until a window shows them, the log is where a typo is told.
-                    for line in &loaded.invalid {
-                        log::warn!(
-                            "{}: line {line} could not be read and is ignored",
-                            path.display()
-                        );
-                    }
+                    loaded.warn_invalid(&path);
                     loaded
                 }
                 Err(error) => {
@@ -736,6 +778,38 @@ sql_timeout_secs = 30  # 0 waits forever
         assert_eq!(loaded.settings.sql_timeout_secs, None);
         // The text says what the settings are.
         assert_eq!(Settings::from_toml(&loaded.text).settings, loaded.settings);
+    }
+
+    #[test]
+    fn a_text_too_long_for_a_settings_file_is_not_read_at_all() {
+        // A key with no `=` on every line: the parser stops at each, so
+        // reading this would take a pass per line.
+        let text = format!(
+            "[data]\npage_size = 100\n\n{}",
+            "not toml\n".repeat(MAX_LINES)
+        );
+        let loaded = Settings::from_toml(&text);
+        assert_eq!(loaded.settings, Settings::default());
+        assert!(loaded.lines.is_empty());
+        assert_eq!(loaded.text, text);
+        // Every line that says something is marked; the blank one is not.
+        assert_eq!(loaded.invalid.len(), MAX_LINES + 2);
+        assert_eq!(loaded.invalid[..3], [1, 2, 4]);
+        assert_eq!(loaded.invalid.last(), Some(&(MAX_LINES + 3)));
+        // Few lines, but more bytes than a settings file has.
+        let wide = format!("[data]\npage_size = 100\n# {}\n", "x".repeat(MAX_BYTES));
+        let loaded = Settings::from_toml(&wide);
+        assert_eq!(loaded.settings, Settings::default());
+        assert_eq!(loaded.invalid, vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn a_text_of_the_most_lines_a_settings_file_has_is_read() {
+        let text = format!("[data]\npage_size = 100\n{}", "\n".repeat(MAX_LINES - 2));
+        assert_eq!(text.lines().count(), MAX_LINES);
+        let loaded = Settings::from_toml(&text);
+        assert_eq!(loaded.settings.page_size, 100);
+        assert!(loaded.invalid.is_empty());
     }
 
     #[test]
