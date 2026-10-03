@@ -259,7 +259,8 @@ pub enum Event {
     },
     /// Whether the settings file is being watched, wherever an edit of it
     /// can be made. Sent again when that changes: a symbolic link turned to
-    /// a directory that cannot be watched, or back.
+    /// a directory that cannot be watched, or such a directory that can be
+    /// watched after all.
     SettingsWatch { live: bool },
     /// The settings file changed on disk: its text. The app's own writes
     /// come this way too, and it knows them by their text.
@@ -779,20 +780,19 @@ struct SettingsWatcher {
 impl SettingsWatcher {
     /// Looks where the settings file is now and watches there. A link can
     /// be made, turned elsewhere or replaced by a file while the app runs.
-    /// `false` when a link leads where nothing can be watched: an edit made
-    /// there would not be seen.
-    fn follow(&mut self) -> bool {
+    /// An error, with what to log, when a link leads where nothing can be
+    /// watched: an edit made there would not be seen.
+    fn follow(&mut self) -> Result<(), String> {
         use notify::Watcher as _;
-        let (name, directory, mut live) = match behind_link(&self.path) {
-            Ok(Some((name, directory))) => (Some(name), directory, true),
-            Ok(None) => (None, None, true),
-            Err(error) => {
-                log::warn!(
-                    "could not follow the link at {}: {error}",
-                    self.path.display()
-                );
-                (None, None, false)
-            }
+        let behind = behind_link(&self.path).map_err(|error| {
+            format!(
+                "could not follow the link at {}: {error}",
+                self.path.display()
+            )
+        });
+        let (name, directory) = match &behind {
+            Ok(Some((name, directory))) => (Some(name.clone()), directory.clone()),
+            _ => (None, None),
         };
         let own = self.path.file_name().map(OsStr::to_owned);
         self.names = own.into_iter().chain(name).collect();
@@ -803,19 +803,13 @@ impl SettingsWatcher {
                 let _ = self.watcher.unwatch(&left);
             }
             if let Some(directory) = directory {
-                match self
-                    .watcher
+                self.watcher
                     .watch(&directory, notify::RecursiveMode::NonRecursive)
-                {
-                    Ok(()) => self.elsewhere = Some(directory),
-                    Err(error) => {
-                        log::warn!("could not watch {}: {error}", directory.display());
-                        live = false;
-                    }
-                }
+                    .map_err(|error| format!("could not watch {}: {error}", directory.display()))?;
+                self.elsewhere = Some(directory);
             }
         }
-        live
+        behind.map(|_| ())
     }
 }
 
@@ -870,7 +864,13 @@ fn watch_settings(path: PathBuf, outbox: Outbox) -> notify::Result<(SettingsRead
         names: Vec::new(),
         elsewhere: None,
     };
-    let live = watch.follow();
+    let live = match watch.follow() {
+        Ok(()) => true,
+        Err(why) => {
+            log::warn!("{why}");
+            false
+        }
+    };
     let reader = tokio::spawn(read_settings(watch, live, changes, outbox));
     Ok((SettingsReader(reader.abort_handle()), live))
 }
@@ -889,9 +889,14 @@ fn concerns(event: &notify::Event, names: &[OsString]) -> bool {
             .any(|name| names.iter().any(|known| known == name))
 }
 
+/// How often a watcher that is not live looks again for the place its link
+/// leads to: nothing that is watched says when that place appears.
+const LOOK_AGAIN: Duration = Duration::from_secs(2);
+
 /// Sends the settings file's text each time it changes, once the changes
-/// have settled, and says so when it can no longer see every change
-/// ([`Event::SettingsWatch`]). Runs until it is stopped ([`SettingsReader`]).
+/// have settled, and says so when it can no longer see every change, or
+/// can again ([`Event::SettingsWatch`]). Runs until it is stopped
+/// ([`SettingsReader`]).
 async fn read_settings(
     mut watch: SettingsWatcher,
     mut live: bool,
@@ -900,18 +905,42 @@ async fn read_settings(
 ) {
     // What was sent last: the same text is not news, whatever woke us.
     let mut sent: Option<String> = None;
-    while let Some(event) = events.recv().await {
-        if !concerns(&event, &watch.names) {
-            continue;
-        }
-        tokio::time::sleep(SETTLE).await;
-        while events.try_recv().is_ok() {}
+    let mut look_again = tokio::time::Instant::now() + LOOK_AGAIN;
+    loop {
+        // A link that leads where nothing can be watched (a directory that
+        // is not there yet, a volume not mounted) is looked at again from
+        // time to time: no event comes when the place appears.
+        let woken = if live {
+            Ok(events.recv().await)
+        } else {
+            tokio::time::timeout_at(look_again, events.recv()).await
+        };
+        let looking_again = match woken {
+            Ok(Some(event)) => {
+                if !concerns(&event, &watch.names) {
+                    continue;
+                }
+                tokio::time::sleep(SETTLE).await;
+                while events.try_recv().is_ok() {}
+                false
+            }
+            Ok(None) => return,
+            Err(_) => true,
+        };
         // Before the file is read, so that no edit falls between the read
         // and the watch on a place the file has just moved to.
         let follows = tokio::task::block_in_place(|| watch.follow());
-        if follows != live {
-            live = follows;
+        look_again = tokio::time::Instant::now() + LOOK_AGAIN;
+        if follows.is_ok() != live {
+            // Logged when it changes, not at every look.
+            if let Err(why) = &follows {
+                log::warn!("{why}");
+            }
+            live = follows.is_ok();
             outbox.emit(Event::SettingsWatch { live });
+        }
+        if looking_again && !live {
+            continue;
         }
         let path = &watch.path;
         let read = || {
@@ -3994,6 +4023,32 @@ mod tests {
             Some(Event::SettingsWatch { live: true })
         ));
         assert!(!texts_until(&mut backend, "[data]\npage_size = 500\n").is_empty());
+        std::fs::write(&target, "[data]\npage_size = 1000\n").unwrap();
+        assert!(!texts_until(&mut backend, "[data]\npage_size = 1000\n").is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_place_that_appears_behind_a_link_is_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let (config, _) = config_and_dotfiles(dir.path());
+        let path = config.join("settings.toml");
+        // The directory the link leads to is not there yet (a volume that
+        // is not mounted).
+        let away = dir.path().join("away");
+        let target = away.join("settings.toml");
+        std::os::unix::fs::symlink(&target, &path).unwrap();
+        let (mut backend, live) = watching(&path);
+        assert!(!live);
+        // It appears, and nothing changes beside the link: no event says so.
+        std::fs::create_dir(&away).unwrap();
+        crate::util::write_atomic(&target, b"[data]\npage_size = 500\n").unwrap();
+        assert!(matches!(
+            backend.wait(WAIT),
+            Some(Event::SettingsWatch { live: true })
+        ));
+        assert!(!texts_until(&mut backend, "[data]\npage_size = 500\n").is_empty());
+        // From then on an edit made there is seen.
         std::fs::write(&target, "[data]\npage_size = 1000\n").unwrap();
         assert!(!texts_until(&mut backend, "[data]\npage_size = 1000\n").is_empty());
     }

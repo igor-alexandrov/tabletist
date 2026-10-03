@@ -444,8 +444,10 @@ Each time it wakes it resolves the link again before it reads, so a link
 made, turned elsewhere or replaced by a plain file while the app runs is
 followed. A link that leads where nothing can be watched (the directory is
 not there, or no watch can be had on it) is logged and
-`Event::SettingsWatch { live: false }` is sent, then `true` again once it
-can. A link turned by hand among the directories on the way, with nothing
+`Event::SettingsWatch { live: false }` is sent. While it is not live the
+watcher looks again every two seconds, since no event comes when the place
+appears (a volume is mounted), and sends `true`, with the file's text, once
+it can watch there. A link turned by hand among the directories on the way, with nothing
 changing beside `settings.toml`, is not seen until the next change that is.
 
 When the file is deleted while the app runs, the settings in memory stay,
