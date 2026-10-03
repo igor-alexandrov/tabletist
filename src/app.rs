@@ -2271,10 +2271,10 @@ impl App {
     }
 
     /// Fetches again, at the settings' page size, every table that shows a
-    /// page or waits for one on a session that can answer. The page it shows
-    /// goes first, as when Next moves on: left on screen while a fetch
-    /// fails, a page of the old size would be moved past by the new one.
-    /// The others take the size when they next fetch (see `fetch_rows`).
+    /// page or waits for one on a session that can answer. `fetch_rows`
+    /// drops the page of the old size as it takes the new one. The others
+    /// take the size, and lose their page the same way, when they next
+    /// fetch.
     fn resize_pages(&mut self) {
         let size = self.settings.page_size;
         let mut again = Vec::new();
@@ -2294,10 +2294,6 @@ impl App {
             );
         }
         for (tab, id) in again {
-            if let Some(object) = self.object_tab_mut(tab, id) {
-                object.selection = None;
-                object.rows.value = None;
-            }
             self.fetch_rows(tab, id);
         }
     }
@@ -2920,7 +2916,9 @@ impl App {
         self.cancel(session, running);
     }
 
-    /// Loads the object tab's rows, replacing any load still pending.
+    /// Loads the object tab's rows at the settings' page size, replacing
+    /// any load still pending. A page of another size does not stay on
+    /// screen meanwhile, whatever the caller kept.
     pub fn fetch_rows(&mut self, tab: ConnTabId, id: TabId) {
         let request = RequestId(self.next_id());
         let page_size = self.settings.page_size;
@@ -2931,12 +2929,17 @@ impl App {
         let Some(object) = workspace.object_tab_mut(id) else {
             return;
         };
-        let superseded = object.rows.pending;
-        object.rows.start(request);
         // Until here the limit was the size of the page on screen, which
         // Next and Previous have just moved by. From here it is the
-        // settings': a size that changed in between costs no row.
-        object.query.limit = page_size;
+        // settings'. A page of another size cannot stay under the new
+        // limit: were this fetch cancelled, Next would move past it by the
+        // wrong size.
+        if object.query.limit != page_size {
+            object.drop_page();
+            object.query.limit = page_size;
+        }
+        let superseded = object.rows.pending;
+        object.rows.start(request);
         let query = object.query.clone();
         self.cancel(session, superseded);
         self.backend.send(Command::FetchRows {

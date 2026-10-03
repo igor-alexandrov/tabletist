@@ -515,6 +515,43 @@ mod tests {
     }
 
     #[test]
+    fn a_refresh_at_a_new_page_size_leaves_no_page_of_the_old_size_to_move_from() {
+        let mut harness = Harness::new();
+        let tab = harness.connect_fake();
+        harness.click("users");
+        harness.answer_rows(crate::testing::page(3, true));
+        // The size changes while the session is down: the page keeps its own.
+        harness.app.workspace_mut(tab).unwrap().status =
+            crate::model::SessionStatus::Disconnected(tabletist_db::Error::query("gone"));
+        let settings = crate::settings::Settings {
+            page_size: 500,
+            ..harness.app.settings.clone()
+        };
+        harness.app.apply_settings(settings);
+        harness.app.workspace_mut(tab).unwrap().status = crate::model::SessionStatus::Connected;
+        harness.app.apply(crate::model::Action::Refresh(tab));
+        assert_eq!(last_fetch(&harness), (0, 500));
+        // A refresh keeps the page it fetches again, but not one of another
+        // size: a cancel would bring it back under a limit it was not
+        // fetched with.
+        let object = harness
+            .app
+            .workspace(tab)
+            .unwrap()
+            .active_object_tab()
+            .unwrap();
+        assert!(object.page().is_none());
+        cancel_fetches(&mut harness, tab);
+        // Nothing is on screen for Next to move past by the new size.
+        let before = fetches(&harness);
+        let object_tab = harness.app.workspace(tab).unwrap().active_tab.unwrap();
+        harness
+            .app
+            .apply(crate::model::Action::NextPage { tab, object_tab });
+        assert_eq!(fetches(&harness), before, "{:?}", last_fetch(&harness));
+    }
+
+    #[test]
     fn the_same_settings_fetch_nothing() {
         let mut harness = Harness::new();
         harness.connect_fake();
