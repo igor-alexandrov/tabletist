@@ -665,7 +665,7 @@ impl Harness {
         let dir = tempfile::tempdir().expect("temp dir");
         let ctx = egui::Context::default();
         ctx.enable_accesskit();
-        let mut app = App::new(AppDirs::at(dir.path()), Settings::default(), backend);
+        let mut app = App::new(AppDirs::at(dir.path()), Settings::default().into(), backend);
         // Tests stay deterministic on every OS.
         app.look = crate::theme::Look::standard();
         app.attach(&ctx, false);
