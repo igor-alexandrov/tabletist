@@ -4,7 +4,7 @@
 
 **Goal:** Settings live in `settings.toml`, read tolerantly and written in one canonical form, with an older `settings.json` carried over once; and three new options (timestamps, number grouping, value tags) change what the grids show.
 
-**Architecture:** `src/settings.rs` gains a canonical writer (`to_toml`) and a tolerant reader (`from_toml`, on `toml::de::DeTable::parse_recoverable`) that returns the settings together with the file's text, the lines it ignored and the line of each key. `Settings::load` picks the source (TOML, the old JSON, or defaults) and only reads; `App::new` writes the TOML once when the JSON was the source. The three options are read where cells are built: a workspace starts with the timestamps option, `data_view::cell` groups numbers, and the three views drop value tags when the option is off.
+**Architecture:** `src/settings.rs` gains a canonical writer (`to_toml`) and a tolerant reader (`from_toml`, on `toml::de::DeTable::parse_recoverable`) that returns the settings together with the file's text, the lines it ignored and the line of each key. `Settings::load` picks the source (TOML, the old JSON, or defaults) and writes no settings; `App::new` writes the TOML once when the JSON was the source. The three options are read where cells are built: a workspace starts with the timestamps option, `data_view::cell` groups numbers, and the three views drop value tags when the option is off.
 
 **Tech Stack:** Rust 2024, egui (crmne fork, 0.36), `toml` 1.1 (parser only). Headless UI tests through `src/testing.rs`.
 
@@ -873,7 +873,7 @@ In `impl Settings`:
 
 Notes for the implementer:
 - `toml::de::DeTable` is `Map<Spanned<DeString>, Spanned<DeValue>>`. `get` and `get_key_value` take `&str` (`Spanned<Cow<str>>: Borrow<str>`). `Spanned::span()` is a byte range, `get_ref()` the value. `DeValue::as_integer()` gives a `DeInteger` whose `as_str()` and `radix()` feed `from_str_radix`. `Error::span()` is an `Option`.
-- Why the loop: `parse_recoverable` gives up on the rest of the document after a line with a key and no `=` (`toml`'s `de/parser/document.rs` breaks out of its event loop), and for `timestamps = full` or `value_tags = False` it reports an error and still returns a value. Emptying each rejected line and parsing again makes "ignored" true in both cases. The loop ends because every pass empties at least one more line. An unclosed multi-line value (`page_size = [`) is the one case that costs more than its own line: the parser blames the end of the file, so the lines under the bracket are emptied from the bottom up until the opening one goes. The settings file has no multi-line values, so that is accepted; do not chase it.
+- Why the loop: `parse_recoverable` gives up on the rest of the document after a line with a key and no `=` (`toml`'s `de/parser/document.rs` breaks out of its event loop), and for `timestamps = full` or `value_tags = False` it reports an error and still returns a value. Emptying each rejected line and parsing again makes "ignored" true in both cases. The loop ends because every pass empties at least one more line. A value that never closes is the one case that costs more than its own line: for a multi-line string left open (`theme = """Nord`) the parser blames the end of the text, a place no line has, and still returns a guess. An error at or past the end of the text therefore blames the last line that is not blank, so the lines under the opening one are emptied from the bottom up until it goes, and the guess is never applied (test: `a_string_left_open_is_not_applied_and_costs_the_lines_under_it`). An unclosed `[` or `{` costs its own line when only blank lines and comments follow, and the lines under it otherwise; they are all marked, and nothing wrong is applied, since no key takes an array or a table. Blank, here, is TOML's blank (spaces and tabs): a stray carriage return or a no-break space on the last line is the bad line itself, not one to skip. A table header the parser rejects also costs the keys under it, without a mark for them: they are read into the table above, where this version does not know them.
 - If one of the three bad-line tests reports other line numbers than it expects, print what `parse_recoverable` returned for that text (the errors' spans and messages) before changing anything. Fix the reader so the tests' claims hold (one bad line costs that line and nothing else); do not weaken a test without saying why.
 
 - [ ] **Step 5: Run the tests**
@@ -896,6 +896,8 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ---
 
 ### Task 5: The file is `settings.toml`
+
+> **After review.** The listings in Tasks 4 and 5 are as first written. What was built differs where the reviews found something: an error at the end of the text blames the last line TOML does not call blank (`last_line`); `Loaded::of` brings the settings into range itself, so the JSON arm of `load` does not; a `settings.toml` that cannot be read is kept aside like one that is not UTF-8; and `take`'s comment says an integer an `i64` cannot hold is no value. `src/settings.rs` is the record.
 
 **Files:**
 - Modify: `src/paths.rs`, `src/util.rs`, `src/settings.rs`, `src/backend.rs` (test near line 3090), `src/entrypoint.rs:111`, `src/app.rs`

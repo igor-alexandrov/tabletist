@@ -28,7 +28,7 @@ design canvas Artifact. They are not copied into the repository.
 | Question | Decision |
 |---|---|
 | Rows | Only the options the app can honour today: rows per page, timestamps, numbers, value tags. |
-| File | `settings.toml`, in tables. An existing `settings.json` is read once and left in place. |
+| File | `settings.toml`, in tables. An existing `settings.json` is read whenever there is no `settings.toml`, and left in place. |
 | Reading | Tolerant: a line that cannot be read is ignored and remembered by its number; the rest of the file applies. |
 | Writing | The app's own canonical text, the same every time. Comments and unknown keys a user added are not kept. |
 | Parser | The `toml` crate (`DeTable::parse_recoverable`). Our own writer. |
@@ -120,8 +120,8 @@ the old JSON still deserializes; fields the JSON lacks take their defaults.
 
 `Settings::to_toml(&self) -> String` renders the text above: the header
 comment, the tables in that order, keys aligned within a table, and the
-comment that lists a key's values where it has a closed set, two spaces
-after the value. It is the only writer. `StateFile::Settings` saves that text through `util::write_atomic`.
+note beside the keys that have one (the values of a closed set, or what a
+value that reads oddly means), two spaces after the value. It is the only writer. `StateFile::Settings` saves that text through `util::write_atomic`.
 
 ### Reading
 
@@ -157,6 +157,17 @@ parser rejected, keeping its line break, and parses again until nothing more
 is rejected. One bad line then costs that line and nothing else, and a
 rejected line is never applied. `Loaded::text` stays the file's own text.
 
+Two kinds of bad line cost more than themselves. A value that never closes
+(a multi-line string left open) costs the lines under it, which are all
+marked. A table header the parser rejects can cost the keys under it without a
+mark for them: they are read into the table above (or into none), and count
+only if that table knows them.
+
+The JSON is read at every start that finds no `settings.toml`, not only the
+first: after the TOML is deleted, or kept aside as `.bad`, the next start
+carries the old JSON over again. Whether a reset should ignore it is left
+to step 2.
+
 Then, for each known key:
 
 - A value of the wrong type, or a string outside a closed set
@@ -173,16 +184,17 @@ before a window shows it.
 `load` picks the source:
 
 1. `settings.toml` exists: read it (`Source::Toml`). A file that is not
-   UTF-8 is moved aside as `settings.toml.bad`, as `util::load_json` does
-   with damaged JSON, and the defaults are used. One that cannot be read at
-   all gives the defaults with a logged warning.
+   UTF-8, or that cannot be read at all, is moved aside as
+   `settings.toml.bad`, as `util::load_json` does with a damaged JSON file,
+   so the next save cannot replace it; the defaults are used.
 2. Else `settings.json` exists: read it as today (`util::load_json`, so a
    damaged one is still moved aside as `.bad`), giving `Source::Json`. The
    JSON is not removed or changed, so an older Tabletist still finds its
    file.
 3. Else: the defaults (`Source::Defaults`).
 
-`load` only reads. `App::new` takes the `Loaded`; when its source is `Json`
+`load` writes no settings: the only thing it does to the disk is move a
+file it cannot use aside. `App::new` takes the `Loaded`; when its source is `Json`
 it sends `Command::Save` with `StateFile::Settings` once, which writes
 `settings.toml`. With `Source::Defaults` nothing is written until a setting
 changes or an action needs the file (Reveal, the editor key).
@@ -208,6 +220,13 @@ Two functions, one inside the other:
 
 A change that arrives from the file (Live reload) calls `apply_settings`
 only, and keeps the file's own text, invalid lines and key lines.
+
+A grid keeps its fitted column widths in egui's memory under its id, which
+is why `full_precision` is part of that id: wider timestamps fit the columns
+again. Grouped numbers and value tags change a cell's width too (a tag adds
+its padding), so once these options can change while a grid is open (step 2
+onward) they join the grid ids, or `apply_settings` forgets the grids'
+widths. In step 1 the options are fixed for a session and nothing is needed.
 
 | Option | Control | Effect |
 |---|---|---|
