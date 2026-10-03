@@ -208,6 +208,8 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 The rule that keeps paging honest: **a table's `query.limit` is the size of the page it shows or awaits, and `fetch_rows` brings it to the settings' size each time it fetches.** Next and Previous move the offset by `query.limit` before they call `fetch_rows`, so they move by the size of the page that was on screen, and no row is skipped whichever size comes next. A table that is not fetched again (its session is down, or it has nothing loaded) keeps its limit until its next fetch. A table that is fetched again drops the page it shows first, as Next and Previous do: if the new fetch then fails or is cancelled, no page of the old size is left on screen for Next to move past by the new one.
 
+> **After review.** Next and Previous are not the only callers that fetch: Refresh and a reconnect fetch too, and keep the page on screen while they do. So the rule is held by `fetch_rows` itself: when the settings' size differs from the query's limit, it drops the page before it takes the new limit (`ObjectTab::drop_page`). `resize_pages` then needs no drop of its own. The listing below is as first written; `src/app.rs` is the record.
+
 - [ ] **Step 1: Write the failing tests**
 
 In `src/ui/mod.rs`, beside the settings tests of step 1 (`a_workspace_starts_with_the_timestamps_the_settings_ask_for`):
