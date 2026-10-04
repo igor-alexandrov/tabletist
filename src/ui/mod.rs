@@ -13098,4 +13098,153 @@ mod tests {
         assert!(leaving(&harness));
         assert_eq!(edits(&harness, tab, id).cells.len(), 1);
     }
+
+    /// How many times the last frame painted `text` as one piece.
+    fn times_painted(harness: &Harness, text: &str) -> usize {
+        let pieces = harness.painted.iter();
+        pieces.filter(|(piece, _)| piece == text).count()
+    }
+
+    /// Whether the row panel's field labelled `label` carries the pending
+    /// mark: the amber dot after its label, or the terminal's `~`.
+    fn field_marked(harness: &Harness, label: &str) -> bool {
+        let palette = harness.app.palette;
+        let Some(line) = harness.painted_rect(label) else {
+            panic!("no field labelled {label}");
+        };
+        let beside = |rect: &egui::Rect| {
+            rect.left() >= line.right() && line.y_range().contains(rect.center().y)
+        };
+        if harness.app.look.terminal {
+            let marks = harness.text_rects.iter().zip(&harness.painted);
+            marks
+                .filter(|((text, _), (_, color))| text == "~" && *color == palette.warning)
+                .any(|((_, rect), _)| beside(rect))
+        } else {
+            let dots = harness.fills.iter();
+            dots.filter(|(rect, fill)| *fill == palette.warning && rect.width() == 6.0)
+                .any(|(rect, _)| beside(rect))
+        }
+    }
+
+    #[test]
+    fn the_row_panel_shows_a_pending_value_and_what_it_was() {
+        for look in Look::ALL {
+            let (mut harness, tab, id) = editable_in(look);
+            let palette = harness.app.palette;
+            select(&mut harness, tab, id, (1, 1));
+            // The grid's cell and the panel's field.
+            assert_eq!(times_painted(&harness, "user2@example.com"), 2);
+            assert!(!field_marked(&harness, "email · TEXT"), "{}", look.name);
+            make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
+            harness.settle();
+            // Both show the new value, and the panel says what it was.
+            assert_eq!(
+                times_painted(&harness, "bob@example.com"),
+                2,
+                "{}",
+                look.name
+            );
+            assert_eq!(times_painted(&harness, "user2@example.com"), 0);
+            assert!(
+                painted_in(&harness, "was user2@example.com", palette.dim),
+                "{}",
+                look.name
+            );
+            assert!(field_marked(&harness, "email · TEXT"), "{}", look.name);
+            assert!(!field_marked(&harness, "meta · JSON"), "{}", look.name);
+            assert!(harness.has("email · TEXT, pending"), "{}", look.name);
+            // A NULL that is pending reads as NULL, over what it replaces.
+            select(&mut harness, tab, id, (0, 2));
+            assert!(!painted(&harness, r#"was {"plan":"pro"}"#));
+            let nulls = times_painted(&harness, "NULL");
+            harness.app.apply(Action::SetNull { tab, id });
+            harness.settle();
+            assert!(
+                painted_in(&harness, r#"was {"plan":"pro"}"#, palette.dim),
+                "{}",
+                look.name
+            );
+            // In the grid's cell and in the panel's field, where the
+            // document was.
+            assert_eq!(times_painted(&harness, "NULL"), nulls + 2, "{}", look.name);
+            assert!(field_marked(&harness, "meta · JSON"), "{}", look.name);
+            // A value on a NULL: the panel's word for what it was.
+            make_pending(&mut harness, tab, id, (1, 2), "{}");
+            harness.settle();
+            assert!(
+                painted_in(&harness, "was NULL", palette.dim),
+                "{}",
+                look.name
+            );
+            // Reverted, the panel is as the page.
+            select(&mut harness, tab, id, (1, 1));
+            harness.app.apply(Action::RevertCell { tab, id });
+            harness.settle();
+            assert_eq!(
+                times_painted(&harness, "user2@example.com"),
+                2,
+                "{}",
+                look.name
+            );
+            assert_eq!(times_painted(&harness, "bob@example.com"), 0);
+            assert!(!painted(&harness, "was user2@example.com"), "{}", look.name);
+            assert!(!field_marked(&harness, "email · TEXT"), "{}", look.name);
+            assert!(harness.has("email · TEXT"), "{}", look.name);
+            // The row's other change is still said.
+            assert!(painted(&harness, "was NULL"), "{}", look.name);
+            // Saved, the panel shows what the database holds.
+            harness.app.apply(Action::WriteEdits { tab, id });
+            harness.answer_written(Ok(tabletist_db::WriteOutcome::Written {
+                rows: vec![
+                    vec![
+                        tabletist_db::Value::Int(1),
+                        tabletist_db::Value::Text("user1@example.com".into()),
+                        tabletist_db::Value::Null,
+                    ],
+                    vec![
+                        tabletist_db::Value::Int(2),
+                        tabletist_db::Value::Text("user2@example.com".into()),
+                        tabletist_db::Value::Text("{}".into()),
+                    ],
+                ],
+                elapsed: std::time::Duration::from_millis(14),
+            }));
+            harness.settle();
+            assert!(!painted(&harness, "was NULL"), "{}", look.name);
+            assert!(!field_marked(&harness, "meta · JSON"), "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn the_row_panel_stays_read_only_with_a_pending_value() {
+        for look in Look::ALL {
+            let (mut harness, tab, id) = editable_in(look);
+            select(&mut harness, tab, id, (1, 1));
+            // The editing controls under the row, as the look names them.
+            let controls = if look.terminal {
+                ["e edit", "yy p duplicate", "dd delete"]
+            } else {
+                ["Edit", "Duplicate", "Delete"]
+            };
+            let footer = |harness: &mut Harness| {
+                let tree = harness.settle();
+                let mut names: Vec<String> = controls
+                    .into_iter()
+                    .filter(|name| {
+                        tree.nodes
+                            .iter()
+                            .any(|(_, node)| node.label() == Some(name) && node.is_disabled())
+                    })
+                    .map(str::to_owned)
+                    .collect();
+                names.sort();
+                names
+            };
+            let before = footer(&mut harness);
+            assert_eq!(before.len(), 3, "{}", look.name);
+            make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
+            assert_eq!(footer(&mut harness), before, "{}", look.name);
+        }
+    }
 }

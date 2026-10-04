@@ -612,12 +612,17 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, id: TabId) {
                 .auto_shrink([false, false])
                 .show(&mut body_ui, |ui| {
                     ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
+                    // A pending cell is drawn by its new value, as the grid
+                    // draws it: a document, a tag, a NULL.
                     let fields: Vec<(usize, &tabletist_db::ColumnMeta, &Value)> = source
                         .columns
                         .iter()
                         .zip(row.iter())
                         .enumerate()
-                        .map(|(col, (column, value))| (col, column, value))
+                        .map(|(col, (column, value))| {
+                            let pending = pending_field(texts, col);
+                            (col, column, pending.map_or(value, |cell| &cell.new))
+                        })
                         .collect();
                     let ctx = ui.ctx().clone();
                     let is_doc = |column: &tabletist_db::ColumnMeta, value: &Value| {
@@ -700,6 +705,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, id: TabId) {
                                                 skin,
                                                 &mut actions,
                                             );
+                                            was(ui, *col, skin);
                                         },
                                     );
                                 }
@@ -736,6 +742,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, id: TabId) {
                                         skin,
                                         &mut actions,
                                     );
+                                    was(ui, *col, skin);
                                 });
                             });
                             ui.add_space(12.0);
@@ -766,6 +773,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, id: TabId) {
                                         skin,
                                         &mut actions,
                                     );
+                                    was(ui, *col, skin);
                                 });
                             });
                             ui.add_space(12.0);
@@ -815,8 +823,38 @@ struct FieldSkin<'a> {
     copy_key: bool,
 }
 
-/// One field: its label (with a copy button, or a document's controls),
-/// then its value.
+/// What is pending in the column `col` of the row `texts` is of.
+fn pending_field(texts: Option<&RowFields>, col: usize) -> Option<&crate::model::PendingField> {
+    texts?.pending.get(col)?.as_ref()
+}
+
+/// Under a pending field's value: what it loaded as, "was {loaded}".
+fn was(ui: &mut egui::Ui, col: usize, skin: FieldSkin<'_>) {
+    let FieldSkin {
+        look,
+        palette,
+        locale,
+        texts,
+        ..
+    } = skin;
+    let Some(pending) = pending_field(texts, col) else {
+        return;
+    };
+    ui.add_space(if look.terminal { 2.0 } else { 3.0 });
+    let text = format!("{} {}", look.label(&gettext(locale, "was")), pending.was);
+    let width = ui.available_width();
+    Text::one(look, caption(look), &text, palette.dim)
+        .wrap(width)
+        .layout(ui.ctx())
+        .label(ui);
+}
+
+/// The pending mark after a field's label: the dot a pending cell's row
+/// and the pending bar wear, or the terminal's `~`.
+const MARK: f32 = 6.0;
+
+/// One field: its label (with a copy button, or a document's controls, and
+/// the pending mark when its cell is pending), then its value.
 #[allow(clippy::too_many_arguments)] // one call site per layout
 fn field(
     ui: &mut egui::Ui,
@@ -869,18 +907,40 @@ fn field(
     };
     let (line, response) = ui.allocate_exact_size(vec2(width, label_height), Sense::hover());
     let name_id = response.id;
-    response.widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, &text));
-    // Cut at the column's edge, as the field's own width allows.
-    let room = line.width() - 30.0;
+    let pending = pending_field(texts, col).is_some();
+    // A screen reader hears the mark as a word.
+    let name = if pending {
+        format!("{text}, {}", gettext(locale, "pending"))
+    } else {
+        text.clone()
+    };
+    response.widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, &name));
+    // Cut at the column's edge, as the field's own width allows, and
+    // before the mark of a pending one.
+    let mark = if pending { 6.0 + MARK } else { 0.0 };
+    let room = line.width() - 30.0 - mark;
     let shown = crate::ui::grid::ellipsize(&text, room, false, |text| {
         label_role.width(ui.ctx(), look.faces, text)
     });
-    widgets::paint_text(
+    let label_width = widgets::paint_text(
         ui,
         line.left(),
         line.center().y,
         Text::one(look, label_role, &shown, palette.dim),
     );
+    if pending {
+        let x = line.left() + label_width + 6.0;
+        if look.terminal {
+            let tilde = Text::one(look, label_role, "~", palette.warning);
+            widgets::paint_text(ui, x, line.center().y, tilde);
+        } else {
+            ui.painter().circle_filled(
+                pos2(x + MARK / 2.0, line.center().y),
+                MARK / 2.0,
+                palette.warning,
+            );
+        }
+    }
     let column_name = format::display_safe(&column.name);
     let copy_label = format!("{} {column_name}", gettext(locale, "Copy"));
     let hovered = ui.rect_contains_pointer(line.expand2(vec2(16.0, 30.0)));
