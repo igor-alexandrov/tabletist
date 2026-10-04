@@ -29,8 +29,9 @@ pub enum Ring {
     Edge { radius: u8 },
     /// A text field: its border in the accent and a soft halo round it.
     Field { radius: u8 },
-    /// A text field whose text fails its check: as [`Ring::Field`], in the
-    /// danger colour.
+    /// A text field whose text fails its check, or one that takes the word
+    /// a write to production waits for: as [`Ring::Field`], in the danger
+    /// colour.
     Failing { radius: u8 },
     /// The widget shows it by itself (a caret in text that has no box, the
     /// terminal's reversed button).

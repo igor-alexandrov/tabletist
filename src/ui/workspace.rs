@@ -679,7 +679,7 @@ fn chip_card(ui: &mut egui::Ui, chip: &Chip, hint: Option<&str>, look: &Look, pa
 
 /// Where a connection points, in a word: its database, or the file's name
 /// for SQLite.
-fn target(workspace: &crate::model::Workspace) -> String {
+pub fn target(workspace: &crate::model::Workspace) -> String {
     match &workspace.spec.sqlite_path {
         Some(path) => crate::model::file_name(&path.display().to_string()),
         None => workspace.spec.database.clone(),
