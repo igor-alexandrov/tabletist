@@ -403,11 +403,25 @@ fn fixture_connection() -> SavedConnection {
         id: ConnectionId::new(),
         name: "Fixture".into(),
         environment: crate::env::Environment::Dev,
-        read_only: None,
+        // Read-only, as every connection was when most tests were written.
+        // A test of a writable connection says so itself.
+        read_only: Some(true),
         password: crate::connections::PasswordMode::None,
         ssh_secret: crate::connections::PasswordMode::None,
         spec: ConnectSpec::sqlite("/tmp/fixture.db"),
     }
+}
+
+/// What the newest Connect asked its session to be opened as. A faked
+/// `Connected` says so, as the backend says what the session it opened is.
+pub fn asked_access(app: &App) -> tabletist_db::Access {
+    let sent = app.backend.sent.iter().rev();
+    sent.filter_map(|command| match command {
+        Command::Connect { access, .. } => Some(*access),
+        _ => None,
+    })
+    .next()
+    .expect("a Connect was sent")
 }
 
 /// A workspace for the fixture connection, still connecting and with no
@@ -442,6 +456,7 @@ impl Harness {
             request,
             driver: Driver::Sqlite,
             encrypted: false,
+            access: crate::testing::asked_access(&self.app),
         }));
         let Command::ListSchemas { request, .. } = *last_sent(&self.app) else {
             panic!("expected ListSchemas");

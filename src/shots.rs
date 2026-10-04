@@ -223,6 +223,8 @@ fn workspace(harness: &mut Harness) -> ConnTabId {
     let workspace = harness.app.workspace_mut(tab).unwrap();
     workspace.name = saved.name.clone();
     workspace.environment = saved.environment;
+    // The fixture's session is read-only; Bookshop's would not be.
+    workspace.access = saved.access();
     workspace.spec = saved.spec.clone();
     workspace.driver = Driver::Postgres;
     workspace.tree.schemas.value = Some(vec!["public".into()]);
@@ -274,6 +276,8 @@ fn production_beside(harness: &mut Harness, own: ConnTabId) {
     let workspace = harness.app.workspace_mut(tab).unwrap();
     workspace.name = "Bookshop".into();
     workspace.environment = Environment::Production;
+    // Its box never set: production's default.
+    workspace.access = crate::connections::access(None, workspace.environment);
     workspace.spec = spec;
     workspace.driver = Driver::Postgres;
     harness.app.apply(Action::ActivateConnTab(own));
@@ -444,7 +448,7 @@ fn shots() {
         workspace.object_tab_mut(id).unwrap().rows.started =
             std::time::Instant::now().checked_sub(Duration::from_millis(4200));
     });
-    // A write the read-only session refused.
+    // A write the editor refused: it only reads, on any connection.
     both("sql-blocked", |harness| {
         let tab = sql_script(
             harness,
@@ -535,6 +539,8 @@ fn shots() {
         let tab = harness.connect_fake();
         let workspace = harness.app.workspace_mut(tab).unwrap();
         workspace.name = "Bookshop".into();
+        // The fixture's session is read-only; Bookshop's would not be.
+        workspace.access = saved().access();
         workspace.driver = Driver::Postgres;
         harness.app.apply(Action::OpenObject {
             tab,
@@ -1406,6 +1412,8 @@ mod mock {
         let workspace = harness.app.workspace_mut(tab).unwrap();
         workspace.name = saved.name.clone();
         workspace.environment = saved.environment;
+        // The fixture's session is read-only; Bookshop's would not be.
+        workspace.access = saved.access();
         workspace.spec = saved.spec.clone();
         workspace.driver = Driver::Postgres;
         workspace.tree.schemas.value = Some(vec!["public".into()]);
