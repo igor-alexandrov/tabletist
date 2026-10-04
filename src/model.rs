@@ -1699,14 +1699,41 @@ pub struct ObjectTab {
 /// The row panel's text for one row, formatted once when the selection or
 /// the page (or the SQL result) changes: a cell can hold megabytes, too much
 /// to format again every frame.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub struct RowFields {
     /// The request whose answer holds the row: a table's rows, or a SQL
     /// editor's run.
     pub request: Option<RequestId>,
     pub row: usize,
-    /// One per column.
+    /// One per column. A pending cell's is the text of its new value.
     pub fields: Vec<crate::ui::format::FieldText>,
+    /// What is pending in a table's row, one per column. Empty where
+    /// nothing is, and for a SQL editor's result.
+    pub pending: Vec<Option<PendingField>>,
+}
+
+/// A pending cell as the row panel shows it.
+#[derive(Clone, PartialEq)]
+pub struct PendingField {
+    /// The new value, as a value the panel draws.
+    pub new: tabletist_db::Value,
+    /// What the cell loaded as, short, as the grid shows it.
+    pub was: String,
+}
+
+/// Without the texts: a pending cell's is what the user typed, which stays
+/// out of logs and panics, and a loaded one can be megabytes.
+impl std::fmt::Debug for RowFields {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "RowFields {{ request: {:?}, row: {}, fields: {}, pending: {} }}",
+            self.request,
+            self.row,
+            self.fields.len(),
+            self.pending.iter().flatten().count()
+        )
+    }
 }
 
 /// One condition in the filter bar.
@@ -3222,6 +3249,7 @@ mod tests {
             request: sql.run.loaded,
             row: 1,
             fields: Vec::new(),
+            pending: Vec::new(),
         });
         assert!(sql.selected_fields().is_some());
         sql.selection = Some(CellPos { row: 2, col: 0 });

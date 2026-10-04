@@ -301,7 +301,8 @@ impl App {
                 }
                 let request = sql.run.loaded;
                 let values = sql.shown_rows().and_then(|(_, rows, _)| rows.get(row));
-                sql.fields = values.map(|values| row_fields(request, row, values));
+                let nothing = std::collections::BTreeMap::new();
+                sql.fields = values.map(|values| row_fields(request, row, values, &nothing));
             }
             for object in workspace.object_tabs_mut() {
                 let row = object
@@ -316,11 +317,14 @@ impl App {
                 if object.selected_fields().is_some() {
                     continue;
                 }
+                // What is pending in the row shows in the panel as it does
+                // in the grid. The set's every change drops this text, so
+                // it is made again from the set as it stands.
                 let request = object.rows.loaded;
                 object.fields = page
                     .rows
                     .get(row)
-                    .map(|values| row_fields(request, row, values));
+                    .map(|values| row_fields(request, row, values, &object.edits.cells));
             }
         }
     }
@@ -3695,16 +3699,47 @@ fn step(index: usize, delta: isize, len: usize) -> usize {
     moved as usize
 }
 
-/// A row's text for the row panel, formatted once.
+/// A row's text for the row panel, formatted once. A cell of the page's
+/// row `row` that is pending in `cells` reads as its new value, and keeps
+/// what it loaded as beside it, so the panel never disagrees with the
+/// grid.
 fn row_fields(
     request: Option<RequestId>,
     row: usize,
     values: &[tabletist_db::Value],
+    cells: &std::collections::BTreeMap<(usize, usize), crate::edit::Pending>,
 ) -> crate::model::RowFields {
+    use crate::ui::format::{cell_text, field_text};
+    use tabletist_db::{NewValue, Value};
+    let pending: Vec<Option<crate::model::PendingField>> = values
+        .iter()
+        .enumerate()
+        .map(|(col, loaded)| {
+            let new = match &cells.get(&(row, col))?.new {
+                NewValue::Text(text) => Value::Text(text.as_str().into()),
+                NewValue::Null => Value::Null,
+            };
+            Some(crate::model::PendingField {
+                new,
+                was: cell_text(loaded).into_owned(),
+            })
+        })
+        .collect();
+    let fields = values
+        .iter()
+        .zip(&pending)
+        .map(|(loaded, pending)| field_text(pending.as_ref().map_or(loaded, |cell| &cell.new)))
+        .collect();
     crate::model::RowFields {
         request,
         row,
-        fields: values.iter().map(crate::ui::format::field_text).collect(),
+        fields,
+        // A row with nothing pending keeps no list of nothing.
+        pending: if pending.iter().any(Option::is_some) {
+            pending
+        } else {
+            Vec::new()
+        },
     }
 }
 
@@ -10160,6 +10195,46 @@ mod tests {
             harness.app.apply(Action::WriteEdits { tab, id });
             assert!(write_since(&harness, before).is_none());
             assert_eq!(object(&harness, tab, id).edits.cells.len(), 1);
+        }
+
+        #[test]
+        fn the_row_panels_text_follows_the_pending_set() {
+            let mut harness = Harness::new();
+            let (tab, id) = harness.editable();
+            type_into(&mut harness, tab, id, at(1, 1), "bob@example.com");
+            // The panel's text is made once the actions are applied.
+            harness.app.apply_actions();
+            let fields = object(&harness, tab, id).selected_fields();
+            let fields = fields.expect("the selected row's text");
+            assert_eq!(fields.fields[1].short, "bob@example.com");
+            let was = |col: usize| fields.pending[col].as_ref().map(|cell| cell.was.as_str());
+            assert_eq!(
+                [was(0), was(1), was(2)],
+                [None, Some("user2@example.com"), None]
+            );
+            // What was typed stays out of what a log or a panic prints.
+            let printed = format!("{:?}", object(&harness, tab, id));
+            assert!(!printed.contains("bob@example.com"), "{printed}");
+            // NULL is a value the panel draws as one.
+            harness.app.apply(Action::SelectCell {
+                tab,
+                id,
+                cell: at(0, 2),
+            });
+            harness.app.apply(Action::SetNull { tab, id });
+            harness.app.apply_actions();
+            let fields = object(&harness, tab, id).selected_fields();
+            let pending = fields.and_then(|fields| fields.pending[2].as_ref());
+            let pending = pending.expect("the pending NULL");
+            assert!(pending.new.is_null());
+            assert_eq!(pending.was, r#"{"plan":"pro"}"#);
+            // Taken back, the text is the page's again and nothing is kept.
+            harness.app.apply(Action::RevertCell { tab, id });
+            harness.app.apply_actions();
+            let fields = object(&harness, tab, id).selected_fields();
+            let fields = fields.expect("the selected row's text");
+            assert!(fields.pending.is_empty());
+            assert_eq!(fields.fields[2].short, r#"{"plan":"pro"}"#);
         }
 
         #[test]
