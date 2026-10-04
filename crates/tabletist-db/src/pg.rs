@@ -475,7 +475,11 @@ impl Conn {
         let columns = self
             .catalog(
                 // An enum's labels in their sort order; a text column's
-                // single-column CHECK constraints, by name.
+                // single-column CHECK constraints, by name. Whether the
+                // column is generated is read through `to_jsonb`:
+                // `attgenerated` only exists from PostgreSQL 12 and
+                // `attidentity` from 10, and naming a column a server lacks
+                // would fail the whole Structure view.
                 "SELECT a.attname::text, format_type(a.atttypid, a.atttypmod), NOT a.attnotnull, \
                         pg_get_expr(d.adbin, d.adrelid), col_description(a.attrelid, a.attnum), \
                         CASE WHEN t.typtype = 'e' THEN \
@@ -484,7 +488,9 @@ impl Conn {
                         CASE WHEN t.oid IN ('text'::regtype, 'varchar'::regtype) THEN \
                             ARRAY(SELECT pg_get_expr(c.conbin, c.conrelid) FROM pg_constraint c \
                                   WHERE c.conrelid = a.attrelid AND c.contype = 'c' \
-                                    AND c.conkey = ARRAY[a.attnum] ORDER BY c.conname) END \
+                                    AND c.conkey = ARRAY[a.attnum] ORDER BY c.conname) END, \
+                        COALESCE(to_jsonb(a) ->> 'attgenerated', '') <> '' \
+                            OR COALESCE(to_jsonb(a) ->> 'attidentity', '') = 'a' \
                  FROM pg_attribute a \
                  JOIN pg_type t ON t.oid = a.atttypid \
                  LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum \
@@ -510,6 +516,7 @@ impl Conn {
                     default: column(row, 3)?,
                     comment: column(row, 4)?,
                     allowed_values,
+                    generated: column(row, 7)?,
                 })
             })
             .collect::<Result<_>>()?;

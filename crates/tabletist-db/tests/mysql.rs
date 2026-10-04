@@ -284,6 +284,51 @@ async fn views_and_quoted_names_describe_and_missing_objects_fail() {
     ));
 }
 
+#[tokio::test]
+async fn generated_columns_say_so() {
+    let Some(connection) = connect().await else {
+        return;
+    };
+    let mut admin = admin().await;
+    for statement in [
+        "DROP TABLE IF EXISTS catalog_generated",
+        "CREATE TABLE catalog_generated (
+             id INT PRIMARY KEY,
+             title VARCHAR(50) NOT NULL,
+             stamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+             slug VARCHAR(50) GENERATED ALWAYS AS (LOWER(title)) VIRTUAL,
+             shout VARCHAR(50) GENERATED ALWAYS AS (UPPER(title)) STORED
+         )",
+    ] {
+        admin.query_drop(statement).await.unwrap();
+    }
+    let structure = connection
+        .describe(&ObjectRef::new("tabletist", "catalog_generated"))
+        .await;
+    admin
+        .query_drop("DROP TABLE catalog_generated")
+        .await
+        .unwrap();
+    let generated: Vec<(String, bool)> = structure
+        .unwrap()
+        .columns
+        .into_iter()
+        .map(|column| (column.name, column.generated))
+        .collect();
+    assert_eq!(
+        generated,
+        [
+            ("id".to_owned(), false),
+            ("title".to_owned(), false),
+            // MySQL 8 calls a default that is an expression
+            // `DEFAULT_GENERATED`: the column still takes a value.
+            ("stamp".to_owned(), false),
+            ("slug".to_owned(), true),
+            ("shout".to_owned(), true),
+        ]
+    );
+}
+
 use tabletist_db::{Filter, FilterOp, RowPage, RowQuery, Sort, SortDir, Value, ValueKind};
 
 fn users(limit: u32) -> RowQuery {

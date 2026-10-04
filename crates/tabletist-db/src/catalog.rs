@@ -49,6 +49,10 @@ pub struct ColumnInfo {
     /// PostgreSQL enum's labels, or a text column's `CHECK (col IN (...))`
     /// list. `None` for every other column.
     pub allowed_values: Option<Vec<String>>,
+    /// Whether the database computes the column itself and refuses a value
+    /// for it: a generated column, or an identity column that is always
+    /// generated.
+    pub generated: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]

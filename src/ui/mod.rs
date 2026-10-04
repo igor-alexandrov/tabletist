@@ -6648,6 +6648,7 @@ mod tests {
                 default: None,
                 comment: None,
                 allowed_values: None,
+                generated: false,
             }],
             primary_key: vec!["id".into()],
             indexes: vec![tabletist_db::IndexInfo {
@@ -10586,6 +10587,7 @@ mod tests {
                     default: None,
                     comment: None,
                     allowed_values: None,
+                    generated: false,
                 })
                 .collect(),
             primary_key: vec!["id".into()],
