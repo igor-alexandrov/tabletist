@@ -143,6 +143,20 @@ pub fn resolve_link(path: &Path) -> std::io::Result<PathBuf> {
 /// file is private to the user (0600) wherever it is, and its directory is
 /// flushed after the rename so the new name survives a crash too.
 pub fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    put_atomic(path, bytes, true).map(|_| ())
+}
+
+/// Writes `bytes` to `path` as [`write_atomic`] does, but only where no
+/// file is: one that is there, made a moment ago by someone else too, is
+/// left as it is. Whether it wrote. Looking for the file first and writing
+/// after would replace a file made between the two.
+pub fn create_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<bool> {
+    put_atomic(path, bytes, false)
+}
+
+/// [`write_atomic`], or with `replace` false [`create_atomic`]. Whether it
+/// wrote.
+fn put_atomic(path: &Path, bytes: &[u8], replace: bool) -> std::io::Result<bool> {
     let destination = resolve_link(path)?;
     let dir = directory_of(&destination);
     if destination == path {
@@ -154,7 +168,18 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
         .tempfile_in(dir)?;
     file.write_all(bytes)?;
     file.as_file().sync_all()?;
-    file.persist(&destination).map_err(|error| error.error)?;
+    if replace {
+        file.persist(&destination).map_err(|error| error.error)?;
+    } else {
+        match file.persist_noclobber(&destination) {
+            Ok(_) => {}
+            // The temporary file goes with the error that holds it.
+            Err(error) if error.error.kind() == std::io::ErrorKind::AlreadyExists => {
+                return Ok(false);
+            }
+            Err(error) => return Err(error.error),
+        }
+    }
     #[cfg(unix)]
     {
         // Best effort: some filesystems cannot sync a directory, and the
@@ -163,7 +188,7 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
             let _ = dir.sync_all();
         }
     }
-    Ok(())
+    Ok(true)
 }
 
 /// Saves `value` as pretty JSON, atomically.
@@ -312,6 +337,51 @@ mod tests {
     struct Sample {
         name: String,
         count: u32,
+    }
+
+    #[test]
+    fn a_file_is_made_only_where_none_is() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nested").join("settings.toml");
+        let names = || -> Vec<_> {
+            std::fs::read_dir(dir.path().join("nested"))
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name())
+                .collect()
+        };
+        // None there: it is written, its directory made as a save makes it.
+        assert!(create_atomic(&path, b"ours").unwrap());
+        assert_eq!(std::fs::read(&path).unwrap(), b"ours");
+        // One there: it is left as it is, and so is its directory.
+        std::fs::write(&path, b"theirs").unwrap();
+        assert!(!create_atomic(&path, b"ours again").unwrap());
+        assert_eq!(std::fs::read(&path).unwrap(), b"theirs");
+        assert_eq!(
+            names(),
+            ["settings.toml"],
+            "no temporary file is left behind"
+        );
+        // A save still replaces it.
+        write_atomic(&path, b"saved").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"saved");
+    }
+
+    #[test]
+    fn a_file_is_made_where_a_link_leads_and_the_link_stays() {
+        if !can_symlink() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let (link, target) = (
+            dir.path().join("settings.toml"),
+            dir.path().join("real.toml"),
+        );
+        symlink_file(&target, &link);
+        assert!(create_atomic(&link, b"ours").unwrap());
+        assert_eq!(std::fs::read(&target).unwrap(), b"ours");
+        assert_eq!(std::fs::read_link(&link).unwrap(), target);
+        assert!(!create_atomic(&link, b"again").unwrap());
+        assert_eq!(std::fs::read(&target).unwrap(), b"ours");
     }
 
     #[test]

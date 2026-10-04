@@ -1277,14 +1277,36 @@ fn open_in_editor(
     written: &Written,
     start: impl FnOnce(&std::path::Path) -> std::io::Result<()>,
 ) -> Result<(), String> {
+    open_where_missing(path, text, written, |path| !path.exists(), start)
+}
+
+/// [`open_in_editor`], with `missing` for the look at the disk: the tests
+/// have someone else make the file between that look and the write.
+fn open_where_missing(
+    path: &std::path::Path,
+    text: &str,
+    written: &Written,
+    missing: impl FnOnce(&std::path::Path) -> bool,
+    start: impl FnOnce(&std::path::Path) -> std::io::Result<()>,
+) -> Result<(), String> {
     {
         let mut written = lock(written);
-        if !path.exists() {
-            let result = crate::util::write_atomic(path, text.as_bytes());
-            // As after a save: a write that failed leaves nothing on the
-            // disk that is known to be the app's.
-            *written = result.is_ok().then(|| text.to_owned());
-            result.map_err(|error| error.to_string())?;
+        // The lock keeps the backend's own writes out, not anyone else's:
+        // an editor can make the file after the look for it. So the file
+        // is made only where none is, in one step, and one that appeared
+        // meanwhile is opened as it is: theirs, and no write of the
+        // backend's.
+        if missing(path) {
+            match crate::util::create_atomic(path, text.as_bytes()) {
+                Ok(true) => *written = Some(text.to_owned()),
+                Ok(false) => {}
+                // As after a save: a write that failed leaves nothing on
+                // the disk that is known to be the app's.
+                Err(error) => {
+                    *written = None;
+                    return Err(error.to_string());
+                }
+            }
         }
     }
     start(path).map_err(|error| error.to_string())
@@ -5314,6 +5336,41 @@ mod tests {
             open_in_editor(&path, PAGE_500, &written, |_| Ok(())).unwrap();
             assert_eq!(*lock(&written), before);
             assert_eq!(std::fs::read_to_string(&path).unwrap(), theirs);
+        }
+    }
+
+    #[test]
+    fn a_file_made_after_the_look_for_it_is_opened_as_it_is() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.toml");
+        let theirs = "[data]\npage_size = 100\n";
+        // Nothing written yet, or a text of the backend's from before:
+        // neither is touched by a file someone else made.
+        for before in [None, Some("[data]\npage_size = 50\n".to_owned())] {
+            let _ = std::fs::remove_file(&path);
+            let written: Written = Arc::new(Mutex::new(before.clone()));
+            let mut opened = None;
+            open_where_missing(
+                &path,
+                PAGE_500,
+                &written,
+                // Not there when it is looked for, and there a moment
+                // later: an editor saved it.
+                |path| {
+                    std::fs::write(path, theirs).unwrap();
+                    true
+                },
+                |path| {
+                    opened = Some(std::fs::read_to_string(path).unwrap());
+                    Ok(())
+                },
+            )
+            .unwrap();
+            assert_eq!(opened.as_deref(), Some(theirs));
+            assert_eq!(*lock(&written), before);
+            // And nothing is left beside it.
+            let files = std::fs::read_dir(dir.path()).unwrap().count();
+            assert_eq!(files, 1);
         }
     }
 
