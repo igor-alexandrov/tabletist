@@ -448,6 +448,29 @@ and demo mode never watch. The backend answers with
 watches left) the failure is logged and the pane's header does not say
 `live`; everything else works.
 
+`settings.toml` may be a symbolic link: GNU stow, dotbot and chezmoi in
+symlink mode keep the file in a repository and a link in the config
+directory. An edit made in the repository raises its events there and none
+beside the link, so the watcher resolves the link (`util::link_chain`,
+the links at the end of the path, one after another) and, when the file is
+in another directory, watches that directory too. Where one link leads to
+another, the directory of each is watched, since any of them can be
+turned. The reader wakes for any of their names: the link's in the config
+directory, the file's where it is, and those of the links between.
+Each time it wakes it resolves the link again before it reads, so a link
+made, turned elsewhere or replaced by a plain file while the app runs is
+followed. Once the watches are in place it resolves once more, and again
+until it finds what it watched: a link turned between the look at it and
+the watch on its directory would otherwise be missed for good. A link that leads where nothing can be watched (the directory is
+not there, or no watch can be had on it) is logged and
+`Event::SettingsWatch { live: false }` is sent. While it is not live the
+watcher looks again every two seconds, since no event comes when the place
+appears (a volume is mounted), and sends `true`, with the file's text, once
+it can watch there. A link turned by hand among the directories on the way
+(a directory that is itself a link), with nothing changing beside
+`settings.toml` or a link it leads through, is not seen until the next
+change that is.
+
 When the file is deleted while the app runs, the settings in memory stay,
 and the next change writes the file again.
 
@@ -470,10 +493,24 @@ footer: "2 lines in the file could not be read and were ignored".
   app's own writes, the very text the backend sent last is not seen: the
   reader never sends the same text twice in a row. The app then holds the
   newer settings and the disk the older, until the next change of either.
-- `settings.toml` as a symbolic link (a dotfiles manager) is not supported
-  yet: an edit made through the link's target is not noticed, though the
-  file is said to be watched, and a save from the app replaces the link with
-  a plain file. Both are one task of their own.
+- A state file that is a symbolic link (`settings.toml`, and
+  `connections.json` and `known_hosts.json` alike) is saved through the
+  link: `util::write_atomic` resolves it and makes its temporary file beside
+  the file the link leads to, so the rename replaces that file and the link
+  stays. The write is as atomic as before, the temporary file still has a
+  random name and is made exclusively (a link planted under a temporary
+  name is not followed, in either directory), and on Unix the new file is
+  0600 where it lands, in the repository too. What no longer holds is that
+  a link at the path itself is never written through: that is now the
+  point, and whoever can put a link in the config directory (0700, the
+  user's) decides which file a save replaces. A link to a directory that is
+  not there is not followed by making the directory: the save fails, is
+  reported in the notice, and the link stays. So does a save where the
+  repository cannot be written. A file behind a link that cannot be loaded
+  is renamed to `.bad` beside itself, not the link. Where the link cannot
+  be followed (what it leads to cannot be looked at for now, or the links
+  lead back to themselves) nothing is renamed and the link stays: a save
+  through it fails for the same reason, so nothing is replaced.
 - The config directory is read-only: the change applies for the session and
   the failed save is reported in the notice, as today.
 - `page_size = 250` by hand: honoured, and shown in the menu as its own

@@ -582,7 +582,9 @@ thread; a burst of saves to one file writes only the newest, and quitting
 waits briefly for pending saves.
 All JSON is written atomically (write `*.tmp`, then rename), versioned, and
 loaded with `#[serde(default)]` so older files keep working. An unreadable file
-falls back to defaults with a warning and is kept aside as `*.bad`.
+falls back to defaults with a warning and is kept aside as `*.bad`. A file
+that is a symbolic link (a dotfiles manager) is written where the link
+leads, so the link stays.
 
 ## 6. Testing
 
