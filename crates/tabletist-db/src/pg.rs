@@ -20,6 +20,7 @@ use tokio_postgres::error::SqlState;
 use tokio_postgres_rustls::MakeRustlsConnect;
 
 mod script;
+mod write;
 
 pub struct Conn {
     pub(crate) client: tokio::sync::Mutex<tokio_postgres::Client>,
