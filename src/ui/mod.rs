@@ -1177,7 +1177,12 @@ mod tests {
             .map(|home| home.to_path_buf());
         harness.app.dirs.home = home;
         harness.settle();
-        assert!(harness.painted_color("~/config/settings.toml").is_some());
+        // The separator after `config` is the system's.
+        assert!(
+            harness.painted.iter().any(|(text, _)| {
+                text.starts_with("~/config") && text.ends_with("settings.toml")
+            })
+        );
         // Not watched (a test never is): nothing claims it is live.
         assert!(harness.painted_color("live").is_none());
         harness.app.settings_file.live = true;
