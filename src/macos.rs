@@ -174,8 +174,9 @@ pub struct SettingsMenu {
 
 impl SettingsMenu {
     /// Adds the item, titled `title`. Choosing it draws a frame, which
-    /// finds it with [`SettingsMenu::take`]. `None` when the app menu is
-    /// not as winit builds it (or off the main thread).
+    /// finds it with [`SettingsMenu::take`]. `None` when there is no app
+    /// menu or it has no separator to put the item after (or off the main
+    /// thread).
     pub fn attach(ctx: &egui::Context, title: &str) -> Option<Self> {
         let chosen = Rc::new(Cell::new(false));
         let item = tabletist_appkit::SettingsItem::insert(title, {

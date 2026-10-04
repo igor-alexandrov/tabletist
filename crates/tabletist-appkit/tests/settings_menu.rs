@@ -25,8 +25,9 @@ fn main() {
         "there is no menu yet"
     );
 
-    // The menu bar and the app menu in it, as winit orders it: About, a
-    // separator, Hide, a separator, Quit.
+    // The menu bar and the app menu in it, in winit's order and shorter:
+    // About, a separator, Hide, a separator, Quit. (winit has Services,
+    // Hide Others and Show All beside Hide.)
     let bar = NSMenu::new(mtm);
     let holder = NSMenuItem::new(mtm);
     bar.addItem(&holder);
@@ -73,19 +74,25 @@ fn main() {
 
     // After About's separator, with a separator of its own after it.
     assert_eq!(menu.numberOfItems(), before + 2);
+    // The menu as it reads, a separator as `-`: what a separator's title
+    // is, AppKit does not say.
     let titles = |menu: &NSMenu| -> Vec<String> {
         let items = menu.itemArray().to_vec();
-        items.iter().map(|item| item.title().to_string()).collect()
+        let title = |item: &NSMenuItem| match item.isSeparatorItem() {
+            true => "-".to_owned(),
+            false => item.title().to_string(),
+        };
+        items.iter().map(|item| title(item)).collect()
     };
     assert_eq!(
         titles(&menu),
         [
             "About tabletist",
-            "",
+            "-",
             "Settings…",
-            "",
+            "-",
             "Hide tabletist",
-            "",
+            "-",
             "Quit tabletist"
         ]
     );
@@ -108,16 +115,18 @@ fn main() {
     menu.performActionForItemAtIndex(2);
     assert_eq!(chosen.get(), 2, "and again");
 
-    // Dropped, the menu is as winit made it.
+    // Dropped, the menu is as winit made it, and the item, which this
+    // test still holds, calls nothing.
     drop(item);
+    assert!(settings.target().is_none(), "no dangling target");
     assert_eq!(menu.numberOfItems(), before);
     assert_eq!(
         titles(&menu),
         [
             "About tabletist",
-            "",
+            "-",
             "Hide tabletist",
-            "",
+            "-",
             "Quit tabletist"
         ]
     );

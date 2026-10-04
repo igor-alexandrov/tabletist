@@ -40,7 +40,8 @@ impl SettingsItem {
             .position(|item| item.isSeparatorItem())?;
         let target = MenuTarget::new(mtm, Box::new(chosen));
         // SAFETY: `target` implements `menuItemChosen:` as an action, and
-        // it lives as long as the item, which `Drop` takes out of the menu.
+        // it lives for as long as the item is in the menu: `Drop` takes
+        // the item out and its target away before the target goes.
         let item = unsafe {
             let item = NSMenuItem::initWithTitle_action_keyEquivalent(
                 NSMenuItem::alloc(mtm),
@@ -72,5 +73,8 @@ impl Drop for SettingsItem {
                 self.menu.removeItem(item);
             }
         }
+        // Whoever still holds the item holds one that calls nothing.
+        // SAFETY: an item may have no target.
+        unsafe { self.item.setTarget(None) };
     }
 }

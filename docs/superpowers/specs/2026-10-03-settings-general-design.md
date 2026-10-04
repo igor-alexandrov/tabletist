@@ -439,9 +439,10 @@ the one after About), the place the platform gives it; where the menu has no
 separator, nothing is inserted and the key handler opens the window. It
 shares the class that `about.rs` had, now `MenuTarget` in `target.rs`: an
 object that calls a closure when a menu item is chosen, through the action
-`menuItemChosen:`. Dropping the `SettingsItem` removes both items. `src/macos.rs` wraps it as `SettingsMenu`
-the way `AboutMenu` wraps `AboutItem`, and `Window::logic` turns a chosen
-item into `Action::ShowSettings`.
+`menuItemChosen:`. Dropping the `SettingsItem` removes both items and takes
+the item's target away. `src/macos.rs` wraps it as `SettingsMenu` the way
+`AboutMenu` wraps `AboutItem`, and `Window::logic` turns a chosen item into
+`Action::ShowSettings`.
 
 AppKit takes `⌘,` for the menu item before egui sees it, so on macOS the key
 arrives through the menu; if the item could not be inserted, `keys.rs` still
