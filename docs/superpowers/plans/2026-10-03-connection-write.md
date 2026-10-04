@@ -26,7 +26,8 @@
       export TABLETIST_TEST_MYSQL_URL=mysql://tabletist:tabletist@localhost:53306/tabletist
 
 - The PostgreSQL and MySQL fixtures are loaded once and shared by every test of a suite. **A write test never changes a fixture table.** It creates a table of its own through the suite's `admin()` connection, under a name no other test uses, and drops it when done. SQLite tests each get their own file and may change it freely.
-- **This plan runs on the branch `claude/connection-write`,** which sits on top of pull request #71 (the app half of step 1: `Workspace::access`, `Command::Connect { access }`, `Event::Connected { access }`). The database half of step 1 is in `main`.
+- **This plan runs on the branch `claude/connection-write`,** off `main`, which holds all of step 1 (`Access`, the fenced sessions, `Workspace::access`, `Command::Connect { access }`, `Event::Connected { access }`).
+- **Tasks 1 to 3 are built**, with what their review changed (see "As built" under each). Tasks 4 on build on that: `IndexInfo::key_columns`, `ColumnClass::Binary`, and `Structure::row_key` as it now stands.
 - **How the SQLite driver stands, which the SQLite tasks build on.** Read each function before you edit it.
   - `Conn` holds `inner: Arc<Mutex<rusqlite::Connection>>`, the interrupt handle and `fences`. `open` installs the authorizer with `tabletist_sqlite_ffi::set_authorizer(&connection, ..)` after `set_session_pragmas` and the first read. A save's statements are the app's own: they run with no fence up.
   - Names can hold bytes that are not UTF-8, and rusqlite panics on them. So the catalog reads text through `text` and `optional_text` (as `Lossy`, which also says whether the name is exact), an index is looked up by the bytes of its name, and a statement's columns come from `declared_columns` (through `tabletist_sqlite_ffi::result_columns`). **Never read a statement's column names through rusqlite** (`column_names`, `column_name`, `columns`).
@@ -44,10 +45,10 @@ The spec leaves these open; task 10 writes them into it.
 
 1. **`Command::Write` carries no tab.** The reducer finds the tab by the request, as for every other request.
 2. **MySQL: only tables whose engine has transactions.** One transaction is the promise, and MyISAM cannot roll back. Others are refused before anything is sent.
-3. **SQLite binds a save's values exactly as built.** The filter path turns text that looks like a number into a number (`to_sqlite`); a save does not guess.
+3. **SQLite binds a save's values exactly as built.** The filter path turns text that looks like a number into a number (`to_sqlite`); a save does not guess. One case needs a rule of its own: a column with no declared type (or one SQLite gives no affinity) converts nothing, so text would turn a stored number into text. There the builder follows what the cell held: if the loaded value was a number and the new text is one, it goes as a number.
 4. **SQLite puts the session in order before it writes.** A script can leave `main`'s `journal_mode` at `memory`, and `locking_mode` and `ignore_check_constraints` changed, for the session; a save puts them back first. The journal mode is restored on `main` only, and only from `memory`: without a schema the pragma would set every attached database's mode, and a mode another program gave the file is not a script's leftover.
 4a. **SQLite saves only to `main`.** A table of an attached database is refused: the session knows `main`'s journal mode only, and a script's `ATTACH` is the one way such a database appears.
-5. **The crate checks only what it converts.** Numbers on SQLite and booleans on SQLite and MySQL are parsed by the statement builder; text it cannot convert is `WriteOutcome::Failed` before anything is sent. The messages a user sees while typing are step 3.
+5. **The crate checks only what it converts.** Numbers on SQLite and booleans on SQLite and MySQL are parsed by the statement builder; text it cannot convert is `WriteOutcome::Failed` before anything is sent. The messages a user sees while typing are step 3. Two rules came out of the review of the classes: a column of class `Binary` is refused outright (MySQL stores `'1'` in a `BIT(8)` as 49, the character's code), and a MySQL `tinyint(1)` takes `true` and `false` but also any whole number a tinyint holds, since some tables keep more than a flag in one.
 6. **A key value that is NULL, a key column that is also changed, a column changed twice:** refused by `ChangeSet::check`.
 7. **MySQL starts its transaction with `START TRANSACTION READ WRITE` as text,** not through the driver's transaction options. The driver opens a read-only transaction as `SET TRANSACTION READ ONLY` then `START TRANSACTION`, and a cancel between the two can leave "next transaction read-only" pending.
 8. **PostgreSQL literals** are `'...'` when the text holds no backslash and `E'...'` when it does, so Review SQL reads plainly and still runs as shown.
@@ -220,6 +221,8 @@ git add -A && git commit -m "Say in the catalog which columns the database compu
 ---
 
 ### Task 2: Partial indexes and the row key
+
+> **As built:** the review found that an index's display text cannot say whether it names a row. A MySQL prefix index (`UNIQUE (name(1))`) and an index of another collation than its column's both read as plain columns and can match two rows, and PostgreSQL's primary key query took `INCLUDE` columns for key columns. So `IndexInfo` also has `key_columns: Option<Vec<String>>`, set by each driver only when every entry is one whole column compared as the column compares (PostgreSQL: no expression, the column's collation and its default operator class; MySQL: no expression and no prefix; SQLite: no expression), and `Structure::row_key` reads that instead of matching names. A primary key whose own index is not over whole columns (MySQL allows `PRIMARY KEY (name(1))`) is passed over too. SQLite cannot say a column's declared collation, so an index or primary key of another collation is not detected there; a save's own check (it reads the row by its key and refuses more than one) is what stops it. The steps below are the first draft.
 
 **Files:**
 - Modify: `crates/tabletist-db/src/catalog.rs` (`IndexInfo`, `Structure`)
@@ -402,6 +405,8 @@ git add -A && git commit -m "Find the columns that tell one row from another"
 ---
 
 ### Task 3: Column classes
+
+> **As built:** `ColumnClass` also has `Binary` (MySQL `bit`, `binary`, `varbinary` and the blobs; PostgreSQL `bytea`; SQLite blob affinity), and it is `Copy`. A type's arguments count only when all of them are whole numbers from zero up (`numeric(5,-2)` states no digits). On MySQL the first word decides (`float unsigned` is a float; `tinyint(1) unsigned zerofill` is an integer, not the boolean alias). On SQLite only real integer type names are `Integer`; any other name with numeric affinity (`FLOATING POINT`, `NUMERIC(10,2)`) is a `Decimal` without limits, since integer affinity stores a real unchanged. PostgreSQL `bpchar` is text without a limit.
 
 **Files:**
 - Create: `crates/tabletist-db/src/class.rs`
@@ -1139,6 +1144,18 @@ In the test module of `dialect.rs`:
         assert_eq!(set(Dialect::Sqlite, typed("b", "BOOLEAN", "TRUE")), "1");
         assert_eq!(set(Dialect::Sqlite, typed("t", "TEXT", "12")), "'12'");
         assert_eq!(set(Dialect::Sqlite, typed("t", "", "12")), "'12'");
+        // A column with no type keeps a number a number, where it held one.
+        let held = |loaded: Value, new: &str| CellChange {
+            loaded,
+            ..typed("t", "", new)
+        };
+        assert_eq!(set(Dialect::Sqlite, held(Value::Int(5), "6")), "6");
+        assert_eq!(set(Dialect::Sqlite, held(Value::Float(1.5), "2")), "2");
+        assert_eq!(set(Dialect::Sqlite, held(Value::Int(5), "six")), "'six'");
+        assert_eq!(set(Dialect::Sqlite, held(Value::Text("5".into()), "6")), "'6'");
+        // A MySQL tinyint(1) takes what a tinyint holds.
+        assert_eq!(set(Dialect::MySql, typed("b", "tinyint(1)", "true")), "1");
+        assert_eq!(set(Dialect::MySql, typed("b", "tinyint(1)", "5")), "5");
         // What cannot be converted is refused, with the column and its type.
         for (dialect, cell) in [
             (Dialect::Sqlite, typed("pages", "INTEGER", "many")),
@@ -1146,6 +1163,11 @@ In the test module of `dialect.rs`:
             (Dialect::Sqlite, typed("price", "REAL", "NaN")),
             (Dialect::Sqlite, typed("in_print", "BOOLEAN", "maybe")),
             (Dialect::MySql, typed("in_print", "tinyint(1)", "yes")),
+            (Dialect::MySql, typed("in_print", "tinyint(1)", "128")),
+            // Binary columns are never sent as text.
+            (Dialect::MySql, typed("flags", "bit(8)", "1")),
+            (Dialect::Postgres, typed("cover", "bytea", "x")),
+            (Dialect::Sqlite, typed("cover", "BLOB", "x")),
         ] {
             let column = cell.column.clone();
             let refused = shown(dialect, cell).unwrap_err().to_string();
@@ -1333,12 +1355,38 @@ and in `impl Dialect`:
                 .map(Operand::Float)
         };
         match (self, column_class(self, &change.type_name)) {
+            // Never as text: MySQL would store a `bit`'s text as the
+            // characters' codes.
+            (_, ColumnClass::Binary) => Err(Error::query(format!(
+                "{}: binary values cannot be edited yet",
+                change.column
+            ))),
             (Self::Postgres, _) => Ok(Operand::Text(text.clone())),
-            (_, ColumnClass::Boolean) => match typed.to_ascii_lowercase().as_str() {
+            // A tinyint(1) holds any tinyint, and some tables keep more
+            // than a flag in one.
+            (Self::MySql, ColumnClass::Boolean) => match typed.to_ascii_lowercase().as_str() {
+                "true" => Ok(Operand::Int(1)),
+                "false" => Ok(Operand::Int(0)),
+                _ => typed
+                    .parse::<i8>()
+                    .map(|number| Operand::Int(i64::from(number)))
+                    .map_err(|_| refused("true, false or a whole number from -128 to 127")),
+            },
+            (Self::Sqlite, ColumnClass::Boolean) => match typed.to_ascii_lowercase().as_str() {
                 "true" | "1" => Ok(Operand::Int(1)),
                 "false" | "0" => Ok(Operand::Int(0)),
                 _ => Err(refused("true or false")),
             },
+            // No declared type, or one SQLite gives no affinity: nothing
+            // converts the text, so a number stays a number only where the
+            // cell held one.
+            (Self::Sqlite, ColumnClass::Other)
+                if matches!(change.loaded, Value::Int(_) | Value::Float(_)) =>
+            {
+                Ok(whole()
+                    .or_else(real)
+                    .unwrap_or_else(|| Operand::Text(text.clone())))
+            }
             (Self::Sqlite, ColumnClass::Integer { .. }) => {
                 whole().ok_or_else(|| refused("a whole number"))
             }
