@@ -799,10 +799,12 @@ mod mock {
         OmarchyDialog,
         /// The Settings screen, wide enough for the file beside the options.
         OmarchySettings,
+        /// The Settings window, as a sheet over the workspace.
+        MacSettings,
     }
 
     impl Screen {
-        pub const ALL: [Screen; 10] = [
+        pub const ALL: [Screen; 11] = [
             Self::MacWorkspace,
             Self::MacWorkspaceDark,
             Self::MacValues,
@@ -813,6 +815,7 @@ mod mock {
             Self::MacDialog,
             Self::OmarchyDialog,
             Self::OmarchySettings,
+            Self::MacSettings,
         ];
 
         /// The screen's name (screenshot files).
@@ -828,6 +831,7 @@ mod mock {
                 Self::MacDialog => "macos-connection-edit",
                 Self::OmarchyDialog => "omarchy-connection-edit",
                 Self::OmarchySettings => "omarchy-settings-general",
+                Self::MacSettings => "macos-settings-general",
             }
         }
 
@@ -837,7 +841,8 @@ mod mock {
                 | Self::MacWorkspaceDark
                 | Self::MacValues
                 | Self::MacPicker
-                | Self::MacDialog => Look::macos(),
+                | Self::MacDialog
+                | Self::MacSettings => Look::macos(),
                 Self::OmarchyWorkspace
                 | Self::OmarchyValues
                 | Self::OmarchyPicker
@@ -854,7 +859,8 @@ mod mock {
                 | Self::MacWorkspaceDark
                 | Self::MacValues
                 | Self::MacPicker
-                | Self::MacDialog => egui::vec2(1440.0, 900.0),
+                | Self::MacDialog
+                | Self::MacSettings => egui::vec2(1440.0, 900.0),
                 Self::OmarchyWorkspace | Self::OmarchyValues | Self::OmarchySettings => {
                     egui::vec2(1896.0, 1056.0)
                 }
@@ -870,7 +876,8 @@ mod mock {
                 | Self::MacWorkspaceDark
                 | Self::MacValues
                 | Self::MacPicker
-                | Self::MacDialog => 2000.0 / 1440.0,
+                | Self::MacDialog
+                | Self::MacSettings => 2000.0 / 1440.0,
                 Self::OmarchyWorkspace | Self::OmarchyValues | Self::OmarchySettings => {
                     2000.0 / 1920.0
                 }
@@ -882,9 +889,11 @@ mod mock {
         /// Night, as the mockups.
         pub fn palette(self) -> Palette {
             match self {
-                Self::MacWorkspace | Self::MacValues | Self::MacPicker | Self::MacDialog => {
-                    Palette::light()
-                }
+                Self::MacWorkspace
+                | Self::MacValues
+                | Self::MacPicker
+                | Self::MacDialog
+                | Self::MacSettings => Palette::light(),
                 Self::MacWorkspaceDark => Palette::dark(),
                 Self::OmarchyWorkspace
                 | Self::OmarchyValues
@@ -956,6 +965,15 @@ mod mock {
                     harness.app.apply(Action::ShowSettings);
                     harness.app.apply(Action::MoveSettingsRow(1));
                     harness.app.settings_file.live = true;
+                }
+                // Over the Bookshop's workspace too, which shows dimmed at
+                // its sides. The path is one that stays, as above, and is
+                // written from a home directory that is no one's.
+                Self::MacSettings => {
+                    workspace(harness);
+                    harness.app.dirs.home = Some(PathBuf::from("/home/demo"));
+                    harness.app.dirs.config = PathBuf::from("/home/demo/.config/tabletist");
+                    harness.app.apply(Action::ShowSettings);
                 }
             }
         }
