@@ -1389,7 +1389,8 @@ fn can_run(file: &std::path::Path) -> bool {
 }
 
 /// The program that shows where `path` is kept on this system, and what
-/// it is given.
+/// it is given. On Windows the one argument is explorer's command line as
+/// it must read, and is given to it as it is ([`start_reveal`]).
 fn reveal_command(path: &std::path::Path) -> (String, Vec<std::ffi::OsString>) {
     #[cfg(target_os = "macos")]
     {
@@ -1400,13 +1401,15 @@ fn reveal_command(path: &std::path::Path) -> (String, Vec<std::ffi::OsString>) {
     }
     #[cfg(windows)]
     {
-        // The path as an argument of its own: one with a space in it is
-        // quoted on the command line, and explorer takes `/select,` for
-        // its switch only outside the quotes.
-        (
-            "explorer".into(),
-            vec!["/select,".into(), path.as_os_str().to_owned()],
-        )
+        // The switch, then the path in quotes of its own. Explorer reads
+        // its command line itself: it takes `/select,` for its switch only
+        // outside quotes, and splits what follows at a comma outside them,
+        // so a path with a space or a comma is whole only in quotes. A
+        // path on Windows holds no quote to escape.
+        let mut select = std::ffi::OsString::from("/select,\"");
+        select.push(path);
+        select.push("\"");
+        ("explorer".into(), vec![select])
     }
     #[cfg(all(unix, not(target_os = "macos")))]
     {
@@ -1417,14 +1420,13 @@ fn reveal_command(path: &std::path::Path) -> (String, Vec<std::ffi::OsString>) {
     }
 }
 
-/// Starts `program` and lets it go: it is the user's window from here. A
-/// thread of its own waits for it, so it leaves no zombie, and says in the
-/// log when it ended with a failure: a launcher with nothing to open the
-/// file with has no other way to be heard.
-fn start(program: String, args: Vec<std::ffi::OsString>) -> std::io::Result<()> {
+/// Starts `command`, which runs `program`, and lets it go: it is the
+/// user's window from here. A thread of its own waits for it, so it leaves
+/// no zombie, and says in the log when it ended with a failure: a launcher
+/// with nothing to open the file with has no other way to be heard.
+fn start(program: String, mut command: std::process::Command) -> std::io::Result<()> {
     use std::process::Stdio;
-    let mut child = std::process::Command::new(&program)
-        .args(args)
+    let mut child = command
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -1449,13 +1451,27 @@ fn start_editor(path: &std::path::Path) -> std::io::Result<()> {
             .is_some_and(|paths| on_path(name, std::env::split_paths(paths)))
     };
     let (program, args) = editor_command(path, found);
-    start(program, args)
+    let mut command = std::process::Command::new(&program);
+    command.args(args);
+    start(program, command)
 }
 
 /// Starts the file manager where `path` is.
 fn start_reveal(path: &std::path::Path) -> std::io::Result<()> {
     let (program, args) = reveal_command(path);
-    start(program, args)
+    let mut command = std::process::Command::new(&program);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt as _;
+        // As it is written: quoted by the usual rules, the quotes around
+        // the path would be escaped and the switch taken into them.
+        for arg in &args {
+            command.raw_arg(arg);
+        }
+    }
+    #[cfg(not(windows))]
+    command.args(&args);
+    start(program, command)
 }
 
 /// Hands the settings file to a program: `open_in_editor` with `start`,
@@ -5530,19 +5546,29 @@ mod tests {
             (program.as_str(), args),
             ("open", vec!["-R".into(), path.as_os_str().to_owned()])
         );
-        // The switch, and the path on its own: quoted with the switch, a
-        // path with a space in it would not be selected.
+        // The switch, and the path in quotes of its own, as explorer's
+        // command line must read: a space or a comma in the path would
+        // otherwise end it there.
         #[cfg(windows)]
-        assert_eq!(
-            (program.as_str(), args),
-            (
-                "explorer",
-                vec![
-                    std::ffi::OsString::from("/select,"),
-                    path.as_os_str().to_owned()
-                ]
-            )
-        );
+        {
+            assert_eq!(
+                (program.as_str(), args),
+                (
+                    "explorer",
+                    vec![std::ffi::OsString::from(
+                        "/select,\"/config/settings.toml\""
+                    )]
+                )
+            );
+            let awkward = std::path::Path::new(r"C:\Users\Doe, John\My Settings\settings.toml");
+            let (_, args) = reveal_command(awkward);
+            assert_eq!(
+                args,
+                vec![std::ffi::OsString::from(
+                    r#"/select,"C:\Users\Doe, John\My Settings\settings.toml""#
+                )]
+            );
+        }
         // No file manager is asked to select a file the same way: the
         // directory is opened.
         #[cfg(all(unix, not(target_os = "macos")))]

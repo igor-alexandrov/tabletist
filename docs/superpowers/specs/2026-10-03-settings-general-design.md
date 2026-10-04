@@ -479,13 +479,15 @@ the look, so a macOS look drawn in a Linux test still compiles and runs:
 | | Reveal | Editor |
 |---|---|---|
 | macOS | `open -R <path>` | `open -t <path>` |
-| Windows | `explorer /select, <path>` | `explorer <path>` |
+| Windows | `explorer /select,"<path>"` | `explorer <path>` |
 | Linux | `xdg-open <the directory>` | `omarchy-launch-editor <path>` when it is on `PATH` and can be run, else `xdg-open <path>` |
 
-On Windows the path is an argument of its own after `/select,`: a path with
-a space in it is quoted on the command line, and explorer takes `/select,`
-for its switch only outside the quotes. A path with a comma and no space is
-not quoted and would be split there; that is left as it is.
+On Windows explorer reads its command line itself: it takes `/select,` for
+its switch only outside quotes, and splits what follows at a comma outside
+them. So the path goes in quotes of its own right after the switch, and the
+whole is given to explorer as it is written (`raw_arg`), not quoted again by
+the usual rules. A path with a space or a comma in it is then selected. A
+Windows path holds no quote to escape.
 
 On Linux the Omarchy launcher is used only when it can be run: a file of
 that name on `PATH` that has no executable bit would fail to start, and
