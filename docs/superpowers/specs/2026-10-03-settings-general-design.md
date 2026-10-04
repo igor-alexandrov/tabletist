@@ -286,18 +286,27 @@ value as the server sent it.
 `Dialog::Settings(Box<SettingsDialog>)`:
 
     pub struct SettingsDialog {
-        pub tab: SettingsTab,        // General
-        /// Omarchy: the option the keys act on.
+        /// The option the keys act on (Omarchy), as an index into
+        /// `OptionId::ALL`.
         pub row: usize,
-        /// The footer asked whether to reset.
-        pub confirm_reset: bool,
     }
 
-Actions: `ShowSettings`, `SetOption(OptionValue)`, `ResetOption(OptionId)`,
-`ResetSettings`, `ConfirmResetSettings(bool)`, `MoveSettingsRow(isize)`,
-`RevealSettingsFile`, `ExportSettings`, `EditSettingsFile`. The view pushes
-them; `App::apply` changes the settings. `ShowSettings` opens the window
-when no dialog is open or the shortcuts dialog is; `Escape` closes it.
+The window holds nothing of the settings: every change applies at once.
+Step 4 adds what its footer needs (whether Reset was asked for); a tab
+arrives with the second tab.
+
+An option is a value: `OptionId` names the four rows and `OptionValue` is
+one of them set to something (`src/settings.rs`). A key, a click, a reset
+and a menu all say the same thing with it.
+
+Actions: `ShowSettings`, `MoveSettingsRow(isize)`, `SelectSettingsRow(usize)`,
+`SetOption(OptionValue)` (a reset of one option is `SetOption` with its
+default), `EditSettingsFile`; step 4 adds `ResetSettings`,
+`ConfirmResetSettings(bool)`, `RevealSettingsFile` and `ExportSettings`.
+The view pushes them; `App::apply` changes the settings through
+`change_settings`. `ShowSettings` opens the window when no dialog is open or
+the shortcuts dialog is; asked for while it is open, it does nothing;
+`Escape` closes it.
 
 The view is `src/ui/settings/`: `mod.rs` (the options, their labels and
 hints, shared by both layouts), `sheet.rs` (macOS and Windows), and
@@ -356,7 +365,8 @@ The artboard's screen, over the whole window:
 
 Keys, taken by the screen while it is open: `j`/`k` and the up and down
 arrows move the cursor; `h`/`l` and left and right step the value through
-its choices (a toggle: off and on); `space` flips a toggle; `R` puts the
+its choices (a toggle: off and on); `space` flips an option of two values
+(value tags, timestamps, numbers) and leaves the page size; `R` puts the
 cursor's option back to its default; `ctrl+e` opens the file; `Escape`
 closes. A click on a row moves the cursor to it, and a click on a value
 sets it.
@@ -385,18 +395,19 @@ handles it. Either way one press opens the window once.
 
 All three run on the backend, as disk and process work does.
 
-- **Reveal**: `Command::OpenSettingsFile { path, text, how: Reveal }`.
-- **Open in the editor**: the same command with `how: Editor`.
-- **Export…**: `Backend::save_bytes`, the path a binary value is saved by
-  (its dialog title becomes a parameter), with the name
+- **Open in the editor** (step 3): `Command::EditSettingsFile { path, text }`.
+- **Reveal** (step 4): a command of its own, `RevealSettingsFile { path,
+  text }`, sharing the editor's "write it first if it is not there".
+- **Export…** (step 4): `Backend::save_bytes`, the path a binary value is
+  saved by (its dialog title becomes a parameter), with the name
   `tabletist-settings.toml` and the canonical text.
 
-`OpenSettingsFile` carries the canonical text: the backend writes it to
-`path` when no file is there, then starts the program, so the UI thread
-never looks at the disk and the write always comes first. The child is not
-waited for. `Event::SettingsFileOpened { result }` puts a failure in the
-app's notice, as a failed save is; a failed export is already reported that
-way.
+Both commands carry the text the app holds: the backend writes it to `path`
+when no file is there, then starts the program, so the UI thread never looks
+at the disk and the write always comes first. The program is not waited for
+by anything the app needs (a thread reaps it). `Event::SettingsFileOpened {
+result }` puts a failure in the app's notice, as a failed save is; a failed
+export is already reported that way.
 
 The program follows the operating system the app was built for (`cfg`), not
 the look, so a macOS look drawn in a Linux test still compiles and runs:
@@ -504,13 +515,13 @@ footer: "2 lines in the file could not be read and were ignored".
 - Two writers: the user saves the file in an editor while changing an
   option in the window. The last write wins; neither is merged.
 - Two quick changes in the app can be read from the disk between their two
-  writes. The first text then comes back as if from outside and is applied
-  for a moment, until the second follows; nothing is written by either. A
-  third change made in the app inside that moment would be built on the
-  older settings and lose the second. Menus cannot be clicked that fast, but
-  a key held down on an option can: steps 3 and 4 must close this before
-  they let a key change a setting (hold the newest text until its own write
-  has come back, or step a value no faster than its save).
+  writes, so the first text comes back after the second was made. From step
+  3 the app knows it: `SettingsFile::unseen` holds every text the app wrote
+  and has not seen come back, oldest first (the file only moves forward, so
+  they come back in order). One of them coming back is the app's own, it
+  and the ones before it are seen, and it is not applied. A key held down
+  on an option therefore never has its newest change undone. A save that
+  failed empties the list: what was not written cannot come back.
 - A change from outside that restores, within the settle after one of the
   app's own writes, the very text the backend sent last is not seen: the
   reader never sends the same text twice in a row. The app then holds the
@@ -567,8 +578,9 @@ Every behaviour gets a focused test; UI behaviour goes through
   each control changes its setting and saves; `Escape` closes; Reset asks,
   then resets only the four options. Omarchy: each key; the pane shows the
   text, highlights the cursor's line and is hidden in a narrow window.
-- File actions: Reveal and the editor key push `OpenSettingsFile` with the
-  path, the text and the right `how`; Export reaches `Backend::save_bytes`
+- File actions: the editor key pushes `EditSettingsFile` and Reveal
+  `RevealSettingsFile`, each with the path and the text; Export reaches
+  `Backend::save_bytes`
   with the name and the text; a failure reaches the notice. A backend test
   in a temporary directory checks that a missing file is written before the
   program starts.
