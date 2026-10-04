@@ -2274,6 +2274,16 @@ impl App {
         if old.page_size != self.settings.page_size {
             self.resize_pages();
         }
+        if old.show_system_schemas != self.settings.show_system_schemas {
+            // A completion list offers the schemas that are shown, and an
+            // open one is worked out again only when its script, its cursor
+            // or its catalog changed: its catalog did.
+            for tab in &mut self.tabs {
+                if let ConnTabContent::Workspace(workspace) = &mut tab.content {
+                    workspace.catalog_changed();
+                }
+            }
+        }
         if old.custom_theme != self.settings.custom_theme {
             // Reading a theme needs the window: `logic` has it.
             self.theme_changed = true;
