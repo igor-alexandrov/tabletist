@@ -1,9 +1,234 @@
-//! Editing a cell: the words for what a typed value fails and for why a
-//! cell cannot be edited.
+//! Editing a cell: the field that sits on the cell, the keys that end an
+//! edit, and the words for what a typed value fails and for why a cell
+//! cannot be edited.
 
-use crate::edit::{Lock, Problem};
+use egui::text::{CCursor, CCursorRange};
+use egui::{CornerRadius, Id, Key, Margin, Modifiers, Rect, Stroke, StrokeKind, Ui, pos2, vec2};
+
+use crate::edit::{Editor, Lock, Problem};
 use crate::i18n::{Locale, gettext, ngettext};
+use crate::model::{Advance, ConnTabId, TabId};
+use crate::theme::{Look, Palette};
+use crate::typography::Text;
+use crate::ui::focus::{self, Ring};
 use crate::ui::format::display_safe;
+use crate::ui::keys::consume_press;
+use crate::ui::states::Tone;
+use crate::ui::{grid, widgets};
+
+/// What a frame of an open editor asks for.
+#[derive(Debug, Default, PartialEq)]
+pub struct Outcome {
+    /// The text changed.
+    pub changed: bool,
+    /// Enter, Tab or Shift+Tab ended the edit.
+    pub commit: Option<Advance>,
+    /// Esc.
+    pub cancel: bool,
+    /// The keyboard went elsewhere.
+    pub left: bool,
+    /// Alt+Enter.
+    pub large: bool,
+}
+
+/// The cell an editor is open on, as its field needs it.
+pub struct Target {
+    /// The field's id: one for a table's tab, whatever cell it is on.
+    pub id: Id,
+    /// The column's name.
+    pub name: String,
+    /// The column's type as the grid's header shows it.
+    pub type_name: String,
+    /// The most characters the column holds, where its type says.
+    pub max_chars: Option<u32>,
+    /// No dialog is up: an editor that is open has the keyboard.
+    pub hold: bool,
+}
+
+/// The id of the field that edits a cell of the table `id` shows.
+pub fn field_id(tab: ConnTabId, id: TabId) -> Id {
+    Id::new(("cell-editor", tab.0, id.0))
+}
+
+/// Whether the field `id` had the keyboard when it was last drawn. egui
+/// says a widget lost the keyboard only when it had it a frame ago, and a
+/// field is not drawn every frame (its tab may be behind another).
+fn had_id(id: Id) -> Id {
+    id.with("had-keyboard")
+}
+
+/// Gives the field `id` the keyboard, its cursor at the end of `text` and
+/// nothing to undo: it is one field for every cell, and each edit is its
+/// own.
+fn take_keyboard(ui: &Ui, id: Id, text: &str) {
+    let mut state = egui::text_edit::TextEditState::default();
+    let end = CCursor::new(text.chars().count());
+    state.cursor.set_char_range(Some(CCursorRange::one(end)));
+    state.store(ui.ctx(), id);
+    ui.memory_mut(|memory| memory.request_focus(id));
+    // The keys a field holds (Tab, Esc) are its own from the frame after
+    // it has the keyboard: ask for that frame, since no event need follow
+    // the one that opened the editor.
+    ui.ctx().request_repaint();
+}
+
+/// The keys that end an edit, read before the field is added: it would
+/// take Enter as giving the keyboard up, and Alt+Enter with it. Tab and
+/// Esc are egui's to move and drop the keyboard with, unless the field
+/// holds them (see `hold_keys`).
+fn ending_keys(ui: &Ui, has: bool, had: bool, outcome: &mut Outcome) {
+    ui.input_mut(|input| {
+        if has {
+            // Alt first: a match lets an extra Alt and Shift through.
+            if consume_press(input, Modifiers::ALT, Key::Enter) {
+                outcome.large = true;
+            } else if consume_press(input, Modifiers::NONE, Key::Enter) {
+                outcome.commit = Some(Advance::Down);
+            } else if consume_press(input, Modifiers::SHIFT, Key::Tab) {
+                outcome.commit = Some(Advance::Left);
+            } else if consume_press(input, Modifiers::NONE, Key::Tab) {
+                outcome.commit = Some(Advance::Right);
+            }
+        }
+        // In the first frames of a field egui still drops the keyboard on
+        // Esc before any of this runs: the key is the editor's all the same.
+        if (has || had) && consume_press(input, Modifiers::NONE, Key::Escape) {
+            outcome.cancel = true;
+        }
+    });
+}
+
+/// Keeps Tab and Esc for the field `id`, which has the keyboard. The field
+/// set its own filter while it drew (the arrows, Tab); egui replaces the
+/// whole filter, so those are named again. It holds from the frame after
+/// the field first had the keyboard.
+fn hold_keys(ui: &Ui, id: Id) {
+    ui.memory_mut(|memory| {
+        memory.set_focus_lock_filter(
+            id,
+            egui::EventFilter {
+                tab: true,
+                horizontal_arrows: true,
+                vertical_arrows: true,
+                escape: true,
+            },
+        );
+    });
+}
+
+/// The editor on its cell: a one-line field over `rect`, the cell's. It
+/// edits `editor.text` and takes `editor.focus`; everything else it says in
+/// its [`Outcome`].
+pub fn field(
+    ui: &mut Ui,
+    rect: Rect,
+    editor: &mut Editor,
+    target: &Target,
+    (look, palette, locale): (&Look, &Palette, Locale),
+) -> Outcome {
+    let mut outcome = Outcome::default();
+    let id = target.id;
+    if std::mem::take(&mut editor.focus) {
+        take_keyboard(ui, id, &editor.text);
+    }
+    let has = ui.memory(|memory| memory.has_focus(id));
+    let had: bool = ui.data(|data| data.get_temp(had_id(id))).unwrap_or(false);
+    ending_keys(ui, has, had, &mut outcome);
+
+    // Over the cell: the row's fill would show through a field with none.
+    ui.painter()
+        .rect_filled(rect, CornerRadius::ZERO, palette.window);
+    let role = grid::data_role(look);
+    let pad = grid::cell_pad(look);
+    let center = rect.center().y;
+    // How much of the column's length the text takes, at the field's right.
+    let mut right = rect.right() - pad;
+    if let Some(max) = target.max_chars {
+        let count = format!("{} / {max}", editor.text.chars().count());
+        let laid = Text::one(look, widgets::secondary(look), &count, palette.dim).layout(ui.ctx());
+        right -= laid.paint_right(ui.painter(), right, center) + pad;
+    }
+    let line = role.row_height(ui.ctx(), look.faces);
+    let place = Rect::from_min_max(
+        pos2(rect.left() + pad, center - line / 2.0),
+        pos2(right.max(rect.left() + pad), center + line / 2.0),
+    );
+    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(place));
+    let mut layouter = crate::typography::layouter(look, role, palette.text);
+    let response = child.add(
+        egui::TextEdit::singleline(&mut editor.text)
+            .id(id)
+            .font(role.font_id(look.faces))
+            .frame(egui::Frame::NONE)
+            .margin(Margin::ZERO)
+            .desired_width(place.width())
+            // Tab ends the edit; it is not egui's to move the keyboard with.
+            .lock_focus(true)
+            .layouter(&mut layouter),
+    );
+    // The name only: the field keeps the role and the value egui gave it.
+    let name = format!("{} {}", gettext(locale, "Edit"), display_safe(&target.name));
+    ui.ctx().accesskit_node_builder(id, |node| {
+        node.set_label(name);
+    });
+    let has = response.has_focus();
+    if has {
+        hold_keys(ui, id);
+    }
+    // The ring is the cell's: red while the text fails its check.
+    let ring = if editor.problem.is_some() {
+        Ring::Failing { radius: 0 }
+    } else {
+        Ring::Field { radius: 0 }
+    };
+    focus::hint(ui, &response, rect, ring);
+    if let (Some(problem), true) = (&editor.problem, target.hold) {
+        let message = problem_text(problem, &target.type_name, Some(&editor.text), locale);
+        say_under(ui, rect, id, &message, look, palette);
+    }
+    outcome.changed = response.changed();
+    let ended = outcome.commit.is_some() || outcome.cancel || outcome.large;
+    // The keyboard went elsewhere: to a click, to another field.
+    outcome.left = had && !has && !ended;
+    if target.hold && !has && !had {
+        // An editor whose leaving was not taken (a prompt was up) is still
+        // open: it has the keyboard again once nothing else is asked.
+        response.request_focus();
+        ui.ctx().request_repaint();
+    }
+    ui.data_mut(|data| data.insert_temp(had_id(id), has));
+    outcome
+}
+
+/// Paints `message` under the field at `rect`, or over it where the grid
+/// ends under it: what the text fails, in red. Over the rows, which are
+/// drawn after the field's.
+fn say_under(ui: &Ui, rect: Rect, id: Id, message: &str, look: &Look, palette: &Palette) {
+    let clip = ui.clip_rect();
+    let laid = Text::one(look, widgets::secondary(look), message, palette.danger).layout(ui.ctx());
+    let size = laid.size() + vec2(12.0, 6.0);
+    // Clear of the field's halo.
+    let gap = 4.0;
+    let below = rect.bottom() + gap;
+    let top = if below + size.y > clip.bottom() {
+        rect.top() - gap - size.y
+    } else {
+        below
+    };
+    let place = Rect::from_min_size(pos2(rect.left(), top), size);
+    let layer = egui::LayerId::new(egui::Order::Foreground, id.with("problem"));
+    let painter = ui.ctx().layer_painter(layer).with_clip_rect(clip);
+    let corner = CornerRadius::same(look.radius.min(4));
+    painter.rect_filled(place, corner, Tone::Danger.fill(look, palette));
+    painter.rect_stroke(
+        place,
+        corner,
+        Stroke::new(1.0, Tone::Danger.line(look, palette)),
+        StrokeKind::Inside,
+    );
+    laid.paint_left(&painter, place.left() + 6.0, place.center().y);
+    widgets::announce(ui, place, message);
+}
 
 /// What a typed value fails, as the user reads it. `type_name` is the
 /// column's type as the grid's header shows it (the page's `ColumnMeta`:

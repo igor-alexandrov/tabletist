@@ -11,9 +11,9 @@ use std::collections::BTreeMap;
 use tabletist_db::{NewValue, SortDir, Value, ValueKind};
 
 use crate::app::App;
-use crate::edit::State;
+use crate::edit::{Pending, State, Table};
 use crate::i18n::gettext;
-use crate::model::{Action, CellPos, ConnTabId, ObjectTab, ObjectView, TabId};
+use crate::model::{Action, CellPos, ConnTabId, EditStart, ObjectTab, ObjectView, TabId};
 use crate::theme::{Icon, Look, Palette};
 use crate::typography::{Text, TextRole};
 use crate::ui::cell_editor;
@@ -1097,11 +1097,28 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
     let locale = app.locale;
     let palette = app.palette;
     let look = app.look;
+    // An editor that is open has the keyboard, unless a dialog has it.
+    let hold = app.dialog.is_none();
     let Some(workspace) = app.workspace(tab) else {
         return;
     };
     let fit = Fit::of(workspace, &app.settings);
+    // The arrows are the grid's once the user worked in it.
+    let keys = workspace.pane == crate::model::Pane::Grid;
     let Some(object) = workspace.object_tab(object_tab) else {
+        return;
+    };
+    // What editing asks of the workspace and the tab together, read before
+    // the tab is taken for its editor's text.
+    let computed = computed_columns(workspace, object);
+    let target = editor_target(workspace, object, tab, hold);
+    // The tab itself from here on: the field on a cell edits the text its
+    // editor holds, beside the page the grid reads. Nothing else of it is
+    // changed.
+    let Some(object) = app
+        .workspace_mut(tab)
+        .and_then(|workspace| workspace.object_tab_mut(object_tab))
+    else {
         return;
     };
     let mut actions = Vec::new();
@@ -1116,7 +1133,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
                 actions.push(Action::RetryRows { tab, object_tab })
             });
         });
-    } else if let Some(page) = object.page() {
+    } else if let Some(page) = object.rows.value.as_ref() {
         let structure = object.structure.value.as_ref();
         let columns: Vec<Column<'_>> = page
             .columns
@@ -1154,8 +1171,26 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
                 grouped: fit.grouped && !is_key(&column.name, structure),
             })
             .collect();
-        // What is pending, and what else of editing the cells show.
-        let changes = Changes::of(workspace, object, page, &ctx);
+        // What is pending, and what else of editing the cells show: read
+        // field by field, beside the editor whose text the field edits.
+        let changes = Changes::of(
+            &object.edits.cells,
+            object.edits.saving.is_some(),
+            object.edits.saved.as_ref(),
+            computed,
+            &ctx,
+        );
+        let mut editor = object.edits.editor.as_mut();
+        let editing = editor.as_ref().map(|editor| editor.cell);
+        // What the field says of this frame, once the grid has drawn it on
+        // its cell.
+        let mut outcome = cell_editor::Outcome::default();
+        let mut field = |ui: &mut egui::Ui, rect: Rect| {
+            if let (Some(editor), Some(target)) = (editor.as_deref_mut(), &target) {
+                let skin = (&look, &palette, locale);
+                outcome = cell_editor::field(ui, rect, editor, target, skin);
+            }
+        };
         // A fit come back to is fitted to the rows now on screen: what the
         // grid of the fit before kept goes when this one is drawn.
         let id = grid_id(tab, object_tab, fit);
@@ -1167,11 +1202,12 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
             page.rows.len(),
             object.query.offset,
             object.selection,
-            // The arrows are the grid's once the user worked in it.
-            workspace.pane == crate::model::Pane::Grid,
+            keys,
             &palette,
             &look,
-            &|row| changes.edits.row_mark(row),
+            &|row| crate::edit::row_mark(changes.cells, row),
+            editing,
+            Some(&mut field),
             |row, col| {
                 let loaded = &page.rows[row][col];
                 let column = &page.columns[col];
@@ -1182,11 +1218,33 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
                 cell
             },
         );
+        let id = object_tab;
+        // The text is noted as typed before anything ends the edit: an
+        // editor that was not typed into closes without a change, and a
+        // first keystroke may share its frame with Enter or a click away.
+        if outcome.changed {
+            actions.push(Action::EditorTyped { tab, id });
+        }
+        if outcome.large {
+            actions.push(Action::EditorBreak { tab, id });
+        } else if let Some(then) = outcome.commit {
+            actions.push(Action::CommitEdit { tab, id, then });
+        } else if outcome.cancel {
+            actions.push(Action::CancelEdit { tab, id });
+        } else if outcome.left {
+            actions.push(Action::LeaveEdit { tab, id });
+        }
         if let Some(cell) = output.clicked {
-            actions.push(Action::SelectCell {
+            actions.push(Action::SelectCell { tab, id, cell });
+        }
+        // A second click edits the cell, where the look edits in place.
+        if let Some(cell) = output.double_clicked.filter(|_| !look.terminal) {
+            let start = EditStart::Value;
+            actions.push(Action::EditCell {
                 tab,
-                id: object_tab,
+                id,
                 cell,
+                start,
             });
         }
         // The Tab key came to the grid: the arrows are its own now.
@@ -1249,25 +1307,70 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
 /// What editing shows in a table's grid: the pending cells, the ones a save
 /// just wrote, and the columns no edit reaches.
 struct Changes<'a> {
-    edits: &'a crate::edit::Edits,
+    cells: &'a BTreeMap<(usize, usize), Pending>,
     /// Each pending cell's new value, as a value a cell draws.
     values: BTreeMap<(usize, usize), Value>,
     /// The columns the database computes, in a table that can be edited.
     computed: Vec<bool>,
+    /// A save is running.
+    saving: bool,
     /// The cells the last save wrote, while they show it.
     saved: &'a [CellPos],
 }
 
+/// The page's columns that the database computes, in a table that can be
+/// edited: none in any other. Decided once for each column, and not by
+/// asking why each cell is locked: a save and a fetch lock every cell for a
+/// while, and a computed column is drawn as one through both.
+fn computed_columns(workspace: &crate::model::Workspace, object: &ObjectTab) -> Vec<bool> {
+    let computes = |structure: &tabletist_db::Structure| {
+        structure.columns.iter().any(|column| column.generated)
+    };
+    let table = Table::of(workspace, object)
+        .filter(|table| table.structure.is_some_and(computes))
+        .filter(|table| table.never().is_none());
+    let Some(table) = table else {
+        return Vec::new();
+    };
+    (0..table.page.columns.len())
+        .map(|col| table.column(col).is_some_and(|column| column.generated))
+        .collect()
+}
+
+/// The cell the tab's open editor is on, as its field needs it.
+fn editor_target(
+    workspace: &crate::model::Workspace,
+    object: &ObjectTab,
+    tab: ConnTabId,
+    hold: bool,
+) -> Option<cell_editor::Target> {
+    let editor = object.edits.editor.as_ref()?;
+    let table = Table::of(workspace, object)?;
+    let column = table.page.columns.get(editor.cell.col)?;
+    let max_chars = match table.class(editor.cell.col) {
+        Some(tabletist_db::ColumnClass::Text { max_chars }) => max_chars,
+        _ => None,
+    };
+    // The type as the header names it, not as the structure does.
+    let type_name = format::type_label(&column.type_name, column.kind);
+    Some(cell_editor::Target {
+        id: cell_editor::field_id(tab, object.id),
+        name: column.name.clone(),
+        type_name: format::display_safe(&type_name).into_owned(),
+        max_chars,
+        hold,
+    })
+}
+
 impl<'a> Changes<'a> {
     fn of(
-        workspace: &crate::model::Workspace,
-        object: &'a ObjectTab,
-        page: &tabletist_db::RowPage,
+        cells: &'a BTreeMap<(usize, usize), Pending>,
+        saving: bool,
+        saved: Option<&'a crate::edit::Saved>,
+        computed: Vec<bool>,
         ctx: &egui::Context,
     ) -> Self {
-        let edits = &object.edits;
-        let values = edits
-            .cells
+        let values = cells
             .iter()
             .map(|(at, pending)| {
                 let value = match &pending.new {
@@ -1277,32 +1380,17 @@ impl<'a> Changes<'a> {
                 (*at, value)
             })
             .collect();
-        // Decided once for each column, and not by asking why each cell is
-        // locked: a save and a fetch lock every cell for a while, and a
-        // computed column is drawn as one through both.
-        let table = crate::edit::Table::of(workspace, object)
-            .filter(|table| {
-                table.structure.is_some_and(|structure| {
-                    structure.columns.iter().any(|column| column.generated)
-                })
-            })
-            .filter(|table| table.never().is_none());
-        let computed = (0..page.columns.len())
-            .map(|col| {
-                let column = table.as_ref().and_then(|table| table.column(col));
-                column.is_some_and(|column| column.generated)
-            })
-            .collect();
-        let saved = edits.saved.as_ref().and_then(|saved| {
+        let saved = saved.and_then(|saved| {
             let left = crate::edit::SAVED_FOR.checked_sub(saved.at.elapsed())?;
             // Come back when the moment is over, to draw them as they are.
             ctx.request_repaint_after(left);
             Some(saved.cells.as_slice())
         });
         Self {
-            edits,
+            cells,
             values,
             computed,
+            saving,
             saved: saved.unwrap_or_default(),
         }
     }
@@ -1318,7 +1406,7 @@ impl<'a> Changes<'a> {
         look: &Look,
         locale: crate::i18n::Locale,
     ) {
-        let Some(pending) = self.edits.cells.get(&at) else {
+        let Some(pending) = self.cells.get(&at) else {
             let (row, col) = at;
             cell.mark = if self.saved.contains(&CellPos { row, col }) {
                 Mark::Saved
@@ -1329,7 +1417,7 @@ impl<'a> Changes<'a> {
             };
             return;
         };
-        let saving = self.edits.saving.is_some();
+        let saving = self.saving;
         match &pending.state {
             State::Ready => {
                 cell.mark = if saving { Mark::Saving } else { Mark::Pending };

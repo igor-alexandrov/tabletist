@@ -38,7 +38,7 @@ fn key_width(look: &crate::theme::Look) -> f32 {
 }
 
 /// Space between a cell's edge and its text.
-fn cell_pad(look: &crate::theme::Look) -> f32 {
+pub(crate) fn cell_pad(look: &crate::theme::Look) -> f32 {
     if look.terminal { 8.0 } else { 12.0 }
 }
 const HANDLE_WIDTH: f32 = 6.0;
@@ -111,6 +111,10 @@ pub struct Cell<'a> {
     /// when asked.
     pub hint: Option<String>,
 }
+
+/// What draws the field of a cell being edited, given the cell's place:
+/// the view's, which holds the text. The grid only says where.
+pub type Editor<'a> = &'a mut dyn FnMut(&mut Ui, Rect);
 
 #[derive(Debug, Default, PartialEq)]
 pub struct GridOutput {
@@ -456,6 +460,9 @@ pub fn show<'a>(
     look: &crate::theme::Look,
     // What each row's pending cells come to, for its mark.
     rows: &dyn Fn(usize) -> RowMark,
+    // The cell an editor is open on, and what draws its field on the cell.
+    editing: Option<CellPos>,
+    mut editor: Option<Editor<'_>>,
     mut cell: impl FnMut(usize, usize) -> Cell<'a>,
 ) -> GridOutput {
     let mut output = GridOutput::default();
@@ -496,7 +503,10 @@ pub fn show<'a>(
     let last: Option<CellPos> = ui
         .data(|data| data.get_temp::<Option<CellPos>>(last_id))
         .flatten();
-    let reveal = selection.filter(|cell| Some(*cell) != last);
+    // A cell being edited stays in view, as a selection that just moved
+    // comes into it: egui takes the keyboard from a field that is not
+    // drawn.
+    let reveal = editing.or(selection.filter(|cell| Some(*cell) != last));
     let total = gutter + widths.iter().sum::<f32>();
     let hairline = crate::ui::widgets::hairline(ui);
     let visible = ui.max_rect();
@@ -538,8 +548,12 @@ pub fn show<'a>(
     focus::claim(ui, focus::Region::Grid, &stop);
     output.focused = stop.gained_focus();
     // The cell is lit while the keyboard is in use and its keys come here:
-    // not while a button or a field has them.
-    let lit = keys && focus::visible(ui.ctx()) && !focus::on_control(ui.ctx());
+    // not while a button or a field has them. The field of a cell being
+    // edited is the grid's own: the pane has not lost the keyboard to it.
+    let lit =
+        keys && focus::visible(ui.ctx()) && (editing.is_some() || !focus::on_control(ui.ctx()));
+    // Whether the editor's field was drawn with its row.
+    let mut placed = false;
 
     let scroll = egui::ScrollArea::both()
         .id_salt(id)
@@ -694,6 +708,15 @@ pub fn show<'a>(
                     } else {
                         cell_rect
                     };
+                    if editing == Some(CellPos { row, col })
+                        && let Some(editor) = editor.as_deref_mut()
+                    {
+                        // The field in place of the cell's text, in view
+                        // or not: it is drawn as long as it is open.
+                        editor(ui, cell_rect);
+                        placed = true;
+                        continue;
+                    }
                     if !ui.is_rect_visible(cell_rect) {
                         continue;
                     }
@@ -851,6 +874,23 @@ pub fn show<'a>(
                     }
                 }
             });
+
+            // A row scrolled out of view is not built, and its cell's
+            // field must be drawn all the same to keep the keyboard: where
+            // the cell is, until the grid has scrolled back to it.
+            if let (Some(at), Some(editor), false) = (editing, editor, placed)
+                && at.row < row_count
+                && at.col < widths.len()
+            {
+                let place = pos2(
+                    origin.x + gutter + lefts[at.col],
+                    origin.y + header_height + at.row as f32 * row_height,
+                );
+                editor(
+                    ui,
+                    Rect::from_min_size(place, vec2(widths[at.col], row_height)),
+                );
+            }
 
             // The header, painted over the rows at the top of the visible
             // area so it stays put while rows scroll under it. Its widgets
@@ -1664,6 +1704,8 @@ mod tests {
                     &palette,
                     &crate::theme::Look::standard(),
                     &|_| RowMark::None,
+                    None,
+                    None,
                     |row, col| Cell {
                         text: format!("r{row}c{col}").into(),
                         ..Default::default()
@@ -1718,6 +1760,8 @@ mod tests {
                 palette,
                 look,
                 &|_| RowMark::None,
+                None,
+                None,
                 |row, col| Cell {
                     text: format!("r{row}c{col}").into(),
                     ..Default::default()
@@ -1833,6 +1877,8 @@ mod tests {
                 palette,
                 look,
                 &|at| if at == 1 { row } else { RowMark::None },
+                None,
+                None,
                 |row, col| Cell {
                     text: format!("r{row}c{col}").into(),
                     mark: if (row, col) == (1, 1) {
@@ -2092,6 +2138,8 @@ mod tests {
                     &Palette::light(),
                     &Look::standard(),
                     &|_| RowMark::None,
+                    None,
+                    None,
                     |row, col| Cell {
                         text: format!("r{row}c{col}").into(),
                         ..Default::default()
