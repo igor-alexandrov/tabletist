@@ -1169,6 +1169,98 @@ mod tests {
     }
 
     #[test]
+    fn the_file_panes_note_reads_as_one_sentence_without_its_marks() {
+        let harness = settings_screen();
+        // The marks say which word is coloured, and are not written.
+        let note =
+            "edits in the file reload live · invalid lines are shown here in red and ignored";
+        assert_eq!(harness.painted_color(note), Some(harness.app.palette.dim));
+    }
+
+    /// The Settings screen over a settings file that goes on for `notes`
+    /// lines of comments, with one line that is ignored among the first.
+    fn settings_screen_over_a_long_file(notes: usize) -> Harness {
+        let mut harness = settings_screen();
+        let settings = harness.app.settings.to_toml();
+        let settings = settings.replace("group_digits = false", "group_digits = \"yes\"");
+        let notes: String = (1..=notes).map(|note| format!("# note {note}\n")).collect();
+        harness.app.apply(crate::model::Action::Backend(
+            crate::backend::Event::SettingsFile {
+                text: format!("{settings}{notes}"),
+                own: false,
+            },
+        ));
+        harness.settle();
+        harness
+    }
+
+    #[test]
+    fn a_long_settings_file_is_marked_and_coloured_where_it_is_in_view() {
+        let mut harness = settings_screen_over_a_long_file(900);
+        let palette = harness.app.palette;
+        let marked = |harness: &Harness, key: &str| {
+            let line = harness.painted_rect(key).expect("the key's line");
+            harness.fills.iter().any(|(rect, color)| {
+                *color == palette.selection
+                    && rect.y_range().contains(line.center().y)
+                    && rect.x_range().contains(line.center().x)
+            })
+        };
+        assert!(marked(&harness, "page_size    = "));
+        assert!(!marked(&harness, "timestamps   = "));
+        harness.press(egui::Key::J, egui::Modifiers::NONE);
+        assert!(marked(&harness, "timestamps   = "));
+        assert!(!marked(&harness, "page_size    = "));
+        assert_eq!(
+            harness.painted_color("group_digits = \"yes\""),
+            Some(palette.danger)
+        );
+        // The lines under the settings are the file's too, as far as the
+        // pane reaches.
+        assert_eq!(harness.painted_color("# note 1"), Some(palette.dim));
+        assert!(harness.painted_color("# note 900").is_none());
+    }
+
+    #[test]
+    fn a_text_too_long_for_a_settings_file_is_shown_to_its_last_line() {
+        let mut harness = settings_screen_over_a_long_file(5_000);
+        let danger = harness.app.palette.danger;
+        // It was not read: every line of it is one that was ignored.
+        assert!(harness.app.settings_file.lines.is_empty());
+        let first = "# written by tabletist, safe to edit by hand";
+        assert_eq!(harness.painted_color(first), Some(danger));
+        assert_eq!(harness.painted_color("[data]"), Some(danger));
+        assert!(harness.painted_color("# note 5000").is_none());
+        // The pane is as tall as all of its lines: the wheel reaches the
+        // last, and the first is then out of view.
+        let over = harness.painted_rect("[data]").expect("the file").center();
+        harness.frame(vec![egui::Event::PointerMoved(over)]);
+        for _ in 0..200 {
+            if harness.painted_color("# note 5000").is_some() {
+                break;
+            }
+            harness.frame(vec![egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Page,
+                delta: egui::vec2(0.0, -10.0),
+                phase: egui::TouchPhase::Move,
+                modifiers: Modifiers::NONE,
+            }]);
+        }
+        harness.finish_animations();
+        assert_eq!(harness.painted_color("# note 5000"), Some(danger));
+        assert!(harness.painted_color(first).is_none());
+        // It is in the pane, under the file's path and in the window: a
+        // line painted where the pane does not show it is not shown.
+        let last = harness.painted_rect("# note 5000").expect("the last line");
+        let mut painted = harness.text_rects.iter();
+        let (_, path) = painted
+            .find(|(text, _)| text.ends_with("settings.toml"))
+            .expect("the file's path");
+        assert!(last.top() >= path.bottom(), "{last:?} under {path:?}");
+        assert!(last.bottom() <= harness.size.y, "{last:?}");
+    }
+
+    #[test]
     fn a_narrow_window_has_the_options_and_not_the_file() {
         let mut harness = Harness::with_size(egui::vec2(1000.0, 700.0));
         harness.set_look(crate::theme::Look::omarchy());

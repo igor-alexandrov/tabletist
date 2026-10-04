@@ -285,7 +285,11 @@ impl From<Settings> for Loaded {
 pub struct SettingsFile {
     /// The text as last read or written.
     pub text: String,
-    /// The lines that were ignored, counted from 1.
+    /// How many lines the text has, counted when it is set
+    /// ([`Loaded::into_parts`]): what shows the file knows how tall it is
+    /// without walking a long text on every frame.
+    pub line_count: usize,
+    /// The lines that were ignored, counted from 1, in order.
     pub invalid: Vec<usize>,
     /// The line each key is on.
     pub lines: Vec<(Key, usize)>,
@@ -300,6 +304,7 @@ impl Loaded {
     /// The settings, and what the app keeps of their file.
     pub fn into_parts(self) -> (Settings, SettingsFile) {
         let file = SettingsFile {
+            line_count: self.text.lines().count(),
             text: self.text,
             invalid: self.invalid,
             lines: self.lines,
@@ -971,6 +976,7 @@ sql_timeout_secs = 30  # 0 waits forever
             file,
             SettingsFile {
                 text: text.into(),
+                line_count: 3,
                 invalid: vec![3],
                 lines: vec![(Key::PageSize, 2)],
                 live: false,

@@ -1,7 +1,8 @@
 //! The Settings window as the terminal look draws it: a screen over the
 //! whole window. A header, the app's notice while it has one, a nav of one
 //! item, the options in rows under a cursor, the settings file beside them
-//! where the window has the room, and the screen's keys in the footer.
+//! where the window has the room (`file_pane.rs` draws it in the place it
+//! is given here), and the screen's keys in the footer.
 
 use egui::emath::GuiRounding as _;
 use egui::{CornerRadius, Rect, Sense, Stroke, StrokeKind, Ui, WidgetInfo, WidgetType, pos2, vec2};
@@ -17,8 +18,7 @@ use crate::ui::keys::keys_label;
 use crate::ui::value_tags::terminal_slots;
 use crate::ui::widgets::{self, ButtonSpec};
 
-use super::file_pane::{shown_path, spans};
-use super::{Said, choices, label};
+use super::{Said, choices, file_pane, label};
 
 /// The header's and the footer's heights, each without its rule.
 const HEADER: f32 = 40.0;
@@ -43,25 +43,18 @@ const SEGMENT_PAD: f32 = 6.0;
 const FILE: f32 = 620.0;
 const FILE_SHARE: f32 = 0.4;
 const FILE_FROM: f32 = 1100.0;
-/// The pane's header without its rule, how far its words stand in from its
-/// sides, and the space over the file's first line.
-const FILE_HEADER: f32 = 34.0;
-const FILE_SIDE: f32 = 14.0;
-const FILE_TOP: f32 = 12.0;
-/// The space over and under the pane's note.
-const FILE_NOTE: f32 = 10.0;
 
 /// How the screen draws: the look, the palette and the language.
 #[derive(Clone, Copy)]
-struct Skin<'a> {
-    look: &'a Look,
-    palette: &'a Palette,
-    locale: Locale,
+pub(super) struct Skin<'a> {
+    pub(super) look: &'a Look,
+    pub(super) palette: &'a Palette,
+    pub(super) locale: Locale,
 }
 
 impl Skin<'_> {
     /// `text` translated, in the look's case.
-    fn say(&self, text: &'static str) -> String {
+    pub(super) fn say(&self, text: &'static str) -> String {
         self.look.label(&gettext(self.locale, text))
     }
 
@@ -138,7 +131,7 @@ pub(super) fn show(app: &App, ctx: &egui::Context, row: usize, actions: &mut Vec
                     rows(ui, &app.settings, row, &skin, actions);
                 });
             if let Some(beside) = beside {
-                file(ui, beside, app, option, &skin);
+                file_pane::show(ui, beside, app, option, &skin);
             }
             footer(ui, option, &app.settings, &skin, actions);
         });
@@ -622,112 +615,6 @@ fn hint(option: OptionId, settings: &Settings, skin: &Skin) -> Text {
                 .add(role, "ebook", second)
         }
     }
-}
-
-/// The settings file beside its options: where it is and whether it is
-/// watched, its text with the line of the cursor's option marked, and what
-/// its colours say.
-fn file(ui: &mut Ui, rect: Rect, app: &App, option: Option<OptionId>, skin: &Skin) {
-    let Skin { look, palette, .. } = *skin;
-    let role = widgets::code(look);
-    let file = &app.settings_file;
-    ui.painter()
-        .rect_filled(rect, CornerRadius::ZERO, palette.panel);
-    widgets::vline(ui, rect.left() + 0.5, rect.y_range(), palette.outline);
-    let left = rect.left() + 1.0 + FILE_SIDE;
-    let right = (rect.right() - FILE_SIDE).max(left);
-
-    let rule = (rect.top() + FILE_HEADER).min(rect.bottom());
-    widgets::hline(ui, rect.x_range(), rule + 0.5, palette.outline);
-    let y = rect.top() + FILE_HEADER / 2.0;
-    let mut room = right;
-    if file.live {
-        let live = Text::one(look, role, &skin.say("live"), palette.dim);
-        room -= widgets::paint_text_right(ui, right, y, live) + 12.0;
-    }
-    // The home directory from the environment: nothing here reads the disk.
-    let home = directories::BaseDirs::new();
-    let home = home.as_ref().map(directories::BaseDirs::home_dir);
-    let path = shown_path(&app.dirs.settings_file(), home);
-    // The pane's heading: strong, as a heading over a rule is in this look.
-    let path = Text::one(look, TextRole::OGroup, &path, palette.text).layout(ui.ctx());
-    let clip = Rect::from_min_max(pos2(left, rect.top()), pos2(room.max(left), rule));
-    let clipped = ui.painter().with_clip_rect(clip);
-    // A path longer than the header keeps its end: the file's name is there.
-    if path.width() > clip.width() {
-        path.paint_right(&clipped, clip.right(), y);
-    } else {
-        path.paint_left(&clipped, left, y);
-    }
-    widgets::announce(ui, clip, path.galley.text());
-
-    // The note before the text: how tall it is says where the text ends.
-    let before = format!(
-        "{} · {} ",
-        skin.say("Edits in the file reload live"),
-        skin.say("invalid lines are shown here in")
-    );
-    let note = Text::new(look)
-        .add(role, &before, palette.dim)
-        .add(role, &skin.say("red"), palette.danger)
-        .add(role, &format!(" {}", skin.say("and ignored")), palette.dim)
-        .wrap(right - left)
-        .layout(ui.ctx());
-    let foot = (rect.bottom() - (2.0 * FILE_NOTE + note.height()).ceil() - 1.0).max(rule + 1.0);
-    widgets::hline(ui, rect.x_range(), foot + 0.5, palette.outline);
-    let under = Rect::from_min_max(pos2(rect.left(), foot + 1.0), rect.max);
-    note.paint(
-        &ui.painter().with_clip_rect(under),
-        pos2(left, under.top() + FILE_NOTE),
-    );
-
-    let marked = option.and_then(|option| {
-        let line = file.lines.iter().find(|(key, _)| *key == option.key());
-        line.map(|(_, line)| *line)
-    });
-    let line = role.row_height(ui.ctx(), look.faces);
-    // The text scrolls between the header and the note, past the pane's
-    // rule.
-    let body = Rect::from_min_max(
-        pos2(rect.left() + 1.0, rule + 1.0),
-        pos2(rect.right(), foot),
-    );
-    let mut text = ui.new_child(egui::UiBuilder::new().id_salt("file").max_rect(body));
-    egui::ScrollArea::vertical()
-        .auto_shrink([false, false])
-        .show(&mut text, |ui| {
-            // The lines as `Settings::from_toml` counts them, from 1. The
-            // end of a line as another system's editor wrote it is not
-            // drawn.
-            let count = file.text.lines().count();
-            let height = 2.0 * FILE_TOP + count as f32 * line;
-            let (place, _) =
-                ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::hover());
-            for (index, text) in file.text.lines().enumerate() {
-                let number = index + 1;
-                let top = place.top() + FILE_TOP + index as f32 * line;
-                let row = Rect::from_min_size(pos2(place.left(), top), vec2(place.width(), line));
-                if !ui.is_rect_visible(row) {
-                    continue;
-                }
-                if marked == Some(number) {
-                    ui.painter()
-                        .rect_filled(row, CornerRadius::ZERO, palette.selection);
-                }
-                let y = row.center().y;
-                let mut x = row.left() + FILE_SIDE;
-                // A line that was ignored is one colour: nothing in it was
-                // read.
-                if file.invalid.contains(&number) {
-                    widgets::paint_text(ui, x, y, Text::one(look, role, text, palette.danger));
-                    continue;
-                }
-                for (range, part) in spans(text) {
-                    let piece = Text::one(look, role, &text[range], part.color(palette));
-                    x += widgets::paint_text(ui, x, y, piece);
-                }
-            }
-        });
 }
 
 /// The screen's keys at the left. A hint whose key does one thing is that
