@@ -709,5 +709,8 @@ window to ship can already say `live` and mean it.
    shortcuts dialog's button. The key's line in `SHORTCUTS` waits for step
    4, so no look lists a key that does nothing there.
 4. **The window on macOS and Windows.** The sheet, the toggle, the footer's
-   Reveal, Export, Reset and count of ignored lines, the macOS menu item,
-   the ways in for every look, and the `SHORTCUTS` line.
+   Reveal, Export, Reset and count of ignored lines, the ways in for every
+   look, and the `SHORTCUTS` line. The macOS menu item (see Opening) is
+   delivered after it, in a pull request of its own: it needs
+   `tabletist-appkit` and runs only on a Mac, and `⌘,` reaches the window
+   without it.
