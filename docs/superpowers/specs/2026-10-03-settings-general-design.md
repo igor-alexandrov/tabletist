@@ -507,7 +507,10 @@ footer: "2 lines in the file could not be read and were ignored".
   not there is not followed by making the directory: the save fails, is
   reported in the notice, and the link stays. So does a save where the
   repository cannot be written. A file behind a link that cannot be loaded
-  is renamed to `.bad` beside itself, not the link.
+  is renamed to `.bad` beside itself, not the link. Where the link cannot
+  be followed (what it leads to cannot be looked at for now, or the links
+  lead back to themselves) nothing is renamed and the link stays: a save
+  through it fails for the same reason, so nothing is replaced.
 - The config directory is read-only: the change applies for the session and
   the failed save is reported in the notice, as today.
 - `page_size = 250` by hand: honoured, and shown in the menu as its own

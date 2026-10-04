@@ -199,10 +199,21 @@ pub fn load_json<T: DeserializeOwned + Default>(path: &Path) -> T {
 /// `<name>.bad.1`, `<name>.bad.2`... when earlier ones exist, so a second
 /// failure never replaces the first copy. Behind a symbolic link it is the
 /// file the link leads to that is renamed, beside itself: the link stays,
-/// and the next save writes a new file where it leads.
+/// and the next save writes a new file where it leads. Where the link
+/// cannot be followed nothing is renamed, the link least of all: a save
+/// through it fails in the same way, so nothing is replaced either.
 pub fn keep_aside(path: &Path, problem: &str) {
-    // Links without an end have no file to move: the link itself goes.
-    let file = resolve_link(path).unwrap_or_else(|_| path.to_path_buf());
+    let file = match resolve_link(path) {
+        Ok(file) => file,
+        Err(error) => {
+            log::warn!(
+                "could not load {} ({problem}) nor follow its link ({error}); \
+                 leaving it in place and using defaults",
+                path.display()
+            );
+            return;
+        }
+    };
     let path = file.as_path();
     let Some(aside) = (0..1000)
         .map(|n| match n {
@@ -509,6 +520,49 @@ mod tests {
         // A path with nothing at it is no error: it is where a file is made.
         assert_eq!(resolve_link(&path).unwrap(), path);
         assert_eq!(link_chain(&path).unwrap(), [path]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_link_that_cannot_be_followed_is_left_where_it_is() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let (config, dotfiles) = (dir.path().join("config"), dir.path().join("dotfiles"));
+        std::fs::create_dir_all(&config).unwrap();
+        std::fs::create_dir_all(&dotfiles).unwrap();
+        let (link, target) = (config.join("sample.json"), dotfiles.join("sample.json"));
+        let precious = Sample {
+            name: "precious".into(),
+            count: 3,
+        };
+        save_json(&target, &precious).unwrap();
+        symlink_file(&target, &link);
+        // The directory the link leads to cannot be looked into for now.
+        let allow = |mode| {
+            std::fs::set_permissions(&dotfiles, std::fs::Permissions::from_mode(mode)).unwrap()
+        };
+        allow(0o000);
+        if dotfiles.read_dir().is_ok() {
+            return allow(0o700); // running as root: permissions do not apply
+        }
+        // The file cannot be loaded, and the link is not what is moved
+        // aside for it, though its own directory would allow that.
+        assert_eq!(load_json::<Sample>(&link), Sample::default());
+        assert_eq!(names_in(&config), ["sample.json"]);
+        assert_eq!(std::fs::read_link(&link).unwrap(), target);
+        // Nor does a save put a plain file in its place.
+        assert!(save_json(&link, &Sample::default()).is_err());
+        assert_eq!(std::fs::read_link(&link).unwrap(), target);
+        allow(0o700);
+        assert_eq!(names_in(&dotfiles), ["sample.json"]);
+        assert_eq!(load_json::<Sample>(&link), precious);
+
+        // Two links that lead to each other are left as they are too.
+        let (one, other) = (config.join("one.json"), config.join("other.json"));
+        symlink_file(&other, &one);
+        symlink_file(&one, &other);
+        assert_eq!(load_json::<Sample>(&one), Sample::default());
+        assert_eq!(names_in(&config), ["one.json", "other.json", "sample.json"]);
     }
 
     #[test]
