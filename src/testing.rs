@@ -440,7 +440,15 @@ impl Harness {
     /// tree's first requests: schema `main` with `users`, `orders` and the
     /// view `active_users`.
     pub fn connect_fake(&mut self) -> ConnTabId {
-        let saved = fixture_connection();
+        self.connect_fake_as(true)
+    }
+
+    /// [`Self::connect_fake`], with the saved connection's "Open read-only"
+    /// box as given. The session's access is read from that box at every
+    /// connect, so a writable fixture comes back writable from a reconnect.
+    pub fn connect_fake_as(&mut self, read_only: bool) -> ConnTabId {
+        let mut saved = fixture_connection();
+        saved.read_only = Some(read_only);
         let conn = saved.id.clone();
         self.app.connections.upsert(saved);
         let tab = self.app.active_tab_id();
@@ -537,7 +545,50 @@ pub fn page(rows: usize, has_more: bool) -> RowPage {
     }
 }
 
+/// The structure of the table `page` holds: `id` is the primary key,
+/// `email` is NOT NULL, `meta` is JSON and may be NULL.
+pub fn fixture_structure() -> tabletist_db::Structure {
+    let column = |name: &str, type_name: &str, nullable: bool| tabletist_db::ColumnInfo {
+        name: name.into(),
+        type_name: type_name.into(),
+        nullable,
+        ..tabletist_db::ColumnInfo::default()
+    };
+    tabletist_db::Structure {
+        columns: vec![
+            column("id", "INTEGER", false),
+            column("email", "TEXT", false),
+            column("meta", "JSON", true),
+        ],
+        primary_key: vec!["id".into()],
+        ..tabletist_db::Structure::default()
+    }
+}
+
 impl Harness {
+    /// A writable connection with `users` open and pinned, its structure
+    /// and a page of five rows loaded: a table whose cells can be edited.
+    /// The saved connection itself is writable, so a reconnect comes back
+    /// writable too.
+    pub fn editable(&mut self) -> (ConnTabId, TabId) {
+        let tab = self.connect_fake_as(false);
+        self.app.apply(Action::OpenObject {
+            tab,
+            object: tabletist_db::ObjectRef::new("main", "users"),
+            kind: ObjectKind::Table,
+            pin: true,
+        });
+        // The describe was sent before the rows were asked for.
+        self.answer_structure(fixture_structure());
+        self.answer_rows(page(5, false));
+        let id = self
+            .app
+            .workspace(tab)
+            .and_then(|workspace| workspace.active_tab)
+            .expect("the table's tab is open");
+        (tab, id)
+    }
+
     /// Answers the newest FetchRows command with `page`.
     pub fn answer_rows(&mut self, page: RowPage) {
         let (session, request) = self

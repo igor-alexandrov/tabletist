@@ -3,9 +3,11 @@
 //! is decided from the page and the structure alone; the reducer in
 //! `app.rs` owns every transition.
 
+use std::collections::BTreeMap;
+
 use tabletist_db::{
-    Access, ColumnClass, ColumnInfo, Dialect, NewValue, ObjectKind, RowPage, Structure, Value,
-    column_class,
+    Access, ColumnClass, ColumnInfo, Dialect, Error, NewValue, ObjectKind, RowPage, Structure,
+    Value, column_class,
 };
 
 use crate::model::CellPos;
@@ -368,6 +370,121 @@ pub fn opens_large(text: &str, class: ColumnClass) -> bool {
     class == ColumnClass::Json
         || text.contains('\n')
         || text.chars().count() > crate::ui::format::CELL_MAX_CHARS
+}
+
+/// One cell's new value, not yet written.
+#[derive(Clone, PartialEq)]
+pub struct Pending {
+    pub new: NewValue,
+    pub state: State,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum State {
+    /// Waits for a save.
+    Ready,
+    /// Fails its check: a save is not offered until it is fixed.
+    ToFix(Problem),
+    /// The last save's statement for its row failed. It is sent again by
+    /// the next save.
+    Failed(Error),
+}
+
+/// The editor that is open. Only `text` is the view's to change.
+pub struct Editor {
+    pub cell: CellPos,
+    pub text: String,
+    /// The popover rather than the field on the cell.
+    pub large: bool,
+    /// Taken by the view when it gives the field the keyboard.
+    pub focus: bool,
+    /// Whether the text was typed into. An editor that was only opened and
+    /// closed changes nothing: on a NULL cell it starts empty, and the
+    /// empty string is not NULL.
+    pub touched: bool,
+    /// What the text fails, kept up to date by `Action::EditorTyped`.
+    pub problem: Option<Problem>,
+}
+
+/// What a table's tab holds while its values are edited.
+#[derive(Default)]
+pub struct Edits {
+    /// By row and column of the loaded page.
+    pub cells: BTreeMap<(usize, usize), Pending>,
+    pub editor: Option<Editor>,
+    /// Why the cell last asked for could not be edited.
+    pub why: Option<(CellPos, Lock)>,
+}
+
+/// How much is pending.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Counts {
+    pub changes: usize,
+    pub rows: usize,
+    pub to_fix: usize,
+    pub failed: usize,
+}
+
+/// What a row's cells come to, for its mark.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RowMark {
+    #[default]
+    None,
+    Changed,
+    /// One of its cells is to fix or failed.
+    Trouble,
+}
+
+impl Edits {
+    /// Whether the tab's page must stay: something is pending, or an
+    /// editor is open.
+    pub fn holds(&self) -> bool {
+        !self.cells.is_empty() || self.editor.is_some()
+    }
+
+    pub fn counts(&self) -> Counts {
+        let mut counts = Counts {
+            changes: self.cells.len(),
+            ..Counts::default()
+        };
+        let mut last = None;
+        for (&(row, _), cell) in &self.cells {
+            if last != Some(row) {
+                counts.rows += 1;
+                last = Some(row);
+            }
+            match cell.state {
+                State::Ready => {}
+                State::ToFix(_) => counts.to_fix += 1,
+                State::Failed(_) => counts.failed += 1,
+            }
+        }
+        counts
+    }
+
+    pub fn row_mark(&self, row: usize) -> RowMark {
+        let mut cells = self.cells.range((row, 0)..=(row, usize::MAX)).peekable();
+        if cells.peek().is_none() {
+            RowMark::None
+        } else if cells.any(|(_, cell)| cell.state != State::Ready) {
+            RowMark::Trouble
+        } else {
+            RowMark::Changed
+        }
+    }
+}
+
+/// Without the texts: what a user typed stays out of logs and panics.
+impl std::fmt::Debug for Edits {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Edits {{ cells: {}, editor: {:?}, why: {:?} }}",
+            self.cells.len(),
+            self.editor.as_ref().map(|editor| editor.cell),
+            self.why
+        )
+    }
 }
 
 #[cfg(test)]
@@ -774,5 +891,28 @@ mod tests {
         assert!(opens_large(&"x".repeat(257), plain));
         assert!(!opens_large(&"x".repeat(256), plain));
         assert!(opens_large("{}", ColumnClass::Json));
+    }
+
+    #[test]
+    fn the_set_is_printed_without_what_was_typed() {
+        let mut edits = Edits::default();
+        edits.cells.insert(
+            (0, 1),
+            Pending {
+                new: NewValue::Text("a secret".into()),
+                state: State::Ready,
+            },
+        );
+        edits.editor = Some(Editor {
+            cell: at(0, 2),
+            text: "another secret".into(),
+            large: false,
+            focus: false,
+            touched: true,
+            problem: None,
+        });
+        let printed = format!("{edits:?}");
+        assert!(!printed.contains("secret"), "{printed}");
+        assert!(printed.contains("cells: 1"), "{printed}");
     }
 }

@@ -223,6 +223,57 @@ pub enum Action {
         id: TabId,
         cell: CellPos,
     },
+    /// Open the editor on a cell of a table's grid, or say why it cannot
+    /// be edited.
+    EditCell {
+        tab: ConnTabId,
+        id: TabId,
+        cell: CellPos,
+        start: EditStart,
+    },
+    /// The editor's text changed: check it again.
+    EditorTyped {
+        tab: ConnTabId,
+        id: TabId,
+    },
+    /// Take the editor's text as the cell's new value, if its column takes
+    /// it, and move on.
+    CommitEdit {
+        tab: ConnTabId,
+        id: TabId,
+        then: Advance,
+    },
+    /// The editor lost the keyboard: keep its text, as a cell to fix when
+    /// its column does not take it.
+    LeaveEdit {
+        tab: ConnTabId,
+        id: TabId,
+    },
+    /// Close the editor and drop its text.
+    CancelEdit {
+        tab: ConnTabId,
+        id: TabId,
+    },
+    /// Add a line break and move the text into the large editor.
+    EditorBreak {
+        tab: ConnTabId,
+        id: TabId,
+    },
+    /// Make the active cell NULL, where its column allows it.
+    SetNull {
+        tab: ConnTabId,
+        id: TabId,
+    },
+    /// Put back the active cell's loaded value.
+    RevertCell {
+        tab: ConnTabId,
+        id: TabId,
+    },
+    /// Drop every pending change of the tab.
+    DiscardEdits {
+        tab: ConnTabId,
+        id: TabId,
+    },
     /// Arrow keys (±1), Page Up/Down (±page), Home/End (isize::MIN/MAX).
     MoveSelection {
         tab: ConnTabId,
@@ -1525,6 +1576,28 @@ pub struct CellPos {
     pub col: usize,
 }
 
+/// Where an editor starts.
+#[derive(Debug)]
+pub enum EditStart {
+    /// From the cell's value, or its pending one, the cursor at the end.
+    Value,
+    /// From this text, with nothing of the old value (Omarchy's `cc`).
+    Replace(String),
+    /// From the character that was typed on the cell. On a cell that cannot
+    /// be edited this does nothing: only an edit that was asked for says
+    /// why.
+    Typed(String),
+}
+
+/// Where the selection goes after an edit is committed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Advance {
+    Stay,
+    Down,
+    Right,
+    Left,
+}
+
 /// One open table or view.
 #[derive(Debug)]
 pub struct ObjectTab {
@@ -1544,6 +1617,9 @@ pub struct ObjectTab {
     pub filter: FilterBar,
     /// The row panel's text for the selected row (see `App::format_rows`).
     pub fields: Option<RowFields>,
+    /// What is pending, while the tab's values are edited. A tab that holds
+    /// edits keeps its page.
+    pub edits: crate::edit::Edits,
 }
 
 /// The row panel's text for one row, formatted once when the selection or
@@ -1631,6 +1707,7 @@ impl ObjectTab {
             count: Fetch::default(),
             filter: FilterBar::default(),
             fields: None,
+            edits: crate::edit::Edits::default(),
         }
     }
 
