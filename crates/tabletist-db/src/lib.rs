@@ -24,6 +24,7 @@ mod ssh;
 pub mod ssh_config;
 mod tls;
 mod value;
+mod write;
 
 use std::fmt;
 use std::sync::Arc;
@@ -39,6 +40,7 @@ pub use script::{ScriptOutcome, StatementOutcome, StatementResult, StopFlag};
 pub use spec::{ConnectSpec, Driver, ParsedUrl, Secrets, SshAuth, SshSpec, TlsMode};
 pub use ssh::HostKeys;
 pub use value::{ColumnMeta, Value, ValueKind, value_from_pg_text};
+pub use write::{CellChange, ChangeSet, Conflict, NewValue, RowChange, WriteOutcome};
 
 /// Whether a session may write. The app has no writing call yet; a
 /// writable session is the one a later `write` will be allowed on.
@@ -254,6 +256,28 @@ impl Connection {
             Inner::Sqlite(conn) => conn.count_rows(query).await,
             Inner::Postgres(conn) => conn.count_rows(query).await,
             Inner::MySql(conn) => conn.count_rows(query).await,
+        }
+    }
+
+    /// Writes `changes` in one transaction, or nothing: the crate's only
+    /// writing call. Each row is found by its key, locked, and compared
+    /// with what the page loaded in the columns the save changes; a row
+    /// that differs or is gone makes the whole save a conflict.
+    ///
+    /// On a read-only connection it is refused before the set is even
+    /// looked at. The future must be awaited to its end and never dropped:
+    /// a save dropped mid-way would leave its transaction open on the
+    /// session. The backend awaits every command to its end, and stops a
+    /// save through the session's cancel.
+    pub async fn write(&self, changes: &ChangeSet) -> Result<WriteOutcome> {
+        if self.access == Access::ReadOnly {
+            return Err(Error::ReadOnly);
+        }
+        changes.check()?;
+        match &self.inner {
+            Inner::Sqlite(_) | Inner::Postgres(_) | Inner::MySql(_) => Err(Error::Unsupported(
+                "saving is not built for this database yet",
+            )),
         }
     }
 
