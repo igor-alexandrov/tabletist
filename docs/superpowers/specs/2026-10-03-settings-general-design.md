@@ -458,7 +458,11 @@ time up to a second, six reads in all; a change meanwhile starts over, and a
 file that is gone is not retried.
 
 `App` drops an event whose text equals `settings_file.text`: that is its own
-write, or a change that changed nothing. Otherwise it runs
+write, or a change that changed nothing. (From step 3 the event also says
+whether the text is the backend's own write, `own`, and the app keeps the
+text it last asked to be written, `SettingsFile::saved`: see "Errors and
+edge cases" for what it does with an own write that is not the text it
+holds.) Otherwise it runs
 `Settings::from_toml`, keeps the text, the invalid lines and the key lines,
 and applies the settings through the same effects a change in the window
 has, without writing the file back.
@@ -516,12 +520,15 @@ footer: "2 lines in the file could not be read and were ignored".
   option in the window. The last write wins; neither is merged.
 - Two quick changes in the app can be read from the disk between their two
   writes, so the first text comes back after the second was made. From step
-  3 the app knows it: `SettingsFile::unseen` holds every text the app wrote
-  and has not seen come back, oldest first (the file only moves forward, so
-  they come back in order). One of them coming back is the app's own, it
-  and the ones before it are seen, and it is not applied. A key held down
-  on an option therefore never has its newest change undone. A save that
-  failed empties the list: what was not written cannot come back.
+  3 the backend says which texts are its own writes (`Event::SettingsFile {
+  text, own }`, decided under a lock the writer and the reader share), and
+  the app keeps the text it last asked to be written (`SettingsFile::saved`).
+  A text of its own that is not the one it holds is dropped when it is an
+  older write (the newest is still to come) and applied when it is the
+  newest (its save landed over a change from outside that it had applied in
+  between: the disk has it). A key held down on an option therefore never
+  has its newest change undone, and the same older text put back by someone
+  else is still a change.
 - A change from outside that restores, within the settle after one of the
   app's own writes, the very text the backend sent last is not seen: the
   reader never sends the same text twice in a row. The app then holds the

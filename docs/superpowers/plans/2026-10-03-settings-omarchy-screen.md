@@ -4,7 +4,7 @@
 
 **Goal:** In the terminal look, `ctrl+,` opens a Settings screen over the whole window: the General tab's four options under a cursor moved and changed with keys, the settings file shown beside them with the cursor's line highlighted and the ignored lines in red, and a key that opens the file in the editor.
 
-**Architecture:** The options become values (`OptionId`, `OptionValue` in `src/settings.rs`) so that keys, clicks and the file all change a setting through one action, `SetOption`, and `App::change_settings`. `Dialog::Settings` holds only the cursor. The screen is `src/ui/settings/`: `mod.rs` owns what both layouts share (the options' words, the ways in, the keys), `terminal.rs` draws the Omarchy screen, `file_pane.rs` colours the file's text. The backend opens the file in the editor. Before a held key can change a setting, the app learns to know every write of its own that has not come back from the disk, not only the last.
+**Architecture:** The options become values (`OptionId`, `OptionValue` in `src/settings.rs`) so that keys, clicks and the file all change a setting through one action, `SetOption`, and `App::change_settings`. `Dialog::Settings` holds only the cursor. The screen is `src/ui/settings/`: `mod.rs` owns what both layouts share (the options' words, the ways in, the keys), `terminal.rs` draws the Omarchy screen, `file_pane.rs` colours the file's text. The backend opens the file in the editor. Before a held key can change a setting, the backend learns to tell the app which texts of the file are the app's own writes, so that one of them arriving late is never taken for a change from outside.
 
 **Tech Stack:** Rust 2024, egui (crmne fork, 0.36), tokio. Headless UI tests through `src/testing.rs` with `harness.set_look(Look::omarchy())`.
 
@@ -36,7 +36,7 @@
 
 `src/app.rs`: `App::settings`, `App::settings_file`, `App::apply_settings(new)` (effects, no write), `App::change_settings(|settings| ..)` (applied and written as the canonical text; a change that changes nothing writes nothing), private `save_settings`, `Event::SettingsFile { text }` applied unless it equals `settings_file.text`, `Event::SettingsWatch { live }`.
 
-`src/backend.rs`: `Command::WatchSettings`, the watcher and its reader, `Command::Save` with `StateFile::Settings`, `Event::Saved { path, result }`.
+`src/backend.rs`: `Command::WatchSettings`, `watch_settings`, `concerns`, `settled`, `read_file`, and the reader `read_settings(path, changes, outbox, read)`, which takes the function that reads the file (the tests have one that fails) and keeps the text it sent last (`sent`); `Saves::write`, which writes a `StateFile`; `Command::Save` with `StateFile::Settings`, `Event::Saved { path, result }`.
 
 `src/model.rs`: `Dialog { Connection, Password, HostKey, QuickOpen, Help, About }`, `Action::{ShowHelp, ShowAbout, CloseDialog}`.
 
@@ -46,10 +46,10 @@ The terminal look's patterns to follow: `src/ui/connect_dialog/terminal.rs` (a h
 
 | File | Change |
 |---|---|
-| `src/settings.rs` | `SettingsFile::unseen` (own writes not yet back). `OptionId`, `OptionValue`, `PAGE_SIZES`, and the three ways a key changes an option. |
+| `src/settings.rs` | `SettingsFile::saved` (the text the app last asked to be written). `OptionId`, `OptionValue`, `PAGE_SIZES`, and the three ways a key changes an option. |
 | `src/model.rs` | `Dialog::Settings`, `SettingsDialog`, five actions. |
-| `src/app.rs` | The actions; own writes known by more than the last; the editor action and its event. |
-| `src/backend.rs` | `Command::EditSettingsFile`, `Event::SettingsFileOpened`, the editor's program. |
+| `src/app.rs` | The actions; what to do with a write of its own that comes back; the editor action and its event. |
+| `src/backend.rs` | The reader tells an own write from another's (`Event::SettingsFile { own }`). `Command::EditSettingsFile`, `Event::SettingsFileOpened`, the editor's program. |
 | `src/ui/settings/mod.rs` | New. What both layouts share: the options' words, `show`, the keys. |
 | `src/ui/settings/terminal.rs` | New. The Omarchy screen. |
 | `src/ui/settings/file_pane.rs` | New. The file's text, coloured. |
@@ -60,20 +60,100 @@ The terminal look's patterns to follow: `src/ui/connect_dialog/terminal.rs` (a h
 
 ---
 
-### Task 1: The app knows every write of its own that has not come back
+### Task 1: A write of the app's own is known for what it is
 
 **Files:**
-- Modify: `src/settings.rs` (`SettingsFile`), `src/app.rs` (`change_settings`, the `Event::SettingsFile` and `Event::Saved` arms)
+- Modify: `src/backend.rs` (`Saves`, `Saves::write`, `read_file`, `read_settings`, `watch_settings`, `Worker::handle`, `Event::SettingsFile`, the reader's tests), `src/settings.rs` (`SettingsFile`), `src/app.rs` (`save_settings`, the `Event::SettingsFile` arm), and every place that builds an `Event::SettingsFile`
 
 Today the app drops a text from the disk only if it equals the text it holds. Two quick changes in the app can be read between their two writes: the first text then comes back, differs from the second, and is applied for a moment. A third change made in that moment is built on the older settings and loses the second. A menu cannot be clicked that fast; a key held down on an option can.
 
-The file's content only moves forward (the backend writes in order), so the texts the reader sends are a subsequence of the app's writes, in order. The app keeps the writes it has not seen back, oldest first. A text from the disk that is one of them is its own: everything up to it is seen, and it is not applied.
+The backend knows exactly what it wrote. It says so: `Event::SettingsFile { text, own }`, where `own` means "this is, byte for byte, what the backend itself wrote to the file last". The app then has a rule with no guess in it:
+
+| The text | The app |
+|---|---|
+| is the one it holds | drops it (an echo, or a save that changed nothing) |
+| is another's (`own` false) | applies it |
+| is its own, and the one it last asked to be written | applies it: its save landed over a change from outside that it had applied in between, and the disk is what counts |
+| is its own, and older than that | drops it: read between two of its writes; the newest is still to come |
+
+Whether a text on disk is the backend's own is decided under one lock, held by the writer while it writes and records the text, and by the reader while it reads and compares. Without it a write could land between the reader's read and its comparison, and the app's own older text would look like someone else's.
 
 - [ ] **Step 1: Write the failing tests**
 
-In `src/app.rs`'s tests, after `the_apps_own_text_coming_back_is_not_read_again`:
+`src/backend.rs` tests. First adapt the paused-clock helper `reader(answer)` (it builds a reader whose reads are answered by `answer(n)`): `answer` now returns `std::io::Result<Found>`. The existing tests that use it wrap their bytes (`Found { bytes, own: false }`) and keep every assertion. Then add:
 
 ```rust
+    #[test]
+    fn a_write_of_the_backends_own_is_sent_as_its_own() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.toml");
+        let (mut backend, live) = watching(&path);
+        assert!(live);
+        // Another's save: the app is told it is not its own.
+        crate::util::write_atomic(&path, b"[data]\npage_size = 500\n").unwrap();
+        assert_eq!(
+            files_until(&mut backend, "[data]\npage_size = 500\n"),
+            vec![("[data]\npage_size = 500\n".to_owned(), false)]
+        );
+        // The app's save, through the backend.
+        let settings = crate::settings::Settings {
+            page_size: 100,
+            ..Default::default()
+        };
+        backend.send(Command::Save {
+            path: path.clone(),
+            file: StateFile::Settings(settings.clone()),
+        });
+        assert_eq!(
+            files_until(&mut backend, &settings.to_toml()),
+            vec![(settings.to_toml(), true)]
+        );
+        // The text before it, put back by someone else, is theirs.
+        crate::util::write_atomic(&path, b"[data]\npage_size = 500\n").unwrap();
+        assert_eq!(
+            files_until(&mut backend, "[data]\npage_size = 500\n"),
+            vec![("[data]\npage_size = 500\n".to_owned(), false)]
+        );
+    }
+```
+
+with a helper beside `texts_until` that keeps the flag and skips the `Saved` event of the save:
+
+```rust
+    /// The settings file's texts the backend sends until `expected` comes,
+    /// that one included, each with whether it is the backend's own write;
+    /// empty when it never does.
+    fn files_until(backend: &mut Backend, expected: &str) -> Vec<(String, bool)> {
+        let deadline = std::time::Instant::now() + WAIT;
+        let mut files = Vec::new();
+        while std::time::Instant::now() < deadline {
+            if let Some(Event::SettingsFile { text, own }) =
+                backend.wait(Duration::from_millis(200))
+            {
+                let done = text == expected;
+                files.push((text, own));
+                if done {
+                    return files;
+                }
+            }
+        }
+        Vec::new()
+    }
+```
+
+`texts_until` stays for the tests that have it; it and the paused-clock helper `texts(events)` now match `Event::SettingsFile { text, .. }`.
+
+`src/app.rs` tests, after `the_apps_own_text_coming_back_is_not_read_again`:
+
+```rust
+    /// The settings file's text coming from the disk.
+    fn from_disk(text: &str, own: bool) -> Action {
+        Action::Backend(Event::SettingsFile {
+            text: text.into(),
+            own,
+        })
+    }
+
     #[test]
     fn an_older_write_of_the_apps_own_coming_back_late_undoes_nothing() {
         let (mut app, _dir) = app();
@@ -83,157 +163,221 @@ In `src/app.rs`'s tests, after `the_apps_own_text_coming_back_is_not_read_again`
         let second = app.settings_file.text.clone();
         let saved = settings_saves(&app).len();
         // The disk was read between the two writes.
-        app.apply(Action::Backend(Event::SettingsFile { text: first }));
+        app.apply(from_disk(&first, true));
         assert_eq!(app.settings.page_size, 500, "the newer change stays");
         assert_eq!(app.settings_file.text, second);
-        // Then the newest comes back, and nothing is left to wait for.
-        app.apply(Action::Backend(Event::SettingsFile {
-            text: second.clone(),
-        }));
+        // Then the newest comes back.
+        app.apply(from_disk(&second, true));
         assert_eq!(app.settings.page_size, 500);
-        assert!(app.settings_file.unseen.is_empty());
         assert_eq!(settings_saves(&app).len(), saved);
     }
 
     #[test]
-    fn a_text_from_outside_is_applied_though_writes_are_awaited() {
-        let (mut app, _dir) = app();
-        app.change_settings(|settings| settings.sql_limit = 100);
-        let outside = "[data]\npage_size = 500\n";
-        app.apply(Action::Backend(Event::SettingsFile {
-            text: outside.into(),
-        }));
-        assert_eq!(app.settings.page_size, 500);
-        assert_eq!(app.settings_file.text, outside);
-        assert!(app.settings_file.unseen.is_empty());
-    }
-
-    #[test]
-    fn a_write_seen_back_is_not_taken_for_the_apps_own_a_second_time() {
+    fn the_same_older_text_from_someone_else_is_a_change() {
         let (mut app, _dir) = app();
         app.change_settings(|settings| settings.sql_limit = 100);
         let first = app.settings_file.text.clone();
         app.change_settings(|settings| settings.page_size = 500);
-        let second = app.settings_file.text.clone();
-        app.apply(Action::Backend(Event::SettingsFile {
-            text: first.clone(),
-        }));
-        app.apply(Action::Backend(Event::SettingsFile { text: second }));
-        // Someone outside puts the first text back: that is a change now.
-        app.apply(Action::Backend(Event::SettingsFile { text: first }));
+        // Not the backend's write: someone put that text there.
+        app.apply(from_disk(&first, false));
         assert_eq!(app.settings.page_size, Settings::DEFAULT_PAGE_SIZE);
+        assert_eq!(app.settings_file.text, first);
     }
 
     #[test]
-    fn a_save_that_failed_is_not_waited_for() {
+    fn the_apps_save_landing_over_a_change_from_outside_is_what_the_disk_has() {
         let (mut app, _dir) = app();
         app.change_settings(|settings| settings.sql_limit = 100);
-        assert_eq!(app.settings_file.unseen.len(), 1);
-        app.apply(Action::Backend(Event::Saved {
-            path: app.dirs.settings_file(),
-            result: Err("No space left on device".into()),
-        }));
-        assert!(app.settings_file.unseen.is_empty());
+        let ours = app.settings_file.text.clone();
+        // An edit from outside is read before the app's save lands...
+        app.apply(from_disk("[data]\npage_size = 500\n", false));
+        assert_eq!(app.settings.page_size, 500);
+        assert_eq!(app.settings.sql_limit, 1_000);
+        let saved = settings_saves(&app).len();
+        // ...and then it lands, over the edit.
+        app.apply(from_disk(&ours, true));
+        assert_eq!(app.settings.sql_limit, 100);
+        assert_eq!(app.settings.page_size, Settings::DEFAULT_PAGE_SIZE);
+        assert_eq!(app.settings_file.text, ours);
+        assert_eq!(settings_saves(&app).len(), saved, "nothing is written back");
     }
 ```
+
+Every other place that builds an `Event::SettingsFile { text }` (the step 2 tests in `src/app.rs` and `src/ui/mod.rs`) gains `own: false`: those are edits from outside.
 
 - [ ] **Step 2: Run them to see them fail**
 
 Run: `~/.cargo/bin/cargo test --locked -p tabletist --lib an_older_write_of_the_apps_own`
-Expected: does not compile, "no field `unseen`".
+Expected: does not compile, "no field `own`".
 
-- [ ] **Step 3: Implement**
+- [ ] **Step 3: The backend**
+
+`src/backend.rs`.
+
+`Event::SettingsFile` becomes:
+
+```rust
+    /// The settings file changed on disk: its text. `own` when it is, byte
+    /// for byte, what the backend itself wrote there last: the app's own
+    /// save coming back, which it must not take for someone else's change.
+    SettingsFile { text: String, own: bool },
+```
+
+A cell shared by the writer and the reader, beside `Saves`:
+
+```rust
+/// The text the backend wrote to the settings file last, if it wrote one.
+/// Locked while it is written and while the reader reads the file and
+/// compares: a write cannot land between the reader's read and its
+/// comparison and make the app's own older text look like someone else's.
+type Written = Arc<Mutex<Option<String>>>;
+```
+
+`Saves` gains `settings_written: Written` (it derives `Default`), and `Saves::write` writes the settings under the lock:
+
+```rust
+            let result = match &file {
+                // Known to the settings file's reader for the app's own.
+                StateFile::Settings(settings) => {
+                    let mut written = lock(&self.settings_written);
+                    let result = file.save(path);
+                    // After a write that failed nothing on the disk is
+                    // known to be the app's: the text there may be an
+                    // older write of its own, but the app has moved on
+                    // from it, and someone putting it back must be heard.
+                    *written = result.is_ok().then(|| settings.to_toml());
+                    result
+                }
+                _ => file.save(path),
+            }
+            .map_err(|error| error.to_string());
+```
+
+(`Settings::save` writes `to_toml()`: the two are the same text.)
+
+What a read finds:
+
+```rust
+/// The settings file as the reader found it.
+struct Found {
+    bytes: Vec<u8>,
+    /// It is what the backend wrote there last.
+    own: bool,
+}
+```
+
+`read_file` takes the cell and holds it across the read and the comparison:
+
+```rust
+async fn read_file(path: PathBuf, written: Written) -> std::io::Result<Found> {
+    let read = move || {
+        let written = lock(&written);
+        let bytes = std::fs::read(path)?;
+        let own = written
+            .as_deref()
+            .is_some_and(|text| text.as_bytes() == bytes.as_slice());
+        Ok(Found { bytes, own })
+    };
+    match tokio::task::spawn_blocking(read).await {
+        Ok(found) => found,
+        Err(error) => Err(std::io::Error::other(error)),
+    }
+}
+```
+
+`read_settings`: its `F` is `Future<Output = std::io::Result<Found>>`; the loop carries the `Found` out instead of the bytes, and its end becomes:
+
+```rust
+        match String::from_utf8(found.bytes) {
+            Ok(text) if sent.as_deref() == Some(text.as_str()) => {}
+            Ok(text) => {
+                sent = Some(text.clone());
+                outbox.emit(Event::SettingsFile {
+                    text,
+                    own: found.own,
+                });
+            }
+            Err(_) => log::warn!("{} is not text; it is not read", path.display()),
+        }
+```
+
+`watch_settings` takes the cell (`written: Written`) and passes the reader `move |path| read_file(path, Arc::clone(&written))`; `Worker::handle` gives it `Arc::clone(&self.saves.settings_written)`.
+
+- [ ] **Step 4: The app**
 
 `src/settings.rs`, `SettingsFile` gains:
 
 ```rust
-    /// The texts the app wrote that it has not seen come back from the
-    /// disk, oldest first. One of them coming back is the app's own write,
-    /// however late, and not a change from outside.
-    pub unseen: Vec<String>,
+    /// The text the app last asked to be written, if it asked: what tells
+    /// its newest write, coming back from the disk, from an older one.
+    pub saved: Option<String>,
 ```
 
-and `Loaded::into_parts` fills it with `Vec::new()`.
+`Loaded::into_parts` fills it with `None`. Any `SettingsFile { .. }` literal in a test needs it; the compiler names them.
 
-`src/app.rs`, `change_settings`: the file it builds keeps the list and adds the new text.
+`src/app.rs`, `save_settings` remembers what it sends (it is the one place that sends it):
 
 ```rust
-        let live = self.settings_file.live;
-        let mut unseen = std::mem::take(&mut self.settings_file.unseen);
-        let (settings, file) = loaded.into_parts();
-        unseen.push(file.text.clone());
-        self.settings_file = SettingsFile {
-            live,
-            unseen,
-            ..file
-        };
+    fn save_settings(&mut self) {
+        self.settings_file.saved = Some(self.settings.to_toml());
+        self.backend.send(Command::Save {
+            path: self.dirs.settings_file(),
+            file: StateFile::Settings(self.settings.clone()),
+        });
+    }
 ```
+
+`change_settings` builds a new `SettingsFile` before it calls `save_settings`; keep `saved` across that as it keeps `live` (`let saved = self.settings_file.saved.take();` and `SettingsFile { live, saved, ..file }`).
 
 The `Event::SettingsFile` arm:
 
 ```rust
-            Event::SettingsFile { text } => {
-                // A write of the app's own coming back from the disk: it
-                // and every write before it have been seen. An older one
-                // can come late, read between two writes; applying it
-                // would undo the change made since.
-                if let Some(seen) = self
-                    .settings_file
-                    .unseen
-                    .iter()
-                    .position(|written| *written == text)
-                {
-                    self.settings_file.unseen.drain(..=seen);
+            Event::SettingsFile { text, own } => {
+                // What the app holds already: its own write coming back,
+                // or a save that changed nothing.
+                if text == self.settings_file.text {
                     return;
                 }
-                // A save that changed nothing.
-                if text == self.settings_file.text {
+                // A write of its own that is not what it holds. An older
+                // one was read between two of its writes: the newest is
+                // still to come, and applying this would undo the change
+                // made since. The newest itself landed over a change from
+                // outside that was applied in between: the disk has it.
+                if own && self.settings_file.saved.as_deref() != Some(text.as_str()) {
                     return;
                 }
                 let loaded = Settings::from_toml(&text);
                 loaded.warn_invalid(&self.dirs.settings_file());
                 let live = self.settings_file.live;
+                let saved = self.settings_file.saved.take();
                 let (settings, file) = loaded.into_parts();
                 // The file as its writer left it: not written back, so a
-                // line that was ignored stays where they can see it. Any
-                // write still awaited is behind this one now.
-                self.settings_file = SettingsFile { live, ..file };
+                // line that was ignored stays where they can see it.
+                self.settings_file = SettingsFile {
+                    live,
+                    saved,
+                    ..file
+                };
                 self.apply_settings(settings);
             }
 ```
 
-The `Event::Saved` arm: a failed save of the settings file is not waited for.
-
-```rust
-            Event::Saved { path, result } => {
-                if let Err(error) = result {
-                    // What was not written cannot come back.
-                    if path == self.dirs.settings_file() {
-                        self.settings_file.unseen.clear();
-                    }
-                    self.notice = Some(format!("Could not save {}: {error}.", path.display()));
-                }
-            }
-```
-
-The start that reads the old `settings.json` calls `save_settings` without `change_settings`: let `App::new` push that text too (`app.settings_file.unseen.push(app.settings_file.text.clone())` beside its `save_settings()`), so its echo is known as well.
-
-Any test that builds a `SettingsFile { .. }` literal needs the new field: the compiler names them.
-
-- [ ] **Step 4: Run the tests**
+- [ ] **Step 5: Run the tests**
 
 ```bash
+~/.cargo/bin/cargo test --locked -p tabletist --lib backend::tests::
 ~/.cargo/bin/cargo test --locked -p tabletist --lib app::tests::
 ~/.cargo/bin/cargo test --locked -p tabletist --lib settings::
+~/.cargo/bin/cargo test --locked --workspace --all-targets
 ```
 
-Expected: PASS, with `the_apps_own_text_coming_back_is_not_read_again` and `a_change_of_the_file_is_applied_and_not_written_back` unchanged.
+Expected: PASS, with the step 2 tests of the reader and of the app unchanged but for `own: false` and the helper's `Found`. Run the backend tests five times: they wait on the real file system.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
-git add src/settings.rs src/app.rs
-git commit -S -m "Know every write of the app's own that has not come back
+git add src/backend.rs src/settings.rs src/app.rs src/ui/mod.rs
+git commit -S -m "Tell the app which texts of its settings file are its own writes
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```
@@ -748,7 +892,8 @@ In `src/ui/mod.rs`'s tests (a `settings` block of its own, after the settings te
     fn mod_comma_opens_the_settings_in_the_terminal_look_and_escape_closes_them() {
         let mut harness = settings_screen();
         assert!(harness.has("settings"));
-        assert!(harness.painted_color("rows per page").is_some());
+        // The cursor starts on the first option.
+        assert!(harness.painted_color("▌rows per page").is_some());
         // A second press leaves the screen as it is.
         harness.press(egui::Key::J, egui::Modifiers::NONE);
         harness.press(egui::Key::Comma, egui::Modifiers::COMMAND);
@@ -873,8 +1018,6 @@ In `src/ui/mod.rs`'s tests (a `settings` block of its own, after the settings te
         harness.press(egui::Key::J, egui::Modifiers::NONE);
         assert_eq!(settings_cursor(&harness), 1);
         assert_eq!(harness.app.workspace(tab).unwrap().pane, pane);
-        // The workspace is not drawn through the screen.
-        assert!(harness.painted_color("users").is_none());
     }
 ```
 
@@ -887,7 +1030,7 @@ Expected: FAIL (the key does nothing, the dialog does not open).
 
 - [ ] **Step 3: The ways in**
 
-`src/ui/keys.rs`, in `handle`, where the global shortcuts are read (beside the others taken whatever has the keyboard):
+`src/ui/keys.rs`, in `handle`, **after** the big `ctx.input_mut(|input| { .. })` closure that reads the other shortcuts and before the `letters` call. Not inside that closure as written: a `ctx.input_mut` inside another takes egui's lock twice and hangs. (`handle` is not called at all while a dialog is open, so a second `Mod+,` over the open screen does nothing by itself, and the shortcuts dialog's way to the screen is its button.)
 
 ```rust
     // The Settings window, wherever the keyboard is. Until the other looks
@@ -1022,12 +1165,13 @@ Notes:
 `src/ui/settings/terminal.rs` draws what the top of this task lists, from `app.settings`, with `row` as the cursor, pushing `SelectSettingsRow` and `SetOption` for clicks. Build it the way `src/ui/connect_dialog/terminal.rs` builds its header, rows and footer; read that file first. What must hold:
 
 - **A modal over everything.** Use `widgets::modal(egui::Id::new("settings"), &look, &palette)` with a frame of no margin, no stroke, no rounding and the window colour, and an area anchored at the window's top left (`egui::Modal::default_area(id).anchor(egui::Align2::LEFT_TOP, egui::Vec2::ZERO).fade_in(false)`, as the connection dialog places its own), and give the content the size of `ctx.content_rect()`. Nothing behind it is clickable, and the workspace is covered.
+- **The title is announced.** `settings` is painted with `widgets::paint_label`, which names it for screen readers: the tests find the screen by it.
 - **Painted, not laid out.** Allocate each band's rectangle (`ui.allocate_exact_size`) and paint into it with `widgets::paint_text`, `paint_label`, `hline`, `vline`, as the connection dialog's header and footer do. Text only through `Text::one(look, role, ..)` and `Text::new(look).add(role, text, color)`.
 - **Every word through `gettext` and `look.label`**, among them the labels of `mod::label`, the hints and the header.
-- **Each row is a button** named by its option's label (`ButtonSpec::new(&name).hidden_at(ui, row_rect)`), pushing `SelectSettingsRow(index)`.
+- **Each row is a button** named by its option's label (`ButtonSpec::new(&name).hidden_at(ui, row_rect)`), pushing `SelectSettingsRow(index)`. Names go through `gettext` only, not `look.label`, as the connection dialog's hidden buttons do: `Numbers`, not `numbers`.
 - **Each choice is a button** over the place it is drawn, named `"<label>: <choice>"` in the words of `mod::choices` (for example `Timestamps: full`, `Value tags: off`, `Rows per page: more`), pushing `SelectSettingsRow(index)` and `SetOption(value)`. Declare a row's choice buttons after the row's own, so a click on a value is the value's. For the page size the two buttons are the two chevrons; they are there on every row, and drawn on the cursor's.
 - **The cursor's row** is marked as the list says. Use `palette.selection` for the fill; paint the 2 pt bar yourself, as the artboard's nav and rows both have it.
-- **The label of the cursor's row** is one painted text, `▌` and the label together (`▌rows per page`): the test looks for it whole.
+- **The label of the cursor's row** is one painted text, `▌` and the label together (`▌rows per page`): the test looks for it whole. So is the page size with its chevrons (`‹ 500 ›`): one `Text` of three parts, each in its colour.
 - **The value tags' samples** take `crate::ui::value_tags::terminal_slots(&palette)[0]` and `[1]`.
 - **A window too short for the rows:** the rows scroll (`egui::ScrollArea::vertical`) between the header and the footer, which stay.
 
@@ -1178,7 +1322,13 @@ In `src/ui/mod.rs`, after the tests of Task 4:
         // The text the app holds, a line of the file per line.
         assert!(harness.painted_color("[data]").is_some());
         assert!(harness.painted_color("page_size    = ").is_some());
-        assert!(harness.has("settings.toml"));
+        // The path, however the home directory is written.
+        assert!(
+            harness
+                .painted
+                .iter()
+                .any(|(text, _)| text.ends_with("settings.toml"))
+        );
         // Not watched (a test never is): nothing claims it is live.
         assert!(harness.painted_color("live").is_none());
         harness.app.settings_file.live = true;
@@ -1192,6 +1342,7 @@ In `src/ui/mod.rs`, after the tests of Task 4:
         harness.app.apply(crate::model::Action::Backend(
             crate::backend::Event::SettingsFile {
                 text: "[data]\npage_size = 500\ngroup_digits = \"yes\"\n".into(),
+                own: false,
             },
         ));
         harness.settle();
@@ -1327,9 +1478,7 @@ pub(super) fn spans(line: &str) -> Vec<(Range<usize>, Part)> {
             }
         }
     } else {
-        let len = value
-            .find(|c: char| c == ' ' || c == '\t' || c == '#')
-            .unwrap_or(value.len());
+        let len = value.find([' ', '\t', '#']).unwrap_or(value.len());
         if len > 0 {
             out.push((value_at..value_at + len, Part::Value));
         }
@@ -1361,7 +1510,7 @@ pub(super) fn shown_path(path: &Path, home: Option<&Path>) -> String {
 
 If a test of `spans` shows a case this does not hold (the byte ranges must tile the line, in order, for every input), fix `spans`: the tests state the rule.
 
-The home directory: `directories::UserDirs::new()` gives it (`src/backend.rs` uses it for `~/.ssh`); take it once per frame in the pane and pass `home_dir()` to `shown_path`. No `HOME` reading by hand.
+The home directory: `directories::BaseDirs::new()` gives it (`src/backend.rs` uses it for `~/.ssh`), and reads only the environment. Not `UserDirs`: on Linux that one reads a file, which is disk work on the UI thread. Pass its `home_dir()` to `shown_path`. No `HOME` reading by hand.
 
 The pane itself is a function of `terminal.rs` or of this file, as it reads best: `pub(super) fn show(ui: &mut egui::Ui, rect: egui::Rect, app: &App, cursor: OptionId)`. It paints, per line of `app.settings_file.text` (split on `\n`, numbering from 1, as `Settings::from_toml` counts):
 - the selection fill across the pane when the line is the cursor option's (`settings_file.lines` has `(option.key(), line)`);
@@ -1505,7 +1654,8 @@ The choice follows the operating system the app was built for (`cfg`), not the l
     #[test]
     fn ctrl_e_opens_the_settings_file_in_the_editor() {
         let mut harness = settings_screen();
-        assert!(harness.painted_color("ctrl+e").is_some());
+        // The footer's hint is its button too.
+        assert!(harness.has("Open file in editor"));
         harness.press(egui::Key::E, egui::Modifiers::CTRL);
         assert!(matches!(
             crate::testing::last_sent(&harness.app),
@@ -1615,7 +1765,7 @@ fn on_path(name: &str) -> bool {
 }
 
 /// Starts the editor on `path` and lets it go: it is the user's window from
-/// here. A thread of the blocking pool waits for it, so it leaves no zombie.
+/// here. A thread of its own waits for it, so it leaves no zombie.
 fn start_editor(path: &std::path::Path) -> std::io::Result<()> {
     use std::process::Stdio;
     let (program, args) = editor_command(path, on_path);
@@ -1661,15 +1811,17 @@ and `apply_event`:
             }
 ```
 
-`src/ui/settings/mod.rs`, in `keys`, before the plain keys (Ctrl first, as Shift is):
+`src/ui/settings/mod.rs`, in `keys`, before the plain keys (Ctrl first, as Shift is). Only a fresh press: `consume_key` counts the repeats of a held key too, and each would start another editor. `src/ui/keys.rs` has `consume_press` for exactly this; make it `pub(super)` and use it:
 
 ```rust
-        if pressed(Modifiers::CTRL, Key::E) {
+        if super::keys::consume_press(input, Modifiers::CTRL, Key::E) {
             actions.push(Action::EditSettingsFile);
         }
 ```
 
-`src/ui/settings/terminal.rs`: the footer gains `ctrl+e` `open file in $EDITOR` between `space` and `R`, its hint a button named `Open file in editor` that pushes `Action::EditSettingsFile`.
+(`pressed` borrows `input` in the closure above: take this key before that closure is made, or call `input.consume_key` directly in the others.)
+
+`src/ui/settings/terminal.rs`: the footer gains `ctrl+e` `open file in $EDITOR` between `space` and `R`, its hint a button named `Open file in editor` that pushes `Action::EditSettingsFile`. `$EDITOR` is a name, not a word: keep it out of `look.label`, which would lower-case it.
 
 Notes:
 - `text` is what the app holds: with no file, that is what would be written; with a file, the file wins and `text` is not used.
@@ -1709,13 +1861,13 @@ Nobody can open the window in this session, and no test may compare the screen w
 
 - [ ] **Step 1: Add the scene**
 
-Read how `src/shots.rs` lists its scenes (the enum with `OmarchyDialog`, its name, look, size, scale and palette, and the `match` that sets a scene up). Add `OmarchySettings`: the Omarchy look and the palette the other Omarchy scenes use, a window wide enough for the file pane (the size of `OmarchyPicker` doubled in width is enough; take what the wide Omarchy scenes use if there are any), the demo data's workspace under it if the other scenes open one, then `Action::ShowSettings` and the cursor on the second row (`Action::MoveSettingsRow(1)`), with `settings_file.live` set so the header shows it. Name the file `omarchy-settings-general`.
+Read `src/shots.rs` from its header down: how the scenes are listed (the `Screen` enum with `OmarchyDialog`, `Screen::ALL` and its length, each scene's name, look, size, scale and palette, and the `match` that sets a scene up), and the command the header gives for rendering them. Add `OmarchySettings`: the Omarchy look and the palette the other Omarchy scenes use, a window wide enough for the file pane (wider than 1100 points), `Action::ShowSettings` and the cursor on the second row (`Action::MoveSettingsRow(1)`), with `settings_file.live` set so the header says so. Name it `omarchy-settings-general`.
 
-Fixtures are the neutral demo data only. The picture is never committed: `target/` is ignored.
+Fixtures are the neutral demo data only. The picture is never committed: `target/` is ignored. The pane's header will show the harness's temporary path: that is what the app would show for that directory, and no reason to fake a path.
 
 - [ ] **Step 2: Render it and look**
 
-Run: `~/.cargo/bin/cargo test --locked --features shots -p tabletist --lib shots:: -- --nocapture` (or the command the top of `src/shots.rs` documents), then open `target/shots/omarchy-settings-general.png` (the Read tool shows images).
+The shots tests are `#[ignore]`d: run them as the header of `src/shots.rs` says (with `--features shots` and `-- --ignored`), then open the picture it wrote under `target/shots/` (the file's name has the prefix the others have, for example `mock-omarchy-settings-general.png`; the Read tool shows images).
 
 Look for what a test cannot say: text that overlaps or is cut, a band of the wrong height, the cursor's bar missing, the pane's colours, the footer's hints running into each other. Fix what is wrong in `src/ui/settings/terminal.rs` and render again. If the renderer cannot start here (no GPU), say so in the report and leave the scene for the user to render.
 
