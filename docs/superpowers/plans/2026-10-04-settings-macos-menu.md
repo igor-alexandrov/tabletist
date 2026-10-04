@@ -156,7 +156,7 @@ Expected: PASS.
 
 - [ ] **Step 1: Write the test**
 
-`crates/tabletist-appkit/tests/settings_menu.rs`, beside `about_menu.rs` and shaped as it is. It builds an app menu in winit's order (About, a separator, Hide, a separator, Quit), and checks that nothing is inserted before there is a menu or where the menu has no separator; that the item lands after About's separator with a separator of its own; that it carries `,` as its key and calls back when chosen; and that dropping it leaves the menu as it was.
+`crates/tabletist-appkit/tests/settings_menu.rs`, beside `about_menu.rs` and shaped as it is. It builds an app menu in winit's order (About, a separator, Hide, a separator, Quit), and checks that nothing is inserted before there is a menu or where the menu has no separator; that the item lands after About's separator with a separator of its own; that it carries `,` as its key and calls back when chosen; and that dropping it leaves the menu as it was and the item with no target.
 
 ```rust
 //! The Settings item in an app menu built the way winit builds it, chosen
@@ -186,8 +186,9 @@ fn main() {
         "there is no menu yet"
     );
 
-    // The menu bar and the app menu in it, as winit orders it: About, a
-    // separator, Hide, a separator, Quit.
+    // The menu bar and the app menu in it, in winit's order and shorter:
+    // About, a separator, Hide, a separator, Quit. (winit has Services,
+    // Hide Others and Show All beside Hide.)
     let bar = NSMenu::new(mtm);
     let holder = NSMenuItem::new(mtm);
     bar.addItem(&holder);
@@ -234,19 +235,25 @@ fn main() {
 
     // After About's separator, with a separator of its own after it.
     assert_eq!(menu.numberOfItems(), before + 2);
+    // The menu as it reads, a separator as `-`: what a separator's title
+    // is, AppKit does not say.
     let titles = |menu: &NSMenu| -> Vec<String> {
         let items = menu.itemArray().to_vec();
-        items.iter().map(|item| item.title().to_string()).collect()
+        let title = |item: &NSMenuItem| match item.isSeparatorItem() {
+            true => "-".to_owned(),
+            false => item.title().to_string(),
+        };
+        items.iter().map(|item| title(item)).collect()
     };
     assert_eq!(
         titles(&menu),
         [
             "About tabletist",
-            "",
+            "-",
             "Settings…",
-            "",
+            "-",
             "Hide tabletist",
-            "",
+            "-",
             "Quit tabletist"
         ]
     );
@@ -269,16 +276,18 @@ fn main() {
     menu.performActionForItemAtIndex(2);
     assert_eq!(chosen.get(), 2, "and again");
 
-    // Dropped, the menu is as winit made it.
+    // Dropped, the menu is as winit made it, and the item, which this
+    // test still holds, calls nothing.
     drop(item);
+    assert!(settings.target().is_none(), "no dangling target");
     assert_eq!(menu.numberOfItems(), before);
     assert_eq!(
         titles(&menu),
         [
             "About tabletist",
-            "",
+            "-",
             "Hide tabletist",
-            "",
+            "-",
             "Quit tabletist"
         ]
     );
@@ -349,7 +358,8 @@ impl SettingsItem {
             .position(|item| item.isSeparatorItem())?;
         let target = MenuTarget::new(mtm, Box::new(chosen));
         // SAFETY: `target` implements `menuItemChosen:` as an action, and
-        // it lives as long as the item, which `Drop` takes out of the menu.
+        // it lives for as long as the item is in the menu: `Drop` takes
+        // the item out and its target away before the target goes.
         let item = unsafe {
             let item = NSMenuItem::initWithTitle_action_keyEquivalent(
                 NSMenuItem::alloc(mtm),
@@ -381,6 +391,9 @@ impl Drop for SettingsItem {
                 self.menu.removeItem(item);
             }
         }
+        // Whoever still holds the item holds one that calls nothing.
+        // SAFETY: an item may have no target.
+        unsafe { self.item.setTarget(None) };
     }
 }
 ```
@@ -435,8 +448,9 @@ pub struct SettingsMenu {
 
 impl SettingsMenu {
     /// Adds the item, titled `title`. Choosing it draws a frame, which
-    /// finds it with [`SettingsMenu::take`]. `None` when the app menu is
-    /// not as winit builds it (or off the main thread).
+    /// finds it with [`SettingsMenu::take`]. `None` when there is no app
+    /// menu or it has no separator to put the item after (or off the main
+    /// thread).
     pub fn attach(ctx: &egui::Context, title: &str) -> Option<Self> {
         let chosen = Rc::new(Cell::new(false));
         let item = tabletist_appkit::SettingsItem::insert(title, {
