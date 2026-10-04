@@ -110,6 +110,9 @@ pub struct Cell<'a> {
     /// a failed one failed. Never why a cell is locked, which is said only
     /// when asked.
     pub hint: Option<String>,
+    /// What the cell says without the pointer on it: why it cannot be
+    /// edited, once that was asked for.
+    pub note: Option<String>,
 }
 
 /// What draws the field of a cell being edited, given the cell's place:
@@ -722,7 +725,7 @@ pub fn show<'a>(
                     }
                     let content = cell(row, col);
                     let here = selection == Some(CellPos { row, col });
-                    if let Some(hint) = &content.hint {
+                    if content.hint.is_some() || content.note.is_some() {
                         // Where the cell shows: not the part of it that
                         // scrolled under the pinned column.
                         let mut seen = cell_rect;
@@ -732,9 +735,14 @@ pub fn show<'a>(
                         }
                         if seen.is_positive() {
                             // Hovered and no more: a click is the row's.
-                            let _ = ui
-                                .interact(seen, id.with(("hint", row, col)), Sense::hover())
-                                .on_hover_text(hint.as_str());
+                            let at = ui.interact(seen, id.with(("hint", row, col)), Sense::hover());
+                            if let Some(note) = &content.note {
+                                // It was asked for: said without waiting
+                                // for the pointer.
+                                at.show_tooltip_text(note.as_str());
+                            } else if let Some(hint) = &content.hint {
+                                let _ = at.on_hover_text(hint.as_str());
+                            }
                         }
                     }
                     // What the cell's pending state tints it with. The

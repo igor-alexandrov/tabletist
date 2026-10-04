@@ -11588,6 +11588,97 @@ mod tests {
     }
 
     #[test]
+    fn a_locked_cell_says_why_instead_of_opening() {
+        let said = |harness: &mut Harness, text: &str| {
+            let tree = harness.settle();
+            let named = crate::testing::labels(&tree)
+                .iter()
+                .any(|name| name == text);
+            named && harness.painted.iter().any(|(piece, _)| piece == text)
+        };
+        for look in desktop_looks() {
+            let (mut harness, tab, id) = editable_in(look);
+            let why = "Part of the row's key";
+            select(&mut harness, tab, id, (1, 0));
+            assert!(
+                !said(&mut harness, why),
+                "{}: not before it is asked",
+                look.name
+            );
+            harness.press(Key::Enter, Modifiers::NONE);
+            assert!(edits(&harness, tab, id).editor.is_none(), "{}", look.name);
+            assert!(!harness.ctx.text_edit_focused(), "{}", look.name);
+            assert!(said(&mut harness, why), "{}", look.name);
+            // It is a note at the cell: beside the key it is about.
+            // (The row panel writes the key too: the grid's is leftmost.)
+            let note = harness.painted_rect(why).unwrap();
+            let keys = harness.text_rects.iter().filter(|(text, _)| text == "2");
+            let cell = keys
+                .map(|(_, rect)| *rect)
+                .min_by(|a, b| a.left().total_cmp(&b.left()))
+                .unwrap();
+            let apart = note.distance_to_pos(cell.center());
+            assert!(apart < 40.0, "{}: {note:?} by {cell:?}", look.name);
+            // It stays without the pointer, until the selection moves.
+            for _ in 0..90 {
+                harness.frame(Vec::new());
+            }
+            assert!(said(&mut harness, why), "{}", look.name);
+            harness.press(Key::ArrowDown, Modifiers::NONE);
+            assert!(!said(&mut harness, why), "{}", look.name);
+            // F2 and a second click ask as Enter does.
+            harness.press(Key::F2, Modifiers::NONE);
+            assert!(said(&mut harness, why), "{}", look.name);
+            harness.press(Key::ArrowRight, Modifiers::NONE);
+            assert!(!said(&mut harness, why), "{}", look.name);
+            let at = cell_of(&harness, "4");
+            click_at(&mut harness, at);
+            assert!(!said(&mut harness, why), "{}", look.name);
+            click_at(&mut harness, at);
+            assert!(said(&mut harness, why), "{}", look.name);
+            // A cell that can be edited opens, and the note is gone.
+            select(&mut harness, tab, id, (1, 1));
+            harness.press(Key::Enter, Modifiers::NONE);
+            assert!(edits(&harness, tab, id).editor.is_some(), "{}", look.name);
+            assert!(!said(&mut harness, why), "{}", look.name);
+        }
+        // A table that is never edited says so of any cell: a connection
+        // that opens read-only, and one with no key names the table.
+        for look in desktop_looks() {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            let tab = with_page(&mut harness);
+            harness.answer_structure(crate::testing::fixture_structure());
+            let id = harness.app.workspace(tab).unwrap().active_tab.unwrap();
+            focus_grid(&mut harness, tab);
+            select(&mut harness, tab, id, (1, 1));
+            harness.press(Key::Enter, Modifiers::NONE);
+            let why = "This connection opens read-only";
+            assert!(said(&mut harness, why), "{}", look.name);
+
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            let tab = harness.connect_fake_as(false);
+            harness.app.apply(Action::OpenObject {
+                tab,
+                object: tabletist_db::ObjectRef::new("main", "users"),
+                kind: tabletist_db::ObjectKind::Table,
+                pin: true,
+            });
+            let mut structure = crate::testing::fixture_structure();
+            structure.primary_key.clear();
+            harness.answer_structure(structure);
+            harness.answer_rows(crate::testing::page(5, false));
+            let id = harness.app.workspace(tab).unwrap().active_tab.unwrap();
+            focus_grid(&mut harness, tab);
+            select(&mut harness, tab, id, (1, 1));
+            harness.press(Key::Enter, Modifiers::NONE);
+            let why = "users has no primary key or unique index, so a row can't be targeted safely";
+            assert!(said(&mut harness, why), "{}", look.name);
+        }
+    }
+
+    #[test]
     fn mod_backspace_sets_null_and_mod_z_reverts() {
         for look in desktop_looks() {
             let (mut harness, tab, id) = editable_in(look);
