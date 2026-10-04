@@ -966,13 +966,12 @@ fn concerns(event: &notify::Event, names: &[OsString]) -> bool {
 /// Whether two file names are one file's. macOS and Windows find a file
 /// whatever the case of its name, so one kept as `Settings.toml` is the
 /// one the app reads as `settings.toml`, and its changes come under the
-/// spelling it is kept in.
+/// spelling it is kept in. That goes for every letter, not for those of
+/// ASCII alone: a link may spell the file it leads to `Ä.toml` where it is
+/// kept as `ä.toml`. A name taken for the file's by mistake costs a read.
 fn same_file(one: &std::ffi::OsStr, other: &std::ffi::OsStr) -> bool {
-    if cfg!(any(windows, target_os = "macos")) {
-        one.eq_ignore_ascii_case(other)
-    } else {
-        one == other
-    }
+    let folded = |name: &std::ffi::OsStr| name.to_string_lossy().to_lowercase();
+    one == other || (cfg!(any(windows, target_os = "macos")) && folded(one) == folded(other))
 }
 
 /// Waits until the changes have been quiet for `SETTLE`: a save is several
@@ -4296,6 +4295,27 @@ mod tests {
             &names
         ));
         assert!(same_file(name, std::ffi::OsStr::new("settings.toml")));
+    }
+
+    #[test]
+    fn a_name_in_another_case_is_the_same_beyond_ascii_too() {
+        use notify::event::ModifyKind;
+        use notify::{Event, EventKind};
+        let folds = cfg!(any(windows, target_os = "macos"));
+        let name = OsString::from;
+        assert_eq!(same_file(&name("Ä.toml"), &name("ä.toml")), folds);
+        assert_eq!(
+            same_file(&name("НАСТРОЙКИ.toml"), &name("настройки.toml")),
+            folds
+        );
+        assert!(same_file(&name("ä.toml"), &name("ä.toml")));
+        assert!(!same_file(&name("ä.toml"), &name("a.toml")));
+        // A link spells the file it leads to in one case, and the file is
+        // kept, and its changes reported, in another.
+        let linked = [name("settings.toml"), name("Ä.toml")];
+        let change = Event::new(EventKind::Modify(ModifyKind::Any));
+        let change = change.add_path("/dotfiles/ä.toml".into());
+        assert_eq!(concerns(&change, &linked), folds);
     }
 
     #[test]
