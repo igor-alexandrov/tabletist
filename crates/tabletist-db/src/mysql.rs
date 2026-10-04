@@ -35,6 +35,7 @@ const UNKNOWN_SYSTEM_VARIABLE: u16 = 1193;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 mod script;
+mod write;
 
 pub struct Conn {
     pub(crate) conn: tokio::sync::Mutex<mysql_async::Conn>,
