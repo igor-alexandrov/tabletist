@@ -27,7 +27,7 @@
 
 - The PostgreSQL and MySQL fixtures are loaded once and shared by every test of a suite. **A write test never changes a fixture table.** It creates a table of its own through the suite's `admin()` connection, under a name no other test uses, and drops it when done. SQLite tests each get their own file and may change it freely.
 - **This plan runs on the branch `claude/connection-write`,** off `main`, which holds all of step 1 (`Access`, the fenced sessions, `Workspace::access`, `Command::Connect { access }`, `Event::Connected { access }`).
-- **Tasks 1 to 3 are built**, with what their review changed (see "As built" under each). Tasks 4 on build on that: `IndexInfo::key_columns`, `ColumnClass::Binary`, and `Structure::row_key` as it now stands.
+- **Tasks 1 to 6 are built**, with what their review changed (see "As built" under each). Tasks 7 on build on that: `IndexInfo::key_columns`, `ColumnClass::Binary`, `Structure::row_key` as it now stands, `ChangeSet::check` with its rule for a row named twice, and the SQLite save in `sqlite/write.rs`, which is the shape the other two drivers follow.
 - **How the SQLite driver stands, which the SQLite tasks build on.** Read each function before you edit it.
   - `Conn` holds `inner: Arc<Mutex<rusqlite::Connection>>`, the interrupt handle and `fences`. `open` installs the authorizer with `tabletist_sqlite_ffi::set_authorizer(&connection, ..)` after `set_session_pragmas` and the first read. A save's statements are the app's own: they run with no fence up.
   - Names can hold bytes that are not UTF-8, and rusqlite panics on them. So the catalog reads text through `text` and `optional_text` (as `Lossy`, which also says whether the name is exact), an index is looked up by the bytes of its name, and a statement's columns come from `declared_columns` (through `tabletist_sqlite_ffi::result_columns`). **Never read a statement's column names through rusqlite** (`column_names`, `column_name`, `columns`).
@@ -46,13 +46,14 @@ The spec leaves these open; task 10 writes them into it.
 1. **`Command::Write` carries no tab.** The reducer finds the tab by the request, as for every other request.
 2. **MySQL: only tables whose engine has transactions.** One transaction is the promise, and MyISAM cannot roll back. Others are refused before anything is sent.
 3. **SQLite binds a save's values exactly as built.** The filter path turns text that looks like a number into a number (`to_sqlite`); a save does not guess. One case needs a rule of its own: a column with no declared type (or one SQLite gives no affinity) converts nothing, so text would turn a stored number into text. There the builder follows what the cell held: if the loaded value was a number and the new text is one, it goes as a number.
-4. **SQLite puts the session in order before it writes.** A script can leave `main`'s `journal_mode` at `memory`, and `locking_mode` and `ignore_check_constraints` changed, for the session; a save puts them back first. The journal mode is restored on `main` only, and only from `memory`: without a schema the pragma would set every attached database's mode, and a mode another program gave the file is not a script's leftover.
+4. **SQLite puts the session in order before it writes.** A script can leave pragmas on the session that outlive its rollback, and a save puts back every one that changes what it writes or whether it can: `main`'s `journal_mode`, `locking_mode`, `ignore_check_constraints`, `recursive_triggers` (with it on, a table's triggers fire on what triggers wrote, and a save writes more than it would have) and `count_changes` (with it on, an `UPDATE` answers with a row and the driver refuses it). The journal mode is restored on `main` only, since without a schema the pragma would set every attached database's mode, and only when neither the mode now nor the mode at open is `wal`: WAL is the file's and another program may have given it, every other mode is the session's. `full_column_names` and `short_column_names` rename a statement's columns, which a page feels as much as a save, so `set_session_pragmas` puts those back after every script.
 4a. **SQLite saves only to `main`.** A table of an attached database is refused: the session knows `main`'s journal mode only, and a script's `ATTACH` is the one way such a database appears.
 5. **The crate checks only what it converts.** Numbers on SQLite and booleans on SQLite and MySQL are parsed by the statement builder; text it cannot convert is `WriteOutcome::Failed` before anything is sent. The messages a user sees while typing are step 3. Two rules came out of the review of the classes: a column of class `Binary` is refused outright (MySQL stores `'1'` in a `BIT(8)` as 49, the character's code), and a MySQL `tinyint(1)` takes `true` and `false` but also any whole number a tinyint holds, since some tables keep more than a flag in one.
-6. **A key value that is NULL, a key column that is also changed, a column changed twice:** refused by `ChangeSet::check`.
+6. **A key value that is NULL, a key column that is also changed, a column changed twice, a row named twice:** refused by `ChangeSet::check`. Two changes with the same key would both pass the conflict check against the row as it was, and the later would overwrite the earlier.
 7. **MySQL starts its transaction with `START TRANSACTION READ WRITE` as text,** not through the driver's transaction options. The driver opens a read-only transaction as `SET TRANSACTION READ ONLY` then `START TRANSACTION`, and a cancel between the two can leave "next transaction read-only" pending.
 8. **PostgreSQL literals** are `'...'` when the text holds no backslash and `E'...'` when it does, so Review SQL reads plainly and still runs as shown.
 9. **`Err` from `write` is not always a lost session.** The spec says an `Err` is a failure of the session or the run. A lock another session holds until a timeout, a busy file at `BEGIN IMMEDIATE`, a `COMMIT` the database refuses: each is an ordinary `Error::Query` on a session that lives. Nothing was written in any of them. Only `ConnectionLost` means the session is gone.
+10. **SQLite refuses what it did not read exactly.** A name or a text value that is not UTF-8 reads with U+FFFD for the bad bytes, and so can read the same as another. A save refuses three things rather than guess: a name it uses (in the key or the set) that more than one of the row's columns reads as, counted without regard to ASCII case as SQLite matches names (the row would be compared in one column and written in the other); a key whose text holds U+FFFD (it could name another row whose key really is that text; a key that really holds U+FFFD pays for this); and a changed column whose stored text is not UTF-8 (two different values read the same, so the save cannot tell whether someone changed it). Text that really holds U+FFFD in a changed column saves as any other.
 
 ## Where a run can stop
 
@@ -689,6 +690,8 @@ git add -A && git commit -m "Read from a type's name what its column takes"
 
 ### Task 4: What a save asks for, and the front door
 
+> **As built:** as below, and `ChangeSet::check` also refuses a set that names the same row twice (decision 6). The steps below are the first draft.
+
 **Files:**
 - Create: `crates/tabletist-db/src/write.rs`
 - Modify: `crates/tabletist-db/src/error.rs` (`Error::ReadOnly`), `crates/tabletist-db/src/lib.rs` (`mod write;`, exports, `Connection::write`)
@@ -981,6 +984,8 @@ git add -A && git commit -m "Say what a save asks for and refuse it where it can
 ---
 
 ### Task 5: The statement builder
+
+> **As built:** as below, and two SQLite literals changed so that the shown text runs when a person pastes it: text holding a NUL byte is shown joined around `char(0)`, as `('a' || char(0) || 'b')` (SQLite's parser stops a quoted string at the NUL, and a cast of the text's bytes would be read in the file's encoding, which stores other text in a UTF-16 file), and an infinite float as `9e999` or `-9e999` (`inf` reads as a column's name). A test in `tests/sqlite.rs` runs the shown text on one file and the save on another, in a UTF-8 and a UTF-16 file, and compares what each stored; the unit test here only proves the two forms take the same values in the same order.
 
 **Files:**
 - Modify: `crates/tabletist-db/src/dialect.rs`
@@ -1468,6 +1473,17 @@ git add -A && git commit -m "Build a row's UPDATE once, to be read and to be run
 ---
 
 ### Task 6: SQLite saves
+
+> **As built:** the six steps as below, with what building and the review added.
+> - **Names and values not read exactly are refused** (decision 10). The first was found while building: with columns `caf\xE9` and `caf\u{FFFD}` the draft compared one and wrote the other.
+> - **More is put back before the transaction** (decision 4): `recursive_triggers` and `count_changes` too, and the journal mode from any mode but WAL.
+> - `rusqlite` 0.37 has no `DatabaseName`; the schema of `pragma_update` is `Some("main")`.
+> - A key whose name is not UTF-8 is an `Err` (the read by key fails: no SQL can spell the column), not `Failed`. Nothing is written either way.
+> - The bundled SQLite reads a double-quoted name that matches no column as an error, not as a string, on the session as the driver opens it. A save counts on that: `WHERE "nosuch" = ?` must fail, not compare a string.
+> - A changed column whose stored text is not UTF-8 is `Failed` for its row, not a conflict: a conflict offers to write over what the file holds, which would still be unknown.
+> - Tests beyond the draft's: a key matching two rows, an update that changes no row (a view's `INSTEAD OF` trigger), a typeless column keeping its kind of value, a typeless key bound exactly, names and values that are not UTF-8, a file another program holds (in the unit tests of `sqlite.rs`, where the busy timeout can be shortened), a cancel in the middle of a save, each pragma a script can leave.
+>
+> The steps below are the first draft.
 
 **Files:**
 - Create: `crates/tabletist-db/src/sqlite/write.rs`
@@ -2297,6 +2313,8 @@ git add -A && git commit -m "Save changed rows on PostgreSQL in one transaction"
 - Modify: `crates/tabletist-db/src/mysql.rs` (`mod write;`, visibility of `column_metas`, `row_values`, `params`, `execute`, `status`, `query_error`), `lib.rs` (the MySQL arm)
 - Test: `crates/tabletist-db/tests/mysql.rs`
 
+> **From the review of task 6:** `ChangeSet::check` and `changed_since_loaded` compare column names exactly, and MySQL matches them without regard to case. A set that names `id` in its key and `ID` in its set passes `check` and would change its own key. On SQLite the exact match in `changed_since_loaded` stops it (the name is not among the row's columns); make sure the same holds here, with a test, before the first statement is sent. And the reviewer ran the `FLOAT` key case this plan leaves for step 3: a key of `Float(0.1)` finds no row, bound or shown, so the save reports the row gone. It fails safe; the note under "What this plan leaves for step 3" stands.
+
 MySQL differs from the other two in four ways, each of which a test pins:
 - **The transaction is started as text.** `START TRANSACTION READ WRITE`, checked by the server's status (in a transaction, not a read-only one), ended with `COMMIT` or `ROLLBACK` as text. Not `mysql_async`'s transaction options: the driver opens a read-only transaction as `SET TRANSACTION READ ONLY` then `START TRANSACTION`, and a cancel between the two leaves "next transaction read-only" pending.
 - **Only a transactional engine.** A table whose engine has no transactions (MyISAM) is refused before the transaction starts.
@@ -2426,6 +2444,8 @@ git add -A && git commit -m "Save changed rows on MySQL in one transaction"
 
 **Files:**
 - Modify: `src/backend.rs` (`Command`, `Event`, `session_of`, `request_of`, `fail`, `skip`, the session loop, tests), `src/app.rs` (`apply_event`)
+
+> **From the review of task 6:** `write` answers `Error::ConnectionLost` when it could not end its transaction, but the crate does not close the handle itself. The session loop must drop the session on that error, as it does for a script's, or a session that may still be able to write stays in use. Pin it with a test if the loop's existing tests can reach it.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -2573,4 +2593,7 @@ git add -A && git commit -m "Describe the save the crate can now make"
 - **Keys the builder cannot be sure of.** A MySQL key that decodes to text for a numeric column (`DECIMAL`, a `BIGINT UNSIGNED` above `i64::MAX`) is bound as a string, which MySQL may compare as a double; a `FLOAT` key is bound as a double and can miss its own row. Both fail safe (more than one row is an error, no row is a conflict), but such a table cannot be saved. Step 3 should lock its cells, or the key operand should be typed.
 - **MySQL's engine rule is known only at save time.** `Structure` has no field for it, so the grid cannot lock a MyISAM table's cells up front. Step 3 decides whether the catalog should say.
 - A lock another session holds makes a save wait, on PostgreSQL and MySQL, until the user cancels it. Whether a save should give up by itself is a question for the grid's Saving state.
+- **What SQLite refuses at save time, the grid could lock up front** (decision 10): a row whose key text holds U+FFFD, a cell whose text was not read exactly, a column whose name another column reads as. `Value` does not say whether text was read exactly, so today only the save knows. And where two columns read as one name, the grid must take a row's key and loaded values by position, never by name.
+- **What Review SQL shows is not always what another client would run.** On MySQL the shown text assumes backslash escapes, which the app's session keeps on; pasted into a session with `NO_BACKSLASH_ESCAPES` a backslash is stored doubled. On SQLite a REAL with a very large exponent, written as text, can read back as a neighbouring double (SQLite's parser), where the bound value is exact. Step 4 decides whether the dialog should say so.
+- The read by key takes every matching row before it refuses more than one. A key is unique by `row_key`'s rule, so this only matters where that rule cannot see (a SQLite collation); `LIMIT 2` would bound it.
 - A SQLite table with triggers: `rusqlite`'s count is the statement's own rows, so a trigger's changes do not disturb the "exactly one row" check, but what a trigger wrote is not in the row a save reads back unless it is that row.
