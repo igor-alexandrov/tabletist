@@ -55,6 +55,11 @@ fn keys(app: &App, ctx: &egui::Context, row: usize, actions: &mut Vec<Action>) {
     };
     let settings = &app.settings;
     ctx.input_mut(|input| {
+        // A fresh press only: every repeat of a key held down would start
+        // another editor.
+        if super::keys::consume_press(input, Modifiers::CTRL, Key::E) {
+            actions.push(Action::EditSettingsFile);
+        }
         let mut pressed = |modifiers, key| input.consume_key(modifiers, key);
         // Shift first: egui ignores an extra Shift when it matches a key.
         if pressed(Modifiers::SHIFT, Key::R) {

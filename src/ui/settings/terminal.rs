@@ -687,17 +687,26 @@ fn footer(
         .and_then(|option| settings.flipped(option))
         .map(Action::SetOption);
     let reset = option.map(|option| Action::SetOption(option.default_value()));
+    let edit = Some(Action::EditSettingsFile);
+    // `$EDITOR` is a name: the look does not lower-case it.
+    let in_editor = skin
+        .say("open file in {editor}")
+        .replace("{editor}", "$EDITOR");
     // The key, what it does, the button it stands for, and what that does.
     let keys = [
-        ("j/k", "move", None),
-        ("h/l", "change", None),
-        ("space", "toggle", Some(("Toggle", flip))),
-        ("R", "reset option", Some(("Reset option", reset))),
-        ("esc", "close", Some(("Close", Some(Action::CloseDialog)))),
+        ("j/k", skin.say("move"), None),
+        ("h/l", skin.say("change"), None),
+        ("space", skin.say("toggle"), Some(("Toggle", flip))),
+        ("ctrl+e", in_editor, Some(("Open file in editor", edit))),
+        ("R", skin.say("reset option"), Some(("Reset option", reset))),
+        (
+            "esc",
+            skin.say("close"),
+            Some(("Close", Some(Action::CloseDialog))),
+        ),
     ];
     let mut left = rect.left() + 12.0;
     for (key, what, button) in keys {
-        let what = skin.say(what);
         let hint = [(key, what.as_str(), true)];
         let width = widgets::key_hints(ui, (left, y), &hint, 0.0, look, palette);
         // In from the window's edge by a focus ring's reach, or the ring

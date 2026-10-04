@@ -953,6 +953,10 @@ impl App {
                 }
             }
             Action::SetOption(value) => self.change_settings(|settings| value.set(settings)),
+            Action::EditSettingsFile => self.backend.send(Command::EditSettingsFile {
+                path: self.dirs.settings_file(),
+                text: self.settings_file.text.clone(),
+            }),
             Action::OpenQuickOpen => {
                 let tab = self.active_tab_id();
                 if self.dialog.is_none() && self.workspace(tab).is_some() {
@@ -2107,6 +2111,14 @@ impl App {
                     ..file
                 };
                 self.apply_settings(settings);
+            }
+            Event::SettingsFileOpened { result } => {
+                if let Err(error) = result {
+                    self.notice = Some(format!(
+                        "Could not open {} in the editor: {error}.",
+                        self.dirs.settings_file().display()
+                    ));
+                }
             }
             Event::Databases {
                 session,
@@ -4296,6 +4308,34 @@ mod tests {
             app.backend.sent.last(),
             Some(Command::WatchSettings { path: watched }) if *watched == path
         ));
+    }
+
+    #[test]
+    fn the_settings_file_is_opened_in_the_editor_through_the_backend() {
+        let (mut app, _dir) = app();
+        app.apply(Action::EditSettingsFile);
+        let path = app.dirs.settings_file();
+        let text = app.settings_file.text.clone();
+        assert!(matches!(
+            app.backend.sent.last(),
+            Some(Command::EditSettingsFile { path: sent, text: held })
+                if *sent == path && *held == text
+        ));
+    }
+
+    #[test]
+    fn an_editor_that_did_not_start_shows_a_notice() {
+        let (mut app, _dir) = app();
+        app.apply(Action::Backend(Event::SettingsFileOpened {
+            result: Err("no editor".into()),
+        }));
+        let notice = app.notice.clone().expect("a notice");
+        assert!(notice.contains("no editor"), "{notice}");
+        app.notice = None;
+        app.apply(Action::Backend(Event::SettingsFileOpened {
+            result: Ok(()),
+        }));
+        assert!(app.notice.is_none());
     }
 
     #[test]

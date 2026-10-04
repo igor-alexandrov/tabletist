@@ -335,6 +335,8 @@ pub enum Action {
     SelectSettingsRow(usize),
     /// Set an option. Applied and saved at once.
     SetOption(crate::settings::OptionValue),
+    /// Open the settings file in the editor.
+    EditSettingsFile,
     /// Open quick open for the active connection tab.
     OpenQuickOpen,
     /// Move quick open's selection by this many results.

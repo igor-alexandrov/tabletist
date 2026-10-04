@@ -143,6 +143,13 @@ pub enum Command {
     WatchSettings {
         path: PathBuf,
     },
+    /// Opens the settings file `path` in the editor, written from `text`
+    /// first when it is not there. Answered with
+    /// [`Event::SettingsFileOpened`].
+    EditSettingsFile {
+        path: PathBuf,
+        text: String,
+    },
     /// Signals `done` once every save sent before it is on disk.
     Flush {
         done: mpsc::Sender<()>,
@@ -266,6 +273,8 @@ pub enum Event {
     /// for byte, what the backend itself wrote there last: the app's own
     /// save coming back, which it must not take for someone else's change.
     SettingsFile { text: String, own: bool },
+    /// The editor was started on the settings file, or why it was not.
+    SettingsFileOpened { result: Result<(), String> },
 }
 
 /// Who stopped a SQL editor run.
@@ -1255,6 +1264,73 @@ async fn read_settings<W, R, F>(
     }
 }
 
+/// Opens the settings file `path` with `start`, writing `text` to it first
+/// when it is not there: the editor is given a file, and the UI thread
+/// never looked at the disk to know.
+fn open_in_editor(
+    path: &std::path::Path,
+    text: &str,
+    start: impl FnOnce(&std::path::Path) -> std::io::Result<()>,
+) -> Result<(), String> {
+    if !path.exists() {
+        crate::util::write_atomic(path, text.as_bytes()).map_err(|error| error.to_string())?;
+    }
+    start(path).map_err(|error| error.to_string())
+}
+
+/// The program that opens a text file for editing on this system, and what
+/// it is given. `on_path` says whether a command of that name can be run.
+fn editor_command(
+    path: &std::path::Path,
+    on_path: impl Fn(&str) -> bool,
+) -> (String, Vec<std::ffi::OsString>) {
+    let file = path.as_os_str().to_owned();
+    #[cfg(target_os = "macos")]
+    {
+        let _ = on_path;
+        ("open".into(), vec!["-t".into(), file])
+    }
+    #[cfg(windows)]
+    {
+        let _ = on_path;
+        ("explorer".into(), vec![file])
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        // Omarchy opens $EDITOR in a terminal of its own; any other
+        // desktop knows what edits a text file.
+        let program = if on_path("omarchy-launch-editor") {
+            "omarchy-launch-editor"
+        } else {
+            "xdg-open"
+        };
+        (program.into(), vec![file])
+    }
+}
+
+/// Whether a command named `name` is in one of `PATH`'s directories.
+fn on_path(name: &str) -> bool {
+    std::env::var_os("PATH")
+        .is_some_and(|paths| std::env::split_paths(&paths).any(|dir| dir.join(name).is_file()))
+}
+
+/// Starts the editor on `path` and lets it go: it is the user's window from
+/// here. A thread of its own waits for it, so it leaves no zombie.
+fn start_editor(path: &std::path::Path) -> std::io::Result<()> {
+    use std::process::Stdio;
+    let (program, args) = editor_command(path, on_path);
+    let mut child = std::process::Command::new(program)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
+    Ok(())
+}
+
 /// Runs on the backend runtime. Owns every session.
 struct Worker {
     outbox: Outbox,
@@ -1485,6 +1561,16 @@ impl Worker {
                 };
                 self.outbox.emit(Event::SettingsWatch { live });
             }
+            Command::EditSettingsFile { path, text } => {
+                let outbox = self.outbox.clone();
+                tokio::task::spawn_blocking(move || {
+                    let result = open_in_editor(&path, &text, start_editor);
+                    if let Err(error) = &result {
+                        log::warn!("could not open {} in the editor: {error}", path.display());
+                    }
+                    outbox.emit(Event::SettingsFileOpened { result });
+                });
+            }
             Command::Flush { done } => {
                 let saves = self.saves.clone();
                 tokio::spawn(async move {
@@ -1529,6 +1615,7 @@ fn session_of(command: &Command) -> SessionId {
         | Command::StoreSecret { .. }
         | Command::Save { .. }
         | Command::WatchSettings { .. }
+        | Command::EditSettingsFile { .. }
         | Command::Flush { .. } => SessionId(0),
     }
 }
@@ -1552,6 +1639,7 @@ fn request_of(command: &Command) -> Option<RequestId> {
         | Command::StoreSecret { .. }
         | Command::Save { .. }
         | Command::WatchSettings { .. }
+        | Command::EditSettingsFile { .. }
         | Command::Flush { .. } => None,
     }
 }
@@ -1621,6 +1709,7 @@ fn fail(outbox: &Outbox, command: Command, error: Error) {
         | Command::StoreSecret { .. }
         | Command::Save { .. }
         | Command::WatchSettings { .. }
+        | Command::EditSettingsFile { .. }
         | Command::Flush { .. } => return,
     };
     outbox.emit(event);
@@ -1856,6 +1945,7 @@ async fn run_session(
             | Command::StoreSecret { .. }
             | Command::Save { .. }
             | Command::WatchSettings { .. }
+            | Command::EditSettingsFile { .. }
             | Command::Flush { .. } => None,
         };
         end.command = None;
@@ -5046,5 +5136,68 @@ mod tests {
         let path = dir.path().join("missing").join("settings.toml");
         let (_backend, live) = watching(&path);
         assert!(!live);
+    }
+
+    #[test]
+    fn a_settings_file_that_is_not_there_is_written_before_the_editor_starts() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config").join("settings.toml");
+        let mut seen = None;
+        open_in_editor(&path, "[data]\npage_size = 300\n", |opened| {
+            seen = Some((
+                opened.to_path_buf(),
+                std::fs::read_to_string(opened).unwrap(),
+            ));
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(
+            seen,
+            Some((path.clone(), "[data]\npage_size = 300\n".to_owned()))
+        );
+        // A file that is there is opened as it is, whatever the app holds.
+        std::fs::write(&path, "[data]\npage_size = 100\n").unwrap();
+        open_in_editor(&path, "[data]\npage_size = 300\n", |_| Ok(())).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "[data]\npage_size = 100\n"
+        );
+    }
+
+    #[test]
+    fn an_editor_that_cannot_start_is_told_with_the_file_still_written() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.toml");
+        let error = open_in_editor(&path, "[data]\n", |_| {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "no editor",
+            ))
+        })
+        .unwrap_err();
+        assert!(error.contains("no editor"), "{error}");
+        assert!(path.exists());
+    }
+
+    #[test]
+    fn the_editor_is_the_systems_way_to_open_a_text_file() {
+        let path = std::path::Path::new("/config/settings.toml");
+        let (program, args) = editor_command(path, |_| false);
+        #[cfg(target_os = "macos")]
+        assert_eq!((program.as_str(), args.len()), ("open", 2));
+        #[cfg(windows)]
+        assert_eq!((program.as_str(), args.len()), ("explorer", 1));
+        #[cfg(all(unix, not(target_os = "macos")))]
+        {
+            assert_eq!((program.as_str(), args.len()), ("xdg-open", 1));
+            // Omarchy's own launcher, where it is installed.
+            let (program, args) = editor_command(path, |name| name == "omarchy-launch-editor");
+            assert_eq!(program, "omarchy-launch-editor");
+            assert_eq!(args, vec![path.as_os_str().to_owned()]);
+        }
+        assert_eq!(
+            args.last().map(|arg| arg.as_os_str()),
+            Some(path.as_os_str())
+        );
     }
 }

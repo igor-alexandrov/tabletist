@@ -1129,6 +1129,43 @@ mod tests {
     }
 
     #[test]
+    fn ctrl_e_opens_the_settings_file_in_the_editor() {
+        let mut harness = settings_screen();
+        // The footer's hint is its button too.
+        assert!(harness.has("Open file in editor"));
+        harness.press(egui::Key::E, egui::Modifiers::CTRL);
+        assert!(matches!(
+            crate::testing::last_sent(&harness.app),
+            Command::EditSettingsFile { .. }
+        ));
+        // The screen stays: the editor is another window.
+        assert!(settings_open(&harness));
+    }
+
+    #[test]
+    fn ctrl_e_held_down_opens_the_editor_once() {
+        let mut harness = settings_screen();
+        let held = |repeat| egui::Event::Key {
+            key: egui::Key::E,
+            physical_key: None,
+            pressed: true,
+            repeat,
+            modifiers: egui::Modifiers::CTRL,
+        };
+        harness.frame(vec![held(false)]);
+        harness.frame(vec![held(true)]);
+        harness.frame(vec![held(true)]);
+        let opened = harness
+            .app
+            .backend
+            .sent
+            .iter()
+            .filter(|command| matches!(command, Command::EditSettingsFile { .. }))
+            .count();
+        assert_eq!(opened, 1);
+    }
+
+    #[test]
     fn the_timestamp_hint_gives_way_to_the_filter_chips() {
         use egui::accesskit::Role;
         for look in [crate::theme::Look::standard(), crate::theme::Look::macos()] {
