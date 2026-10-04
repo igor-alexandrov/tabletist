@@ -122,30 +122,12 @@ fn results_id(tab: ConnTabId, id: TabId) -> Id {
     Id::new(("sql-results", tab.0, id.0))
 }
 
-/// The grid an editor's result was last drawn with. Each run has its own,
-/// so the one before it is forgotten when the next is drawn.
-#[derive(Clone, Copy, PartialEq)]
-struct LastGrid(Id);
-
 /// The scroll area an editor's messages were last drawn in, one per run
 /// as well: a new run's messages start at their top.
 #[derive(Clone, Copy, PartialEq)]
 struct LastMessages(Id);
 
-/// Notes that the results kept under `key` now draw the grid `grid`, and
-/// drops what egui kept for the grid before it.
-fn keep_grid(ctx: &egui::Context, key: Id, grid: Id) {
-    let before: Option<LastGrid> = ctx.data(|data| data.get_temp(key));
-    if before == Some(LastGrid(grid)) {
-        return;
-    }
-    if let Some(LastGrid(old)) = before {
-        grid::forget(ctx, old);
-    }
-    ctx.data_mut(|data| data.insert_temp(key, LastGrid(grid)));
-}
-
-/// [`keep_grid`] for the scroll area of the messages.
+/// [`grid::keep`] for the scroll area of the messages.
 fn keep_messages(ctx: &egui::Context, key: Id, area: Id) {
     ctx.data_mut(|data| {
         let before: Option<LastMessages> = data.get_temp(key);
@@ -163,15 +145,15 @@ fn keep_messages(ctx: &egui::Context, key: Id, area: Id) {
 /// grid's widths and where it and the messages were scrolled to.
 pub fn forget(ctx: &egui::Context, tab: ConnTabId, id: TabId) {
     let key = results_id(tab, id);
-    let grid: Option<LastGrid> = ctx.data(|data| data.get_temp(key));
-    if let Some(LastGrid(grid)) = grid {
+    let grid: Option<grid::Last> = ctx.data(|data| data.get_temp(key));
+    if let Some(grid::Last(grid)) = grid {
         grid::forget(ctx, grid);
     }
     ctx.data_mut(|data| {
         if let Some(LastMessages(area)) = data.get_temp(key) {
             data.remove::<egui::scroll_area::State>(area);
         }
-        data.remove::<LastGrid>(key);
+        data.remove::<grid::Last>(key);
         data.remove::<LastMessages>(key);
     });
 }
@@ -1124,7 +1106,9 @@ fn results(ui: &mut Ui, run: &SqlRun, place: &Place<'_>, env: &Env<'_>, actions:
         })
         .collect();
     let id = grid_id(tab, sql.id, sql.run.loaded, fit);
-    keep_grid(ui.ctx(), results_id(tab, sql.id), id);
+    // Each run and each fit has its own grid: the one before it is
+    // forgotten when the next is drawn.
+    grid::keep(ui.ctx(), results_id(tab, sql.id), id);
     let mut child = ui.new_child(egui::UiBuilder::new().id_salt("grid").max_rect(area));
     child.set_clip_rect(area.intersect(ui.clip_rect()));
     let ctx = ui.ctx().clone();
@@ -2321,8 +2305,8 @@ mod tests {
 
     /// The grid the editor's result was last drawn with.
     fn result_grid(harness: &Harness, tab: ConnTabId, id: TabId) -> Option<Id> {
-        let kept: Option<LastGrid> = harness.ctx.data(|data| data.get_temp(results_id(tab, id)));
-        kept.map(|LastGrid(grid)| grid)
+        let kept: Option<grid::Last> = harness.ctx.data(|data| data.get_temp(results_id(tab, id)));
+        kept.map(|grid::Last(grid)| grid)
     }
 
     #[test]

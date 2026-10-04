@@ -787,6 +787,12 @@ fn grid_id(tab: ConnTabId, object_tab: TabId, fit: Fit) -> Id {
     Id::new(("grid", tab.0, object_tab.0, fit))
 }
 
+/// Where egui's memory keeps which grid the table `object_tab` was last
+/// drawn with.
+fn table_id(tab: ConnTabId, object_tab: TabId) -> Id {
+    Id::new(("table-grid", tab.0, object_tab.0))
+}
+
 /// What a status line says of the columns while some are out of view:
 /// `Columns 1–10 of 40 · id pinned`, or the terminal's `cols 1–7 of 40`.
 /// Nothing while every column shows. It reads what the grid drew last, so
@@ -1138,9 +1144,13 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
                 grouped: fit.grouped && !is_key(&column.name, structure),
             })
             .collect();
+        // A fit come back to is fitted to the rows now on screen: what the
+        // grid of the fit before kept goes when this one is drawn.
+        let id = grid_id(tab, object_tab, fit);
+        grid::keep(ui.ctx(), table_id(tab, object_tab), id);
         let output = grid::show(
             ui,
-            grid_id(tab, object_tab, fit),
+            id,
             &columns,
             page.rows.len(),
             object.query.offset,

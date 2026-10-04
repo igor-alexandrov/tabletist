@@ -702,6 +702,39 @@ mod tests {
     }
 
     #[test]
+    fn an_option_turned_back_on_fits_the_rows_then_on_screen() {
+        let mut harness = Harness::new();
+        let tab = harness.connect_fake();
+        let group = |harness: &mut Harness, group_digits| {
+            let settings = crate::settings::Settings {
+                group_digits,
+                ..harness.app.settings.clone()
+            };
+            harness.app.apply_settings(settings);
+            harness.settle();
+        };
+        // Grouped, over a page of small numbers: the columns fit those.
+        group(&mut harness, true);
+        harness.click("users");
+        harness.answer_rows(crate::testing::page(1, true));
+        harness.settle();
+        group(&mut harness, false);
+        // The next page has a far longer one.
+        let object_tab = harness.app.workspace(tab).unwrap().active_tab.unwrap();
+        harness
+            .app
+            .apply(crate::model::Action::NextPage { tab, object_tab });
+        let mut page = crate::testing::page(1, false);
+        page.rows[0][0] = tabletist_db::Value::Int(i64::MAX);
+        harness.answer_rows(page);
+        harness.settle();
+        // Grouped again. The widths the grouped grid had over the first page
+        // would cut this number short.
+        group(&mut harness, true);
+        assert!(harness.painted_color("9,223,372,036,854,775,807").is_some());
+    }
+
+    #[test]
     fn an_edit_of_the_file_changes_what_an_open_grid_shows() {
         let mut harness = Harness::new();
         harness.connect_fake();

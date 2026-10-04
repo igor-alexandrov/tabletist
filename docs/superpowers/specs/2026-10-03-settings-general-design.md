@@ -239,6 +239,10 @@ again. Grouped numbers and value tags change a cell's width too (a tag adds
 its padding), so once these options can change while a grid is open (step 2
 onward) they join the grid ids, or `apply_settings` forgets the grids'
 widths. In step 1 the options are fixed for a session and nothing is needed.
+A view remembers which grid it last drew and forgets the one before it when
+the id changes (`grid::keep`), a table as a SQL result does: an option set
+back to what it was fits the rows then on screen, not the page its grid last
+saw.
 
 | Option | Control | Effect |
 |---|---|---|
