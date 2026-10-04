@@ -26,6 +26,7 @@
       Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 
   If the commit's signing agent is locked ("agent refused operation"), do not bypass it: `git add -A`, `git write-tree`, and report the tree id with the subject.
+- **Tasks 6 to 12 are built** (macOS and Windows edit, save, leave, confirm and close), with what their review changed: see "As built (tasks 6 to 12)" before task 13. Omarchy (tasks 13 to 15) and the documents (task 16) remain.
 - **Tasks 1 to 5 are built,** with what their review changed (decisions 21 to 23, and "As built" under task 5). The editing reducer is in `src/app/editing.rs` (a second `impl App`: `table`, `edit_cell`, `close_editor`, `set_null`, `save_blocked`, `write_edits`, `send_write`, `confirm_write`, `written`, `dropped_by`, `dropped_under_a_prompt`, `hold`, `perform`); the arms in `App::apply` call into it. Its tests are the nested `mod editing` at the end of `src/app.rs`'s test module.
 - **How the code stands.** Read each function before you edit it; where this plan's code and the code disagree, the code wins and you say so in your report.
   - `src/model.rs`: `ObjectTab` (around line 1519) holds `rows: Fetch<RowPage>`, `structure: Fetch<Structure>`, `selection: Option<CellPos>`, `pinned`. `Action` (line 47) is neither `Clone` nor `PartialEq`. `Dialog` (around 1052) has seven variants and none is a confirmation. `Workspace` has `access`, `environment`, `driver`, `status`, `session`.
@@ -3380,6 +3381,19 @@ The panel must never disagree with the grid. `format_rows` formats the selected 
 Commit: "Show a pending value in the row panel".
 
 ---
+
+> **As built (tasks 6 to 12).** What the Omarchy tasks build on and what changed from the draft above.
+> - **Grid:** `grid::Mark`, `Cell::{mark, hint, note}` (`Cell` derives `Default`), `GridOutput::{double_clicked, editing_rect}`, and `grid::show`'s new parameters `rows`, `editing`, `editor`. The Omarchy marks (`~`, `!`, the tinted text, the accent line for the cursor on a marked cell) are already drawn. `Cell::note` (the locked note at the cell) is not drawn in the terminal look.
+> - **Editor:** `cell_editor::{field, large, Outcome, Target, field_id, problem_text, lock_text}`. The field is the whole cell; `keep_keyboard` holds egui's focus moves off from the frame it opens. `data_view::show` turns the `Outcome` into actions, `EditorTyped` first.
+> - **Held back for the terminal look** in two places, to lift in task 13: `!terminal` before `editing_keys` in `keys.rs`, and the filter on the double-click in `data_view.rs`. The large editor's band is the desktop one in every look so far.
+> - **Keys:** `keys::editing_keys`. Mod+S saves wherever the bar offers Save (also from the tree, the Structure view and a focused field); in the terminal look nothing yet. `keys::handle` treats an open editor as editing from its first frame.
+> - **Bar and notes:** `pending_bar::{show, note_text, written_text}` (sentence case, no mark: lower them with `look.label` for Omarchy). `Note::NotSent` ("Not connected. Nothing was sent.") beside `Note::Lost`. `Action::DismissNote` clears a note without touching the set.
+> - **Tab:** `Tab::unsaved` already reaches `terminal_tab`; the `[+]` goes there.
+> - **Prompts:** `write_prompts.rs` draws both in every look; `terminal_dialog::{head, foot, keys, Key}` are the shared terminal pieces (moved out of `connect_dialog`). Enter follows the focused button and never discards. The terminal Leave box ignores `w` and `d` while a text field has the keyboard or a key is held: insert mode's field keeps the keyboard for the first frame of a prompt, so a letter typed then is text, not an answer.
+> - **Closing:** `App::hold_close` runs in `frame_ui` and in `logic` (the window may be hidden). A close request under a running save asks, without Save (`LeavePrompt::saving`). On macOS, Quit becomes a close request through winit's `macos-quit-as-close` feature; that is unverified until it runs on a Mac.
+> - **Row panel:** `RowFields::pending`; the panel already draws `~` for a pending field in the terminal look.
+> - **Copy** takes the pending value a cell shows, also for the terminal's `y`.
+> - **Left as found:** the "save is still running" prompt keeps its sentence if the save ends while it is up; an input method cannot start an edit by typing (Enter or F2 does); the first large editor of a session drops a keystroke typed in its sizing frame; the row's key value takes the row's colour but not a heavier weight (no such text role).
 
 ### Task 13: Omarchy, the keys and insert mode
 
