@@ -954,10 +954,7 @@ impl App {
             }
             Action::SetOption(value) => self.change_settings(|settings| value.set(settings)),
             Action::EditSettingsFile => {
-                // Written by the backend when no file is there: a write of
-                // the app's own, to be known when it comes back.
-                let text = self.settings_file.text.clone();
-                self.settings_file.offered = Some(text.clone());
+                let text = self.offer_settings_text();
                 self.backend.send(Command::EditSettingsFile {
                     path: self.dirs.settings_file(),
                     text,
@@ -2104,9 +2101,8 @@ impl App {
                 // does a text handed over with the file to be opened, which
                 // the backend wrote because the file was gone by then.
                 let file = &self.settings_file;
-                let newest = [&file.saved, &file.offered]
-                    .into_iter()
-                    .any(|asked| asked.as_deref() == Some(text.as_str()));
+                let newest =
+                    file.saved.as_deref() == Some(text.as_str()) || file.offered.contains(&text);
                 if own && !newest {
                     return;
                 }
@@ -2114,7 +2110,7 @@ impl App {
                 loaded.warn_invalid(&self.dirs.settings_file());
                 let live = self.settings_file.live;
                 let saved = self.settings_file.saved.take();
-                let offered = self.settings_file.offered.take();
+                let offered = std::mem::take(&mut self.settings_file.offered);
                 let (settings, file) = loaded.into_parts();
                 // The file as its writer left it: not written back, so a
                 // line that was ignored stays where they can see it.
@@ -2287,13 +2283,25 @@ impl App {
     /// settings.json call it.
     fn save_settings(&mut self) {
         self.settings_file.saved = Some(self.settings.to_toml());
-        // The save is newer than a text handed over with the file: where
-        // that one was written, this one lands over it.
-        self.settings_file.offered = None;
+        // The save is newer than any text handed over with the file: where
+        // one of those was written, this lands over it.
+        self.settings_file.offered.clear();
         self.backend.send(Command::Save {
             path: self.dirs.settings_file(),
             file: StateFile::Settings(self.settings.clone()),
         });
+    }
+
+    /// The text the app holds of its settings file, to hand over with the
+    /// file to be opened. The backend writes it when no file is there: a
+    /// write of the app's own, which is noted here to be known when it
+    /// comes back.
+    fn offer_settings_text(&mut self) -> String {
+        let text = self.settings_file.text.clone();
+        if !self.settings_file.offered.contains(&text) {
+            self.settings_file.offered.push(text.clone());
+        }
+        text
     }
 
     /// Asks the backend to watch the settings file, so an edit made outside
@@ -4218,6 +4226,31 @@ mod tests {
         app.apply(from_disk(&ours, true));
         assert_eq!(app.settings.page_size, Settings::DEFAULT_PAGE_SIZE);
         assert_eq!(app.settings_file.text, ours);
+    }
+
+    #[test]
+    fn each_text_written_for_an_editor_that_waits_is_the_apps_own() {
+        let (mut app, _dir) = app();
+        let first = app.settings_file.text.clone();
+        // Two requests wait at once, with a change from outside between
+        // them: the file is deleted, the first of them writes its text,
+        // and the second finds a file and writes nothing.
+        app.apply(Action::EditSettingsFile);
+        let second = "[data]\npage_size = 500\n";
+        app.apply(from_disk(second, false));
+        app.apply(Action::EditSettingsFile);
+        assert_eq!(app.settings.page_size, 500);
+        app.apply(from_disk(&first, true));
+        assert_eq!(app.settings.page_size, Settings::DEFAULT_PAGE_SIZE);
+        assert_eq!(app.settings_file.text, first);
+        // The other way round: the second is the one that wrote.
+        app.apply(from_disk(second, true));
+        assert_eq!(app.settings.page_size, 500);
+        // Asked for again with a text already handed over, nothing is
+        // kept twice.
+        app.apply(Action::EditSettingsFile);
+        app.apply(Action::EditSettingsFile);
+        assert_eq!(app.settings_file.offered.len(), 2);
     }
 
     #[test]

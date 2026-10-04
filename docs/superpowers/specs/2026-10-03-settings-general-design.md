@@ -566,10 +566,12 @@ footer: "2 lines in the file could not be read and were ignored".
   newest (its save landed over a change from outside that it had applied in
   between: the disk has it). A key held down on an option therefore never
   has its newest change undone, and the same older text put back by someone
-  else is still a change. The text handed over with the file to be opened
+  else is still a change. A text handed over with the file to be opened
   (`SettingsFile::offered`) counts as the newest too, until a save is asked
   for: the backend writes it when the file is gone by then, and the app may
-  have applied a change from outside since it handed the text over.
+  have applied a change from outside since it handed the text over. Every
+  text handed over since the last save is kept, not the last alone: two
+  requests can wait at once, and the first may be the one that writes.
 - A change from outside that restores, within the settle after one of the
   app's own writes, the very text the backend sent last is not seen: the
   reader never sends the same text twice in a row. The app then holds the
