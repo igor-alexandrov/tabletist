@@ -9,8 +9,9 @@ publish = false
 # The workspace forbids unsafe code. Giving a menu item a target and an action
 # means defining an Objective-C class and sending messages the compiler cannot
 # check, so this crate carries the workspace's lints with `unsafe_code` lowered
-# to `deny`, allowed only in `about.rs`, `target.rs` and the test, each use
-# with a SAFETY note. The app and the database layer keep `forbid`.
+# to `deny`, allowed only in `about.rs`, `settings.rs`, `target.rs` and the
+# tests, each use with a SAFETY note. The app and the database layer keep
+# `forbid`.
 [lints.rust]
 unsafe_code = "deny"
 
@@ -24,7 +25,11 @@ objc2-foundation = { version = "0.3", default-features = false, features = ["std
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSResponder", "NSMenu", "NSMenuItem"] }
 
 # AppKit's menus belong to the main thread, which the test harness keeps for
-# itself: this test has its own `main`.
+# itself: these tests have their own `main`.
 [[test]]
 name = "about_menu"
+harness = false
+
+[[test]]
+name = "settings_menu"
 harness = false
