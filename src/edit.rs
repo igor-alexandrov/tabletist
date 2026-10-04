@@ -1,7 +1,7 @@
 //! Editing a table's values: what can be edited, what a column takes, the
 //! pending set a tab holds and the change set a save sends. Everything here
-//! is decided from the page and the structure alone; the reducer in
-//! `app.rs` owns every transition.
+//! is decided from the page and the structure alone; the reducer
+//! (`app.rs`, `app/editing.rs`) owns every transition.
 
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
@@ -203,7 +203,11 @@ pub enum Problem {
     Decimals { scale: u32, stored: String },
     /// More digits before the point than the type holds: at most `whole`.
     Digits { whole: u32 },
-    /// Not `true`, `false`, `1` or `0`.
+    /// More digits than the database keeps of a number: `stored` is the
+    /// number it would have kept instead.
+    Inexact { stored: String },
+    /// Not `true`, `false`, `1` or `0`, nor, where the column holds more
+    /// than a flag, a number it holds.
     Boolean,
     /// Not one of the values the column allows.
     NotOneOf(Vec<String>),
@@ -224,25 +228,27 @@ pub fn check(dialect: Dialect, column: &ColumnInfo, text: &str) -> Option<Proble
         return (!allowed.iter().any(|value| value == text))
             .then(|| Problem::NotOneOf(allowed.clone()));
     }
-    let typed = text.trim();
+    // ASCII whitespace alone: the text is sent as it was typed, and that is
+    // all a database overlooks around a value.
+    let typed = text.trim_ascii();
     match column_class(dialect, &column.type_name) {
         ColumnClass::Integer { min, max } => match typed.parse::<i128>() {
             Err(_) => Some(Problem::WholeNumber),
             Ok(number) if number < min || number > max => Some(Problem::OutOfRange { min, max }),
             Ok(_) => None,
         },
-        ColumnClass::Decimal { precision, scale } => decimal(typed, precision, scale),
+        ColumnClass::Decimal { precision, scale } => {
+            decimal(typed, precision, scale).or_else(|| match dialect {
+                Dialect::Sqlite => inexact(typed),
+                Dialect::Postgres | Dialect::MySql => None,
+            })
+        }
         ColumnClass::Float => {
-            let word =
-                dialect == Dialect::Postgres && matches!(typed, "NaN" | "Infinity" | "-Infinity");
+            let word = dialect == Dialect::Postgres && float_word(typed);
             let number = typed.parse::<f64>().is_ok_and(f64::is_finite);
             (!word && !number).then_some(Problem::Number)
         }
-        ColumnClass::Boolean => (!matches!(
-            typed.to_ascii_lowercase().as_str(),
-            "true" | "false" | "1" | "0"
-        ))
-        .then_some(Problem::Boolean),
+        ColumnClass::Boolean => boolean(dialect, typed),
         ColumnClass::Json => serde_json::from_str::<serde::de::IgnoredAny>(text)
             .err()
             .map(|error| Problem::Json {
@@ -267,15 +273,85 @@ fn json_message(error: &str) -> String {
         .replace('`', "")
 }
 
-/// A plain decimal number within the digits and the scale its type states.
-/// No exponent: the databases take one, but what it would be stored as is
-/// not what the user sees typed.
-fn decimal(typed: &str, precision: Option<u32>, scale: Option<u32>) -> Option<Problem> {
+/// Whether PostgreSQL reads `typed` as a float that is no number: `nan`,
+/// `inf` or `infinity`, in any case. A sign on infinity only: one on NaN is
+/// read by some servers' C library and not by others'.
+fn float_word(typed: &str) -> bool {
+    let word = typed.to_ascii_lowercase();
+    let unsigned = word.strip_prefix(['-', '+']).unwrap_or(&word);
+    word == "nan" || matches!(unsigned, "inf" | "infinity")
+}
+
+/// A boolean as the save's builder takes one. MySQL's is a `tinyint(1)`,
+/// which holds any tinyint, and some tables keep more than a flag there.
+fn boolean(dialect: Dialect, typed: &str) -> Option<Problem> {
+    if matches!(typed.to_ascii_lowercase().as_str(), "true" | "false") {
+        return None;
+    }
+    let (min, max) = (i128::from(i8::MIN), i128::from(i8::MAX));
+    match dialect {
+        Dialect::MySql => match typed.parse::<i128>() {
+            Ok(number) if number < min || number > max => Some(Problem::OutOfRange { min, max }),
+            Ok(_) => None,
+            Err(_) => Some(Problem::Boolean),
+        },
+        Dialect::Postgres | Dialect::Sqlite => {
+            (!matches!(typed, "1" | "0")).then_some(Problem::Boolean)
+        }
+    }
+}
+
+/// A plain decimal's sign, the digits before its point and those after.
+fn parts(typed: &str) -> (bool, &str, &str) {
     let (negative, digits) = match typed.strip_prefix('-') {
         Some(rest) => (true, rest),
         None => (false, typed.strip_prefix('+').unwrap_or(typed)),
     };
     let (whole, fraction) = digits.split_once('.').unwrap_or((digits, ""));
+    (negative, whole, fraction)
+}
+
+/// What SQLite would keep of the plain decimal `typed`, when that is not
+/// the number as typed. It keeps a number as an INTEGER or a REAL whatever
+/// digits the declared type states: a whole number an INTEGER holds is
+/// kept, and any other only when the REAL nearest to it is written with
+/// the same digits.
+fn inexact(typed: &str) -> Option<Problem> {
+    if typed.parse::<i64>().is_ok() {
+        return None;
+    }
+    // Past what a REAL holds at all: the save's builder sends no such
+    // number.
+    let Some(number) = typed.parse::<f64>().ok().filter(|real| real.is_finite()) else {
+        return Some(Problem::Number);
+    };
+    // The typed digits as a number is written: no plus, no zeros ahead of
+    // it but the one before the point, none after its last decimal.
+    let (negative, whole, fraction) = parts(typed);
+    let (whole, fraction) = (
+        whole.trim_start_matches('0'),
+        fraction.trim_end_matches('0'),
+    );
+    let mut written = String::with_capacity(typed.len() + 1);
+    if negative {
+        written.push('-');
+    }
+    written.push_str(if whole.is_empty() { "0" } else { whole });
+    if !fraction.is_empty() {
+        written.push('.');
+        written.push_str(fraction);
+    }
+    // The shortest text that reads back as the same REAL, without an
+    // exponent: what a cell would show of it.
+    let stored = number.to_string();
+    (stored != written).then_some(Problem::Inexact { stored })
+}
+
+/// A plain decimal number within the digits and the scale its type states.
+/// No exponent: the databases take one, but what it would be stored as is
+/// not what the user sees typed.
+fn decimal(typed: &str, precision: Option<u32>, scale: Option<u32>) -> Option<Problem> {
+    let (negative, whole, fraction) = parts(typed);
     let all_digits = |part: &str| part.bytes().all(|byte| byte.is_ascii_digit());
     if (whole.is_empty() && fraction.is_empty()) || !all_digits(whole) || !all_digits(fraction) {
         return Some(Problem::Number);
@@ -470,6 +546,21 @@ impl Edits {
         counts
     }
 
+    /// The statement of the page's row `row` failed with `error`: its
+    /// cells say so until the next save sends them again. With no such row
+    /// (the answer names one the save did not send) no cell is marked, and
+    /// the save is refused with the error.
+    pub fn fail(&mut self, row: Option<usize>, error: Error) {
+        let Some(row) = row else {
+            self.note = Some(Note::Refused(error));
+            return;
+        };
+        for (_, cell) in self.cells.range_mut((row, 0)..=(row, usize::MAX)) {
+            cell.state = State::Failed(error.clone());
+        }
+        self.note = Some(Note::Failed { row, error });
+    }
+
     pub fn row_mark(&self, row: usize) -> RowMark {
         let mut cells = self.cells.range((row, 0)..=(row, usize::MAX)).peekable();
         if cells.peek().is_none() {
@@ -534,7 +625,9 @@ pub enum Note {
     },
     /// The statement of the page's row `row` failed.
     Failed { row: usize, error: Error },
-    /// The connection was lost while saving: what was written is not known.
+    /// What was written is not known: the connection was lost while
+    /// saving or before the save was sent, or the answer is about a row
+    /// the save did not send.
     Lost,
     /// The save was cancelled.
     Cancelled,
@@ -948,6 +1041,155 @@ mod tests {
         assert_eq!(lite("VARCHAR(3)", "longer"), None);
         assert_eq!(lite("NUMERIC(10,2)", "12.505"), None);
         assert_eq!(lite("", "anything"), None);
+    }
+
+    #[test]
+    fn sqlite_refuses_a_decimal_it_would_not_keep_digit_for_digit() {
+        // SQLite keeps a number as INTEGER or REAL, whatever digits the
+        // declared type states.
+        let lite = |text: &str| check(Dialect::Sqlite, &typed("NUMERIC(30,20)"), text);
+        let inexact = |stored: &str| {
+            Some(Problem::Inexact {
+                stored: stored.into(),
+            })
+        };
+        // A whole number an INTEGER holds, however it is written.
+        for whole in ["12", "-12", "+12", "007", "0", "9223372036854775807"] {
+            assert_eq!(lite(whole), None, "{whole}");
+        }
+        assert_eq!(lite("-9223372036854775808"), None);
+        // A number a REAL holds digit for digit.
+        for exact in [
+            "12.5", "12.50", "-0.05", ".5", "5.", "+1.25", "0012.5", "12.0", "0.1",
+        ] {
+            assert_eq!(lite(exact), None, "{exact}");
+        }
+        // Past an INTEGER, but a REAL that is written the same.
+        assert_eq!(lite("100000000000000000000"), None);
+        // What a REAL would round, with what it would keep.
+        assert_eq!(
+            lite("99999999999999999999"),
+            inexact("100000000000000000000")
+        );
+        assert_eq!(
+            lite("0.12345678901234567891"),
+            inexact("0.12345678901234568")
+        );
+        // One past the largest INTEGER is a REAL, and a cell shows a REAL by
+        // the digits that tell it from its neighbours.
+        assert_eq!(lite("9223372036854775808"), inexact("9223372036854776000"));
+        assert_eq!(
+            lite("-0.30000000000000004441"),
+            inexact("-0.30000000000000004")
+        );
+        // Too large for a REAL at all: no number the builder sends.
+        assert_eq!(lite(&"9".repeat(400)), Some(Problem::Number));
+        assert_eq!(lite("twelve"), Some(Problem::Number));
+        assert_eq!(lite("1e3"), Some(Problem::Number));
+        // The other databases keep a decimal's digits.
+        for dialect in [Dialect::Postgres, Dialect::MySql] {
+            let column = typed(if dialect == Dialect::Postgres {
+                "numeric"
+            } else {
+                "decimal(65,30)"
+            });
+            assert_eq!(check(dialect, &column, "0.12345678901234567891"), None);
+            assert_eq!(check(dialect, &column, "99999999999999999999"), None);
+        }
+    }
+
+    #[test]
+    fn a_mysql_boolean_takes_any_number_a_tinyint_holds() {
+        // As the save's builder does: some tables keep more than a flag in
+        // a tinyint(1).
+        let my = |text: &str| check(Dialect::MySql, &typed("tinyint(1)"), text);
+        for ok in ["true", "FALSE", "1", "0", "5", "-128", "127", " 7 ", "+7"] {
+            assert_eq!(my(ok), None, "{ok}");
+        }
+        let range = Some(Problem::OutOfRange {
+            min: -128,
+            max: 127,
+        });
+        assert_eq!(my("128"), range);
+        assert_eq!(my("-129"), range);
+        for bad in ["yes", "", "1.5", "t"] {
+            assert_eq!(my(bad), Some(Problem::Boolean), "{bad}");
+        }
+        // Elsewhere a boolean is a flag.
+        for dialect in [Dialect::Postgres, Dialect::Sqlite] {
+            let type_name = if dialect == Dialect::Postgres {
+                "boolean"
+            } else {
+                "BOOLEAN"
+            };
+            assert_eq!(check(dialect, &typed(type_name), "1"), None);
+            assert_eq!(
+                check(dialect, &typed(type_name), "5"),
+                Some(Problem::Boolean)
+            );
+        }
+    }
+
+    #[test]
+    fn a_postgres_float_takes_the_words_an_editor_starts_from() {
+        let pg = |text: &str| check(Dialect::Postgres, &typed("double precision"), text);
+        // Where the editor of such a cell starts.
+        for value in [f64::INFINITY, f64::NEG_INFINITY, f64::NAN] {
+            let start = start_text(&Value::Float(value), ColumnClass::Float);
+            assert_eq!(pg(&start), None, "{start}");
+        }
+        // As PostgreSQL reads them: in any case, a sign on infinity only.
+        for word in [
+            "inf",
+            "-inf",
+            "+inf",
+            "Infinity",
+            "-INFINITY",
+            "+infinity",
+            "nan",
+            "NaN",
+            " NAN ",
+        ] {
+            assert_eq!(pg(word), None, "{word}");
+        }
+        for bad in ["-nan", "+nan", "infinite", "in", "- inf", "1e999"] {
+            assert_eq!(pg(bad), Some(Problem::Number), "{bad}");
+        }
+        assert_eq!(check(Dialect::Postgres, &typed("real"), "inf"), None);
+        // Only PostgreSQL has them.
+        for (dialect, type_name) in [(Dialect::MySql, "double"), (Dialect::Sqlite, "REAL")] {
+            for word in ["inf", "nan", "Infinity"] {
+                assert_eq!(
+                    check(dialect, &typed(type_name), word),
+                    Some(Problem::Number),
+                    "{dialect:?} {word}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn only_ascii_whitespace_around_a_value_is_overlooked() {
+        // What is sent is the text as typed, and no database overlooks a
+        // non-breaking space around a number.
+        let pg = |type_name: &str, text: &str| check(Dialect::Postgres, &typed(type_name), text);
+        assert_eq!(pg("bigint", " \t12\n"), None);
+        assert_eq!(pg("bigint", "\u{a0}12"), Some(Problem::WholeNumber));
+        assert_eq!(pg("bigint", "12\u{2003}"), Some(Problem::WholeNumber));
+        assert_eq!(pg("numeric(10,2)", " 12.5 "), None);
+        assert_eq!(pg("numeric(10,2)", "12.5\u{a0}"), Some(Problem::Number));
+        assert_eq!(pg("double precision", " 1.5 "), None);
+        assert_eq!(pg("double precision", "\u{a0}1.5"), Some(Problem::Number));
+        assert_eq!(pg("boolean", " true "), None);
+        assert_eq!(pg("boolean", "true\u{a0}"), Some(Problem::Boolean));
+        assert_eq!(
+            check(Dialect::MySql, &typed("tinyint(1)"), "\u{a0}1"),
+            Some(Problem::Boolean)
+        );
+        assert_eq!(
+            check(Dialect::Sqlite, &typed("NUMERIC"), "\u{a0}1.5"),
+            Some(Problem::Number)
+        );
     }
 
     #[test]
