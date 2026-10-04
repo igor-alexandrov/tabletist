@@ -21,7 +21,7 @@ use crate::model::{
 };
 use crate::paths::AppDirs;
 use crate::secrets::{SecretString, password_account, ssh_account};
-use crate::settings::{Loaded, Settings, Source};
+use crate::settings::{Loaded, Settings, SettingsFile, Source};
 use crate::theme::{self, Catalog, Palette};
 
 /// What a keyring read is for; each names the exact request it serves, so
@@ -61,6 +61,9 @@ pub struct TitleBar {
 pub struct App {
     pub dirs: AppDirs,
     pub settings: Settings,
+    /// The settings file as the app last read or wrote it or, before any
+    /// file exists, as it would be written.
+    pub settings_file: SettingsFile,
     pub locale: Locale,
     pub palette: Palette,
     pub look: crate::theme::Look,
@@ -89,6 +92,10 @@ pub struct App {
     pub titlebar: TitleBar,
     /// The OS theme seen last frame, to notice light/dark switches.
     system_theme: Option<egui::Theme>,
+    /// Whether the desktop's themes are followed (not in tests or the demo).
+    follow_desktop: bool,
+    /// The settings named another theme since the last `logic`.
+    theme_changed: bool,
     /// The window title last sent, so it is sent only when it changes.
     window_title: String,
     /// SQL editors closed since the last frame: what egui keeps for each
@@ -100,9 +107,8 @@ pub struct App {
 
 impl App {
     pub fn new(dirs: AppDirs, loaded: Loaded, backend: Backend) -> Self {
-        let Loaded {
-            settings, source, ..
-        } = loaded;
+        let source = loaded.source;
+        let (settings, settings_file) = loaded.into_parts();
         let (connections, upgraded) = SavedConnections::load_upgrading(&dirs.connections_file());
         let (host_keys, host_keys_error) = match crate::known_hosts::load(&dirs.known_hosts_file())
         {
@@ -115,6 +121,7 @@ impl App {
         let mut app = Self {
             dirs,
             settings,
+            settings_file,
             locale: Locale::default(),
             palette: Palette::dark(),
             look: crate::theme::Look::for_platform(),
@@ -132,6 +139,8 @@ impl App {
             host_keys_error,
             titlebar: TitleBar::default(),
             system_theme: None,
+            follow_desktop: false,
+            theme_changed: false,
             window_title: "Tabletist".into(),
             closed_editors: Vec::new(),
             next_id: 1,
@@ -628,21 +637,30 @@ impl App {
                 }
             }
             Action::PrevPage { tab, object_tab } => {
-                let moved = self.object_tab_mut(tab, object_tab).is_some_and(|object| {
+                // Back by the size of the page about to be fetched, which
+                // must end where the one on screen begins. That one may be
+                // of another size (the size changed while its session was
+                // down): back by its limit, the rows between the two would
+                // be skipped. The page fetched has the settings' size, or
+                // is only the rows before this one when they are fewer (the
+                // size grew on a page near the start): a whole page from
+                // the start would show the first rows of this one a second
+                // time, and Next from it would not come back here.
+                let page_size = self.settings.page_size;
+                let step = self.object_tab_mut(tab, object_tab).and_then(|object| {
                     if object.query.offset == 0 {
-                        return false;
+                        return None;
                     }
-                    object.query.offset = object
-                        .query
-                        .offset
-                        .saturating_sub(u64::from(object.query.limit));
+                    let step = u32::try_from(object.query.offset)
+                        .map_or(page_size, |before| before.min(page_size));
+                    object.query.offset -= u64::from(step);
                     object.pinned = true;
                     object.selection = None;
                     object.rows.value = None;
-                    true
+                    Some(step)
                 });
-                if moved {
-                    self.fetch_rows(tab, object_tab);
+                if let Some(step) = step {
+                    self.fetch_page(tab, object_tab, step);
                 }
             }
             Action::SortBy {
@@ -872,20 +890,14 @@ impl App {
                 if let Some(sql) = self.sql_tab_mut(tab, sql_tab) {
                     sql.limit = limit;
                 }
-                if self.settings.sql_limit != limit {
-                    self.settings.sql_limit = limit;
-                    self.save_settings();
-                }
+                self.change_settings(|settings| settings.sql_limit = limit);
             }
             Action::SetSqlTimeout { tab, sql_tab, secs } => {
                 let secs = Settings::valid_sql_timeout(secs);
                 if let Some(sql) = self.sql_tab_mut(tab, sql_tab) {
                     sql.timeout = Settings::timeout_of(secs);
                 }
-                if self.settings.sql_timeout_secs != secs {
-                    self.settings.sql_timeout_secs = secs;
-                    self.save_settings();
-                }
+                self.change_settings(|settings| settings.sql_timeout_secs = secs);
             }
             Action::SetResultPane { tab, sql_tab, pane } => {
                 if let Some(sql) = self.sql_tab_mut(tab, sql_tab) {
@@ -2064,6 +2076,22 @@ impl App {
                     self.notice = Some(format!("Could not save {}: {error}.", path.display()));
                 }
             }
+            Event::SettingsWatch { live } => self.settings_file.live = live,
+            Event::SettingsFile { text } => {
+                // The app's own write coming back from the disk, or a save
+                // that changed nothing.
+                if text == self.settings_file.text {
+                    return;
+                }
+                let loaded = Settings::from_toml(&text);
+                loaded.warn_invalid(&self.dirs.settings_file());
+                let live = self.settings_file.live;
+                let (settings, file) = loaded.into_parts();
+                // The file as its writer left it: not written back, so a
+                // line that was ignored stays where they can see it.
+                self.settings_file = SettingsFile { live, ..file };
+                self.apply_settings(settings);
+            }
             Event::Databases {
                 session,
                 request,
@@ -2212,12 +2240,100 @@ impl App {
         });
     }
 
-    /// Writes the settings (the SQL editor's menus change them).
-    pub fn save_settings(&mut self) {
+    /// Sends the settings to the backend to be written. Only
+    /// [`App::change_settings`] and the start that read the old
+    /// settings.json call it.
+    fn save_settings(&mut self) {
         self.backend.send(Command::Save {
             path: self.dirs.settings_file(),
             file: StateFile::Settings(self.settings.clone()),
         });
+    }
+
+    /// Asks the backend to watch the settings file, so an edit made outside
+    /// the app reaches it (`Event::SettingsFile`).
+    fn watch_settings(&mut self) {
+        self.backend.send(Command::WatchSettings {
+            path: self.dirs.settings_file(),
+        });
+    }
+
+    /// A change made in the app (a menu, the Settings window): applied, and
+    /// written as the canonical text, which is the file from then on. The
+    /// lines the reader had ignored are gone with the text they were in.
+    /// A change that changes nothing writes nothing.
+    pub fn change_settings(&mut self, change: impl FnOnce(&mut Settings)) {
+        let mut changed = self.settings.clone();
+        change(&mut changed);
+        let loaded = Loaded::of(changed, Source::Toml);
+        if loaded.settings == self.settings {
+            return;
+        }
+        let live = self.settings_file.live;
+        let (settings, file) = loaded.into_parts();
+        self.settings_file = SettingsFile { live, ..file };
+        self.apply_settings(settings);
+        self.save_settings();
+    }
+
+    /// Replaces the settings and does what the ones that changed ask for.
+    /// Every change comes through here, from the app or from the file, and
+    /// nothing is written here: saving is [`App::change_settings`]'s.
+    pub fn apply_settings(&mut self, new: Settings) {
+        let old = std::mem::replace(&mut self.settings, new);
+        if old.timestamps != self.settings.timestamps {
+            let full = self.settings.timestamps == crate::settings::Timestamps::Full;
+            for tab in &mut self.tabs {
+                if let ConnTabContent::Workspace(workspace) = &mut tab.content {
+                    workspace.full_precision = full;
+                }
+            }
+        }
+        if old.page_size != self.settings.page_size {
+            self.resize_pages();
+        }
+        if old.show_system_schemas != self.settings.show_system_schemas {
+            // A completion list offers the schemas that are shown, and an
+            // open one is worked out again only when its script, its cursor
+            // or its catalog changed: its catalog did.
+            for tab in &mut self.tabs {
+                if let ConnTabContent::Workspace(workspace) = &mut tab.content {
+                    workspace.catalog_changed();
+                }
+            }
+        }
+        if old.custom_theme != self.settings.custom_theme {
+            // Reading a theme needs the window: `logic` has it.
+            self.theme_changed = true;
+        }
+    }
+
+    /// Fetches again, at the settings' page size, every table that shows a
+    /// page or waits for one on a session that can answer. `fetch_rows`
+    /// drops the page of the old size as it takes the new one. The others
+    /// take the size, and lose their page the same way, when they next
+    /// fetch.
+    fn resize_pages(&mut self) {
+        let size = self.settings.page_size;
+        let mut again = Vec::new();
+        for tab in &self.tabs {
+            let ConnTabContent::Workspace(workspace) = &tab.content else {
+                continue;
+            };
+            if !matches!(workspace.status, SessionStatus::Connected) {
+                continue;
+            }
+            again.extend(
+                workspace
+                    .object_tabs()
+                    .filter(|object| object.query.limit != size)
+                    .filter(|object| object.page().is_some() || object.rows.pending.is_some())
+                    .map(|object| (tab.id, object.id)),
+            );
+        }
+        for (tab, id) in again {
+            self.fetch_rows(tab, id);
+        }
     }
 
     fn save_dialog(&mut self, connect: bool) {
@@ -2838,8 +2954,17 @@ impl App {
         self.cancel(session, running);
     }
 
-    /// Loads the object tab's rows, replacing any load still pending.
+    /// Loads the object tab's rows at the settings' page size, replacing
+    /// any load still pending. A page of another size does not stay on
+    /// screen meanwhile, whatever the caller kept.
     pub fn fetch_rows(&mut self, tab: ConnTabId, id: TabId) {
+        self.fetch_page(tab, id, self.settings.page_size);
+    }
+
+    /// Loads a page of `limit` rows, as [`App::fetch_rows`] does at the
+    /// settings' size. Only Previous asks for another: the rows before a
+    /// page that begins less than a page from the start.
+    fn fetch_page(&mut self, tab: ConnTabId, id: TabId, limit: u32) {
         let request = RequestId(self.next_id());
         let Some(workspace) = self.workspace_mut(tab) else {
             return;
@@ -2848,6 +2973,17 @@ impl App {
         let Some(object) = workspace.object_tab_mut(id) else {
             return;
         };
+        // Until here the limit was the size of the page on screen. Next
+        // has just moved past that page by it. Previous has moved back by
+        // the size it asks for here, so that the page fetched ends where
+        // that one begins. From here the limit is the size of the page
+        // awaited. A page of another size cannot stay under the new limit:
+        // were this fetch cancelled, Next would move past it by the wrong
+        // size.
+        if object.query.limit != limit {
+            object.drop_page();
+            object.query.limit = limit;
+        }
         let superseded = object.rows.pending;
         object.rows.start(request);
         let query = object.query.clone();
@@ -3047,6 +3183,7 @@ impl App {
     /// Called once the window exists. `follow_desktop` is false in demo mode
     /// and tests, which must not scan the user's themes or Omarchy.
     pub fn attach(&mut self, ctx: &egui::Context, follow_desktop: bool) {
+        self.follow_desktop = follow_desktop;
         theme::install(ctx, follow_desktop, &self.look);
         if follow_desktop {
             theme::enable_desktop_themes(&mut self.themes);
@@ -3056,6 +3193,9 @@ impl App {
                 self.settings.custom_theme.clone(),
                 &fastframe_theme::Waker::new(move || repaint.request_repaint()),
             );
+            // Not in tests or the demo, which must not watch the user's
+            // directories any more than they scan them.
+            self.watch_settings();
         }
         self.system_theme = ctx.system_theme();
         self.palette = self.resolve_palette();
@@ -3072,7 +3212,10 @@ impl App {
 
     /// Work that does not draw: theme changes on disk or in the OS.
     pub fn logic(&mut self, ctx: &egui::Context) {
-        if self.themes.needs_reload() {
+        // The settings named another theme: where the desktop is followed
+        // the catalog reads that file first, as it does at the start.
+        let renamed = std::mem::take(&mut self.theme_changed);
+        if self.themes.needs_reload() || (renamed && self.follow_desktop) {
             let repaint = ctx.clone();
             self.themes.start(
                 self.dirs.themes_dir(),
@@ -3082,7 +3225,7 @@ impl App {
         }
         let scanned = self.themes.poll();
         let system = ctx.system_theme();
-        if scanned || system != self.system_theme {
+        if scanned || renamed || system != self.system_theme {
             self.system_theme = system;
             let palette = self.resolve_palette();
             if palette != self.palette {
@@ -3335,6 +3478,52 @@ mod tests {
             );
             assert_eq!(saves(&app), 0, "{source:?}");
         }
+    }
+
+    #[test]
+    fn the_app_keeps_the_text_and_the_lines_it_started_with() {
+        let dir = tempfile::tempdir().unwrap();
+        let text = "[data]\npage_size = 100\ngroup_digits = \"yes\"\n";
+        let app = App::new(
+            AppDirs::at(dir.path()),
+            Settings::from_toml(text),
+            Backend::recording(),
+        );
+        assert_eq!(app.settings.page_size, 100);
+        assert_eq!(app.settings_file.text, text);
+        assert_eq!(app.settings_file.invalid, vec![3]);
+        assert_eq!(
+            app.settings_file.lines,
+            vec![(crate::settings::Key::PageSize, 2)]
+        );
+        assert!(!app.settings_file.live);
+    }
+
+    #[test]
+    fn a_new_theme_name_is_resolved_at_the_next_logic_pass() {
+        let mut harness = Harness::new();
+        // A catalog that holds the theme already: no directory is read.
+        let mut nord = Palette::dark();
+        nord.accent = egui::Color32::from_rgb(0x88, 0xc0, 0xd0);
+        harness.app.themes = Catalog::preview(
+            vec![crate::theme::CustomTheme {
+                filename: "Nord.json".into(),
+                palette: nord,
+            }],
+            false,
+        );
+        let settings = Settings {
+            custom_theme: Some("Nord.json".into()),
+            ..harness.app.settings.clone()
+        };
+        harness.app.apply_settings(settings);
+        assert!(harness.app.theme_changed);
+        assert_ne!(harness.app.palette, nord, "not before `logic`");
+        harness.app.logic(&harness.ctx.clone());
+        assert!(!harness.app.theme_changed);
+        assert_eq!(harness.app.palette, nord.with_readable_labels());
+        // Tests do not follow the desktop: no scan of the themes directory.
+        assert!(!harness.app.themes.loading());
     }
 
     fn ids(app: &App) -> Vec<u64> {
@@ -3924,15 +4113,143 @@ mod tests {
         }
     }
 
+    fn settings_saves(app: &App) -> Vec<&Settings> {
+        app.backend
+            .sent
+            .iter()
+            .filter_map(|command| match command {
+                Command::Save {
+                    file: StateFile::Settings(settings),
+                    ..
+                } => Some(settings),
+                _ => None,
+            })
+            .collect()
+    }
+
     #[test]
-    fn saving_settings_sends_them_to_the_backend() {
-        let mut harness = Harness::new();
-        harness.app.settings.sql_limit = 100;
-        harness.app.save_settings();
+    fn a_change_made_in_the_app_is_applied_written_and_kept_as_the_files_text() {
+        let dir = tempfile::tempdir().unwrap();
+        // A file the user wrote, with a line the reader ignored.
+        let text = "[data]\npage_size = 100\ngroup_digits = \"yes\"\n";
+        let mut app = App::new(
+            AppDirs::at(dir.path()),
+            Settings::from_toml(text),
+            Backend::recording(),
+        );
+        app.change_settings(|settings| settings.sql_limit = 100);
+        assert_eq!(app.settings.sql_limit, 100);
+        assert_eq!(app.settings.page_size, 100, "what the file set stays");
+        let saved = settings_saves(&app);
+        assert_eq!(saved.len(), 1);
+        assert_eq!(*saved[0], app.settings);
+        // The file is the canonical text now: nothing in it is invalid.
+        assert_eq!(app.settings_file.text, app.settings.to_toml());
+        assert!(app.settings_file.invalid.is_empty());
+        assert_eq!(
+            app.settings_file.lines,
+            Settings::from_toml(&app.settings.to_toml()).lines
+        );
+    }
+
+    #[test]
+    fn a_change_that_changes_nothing_is_not_written() {
+        let (mut app, _dir) = app();
+        let limit = app.settings.sql_limit;
+        app.change_settings(|settings| settings.sql_limit = limit);
+        assert!(settings_saves(&app).is_empty());
+    }
+
+    #[test]
+    fn a_change_made_in_the_app_is_brought_into_range() {
+        let (mut app, _dir) = app();
+        app.change_settings(|settings| settings.page_size = 5);
+        assert_eq!(app.settings.page_size, Settings::MIN_PAGE_SIZE);
+        assert_eq!(settings_saves(&app).len(), 1);
+    }
+
+    #[test]
+    fn a_change_that_is_brought_back_to_what_was_set_is_not_written() {
+        let (mut app, _dir) = app();
+        app.change_settings(|settings| settings.page_size = Settings::MIN_PAGE_SIZE);
+        let saved = settings_saves(&app).len();
+        // Below the range: brought up to the size already set.
+        app.change_settings(|settings| settings.page_size = 5);
+        assert_eq!(app.settings.page_size, Settings::MIN_PAGE_SIZE);
+        assert_eq!(settings_saves(&app).len(), saved);
+    }
+
+    #[test]
+    fn a_change_of_the_file_is_applied_and_not_written_back() {
+        let (mut app, _dir) = app();
+        let text = "[data]\npage_size = 500\ngroup_digits = \"yes\"\ntimestamps = \"full\"\n";
+        app.apply(Action::Backend(Event::SettingsFile { text: text.into() }));
+        assert_eq!(app.settings.page_size, 500);
+        assert_eq!(app.settings.timestamps, crate::settings::Timestamps::Full);
+        assert!(!app.settings.group_digits);
+        // The file as the user wrote it, with the line that was ignored.
+        assert_eq!(app.settings_file.text, text);
+        assert_eq!(app.settings_file.invalid, vec![3]);
+        assert_eq!(
+            app.settings_file.lines,
+            vec![
+                (crate::settings::Key::PageSize, 2),
+                (crate::settings::Key::Timestamps, 4)
+            ]
+        );
+        assert!(settings_saves(&app).is_empty(), "the user's file is theirs");
+    }
+
+    #[test]
+    fn the_apps_own_text_coming_back_is_not_read_again() {
+        let (mut app, _dir) = app();
+        app.change_settings(|settings| settings.sql_limit = 100);
+        let saved = settings_saves(&app).len();
+        // Something only a second reading would change.
+        app.settings_file.invalid = vec![9];
+        let text = app.settings_file.text.clone();
+        app.apply(Action::Backend(Event::SettingsFile { text }));
+        assert_eq!(app.settings_file.invalid, vec![9]);
+        assert_eq!(app.settings.sql_limit, 100);
+        assert_eq!(settings_saves(&app).len(), saved);
+    }
+
+    #[test]
+    fn a_change_of_the_file_keeps_whether_it_is_watched() {
+        let (mut app, _dir) = app();
+        app.apply(Action::Backend(Event::SettingsWatch { live: true }));
+        assert!(app.settings_file.live);
+        app.apply(Action::Backend(Event::SettingsFile {
+            text: "[data]\npage_size = 500\n".into(),
+        }));
+        assert!(app.settings_file.live);
+        app.change_settings(|settings| settings.sql_limit = 100);
+        assert!(app.settings_file.live);
+    }
+
+    #[test]
+    fn the_settings_file_is_watched_through_the_backend() {
+        let (mut app, _dir) = app();
+        app.watch_settings();
+        let path = app.dirs.settings_file();
         assert!(matches!(
-            crate::testing::last_sent(&harness.app),
-            Command::Save { file: StateFile::Settings(settings), .. } if settings.sql_limit == 100
+            app.backend.sent.last(),
+            Some(Command::WatchSettings { path: watched }) if *watched == path
         ));
+    }
+
+    #[test]
+    fn a_start_that_does_not_follow_the_desktop_does_not_watch_the_users_directories() {
+        // The harness attaches as the demo does.
+        let harness = crate::testing::Harness::new();
+        assert!(
+            !harness
+                .app
+                .backend
+                .sent
+                .iter()
+                .any(|command| matches!(command, Command::WatchSettings { .. }))
+        );
     }
 
     #[test]

@@ -2,7 +2,8 @@
 //! polls events each frame; the backend wakes the UI when an event is ready.
 
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::ffi::{OsStr, OsString};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, mpsc};
 use std::time::Duration;
@@ -138,6 +139,12 @@ pub enum Command {
         path: PathBuf,
         file: StateFile,
     },
+    /// Watches the settings file `path` for changes made outside the app,
+    /// behind a symbolic link too. Answered with [`Event::SettingsWatch`];
+    /// each change is then an [`Event::SettingsFile`].
+    WatchSettings {
+        path: PathBuf,
+    },
     /// Signals `done` once every save sent before it is on disk.
     Flush {
         done: mpsc::Sender<()>,
@@ -254,6 +261,14 @@ pub enum Event {
         path: PathBuf,
         result: Result<(), String>,
     },
+    /// Whether the settings file is being watched, wherever an edit of it
+    /// can be made. Sent again when that changes: a symbolic link turned to
+    /// a directory that cannot be watched, or such a directory that can be
+    /// watched after all.
+    SettingsWatch { live: bool },
+    /// The settings file changed on disk: its text. The app's own writes
+    /// come this way too, and it knows them by their text.
+    SettingsFile { text: String },
 }
 
 /// Who stopped a SQL editor run.
@@ -744,6 +759,462 @@ impl Saves {
     }
 }
 
+/// How long the settings file must have been left alone before it is read:
+/// a save is several changes (a temporary file, a rename, a truncate and a
+/// write), and a read between two of them finds the file half-written.
+const SETTLE: Duration = Duration::from_millis(100);
+
+/// The watch on the settings file, held by the task that reads it. The
+/// directory of the file is always watched. The directory and not the
+/// file: an editor saves by renaming another file over it, and a watch on
+/// the file would stay with the one that was replaced. When the file is a
+/// symbolic link, as a dotfiles manager makes it, the directory of the file
+/// it leads to is watched too: an edit made there raises no event beside
+/// the link. So is the directory of each link on the way, when one link
+/// leads to another: any of them can be turned.
+struct SettingsWatcher {
+    watcher: notify::RecommendedWatcher,
+    /// The settings file, as the app names it.
+    path: PathBuf,
+    /// The names a change of the settings comes under: the file's own and,
+    /// behind a link, the name of the file it leads to and of every link
+    /// on the way there. The watcher's callback reads them.
+    names: Arc<Mutex<Vec<OsString>>>,
+    /// The directories watched for a link's sake, while there are any.
+    elsewhere: Vec<PathBuf>,
+    /// Every directory watched, as the watcher names it in an event. The
+    /// callback reads them, to tell when one is moved or removed.
+    watched: Arc<Mutex<Vec<PathBuf>>>,
+    /// Set by the callback when a watched directory was moved or removed:
+    /// a watch stays with the directory it was put on, not with its path,
+    /// so one made anew at that path is not watched until it is asked for
+    /// again ([`Self::renew`]).
+    gone: Arc<AtomicBool>,
+}
+
+/// What lies behind a symbolic link at the settings file: the names of what
+/// the links lead through, and the directories those are in.
+type Behind = (Vec<OsString>, Vec<PathBuf>);
+
+/// How many times in a row the links may be found turned since they were
+/// last looked at before the watcher gives up for now.
+const LOOKS: usize = 3;
+
+impl SettingsWatcher {
+    /// Looks where the settings file is now and watches there. A link can
+    /// be made, turned elsewhere or replaced by a file while the app runs.
+    /// An error, with what to log, when a link leads where nothing can be
+    /// watched: an edit made there would not be seen.
+    fn follow(&mut self) -> Result<(), String> {
+        self.follow_with(behind_link)
+    }
+
+    /// [`Self::follow`], with `look` for the look at the links: the tests
+    /// turn a link between that look and the watch that comes of it.
+    fn follow_with(
+        &mut self,
+        mut look: impl FnMut(&Path) -> std::io::Result<Behind>,
+    ) -> Result<(), String> {
+        self.renew()?;
+        // A link in a directory that is not watched yet can be turned
+        // between the look at it and the watch on its directory, and no
+        // event would say so. So once the watches are there the links are
+        // looked at again, until they are as they were when watched.
+        let mut watched = self.watch_behind(look(&self.path));
+        for _ in 0..LOOKS {
+            let again = self.watch_behind(look(&self.path));
+            if again == watched {
+                return watched.map(|_| ());
+            }
+            watched = again;
+        }
+        Err(format!(
+            "the link at {} keeps being turned",
+            self.path.display()
+        ))
+    }
+
+    /// Watches every directory anew once one of them was moved or removed
+    /// ([`Self::gone`]): the settings file's own here, and the ones behind
+    /// a link when [`Self::watch_behind`] finds none kept. An error when
+    /// the file's own directory is not there to be watched, and then the
+    /// next look tries again.
+    fn renew(&mut self) -> Result<(), String> {
+        use notify::Watcher as _;
+        if !self.gone.swap(false, Ordering::SeqCst) {
+            return Ok(());
+        }
+        // Best effort: the watcher may have let go of a directory that was
+        // removed by itself.
+        for directory in self.elsewhere.drain(..) {
+            let _ = self.watcher.unwatch(&directory);
+        }
+        let beside = crate::util::directory_of(&self.path);
+        let _ = self.watcher.unwatch(beside);
+        let renewed = self
+            .watcher
+            .watch(beside, notify::RecursiveMode::NonRecursive);
+        self.tell_watched();
+        renewed.map_err(|error| {
+            self.gone.store(true, Ordering::SeqCst);
+            format!("could not watch {}: {error}", beside.display())
+        })
+    }
+
+    /// Tells the callback which directories are watched now.
+    fn tell_watched(&self) {
+        let beside = crate::util::directory_of(&self.path);
+        let named = |directory: &Path| {
+            std::path::absolute(directory).unwrap_or_else(|_| directory.to_path_buf())
+        };
+        let elsewhere = self.elsewhere.iter().map(|directory| named(directory));
+        *lock(&self.watched) = std::iter::once(named(beside)).chain(elsewhere).collect();
+    }
+
+    /// Watches where `behind` says the links lead, and no longer where
+    /// they led before. Gives back what it was given, or why that cannot
+    /// be watched.
+    fn watch_behind(&mut self, behind: std::io::Result<Behind>) -> Result<Behind, String> {
+        use notify::Watcher as _;
+        let behind = behind.map_err(|error| {
+            format!(
+                "could not follow the link at {}: {error}",
+                self.path.display()
+            )
+        });
+        let (names, directories) = behind.clone().unwrap_or_default();
+        let own = self.path.file_name().map(OsStr::to_owned);
+        *lock(&self.names) = own.into_iter().chain(names).collect();
+        // Let go of where the links no longer lead. Best effort: a
+        // directory that is gone is not watched any more as it is.
+        let watcher = &mut self.watcher;
+        self.elsewhere.retain(|watched| {
+            let kept = directories.contains(watched);
+            if !kept {
+                let _ = watcher.unwatch(watched);
+            }
+            kept
+        });
+        let mut failed = None;
+        for directory in directories {
+            if self.elsewhere.contains(&directory) {
+                continue;
+            }
+            match watcher.watch(&directory, notify::RecursiveMode::NonRecursive) {
+                Ok(()) => self.elsewhere.push(directory),
+                Err(error) => {
+                    failed = Some(format!("could not watch {}: {error}", directory.display()));
+                    break;
+                }
+            }
+        }
+        self.tell_watched();
+        match failed {
+            Some(why) => Err(why),
+            None => behind,
+        }
+    }
+}
+
+/// Where the settings file is when `path` is a symbolic link: the names of
+/// what the links lead through (each further link, and the file at the
+/// end), and the directories those are in, other than the link's own.
+/// Nothing for a path that is no link.
+fn behind_link(path: &Path) -> std::io::Result<Behind> {
+    let chain = crate::util::link_chain(path)?;
+    let (mut names, mut directories) = (Vec::new(), Vec::new());
+    let Some(behind) = chain.get(1..).filter(|behind| !behind.is_empty()) else {
+        return Ok((names, directories));
+    };
+    // As the system has them: one directory reached by two paths is told
+    // for one, and is not watched twice.
+    let beside = std::fs::canonicalize(crate::util::directory_of(path))?;
+    for file in behind {
+        // A link to a directory's `..` names nothing that could be read.
+        let Some(name) = file.file_name() else {
+            continue;
+        };
+        names.push(name.to_owned());
+        let directory = std::fs::canonicalize(crate::util::directory_of(file))?;
+        if directory != beside && !directories.contains(&directory) {
+            directories.push(directory);
+        }
+    }
+    Ok((names, directories))
+}
+
+/// The task that watches and reads the settings file. Dropped, it stops
+/// the task, and the watcher the task holds goes with it.
+struct SettingsReader(tokio::task::AbortHandle);
+
+impl Drop for SettingsReader {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+/// Watches the settings file `path` and starts the task that reads it
+/// whenever it changes, and once at the start. Says too whether every
+/// place an edit can be made is watched (see [`SettingsWatcher::follow`]).
+fn watch_settings(path: PathBuf, outbox: Outbox) -> notify::Result<(SettingsReader, bool)> {
+    use notify::Watcher as _;
+    let (changed, changes) = tokio_mpsc::unbounded_channel();
+    // The file as it is now: it was loaded before there was a watch, and a
+    // save made in between raised no event. The app drops a text it holds
+    // already.
+    let _ = changed.send(());
+    let names = Arc::new(Mutex::new(Vec::new()));
+    let known = Arc::clone(&names);
+    let watched = Arc::new(Mutex::new(Vec::new()));
+    let directories = Arc::clone(&watched);
+    let gone = Arc::new(AtomicBool::new(false));
+    let left = Arc::clone(&gone);
+    let mut watcher =
+        notify::recommended_watcher(move |event: notify::Result<notify::Event>| match event {
+            Ok(event) => {
+                // A directory made anew where this one was is watched once
+                // the reader has looked: it is woken for that too.
+                let moved = leaves(&event, &lock(&directories));
+                if moved {
+                    left.store(true, Ordering::SeqCst);
+                }
+                if moved || concerns(&event, &lock(&known)) {
+                    let _ = changed.send(());
+                }
+            }
+            Err(error) => log::warn!("watching the settings file: {error}"),
+        })?;
+    watcher.watch(
+        crate::util::directory_of(&path),
+        notify::RecursiveMode::NonRecursive,
+    )?;
+    let mut watch = SettingsWatcher {
+        watcher,
+        path: path.clone(),
+        names,
+        elsewhere: Vec::new(),
+        watched,
+        gone,
+    };
+    let live = match watch.follow() {
+        Ok(()) => true,
+        Err(why) => {
+            log::warn!("{why}");
+            false
+        }
+    };
+    // The reader holds the watcher from here on, to turn it with the link.
+    let follow = move || tokio::task::block_in_place(|| watch.follow());
+    let reader = tokio::spawn(read_settings(
+        path, live, changes, outbox, follow, read_file,
+    ));
+    Ok((SettingsReader(reader.abort_handle()), live))
+}
+
+/// Reads `path` on the blocking pool: a disk can be slow, and the runtime's
+/// threads serve every session.
+async fn read_file(path: PathBuf) -> std::io::Result<Vec<u8>> {
+    match tokio::task::spawn_blocking(move || std::fs::read(path)).await {
+        Ok(read) => read,
+        Err(error) => Err(std::io::Error::other(error)),
+    }
+}
+
+/// Whether `event` says a file named as one of `names` may have changed.
+/// Not when it was only looked at: Linux reports every open, and the reader
+/// below opens the file, so answering those would have it read again for
+/// ever. The file is known by its name: the paths come as the system has
+/// them, which is not always as the directory was given.
+fn concerns(event: &notify::Event, names: &[OsString]) -> bool {
+    !event.kind.is_access()
+        && event
+            .paths
+            .iter()
+            .filter_map(|path| path.file_name())
+            .any(|changed| names.iter().any(|name| same_file(changed, name)))
+}
+
+/// Whether `event` says that one of the watched `directories` is no longer
+/// where it was: moved, or removed. The watch on it did not stay with its
+/// path, and what is at that path now, or comes to be, is not watched.
+fn leaves(event: &notify::Event, directories: &[PathBuf]) -> bool {
+    use notify::EventKind;
+    use notify::event::ModifyKind;
+    let leaving = matches!(
+        event.kind,
+        EventKind::Remove(_) | EventKind::Modify(ModifyKind::Name(_))
+    );
+    leaving && event.paths.iter().any(|path| directories.contains(path))
+}
+
+/// Whether two file names are one file's. macOS and Windows find a file
+/// whatever the case of its name, so one kept as `Settings.toml` is the
+/// one the app reads as `settings.toml`, and its changes come under the
+/// spelling it is kept in. That goes for every letter, not for those of
+/// ASCII alone: a link may spell the file it leads to `Ä.toml` where it is
+/// kept as `ä.toml`. Beyond ASCII the systems' own rules cannot be told
+/// from here (Windows takes `Σ.toml` and `ς.toml` for one name, which no
+/// lower case does, and macOS a letter with its accent however the two are
+/// written), so there two names that both go beyond it are taken for one.
+/// A name taken for the file's by mistake costs a read.
+fn same_file(one: &std::ffi::OsStr, other: &std::ffi::OsStr) -> bool {
+    if one == other {
+        return true;
+    }
+    if !cfg!(any(windows, target_os = "macos")) {
+        return false;
+    }
+    // Through the upper case: `ς` and `σ` share one, and no lower one.
+    let folded = |name: &std::ffi::OsStr| name.to_string_lossy().to_uppercase().to_lowercase();
+    folded(one) == folded(other) || !(one.is_ascii() || other.is_ascii())
+}
+
+/// Waits until the changes have been quiet for `SETTLE`: a save is several
+/// of them, and each starts the wait again. False when the watch has ended.
+async fn settled(changes: &mut tokio_mpsc::UnboundedReceiver<()>) -> bool {
+    loop {
+        match tokio::time::timeout(SETTLE, changes.recv()).await {
+            Ok(Some(())) => {}
+            Ok(None) => return false,
+            Err(_) => return true,
+        }
+    }
+}
+
+/// How many times the settings file is read for one change before the
+/// reader leaves it until the next: a file that cannot be read at all (its
+/// permissions, say) is not tried for ever.
+const READ_TRIES: u32 = 6;
+
+/// The longest wait between two of those reads. The first wait is `SETTLE`
+/// and each after it twice as long: an editor that still holds the file
+/// lets go within moments, and one that does not is asked less and less.
+const READ_AGAIN_MAX: Duration = Duration::from_secs(1);
+
+/// How often a watcher that is not live looks again for the place its link
+/// leads to: nothing that is watched says when that place appears.
+const LOOK_AGAIN: Duration = Duration::from_secs(2);
+
+/// Sends the settings file's text each time it changes, once the changes
+/// have settled, and says so when it can no longer see every change, or
+/// can again ([`Event::SettingsWatch`]). A read that fails is tried again,
+/// `READ_TRIES` times in all, and one the file changed under is not sent.
+/// Runs until it is stopped ([`SettingsReader`]) or nothing is left that
+/// could wake it. `follow` looks where the file is now
+/// ([`SettingsWatcher::follow`]) and `read` reads it: the tests have reads
+/// that fail, and ones that take their time.
+async fn read_settings<W, R, F>(
+    path: PathBuf,
+    mut live: bool,
+    mut changes: tokio_mpsc::UnboundedReceiver<()>,
+    outbox: Outbox,
+    mut follow: W,
+    read: R,
+) where
+    W: FnMut() -> Result<(), String>,
+    R: Fn(PathBuf) -> F,
+    F: Future<Output = std::io::Result<Vec<u8>>>,
+{
+    // What was sent last: the same text is not news, whatever woke us.
+    let mut sent: Option<String> = None;
+    let mut look_again = tokio::time::Instant::now() + LOOK_AGAIN;
+    loop {
+        // A link that leads where nothing can be watched (a directory that
+        // is not there yet, a volume not mounted) is looked at again from
+        // time to time: no event comes when the place appears.
+        let woken = if live {
+            Ok(changes.recv().await)
+        } else {
+            tokio::time::timeout_at(look_again, changes.recv()).await
+        };
+        let mut changed = match woken {
+            Ok(Some(())) => true,
+            Ok(None) => return,
+            Err(_) => false,
+        };
+        let bytes = 'settle: loop {
+            if changed && !settled(&mut changes).await {
+                return;
+            }
+            // Before the file is read, so that no edit falls between the
+            // read and the watch on a place the file has just moved to.
+            let follows = follow();
+            look_again = tokio::time::Instant::now() + LOOK_AGAIN;
+            if follows.is_ok() != live {
+                // Logged when it changes, not at every look.
+                if let Err(why) = &follows {
+                    log::warn!("{why}");
+                }
+                live = follows.is_ok();
+                outbox.emit(Event::SettingsWatch { live });
+            }
+            // Looked again, and the place is still not there: no change
+            // was reported, so there is nothing new to read.
+            if !changed && !live {
+                break 'settle None;
+            }
+            let mut tries = 1;
+            let mut wait = SETTLE;
+            loop {
+                match read(path.clone()).await {
+                    Ok(bytes) => match changes.try_recv() {
+                        // Changed while it was read (an editor truncating
+                        // it, say): what was read may be half of that save,
+                        // and sending it would have the app apply it until
+                        // the next read. It is left to settle and read
+                        // again.
+                        Ok(()) => {
+                            changed = true;
+                            continue 'settle;
+                        }
+                        // The end of the watch is not a change: this text
+                        // is whole, and the task ends at its next wait.
+                        Err(_) => break 'settle Some(bytes),
+                    },
+                    // Deleted: the settings in memory stay, and the next
+                    // change made in the app writes the file again. No
+                    // wait brings it back.
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                        break 'settle None;
+                    }
+                    Err(error) if tries == READ_TRIES => {
+                        log::warn!("could not read {}: {error}", path.display());
+                        break 'settle None;
+                    }
+                    Err(_) => tries += 1,
+                }
+                // An editor may still hold the file (a sharing violation on
+                // Windows), and its letting go is not a change: nothing
+                // would wake us. So the change stays pending, and the file
+                // is tried again once the editor has had the time.
+                match tokio::time::timeout(wait, changes.recv()).await {
+                    // Changed meanwhile: a new save, to be left to settle
+                    // and read from the first try.
+                    Ok(Some(())) => {
+                        changed = true;
+                        continue 'settle;
+                    }
+                    Ok(None) => return,
+                    Err(_) => wait = (wait * 2).min(READ_AGAIN_MAX),
+                }
+            }
+        };
+        let Some(bytes) = bytes else {
+            continue;
+        };
+        match String::from_utf8(bytes) {
+            Ok(text) if sent.as_deref() == Some(text.as_str()) => {}
+            Ok(text) => {
+                sent = Some(text.clone());
+                outbox.emit(Event::SettingsFile { text });
+            }
+            // Half-written, or not a settings file at all: the settings in
+            // memory stay, and nothing on disk is touched.
+            Err(_) => log::warn!("{} is not text; it is not read", path.display()),
+        }
+    }
+}
+
 /// Runs on the backend runtime. Owns every session.
 struct Worker {
     outbox: Outbox,
@@ -755,6 +1226,8 @@ struct Worker {
     /// Sessions closed before they finished connecting.
     closed_early: std::collections::HashSet<SessionId>,
     connecting: std::collections::HashSet<SessionId>,
+    /// Watches and reads the settings file. Dropping it ends both.
+    settings_watch: Option<SettingsReader>,
     #[cfg(test)]
     watched: Watched,
 }
@@ -770,6 +1243,7 @@ impl Worker {
             ready,
             closed_early: Default::default(),
             connecting: Default::default(),
+            settings_watch: None,
             #[cfg(test)]
             watched: Watched::default(),
         };
@@ -970,6 +1444,19 @@ impl Worker {
                 });
             }
             Command::Save { path, file } => self.saves.save(path, file, &self.outbox),
+            Command::WatchSettings { path } => {
+                let live = match watch_settings(path, self.outbox.clone()) {
+                    Ok((reader, live)) => {
+                        self.settings_watch = Some(reader);
+                        live
+                    }
+                    Err(error) => {
+                        log::warn!("could not watch the settings file: {error}");
+                        false
+                    }
+                };
+                self.outbox.emit(Event::SettingsWatch { live });
+            }
             Command::Flush { done } => {
                 let saves = self.saves.clone();
                 tokio::spawn(async move {
@@ -1013,6 +1500,7 @@ fn session_of(command: &Command) -> SessionId {
         | Command::LoadSecret { .. }
         | Command::StoreSecret { .. }
         | Command::Save { .. }
+        | Command::WatchSettings { .. }
         | Command::Flush { .. } => SessionId(0),
     }
 }
@@ -1035,6 +1523,7 @@ fn request_of(command: &Command) -> Option<RequestId> {
         | Command::LoadSecret { .. }
         | Command::StoreSecret { .. }
         | Command::Save { .. }
+        | Command::WatchSettings { .. }
         | Command::Flush { .. } => None,
     }
 }
@@ -1103,6 +1592,7 @@ fn fail(outbox: &Outbox, command: Command, error: Error) {
         | Command::LoadSecret { .. }
         | Command::StoreSecret { .. }
         | Command::Save { .. }
+        | Command::WatchSettings { .. }
         | Command::Flush { .. } => return,
     };
     outbox.emit(event);
@@ -1337,6 +1827,7 @@ async fn run_session(
             | Command::LoadSecret { .. }
             | Command::StoreSecret { .. }
             | Command::Save { .. }
+            | Command::WatchSettings { .. }
             | Command::Flush { .. } => None,
         };
         end.command = None;
@@ -3156,6 +3647,52 @@ mod tests {
     }
 
     #[test]
+    fn a_state_file_saved_through_a_symbolic_link_keeps_the_link() {
+        if !crate::util::can_symlink() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let (config, dotfiles) = config_and_dotfiles(dir.path());
+        let mut backend = Backend::start_with(Waker::default(), Keyring::memory());
+        let files = [
+            (
+                "settings.toml",
+                StateFile::Settings(crate::settings::Settings::default()),
+            ),
+            (
+                "connections.json",
+                StateFile::Connections(SavedConnections::default()),
+            ),
+            (
+                "known_hosts.json",
+                StateFile::KnownHosts(HostKeys::default()),
+            ),
+        ];
+        for (name, file) in files {
+            // As a dotfiles manager leaves it: the file in its repository
+            // and a link in the config directory.
+            let (path, target) = (config.join(name), dotfiles.join(name));
+            std::fs::write(&target, "from the repository").unwrap();
+            crate::util::symlink_file(&target, &path);
+            backend.send(Command::Save {
+                path: path.clone(),
+                file,
+            });
+            match backend.wait(WAIT) {
+                Some(Event::Saved { result: Ok(()), .. }) => {}
+                other => panic!("expected {name} to be written, got {other:?}"),
+            }
+            assert_eq!(std::fs::read_link(&path).unwrap(), target, "{name}");
+            assert!(!target.symlink_metadata().unwrap().file_type().is_symlink());
+            assert_ne!(
+                std::fs::read_to_string(&target).unwrap(),
+                "from the repository",
+                "{name} is written where the link leads"
+            );
+        }
+    }
+
+    #[test]
     fn a_cancelled_queued_request_never_runs() {
         let (_dir, spec) = fixture();
         let (mut backend, session) = connected(spec);
@@ -3565,5 +4102,887 @@ mod tests {
             Some(Event::SshHosts { request, .. }) => assert_eq!(request, RequestId(9)),
             other => panic!("{other:?}"),
         }
+    }
+
+    /// Starts a backend watching `path`, and says whether it could.
+    fn watching(path: &std::path::Path) -> (Backend, bool) {
+        let mut backend = Backend::start_with(Waker::default(), Keyring::memory());
+        backend.send(Command::WatchSettings {
+            path: path.to_path_buf(),
+        });
+        match backend.wait(WAIT) {
+            Some(Event::SettingsWatch { live }) => (backend, live),
+            other => panic!("expected to hear whether the file is watched, got {other:?}"),
+        }
+    }
+
+    /// The texts of the settings file the backend sends until `expected`
+    /// comes, that one included; empty when it never does.
+    fn texts_until(backend: &mut Backend, expected: &str) -> Vec<String> {
+        let deadline = std::time::Instant::now() + WAIT;
+        let mut texts = Vec::new();
+        while std::time::Instant::now() < deadline {
+            if let Some(Event::SettingsFile { text }) = backend.wait(Duration::from_millis(200)) {
+                let done = text == expected;
+                texts.push(text);
+                if done {
+                    return texts;
+                }
+            }
+        }
+        Vec::new()
+    }
+
+    #[test]
+    fn the_settings_file_is_read_when_it_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.toml");
+        let (mut backend, live) = watching(&path);
+        assert!(live);
+        std::fs::write(&path, "[data]\npage_size = 500\n").unwrap();
+        assert!(!texts_until(&mut backend, "[data]\npage_size = 500\n").is_empty());
+        // An editor that saves by renaming another file over it.
+        crate::util::write_atomic(&path, b"[data]\npage_size = 100\n").unwrap();
+        assert!(!texts_until(&mut backend, "[data]\npage_size = 100\n").is_empty());
+        // And one that writes in place. The first write above was that
+        // too, but so soon after the watch began that the read it starts
+        // with may have been the one to find it.
+        std::fs::write(&path, "[data]\npage_size = 300\n").unwrap();
+        assert!(!texts_until(&mut backend, "[data]\npage_size = 300\n").is_empty());
+    }
+
+    #[test]
+    fn the_settings_file_is_read_when_the_watch_starts() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.toml");
+        // Saved after the app loaded its settings and before it watched
+        // the file: no change follows to say so.
+        std::fs::write(&path, PAGE_500).unwrap();
+        let (mut backend, live) = watching(&path);
+        assert!(live);
+        assert_eq!(texts_until(&mut backend, PAGE_500), [PAGE_500]);
+        // Once: the watch starting is not a change of the file.
+        assert!(backend.wait(Duration::from_millis(600)).is_none());
+    }
+
+    #[test]
+    fn the_settings_file_settles_from_its_last_change() {
+        paused().block_on(async {
+            let (changed, mut changes) = tokio_mpsc::unbounded_channel();
+            let start = tokio::time::Instant::now();
+            // A save in three steps, 80 ms apart: truncated at 80, written
+            // at 160. Read 100 ms after the first, the file would be empty.
+            let editor = changed.clone();
+            tokio::spawn(async move {
+                for _ in 0..3 {
+                    let _ = editor.send(());
+                    tokio::time::sleep(Duration::from_millis(80)).await;
+                }
+            });
+            assert!(settled(&mut changes).await);
+            assert_eq!(start.elapsed(), Duration::from_millis(260));
+            // The watcher is gone: there is nothing left to read for.
+            drop(changed);
+            assert!(!settled(&mut changes).await);
+        });
+    }
+
+    /// The reader of a settings file whose read number `n`, from 0, answers
+    /// at once with `answer(n)`: the channel that wakes it, what it sends,
+    /// and when each read was.
+    fn reader(
+        answer: impl Fn(usize) -> std::io::Result<Vec<u8>> + Send + 'static,
+    ) -> (
+        tokio_mpsc::UnboundedSender<()>,
+        mpsc::Receiver<Event>,
+        Arc<Mutex<Vec<tokio::time::Instant>>>,
+    ) {
+        slow_reader(move |read| std::future::ready(answer(read)))
+    }
+
+    /// As `reader`, with reads that may take their time: read number `n` is
+    /// the future `read(n)`, and the file can change while it runs. The
+    /// times are those the reads began at.
+    fn slow_reader<F>(
+        read: impl Fn(usize) -> F + Send + 'static,
+    ) -> (
+        tokio_mpsc::UnboundedSender<()>,
+        mpsc::Receiver<Event>,
+        Arc<Mutex<Vec<tokio::time::Instant>>>,
+    )
+    where
+        F: Future<Output = std::io::Result<Vec<u8>>> + Send + 'static,
+    {
+        let (outbox, events) = quiet_outbox();
+        let (changed, changes) = tokio_mpsc::unbounded_channel();
+        let reads = Arc::new(Mutex::new(Vec::new()));
+        let noted = Arc::clone(&reads);
+        let read = move |_: PathBuf| {
+            let mut reads = lock(&noted);
+            reads.push(tokio::time::Instant::now());
+            read(reads.len() - 1)
+        };
+        // A plain file that is watched: there is no link to follow.
+        let follow = || Ok(());
+        let path = PathBuf::from("settings.toml");
+        tokio::spawn(read_settings(path, true, changes, outbox, follow, read));
+        (changed, events, reads)
+    }
+
+    /// What a read answers while an editor holds the file.
+    fn held() -> std::io::Error {
+        std::io::ErrorKind::PermissionDenied.into()
+    }
+
+    /// The texts of the settings file sent so far.
+    fn texts(events: &mpsc::Receiver<Event>) -> Vec<String> {
+        let text = |event| match event {
+            Event::SettingsFile { text } => Some(text),
+            _ => None,
+        };
+        events.try_iter().filter_map(text).collect()
+    }
+
+    const PAGE_500: &str = "[data]\npage_size = 500\n";
+
+    #[test]
+    fn a_settings_file_that_cannot_be_read_is_tried_again() {
+        paused().block_on(async {
+            // An editor holds the file through two reads, and lets go
+            // without another change to say so.
+            let (changed, events, reads) = reader(|read| match read {
+                0 | 1 => Err(held()),
+                _ => Ok(PAGE_500.into()),
+            });
+            let start = tokio::time::Instant::now();
+            changed.send(()).unwrap();
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            assert_eq!(texts(&events), [PAGE_500]);
+            // Once the change has settled, then after a wait that doubles.
+            assert_eq!(sent_at(&reads, start), [100, 200, 400]);
+        });
+    }
+
+    #[test]
+    fn a_settings_file_that_stays_unreadable_is_left_until_it_changes() {
+        paused().block_on(async {
+            let (changed, events, reads) = reader(|read| match read {
+                0..6 => Err(held()),
+                _ => Ok(PAGE_500.into()),
+            });
+            let start = tokio::time::Instant::now();
+            changed.send(()).unwrap();
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            // Six reads, the waits between them doubling up to a second,
+            // and no more: the reader does not ask for ever.
+            assert_eq!(sent_at(&reads, start), [100, 200, 400, 800, 1_600, 2_600]);
+            assert!(texts(&events).is_empty());
+            // The next change is read as any other.
+            changed.send(()).unwrap();
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            assert_eq!(sent_at(&reads, start).len(), 7);
+            assert_eq!(texts(&events), [PAGE_500]);
+        });
+    }
+
+    #[test]
+    fn a_settings_file_that_is_gone_is_read_once() {
+        paused().block_on(async {
+            let (changed, events, reads) = reader(|_| Err(std::io::ErrorKind::NotFound.into()));
+            let start = tokio::time::Instant::now();
+            changed.send(()).unwrap();
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            // Waiting does not bring a deleted file back.
+            assert_eq!(sent_at(&reads, start), [100]);
+            assert!(texts(&events).is_empty());
+        });
+    }
+
+    #[test]
+    fn a_change_while_a_read_waits_starts_over() {
+        paused().block_on(async {
+            let (changed, events, reads) = reader(|read| match read {
+                0..4 => Err(held()),
+                _ => Ok(PAGE_500.into()),
+            });
+            let start = tokio::time::Instant::now();
+            changed.send(()).unwrap();
+            // The third read has failed, and the fourth is due at 800.
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            changed.send(()).unwrap();
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            // The file changed again: it is left to settle, and the waits
+            // begin again from the shortest.
+            assert_eq!(sent_at(&reads, start), [100, 200, 400, 600, 700]);
+            assert_eq!(texts(&events), [PAGE_500]);
+        });
+    }
+
+    /// A read that takes 50 ms to answer with `answer`.
+    async fn after_50_ms(answer: Vec<u8>) -> std::io::Result<Vec<u8>> {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        Ok(answer)
+    }
+
+    #[test]
+    fn a_read_overtaken_by_a_change_is_not_sent() {
+        paused().block_on(async {
+            // An editor truncates the file and writes it again while the
+            // first read runs: that read finds the file empty.
+            let (changed, events, reads) = slow_reader(|read| {
+                after_50_ms(match read {
+                    0 => Vec::new(),
+                    _ => PAGE_500.into(),
+                })
+            });
+            let start = tokio::time::Instant::now();
+            changed.send(()).unwrap();
+            // The first read began at 100 and answers at 150.
+            tokio::time::sleep(Duration::from_millis(120)).await;
+            changed.send(()).unwrap();
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            // What it found is dropped when it answers, and the file is
+            // read again once it has been left alone since.
+            assert_eq!(sent_at(&reads, start), [100, 250]);
+            assert_eq!(texts(&events), [PAGE_500]);
+        });
+    }
+
+    #[test]
+    fn a_read_that_outlasts_the_watch_is_sent() {
+        paused().block_on(async {
+            let (changed, events, reads) = slow_reader(|_| after_50_ms(PAGE_500.into()));
+            let start = tokio::time::Instant::now();
+            changed.send(()).unwrap();
+            tokio::time::sleep(Duration::from_millis(120)).await;
+            // The end of the watch is not a change of the file.
+            drop(changed);
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            assert_eq!(sent_at(&reads, start), [100]);
+            assert_eq!(texts(&events), [PAGE_500]);
+        });
+    }
+
+    #[test]
+    fn a_read_that_waits_ends_with_the_watch() {
+        paused().block_on(async {
+            let (changed, events, reads) = reader(|_| Err(held()));
+            let start = tokio::time::Instant::now();
+            changed.send(()).unwrap();
+            tokio::time::sleep(Duration::from_millis(150)).await;
+            drop(changed);
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            assert_eq!(sent_at(&reads, start), [100]);
+            assert!(texts(&events).is_empty());
+        });
+    }
+
+    #[test]
+    fn only_a_change_of_the_settings_file_wakes_the_reader() {
+        use notify::event::{AccessKind, CreateKind, ModifyKind, RenameMode};
+        use notify::{Event, EventKind};
+        let own = [OsString::from("settings.toml")];
+        let name = &own[..];
+        let at = |kind: EventKind, path: &str| Event::new(kind).add_path(path.into());
+        let data = EventKind::Modify(ModifyKind::Any);
+        assert!(concerns(&at(data, "/config/settings.toml"), name));
+        assert!(concerns(
+            &at(EventKind::Create(CreateKind::File), "/config/settings.toml"),
+            name
+        ));
+        // A rename carries both names: the temporary file's and ours.
+        let renamed = Event::new(EventKind::Modify(ModifyKind::Name(RenameMode::Both)))
+            .add_path("/config/.tabletist-x.tmp".into())
+            .add_path("/private/config/settings.toml".into());
+        assert!(concerns(&renamed, name));
+        // Another file of the directory, and a look at ours: Linux reports
+        // every open, and the reader's own read is one.
+        assert!(!concerns(&at(data, "/config/connections.json"), name));
+        assert!(!concerns(
+            &at(EventKind::Access(AccessKind::Any), "/config/settings.toml"),
+            name
+        ));
+        assert!(!concerns(&at(data, "/config/settings.toml"), &[]));
+        // Behind a symbolic link the file has a second name, elsewhere.
+        let linked = [own[0].clone(), OsString::from("tabletist.toml")];
+        assert!(concerns(&at(data, "/dotfiles/tabletist.toml"), &linked));
+        assert!(concerns(&at(data, "/config/settings.toml"), &linked));
+        assert!(!concerns(&at(data, "/dotfiles/tabletist.toml"), name));
+        assert!(!concerns(&at(data, "/dotfiles/README.md"), &linked));
+    }
+
+    #[test]
+    fn a_settings_file_kept_in_another_case_is_the_same_where_case_does_not_count() {
+        use notify::event::{AccessKind, ModifyKind};
+        use notify::{Event, EventKind};
+        let name = std::ffi::OsStr::new("settings.toml");
+        let names = [name.to_owned()];
+        let at = |kind: EventKind, path: &str| Event::new(kind).add_path(path.into());
+        let data = EventKind::Modify(ModifyKind::Any);
+        // macOS and Windows open `Settings.toml` under the lower-case name
+        // the app asks for, and report its changes as it is spelled.
+        let folds = cfg!(any(windows, target_os = "macos"));
+        assert_eq!(concerns(&at(data, "/config/Settings.toml"), &names), folds);
+        assert_eq!(concerns(&at(data, "/config/SETTINGS.TOML"), &names), folds);
+        // Another file is another file in any case, and a look is a look.
+        assert!(!concerns(&at(data, "/config/Settings.json"), &names));
+        assert!(!concerns(
+            &at(EventKind::Access(AccessKind::Any), "/config/Settings.toml"),
+            &names
+        ));
+        assert!(same_file(name, std::ffi::OsStr::new("settings.toml")));
+    }
+
+    #[test]
+    fn a_name_in_another_case_is_the_same_beyond_ascii_too() {
+        use notify::event::ModifyKind;
+        use notify::{Event, EventKind};
+        let folds = cfg!(any(windows, target_os = "macos"));
+        let name = OsString::from;
+        assert_eq!(same_file(&name("Ä.toml"), &name("ä.toml")), folds);
+        assert_eq!(
+            same_file(&name("НАСТРОЙКИ.toml"), &name("настройки.toml")),
+            folds
+        );
+        assert!(same_file(&name("ä.toml"), &name("ä.toml")));
+        assert!(!same_file(&name("ä.toml"), &name("a.toml")));
+        // A link spells the file it leads to in one case, and the file is
+        // kept, and its changes reported, in another.
+        let linked = [name("settings.toml"), name("Ä.toml")];
+        let change = Event::new(EventKind::Modify(ModifyKind::Any));
+        let change = change.add_path("/dotfiles/ä.toml".into());
+        assert_eq!(concerns(&change, &linked), folds);
+    }
+
+    #[test]
+    fn names_beyond_ascii_that_cannot_be_told_apart_are_taken_for_one() {
+        use notify::event::ModifyKind;
+        use notify::{Event, EventKind};
+        let folds = cfg!(any(windows, target_os = "macos"));
+        let name = OsString::from;
+        // Windows compares names by their upper case, which the two small
+        // sigmas share. Their lower cases differ.
+        assert_eq!(same_file(&name("Σ.toml"), &name("ς.toml")), folds);
+        assert_eq!(same_file(&name("σ.toml"), &name("ς.toml")), folds);
+        let linked = [name("settings.toml"), name("Σ.toml")];
+        let change = Event::new(EventKind::Modify(ModifyKind::Any));
+        let change = change.add_path("/dotfiles/ς.toml".into());
+        assert_eq!(concerns(&change, &linked), folds);
+        // macOS takes a letter with its accent for the same however the
+        // two are written: as one character, or as two.
+        assert_eq!(
+            same_file(&name("\u{e4}.toml"), &name("a\u{308}.toml")),
+            folds
+        );
+        // A name within ASCII is no name beyond it, and the app's own file
+        // is not read for every such name in its directory.
+        assert!(!same_file(&name("settings.toml"), &name("настройки.toml")));
+        assert!(!same_file(&name("a.toml"), &name("\u{e4}.toml")));
+    }
+
+    #[test]
+    fn a_watched_directory_that_is_moved_or_removed_is_told() {
+        use notify::event::{AccessKind, ModifyKind, RemoveKind, RenameMode};
+        use notify::{Event, EventKind};
+        let watched = [PathBuf::from("/config"), PathBuf::from("/dotfiles")];
+        let at = |kind: EventKind, path: &str| Event::new(kind).add_path(path.into());
+        let moved = EventKind::Modify(ModifyKind::Name(RenameMode::From));
+        let removed = EventKind::Remove(RemoveKind::Folder);
+        assert!(leaves(&at(moved, "/dotfiles"), &watched));
+        assert!(leaves(&at(removed, "/dotfiles"), &watched));
+        assert!(leaves(&at(removed, "/config"), &watched));
+        // What happens in it is not the directory leaving, nor is a look
+        // at it or a change of its own times.
+        assert!(!leaves(&at(removed, "/dotfiles/settings.toml"), &watched));
+        assert!(!leaves(&at(moved, "/dotfiles/settings.toml"), &watched));
+        let looked = EventKind::Access(AccessKind::Any);
+        assert!(!leaves(&at(looked, "/dotfiles"), &watched));
+        let touched = EventKind::Modify(ModifyKind::Any);
+        assert!(!leaves(&at(touched, "/dotfiles"), &watched));
+        // Nor is another directory's.
+        assert!(!leaves(&at(removed, "/elsewhere"), &watched));
+    }
+
+    #[test]
+    fn a_settings_file_that_is_not_text_sends_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.toml");
+        let (mut backend, _) = watching(&path);
+        // Each write is all or nothing: one that truncates and then writes
+        // could be read in between, as an empty text.
+        crate::util::write_atomic(&path, &[0xff, 0xfe, 0x00]).unwrap();
+        std::thread::sleep(Duration::from_millis(400));
+        crate::util::write_atomic(&path, b"[data]\npage_size = 500\n").unwrap();
+        // The first text to come is the readable one.
+        assert_eq!(
+            texts_until(&mut backend, "[data]\npage_size = 500\n"),
+            vec!["[data]\npage_size = 500\n".to_owned()]
+        );
+    }
+
+    #[test]
+    fn reading_the_file_does_not_send_it_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.toml");
+        let (mut backend, _) = watching(&path);
+        std::fs::write(&path, "[data]\npage_size = 500\n").unwrap();
+        assert!(!texts_until(&mut backend, "[data]\npage_size = 500\n").is_empty());
+        // The reader's own look at the file does not wake it: nothing more
+        // is sent.
+        assert!(backend.wait(Duration::from_millis(600)).is_none());
+        // And a save of the same text wakes it, but is not news. Renamed
+        // into place, so that no read finds the file empty on the way.
+        crate::util::write_atomic(&path, b"[data]\npage_size = 500\n").unwrap();
+        assert!(backend.wait(Duration::from_millis(600)).is_none());
+    }
+
+    #[test]
+    fn a_settings_file_that_is_deleted_sends_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.toml");
+        let (mut backend, _) = watching(&path);
+        std::fs::write(&path, "[data]\npage_size = 500\n").unwrap();
+        assert!(!texts_until(&mut backend, "[data]\npage_size = 500\n").is_empty());
+        std::fs::remove_file(&path).unwrap();
+        assert!(backend.wait(Duration::from_millis(600)).is_none());
+    }
+
+    /// A config directory and a dotfiles directory under `root`.
+    fn config_and_dotfiles(root: &std::path::Path) -> (PathBuf, PathBuf) {
+        let (config, dotfiles) = (root.join("config"), root.join("dotfiles"));
+        std::fs::create_dir_all(&config).unwrap();
+        std::fs::create_dir_all(&dotfiles).unwrap();
+        (config, dotfiles)
+    }
+
+    #[test]
+    fn an_edit_behind_a_symbolic_link_is_read() {
+        if !crate::util::can_symlink() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let (config, dotfiles) = config_and_dotfiles(dir.path());
+        // As a dotfiles manager leaves it: the file in its repository,
+        // under a name of its own, and a link in the config directory.
+        let (path, target) = (
+            config.join("settings.toml"),
+            dotfiles.join("tabletist.toml"),
+        );
+        std::fs::write(&target, "[data]\npage_size = 100\n").unwrap();
+        crate::util::symlink_file(&target, &path);
+        let (mut backend, live) = watching(&path);
+        assert!(live);
+        // An edit of the file in the repository, in place.
+        std::fs::write(&target, "[data]\npage_size = 500\n").unwrap();
+        assert!(!texts_until(&mut backend, "[data]\npage_size = 500\n").is_empty());
+        // An editor that saves there by renaming another file over it.
+        crate::util::write_atomic(&target, b"[data]\npage_size = 1000\n").unwrap();
+        assert!(!texts_until(&mut backend, "[data]\npage_size = 1000\n").is_empty());
+        // The app's own save goes through the link, which stays.
+        crate::util::write_atomic(&path, b"[data]\npage_size = 100\n").unwrap();
+        assert!(!texts_until(&mut backend, "[data]\npage_size = 100\n").is_empty());
+        assert_eq!(std::fs::read_link(&path).unwrap(), target);
+    }
+
+    #[test]
+    fn a_link_made_while_the_file_is_watched_is_followed() {
+        if !crate::util::can_symlink() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let (config, dotfiles) = config_and_dotfiles(dir.path());
+        let (path, target) = (config.join("settings.toml"), dotfiles.join("settings.toml"));
+        std::fs::write(&path, "[data]\npage_size = 100\n").unwrap();
+        let (mut backend, live) = watching(&path);
+        assert!(live);
+        // The file moves to the repository and a link takes its place.
+        std::fs::write(&target, "[data]\npage_size = 500\n").unwrap();
+        std::fs::remove_file(&path).unwrap();
+        crate::util::symlink_file(&target, &path);
+        assert!(!texts_until(&mut backend, "[data]\npage_size = 500\n").is_empty());
+        // From then on an edit made there is seen.
+        std::fs::write(&target, "[data]\npage_size = 1000\n").unwrap();
+        assert!(!texts_until(&mut backend, "[data]\npage_size = 1000\n").is_empty());
+    }
+
+    #[test]
+    fn a_link_to_where_nothing_can_be_watched_is_not_live() {
+        if !crate::util::can_symlink() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let (config, dotfiles) = config_and_dotfiles(dir.path());
+        let path = config.join("settings.toml");
+        // The directory the link leads to is not there.
+        crate::util::symlink_file(dir.path().join("away").join("settings.toml"), &path);
+        let (mut backend, live) = watching(&path);
+        assert!(!live, "an edit made there would not be seen");
+        // The link is turned to a directory that is: said, and followed.
+        let target = dotfiles.join("settings.toml");
+        std::fs::write(&target, "[data]\npage_size = 500\n").unwrap();
+        std::fs::remove_file(&path).unwrap();
+        crate::util::symlink_file(&target, &path);
+        assert!(matches!(
+            backend.wait(WAIT),
+            Some(Event::SettingsWatch { live: true })
+        ));
+        assert!(!texts_until(&mut backend, "[data]\npage_size = 500\n").is_empty());
+        std::fs::write(&target, "[data]\npage_size = 1000\n").unwrap();
+        assert!(!texts_until(&mut backend, "[data]\npage_size = 1000\n").is_empty());
+    }
+
+    /// Puts a link to `target` at `path`, in place of what is there.
+    fn link_anew(target: &std::path::Path, path: &std::path::Path) {
+        let _ = std::fs::remove_file(path);
+        crate::util::symlink_file(target, path);
+    }
+
+    #[test]
+    fn the_watcher_watches_where_the_link_leads_each_time_it_turns() {
+        if !crate::util::can_symlink() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let (config, dotfiles) = config_and_dotfiles(dir.path());
+        let other = dir.path().join("other");
+        std::fs::create_dir(&other).unwrap();
+        let path = config.join("settings.toml");
+        let mut watch = SettingsWatcher {
+            watcher: notify::recommended_watcher(|_| {}).unwrap(),
+            path: path.clone(),
+            names: Arc::default(),
+            elsewhere: Vec::new(),
+            watched: Arc::default(),
+            gone: Arc::default(),
+        };
+        let names = |watch: &SettingsWatcher| -> Vec<String> {
+            let names = lock(&watch.names);
+            let names = names.iter();
+            names
+                .map(|name| name.to_string_lossy().into_owned())
+                .collect()
+        };
+        // As the system has it, which is how the watcher keeps it.
+        let real = |directory: &std::path::Path| std::fs::canonicalize(directory).unwrap();
+        let nowhere: Vec<PathBuf> = Vec::new();
+
+        // No file yet, then a plain one: only the config directory.
+        assert_eq!(watch.follow(), Ok(()));
+        std::fs::write(&path, "").unwrap();
+        assert_eq!(watch.follow(), Ok(()));
+        assert_eq!(
+            (names(&watch), &watch.elsewhere),
+            (vec!["settings.toml".into()], &nowhere)
+        );
+
+        // A link to another directory, under another name there.
+        link_anew(&dotfiles.join("tabletist.toml"), &path);
+        assert_eq!(watch.follow(), Ok(()));
+        assert_eq!(names(&watch), ["settings.toml", "tabletist.toml"]);
+        assert_eq!(watch.elsewhere, [real(&dotfiles)]);
+
+        // Turned to a third directory: that one, and no longer the second.
+        link_anew(&other.join("settings.toml"), &path);
+        assert_eq!(watch.follow(), Ok(()));
+        assert_eq!(names(&watch), ["settings.toml", "settings.toml"]);
+        assert_eq!(watch.elsewhere, [real(&other)]);
+
+        // Through a second link, which can be turned too: the names of
+        // both, and the directories of both.
+        let current = dotfiles.join("current");
+        link_anew(&other.join("settings.toml"), &current);
+        link_anew(&current, &path);
+        assert_eq!(watch.follow(), Ok(()));
+        assert_eq!(names(&watch), ["settings.toml", "current", "settings.toml"]);
+        assert_eq!(watch.elsewhere, [real(&other), real(&dotfiles)]);
+
+        // Turned to a directory that is not there: said, and nothing kept.
+        link_anew(&dir.path().join("away").join("settings.toml"), &path);
+        assert!(watch.follow().is_err());
+        assert_eq!(
+            (names(&watch), &watch.elsewhere),
+            (vec!["settings.toml".into()], &nowhere)
+        );
+
+        // A link within the config directory: a second name, no second
+        // directory, also when it is reached by another path.
+        link_anew(std::path::Path::new("real.toml"), &path);
+        assert_eq!(watch.follow(), Ok(()));
+        assert_eq!(names(&watch), ["settings.toml", "real.toml"]);
+        assert_eq!(watch.elsewhere, nowhere);
+        link_anew(&dotfiles.join("..").join("config").join("real.toml"), &path);
+        assert_eq!(watch.follow(), Ok(()));
+        assert_eq!(watch.elsewhere, nowhere);
+
+        // And a plain file again.
+        std::fs::remove_file(&path).unwrap();
+        std::fs::write(&path, "").unwrap();
+        assert_eq!(watch.follow(), Ok(()));
+        assert_eq!(
+            (names(&watch), &watch.elsewhere),
+            (vec!["settings.toml".into()], &nowhere)
+        );
+    }
+
+    #[test]
+    fn a_link_turned_before_its_directory_is_watched_is_not_missed() {
+        if !crate::util::can_symlink() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let (config, dotfiles) = config_and_dotfiles(dir.path());
+        let (first, second) = (dir.path().join("first"), dir.path().join("second"));
+        std::fs::create_dir(&first).unwrap();
+        std::fs::create_dir(&second).unwrap();
+        // config/settings.toml -> dotfiles/current -> first/settings.toml
+        let (path, current) = (config.join("settings.toml"), dotfiles.join("current"));
+        crate::util::symlink_file(first.join("settings.toml"), &current);
+        crate::util::symlink_file(&current, &path);
+        let mut watch = SettingsWatcher {
+            watcher: notify::recommended_watcher(|_| {}).unwrap(),
+            path,
+            names: Arc::default(),
+            elsewhere: Vec::new(),
+            watched: Arc::default(),
+            gone: Arc::default(),
+        };
+        // The second link is turned right after the first look at it, when
+        // its directory is not watched yet: no event will ever say so.
+        let mut looks = 0;
+        let followed = watch.follow_with(|path| {
+            let behind = behind_link(path);
+            looks += 1;
+            if looks == 1 {
+                link_anew(&second.join("settings.toml"), &current);
+            }
+            behind
+        });
+        assert_eq!(followed, Ok(()));
+        // What is watched is where the links lead now, not where the
+        // first look found them leading.
+        let real = |directory: &std::path::Path| std::fs::canonicalize(directory).unwrap();
+        assert_eq!(watch.elsewhere, [real(&dotfiles), real(&second)]);
+        assert_eq!(looks, 3, "looked at again until nothing had turned");
+
+        // A link that is turned at every look is not called followed.
+        let mut turns = 0;
+        let followed = watch.follow_with(|path| {
+            let behind = behind_link(path);
+            turns += 1;
+            let to = if turns % 2 == 0 { &second } else { &first };
+            link_anew(&to.join("settings.toml"), &current);
+            behind
+        });
+        assert!(followed.is_err(), "{followed:?}");
+    }
+
+    #[test]
+    fn a_link_turned_in_the_middle_of_a_chain_is_followed() {
+        if !crate::util::can_symlink() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let (config, dotfiles) = config_and_dotfiles(dir.path());
+        let (first, second) = (dir.path().join("first"), dir.path().join("second"));
+        std::fs::create_dir(&first).unwrap();
+        std::fs::create_dir(&second).unwrap();
+        std::fs::write(first.join("settings.toml"), "[data]\npage_size = 100\n").unwrap();
+        std::fs::write(second.join("settings.toml"), "[data]\npage_size = 500\n").unwrap();
+        // config/settings.toml -> dotfiles/current -> first/settings.toml
+        let (path, current) = (config.join("settings.toml"), dotfiles.join("current"));
+        crate::util::symlink_file(first.join("settings.toml"), &current);
+        crate::util::symlink_file(&current, &path);
+        let (mut backend, live) = watching(&path);
+        assert!(live);
+        // The second link is turned: nothing changes beside the first, nor
+        // beside the file it led to.
+        link_anew(&second.join("settings.toml"), &current);
+        assert!(!texts_until(&mut backend, "[data]\npage_size = 500\n").is_empty());
+        // And an edit made where it leads now is seen.
+        std::fs::write(second.join("settings.toml"), "[data]\npage_size = 1000\n").unwrap();
+        assert!(!texts_until(&mut backend, "[data]\npage_size = 1000\n").is_empty());
+    }
+
+    #[test]
+    fn a_link_turned_while_the_file_is_watched_is_followed() {
+        if !crate::util::can_symlink() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let (config, dotfiles) = config_and_dotfiles(dir.path());
+        let other = dir.path().join("other");
+        std::fs::create_dir(&other).unwrap();
+        let path = config.join("settings.toml");
+        let (first, second) = (dotfiles.join("settings.toml"), other.join("settings.toml"));
+        std::fs::write(&first, "[data]\npage_size = 100\n").unwrap();
+        std::fs::write(&second, "[data]\npage_size = 500\n").unwrap();
+        crate::util::symlink_file(&first, &path);
+        let (mut backend, live) = watching(&path);
+        assert!(live);
+
+        // Turned to a file in another directory: read, and watched there.
+        link_anew(&second, &path);
+        assert!(!texts_until(&mut backend, "[data]\npage_size = 500\n").is_empty());
+        std::fs::write(&second, "[data]\npage_size = 1000\n").unwrap();
+        assert!(!texts_until(&mut backend, "[data]\npage_size = 1000\n").is_empty());
+
+        // Turned to a directory that is not there: no longer live.
+        link_anew(&dir.path().join("away").join("settings.toml"), &path);
+        let deadline = std::time::Instant::now() + WAIT;
+        loop {
+            match backend.wait(Duration::from_millis(200)) {
+                Some(Event::SettingsWatch { live }) => break assert!(!live),
+                // The second file's text once more, when its last write
+                // was read in two halves.
+                Some(Event::SettingsFile { .. }) | None => {}
+                other => panic!("expected the watch to be lost, got {other:?}"),
+            }
+            assert!(std::time::Instant::now() < deadline, "never said");
+        }
+
+        // A plain file takes the link's place: live again, and read.
+        std::fs::remove_file(&path).unwrap();
+        crate::util::write_atomic(&path, b"[data]\npage_size = 50\n").unwrap();
+        assert!(matches!(
+            backend.wait(WAIT),
+            Some(Event::SettingsWatch { live: true })
+        ));
+        assert!(!texts_until(&mut backend, "[data]\npage_size = 50\n").is_empty());
+        std::fs::write(&path, "[data]\npage_size = 100\n").unwrap();
+        assert!(!texts_until(&mut backend, "[data]\npage_size = 100\n").is_empty());
+    }
+
+    #[test]
+    fn a_place_that_appears_behind_a_link_is_found() {
+        if !crate::util::can_symlink() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let (config, _) = config_and_dotfiles(dir.path());
+        let path = config.join("settings.toml");
+        // The directory the link leads to is not there yet (a volume that
+        // is not mounted).
+        let away = dir.path().join("away");
+        let target = away.join("settings.toml");
+        crate::util::symlink_file(&target, &path);
+        let (mut backend, live) = watching(&path);
+        assert!(!live);
+        // It appears, and nothing changes beside the link: no event says so.
+        std::fs::create_dir(&away).unwrap();
+        crate::util::write_atomic(&target, b"[data]\npage_size = 500\n").unwrap();
+        assert!(matches!(
+            backend.wait(WAIT),
+            Some(Event::SettingsWatch { live: true })
+        ));
+        assert!(!texts_until(&mut backend, "[data]\npage_size = 500\n").is_empty());
+        // From then on an edit made there is seen.
+        std::fs::write(&target, "[data]\npage_size = 1000\n").unwrap();
+        assert!(!texts_until(&mut backend, "[data]\npage_size = 1000\n").is_empty());
+    }
+
+    /// A link at the config directory's `settings.toml` to the dotfiles
+    /// directory's, which reads 100 rows a page, and a backend watching it.
+    #[cfg(target_os = "linux")]
+    fn linked_to_dotfiles(root: &std::path::Path) -> (Backend, PathBuf, PathBuf) {
+        let (config, dotfiles) = config_and_dotfiles(root);
+        let (path, target) = (config.join("settings.toml"), dotfiles.join("settings.toml"));
+        std::fs::write(&target, "[data]\npage_size = 100\n").unwrap();
+        crate::util::symlink_file(&target, &path);
+        let (backend, live) = watching(&path);
+        assert!(live);
+        (backend, dotfiles, target)
+    }
+
+    // The two below are for Linux, whose watches stay with the directory
+    // they were put on and say when it leaves.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_dotfiles_directory_set_aside_and_made_anew_is_watched_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut backend, dotfiles, target) = linked_to_dotfiles(dir.path());
+        // The repository is set aside and another takes its place. The link
+        // is as it was, and nothing changes beside it.
+        std::fs::rename(&dotfiles, dir.path().join("dotfiles.old")).unwrap();
+        std::fs::create_dir(&dotfiles).unwrap();
+        std::fs::write(&target, "[data]\npage_size = 500\n").unwrap();
+        assert!(!texts_until(&mut backend, "[data]\npage_size = 500\n").is_empty());
+        // And an edit made in the new one is seen.
+        std::fs::write(&target, "[data]\npage_size = 1000\n").unwrap();
+        assert!(!texts_until(&mut backend, "[data]\npage_size = 1000\n").is_empty());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_dotfiles_directory_removed_and_made_anew_is_watched_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut backend, dotfiles, target) = linked_to_dotfiles(dir.path());
+        std::fs::remove_dir_all(&dotfiles).unwrap();
+        std::fs::create_dir(&dotfiles).unwrap();
+        std::fs::write(&target, "[data]\npage_size = 500\n").unwrap();
+        assert!(!texts_until(&mut backend, "[data]\npage_size = 500\n").is_empty());
+        // The watch that was on the directory went with it: an edit made
+        // in the new one is seen all the same.
+        std::fs::write(&target, "[data]\npage_size = 1000\n").unwrap();
+        assert!(!texts_until(&mut backend, "[data]\npage_size = 1000\n").is_empty());
+    }
+
+    #[test]
+    fn a_watcher_told_a_directory_left_watches_them_all_anew() {
+        if !crate::util::can_symlink() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let (config, dotfiles) = config_and_dotfiles(dir.path());
+        let path = config.join("settings.toml");
+        link_anew(&dotfiles.join("settings.toml"), &path);
+        let mut watch = SettingsWatcher {
+            watcher: notify::recommended_watcher(|_| {}).unwrap(),
+            path: path.clone(),
+            names: Arc::default(),
+            elsewhere: Vec::new(),
+            watched: Arc::default(),
+            gone: Arc::default(),
+        };
+        let real = |directory: &std::path::Path| std::fs::canonicalize(directory).unwrap();
+        assert_eq!(watch.follow(), Ok(()));
+        // The callback is told both directories, to know them in an event.
+        assert_eq!(
+            *lock(&watch.watched),
+            [std::path::absolute(&config).unwrap(), real(&dotfiles)]
+        );
+        // One left and is there again: all are watched anew, and the
+        // watcher is done with what it was told.
+        watch.gone.store(true, Ordering::SeqCst);
+        assert_eq!(watch.follow(), Ok(()));
+        assert!(!watch.gone.load(Ordering::SeqCst));
+        assert_eq!(watch.elsewhere, [real(&dotfiles)]);
+    }
+
+    #[test]
+    fn a_watcher_whose_own_directory_left_tries_again_until_it_is_there() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("config");
+        let mut watch = SettingsWatcher {
+            watcher: notify::recommended_watcher(|_| {}).unwrap(),
+            path: config.join("settings.toml"),
+            names: Arc::default(),
+            elsewhere: Vec::new(),
+            watched: Arc::default(),
+            gone: Arc::new(AtomicBool::new(true)),
+        };
+        // Not there: said, and what the watcher was told stays told.
+        assert!(watch.follow().is_err());
+        assert!(watch.gone.load(Ordering::SeqCst));
+        std::fs::create_dir(&config).unwrap();
+        assert_eq!(watch.follow(), Ok(()));
+        assert!(!watch.gone.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn a_directory_that_is_not_there_cannot_be_watched() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("missing").join("settings.toml");
+        let (_backend, live) = watching(&path);
+        assert!(!live);
     }
 }

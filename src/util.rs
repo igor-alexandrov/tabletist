@@ -29,6 +29,33 @@ pub fn pin_now(now: Option<u64>) {
     PINNED_NOW.with(|pinned| pinned.set(now));
 }
 
+/// Makes a symbolic link at `link` to the file `target`, for the tests.
+#[cfg(test)]
+pub fn symlink_file(target: impl AsRef<Path>, link: impl AsRef<Path>) {
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(target, link).unwrap();
+    #[cfg(windows)]
+    std::os::windows::fs::symlink_file(target, link).unwrap();
+}
+
+/// Whether this user may make symbolic links, for the tests of them:
+/// always on Unix, on Windows only with the privilege or in developer mode.
+/// Without it such a test prints "skipped" and passes, as the tests that
+/// need a server do.
+#[cfg(test)]
+pub fn can_symlink() -> bool {
+    #[cfg(windows)]
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let (target, link) = (dir.path().join("target"), dir.path().join("link"));
+        if let Err(error) = std::os::windows::fs::symlink_file(target, link) {
+            eprintln!("skipped: this user cannot make symbolic links ({error})");
+            return false;
+        }
+    }
+    true
+}
+
 /// `path` with `suffix` appended to its file name (`a.json` -> `a.json.tmp`).
 fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
     let mut name = path.as_os_str().to_owned();
@@ -46,25 +73,88 @@ pub fn create_private_dir(dir: &Path) -> std::io::Result<()> {
     builder.create(dir)
 }
 
-/// Writes `bytes` to a new temporary file beside `path`, flushes it to disk,
-/// then renames it over `path`, so a crash never leaves a half-written file.
-/// The temporary file has a random name and is created exclusively, so a
-/// leftover file or a symlink planted beside `path` is never followed. On
-/// Unix it is private to the user (0600), and the directory is flushed after
-/// the rename so the new name survives a crash too.
-pub fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    let dir = match path.parent() {
+/// The directory `path` is in: the current one for a bare file name.
+pub fn directory_of(path: &Path) -> &Path {
+    match path.parent() {
         Some(parent) if !parent.as_os_str().is_empty() => parent,
         _ => Path::new("."),
-    };
-    create_private_dir(dir)?;
+    }
+}
+
+/// How many symbolic links [`resolve_link`] follows before it gives up, as
+/// Linux does.
+const MAX_LINKS: usize = 40;
+
+/// The paths `path` leads through as the symbolic links at its end are
+/// followed (a dotfiles manager keeps the file in its repository and a
+/// link here): `path` first, then what each link leads to, the file last.
+/// Only `path` itself when it is not a link. The file need not be there.
+/// Links among the directories on the way are the system's to follow. More
+/// links than the limit, as links that lead back to themselves are, is an
+/// error, and so is a path that cannot be looked at: it is not taken for a
+/// plain file.
+pub fn link_chain(path: &Path) -> std::io::Result<Vec<PathBuf>> {
+    let mut chain = vec![path.to_path_buf()];
+    loop {
+        let file = &chain[chain.len() - 1];
+        let linked = match file.symlink_metadata() {
+            Ok(metadata) => metadata.file_type().is_symlink(),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+            Err(error) => return Err(error),
+        };
+        if !linked {
+            return Ok(chain);
+        }
+        if chain.len() > MAX_LINKS {
+            return Err(std::io::Error::other(format!(
+                "{} leads through more than {MAX_LINKS} symbolic links",
+                path.display()
+            )));
+        }
+        // A relative target starts at the link's directory; an absolute
+        // one replaces it.
+        let target = std::fs::read_link(file)?;
+        let next = directory_of(file).join(target);
+        chain.push(next);
+    }
+}
+
+/// The file `path` names once the symbolic links at its end are followed:
+/// the last of its [`link_chain`], `path` itself when it is not a link.
+pub fn resolve_link(path: &Path) -> std::io::Result<PathBuf> {
+    let file = link_chain(path)?.pop();
+    Ok(file.unwrap_or_else(|| path.to_path_buf()))
+}
+
+/// Writes `bytes` to a new temporary file beside `path`, flushes it to disk,
+/// then renames it over `path`, so a crash never leaves a half-written file.
+///
+/// When `path` is a symbolic link the link stays: the temporary file is
+/// made beside the file it leads to (so the rename stays within one
+/// directory) and replaces that file. A rename over the link would leave a
+/// plain file there, and the file the user keeps elsewhere would no longer
+/// be the one the app uses. The directory is created only for a path that
+/// is not a link: where a link leads is the user's to make, and a save
+/// through a link to a directory that is not there fails.
+///
+/// The temporary file has a random name and is created exclusively, so a
+/// leftover file or a symlink planted beside the file is never followed:
+/// the only link written through is one at `path` itself. On Unix the new
+/// file is private to the user (0600) wherever it is, and its directory is
+/// flushed after the rename so the new name survives a crash too.
+pub fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let destination = resolve_link(path)?;
+    let dir = directory_of(&destination);
+    if destination == path {
+        create_private_dir(dir)?;
+    }
     let mut file = tempfile::Builder::new()
         .prefix(".tabletist-")
         .suffix(".tmp")
         .tempfile_in(dir)?;
     file.write_all(bytes)?;
     file.as_file().sync_all()?;
-    file.persist(path).map_err(|error| error.error)?;
+    file.persist(&destination).map_err(|error| error.error)?;
     #[cfg(unix)]
     {
         // Best effort: some filesystems cannot sync a directory, and the
@@ -107,8 +197,24 @@ pub fn load_json<T: DeserializeOwned + Default>(path: &Path) -> T {
 
 /// Renames a file that could not be loaded to `<name>.bad`, or to
 /// `<name>.bad.1`, `<name>.bad.2`... when earlier ones exist, so a second
-/// failure never replaces the first copy.
+/// failure never replaces the first copy. Behind a symbolic link it is the
+/// file the link leads to that is renamed, beside itself: the link stays,
+/// and the next save writes a new file where it leads. Where the link
+/// cannot be followed nothing is renamed, the link least of all: a save
+/// through it fails in the same way, so nothing is replaced either.
 pub fn keep_aside(path: &Path, problem: &str) {
+    let file = match resolve_link(path) {
+        Ok(file) => file,
+        Err(error) => {
+            log::warn!(
+                "could not load {} ({problem}) nor follow its link ({error}); \
+                 leaving it in place and using defaults",
+                path.display()
+            );
+            return;
+        }
+    };
+    let path = file.as_path();
     let Some(aside) = (0..1000)
         .map(|n| match n {
             0 => with_suffix(path, ".bad"),
@@ -248,6 +354,242 @@ mod tests {
         assert_eq!(std::fs::read(&path).unwrap(), b"second");
         assert_eq!(mode(&path), 0o600);
         assert_eq!(std::fs::read(&victim).unwrap(), b"untouched");
+    }
+
+    /// The names in `dir`, sorted.
+    fn names_in(dir: &Path) -> Vec<String> {
+        let mut names: Vec<_> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn a_write_through_a_symlink_replaces_the_file_it_leads_to() {
+        if !can_symlink() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let (config, dotfiles) = (dir.path().join("config"), dir.path().join("dotfiles"));
+        std::fs::create_dir_all(&config).unwrap();
+        std::fs::create_dir_all(&dotfiles).unwrap();
+        let (link, target) = (config.join("sample.json"), dotfiles.join("tabletist.json"));
+        std::fs::write(&target, b"first").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o644)).unwrap();
+        }
+        symlink_file(&target, &link);
+        // A link planted under a temporary name beside the target.
+        let victim = dir.path().join("victim");
+        std::fs::write(&victim, b"untouched").unwrap();
+        symlink_file(&victim, dotfiles.join("tabletist.json.tmp"));
+
+        write_atomic(&link, b"second").unwrap();
+        assert_eq!(std::fs::read_link(&link).unwrap(), target, "the link stays");
+        assert!(!target.symlink_metadata().unwrap().file_type().is_symlink());
+        assert_eq!(std::fs::read(&target).unwrap(), b"second");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&target).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600, "the new file is private there too");
+        }
+        assert_eq!(std::fs::read(&victim).unwrap(), b"untouched");
+        assert_eq!(names_in(&config), ["sample.json"]);
+        assert_eq!(
+            names_in(&dotfiles),
+            ["tabletist.json", "tabletist.json.tmp"],
+            "no temporary file is left behind"
+        );
+    }
+
+    #[test]
+    fn a_write_follows_relative_links_one_after_another() {
+        if !can_symlink() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let (config, dotfiles) = (dir.path().join("config"), dir.path().join("dotfiles"));
+        std::fs::create_dir_all(&config).unwrap();
+        std::fs::create_dir_all(&dotfiles).unwrap();
+        // config/sample.json -> ../dotfiles/sample.json -> real.json
+        let link = config.join("sample.json");
+        let beside = Path::new("..").join("dotfiles");
+        symlink_file(beside.join("sample.json"), &link);
+        symlink_file("real.json", dotfiles.join("sample.json"));
+        assert_eq!(
+            resolve_link(&link).unwrap(),
+            config.join(&beside).join("real.json")
+        );
+        assert_eq!(resolve_link(&config).unwrap(), config, "not a link");
+
+        // The last link leads to a file that is not there yet: it is made.
+        write_atomic(&link, b"first").unwrap();
+        write_atomic(&link, b"second").unwrap();
+        assert_eq!(
+            std::fs::read(dotfiles.join("real.json")).unwrap(),
+            b"second"
+        );
+        assert_eq!(names_in(&config), ["sample.json"]);
+        assert_eq!(names_in(&dotfiles), ["real.json", "sample.json"]);
+        for (link, target) in [
+            (link, beside.join("sample.json")),
+            (dotfiles.join("sample.json"), "real.json".into()),
+        ] {
+            assert_eq!(std::fs::read_link(&link).unwrap(), target);
+        }
+    }
+
+    #[test]
+    fn a_write_through_a_link_to_nowhere_fails_and_keeps_the_link() {
+        if !can_symlink() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        // The directory the link leads to is not there (a volume that is
+        // not mounted): it is not the app's to make.
+        let link = dir.path().join("sample.json");
+        let target = dir.path().join("away").join("sample.json");
+        symlink_file(&target, &link);
+        assert!(write_atomic(&link, b"lost").is_err());
+        assert_eq!(std::fs::read_link(&link).unwrap(), target);
+        assert_eq!(names_in(dir.path()), ["sample.json"]);
+
+        // Two links that lead to each other.
+        let (one, other) = (dir.path().join("one.json"), dir.path().join("other.json"));
+        symlink_file(&other, &one);
+        symlink_file(&one, &other);
+        assert!(resolve_link(&one).is_err());
+        assert!(write_atomic(&one, b"lost").is_err());
+        assert_eq!(std::fs::read_link(&one).unwrap(), other);
+        assert_eq!(std::fs::read_link(&other).unwrap(), one);
+    }
+
+    #[test]
+    fn forty_links_are_followed_and_one_more_is_not() {
+        if !can_symlink() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let link = |n: usize| dir.path().join(format!("link-{n}"));
+        // link-1 -> link-2 -> ... -> link-40 -> file: forty links.
+        let file = dir.path().join("file");
+        std::fs::write(&file, b"first").unwrap();
+        symlink_file("file", link(MAX_LINKS));
+        for n in (1..MAX_LINKS).rev() {
+            symlink_file(format!("link-{}", n + 1), link(n));
+        }
+        assert_eq!(resolve_link(&link(1)).unwrap(), file);
+        write_atomic(&link(1), b"second").unwrap();
+        assert_eq!(std::fs::read(&file).unwrap(), b"second");
+        // One more is one too many.
+        symlink_file("link-1", link(0));
+        let error = resolve_link(&link(0)).unwrap_err().to_string();
+        assert!(
+            error.ends_with("leads through more than 40 symbolic links"),
+            "{error}"
+        );
+        assert!(write_atomic(&link(0), b"lost").is_err());
+        assert_eq!(std::fs::read(&file).unwrap(), b"second");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_path_that_cannot_be_looked_at_is_not_taken_for_a_plain_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let closed = dir.path().join("closed");
+        std::fs::create_dir(&closed).unwrap();
+        let path = closed.join("sample.json");
+        let allow = |mode| {
+            std::fs::set_permissions(&closed, std::fs::Permissions::from_mode(mode)).unwrap()
+        };
+        // Nothing in the directory may be looked at, a link there neither.
+        allow(0o000);
+        if closed.read_dir().is_ok() {
+            return allow(0o700); // running as root: permissions do not apply
+        }
+        let error = resolve_link(&path).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+        assert!(write_atomic(&path, b"lost").is_err());
+        allow(0o700);
+        // A path with nothing at it is no error: it is where a file is made.
+        assert_eq!(resolve_link(&path).unwrap(), path);
+        assert_eq!(link_chain(&path).unwrap(), [path]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_link_that_cannot_be_followed_is_left_where_it_is() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let (config, dotfiles) = (dir.path().join("config"), dir.path().join("dotfiles"));
+        std::fs::create_dir_all(&config).unwrap();
+        std::fs::create_dir_all(&dotfiles).unwrap();
+        let (link, target) = (config.join("sample.json"), dotfiles.join("sample.json"));
+        let precious = Sample {
+            name: "precious".into(),
+            count: 3,
+        };
+        save_json(&target, &precious).unwrap();
+        symlink_file(&target, &link);
+        // The directory the link leads to cannot be looked into for now.
+        let allow = |mode| {
+            std::fs::set_permissions(&dotfiles, std::fs::Permissions::from_mode(mode)).unwrap()
+        };
+        allow(0o000);
+        if dotfiles.read_dir().is_ok() {
+            return allow(0o700); // running as root: permissions do not apply
+        }
+        // The file cannot be loaded, and the link is not what is moved
+        // aside for it, though its own directory would allow that.
+        assert_eq!(load_json::<Sample>(&link), Sample::default());
+        assert_eq!(names_in(&config), ["sample.json"]);
+        assert_eq!(std::fs::read_link(&link).unwrap(), target);
+        // Nor does a save put a plain file in its place.
+        assert!(save_json(&link, &Sample::default()).is_err());
+        assert_eq!(std::fs::read_link(&link).unwrap(), target);
+        allow(0o700);
+        assert_eq!(names_in(&dotfiles), ["sample.json"]);
+        assert_eq!(load_json::<Sample>(&link), precious);
+
+        // Two links that lead to each other are left as they are too.
+        let (one, other) = (config.join("one.json"), config.join("other.json"));
+        symlink_file(&other, &one);
+        symlink_file(&one, &other);
+        assert_eq!(load_json::<Sample>(&one), Sample::default());
+        assert_eq!(names_in(&config), ["one.json", "other.json", "sample.json"]);
+    }
+
+    #[test]
+    fn a_damaged_file_behind_a_symlink_is_kept_aside_beside_itself() {
+        if !can_symlink() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let (config, dotfiles) = (dir.path().join("config"), dir.path().join("dotfiles"));
+        std::fs::create_dir_all(&config).unwrap();
+        std::fs::create_dir_all(&dotfiles).unwrap();
+        let (link, target) = (config.join("sample.json"), dotfiles.join("sample.json"));
+        std::fs::write(&target, b"{\"name\": ").unwrap();
+        symlink_file(&target, &link);
+
+        assert_eq!(load_json::<Sample>(&link), Sample::default());
+        assert_eq!(names_in(&config), ["sample.json"], "the link stays");
+        assert_eq!(names_in(&dotfiles), ["sample.json.bad"]);
+        // The next save writes a new file where the link leads.
+        let value = Sample {
+            name: "a".into(),
+            count: 3,
+        };
+        save_json(&link, &value).unwrap();
+        assert_eq!(std::fs::read_link(&link).unwrap(), target);
+        assert_eq!(load_json::<Sample>(&target), value);
+        assert_eq!(names_in(&dotfiles), ["sample.json", "sample.json.bad"]);
     }
 
     #[test]

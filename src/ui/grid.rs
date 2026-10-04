@@ -374,6 +374,25 @@ pub fn forget(ctx: &egui::Context, id: Id) {
     });
 }
 
+/// The grid a view was last drawn with, kept under a key of the view's.
+#[derive(Clone, Copy, PartialEq)]
+pub struct Last(pub Id);
+
+/// Notes that the view kept under `key` now draws the grid `grid`, and
+/// drops what egui kept for the grid before it. For a view whose grid
+/// changes its id: an id come back to would bring the widths that fitted
+/// the rows it last drew, not the ones now on screen.
+pub fn keep(ctx: &egui::Context, key: Id, grid: Id) {
+    let before: Option<Last> = ctx.data(|data| data.get_temp(key));
+    if before == Some(Last(grid)) {
+        return;
+    }
+    if let Some(Last(old)) = before {
+        forget(ctx, old);
+    }
+    ctx.data_mut(|data| data.insert_temp(key, Last(grid)));
+}
+
 /// Whether egui's memory keeps anything for the grid `id`.
 #[cfg(test)]
 pub fn remembered(ctx: &egui::Context, id: Id) -> bool {

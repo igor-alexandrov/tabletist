@@ -91,6 +91,11 @@ tempfile = "3"
 # app writes the file itself (src/settings.rs), so only the parser is built:
 # the default `display` feature would bring in toml_writer.
 toml = { version = "1.1", default-features = false, features = ["parse"] }
+# Tells the backend when settings.toml changes on disk, so an edit made in
+# an editor reaches the running app (src/backend.rs). The version and the
+# features fastframe-theme already brings in for following the desktop's
+# theme: nothing new is built.
+notify = "8.2"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # The desktop's Secret Service (GNOME Keyring, KWallet) over D-Bus.

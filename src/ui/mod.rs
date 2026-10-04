@@ -417,6 +417,342 @@ mod tests {
         assert!(!harness.app.workspace(tab).unwrap().full_precision);
     }
 
+    /// The `FetchRows` sent last: its offset and its limit.
+    fn last_fetch(harness: &Harness) -> (u64, u32) {
+        harness
+            .app
+            .backend
+            .sent
+            .iter()
+            .rev()
+            .find_map(|command| match command {
+                Command::FetchRows { query, .. } => Some((query.offset, query.limit)),
+                _ => None,
+            })
+            .expect("a FetchRows was sent")
+    }
+
+    #[test]
+    fn a_new_page_size_fetches_an_open_page_again_from_where_it_is() {
+        let mut harness = Harness::new();
+        let tab = harness.connect_fake();
+        harness.click("users");
+        harness.answer_rows(crate::testing::page(3, true));
+        let object_tab = harness.app.workspace(tab).unwrap().active_tab.unwrap();
+        harness
+            .app
+            .apply(crate::model::Action::NextPage { tab, object_tab });
+        assert_eq!(last_fetch(&harness), (300, 300));
+        harness.answer_rows(crate::testing::page(3, true));
+        let before = fetches(&harness);
+        let settings = crate::settings::Settings {
+            page_size: 500,
+            ..harness.app.settings.clone()
+        };
+        harness.app.apply_settings(settings);
+        // The same offset, the new size.
+        assert_eq!(fetches(&harness), before + 1);
+        assert_eq!(last_fetch(&harness), (300, 500));
+        // The page of the old size is not left on screen meanwhile: were
+        // this fetch to fail, Next would move past it by the new size.
+        let object = harness
+            .app
+            .workspace(tab)
+            .unwrap()
+            .active_object_tab()
+            .unwrap();
+        assert!(object.page().is_none());
+        harness.answer_rows(crate::testing::page(3, true));
+        // Next moves by the size of the page that is shown: no row skipped.
+        harness
+            .app
+            .apply(crate::model::Action::NextPage { tab, object_tab });
+        assert_eq!(last_fetch(&harness), (800, 500));
+    }
+
+    #[test]
+    fn a_page_still_on_its_way_is_fetched_again_at_the_new_size() {
+        let mut harness = Harness::new();
+        harness.connect_fake();
+        harness.click("users");
+        // Not answered: the first page is in flight at the old size.
+        let before = fetches(&harness);
+        let settings = crate::settings::Settings {
+            page_size: 500,
+            ..harness.app.settings.clone()
+        };
+        harness.app.apply_settings(settings);
+        assert_eq!(fetches(&harness), before + 1);
+        assert_eq!(last_fetch(&harness), (0, 500));
+    }
+
+    #[test]
+    fn a_table_whose_session_is_down_waits_for_its_next_fetch() {
+        let mut harness = Harness::new();
+        let tab = harness.connect_fake();
+        harness.click("users");
+        harness.answer_rows(crate::testing::page(3, true));
+        harness.app.workspace_mut(tab).unwrap().status =
+            crate::model::SessionStatus::Disconnected(tabletist_db::Error::query("gone"));
+        let before = fetches(&harness);
+        let settings = crate::settings::Settings {
+            page_size: 500,
+            ..harness.app.settings.clone()
+        };
+        harness.app.apply_settings(settings);
+        assert_eq!(
+            fetches(&harness),
+            before,
+            "nothing is asked of a dead session"
+        );
+        // Its next fetch moves by the page it shows and asks for the new size.
+        harness.app.workspace_mut(tab).unwrap().status = crate::model::SessionStatus::Connected;
+        let object_tab = harness.app.workspace(tab).unwrap().active_tab.unwrap();
+        harness
+            .app
+            .apply(crate::model::Action::NextPage { tab, object_tab });
+        assert_eq!(last_fetch(&harness), (300, 500));
+    }
+
+    #[test]
+    fn previous_moves_by_the_size_of_the_page_it_fetches() {
+        let mut harness = Harness::new();
+        let tab = harness.connect_fake();
+        harness.click("users");
+        harness.answer_rows(crate::testing::page(3, true));
+        let object_tab = harness.app.workspace(tab).unwrap().active_tab.unwrap();
+        for _ in 0..3 {
+            harness
+                .app
+                .apply(crate::model::Action::NextPage { tab, object_tab });
+            harness.answer_rows(crate::testing::page(3, true));
+        }
+        assert_eq!(last_fetch(&harness), (900, 300));
+        // The size changes while the session is down: the page keeps its own.
+        harness.app.workspace_mut(tab).unwrap().status =
+            crate::model::SessionStatus::Disconnected(tabletist_db::Error::query("gone"));
+        let settings = crate::settings::Settings {
+            page_size: 100,
+            ..harness.app.settings.clone()
+        };
+        harness.app.apply_settings(settings);
+        harness.app.workspace_mut(tab).unwrap().status = crate::model::SessionStatus::Connected;
+        harness
+            .app
+            .apply(crate::model::Action::PrevPage { tab, object_tab });
+        // The page fetched has the new size and ends where the one that was
+        // shown begins. Back by the old size, rows 700 to 899 are skipped.
+        assert_eq!(last_fetch(&harness), (800, 100));
+    }
+
+    #[test]
+    fn previous_near_the_start_fetches_only_the_rows_before_the_page() {
+        let mut harness = Harness::new();
+        let tab = harness.connect_fake();
+        harness.click("users");
+        harness.answer_rows(crate::testing::page(3, true));
+        let object_tab = harness.app.workspace(tab).unwrap().active_tab.unwrap();
+        harness
+            .app
+            .apply(crate::model::Action::NextPage { tab, object_tab });
+        assert_eq!(last_fetch(&harness), (300, 300));
+        harness.answer_rows(crate::testing::page(3, true));
+        // The size grows: the page on screen is rows 300 to 799.
+        let settings = crate::settings::Settings {
+            page_size: 500,
+            ..harness.app.settings.clone()
+        };
+        harness.app.apply_settings(settings);
+        assert_eq!(last_fetch(&harness), (300, 500));
+        harness.answer_rows(crate::testing::page(3, true));
+        harness
+            .app
+            .apply(crate::model::Action::PrevPage { tab, object_tab });
+        // Only 300 rows are before that page. A whole page from the start
+        // would show rows 300 to 499 a second time.
+        assert_eq!(last_fetch(&harness), (0, 300));
+        harness.answer_rows(crate::testing::page(3, true));
+        // Next moves by the short page, back to where the user was, and the
+        // page fetched there has the settings' size again.
+        harness
+            .app
+            .apply(crate::model::Action::NextPage { tab, object_tab });
+        assert_eq!(last_fetch(&harness), (300, 500));
+    }
+
+    #[test]
+    fn a_refresh_at_a_new_page_size_leaves_no_page_of_the_old_size_to_move_from() {
+        let mut harness = Harness::new();
+        let tab = harness.connect_fake();
+        harness.click("users");
+        harness.answer_rows(crate::testing::page(3, true));
+        // The size changes while the session is down: the page keeps its own.
+        harness.app.workspace_mut(tab).unwrap().status =
+            crate::model::SessionStatus::Disconnected(tabletist_db::Error::query("gone"));
+        let settings = crate::settings::Settings {
+            page_size: 500,
+            ..harness.app.settings.clone()
+        };
+        harness.app.apply_settings(settings);
+        harness.app.workspace_mut(tab).unwrap().status = crate::model::SessionStatus::Connected;
+        harness.app.apply(crate::model::Action::Refresh(tab));
+        assert_eq!(last_fetch(&harness), (0, 500));
+        // A refresh keeps the page it fetches again, but not one of another
+        // size: a cancel would bring it back under a limit it was not
+        // fetched with.
+        let object = harness
+            .app
+            .workspace(tab)
+            .unwrap()
+            .active_object_tab()
+            .unwrap();
+        assert!(object.page().is_none());
+        cancel_fetches(&mut harness, tab);
+        // Nothing is on screen for Next to move past by the new size.
+        let before = fetches(&harness);
+        let object_tab = harness.app.workspace(tab).unwrap().active_tab.unwrap();
+        harness
+            .app
+            .apply(crate::model::Action::NextPage { tab, object_tab });
+        assert_eq!(fetches(&harness), before, "{:?}", last_fetch(&harness));
+    }
+
+    #[test]
+    fn the_same_settings_fetch_nothing() {
+        let mut harness = Harness::new();
+        harness.connect_fake();
+        harness.click("users");
+        harness.answer_rows(crate::testing::page(3, true));
+        let before = fetches(&harness);
+        let settings = harness.app.settings.clone();
+        harness.app.apply_settings(settings);
+        assert_eq!(fetches(&harness), before);
+    }
+
+    #[test]
+    fn an_option_that_is_not_the_page_size_fetches_no_page_again() {
+        let mut harness = Harness::new();
+        let tab = harness.connect_fake();
+        harness.click("users");
+        harness.answer_rows(crate::testing::page(3, true));
+        // A page of the old size on a session that answers again: the size
+        // changed while it was down, and nothing was fetched since.
+        harness.app.workspace_mut(tab).unwrap().status =
+            crate::model::SessionStatus::Disconnected(tabletist_db::Error::query("gone"));
+        let settings = crate::settings::Settings {
+            page_size: 500,
+            ..harness.app.settings.clone()
+        };
+        harness.app.apply_settings(settings);
+        harness.app.workspace_mut(tab).unwrap().status = crate::model::SessionStatus::Connected;
+        let before = fetches(&harness);
+        // A new page size would fetch this page again. Another option is no
+        // reason to.
+        let settings = crate::settings::Settings {
+            group_digits: true,
+            ..harness.app.settings.clone()
+        };
+        harness.app.apply_settings(settings);
+        assert_eq!(fetches(&harness), before);
+    }
+
+    #[test]
+    fn a_change_of_the_timestamps_option_reaches_every_open_workspace() {
+        let mut harness = Harness::new();
+        let tab = harness.connect_fake();
+        assert!(!harness.app.workspace(tab).unwrap().full_precision);
+        let settings = crate::settings::Settings {
+            timestamps: crate::settings::Timestamps::Full,
+            ..harness.app.settings.clone()
+        };
+        harness.app.apply_settings(settings);
+        assert!(harness.app.workspace(tab).unwrap().full_precision);
+        // Another option changing leaves a workspace's own choice alone.
+        harness
+            .app
+            .apply(crate::model::Action::ToggleFullPrecision(tab));
+        let settings = crate::settings::Settings {
+            group_digits: true,
+            ..harness.app.settings.clone()
+        };
+        harness.app.apply_settings(settings);
+        assert!(!harness.app.workspace(tab).unwrap().full_precision);
+    }
+
+    #[test]
+    fn a_grid_is_fitted_again_when_an_option_widens_its_cells() {
+        let mut harness = Harness::new();
+        harness.connect_fake();
+        harness.click("users");
+        let mut page = crate::testing::page(1, false);
+        page.rows[0][0] = tabletist_db::Value::Int(i64::MAX);
+        harness.answer_rows(page);
+        harness.settle();
+        assert!(harness.painted_color("9223372036854775807").is_some());
+        let settings = crate::settings::Settings {
+            group_digits: true,
+            ..harness.app.settings.clone()
+        };
+        harness.app.apply_settings(settings);
+        harness.settle();
+        // Not described yet: `id` is not known to be a key, so it is grouped.
+        // Six commas wider. With the widths of the plain number the cell
+        // would be cut short and this text never painted whole.
+        assert!(harness.painted_color("9,223,372,036,854,775,807").is_some());
+    }
+
+    #[test]
+    fn an_option_turned_back_on_fits_the_rows_then_on_screen() {
+        let mut harness = Harness::new();
+        let tab = harness.connect_fake();
+        let group = |harness: &mut Harness, group_digits| {
+            let settings = crate::settings::Settings {
+                group_digits,
+                ..harness.app.settings.clone()
+            };
+            harness.app.apply_settings(settings);
+            harness.settle();
+        };
+        // Grouped, over a page of small numbers: the columns fit those.
+        group(&mut harness, true);
+        harness.click("users");
+        harness.answer_rows(crate::testing::page(1, true));
+        harness.settle();
+        group(&mut harness, false);
+        // The next page has a far longer one.
+        let object_tab = harness.app.workspace(tab).unwrap().active_tab.unwrap();
+        harness
+            .app
+            .apply(crate::model::Action::NextPage { tab, object_tab });
+        let mut page = crate::testing::page(1, false);
+        page.rows[0][0] = tabletist_db::Value::Int(i64::MAX);
+        harness.answer_rows(page);
+        harness.settle();
+        // Grouped again. The widths the grouped grid had over the first page
+        // would cut this number short.
+        group(&mut harness, true);
+        assert!(harness.painted_color("9,223,372,036,854,775,807").is_some());
+    }
+
+    #[test]
+    fn an_edit_of_the_file_changes_what_an_open_grid_shows() {
+        let mut harness = Harness::new();
+        harness.connect_fake();
+        harness.click("users");
+        let mut page = crate::testing::page(1, false);
+        page.rows[0][0] = tabletist_db::Value::Int(1_234_567);
+        harness.answer_rows(page);
+        harness.settle();
+        assert!(harness.painted_color("1234567").is_some());
+        harness.app.apply(crate::model::Action::Backend(
+            crate::backend::Event::SettingsFile {
+                text: "[data]\ngroup_digits = true\n".into(),
+            },
+        ));
+        harness.settle();
+        assert!(harness.painted_color("1,234,567").is_some());
+    }
+
     #[test]
     fn numbers_are_grouped_when_the_settings_say_so_but_keys_never_are() {
         let mut harness = Harness::new();
@@ -3630,6 +3966,48 @@ mod tests {
         assert_ne!(tag, plain);
         let (flat, plain) = painted(false);
         assert_eq!(flat, plain);
+    }
+
+    #[test]
+    fn an_edit_of_the_file_changes_how_an_open_result_draws_a_boolean() {
+        let mut harness = Harness::new();
+        let tab = harness.connect_fake();
+        let mut page = crate::testing::page(1, false);
+        page.columns[2].kind = tabletist_db::ValueKind::Bool;
+        page.rows[0][2] = tabletist_db::Value::Bool(true);
+        with_sql_outcome(
+            &mut harness,
+            tab,
+            tabletist_db::StatementOutcome::Rows {
+                columns: page.columns,
+                rows: page.rows,
+                truncated: false,
+            },
+        );
+        // The boolean cell and the email cell, as the result on screen
+        // draws them once the file reads `text`.
+        let painted = |harness: &mut Harness, text: Option<&str>| {
+            if let Some(text) = text {
+                harness.app.apply(crate::model::Action::Backend(
+                    crate::backend::Event::SettingsFile { text: text.into() },
+                ));
+            }
+            harness.settle();
+            (
+                harness.painted_color("true").expect("the boolean cell"),
+                harness
+                    .painted_color("user1@example.com")
+                    .expect("the email cell"),
+            )
+        };
+        let (tag, plain) = painted(&mut harness, None);
+        assert_ne!(tag, plain, "a tag has its colour");
+        // Nothing is run again: the result that is up is drawn anew.
+        let (flat, plain) = painted(&mut harness, Some("[data]\nvalue_tags = false\n"));
+        assert_eq!(flat, plain);
+        let (again, plain) = painted(&mut harness, Some("[data]\nvalue_tags = true\n"));
+        assert_eq!(again, tag);
+        assert_ne!(again, plain);
     }
 
     #[test]

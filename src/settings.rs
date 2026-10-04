@@ -214,6 +214,34 @@ impl From<Settings> for Loaded {
     }
 }
 
+/// What the app holds of the settings file while it runs: enough to know
+/// its own writes when they come back from the disk, and to show the file
+/// with the lines that were ignored.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SettingsFile {
+    /// The text as last read or written.
+    pub text: String,
+    /// The lines that were ignored, counted from 1.
+    pub invalid: Vec<usize>,
+    /// The line each key is on.
+    pub lines: Vec<(Key, usize)>,
+    /// Whether the backend watches the file for changes made outside.
+    pub live: bool,
+}
+
+impl Loaded {
+    /// The settings, and what the app keeps of their file.
+    pub fn into_parts(self) -> (Settings, SettingsFile) {
+        let file = SettingsFile {
+            text: self.text,
+            invalid: self.invalid,
+            lines: self.lines,
+            live: false,
+        };
+        (self.settings, file)
+    }
+}
+
 /// The line `offset` is on in `text`, counted from 1.
 fn line_of(text: &str, offset: usize) -> usize {
     let before = &text.as_bytes()[..offset.min(text.len())];
@@ -810,6 +838,22 @@ sql_timeout_secs = 30  # 0 waits forever
         let loaded = Settings::from_toml(&text);
         assert_eq!(loaded.settings.page_size, 100);
         assert!(loaded.invalid.is_empty());
+    }
+
+    #[test]
+    fn what_the_app_holds_of_the_file_comes_from_what_was_loaded() {
+        let text = "[data]\npage_size = 100\ngroup_digits = \"yes\"\n";
+        let (settings, file) = Settings::from_toml(text).into_parts();
+        assert_eq!(settings.page_size, 100);
+        assert_eq!(
+            file,
+            SettingsFile {
+                text: text.into(),
+                invalid: vec![3],
+                lines: vec![(Key::PageSize, 2)],
+                live: false,
+            }
+        );
     }
 
     #[test]

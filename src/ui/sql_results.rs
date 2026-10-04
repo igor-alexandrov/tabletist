@@ -110,16 +110,10 @@ fn state(sql: &SqlTab) -> State<'_> {
     }
 }
 
-/// The id of the grid that shows the result of `run`: one per run, so the
-/// widths that fit one result's columns are not another's.
-fn grid_id(tab: ConnTabId, id: TabId, run: Option<RequestId>, full_precision: bool) -> Id {
-    Id::new((
-        "sql-grid",
-        tab.0,
-        id.0,
-        run.map(|run| run.0),
-        full_precision,
-    ))
+/// The id of the grid that shows the result of `run`: one per run and per
+/// fit, so the widths that fit one result's columns are not another's.
+fn grid_id(tab: ConnTabId, id: TabId, run: Option<RequestId>, fit: data_view::Fit) -> Id {
+    Id::new(("sql-grid", tab.0, id.0, run.map(|run| run.0), fit))
 }
 
 /// Where egui's memory keeps what the results of the editor `id` were
@@ -128,30 +122,12 @@ fn results_id(tab: ConnTabId, id: TabId) -> Id {
     Id::new(("sql-results", tab.0, id.0))
 }
 
-/// The grid an editor's result was last drawn with. Each run has its own,
-/// so the one before it is forgotten when the next is drawn.
-#[derive(Clone, Copy, PartialEq)]
-struct LastGrid(Id);
-
 /// The scroll area an editor's messages were last drawn in, one per run
 /// as well: a new run's messages start at their top.
 #[derive(Clone, Copy, PartialEq)]
 struct LastMessages(Id);
 
-/// Notes that the results kept under `key` now draw the grid `grid`, and
-/// drops what egui kept for the grid before it.
-fn keep_grid(ctx: &egui::Context, key: Id, grid: Id) {
-    let before: Option<LastGrid> = ctx.data(|data| data.get_temp(key));
-    if before == Some(LastGrid(grid)) {
-        return;
-    }
-    if let Some(LastGrid(old)) = before {
-        grid::forget(ctx, old);
-    }
-    ctx.data_mut(|data| data.insert_temp(key, LastGrid(grid)));
-}
-
-/// [`keep_grid`] for the scroll area of the messages.
+/// [`grid::keep`] for the scroll area of the messages.
 fn keep_messages(ctx: &egui::Context, key: Id, area: Id) {
     ctx.data_mut(|data| {
         let before: Option<LastMessages> = data.get_temp(key);
@@ -169,15 +145,15 @@ fn keep_messages(ctx: &egui::Context, key: Id, area: Id) {
 /// grid's widths and where it and the messages were scrolled to.
 pub fn forget(ctx: &egui::Context, tab: ConnTabId, id: TabId) {
     let key = results_id(tab, id);
-    let grid: Option<LastGrid> = ctx.data(|data| data.get_temp(key));
-    if let Some(LastGrid(grid)) = grid {
+    let grid: Option<grid::Last> = ctx.data(|data| data.get_temp(key));
+    if let Some(grid::Last(grid)) = grid {
         grid::forget(ctx, grid);
     }
     ctx.data_mut(|data| {
         if let Some(LastMessages(area)) = data.get_temp(key) {
             data.remove::<egui::scroll_area::State>(area);
         }
-        data.remove::<LastGrid>(key);
+        data.remove::<grid::Last>(key);
         data.remove::<LastMessages>(key);
     });
 }
@@ -193,12 +169,8 @@ pub fn show(app: &mut App, ui: &mut Ui, tab: ConnTabId, id: TabId) {
 struct Place<'a> {
     tab: ConnTabId,
     sql: &'a SqlTab,
-    /// Timestamps in full, as the workspace's tables show them.
-    full_precision: bool,
-    /// Numbers in threes, as the settings ask.
-    grouped: bool,
-    /// Booleans as tags, as the settings ask.
-    value_tags: bool,
+    /// How the cells are drawn, as the workspace's tables draw them.
+    fit: data_view::Fit,
     /// Whose error codes the results read.
     driver: tabletist_db::Driver,
     /// Whether the arrow keys move in the result's grid.
@@ -221,9 +193,7 @@ fn draw(app: &App, ui: &mut Ui, tab: ConnTabId, id: TabId, actions: &mut Vec<Act
     let place = Place {
         tab,
         sql,
-        full_precision: workspace.full_precision,
-        grouped: app.settings.group_digits,
-        value_tags: app.settings.value_tags,
+        fit: data_view::Fit::of(workspace, &app.settings),
         driver: workspace.driver,
         keys: workspace.pane == crate::model::Pane::Grid,
     };
@@ -1044,9 +1014,7 @@ fn results(ui: &mut Ui, run: &SqlRun, place: &Place<'_>, env: &Env<'_>, actions:
     let Place {
         tab,
         sql,
-        full_precision,
-        grouped,
-        value_tags,
+        fit,
         keys,
         ..
     } = *place;
@@ -1130,8 +1098,10 @@ fn results(ui: &mut Ui, run: &SqlRun, place: &Place<'_>, env: &Env<'_>, actions:
             }
         })
         .collect();
-    let id = grid_id(tab, sql.id, sql.run.loaded, full_precision);
-    keep_grid(ui.ctx(), results_id(tab, sql.id), id);
+    let id = grid_id(tab, sql.id, sql.run.loaded, fit);
+    // Each run and each fit has its own grid: the one before it is
+    // forgotten when the next is drawn.
+    grid::keep(ui.ctx(), results_id(tab, sql.id), id);
     let mut child = ui.new_child(egui::UiBuilder::new().id_salt("grid").max_rect(area));
     child.set_clip_rect(area.intersect(ui.clip_rect()));
     let ctx = ui.ctx().clone();
@@ -1139,7 +1109,7 @@ fn results(ui: &mut Ui, run: &SqlRun, place: &Place<'_>, env: &Env<'_>, actions:
     // booleans draw as tags, as a table's do.
     let tags: Vec<Tags<'_>> = columns
         .iter()
-        .map(|column| Tags::of(column, None).when(value_tags))
+        .map(|column| Tags::of(column, None).when(fit.value_tags))
         .collect();
     // The grid asks for the cells in view only.
     let output = grid::show(
@@ -1160,9 +1130,9 @@ fn results(ui: &mut Ui, run: &SqlRun, place: &Place<'_>, env: &Env<'_>, actions:
                 &tags[col],
                 look,
                 data_view::Shown {
-                    full_precision,
+                    full_precision: fit.full_precision,
                     // A result has no key to leave alone.
-                    grouped,
+                    grouped: fit.grouped,
                 },
             )
         },
@@ -2349,8 +2319,9 @@ mod tests {
         run(&mut harness);
         harness.answer_sql(Ok(script_outcome(vec![result_with("email")])), None);
         let narrow = width(&mut harness, "email");
+        let fit = data_view::Fit::of(harness.app.workspace(tab).unwrap(), &harness.app.settings);
         let first = sql(&harness, tab).run.loaded;
-        let first = grid_id(tab, sql(&harness, tab).id, first, false);
+        let first = grid_id(tab, sql(&harness, tab).id, first, fit);
         assert!(crate::ui::grid::remembered(&harness.ctx, first));
         // As many columns, one with a far longer name: widths kept from
         // the run before would cut it.
@@ -2361,7 +2332,7 @@ mod tests {
         assert!(wide > narrow + 40.0, "{narrow} then {wide}");
         // What egui kept for the older run's grid is dropped.
         let second = sql(&harness, tab).run.loaded;
-        let second = grid_id(tab, sql(&harness, tab).id, second, false);
+        let second = grid_id(tab, sql(&harness, tab).id, second, fit);
         assert_ne!(first, second);
         assert!(!crate::ui::grid::remembered(&harness.ctx, first));
         assert!(crate::ui::grid::remembered(&harness.ctx, second));
@@ -2369,6 +2340,64 @@ mod tests {
         harness.press(Key::W, Modifiers::COMMAND);
         assert!(harness.app.workspace(tab).unwrap().tabs.is_empty());
         assert!(!crate::ui::grid::remembered(&harness.ctx, second));
+    }
+
+    /// The grid the editor's result was last drawn with.
+    fn result_grid(harness: &Harness, tab: ConnTabId, id: TabId) -> Option<Id> {
+        let kept: Option<grid::Last> = harness.ctx.data(|data| data.get_temp(results_id(tab, id)));
+        kept.map(|grid::Last(grid)| grid)
+    }
+
+    #[test]
+    fn a_result_on_screen_is_fitted_again_when_the_file_changes_value_tags() {
+        let (mut harness, tab) = editor(Look::standard(), "SELECT 1");
+        // A boolean column with no type under its name: its values decide
+        // how wide it is.
+        let mut page = crate::testing::page(3, false);
+        page.columns[2].name = "ok".into();
+        page.columns[2].type_name = String::new();
+        page.columns[2].kind = ValueKind::Bool;
+        for row in &mut page.rows {
+            row[2] = tabletist_db::Value::Bool(false);
+        }
+        let result = StatementOutcome::Rows {
+            columns: page.columns,
+            rows: page.rows,
+            truncated: false,
+        };
+        run(&mut harness);
+        harness.answer_sql(Ok(script_outcome(vec![result])), None);
+        let id = sql(&harness, tab).id;
+        let ran = sql(&harness, tab).run.loaded;
+        // The grid the result is drawn with once the file reads `text`, and
+        // how wide that grid makes the boolean column.
+        let drawn = |harness: &mut Harness, text: Option<&str>| {
+            if let Some(text) = text {
+                let text = text.to_owned();
+                let file = crate::backend::Event::SettingsFile { text };
+                harness.app.apply(Action::Backend(file));
+            }
+            let tree = harness.settle();
+            let grid = result_grid(harness, tab, id).expect("the result was drawn");
+            let column = bounds(&tree, "ok", Role::Label).expect("the column");
+            (grid, column.width())
+        };
+        let remembered = |harness: &Harness, grid| crate::ui::grid::remembered(&harness.ctx, grid);
+        let (tagged, padded) = drawn(&mut harness, None);
+        assert!(remembered(&harness, tagged));
+        // The same run under the other option is another grid, fitted on
+        // its own: a tag pads its text, and the plain text needs less. What
+        // egui kept for the grid before is dropped.
+        let (plain, bare) = drawn(&mut harness, Some("[data]\nvalue_tags = false\n"));
+        assert_eq!(sql(&harness, tab).run.loaded, ran, "nothing ran again");
+        assert_ne!(tagged, plain);
+        assert!(bare < padded, "{padded} then {bare}");
+        assert!(!remembered(&harness, tagged) && remembered(&harness, plain));
+        // And the other way: the widths of the plain text would cut a tag.
+        let (again, wide) = drawn(&mut harness, Some("[data]\nvalue_tags = true\n"));
+        assert_eq!(again, tagged);
+        assert_eq!(wide, padded);
+        assert!(remembered(&harness, tagged) && !remembered(&harness, plain));
     }
 
     #[test]
