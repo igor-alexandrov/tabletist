@@ -26,6 +26,7 @@
       Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 
   If the commit's signing agent is locked ("agent refused operation"), do not bypass it: `git add -A`, `git write-tree`, and report the tree id with the subject.
+- **Tasks 1 to 5 are built,** with what their review changed (decisions 21 to 23, and "As built" under task 5). The editing reducer is in `src/app/editing.rs` (a second `impl App`: `table`, `edit_cell`, `close_editor`, `set_null`, `save_blocked`, `write_edits`, `send_write`, `confirm_write`, `written`, `dropped_by`, `dropped_under_a_prompt`, `hold`, `perform`); the arms in `App::apply` call into it. Its tests are the nested `mod editing` at the end of `src/app.rs`'s test module.
 - **How the code stands.** Read each function before you edit it; where this plan's code and the code disagree, the code wins and you say so in your report.
   - `src/model.rs`: `ObjectTab` (around line 1519) holds `rows: Fetch<RowPage>`, `structure: Fetch<Structure>`, `selection: Option<CellPos>`, `pinned`. `Action` (line 47) is neither `Clone` nor `PartialEq`. `Dialog` (around 1052) has seven variants and none is a confirmation. `Workspace` has `access`, `environment`, `driver`, `status`, `session`.
   - `src/app.rs`: `App::apply` (line 322) is one flat match with early returns and a few re-entrant `self.apply(..)` calls. `fetch_page` (around 3047) is the only place `Command::FetchRows` is sent and it leaves the old page on screen while the new one loads. `after_connect` (around 2499) always fetches the active table tab's rows again. `Event::Rows` replaces the page whole. `Event::Written` is an empty arm (around 2187). `keys::handle` is not called while `app.dialog` is `Some`.
@@ -85,6 +86,10 @@ From the design's "Editing values" artboards. Colours are given as what they are
 18. **The row panel's Edit, Duplicate and Delete stay disabled** (the spec's "Out of scope"), and so does the header's Add row.
 19. **Only a computed column is drawn locked.** The spec has every locked or uneditable cell drawn as the design's "locked" on macOS and Windows; the design draws it for identity and generated columns. A whole table that cannot be edited (a view, a read-only connection, no key) would turn grey, and key columns already have their own colour. So in a table that can be edited, the cells of a generated column are drawn locked (the surface tint, the secondary text colour); every other cell that cannot be edited is drawn as today and says why when asked.
 20. **Smaller additions,** each where a rule needed an answer: the checks also say when a whole number is out of its type's range and when a decimal has too many digits before the point; a save that was cancelled or refused says so in the bar ("Save cancelled. Nothing was written."); **Enter never discards**, so in a leave prompt without Save it does nothing; `Action::Connect` onto a tab whose workspace holds edits is guarded like a disconnect; a guarded action under another dialog is refused with the notice "Save or discard the pending changes first."; a tab with pending changes is named "{name} tab, unsaved" to a screen reader; Alt+Enter adds its line break at the end of the text; the checks name a column's type as the grid's header shows it.
+
+21. **Nothing changes what a prompt asks about while it is up** (found by the review of the model). Only letter keys are skipped under a dialog; every Mod chord still reaches the reducer. So while the Leave prompt or the production confirmation is up, the reducer drops the editing actions, selection moves, and the actions that would replace the dialog (`dropped_under_a_prompt` in `src/app/editing.rs`), and the confirmation sends only if the set is still exactly the one it showed.
+22. **A tab that holds edits keeps its structure as it keeps its page.** No edit starts while the structure is being described (`Lock::Refreshing` covers it), and `RetryStructure` is guarded. A set no change set can be built from (`SaveBlock::Unsendable`) is not offered to be saved.
+23. **The checks agree with what the databases store.** `Problem::Inexact { stored }` on SQLite for a decimal it would not keep digit for digit ("{typed} would be stored as {stored}"); a MySQL `tinyint(1)` takes `true`, `false` or any whole number from -128 to 127; PostgreSQL floats take `nan`, `inf` and `infinity` in any case; only ASCII whitespace around a value is overlooked.
 
 ## Where a run can stop
 
@@ -3034,6 +3039,18 @@ Expected: all pass. The whole suite: `~/.cargo/bin/cargo test --locked --workspa
 git add -A && git commit -m "Ask before pending changes are dropped, and before a save to production"
 ```
 
+> **As built (tasks 1 to 5):** as above, with these changes from the first draft.
+> - `set_null` pins the tab as `edit_cell` does, and `Tab::is_preview` is false for a tab that holds edits whatever its pin says.
+> - `Table::lock` and `change_set` never index a row or a column that may be missing: a row narrower than the page reads as locked.
+> - `Action::Connect` is guarded only for a connection that is still saved (the arm does nothing otherwise).
+> - Decisions 21 to 23. `WritePrompt` holds the change set it showed (`changeset`) and no `places`: the confirmation rebuilds both and compares the set.
+> - A save's answer naming a row outside the set marks no cell: a failure becomes `Note::Refused`, a conflict `Note::Lost`.
+> - A written save whose rows do not fit the page fetches the page again and then performs what was held.
+> - On production a row whose statement cannot be built opens no confirmation: its cells fail with the builder's reason.
+> - A confirmation answered after the session went leaves `Note::Lost`, though nothing was sent: the words for `Lost` in the bar must fit both ("The connection was lost. Nothing is known to have been written." would not do; keep the spec's sentence for a save in flight and say "Not connected. Nothing was sent." where `saving` was never set, which needs the note to say which: add a variant in task 9 rather than stretch `Lost`).
+> - `EditStart` prints without its text.
+> - Left as found: `LeaveSave` when the session went under the prompt closes it, saves nothing, drops the held action and leaves no note; `CancelPassword` and `TrustHostKey` close whatever dialog is up, not only their own (blocked under the two prompts, not elsewhere); `check` answers for a column's allowed values before its class, so a SQLite INTEGER column with a list of non-numbers passes the check and fails in the save.
+
 **The model of editing and saving is whole here.** Nothing a user can do reaches it yet: the tasks that follow draw it. Three of them add state of their own: closing the window (task 11), the row panel's text (task 12) and Omarchy's `:` prompt (task 15).
 
 ---
@@ -3140,6 +3157,7 @@ pub fn lock_text(lock: Lock, table: &str, locale: Locale) -> String
 | `NotOneOf` | `Not one of: {a}, {b}, {c}` |
 | `Json` | `{Message} at {line}:{column}` (first letter upper-cased) |
 | `TooLong` | `At most {max} characters` |
+| `Inexact` | `{typed} would be stored as {stored}` (without the typed text: `Would be stored as {stored}`) |
 
 | Lock | Text |
 |---|---|
@@ -3176,6 +3194,8 @@ Two commits, each green on the four checks: first the words (`cell_editor.rs` wi
 **Files:**
 - Modify: `src/ui/grid.rs`, `src/ui/cell_editor.rs`, `src/ui/data_view.rs`, `src/ui/keys.rs`
 - Test: `src/ui/mod.rs`, `src/ui/keys.rs`
+
+**Mind decision 21 when adding keys:** a Mod chord fires while a dialog is up. The reducer drops the editing actions under the two prompts, so nothing breaks, but a key handler should not push them there in the first place where it can tell (`app.dialog.is_some()`).
 
 **The field.** `grid::show` gains `editor: Option<&mut dyn FnMut(&mut egui::Ui, egui::Rect)>` and `editing: Option<CellPos>`: when it draws the cell `editing` names (and the editor is not the large one), it calls the closure with the cell's rect instead of painting the cell's text. The cell must be on screen for the field to keep the keyboard (egui drops the focus of a widget that is not drawn): while `editing` is some, treat it as a selection change for the reveal logic (around line 523), and keep `lit` true so the pane does not look as if it lost the keyboard. `sql_results.rs` passes `None`, `None`.
 
@@ -3269,7 +3289,7 @@ Commit: "Edit long values, broken text and JSON in a popover".
 - Modify: `src/ui/workspace.rs` (the panel), `src/ui/object_tabs.rs`, `src/ui/data_view.rs` (the footer's state note), `src/ui/sql_results.rs`
 - Test: `src/ui/mod.rs`, `src/ui/object_tabs.rs`
 
-- **The bar** (macOS, Windows): `pending_bar::show(app, ui, tab, object_tab)`, an `egui::Panel::bottom` of 48 pt added in `workspace::show` right after the `data_view::footer` call (bottom panels stack upward in call order), drawn only while `edits.cells` is not empty, a save runs, or `edits.note` is some. Fill `Tone::Warning.fill`, a hairline on top in `Tone::Warning.line`. Left to right: the 8 pt dot in `Tone::Warning.color`; `{n} changes in {m} rows` (singulars: `1 change in 1 row`) in the strong body role; `{n} to fix` in `palette.danger` when there are any; the note, when there is one; at the right `Discard all` (`ButtonSpec`, bordered) and `Save` (`ButtonSpec::primary` with `.shortcut("Mod+S")`), pushing `DiscardEdits` and `WriteEdits`. Discard all is disabled while a save runs (the reducer ignores it then). Save is disabled through `app.save_blocked(tab, id)` with the reason as its tooltip: `Fix {n} value(s) to save`, `Not connected`, `This connection opens read-only`, `Saving…`. While a save runs the bar shows `Saving…` with a spinner and a cancel that pushes `CancelQuery(tab)`.
+- **The bar** (macOS, Windows): `pending_bar::show(app, ui, tab, object_tab)`, an `egui::Panel::bottom` of 48 pt added in `workspace::show` right after the `data_view::footer` call (bottom panels stack upward in call order), drawn only while `edits.cells` is not empty, a save runs, or `edits.note` is some. Fill `Tone::Warning.fill`, a hairline on top in `Tone::Warning.line`. Left to right: the 8 pt dot in `Tone::Warning.color`; `{n} changes in {m} rows` (singulars: `1 change in 1 row`) in the strong body role; `{n} to fix` in `palette.danger` when there are any; the note, when there is one; at the right `Discard all` (`ButtonSpec`, bordered) and `Save` (`ButtonSpec::primary` with `.shortcut("Mod+S")`), pushing `DiscardEdits` and `WriteEdits`. Discard all is disabled while a save runs (the reducer ignores it then). Save is disabled through `app.save_blocked(tab, id)` with the reason as its tooltip: `Fix {n} value(s) to save`, `Not connected`, `This connection opens read-only`, `Saving…`, and for `SaveBlock::Unsendable` `These changes cannot be sent: the table's key is not known`. While a save runs the bar shows `Saving…` with a spinner and a cancel that pushes `CancelQuery(tab)`.
 - **The note's words** (`pending_bar::note_text(note, object, page, structure, locale)`), also used by Omarchy in task 14:
 
 | Note | Text |
