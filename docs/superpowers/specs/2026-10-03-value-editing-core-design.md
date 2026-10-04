@@ -1,8 +1,10 @@
 # Editing values, slice 1: the core and its safety surfaces
 
-Date: 2026-10-03. Status: step 1 (writable connections) is built, see
-`docs/superpowers/plans/2026-10-03-writable-connections.md`; steps 2 to 5
-are not yet planned.
+Date: 2026-10-03. Status: steps 1 (writable connections) and 2 (the save
+in `tabletist-db` and the backend) are built, see
+`docs/superpowers/plans/2026-10-03-writable-connections.md` and
+`docs/superpowers/plans/2026-10-03-connection-write.md`; steps 3 to 5 are
+not yet planned.
 
 ## Intent
 
@@ -221,19 +223,31 @@ and the SQL editor still cannot.
 
 ## What can be edited
 
-- **Tables with a row key.** The key is the primary key, else the first
-  unique index (by name) that is not partial and whose entries are all
-  columns of the table (no expressions; a name the catalog gives quoted is
-  matched unquoted) and all NOT NULL. The catalog gains
-  `IndexInfo.partial: bool` (PostgreSQL `indpred`, SQLite `index_list`'s
-  `partial`; never on MySQL). A table without a key is view-only, and its
-  cells say "<table> has no primary key or unique index, so a row can't be
-  targeted safely". Until the tab's structure has loaded, nothing is
-  editable.
+- **Tables with a row key,** which `Structure::row_key` gives. The key is
+  the primary key, else the first unique index (by name) that is not
+  partial, is over whole columns compared as the column compares, and
+  whose columns are all NOT NULL. The catalog says both things about an
+  index: `IndexInfo.partial: bool` (PostgreSQL `indpred`, SQLite
+  `index_list`'s `partial`; never on MySQL) and `IndexInfo.key_columns`,
+  the index's columns by name, or `None` for an index over an expression,
+  a prefix (`UNIQUE (name(1))` on MySQL) or another collation than its
+  column's: each of those can match two rows. A primary key whose own
+  index is such an index is passed over too. SQLite does not say a
+  column's declared collation, so there a key of another collation goes
+  unseen; the save's own check (it reads the row by its key and refuses
+  more than one) is what stops it. A table without a key is view-only, and
+  its cells say "<table> has no primary key or unique index, so a row
+  can't be targeted safely". Until the tab's structure has loaded, nothing
+  is editable.
 - A row whose key holds a NULL (a SQLite primary key that is not an
   integer can) is locked: "this row's key is NULL".
 - **Never editable:** views, materialized views, SQL results, and anything
-  on a read-only connection ("This connection opens read-only").
+  on a read-only connection ("This connection opens read-only"). Also, and
+  known today only when a save is tried (see "Saving"): a MySQL table whose
+  engine has no transactions, a MySQL table whose key has a `timestamp`,
+  `bit` or `float` column, a table of a database attached to a SQLite
+  session, and on SQLite a row whose key text holds U+FFFD or a column
+  whose name another column reads as.
 - **Locked cells** in an editable table:
   - identity-always and generated columns. The catalog gains
     `ColumnInfo.generated: bool` (PostgreSQL `attgenerated` and
@@ -241,7 +255,9 @@ and the SQL editor still cannot.
     values 2 and 3);
   - the row key's own columns, so a save finds and re-reads the row by the
     same key;
-  - binary values, and values over 256 KiB.
+  - binary values (a column of the class `Binary`, MySQL's `bit` and
+    spatial types among them, and any cell that holds bytes, which a
+    SQLite column of any type can), and values over 256 KiB.
 - A locked or uneditable cell is drawn as the design's "locked" (macOS and
   Windows) and looks as today on Omarchy. Enter (and `i` on Omarchy) on it
   says why, in a note at the cell or in the Omarchy mode line. Typing on it
@@ -421,47 +437,133 @@ again.
     Connection::write(&self, changes: &ChangeSet) -> Result<WriteOutcome>
 
 `write` is the crate's only writing call. On a `ReadOnly` connection it
-returns `Error::ReadOnly` without contacting the server, and it refuses a
-set with no rows, a row with an empty `key` or an empty `set`, before
-anything is sent. An `Err` is a failure of the session or the run (lost
-connection, cancelled); nothing was committed unless the connection was
-lost while committing.
+returns `Error::ReadOnly` before it looks at the set, without contacting
+the server. Then `ChangeSet::check` refuses, before anything is sent: a set
+with no rows; a row with an empty `key` or an empty `set`; a key value that
+is NULL; a key that names a column twice; a key column that is also
+changed; a column changed twice in one row; and the same row twice (keys
+that name the same columns with the same values, in whatever order), since
+both changes would be compared with the row as it was and the second
+written over the first.
 
 One transaction, for every row of the set:
 
-1. Begin, read-write (`BEGIN IMMEDIATE` on SQLite, with `query_only` off).
-2. For each row, read it whole by its key, locked (`SELECT * ... WHERE
-   <key> FOR UPDATE` on PostgreSQL and MySQL). The key is matched with its
-   loaded values in the driver's own form (a binary key as its bytes). No
-   row is a conflict with `server: None`; more than one is an error.
-3. Compare each changed column's value in that row with `loaded`, as
+1. Every statement is built first. A value the builder cannot convert is
+   `Failed` for its row before anything is sent.
+2. Begin, read-write, from no transaction: whatever the session has open
+   is rolled back first, so a save can never commit what an earlier one
+   left.
+3. For each row, read it whole by its key, locked (`SELECT * ... WHERE
+   <key> LIMIT 2 FOR UPDATE` on PostgreSQL and MySQL; SQLite holds the
+   file). The key is matched with its loaded values in the driver's own
+   form (a binary key as its bytes). No row is a conflict with `server:
+   None`; more than one is an error.
+4. Compare each changed column's value in that row with `loaded`, as
    decoded `Value`s (floats by their bits, so NaN equals NaN). Any
    difference is a conflict carrying the row as read.
-4. With any conflict: roll back and return `Conflicts`.
-5. For each row, `UPDATE <table> SET <column> = <new>, ... WHERE <key>`.
+5. With any conflict: roll back and return `Conflicts`. Every row is read
+   and compared before any is changed.
+6. For each row, `UPDATE <table> SET <column> = <new>, ... WHERE <key>`.
    It must touch exactly one row on PostgreSQL and SQLite; MySQL reports
    changed rather than matched rows, so there none or one. A statement
    that fails, touches another number of rows, or on MySQL raises a
-   warning (a truncated or adjusted value) rolls everything back and
-   returns `Failed` with the database's error or the warning's text.
-6. Read each row whole again by its key, commit, and return the rows.
+   warning or a note (a truncated or adjusted value) rolls everything back
+   and returns `Failed` with the database's error or the warning's text.
+7. Read each row whole again by its key. It must still be exactly one row:
+   a trigger the update fired can have made another that the key finds,
+   and then which row was saved is not known. Commit, and return the rows.
+
+Every exit leaves no transaction open and the session as the rest of the
+app expects it. A session that cannot be put back is reported as
+`Error::ConnectionLost` and the backend ends it. `Written` comes back only
+after a `COMMIT` that took hold.
+
+An `Err` is not always a lost session. A lock another session holds until
+a timeout, a busy file when SQLite asks for it, a `COMMIT` the database
+refuses, a cancel, a key that matches more than one row: each is an error
+on a session that lives, with nothing written, and the pending set should
+stay as it was. Only `ConnectionLost` means the session is gone; then
+nothing was committed unless the connection was lost while committing.
+
+A key must name one row, and a save refuses what it cannot be sure of
+rather than guess. Per driver:
+
+- **SQLite.** `query_only` is the session's standing state and is lifted
+  for one `BEGIN IMMEDIATE` transaction, with no fence up: the statements
+  are the app's own. Before it, the save puts back what a script can leave
+  on the session and a write would feel: `main`'s journal mode (unless
+  either mode is WAL, which is the file's and not the session's),
+  `locking_mode`, `ignore_check_constraints`, `recursive_triggers` and
+  `count_changes`. Only `main` is written: a table of an attached database
+  is refused. Values are bound exactly as built, never through the
+  filters' text-to-number guess. A name or a text that is not UTF-8 reads
+  with U+FFFD for the bad bytes and so can read as another, and SQLite
+  takes a name in other ASCII letters for the column all the same, so a
+  save refuses: a name that more than one of the row's columns reads as; a
+  name not spelled as the table spells it; a key whose text holds U+FFFD
+  (a key that really holds one pays for this); and a changed column whose
+  stored text is not UTF-8, as `Failed` and not as a conflict, since a
+  conflict offers to write over what the file holds, which would still be
+  unknown.
+- **PostgreSQL.** The transaction is managed as text (`ROLLBACK; START
+  TRANSACTION READ WRITE; SET LOCAL client_encoding = 'UTF8'`, then
+  `COMMIT` or `ROLLBACK`), not through the driver's transaction type,
+  which cannot answer a cancel that lands on its end. The statements carry
+  their values as literals built from what the page read, so the encoding
+  is pinned for the transaction, and every session, read-only or not,
+  prints floats in full and dates in ISO (`SET extra_float_digits = 3; SET
+  DateStyle = 'ISO'` at connect): with fewer digits two neighbouring
+  floats print alike and the key of one finds the other, and a zone's
+  abbreviation can read back as another zone. A page on a server
+  configured otherwise shows the difference. Text with a NUL is refused
+  before it is sent.
+- **MySQL.** Only a table whose engine has transactions: one transaction
+  is the promise, and MyISAM cannot roll back. The engine is checked
+  before the transaction and again after the locking reads, which hold the
+  table's metadata lock to the end, so an `ALTER TABLE ... ENGINE` in
+  between cannot leave updates that would not roll back. A view has no
+  engine and is refused. The transaction is started as text (`START
+  TRANSACTION READ WRITE`, checked by the server's status), not through
+  the driver's options, whose two statements a cancel can come between,
+  and it ends with `COMMIT` or `ROLLBACK AND NO CHAIN NO RELEASE`. Every
+  session has `sql_notes = 1`, since a decimal rounded to its column's
+  scale raises only a note and a server can have notes off. A name spelled
+  in other letters than the table spells it is refused (MySQL takes `ID`
+  and `id` for one column). A row key with a `timestamp`, `bit` or `float`
+  column is refused: a TIMESTAMP shows in the session's zone without it,
+  so two instants of a repeated daylight-saving hour read alike; a BIT
+  bound as bytes is read as a number; a FLOAT bound as a double misses its
+  row.
 
 New values travel as text and the database converts them to the column's
-type: a quoted literal on PostgreSQL, a bound string on MySQL. Where the
-database would store the text as it is, the statement builder converts
-first, by the column's class, which it takes from `CellChange::type_name`
-with the same function the checks use: on SQLite integers and reals are
-numbers, and on SQLite and MySQL a boolean is 1 or 0. The builder is the
-only place that decides a value's form, so the literal Review SQL shows
-(`12`, `1`) is the value the driver binds.
+type: a quoted literal on PostgreSQL (`'...'`, or `E'...'` when the text
+holds a backslash, so it reads plainly and still runs as shown), a bound
+string on MySQL. Where the database would store the text as it is, the
+statement builder converts first, by the column's class (`column_class`,
+from `CellChange::type_name`, the same function the checks use): on SQLite
+integers and reals are numbers, and on SQLite and MySQL a boolean is 1 or
+0; a MySQL `tinyint(1)` also takes any whole number a tinyint holds. A
+SQLite column with no declared type, or one SQLite gives no affinity,
+converts nothing, so there the builder follows what the cell held: a
+number stays a number if the new text is one, and text stays text. A
+binary column, or a cell that held bytes, is refused outright, a NULL for
+it too. The builder is the only place that decides a value's form, so the
+literal Review SQL shows (`12`, `1`) is the value the driver binds. Two
+SQLite literals are written so that the shown text runs when pasted: text
+holding a NUL as `('a' || char(0) || 'b')`, and an infinite float as
+`9e999`.
 
-The backend gains `Command::Write { session, request, tab, changes }` and
-`Event::Written { .. outcome }`, queued and answered like every request.
-`Mod+.` cancels a running save through the session's cancel handle; the
-`write` future is awaited to its end, never dropped, and rolls back. Once
-`COMMIT` is sent a cancel is no longer honoured. A connection lost during
-the save leaves the pending set as it was and says "The connection was lost
-while saving. Reload to see what was written."
+The backend has `Command::Write { session, request, changes }` and
+`Event::Written { session, request, result }`, queued and answered like
+every request; the reducer finds the tab by the request. `Mod+.` cancels a
+running save through the session's cancel handle; the `write` future is
+awaited to its end, never dropped, and rolls back. A cancel only reaches a
+statement that is running: one that arrives between two of a save's
+statements is lost on PostgreSQL and MySQL, and the save goes on and
+commits. One that reaches the `COMMIT` before it takes hold undoes the
+save, which answers `Cancelled`. A connection lost during the save leaves
+the pending set as it was and says "The connection was lost while saving.
+Reload to see what was written."
 
 After `Written` the reducer replaces those rows in the page, in place even
 when the sort or the filters would now move or hide them, clears their
@@ -534,10 +636,11 @@ Only when the workspace's environment is production, every Save first asks:
 Each step ends compiling, tested and shippable, and gets its own plan run:
 
 1. Writable connections: `Access`, the sessions, the script runner's fence,
-   the dialog's box, the shipped screens. Nothing writes yet.
+   the dialog's box, the shipped screens.
 2. `Connection::write`, the statement builder and the column classes, the
-   catalog's `ColumnInfo.generated` and `IndexInfo.partial`, the row key
-   rule, the backend command and event.
+   catalog's `ColumnInfo.generated`, `IndexInfo.partial` and
+   `IndexInfo.key_columns`, the row key rule, the backend command and
+   event. Nothing in the UI saves yet.
 3. Editing in the grid: the lifecycle, the editors, the checks, the pending
    bar without Review SQL, the keys but `:diff`, Save, the leaving guard,
    and the production confirmation with its statements in both looks.

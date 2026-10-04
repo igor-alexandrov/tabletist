@@ -305,10 +305,13 @@ Cleanup after every script, on every path:
   MySQL 5.7.2, MariaDB 10.2.3 or older) is a cleanup failure.
 - SQLite: `ROLLBACK` when a transaction is still open, then the
   connect-time settings again: the busy timeout, `PRAGMA query_only = ON`,
-  `PRAGMA trusted_schema = OFF` and `PRAGMA case_sensitive_like = OFF`, so a
-  script cannot leave the session writable or change how the filters
-  compare. A script's other `PRAGMA`s and its `ATTACH`es last for the
-  session (see Intent).
+  `PRAGMA trusted_schema = OFF`, `PRAGMA case_sensitive_like = OFF`,
+  `PRAGMA full_column_names = OFF` and `PRAGMA short_column_names = ON`, so
+  a script cannot leave the session writable, change how the filters
+  compare, or rename the columns of the pages and saves after it. A
+  script's other `PRAGMA`s and its `ATTACH`es last for the session (see
+  Intent); those a write would feel are put back by the save itself (the
+  value-editing spec, "Saving").
 
 A cancel is meant for a user statement, but it can land on the queries
 around them. One that lands on the opening queries (`BEGIN`, `SELECT 1`,
@@ -717,8 +720,8 @@ tab's result grid as on a table's.
   its first statement reads as cancelled and the rest "Not run".
 - Session settings a script changes (`SET search_path`, `SET time_zone`)
   last only for that run: PostgreSQL rolls them back, MySQL resets the
-  session. SQLite puts `query_only`, `trusted_schema`, `case_sensitive_like`
-  and the busy timeout back after every run; its other `PRAGMA`s and its
+  session. SQLite puts `query_only`, `trusted_schema`, `case_sensitive_like`,
+  the column-name pragmas and the busy timeout back after every run; its other `PRAGMA`s and its
   `ATTACH`es last for the session.
 - A run that failed as a whole (a refusal, a lost session) shows its error
   and no older rows: the result of the run before it is dropped.

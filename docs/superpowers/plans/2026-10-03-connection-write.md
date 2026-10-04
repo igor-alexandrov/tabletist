@@ -27,7 +27,7 @@
 
 - The PostgreSQL and MySQL fixtures are loaded once and shared by every test of a suite. **A write test never changes a fixture table.** It creates a table of its own through the suite's `admin()` connection, under a name no other test uses, and drops it when done. SQLite tests each get their own file and may change it freely.
 - **This plan runs on the branch `claude/connection-write`,** off `main`, which holds all of step 1 (`Access`, the fenced sessions, `Workspace::access`, `Command::Connect { access }`, `Event::Connected { access }`).
-- **Tasks 1 to 9 are built**, with what their review changed (see "As built" under each, and decisions 10 to 13 below). Only task 10, the documents, is left; it writes the decisions into the spec.
+- **All ten tasks are built**, with what their review changed (see "As built" under each, and decisions 10 to 14 below). Task 10 wrote the decisions into the specs and the crate doc.
 - **How the SQLite driver stands, which the SQLite tasks build on.** Read each function before you edit it.
   - `Conn` holds `inner: Arc<Mutex<rusqlite::Connection>>`, the interrupt handle and `fences`. `open` installs the authorizer with `tabletist_sqlite_ffi::set_authorizer(&connection, ..)` after `set_session_pragmas` and the first read. A save's statements are the app's own: they run with no fence up.
   - Names can hold bytes that are not UTF-8, and rusqlite panics on them. So the catalog reads text through `text` and `optional_text` (as `Lossy`, which also says whether the name is exact), an index is looked up by the bytes of its name, and a statement's columns come from `declared_columns` (through `tabletist_sqlite_ffi::result_columns`). **Never read a statement's column names through rusqlite** (`column_names`, `column_name`, `columns`).
@@ -2557,6 +2557,8 @@ git add -A && git commit -m "Carry a save from the app to its session"
 ---
 
 ### Task 10: The documents, and the full checks
+
+> **As built:** the value-editing spec's status, "What can be edited" and "Saving" say what the code does, the fourteen decisions among it; the main spec lists `write`, the new files and the catalog's new fields, and says how each session fixes what values print; the SQL editor spec names the column-name pragmas among what SQLite puts back after a script; the crate doc says the crate writes in exactly one place.
 
 **Files:**
 - Modify: `docs/superpowers/specs/2026-10-03-value-editing-core-design.md`, `docs/superpowers/specs/2026-09-27-tabletist-design.md`, `crates/tabletist-db/src/lib.rs` (the crate doc)

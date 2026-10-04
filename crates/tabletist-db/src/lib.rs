@@ -1,9 +1,11 @@
 //! Access to PostgreSQL, MySQL and SQLite for Tabletist.
 //!
-//! Nothing in this crate writes to a connected database yet. A session is
-//! read-only unless it is opened [`Access::Writable`], and then it is
-//! fenced: row fetches and counts run in read-only transactions (on SQLite
-//! under `query_only`), and a SQL editor script still cannot write.
+//! The crate writes to a connected database in exactly one place,
+//! [`Connection::write`], and only on a session opened
+//! [`Access::Writable`]. Everything else stays fenced there as on a
+//! read-only session: row fetches and counts run in read-only transactions
+//! (on SQLite under `query_only`), and a SQL editor script still cannot
+//! write.
 
 mod catalog;
 mod check;
@@ -42,8 +44,8 @@ pub use ssh::HostKeys;
 pub use value::{ColumnMeta, Value, ValueKind, value_from_pg_text};
 pub use write::{CellChange, ChangeSet, Conflict, NewValue, RowChange, WriteOutcome};
 
-/// Whether a session may write. The app has no writing call yet; a
-/// writable session is the one a later `write` will be allowed on.
+/// Whether a session may write. [`Connection::write`] is the one call
+/// that does, and it is refused on a read-only session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Access {
     /// Nothing can write: the session itself is read-only.
