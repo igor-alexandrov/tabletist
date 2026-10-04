@@ -14,9 +14,10 @@
 //! a frame that puts them back. Nothing here is `unsafe`: the window comes
 //! from `NSApplication` and the buttons' title bar is their shared ancestor.
 //!
-//! The app menu's About item opens the app's own About dialog ([`AboutMenu`]).
-//! Pointing a menu item somewhere does need `unsafe`, which this crate
-//! forbids, so that one call lives in `tabletist-appkit`.
+//! The app menu's About item opens the app's own About dialog ([`AboutMenu`]),
+//! and its Settings item, added the same way, opens the Settings window
+//! ([`SettingsMenu`]). Pointing a menu item somewhere does need `unsafe`,
+//! which this crate forbids, so that one call lives in `tabletist-appkit`.
 
 use std::cell::Cell;
 use std::rc::Rc;
@@ -142,6 +143,43 @@ impl AboutMenu {
     pub fn attach(ctx: &egui::Context, title: &str) -> Option<Self> {
         let chosen = Rc::new(Cell::new(false));
         let item = tabletist_appkit::AboutItem::take_over(title, {
+            let chosen = chosen.clone();
+            let ctx = ctx.clone();
+            move || {
+                chosen.set(true);
+                ctx.request_repaint();
+            }
+        })?;
+        Some(Self {
+            chosen,
+            _item: item,
+        })
+    }
+
+    /// Whether the item was chosen since the last call.
+    pub fn take(&self) -> bool {
+        self.chosen.replace(false)
+    }
+}
+
+/// The app menu's Settings item, asking for the Settings window.
+///
+/// winit's app menu has none, so one is added where the platform puts it.
+/// AppKit takes `⌘,` for the item before egui sees the key.
+pub struct SettingsMenu {
+    chosen: Rc<Cell<bool>>,
+    /// The item is in the menu for as long as this lives.
+    _item: tabletist_appkit::SettingsItem,
+}
+
+impl SettingsMenu {
+    /// Adds the item, titled `title`. Choosing it draws a frame, which
+    /// finds it with [`SettingsMenu::take`]. `None` when there is no app
+    /// menu or it has no separator to put the item after (or off the main
+    /// thread).
+    pub fn attach(ctx: &egui::Context, title: &str) -> Option<Self> {
+        let chosen = Rc::new(Cell::new(false));
+        let item = tabletist_appkit::SettingsItem::insert(title, {
             let chosen = chosen.clone();
             let ctx = ctx.clone();
             move || {

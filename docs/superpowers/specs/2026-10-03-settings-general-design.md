@@ -433,13 +433,16 @@ that is its value, so its row says the number.
 
 winit builds the app menu as About, separator, Services, Hide, Hide Others,
 Show All, separator, Quit. `tabletist-appkit` gains
-`SettingsItem::insert(title, chosen) -> Option<Self>`, which adds the item
-and a separator after About's separator, the place the platform gives it.
-It shares `about.rs`'s target class (renamed to say what it is: an object
-that calls a closure when a menu item is chosen). Dropping the
-`SettingsItem` removes both items. `src/macos.rs` wraps it as `SettingsMenu`
-the way `AboutMenu` wraps `AboutItem`, and `Window::logic` turns a chosen
-item into `Action::ShowSettings`.
+`SettingsItem::insert(title, chosen) -> Option<Self>`, which puts the item
+and a separator after the first separator of the app menu (in winit's menu,
+the one after About), the place the platform gives it; where the menu has no
+separator, nothing is inserted and the key handler opens the window. It
+shares the class that `about.rs` had, now `MenuTarget` in `target.rs`: an
+object that calls a closure when a menu item is chosen, through the action
+`menuItemChosen:`. Dropping the `SettingsItem` removes both items and takes
+the item's target away. `src/macos.rs` wraps it as `SettingsMenu` the way
+`AboutMenu` wraps `AboutItem`, and `Window::logic` turns a chosen item into
+`Action::ShowSettings`.
 
 AppKit takes `⌘,` for the menu item before egui sees it, so on macOS the key
 arrives through the menu; if the item could not be inserted, `keys.rs` still
@@ -687,9 +690,12 @@ Every behaviour gets a focused test; UI behaviour goes through
   writes nothing; one with the app's own text is dropped; invalid lines
   reach `App`. A backend test in a temporary directory writes the file and
   receives the event.
-- macOS menu: a test with its own `main`, beside `about_menu.rs`, that the
-  item is inserted after About, carries `⌘,`, calls back, and is removed on
-  drop. It runs in CI's macOS job; from Linux it can only be compile-checked.
+- macOS menu: `settings_menu.rs`, a test with its own `main` beside
+  `about_menu.rs`, that the item is inserted after About, carries the key
+  `,`, calls back, and is removed on drop. It does not check the key's
+  modifier, which is AppKit's default (Command); reading it needs a feature
+  the crate does not turn on. It runs in CI's macOS job; from Linux it can
+  only be compile-checked.
 
 Neither `README.md` nor `AGENTS.md` names the settings file, so neither
 changes; the first design spec's list of files is left as the record it is.

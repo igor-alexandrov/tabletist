@@ -135,6 +135,15 @@ pub fn main() -> anyhow::Result<()> {
             if about_menu.is_none() {
                 log::warn!("the app menu has no About item to take over");
             }
+            #[cfg(target_os = "macos")]
+            let settings_menu = crate::macos::SettingsMenu::attach(
+                &cc.egui_ctx,
+                &crate::i18n::gettext(app.locale, "Settings…"),
+            );
+            #[cfg(target_os = "macos")]
+            if settings_menu.is_none() {
+                log::warn!("the app menu has no place for a Settings item");
+            }
             Ok(Box::new(Window {
                 app,
                 shot,
@@ -143,6 +152,8 @@ pub fn main() -> anyhow::Result<()> {
                 title_bar: None,
                 #[cfg(target_os = "macos")]
                 about_menu,
+                #[cfg(target_os = "macos")]
+                settings_menu,
             }))
         }),
     )
@@ -274,6 +285,10 @@ struct Window {
     /// macOS: the app menu's About item, which opens the About dialog.
     #[cfg(target_os = "macos")]
     about_menu: Option<crate::macos::AboutMenu>,
+    /// macOS: the app menu's Settings item, which opens the Settings
+    /// window.
+    #[cfg(target_os = "macos")]
+    settings_menu: Option<crate::macos::SettingsMenu>,
 }
 
 impl Window {
@@ -327,6 +342,19 @@ impl eframe::App for Window {
             .is_some_and(crate::macos::AboutMenu::take)
         {
             self.app.actions.push(crate::model::Action::ShowAbout);
+        }
+        // The same window `Mod+,` opens. AppKit takes that key for the
+        // item before egui sees it, so on macOS the key arrives here; where
+        // the item could not be added, the key handler still has it. Asked
+        // for while it is open, the window stays as it is, so a press that
+        // reached both would still open it once.
+        #[cfg(target_os = "macos")]
+        if self
+            .settings_menu
+            .as_ref()
+            .is_some_and(crate::macos::SettingsMenu::take)
+        {
+            self.app.actions.push(crate::model::Action::ShowSettings);
         }
         self.app.logic(ctx);
         self.drive_shot(ctx);
