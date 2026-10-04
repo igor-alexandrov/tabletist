@@ -435,6 +435,11 @@ impl Conn {
     pub async fn primary_key(&self, object: &ObjectRef) -> Result<Vec<String>> {
         let rows = self
             .catalog(
+                // Only the key's own columns: `INCLUDE` puts more after them
+                // in `indkey`, and those are no part of the key. Their count,
+                // `indnkeyatts`, exists from PostgreSQL 11, so it is read
+                // through `to_jsonb`: every page asks for the key, and naming
+                // a column an older server lacks would fail them all.
                 "SELECT a.attname::text \
                  FROM pg_index i \
                  JOIN pg_class c ON c.oid = i.indrelid \
@@ -442,6 +447,7 @@ impl Conn {
                  CROSS JOIN LATERAL unnest(i.indkey) WITH ORDINALITY AS k(attnum, ord) \
                  JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = k.attnum \
                  WHERE n.nspname = $1 AND c.relname = $2 AND i.indisprimary \
+                   AND k.ord <= COALESCE((to_jsonb(i) ->> 'indnkeyatts')::int, i.indnatts) \
                  ORDER BY k.ord",
                 &[&object.schema, &object.name],
             )
@@ -476,10 +482,11 @@ impl Conn {
             .catalog(
                 // An enum's labels in their sort order; a text column's
                 // single-column CHECK constraints, by name. Whether the
-                // column is generated is read through `to_jsonb`:
-                // `attgenerated` only exists from PostgreSQL 12 and
-                // `attidentity` from 10, and naming a column a server lacks
-                // would fail the whole Structure view.
+                // column is generated is read through `to_jsonb`, for
+                // PostgreSQL 11: `attgenerated` only exists from 12, and
+                // naming a column the server lacks would fail the whole
+                // Structure view. Nothing older is spared by it: the index
+                // query below names `indnkeyatts`, which 11 brought.
                 "SELECT a.attname::text, format_type(a.atttypid, a.atttypmod), NOT a.attnotnull, \
                         pg_get_expr(d.adbin, d.adrelid), col_description(a.attrelid, a.attnum), \
                         CASE WHEN t.typtype = 'e' THEN \
@@ -524,12 +531,30 @@ impl Conn {
             .catalog(
                 // An index that is not valid (a `CREATE UNIQUE INDEX
                 // CONCURRENTLY` that failed) does not hold its rows unique,
-                // whatever it is called.
+                // whatever it is called. The last column is the key's
+                // columns by name, or NULL when an entry is not one whole
+                // column compared as the column compares: an expression (0
+                // in `indkey`), another collation than the column's, or an
+                // operator class that is not the default one. The text
+                // `pg_get_indexdef` shows tells none of these apart.
                 "SELECT ic.relname::text, i.indisunique AND i.indisvalid, i.indisprimary, \
                         am.amname::text, \
                         ARRAY(SELECT pg_get_indexdef(i.indexrelid, k, true) \
                               FROM generate_series(1, i.indnkeyatts::int) AS k ORDER BY k), \
-                        i.indpred IS NOT NULL \
+                        i.indpred IS NOT NULL, \
+                        CASE WHEN NOT EXISTS ( \
+                                 SELECT 1 FROM generate_series(1, i.indnkeyatts::int) AS k \
+                                 LEFT JOIN pg_attribute a \
+                                   ON a.attrelid = i.indrelid AND a.attnum = i.indkey[k - 1] \
+                                 LEFT JOIN pg_opclass oc ON oc.oid = i.indclass[k - 1] \
+                                 WHERE i.indkey[k - 1] = 0 \
+                                    OR a.attcollation <> i.indcollation[k - 1] \
+                                    OR NOT oc.opcdefault) \
+                             THEN ARRAY(SELECT a.attname::text \
+                                        FROM generate_series(1, i.indnkeyatts::int) AS k \
+                                        JOIN pg_attribute a \
+                                          ON a.attrelid = i.indrelid AND a.attnum = i.indkey[k - 1] \
+                                        ORDER BY k) END \
                  FROM pg_index i \
                  JOIN pg_class ic ON ic.oid = i.indexrelid \
                  JOIN pg_am am ON am.oid = ic.relam \
@@ -545,6 +570,7 @@ impl Conn {
                     primary: column(row, 2)?,
                     method: Some(column(row, 3)?),
                     columns: column(row, 4)?,
+                    key_columns: column(row, 6)?,
                     partial: column(row, 5)?,
                 })
             })

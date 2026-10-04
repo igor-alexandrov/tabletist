@@ -214,7 +214,7 @@ impl Conn {
         let columns: Vec<(String, String, String, Option<String>, String, String)> = self
             .catalog(
                 "SELECT column_name, column_type, is_nullable, column_default, column_comment, \
-                        extra \
+                        COALESCE(extra, '') \
                  FROM information_schema.columns \
                  WHERE table_schema = ? AND table_name = ? ORDER BY ordinal_position",
                 at,
@@ -245,27 +245,38 @@ impl Conn {
                 },
             )
             .collect();
-        let index_rows: Vec<(String, i64, String, String)> = self
+        let index_rows: Vec<(String, i64, String, String, i64)> = self
             .catalog(
-                "SELECT index_name, non_unique, COALESCE(column_name, '<expression>'), index_type \
+                // The last column: whether the entry is one whole column. An
+                // expression has no column name, and an index over the first
+                // characters of a column (`sub_part`) names the column all
+                // the same.
+                "SELECT index_name, non_unique, COALESCE(column_name, '<expression>'), index_type, \
+                        column_name IS NOT NULL AND sub_part IS NULL \
                  FROM information_schema.statistics \
                  WHERE table_schema = ? AND table_name = ? ORDER BY index_name, seq_in_index",
                 at,
             )
             .await?;
         let mut indexes: Vec<IndexInfo> = Vec::new();
-        for (name, non_unique, column, method) in index_rows {
+        for (name, non_unique, column, method, whole) in index_rows {
             if indexes.last().is_none_or(|index| index.name != name) {
                 indexes.push(IndexInfo {
                     primary: name == "PRIMARY",
                     unique: non_unique == 0,
                     method: Some(method.to_lowercase()),
                     columns: Vec::new(),
+                    key_columns: Some(Vec::new()),
                     partial: false,
                     name,
                 });
             }
             if let Some(index) = indexes.last_mut() {
+                if whole == 0 {
+                    index.key_columns = None;
+                } else if let Some(key) = &mut index.key_columns {
+                    key.push(column.clone());
+                }
                 index.columns.push(column);
             }
         }

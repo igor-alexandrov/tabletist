@@ -5,7 +5,7 @@ use crate::{Dialect, ValueKind};
 
 /// A column's class. A type the app does not know is `Other`: the database
 /// alone says what it takes.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ColumnClass {
     /// Whole numbers from `min` to `max`.
     Integer {
@@ -24,6 +24,9 @@ pub enum ColumnClass {
     Text {
         max_chars: Option<u32>,
     },
+    /// Bytes. The app does not send these as text: a database that takes
+    /// text for them stores the characters' codes, not the value meant.
+    Binary,
     Other,
 }
 
@@ -93,10 +96,11 @@ fn postgres(name: &str) -> ColumnClass {
         "real" | "double precision" => ColumnClass::Float,
         "boolean" => ColumnClass::Boolean,
         "json" | "jsonb" => ColumnClass::Json,
-        "text" => ColumnClass::Text { max_chars: None },
+        "text" | "bpchar" => ColumnClass::Text { max_chars: None },
         "character varying" | "character" => ColumnClass::Text {
             max_chars: arguments(name).first().copied(),
         },
+        "bytea" => ColumnClass::Binary,
         _ => ColumnClass::Other,
     }
 }
@@ -131,22 +135,31 @@ fn mysql(name: &str) -> ColumnClass {
             max_chars: arguments(name).first().copied(),
         },
         "tinytext" | "text" | "mediumtext" | "longtext" => ColumnClass::Text { max_chars: None },
+        // `bit` too: given the text `1`, MySQL stores the character's code.
+        "bit" | "binary" | "varbinary" | "tinyblob" | "blob" | "mediumblob" | "longblob" => {
+            ColumnClass::Binary
+        }
         _ => ColumnClass::Other,
     }
 }
 
 /// By the affinity SQLite gives the declared type, with JSON, boolean and
-/// date and time names told apart first, as `ValueKind` tells them.
+/// date and time names told apart first, as `ValueKind` tells them. Whole
+/// numbers alone only for the name of an integer type.
 fn sqlite(name: &str) -> ColumnClass {
     match ValueKind::from_sqlite_decl(name) {
         ValueKind::Json => ColumnClass::Json,
         ValueKind::Bool => ColumnClass::Boolean,
         ValueKind::Text => ColumnClass::Text { max_chars: None },
-        ValueKind::Numeric if name.contains("int") => signed(8),
+        ValueKind::Numeric if names_sqlite_integers(name) => signed(8),
+        // Any name holding `int` has integer affinity, which keeps a number
+        // that is not whole as it is: `FLOATING POINT` takes 1.5, and is
+        // not a float either, since it keeps a whole number exact.
         ValueKind::Numeric
-            if ["real", "floa", "doub"]
-                .iter()
-                .any(|word| name.contains(word)) =>
+            if !name.contains("int")
+                && ["real", "floa", "doub"]
+                    .iter()
+                    .any(|word| name.contains(word)) =>
         {
             ColumnClass::Float
         }
@@ -154,14 +167,28 @@ fn sqlite(name: &str) -> ColumnClass {
             precision: None,
             scale: None,
         },
-        ValueKind::Temporal | ValueKind::Binary | ValueKind::Other => ColumnClass::Other,
+        ValueKind::Binary => ColumnClass::Binary,
+        ValueKind::Temporal | ValueKind::Other => ColumnClass::Other,
+    }
+}
+
+/// Whether a SQLite declared type is the name of an integer type, not just
+/// a name with `int` in it.
+fn names_sqlite_integers(name: &str) -> bool {
+    let mut words = base(name).split_whitespace();
+    match words.next() {
+        Some(
+            "int" | "integer" | "tinyint" | "smallint" | "mediumint" | "bigint" | "int2" | "int8",
+        ) => true,
+        Some("unsigned") => words.eq(["big", "int"]),
+        _ => false,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ColumnClass::{Boolean, Decimal, Float, Integer, Json, Other, Text};
+    use ColumnClass::{Binary, Boolean, Decimal, Float, Integer, Json, Other, Text};
 
     fn int(min: i128, max: i128) -> ColumnClass {
         Integer { min, max }
@@ -217,9 +244,23 @@ mod tests {
                 },
             ),
             ("character(5)", Text { max_chars: Some(5) }),
+            // What a column declared `bpchar` prints as: text of any length.
+            ("bpchar", Text { max_chars: None }),
+            // One byte, not one character.
+            ("\"char\"", Other),
+            // More places after the point than digits: 0.00123.
+            (
+                "numeric(3,5)",
+                Decimal {
+                    precision: Some(3),
+                    scale: Some(5),
+                },
+            ),
+            ("bytea", Binary),
             ("timestamp with time zone", Other),
             ("text[]", Other),
             ("integer[]", Other),
+            ("character varying(20)[]", Other),
             ("mood", Other),
             ("uuid", Other),
         ] {
@@ -235,7 +276,10 @@ mod tests {
             ("tinyint(4)", int(-128, 127)),
             ("tinyint unsigned", int(0, 255)),
             ("smallint", int(-32_768, 32_767)),
+            ("mediumint", int(-8_388_608, 8_388_607)),
             ("mediumint unsigned", int(0, 16_777_215)),
+            // Not the boolean: `BOOLEAN` is the signed `tinyint(1)` alone.
+            ("tinyint(1) unsigned zerofill", int(0, 255)),
             ("int", int(i128::from(i32::MIN), i128::from(i32::MAX))),
             ("int(11)", int(i128::from(i32::MIN), i128::from(i32::MAX))),
             ("int unsigned", int(0, i128::from(u32::MAX))),
@@ -273,9 +317,16 @@ mod tests {
             ("text", Text { max_chars: None }),
             ("longtext", Text { max_chars: None }),
             ("datetime(6)", Other),
+            ("year", Other),
             ("enum('happy','sad')", Other),
-            ("varbinary(16)", Other),
-            ("bit(1)", Other),
+            ("binary(16)", Binary),
+            ("varbinary(16)", Binary),
+            ("tinyblob", Binary),
+            ("blob", Binary),
+            ("mediumblob", Binary),
+            ("longblob", Binary),
+            ("bit(1)", Binary),
+            ("bit(8)", Binary),
         ] {
             assert_eq!(column_class(Dialect::MySql, name), class, "{name}");
         }
@@ -285,13 +336,32 @@ mod tests {
     fn sqlite_types_have_the_class_of_their_affinity() {
         let whole = int(i128::from(i64::MIN), i128::from(i64::MAX));
         for (name, class) in [
-            ("INTEGER", whole.clone()),
-            ("bigint", whole.clone()),
+            ("INTEGER", whole),
+            ("bigint", whole),
             ("INT UNSIGNED", whole),
+            ("INT8", whole),
+            ("UNSIGNED BIG INT", whole),
             ("BOOLEAN", Boolean),
             ("JSON", Json),
             ("REAL", Float),
+            ("FLOAT", Float),
             ("double precision", Float),
+            // Integer affinity, by the `INT` in the name, and it keeps 1.5
+            // as it is: a number, whole or not.
+            (
+                "FLOATING POINT",
+                Decimal {
+                    precision: None,
+                    scale: None,
+                },
+            ),
+            (
+                "POINT",
+                Decimal {
+                    precision: None,
+                    scale: None,
+                },
+            ),
             // SQLite enforces neither digits nor a length.
             (
                 "NUMERIC(10,2)",
@@ -310,7 +380,8 @@ mod tests {
             ("TEXT", Text { max_chars: None }),
             ("VARCHAR(255)", Text { max_chars: None }),
             ("DATETIME", Other),
-            ("BLOB", Other),
+            ("BLOB", Binary),
+            ("blob", Binary),
             ("", Other),
         ] {
             assert_eq!(column_class(Dialect::Sqlite, name), class, "{name}");
