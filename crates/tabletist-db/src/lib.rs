@@ -7,6 +7,7 @@
 
 mod catalog;
 mod check;
+mod class;
 pub mod complete;
 mod dialect;
 mod error;
@@ -30,6 +31,7 @@ use std::sync::Arc;
 pub use catalog::{
     ColumnInfo, ForeignKeyInfo, IndexInfo, MAX_LISTED, ObjectInfo, ObjectKind, ObjectRef, Structure,
 };
+pub use class::{ColumnClass, column_class};
 pub use dialect::{Dialect, Sql, escape_like, quote_literal};
 pub use error::{Error, Result, SshStage};
 pub use query::{Filter, FilterOp, RowPage, RowQuery, Sort, SortDir};
