@@ -14,10 +14,10 @@ use crate::connections::{PasswordMode, SavedConnection};
 use crate::i18n::Locale;
 use crate::model::{Action, ConnTab, ConnTabContent, ConnTabId, PickerState};
 use crate::model::{
-    CellPos, Completion, ConnectionForm, Dialog, Fetch, FilterBar, FilterRow, HostKeyPrompt,
-    ObjectTab, ObjectView, Pane, PasswordPrompt, PickTarget, QuickOpen, ResultPane, SecretKind,
-    SessionStatus, SqlTab, Tab, TabId, TestState, TextPrint, Tree, TreeKey, TreeNode, Wanted,
-    Workspace,
+    Advance, CellPos, Completion, ConnectionForm, Dialog, EditStart, Fetch, FilterBar, FilterRow,
+    HostKeyPrompt, ObjectTab, ObjectView, Pane, PasswordPrompt, PickTarget, QuickOpen, ResultPane,
+    SecretKind, SessionStatus, SqlTab, Tab, TabId, TestState, TextPrint, Tree, TreeKey, TreeNode,
+    Wanted, Workspace,
 };
 use crate::paths::AppDirs;
 use crate::secrets::{SecretString, password_account, ssh_account};
@@ -718,7 +718,11 @@ impl App {
                 }
             }
             Action::SelectCell { tab, id, cell } => {
+                // The editor's text is kept, and the note of a locked cell
+                // was about the cell the selection leaves.
+                self.close_editor(tab, id, true);
                 if let Some(object) = self.object_tab_mut(tab, id) {
+                    object.edits.why = None;
                     object.selection = Some(cell);
                     object.pinned = true;
                 } else if let Some(sql) = self.sql_tab_mut(tab, id) {
@@ -733,12 +737,82 @@ impl App {
                     workspace.pane = Pane::Grid;
                 }
             }
+            Action::EditCell {
+                tab,
+                id,
+                cell,
+                start,
+            } => self.edit_cell(tab, id, cell, start),
+            Action::EditorTyped { tab, id } => {
+                let problem = self.editor_problem(tab, id);
+                if let Some(editor) = self.editor_mut(tab, id) {
+                    editor.problem = problem;
+                    editor.touched = true;
+                }
+            }
+            Action::CommitEdit { tab, id, then } => {
+                if self.close_editor(tab, id, false) {
+                    let (rows, cols) = match then {
+                        Advance::Stay => (0, 0),
+                        Advance::Down => (1, 0),
+                        Advance::Right => (0, 1),
+                        Advance::Left => (0, -1),
+                    };
+                    if (rows, cols) != (0, 0) {
+                        self.apply(Action::MoveSelection {
+                            tab,
+                            id,
+                            rows,
+                            cols,
+                        });
+                    }
+                }
+            }
+            Action::LeaveEdit { tab, id } => {
+                self.close_editor(tab, id, true);
+            }
+            Action::CancelEdit { tab, id } => {
+                if let Some(object) = self.object_tab_mut(tab, id) {
+                    object.edits.editor = None;
+                }
+            }
+            Action::EditorBreak { tab, id } => {
+                if let Some(editor) = self.editor_mut(tab, id) {
+                    // At the end of the text, where the cursor of a field
+                    // that just opened is. A break elsewhere is typed in
+                    // the large editor.
+                    editor.text.push('\n');
+                    editor.large = true;
+                    editor.focus = true;
+                    editor.touched = true;
+                }
+            }
+            Action::SetNull { tab, id } => self.set_null(tab, id),
+            Action::RevertCell { tab, id } => {
+                if let Some(object) = self.object_tab_mut(tab, id)
+                    && let Some(cell) = object.selection
+                    && object.edits.editor.is_none()
+                {
+                    object.edits.cells.remove(&(cell.row, cell.col));
+                    object.fields = None;
+                }
+            }
+            Action::DiscardEdits { tab, id } => {
+                if let Some(object) = self.object_tab_mut(tab, id) {
+                    object.edits = crate::edit::Edits::default();
+                    object.fields = None;
+                }
+            }
             Action::MoveSelection {
                 tab,
                 id,
                 rows,
                 cols,
             } => {
+                self.close_editor(tab, id, true);
+                if let Some(object) = self.object_tab_mut(tab, id) {
+                    object.edits.why = None;
+                }
                 if let Some(sql) = self.sql_tab_mut(tab, id) {
                     let (height, width) = sql.dims();
                     sql.selection = (height > 0 && width > 0).then(|| match sql.selection {
@@ -2667,6 +2741,190 @@ impl App {
 
     fn sql_tab_mut(&mut self, tab: ConnTabId, id: TabId) -> Option<&mut SqlTab> {
         self.workspace_mut(tab)?.sql_tab_mut(id)
+    }
+
+    /// What editing may know of a table tab: `None` while it has no page.
+    fn table<T>(
+        &self,
+        tab: ConnTabId,
+        id: TabId,
+        read: impl FnOnce(&crate::edit::Table<'_>, &ObjectTab) -> T,
+    ) -> Option<T> {
+        let workspace = self.workspace(tab)?;
+        let object = workspace.object_tab(id)?;
+        let table = crate::edit::Table {
+            access: workspace.access,
+            kind: object.kind,
+            dialect: workspace.driver.dialect(),
+            structure: object.structure.value.as_ref(),
+            page: object.page()?,
+            refreshing: object.rows.is_loading(),
+            saving: false,
+        };
+        Some(read(&table, object))
+    }
+
+    fn editor_mut(&mut self, tab: ConnTabId, id: TabId) -> Option<&mut crate::edit::Editor> {
+        self.object_tab_mut(tab, id)?.edits.editor.as_mut()
+    }
+
+    /// What the open editor's text fails, if anything.
+    fn editor_problem(&self, tab: ConnTabId, id: TabId) -> Option<crate::edit::Problem> {
+        self.table(tab, id, |table, object| {
+            let editor = object.edits.editor.as_ref()?;
+            let column = table.column(editor.cell.col)?;
+            crate::edit::check(table.dialect, column, &editor.text)
+        })
+        .flatten()
+    }
+
+    fn edit_cell(&mut self, tab: ConnTabId, id: TabId, cell: CellPos, start: EditStart) {
+        // An editor open on another cell keeps its text.
+        self.close_editor(tab, id, true);
+        let (asked, touched) = match &start {
+            EditStart::Value => (true, false),
+            EditStart::Replace(_) => (true, true),
+            EditStart::Typed(_) => (false, true),
+        };
+        let opened = self.table(tab, id, |table, object| {
+            if let Some(lock) = table.lock(cell) {
+                return Err(lock);
+            }
+            let class = table
+                .class(cell.col)
+                .unwrap_or(tabletist_db::ColumnClass::Other);
+            let text = match start {
+                EditStart::Replace(text) | EditStart::Typed(text) => text,
+                EditStart::Value => match object.edits.cells.get(&(cell.row, cell.col)) {
+                    Some(pending) => match &pending.new {
+                        tabletist_db::NewValue::Text(text) => text.clone(),
+                        tabletist_db::NewValue::Null => String::new(),
+                    },
+                    None => crate::edit::start_text(&table.page.rows[cell.row][cell.col], class),
+                },
+            };
+            Ok(crate::edit::Editor {
+                cell,
+                large: crate::edit::opens_large(&text, class),
+                text,
+                focus: true,
+                touched,
+                problem: None,
+            })
+        });
+        let Some(opened) = opened else {
+            return;
+        };
+        let Some(object) = self.object_tab_mut(tab, id) else {
+            return;
+        };
+        match opened {
+            Ok(editor) => {
+                object.selection = Some(cell);
+                object.edits.editor = Some(editor);
+                object.edits.why = None;
+                // A tab being edited is no preview to replace.
+                object.pinned = true;
+            }
+            Err(crate::edit::Lock::NoSuchCell) => return,
+            // Typing on a cell that cannot be edited does nothing.
+            Err(_) if !asked => return,
+            Err(lock) => {
+                object.selection = Some(cell);
+                object.edits.why = Some((cell, lock));
+            }
+        }
+        if let Some(workspace) = self.workspace_mut(tab) {
+            workspace.pane = Pane::Grid;
+        }
+    }
+
+    /// Takes the open editor's text as its cell's new value and closes it.
+    /// A text its column does not take keeps the editor open, unless the
+    /// edit is `left` (the keyboard went elsewhere): then the text is kept
+    /// as a cell to fix, so typing is never lost. Says whether the editor
+    /// closed.
+    fn close_editor(&mut self, tab: ConnTabId, id: TabId, left: bool) -> bool {
+        let verdict = self.table(tab, id, |table, object| {
+            let editor = object.edits.editor.as_ref()?;
+            let cell = editor.cell;
+            let column = table.column(cell.col)?;
+            let class = tabletist_db::column_class(table.dialect, &column.type_name);
+            let loaded = table.page.rows.get(cell.row)?.get(cell.col)?;
+            if !editor.touched {
+                return None;
+            }
+            let new = tabletist_db::NewValue::Text(editor.text.clone());
+            let changed = crate::edit::is_change(loaded, &new, class);
+            let problem = changed
+                .then(|| crate::edit::check(table.dialect, column, &editor.text))
+                .flatten();
+            Some((cell, new, changed, problem))
+        });
+        let Some(object) = self.object_tab_mut(tab, id) else {
+            return false;
+        };
+        let Some(Some((cell, new, changed, problem))) = verdict else {
+            // Nothing was typed, or there is no page or no such cell any
+            // more: the editor closes and the set stays as it was.
+            return object.edits.editor.take().is_some();
+        };
+        if problem.is_some() && !left {
+            if let Some(editor) = object.edits.editor.as_mut() {
+                editor.problem = problem;
+            }
+            return false;
+        }
+        object.edits.editor = None;
+        let key = (cell.row, cell.col);
+        if changed {
+            let state = problem.map_or(crate::edit::State::Ready, crate::edit::State::ToFix);
+            object
+                .edits
+                .cells
+                .insert(key, crate::edit::Pending { new, state });
+        } else {
+            object.edits.cells.remove(&key);
+        }
+        // The row panel shows the pending value.
+        object.fields = None;
+        true
+    }
+
+    fn set_null(&mut self, tab: ConnTabId, id: TabId) {
+        let verdict = self.table(tab, id, |table, object| {
+            let cell = object.selection?;
+            if object.edits.editor.is_some() || table.lock(cell).is_some() {
+                return None;
+            }
+            let column = table.column(cell.col)?;
+            if !column.nullable {
+                return None;
+            }
+            Some((cell, !table.page.rows[cell.row][cell.col].is_null()))
+        });
+        let Some(Some((cell, changed))) = verdict else {
+            return;
+        };
+        let Some(object) = self.object_tab_mut(tab, id) else {
+            return;
+        };
+        let key = (cell.row, cell.col);
+        if changed {
+            object.edits.cells.insert(
+                key,
+                crate::edit::Pending {
+                    new: tabletist_db::NewValue::Null,
+                    state: crate::edit::State::Ready,
+                },
+            );
+            // As opening an editor does: a tab with a pending cell is no
+            // preview for the next single click to replace.
+            object.pinned = true;
+        } else {
+            object.edits.cells.remove(&key);
+        }
+        object.fields = None;
     }
 
     /// The active connection tab and the tab its workspace shows, of
@@ -9344,6 +9602,362 @@ mod tests {
                 harness.app.workspace(tab).unwrap().status,
                 SessionStatus::Cancelled
             ));
+        }
+    }
+
+    /// Editing a table's values: the pending set, the editor, the save and
+    /// the guard that keeps a page with pending changes.
+    mod editing {
+        use super::*;
+        use crate::edit::{Lock, Problem, State};
+        use crate::model::{Advance, EditStart};
+        use tabletist_db::NewValue;
+
+        fn at(row: usize, col: usize) -> CellPos {
+            CellPos { row, col }
+        }
+
+        /// Opens the editor on `cell`, sets its text as a field would, and
+        /// commits.
+        fn type_into(harness: &mut Harness, tab: ConnTabId, id: TabId, cell: CellPos, text: &str) {
+            harness.app.apply(Action::EditCell {
+                tab,
+                id,
+                cell,
+                start: EditStart::Value,
+            });
+            let object = harness
+                .app
+                .workspace_mut(tab)
+                .unwrap()
+                .object_tab_mut(id)
+                .unwrap();
+            object.edits.editor.as_mut().expect("an editor").text = text.to_owned();
+            // What a field says when its text changed.
+            harness.app.apply(Action::EditorTyped { tab, id });
+            harness.app.apply(Action::CommitEdit {
+                tab,
+                id,
+                then: Advance::Stay,
+            });
+        }
+
+        #[test]
+        fn a_committed_edit_is_pending_and_the_loaded_text_takes_it_out_again() {
+            let mut harness = Harness::new();
+            let (tab, id) = harness.editable();
+            harness.app.apply(Action::EditCell {
+                tab,
+                id,
+                cell: at(1, 1),
+                start: EditStart::Value,
+            });
+            // The editor starts from the whole loaded value.
+            let editor = object(&harness, tab, id).edits.editor.as_ref().unwrap();
+            assert_eq!(
+                (editor.cell, editor.text.as_str(), editor.large),
+                (at(1, 1), "user2@example.com", false)
+            );
+            type_into(&mut harness, tab, id, at(1, 1), "bob@example.com");
+            let edits = &object(&harness, tab, id).edits;
+            assert!(edits.editor.is_none());
+            assert_eq!(
+                edits.cells.get(&(1, 1)).map(|cell| &cell.new),
+                Some(&NewValue::Text("bob@example.com".into()))
+            );
+            assert_eq!(edits.counts().changes, 1);
+            // The page itself is untouched: nothing has been sent.
+            assert_eq!(
+                object(&harness, tab, id).page().unwrap().rows[1][1],
+                tabletist_db::Value::Text("user2@example.com".into())
+            );
+            // Opened again, the editor holds the pending text.
+            harness.app.apply(Action::EditCell {
+                tab,
+                id,
+                cell: at(1, 1),
+                start: EditStart::Value,
+            });
+            assert_eq!(
+                object(&harness, tab, id)
+                    .edits
+                    .editor
+                    .as_ref()
+                    .unwrap()
+                    .text,
+                "bob@example.com"
+            );
+            // Typing the loaded text back is no change.
+            type_into(&mut harness, tab, id, at(1, 1), "user2@example.com");
+            assert!(object(&harness, tab, id).edits.cells.is_empty());
+        }
+
+        #[test]
+        fn a_locked_cell_opens_no_editor_and_says_why() {
+            let mut harness = Harness::new();
+            let (tab, id) = harness.editable();
+            harness.app.apply(Action::EditCell {
+                tab,
+                id,
+                cell: at(0, 0),
+                start: EditStart::Value,
+            });
+            let edits = &object(&harness, tab, id).edits;
+            assert!(edits.editor.is_none());
+            assert_eq!(edits.why, Some((at(0, 0), Lock::KeyColumn)));
+            // Moving on forgets the note.
+            harness.app.apply(Action::SelectCell {
+                tab,
+                id,
+                cell: at(0, 1),
+            });
+            assert_eq!(object(&harness, tab, id).edits.why, None);
+            // A read-only connection locks every cell.
+            harness.app.workspace_mut(tab).unwrap().access = tabletist_db::Access::ReadOnly;
+            harness.app.apply(Action::EditCell {
+                tab,
+                id,
+                cell: at(0, 1),
+                start: EditStart::Value,
+            });
+            assert_eq!(
+                object(&harness, tab, id).edits.why,
+                Some((at(0, 1), Lock::ReadOnly))
+            );
+        }
+
+        #[test]
+        fn a_text_that_fails_its_check_stays_in_the_editor_and_is_kept_when_left() {
+            let mut harness = Harness::new();
+            let (tab, id) = harness.editable();
+            // `meta` is JSON, so its editor is the large one.
+            type_into(&mut harness, tab, id, at(1, 2), "{oops");
+            let editor = object(&harness, tab, id).edits.editor.as_ref().unwrap();
+            assert!(editor.large);
+            assert!(matches!(editor.problem, Some(Problem::Json { .. })));
+            assert!(object(&harness, tab, id).edits.cells.is_empty());
+            // Clicking elsewhere never loses the typing: the cell is to fix.
+            harness.app.apply(Action::SelectCell {
+                tab,
+                id,
+                cell: at(0, 1),
+            });
+            let edits = &object(&harness, tab, id).edits;
+            assert!(edits.editor.is_none());
+            assert!(matches!(
+                edits.cells.get(&(1, 2)).map(|cell| &cell.state),
+                Some(State::ToFix(Problem::Json { .. }))
+            ));
+            assert_eq!(edits.counts().to_fix, 1);
+        }
+
+        #[test]
+        fn cancel_drops_the_edit_and_typed_marks_the_problem_as_it_is_typed() {
+            let mut harness = Harness::new();
+            let (tab, id) = harness.editable();
+            harness.app.apply(Action::EditCell {
+                tab,
+                id,
+                cell: at(1, 2),
+                start: EditStart::Replace("{".into()),
+            });
+            harness.app.apply(Action::EditorTyped { tab, id });
+            assert!(
+                object(&harness, tab, id)
+                    .edits
+                    .editor
+                    .as_ref()
+                    .unwrap()
+                    .problem
+                    .is_some()
+            );
+            harness.app.apply(Action::CancelEdit { tab, id });
+            let edits = &object(&harness, tab, id).edits;
+            assert!(edits.editor.is_none() && edits.cells.is_empty());
+        }
+
+        #[test]
+        fn null_is_set_only_where_the_column_allows_it_and_one_cell_is_reverted() {
+            let mut harness = Harness::new();
+            let (tab, id) = harness.editable();
+            // `email` is NOT NULL: the key does nothing.
+            harness.app.apply(Action::SelectCell {
+                tab,
+                id,
+                cell: at(0, 1),
+            });
+            harness.app.apply(Action::SetNull { tab, id });
+            assert!(object(&harness, tab, id).edits.cells.is_empty());
+            // `meta` of the first row holds a value and may be NULL.
+            harness.app.apply(Action::SelectCell {
+                tab,
+                id,
+                cell: at(0, 2),
+            });
+            harness.app.apply(Action::SetNull { tab, id });
+            assert_eq!(
+                object(&harness, tab, id)
+                    .edits
+                    .cells
+                    .get(&(0, 2))
+                    .map(|cell| &cell.new),
+                Some(&NewValue::Null)
+            );
+            // NULL on a cell that was NULL is no change.
+            harness.app.apply(Action::SelectCell {
+                tab,
+                id,
+                cell: at(1, 2),
+            });
+            harness.app.apply(Action::SetNull { tab, id });
+            assert_eq!(object(&harness, tab, id).edits.counts().changes, 1);
+            // Reverting the active cell puts the loaded value back.
+            harness.app.apply(Action::SelectCell {
+                tab,
+                id,
+                cell: at(0, 2),
+            });
+            harness.app.apply(Action::RevertCell { tab, id });
+            assert!(object(&harness, tab, id).edits.cells.is_empty());
+        }
+
+        #[test]
+        fn an_editor_that_was_only_opened_changes_nothing() {
+            let mut harness = Harness::new();
+            let (tab, id) = harness.editable();
+            // On a NULL cell the editor starts empty, and the empty string is
+            // not NULL: only typing makes it a change.
+            for then in [Advance::Stay, Advance::Down] {
+                harness.app.apply(Action::EditCell {
+                    tab,
+                    id,
+                    cell: at(1, 2),
+                    start: EditStart::Value,
+                });
+                harness.app.apply(Action::CommitEdit { tab, id, then });
+                assert!(object(&harness, tab, id).edits.cells.is_empty());
+            }
+            harness.app.apply(Action::EditCell {
+                tab,
+                id,
+                cell: at(1, 2),
+                start: EditStart::Value,
+            });
+            harness.app.apply(Action::LeaveEdit { tab, id });
+            assert!(!object(&harness, tab, id).edits.holds());
+            // A cell made NULL stays NULL when its editor is opened and left.
+            harness.app.apply(Action::SelectCell {
+                tab,
+                id,
+                cell: at(0, 2),
+            });
+            harness.app.apply(Action::SetNull { tab, id });
+            harness.app.apply(Action::EditCell {
+                tab,
+                id,
+                cell: at(0, 2),
+                start: EditStart::Value,
+            });
+            harness.app.apply(Action::CommitEdit {
+                tab,
+                id,
+                then: Advance::Stay,
+            });
+            assert_eq!(
+                object(&harness, tab, id)
+                    .edits
+                    .cells
+                    .get(&(0, 2))
+                    .map(|cell| &cell.new),
+                Some(&NewValue::Null)
+            );
+        }
+
+        #[test]
+        fn typing_on_a_locked_cell_does_nothing() {
+            let mut harness = Harness::new();
+            let (tab, id) = harness.editable();
+            harness.app.apply(Action::EditCell {
+                tab,
+                id,
+                cell: at(0, 0),
+                start: EditStart::Typed("7".into()),
+            });
+            let edits = &object(&harness, tab, id).edits;
+            assert!(edits.editor.is_none());
+            assert_eq!(edits.why, None);
+        }
+
+        #[test]
+        fn commit_moves_on_and_discard_empties_the_set() {
+            let mut harness = Harness::new();
+            let (tab, id) = harness.editable();
+            harness.app.apply(Action::EditCell {
+                tab,
+                id,
+                cell: at(1, 1),
+                start: EditStart::Replace("x@example.com".into()),
+            });
+            harness.app.apply(Action::CommitEdit {
+                tab,
+                id,
+                then: Advance::Down,
+            });
+            assert_eq!(object(&harness, tab, id).selection, Some(at(2, 1)));
+            type_into(&mut harness, tab, id, at(2, 1), "y@example.com");
+            assert_eq!(
+                (
+                    object(&harness, tab, id).edits.counts().changes,
+                    object(&harness, tab, id).edits.counts().rows
+                ),
+                (2, 2)
+            );
+            harness.app.apply(Action::DiscardEdits { tab, id });
+            assert!(!object(&harness, tab, id).edits.holds());
+        }
+
+        #[test]
+        fn editing_pins_a_preview_tab() {
+            let mut harness = Harness::new();
+            let (tab, id) = harness.editable();
+            harness
+                .app
+                .workspace_mut(tab)
+                .unwrap()
+                .object_tab_mut(id)
+                .unwrap()
+                .pinned = false;
+            harness.app.apply(Action::EditCell {
+                tab,
+                id,
+                cell: at(1, 1),
+                start: EditStart::Value,
+            });
+            assert!(object(&harness, tab, id).pinned);
+        }
+
+        #[test]
+        fn a_cell_made_null_pins_a_preview_tab_too() {
+            let mut harness = Harness::new();
+            let (tab, id) = harness.editable();
+            // A selection on a tab that is still a preview: a cell asked
+            // for while it was locked is selected, and that pins nothing.
+            {
+                let object = harness
+                    .app
+                    .workspace_mut(tab)
+                    .unwrap()
+                    .object_tab_mut(id)
+                    .unwrap();
+                object.pinned = false;
+                object.selection = Some(at(0, 2));
+            }
+            harness.app.apply(Action::SetNull { tab, id });
+            assert_eq!(object(&harness, tab, id).edits.cells.len(), 1);
+            assert!(object(&harness, tab, id).pinned);
+            // So the next single click opens beside it, not over it.
+            open(&mut harness, tab, "orders", false);
+            assert_eq!(object(&harness, tab, id).edits.cells.len(), 1);
         }
     }
 }
