@@ -85,22 +85,27 @@ pub fn directory_of(path: &Path) -> &Path {
 /// Linux does.
 const MAX_LINKS: usize = 40;
 
-/// The file `path` names once the symbolic links at its end are followed
-/// (a dotfiles manager keeps the file in its repository and a link here):
-/// `path` itself when it is not a link. The file need not be there. Links
-/// among the directories on the way are the system's to follow. More links
-/// than the limit, as links that lead back to themselves are, is an error.
-pub fn resolve_link(path: &Path) -> std::io::Result<PathBuf> {
-    let mut file = path.to_path_buf();
-    let mut followed = 0;
+/// The paths `path` leads through as the symbolic links at its end are
+/// followed (a dotfiles manager keeps the file in its repository and a
+/// link here): `path` first, then what each link leads to, the file last.
+/// Only `path` itself when it is not a link. The file need not be there.
+/// Links among the directories on the way are the system's to follow. More
+/// links than the limit, as links that lead back to themselves are, is an
+/// error, and so is a path that cannot be looked at: it is not taken for a
+/// plain file.
+pub fn link_chain(path: &Path) -> std::io::Result<Vec<PathBuf>> {
+    let mut chain = vec![path.to_path_buf()];
     loop {
-        let linked = file
-            .symlink_metadata()
-            .is_ok_and(|metadata| metadata.file_type().is_symlink());
+        let file = &chain[chain.len() - 1];
+        let linked = match file.symlink_metadata() {
+            Ok(metadata) => metadata.file_type().is_symlink(),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+            Err(error) => return Err(error),
+        };
         if !linked {
-            return Ok(file);
+            return Ok(chain);
         }
-        if followed == MAX_LINKS {
+        if chain.len() > MAX_LINKS {
             return Err(std::io::Error::other(format!(
                 "{} leads through more than {MAX_LINKS} symbolic links",
                 path.display()
@@ -108,10 +113,17 @@ pub fn resolve_link(path: &Path) -> std::io::Result<PathBuf> {
         }
         // A relative target starts at the link's directory; an absolute
         // one replaces it.
-        let target = std::fs::read_link(&file)?;
-        file = directory_of(&file).join(target);
-        followed += 1;
+        let target = std::fs::read_link(file)?;
+        let next = directory_of(file).join(target);
+        chain.push(next);
     }
+}
+
+/// The file `path` names once the symbolic links at its end are followed:
+/// the last of its [`link_chain`], `path` itself when it is not a link.
+pub fn resolve_link(path: &Path) -> std::io::Result<PathBuf> {
+    let file = link_chain(path)?.pop();
+    Ok(file.unwrap_or_else(|| path.to_path_buf()))
 }
 
 /// Writes `bytes` to a new temporary file beside `path`, flushes it to disk,
@@ -472,6 +484,31 @@ mod tests {
         );
         assert!(write_atomic(&link(0), b"lost").is_err());
         assert_eq!(std::fs::read(&file).unwrap(), b"second");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_path_that_cannot_be_looked_at_is_not_taken_for_a_plain_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let closed = dir.path().join("closed");
+        std::fs::create_dir(&closed).unwrap();
+        let path = closed.join("sample.json");
+        let allow = |mode| {
+            std::fs::set_permissions(&closed, std::fs::Permissions::from_mode(mode)).unwrap()
+        };
+        // Nothing in the directory may be looked at, a link there neither.
+        allow(0o000);
+        if closed.read_dir().is_ok() {
+            return allow(0o700); // running as root: permissions do not apply
+        }
+        let error = resolve_link(&path).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+        assert!(write_atomic(&path, b"lost").is_err());
+        allow(0o700);
+        // A path with nothing at it is no error: it is where a file is made.
+        assert_eq!(resolve_link(&path).unwrap(), path);
+        assert_eq!(link_chain(&path).unwrap(), [path]);
     }
 
     #[test]
