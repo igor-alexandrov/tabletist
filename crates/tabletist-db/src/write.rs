@@ -124,13 +124,14 @@ pub(crate) fn same(a: &Value, b: &Value) -> bool {
     }
 }
 
-/// Whether two keys find the same row: the same columns in the same order,
-/// each with the same value.
+/// Whether two keys find the same row: the same columns, each with the
+/// same value, in whatever order each names them.
 fn same_key(a: &[(String, Value)], b: &[(String, Value)]) -> bool {
     a.len() == b.len()
-        && a.iter()
-            .zip(b)
-            .all(|((column, value), (other, theirs))| column == other && same(value, theirs))
+        && a.iter().all(|(column, value)| {
+            b.iter()
+                .any(|(other, theirs)| column == other && same(value, theirs))
+        })
 }
 
 /// Whether the row as the database holds it (`server`, whose values
@@ -225,6 +226,21 @@ mod tests {
                 set(vec![
                     row(vec![("x", Value::Float(f64::NAN))], vec![cell("name")]),
                     row(vec![("x", Value::Float(f64::NAN))], vec![cell("name")]),
+                ]),
+                "the same key",
+            ),
+            // The order a key names its columns in does not change the
+            // row it finds.
+            (
+                set(vec![
+                    row(
+                        vec![("a", Value::Int(1)), ("b", Value::Int(2))],
+                        vec![cell("name")],
+                    ),
+                    row(
+                        vec![("b", Value::Int(2)), ("a", Value::Int(1))],
+                        vec![cell("email")],
+                    ),
                 ]),
                 "the same key",
             ),

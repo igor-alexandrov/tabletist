@@ -2082,6 +2082,45 @@ async fn a_key_that_matches_two_rows_is_an_error_and_nothing_is_written() {
 }
 
 #[tokio::test]
+async fn a_key_a_trigger_gave_a_second_row_is_an_error_and_is_undone() {
+    let (connection, dir) = fixture_as(Access::Writable).await;
+    // The key finds one row until the update's own trigger makes another
+    // with it.
+    let other = other_program(&dir);
+    other
+        .execute_batch(
+            "CREATE TABLE tags (k TEXT, v TEXT);
+             INSERT INTO tags VALUES ('a', 'old');
+             CREATE TRIGGER tags_twin AFTER UPDATE ON tags BEGIN
+                 INSERT INTO tags VALUES (NEW.k, 'twin');
+             END;",
+        )
+        .unwrap();
+    let changes = one_cell(
+        "tags",
+        ("k", Value::Text("a".into())),
+        "v",
+        "TEXT",
+        Value::Text("old".into()),
+        to("mine"),
+    );
+    let refused = connection.write(&changes).await;
+    assert!(
+        matches!(&refused, Err(Error::Query { message, .. }) if message.contains("more than one row")),
+        "{refused:?}"
+    );
+    let held: Vec<String> = other
+        .prepare("SELECT v FROM tags")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(held, ["old"]);
+    assert_eq!(query_only(&connection).await, Value::Int(1));
+}
+
+#[tokio::test]
 async fn an_update_that_does_not_change_one_row_fails_and_is_undone() {
     let (connection, dir) = fixture_as(Access::Writable).await;
     // A view's trigger does the writing, so the update itself changes no
