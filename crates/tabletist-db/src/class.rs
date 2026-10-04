@@ -139,6 +139,9 @@ fn mysql(name: &str) -> ColumnClass {
         "bit" | "binary" | "varbinary" | "tinyblob" | "blob" | "mediumblob" | "longblob" => {
             ColumnClass::Binary
         }
+        // A spatial value arrives as its bytes, and text is not one.
+        "geometry" | "point" | "linestring" | "polygon" | "multipoint" | "multilinestring"
+        | "multipolygon" | "geometrycollection" | "geomcollection" => ColumnClass::Binary,
         _ => ColumnClass::Other,
     }
 }
@@ -327,6 +330,16 @@ mod tests {
             ("longblob", Binary),
             ("bit(1)", Binary),
             ("bit(8)", Binary),
+            // Spatial values come as bytes.
+            ("geometry", Binary),
+            ("point", Binary),
+            ("linestring", Binary),
+            ("polygon", Binary),
+            ("multipoint", Binary),
+            ("multilinestring", Binary),
+            ("multipolygon", Binary),
+            ("geometrycollection", Binary),
+            ("geomcollection", Binary),
         ] {
             assert_eq!(column_class(Dialect::MySql, name), class, "{name}");
         }
