@@ -1365,6 +1365,9 @@ fn start_editor(path: &std::path::Path) -> std::io::Result<()> {
         .spawn()?;
     std::thread::spawn(move || match child.wait() {
         Ok(status) if status.success() => {}
+        // Windows' explorer ends with a failure whatever it did: its
+        // status says nothing, and a warning at every press would.
+        Ok(_) if cfg!(windows) => {}
         Ok(status) => log::warn!("{program} ended with {status}"),
         Err(error) => log::warn!("could not wait for {program}: {error}"),
     });
