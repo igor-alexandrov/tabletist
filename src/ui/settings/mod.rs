@@ -71,55 +71,114 @@ pub(super) fn choices(option: OptionId, settings: &Settings) -> Vec<(Said, Optio
     }
 }
 
+/// What one of the screen's keys asks for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Asked {
+    /// Open the file in the editor.
+    Edit,
+    Close,
+    /// Move the cursor by this many rows.
+    Move(isize),
+    /// Put the cursor's option back to its default.
+    Reset,
+    /// Step the cursor's option to its next value, or to the one before.
+    Step {
+        forward: bool,
+    },
+    /// Flip the cursor's option, if it has two values.
+    Flip,
+}
+
+/// What `key` held with `modifiers` asks of the screen, if it is one of
+/// its keys. A button of the screen that has the keyboard (`free` is then
+/// false) keeps Space, which presses it, and the arrows, which move focus
+/// from it, as in the workspace. The letters, `R`, `ctrl+e` and Escape are
+/// the screen's wherever the keyboard is.
+fn asked(key: egui::Key, modifiers: egui::Modifiers, free: bool) -> Option<Asked> {
+    use egui::{Key, Modifiers};
+    // As egui matches a key: an extra Shift or Alt is passed over.
+    let plain = modifiers.matches_logically(Modifiers::NONE);
+    match key {
+        Key::E if modifiers.matches_logically(Modifiers::CTRL) => Some(Asked::Edit),
+        // Shift, which a plain key's match would pass over.
+        Key::R if modifiers.matches_logically(Modifiers::SHIFT) => Some(Asked::Reset),
+        _ if !plain => None,
+        Key::Escape => Some(Asked::Close),
+        Key::J => Some(Asked::Move(1)),
+        Key::K => Some(Asked::Move(-1)),
+        Key::L => Some(Asked::Step { forward: true }),
+        Key::H => Some(Asked::Step { forward: false }),
+        Key::ArrowDown if free => Some(Asked::Move(1)),
+        Key::ArrowUp if free => Some(Asked::Move(-1)),
+        Key::ArrowRight if free => Some(Asked::Step { forward: true }),
+        Key::ArrowLeft if free => Some(Asked::Step { forward: false }),
+        Key::Space if free => Some(Asked::Flip),
+        _ => None,
+    }
+}
+
 /// The screen's keys. Nothing under the screen has them first: the app
 /// runs none of the workspace's shortcuts while a dialog is open, and egui
-/// takes the keyboard from what is under a modal. A button of the screen
-/// that has the keyboard keeps Space, which presses it, and the arrows,
-/// which move focus from it, as in the workspace. The letters, `R`,
-/// `ctrl+e` and Escape are the screen's wherever the keyboard is.
+/// takes the keyboard from what is under a modal.
+///
+/// Several keys can come in one frame, and each acts on what the ones
+/// before it left: the cursor where they moved it, an option as they set
+/// it. `j` then `l` changes the row `j` moved to, and `l` twice steps
+/// twice.
 fn keys(app: &App, ctx: &egui::Context, row: usize, actions: &mut Vec<Action>) {
-    use egui::{Key, Modifiers};
-    let option = OptionId::ALL.get(row).copied();
-    let settings = &app.settings;
     let free = !super::focus::on_control(ctx);
+    let last = OptionId::ALL.len() - 1;
+    // As `App::apply` will have them once it has run the actions so far.
+    let mut cursor = row;
+    let mut settings = app.settings.clone();
     ctx.input_mut(|input| {
-        // A fresh press only: every repeat of a key held down would start
-        // another editor.
-        if super::keys::consume_press(input, Modifiers::CTRL, Key::E) {
-            actions.push(Action::EditSettingsFile);
-        }
-        let mut pressed = |modifiers, key| input.consume_key(modifiers, key);
-        if pressed(Modifiers::NONE, Key::Escape) {
-            actions.push(Action::CloseDialog);
-        }
-        if pressed(Modifiers::NONE, Key::J) || (free && pressed(Modifiers::NONE, Key::ArrowDown)) {
-            actions.push(Action::MoveSettingsRow(1));
-        }
-        if pressed(Modifiers::NONE, Key::K) || (free && pressed(Modifiers::NONE, Key::ArrowUp)) {
-            actions.push(Action::MoveSettingsRow(-1));
-        }
-        // The keys below change the cursor's option. A cursor on no row
-        // has none, and the keys above still close the screen or move it
-        // back onto one.
-        let Some(option) = option else {
-            return;
-        };
-        // Shift first: egui ignores an extra Shift when it matches a key.
-        if pressed(Modifiers::SHIFT, Key::R) {
-            actions.push(Action::SetOption(option.default_value()));
-        }
-        if pressed(Modifiers::NONE, Key::L) || (free && pressed(Modifiers::NONE, Key::ArrowRight)) {
-            actions.push(Action::SetOption(settings.stepped(option, true)));
-        }
-        if pressed(Modifiers::NONE, Key::H) || (free && pressed(Modifiers::NONE, Key::ArrowLeft)) {
-            actions.push(Action::SetOption(settings.stepped(option, false)));
-        }
-        if free
-            && pressed(Modifiers::NONE, Key::Space)
-            && let Some(value) = settings.flipped(option)
-        {
-            actions.push(Action::SetOption(value));
-        }
+        input.events.retain(|event| {
+            let egui::Event::Key {
+                key,
+                pressed: true,
+                modifiers,
+                repeat,
+                ..
+            } = event
+            else {
+                return true;
+            };
+            let Some(asked) = asked(*key, *modifiers, free) else {
+                return true;
+            };
+            match asked {
+                // A fresh press only: every repeat of a key held down
+                // would start another editor.
+                Asked::Edit => {
+                    if !repeat {
+                        actions.push(Action::EditSettingsFile);
+                    }
+                }
+                Asked::Close => actions.push(Action::CloseDialog),
+                Asked::Move(by) => {
+                    cursor = cursor.saturating_add_signed(by).min(last);
+                    actions.push(Action::MoveSettingsRow(by));
+                }
+                Asked::Reset | Asked::Step { .. } | Asked::Flip => {
+                    // A cursor on no row has no option to change: the key
+                    // is left, and the ones above still close the screen
+                    // or move it back onto a row.
+                    let Some(option) = OptionId::ALL.get(cursor).copied() else {
+                        return true;
+                    };
+                    let value = match asked {
+                        Asked::Reset => Some(option.default_value()),
+                        Asked::Step { forward } => Some(settings.stepped(option, forward)),
+                        _ => settings.flipped(option),
+                    };
+                    if let Some(value) = value {
+                        value.set(&mut settings);
+                        actions.push(Action::SetOption(value));
+                    }
+                }
+            }
+            false
+        });
     });
 }
 

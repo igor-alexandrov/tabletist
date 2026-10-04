@@ -381,7 +381,7 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
 
 /// Whether `key` with `modifiers` went down this frame. Consumes the
 /// repeats of a held key as well, which do not count as a press.
-pub(super) fn consume_press(input: &mut egui::InputState, modifiers: Modifiers, key: Key) -> bool {
+fn consume_press(input: &mut egui::InputState, modifiers: Modifiers, key: Key) -> bool {
     let mut fresh = false;
     input.events.retain(|event| match event {
         egui::Event::Key {

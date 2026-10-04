@@ -1012,6 +1012,53 @@ mod tests {
     }
 
     #[test]
+    fn keys_that_come_in_one_frame_act_in_their_order() {
+        let key = |key| egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        };
+        // Down a row and a step, in one frame: the step is of the row the
+        // cursor came to, not of the one it left.
+        let mut harness = settings_screen();
+        let before = harness.app.settings.clone();
+        harness.frame(vec![key(egui::Key::J), key(egui::Key::L)]);
+        assert_eq!(settings_cursor(&harness), 1);
+        assert_eq!(harness.app.settings.page_size, before.page_size);
+        assert_eq!(
+            harness.app.settings.timestamps,
+            crate::settings::Timestamps::Full
+        );
+        // Two steps in one frame are two steps: the second starts where
+        // the first ended.
+        let mut harness = settings_screen();
+        let option = crate::settings::OptionId::PageSize;
+        let once = harness.app.settings.stepped(option, true);
+        let mut stepped = harness.app.settings.clone();
+        once.set(&mut stepped);
+        let twice = stepped.stepped(option, true);
+        assert_ne!(once, twice);
+        harness.frame(vec![key(egui::Key::L), key(egui::Key::L)]);
+        assert_eq!(harness.app.settings.value(option), twice);
+        // And a step, then a row down, then a step back: each on its row.
+        let mut harness = settings_screen();
+        harness.frame(vec![
+            key(egui::Key::L),
+            key(egui::Key::J),
+            key(egui::Key::L),
+            key(egui::Key::K),
+        ]);
+        assert_eq!(settings_cursor(&harness), 0);
+        assert_eq!(harness.app.settings.value(option), once);
+        assert_eq!(
+            harness.app.settings.timestamps,
+            crate::settings::Timestamps::Full
+        );
+    }
+
+    #[test]
     fn a_click_moves_the_settings_cursor_and_a_click_on_a_value_sets_it() {
         use crate::settings::Timestamps;
         let mut harness = settings_screen();
