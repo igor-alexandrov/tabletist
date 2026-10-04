@@ -278,7 +278,7 @@ pub fn show(
             let clicked_over = ui.input(|input| input.pointer.any_click());
             let clicked_over = clicked_over && ui.rect_contains_pointer(rect);
             shown.pressed = whole.is_pointer_button_down_on() || whole.clicked() || clicked_over;
-            let border = panel(ui, rect, &style);
+            let border = panel(ui, rect, shape.corner, look, palette);
             let inner = rect.shrink2(shape.pad);
             // The rows are drawn in a `Ui` of their own whose accessibility
             // parent is the list, so their nodes hang under the list's:
@@ -382,11 +382,17 @@ pub fn remembered(ctx: &egui::Context, editor: Id) -> bool {
 
 /// The panel behind the rows: raised and rounded on macOS, the terminal's
 /// darker surface with an accent border. Returns the border, which goes
-/// over the rows: the terminal's reach the panel's edges.
-fn panel(ui: &Ui, rect: Rect, style: &Style<'_>) -> egui::Shape {
-    let palette = style.palette;
-    let corner = CornerRadius::same(style.shape.corner);
-    let (offset, blur, fill, border) = if style.look.terminal {
+/// over the rows: the terminal's reach the panel's edges. A cell's large
+/// editor stands on the same panel.
+pub(crate) fn panel(
+    ui: &Ui,
+    rect: Rect,
+    corner: u8,
+    look: &Look,
+    palette: &Palette,
+) -> egui::Shape {
+    let corner = CornerRadius::same(corner);
+    let (offset, blur, fill, border) = if look.terminal {
         ([0, 12], 32, palette.panel, palette.accent)
     } else {
         ([0, 8], 24, widgets::raised_fill(palette), palette.border)

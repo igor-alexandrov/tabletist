@@ -11106,6 +11106,62 @@ mod tests {
     }
 
     #[test]
+    fn the_keys_after_a_commit_are_the_grids_at_once() {
+        let (mut harness, tab, id) = editable_in(Look::macos());
+        select(&mut harness, tab, id, (1, 1));
+        harness.press(Key::Enter, Modifiers::NONE);
+        type_text(&mut harness, "x");
+        // Enter, and in the very next frame an arrow: the field that just
+        // closed is not there to take it, and it is not lost.
+        harness.frame(vec![crate::testing::key(Key::Enter, Modifiers::NONE)]);
+        harness.frame(vec![
+            crate::testing::release(Key::Enter, Modifiers::NONE),
+            crate::testing::key(Key::ArrowDown, Modifiers::NONE),
+        ]);
+        harness.frame(vec![crate::testing::release(
+            Key::ArrowDown,
+            Modifiers::NONE,
+        )]);
+        harness.settle();
+        assert_eq!(selected(&harness, tab, id), Some((3, 1)));
+        // And what is typed next starts the next edit.
+        harness.press(Key::Enter, Modifiers::NONE);
+        harness.frame(vec![crate::testing::key(Key::Enter, Modifiers::NONE)]);
+        harness.frame(vec![
+            crate::testing::release(Key::Enter, Modifiers::NONE),
+            egui::Event::Text("q".into()),
+        ]);
+        harness.settle();
+        assert_eq!(selected(&harness, tab, id), Some((4, 1)));
+        assert_eq!(editor_text(&harness, tab, id).as_deref(), Some("q"));
+    }
+
+    #[test]
+    fn an_editor_left_behind_another_tab_keeps_its_text() {
+        let (mut harness, tab, id) = editable_in(Look::macos());
+        select(&mut harness, tab, id, (1, 1));
+        harness.press(Key::Enter, Modifiers::NONE);
+        type_text(&mut harness, "x");
+        // Another tab comes in front: the table's grid is not drawn.
+        harness.app.apply(Action::NewSqlTab(tab));
+        harness.settle();
+        assert_eq!(
+            editor_text(&harness, tab, id).as_deref(),
+            Some("user2@example.comx")
+        );
+        // Back on it the editor has lost the keyboard: what was typed is
+        // the cell's pending value.
+        harness.app.apply(Action::ActivateTab { tab, id });
+        harness.settle();
+        harness.settle();
+        assert!(edits(&harness, tab, id).editor.is_none());
+        assert_eq!(
+            pending_text(&harness, tab, id, (1, 1)).as_deref(),
+            Some("user2@example.comx")
+        );
+    }
+
+    #[test]
     fn typing_starts_the_edit_with_that_character() {
         for look in desktop_looks() {
             let (mut harness, tab, id) = editable_in(look);
@@ -11844,5 +11900,262 @@ mod tests {
                 look.name
             );
         }
+    }
+
+    /// What the large editor's band says of the keys, in `look`.
+    fn band_keys(look: &Look) -> String {
+        format!("{}↩ apply · esc cancel", look.command_key())
+    }
+
+    fn is_large(harness: &Harness, tab: ConnTabId, id: TabId) -> bool {
+        let editor = edits(harness, tab, id).editor.as_ref();
+        editor.is_some_and(|editor| editor.large)
+    }
+
+    #[test]
+    fn a_json_cell_opens_the_large_editor() {
+        for look in desktop_looks() {
+            let (mut harness, tab, id) = editable_in(look);
+            let palette = harness.app.palette;
+            select(&mut harness, tab, id, (0, 2));
+            harness.press(Key::Enter, Modifiers::NONE);
+            assert!(is_large(&harness, tab, id), "{}", look.name);
+            assert!(harness.ctx.text_edit_focused(), "{}", look.name);
+            let text = r#"{"plan":"pro"}"#;
+            assert_eq!(editor_text(&harness, tab, id).as_deref(), Some(text));
+            // Its band counts what it holds and names its keys.
+            assert!(painted(&harness, "14 chars · 1 line"), "{}", look.name);
+            assert!(painted(&harness, &band_keys(&look)), "{}", look.name);
+            // It is a field of several lines, anchored to its cell: under
+            // the row it edits, and about 420 by 180.
+            let tree = harness.settle();
+            let field = crate::testing::bounds(
+                &tree,
+                "Edit meta",
+                egui::accesskit::Role::MultilineTextInput,
+            )
+            .expect("the large editor's field");
+            // (The row panel writes the row too: the grid's is leftmost.)
+            let emails = harness.text_rects.iter();
+            let row = emails
+                .filter(|(text, _)| text == "user1@example.com")
+                .map(|(_, rect)| *rect)
+                .min_by(|a, b| a.left().total_cmp(&b.left()))
+                .unwrap();
+            assert!(field.top() >= row.bottom(), "{}: {field:?}", look.name);
+            assert!(
+                field.top() - row.bottom() < 40.0,
+                "{}: {field:?}",
+                look.name
+            );
+            assert!(
+                field.width() > 380.0 && field.width() <= 420.0,
+                "{}: {field:?}",
+                look.name
+            );
+            // The cell keeps its value, and a line round it says it is
+            // being edited.
+            let lined = harness.outlines.iter().any(|(rect, stroke)| {
+                *stroke == egui::Stroke::new(2.0, palette.accent)
+                    && rect.height() == look.grid_row
+                    && rect.bottom() <= field.top()
+            });
+            assert!(lined, "{}", look.name);
+            // Enter is a line break here, and the count follows.
+            type_text(&mut harness, " ");
+            harness.press(Key::Enter, Modifiers::NONE);
+            assert!(is_large(&harness, tab, id), "{}", look.name);
+            assert_eq!(
+                editor_text(&harness, tab, id),
+                Some(format!("{text} \n")),
+                "{}",
+                look.name
+            );
+            assert!(painted(&harness, "16 chars · 2 lines"), "{}", look.name);
+            assert!(edits(&harness, tab, id).cells.is_empty(), "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn the_cell_of_a_large_editor_is_lined_however_it_was_opened() {
+        for look in desktop_looks() {
+            let (mut harness, tab, id) = editable_in(look);
+            let palette = harness.app.palette;
+            // By the pointer: no key was pressed, so no cell is lit.
+            let at = cell_of(&harness, "pro");
+            click_at(&mut harness, at);
+            click_at(&mut harness, at);
+            assert!(is_large(&harness, tab, id), "{}", look.name);
+            assert!(harness.ctx.text_edit_focused(), "{}", look.name);
+            let lined = harness.outlines.iter().any(|(rect, stroke)| {
+                *stroke == egui::Stroke::new(2.0, palette.accent)
+                    && rect.height() == look.grid_row
+                    && rect.contains(at)
+            });
+            assert!(lined, "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn alt_enter_moves_a_one_line_edit_into_the_large_editor() {
+        for look in desktop_looks() {
+            let (mut harness, tab, id) = editable_in(look);
+            select(&mut harness, tab, id, (1, 1));
+            harness.press(Key::Enter, Modifiers::NONE);
+            assert!(!is_large(&harness, tab, id), "{}", look.name);
+            harness.press(Key::Enter, Modifiers::ALT);
+            assert!(is_large(&harness, tab, id), "{}", look.name);
+            assert_eq!(
+                editor_text(&harness, tab, id).as_deref(),
+                Some("user2@example.com\n"),
+                "{}",
+                look.name
+            );
+            // The keyboard is the popover's field, the cursor after the
+            // break.
+            assert!(harness.ctx.text_edit_focused(), "{}", look.name);
+            type_text(&mut harness, "x");
+            assert_eq!(
+                editor_text(&harness, tab, id).as_deref(),
+                Some("user2@example.com\nx"),
+                "{}",
+                look.name
+            );
+            assert!(painted(&harness, "19 chars · 2 lines"), "{}", look.name);
+            assert!(edits(&harness, tab, id).cells.is_empty(), "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn mod_enter_applies_and_escape_cancels_the_large_editor() {
+        for look in desktop_looks() {
+            let (mut harness, tab, id) = editable_in(look);
+            select(&mut harness, tab, id, (0, 2));
+            harness.press(Key::Enter, Modifiers::NONE);
+            type_text(&mut harness, " ");
+            harness.press(Key::Enter, Modifiers::COMMAND);
+            assert!(edits(&harness, tab, id).editor.is_none(), "{}", look.name);
+            assert_eq!(
+                pending_text(&harness, tab, id, (0, 2)).as_deref(),
+                Some(r#"{"plan":"pro"} "#),
+                "{}",
+                look.name
+            );
+            // Applied where it is: the selection stays on the cell.
+            assert_eq!(selected(&harness, tab, id), Some((0, 2)), "{}", look.name);
+            assert!(!harness.ctx.text_edit_focused(), "{}", look.name);
+            assert!(!painted(&harness, &band_keys(&look)), "{}", look.name);
+            // Esc drops what was typed since, and the pending value stays.
+            harness.press(Key::Enter, Modifiers::NONE);
+            assert!(is_large(&harness, tab, id), "{}", look.name);
+            type_text(&mut harness, "junk");
+            harness.press(Key::Escape, Modifiers::NONE);
+            assert!(edits(&harness, tab, id).editor.is_none(), "{}", look.name);
+            assert_eq!(
+                pending_text(&harness, tab, id, (0, 2)).as_deref(),
+                Some(r#"{"plan":"pro"} "#),
+                "{}",
+                look.name
+            );
+            // The grid has the keyboard again.
+            harness.press(Key::ArrowDown, Modifiers::NONE);
+            assert_eq!(selected(&harness, tab, id), Some((1, 2)), "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn invalid_json_cannot_be_applied() {
+        for look in desktop_looks() {
+            let (mut harness, tab, id) = editable_in(look);
+            let palette = harness.app.palette;
+            select(&mut harness, tab, id, (0, 2));
+            harness.press(Key::Enter, Modifiers::NONE);
+            type_text(&mut harness, "}");
+            // The band says what the text fails, in place of its counts.
+            let failing = |harness: &Harness| {
+                harness.painted.iter().any(|(text, color)| {
+                    text.starts_with("Trailing characters at 1:") && *color == palette.danger
+                })
+            };
+            assert!(failing(&harness), "{}: {:?}", look.name, harness.painted);
+            assert!(!painted(&harness, "15 chars · 1 line"), "{}", look.name);
+            harness.press(Key::Enter, Modifiers::COMMAND);
+            assert!(is_large(&harness, tab, id), "{}", look.name);
+            assert!(harness.ctx.text_edit_focused(), "{}", look.name);
+            assert!(edits(&harness, tab, id).cells.is_empty(), "{}", look.name);
+            assert!(failing(&harness), "{}", look.name);
+            // The popover's line is red while it fails.
+            let red = harness.outlines.iter().any(|(rect, stroke)| {
+                stroke.color == palette.danger && rect.width() > 380.0 && rect.height() > 150.0
+            });
+            assert!(red, "{}", look.name);
+            // A click away keeps the text, as a cell to fix.
+            let away = cell_of(&harness, "user4@example.com");
+            click_at(&mut harness, away);
+            let now = edits(&harness, tab, id);
+            assert!(now.editor.is_none(), "{}", look.name);
+            let kept = now.cells.get(&(0, 2)).expect("the cell to fix");
+            assert!(matches!(kept.state, crate::edit::State::ToFix(_)));
+        }
+    }
+
+    #[test]
+    fn a_long_value_is_edited_whole() {
+        for look in desktop_looks() {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            let tab = harness.connect_fake_as(false);
+            harness.app.apply(Action::OpenObject {
+                tab,
+                object: tabletist_db::ObjectRef::new("main", "users"),
+                kind: tabletist_db::ObjectKind::Table,
+                pin: true,
+            });
+            harness.answer_structure(crate::testing::fixture_structure());
+            let long = "abc".repeat(100);
+            let mut page = crate::testing::page(5, false);
+            page.rows[1][1] = tabletist_db::Value::Text(long.as_str().into());
+            harness.answer_rows(page);
+            let id = harness.app.workspace(tab).unwrap().active_tab.unwrap();
+            focus_grid(&mut harness, tab);
+            select(&mut harness, tab, id, (1, 1));
+            harness.press(Key::Enter, Modifiers::NONE);
+            // The grid shows the cut, the editor the value.
+            assert!(is_large(&harness, tab, id), "{}", look.name);
+            assert_eq!(editor_text(&harness, tab, id), Some(long.clone()));
+            assert!(painted(&harness, "300 chars · 1 line"), "{}", look.name);
+            type_text(&mut harness, "!");
+            harness.press(Key::Enter, Modifiers::COMMAND);
+            assert_eq!(
+                pending_text(&harness, tab, id, (1, 1)),
+                Some(format!("{long}!")),
+                "{}",
+                look.name
+            );
+            // The count is grouped as numbers are.
+            harness.press(Key::Enter, Modifiers::NONE);
+            harness.frame(vec![egui::Event::Text("x".repeat(1_000))]);
+            harness.settle();
+            assert!(painted(&harness, "1,301 chars · 1 line"), "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn a_press_on_the_large_editors_band_keeps_its_keyboard() {
+        let (mut harness, tab, id) = editable_in(Look::macos());
+        select(&mut harness, tab, id, (0, 2));
+        harness.press(Key::Enter, Modifiers::NONE);
+        type_text(&mut harness, " ");
+        let band = cell_of(&harness, "15 chars · 1 line");
+        click_at(&mut harness, band);
+        assert!(is_large(&harness, tab, id));
+        assert!(harness.ctx.text_edit_focused());
+        type_text(&mut harness, " ");
+        assert_eq!(
+            editor_text(&harness, tab, id).as_deref(),
+            Some(r#"{"plan":"pro"}  "#)
+        );
+        // Nor is it a click on the row under the popover.
+        assert_eq!(selected(&harness, tab, id), Some((0, 2)));
     }
 }

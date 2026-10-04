@@ -85,6 +85,19 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
         && app
             .workspace(active)
             .is_some_and(|workspace| workspace.can_give_up());
+    // The field of a cell's editor that just closed holds egui's focus
+    // until the frame it is not drawn in ends. The keys are the grid's
+    // already: what is pressed right after a commit is not lost.
+    if let Some((tab, id)) = object {
+        let open = app
+            .workspace(tab)
+            .and_then(|workspace| workspace.object_tab(id))
+            .is_some_and(|object| object.edits.editor.is_some());
+        if !open {
+            let field = crate::ui::cell_editor::field_id(tab, id);
+            ctx.memory_mut(|memory| memory.surrender_focus(field));
+        }
+    }
     let editing = ctx.text_edit_focused();
     // Grid keys act only on a visible grid: the Data view of the active tab.
     let grid = object.is_some_and(|(tab, id)| {

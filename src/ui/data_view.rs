@@ -1192,6 +1192,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
             });
         let mut editor = object.edits.editor.as_mut();
         let editing = editor.as_ref().map(|editor| editor.cell);
+        // A value of several lines, a long one or a document is edited in
+        // a popover at the cell, not on it.
+        let large = editor.as_ref().is_some_and(|editor| editor.large);
         // What the field says of this frame, once the grid has drawn it on
         // its cell.
         let mut outcome = cell_editor::Outcome::default();
@@ -1217,7 +1220,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
             &look,
             &|row| crate::edit::row_mark(changes.cells, row),
             editing,
-            Some(&mut field),
+            if large { None } else { Some(&mut field) },
             |row, col| {
                 let loaded = &page.rows[row][col];
                 let column = &page.columns[col];
@@ -1228,6 +1231,13 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
                 cell
             },
         );
+        if large
+            && let (Some(editor), Some(target)) = (editor, &target)
+            && let Some(anchor) = output.editing_rect
+        {
+            let skin = (&look, &palette, locale);
+            outcome = cell_editor::large(ui.ctx(), anchor, editor, target, skin);
+        }
         let id = object_tab;
         // The text is noted as typed before anything ends the edit: an
         // editor that was not typed into closes without a change, and a
