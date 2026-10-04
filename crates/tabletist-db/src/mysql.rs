@@ -514,6 +514,13 @@ const READ_WRITE: &str = "SET SESSION TRANSACTION READ WRITE";
 /// on sending and reading UTF-8.
 const NAMES: &str = "SET NAMES utf8mb4 COLLATE utf8mb4_general_ci";
 
+/// Has the server say in a note what it rounds: a decimal with more places
+/// than its column keeps is stored rounded in any mode, and only a note
+/// tells. A save takes a note for the warning it is and fails. A server can
+/// have notes off as its default, and a session reset puts that default
+/// back.
+const NOTES: &str = "SET SESSION sql_notes = 1";
+
 /// The sql_mode names a session runs without, so that the server lexes
 /// text as `sql::tokenize` does: with `ANSI_QUOTES` a `"..."` is a name,
 /// and with `NO_BACKSLASH_ESCAPES` a backslash is a character. The others
@@ -545,8 +552,8 @@ async fn prepare_session(conn: &mut mysql_async::Conn, access: Access) -> Result
         });
     let sql_mode = format!("SET SESSION sql_mode = {sql_mode}");
     let statements = match access {
-        Access::ReadOnly => [READ_ONLY, NAMES, sql_mode.as_str()],
-        Access::Writable => [NAMES, sql_mode.as_str(), READ_WRITE],
+        Access::ReadOnly => [READ_ONLY, NAMES, sql_mode.as_str(), NOTES],
+        Access::Writable => [NAMES, sql_mode.as_str(), NOTES, READ_WRITE],
     };
     // Fixed statements: safe to send through the text protocol.
     for statement in statements {

@@ -243,7 +243,10 @@ pub enum Event {
     },
     /// A `Write` ended. `Ok` holds how: written, conflicts, or a statement
     /// that failed, and only the first changed anything. `Err` is a save
-    /// that never ran or whose session failed under it.
+    /// that never ran (refused, skipped, sent to a session that is gone),
+    /// or one that ran and was undone on a session that lives: a busy
+    /// file, a lock it waited too long for, a `COMMIT` the database
+    /// refused, a cancel. Only `ConnectionLost` means the session is gone.
     Written {
         session: SessionId,
         request: RequestId,
@@ -631,6 +634,10 @@ struct Running {
     /// The request at which a test has the session's task panic.
     #[cfg(test)]
     panics: Option<RequestId>,
+    /// The save a test has answered as one whose transaction could not be
+    /// ended: a lost connection, on a connection that is still there.
+    #[cfg(test)]
+    loses: Option<RequestId>,
 }
 
 impl Running {
@@ -2125,6 +2132,14 @@ async fn run_session(
                 // lost connection, and the session is dropped below: it may
                 // still be able to write.
                 let result = connection.write(changes).await;
+                #[cfg(test)]
+                let result = if lock(&running).loses == Some(*request) {
+                    Err(Error::ConnectionLost(
+                        "a test has the save unable to end its transaction".into(),
+                    ))
+                } else {
+                    result
+                };
                 let lost = lost_error(&result);
                 outbox.emit(Event::Written {
                     session: *session,
@@ -3702,6 +3717,11 @@ mod tests {
             ),
             "{said:?}"
         );
+        assert_gone(handle);
+    }
+
+    /// What a session that is over must have left behind.
+    fn assert_gone(handle: &SessionHandle) {
         // Later commands fail at the sender, so the worker answers them.
         assert!(
             handle
@@ -4688,11 +4708,89 @@ mod tests {
 
     /// A save whose transaction could not be ended says the connection is
     /// lost, and the crate does not close the handle itself: the session
-    /// may still be able to write. The session's loop drops it on that
-    /// answer, as it drops one a script lost. Nothing a save comes to in
-    /// order, and no refusal, ends the session.
+    /// may still be able to write. So the session's loop drops it on that
+    /// answer, as it drops one a script lost: what is queued is answered as
+    /// lost, the tab hears that the session is gone, and nothing runs on
+    /// the connection again.
     #[test]
-    fn a_save_that_loses_the_session_counts_as_lost() {
+    fn a_save_that_loses_the_session_ends_it() {
+        let (outbox, received) = quiet_outbox();
+        runtime().block_on(async {
+            let (_dir, spec) = fixture();
+            let connection = Connection::connect_with(
+                &spec,
+                &Secrets::default(),
+                &HostKeys::default(),
+                Access::Writable,
+            )
+            .await
+            .unwrap();
+            let session = SessionId(1);
+            let loses = Running {
+                loses: Some(RequestId(2)),
+                ..Running::default()
+            };
+            let (handle, commands, stopped) = session_handle(&connection, loses);
+            handle
+                .queue
+                .send(Command::Write {
+                    session,
+                    request: RequestId(2),
+                    changes: rename("Grace"),
+                })
+                .unwrap();
+            handle
+                .queue
+                .send(Command::ListSchemas {
+                    session,
+                    request: RequestId(3),
+                })
+                .unwrap();
+            let task = tokio::spawn(run_session(
+                session,
+                connection,
+                commands,
+                stopped,
+                Arc::clone(&handle.running),
+                outbox,
+            ));
+            // The loop ends by itself: nobody closed the session.
+            tokio::time::timeout(WAIT, task)
+                .await
+                .expect("the session must end")
+                .unwrap();
+            let said: Vec<Event> = received.try_iter().collect();
+            assert!(
+                matches!(
+                    said.as_slice(),
+                    [
+                        Event::Written {
+                            session: SessionId(1),
+                            request: RequestId(2),
+                            result: Err(Error::ConnectionLost(_)),
+                        },
+                        Event::Schemas {
+                            request: RequestId(3),
+                            result: Err(Error::ConnectionLost(_)),
+                            ..
+                        },
+                        Event::Disconnected {
+                            session: SessionId(1),
+                            error: Error::ConnectionLost(_),
+                        },
+                    ]
+                ),
+                "{said:?}"
+            );
+            assert_gone(&handle);
+        });
+    }
+
+    /// Which of a save's ends is a lost session: only the connection lost,
+    /// which is also what a save says of a transaction it could not end.
+    /// Nothing a save comes to in order, and no refusal, is one.
+    #[test]
+    fn only_a_lost_connection_counts_a_save_as_lost() {
         let unended: Result<WriteOutcome, Error> = Err(Error::ConnectionLost(
             "could not end the save's transaction".into(),
         ));

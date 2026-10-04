@@ -2597,6 +2597,98 @@ async fn a_cancel_during_a_save_undoes_it() {
     .await;
 }
 
+/// A cancel can land on the `COMMIT` itself: here a constraint checked only
+/// then takes far longer than the test waits. A `COMMIT` that was cancelled
+/// committed nothing, and that is the save's end, on a session that lives.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_cancel_that_lands_on_the_commit_undoes_the_save() {
+    let Some(connection) = connect_as(Access::Writable).await else {
+        return;
+    };
+    on_its_own_tables(
+        "DROP TABLE IF EXISTS write_commit; DROP FUNCTION IF EXISTS write_commit_slow()",
+        // For one name only: the next save commits at once.
+        &format!(
+            "{};
+             CREATE FUNCTION write_commit_slow() RETURNS trigger LANGUAGE plpgsql AS $$
+             BEGIN
+                 IF NEW.name = 'Slow' THEN PERFORM pg_sleep(20); END IF;
+                 RETURN NULL;
+             END $$;
+             CREATE CONSTRAINT TRIGGER slow AFTER UPDATE ON write_commit
+                 DEFERRABLE INITIALLY DEFERRED
+                 FOR EACH ROW EXECUTE FUNCTION write_commit_slow()",
+            people("write_commit")
+        ),
+        async move {
+            let admin = admin().await;
+            let pid = backend_pid(&connection).await;
+            let (columns, first) = row_of(&connection, "write_commit", 1).await;
+            let changes = changes_to(
+                "write_commit",
+                vec![by_id(
+                    1,
+                    vec![cell(&columns, &first, "name", "text", to("Slow"))],
+                )],
+            );
+            let cancel = connection.cancel_handle();
+            let connection = std::sync::Arc::new(connection);
+            let saving = {
+                let connection = std::sync::Arc::clone(&connection);
+                tokio::spawn(async move { connection.write(&changes).await })
+            };
+            // Until the save's session, and no other test's, runs its COMMIT.
+            within(async {
+                loop {
+                    let committing: bool = admin
+                        .query_one(
+                            "SELECT count(*) > 0 FROM pg_stat_activity \
+                             WHERE pid = $1 AND state = 'active' AND query = 'COMMIT'",
+                            &[&pid],
+                        )
+                        .await
+                        .unwrap()
+                        .get(0);
+                    if committing {
+                        break;
+                    }
+                    assert!(!saving.is_finished(), "the commit did not wait");
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await;
+            let deadline = std::time::Instant::now() + Duration::from_secs(15);
+            while !saving.is_finished() {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "cancel must stop the commit"
+                );
+                cancel.cancel().await.unwrap();
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            assert_eq!(saving.await.unwrap(), Err(Error::Cancelled));
+            // No transaction is left open: asked before the session runs
+            // anything else, since a page's own rollback would end one.
+            assert_eq!(state_of(&admin, pid).await, "idle");
+            // And nothing was written.
+            assert_eq!(row_of(&connection, "write_commit", 1).await.1, first);
+            // And the session saves as before.
+            let outcome = save(
+                &connection,
+                "write_commit",
+                1,
+                &[("name", "text", to("Quick"))],
+            )
+            .await;
+            assert!(
+                matches!(outcome, Ok(WriteOutcome::Written { .. })),
+                "{outcome:?}"
+            );
+        },
+    )
+    .await;
+}
+
 /// A trigger the update fires can give a second row the key, or take the
 /// key from the row. The save then has no one row to hand back: it is an
 /// error, and what it wrote (and what the trigger wrote) is undone.

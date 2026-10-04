@@ -7,15 +7,8 @@ use rusqlite::types::ValueRef;
 
 use super::{end_transaction, from_sqlite, map_error};
 use crate::dialect::RowUpdate;
-use crate::write::changed_since_loaded;
+use crate::write::{Applied, changed_since_loaded, more_than_one, not_read_back};
 use crate::{ChangeSet, Conflict, Dialect, Error, Result, RowChange, Sql, Value, WriteOutcome};
-
-/// What the statements of a save came to, before its transaction ends.
-enum Applied {
-    Rows(Vec<Vec<Value>>),
-    Conflicts(Vec<Conflict>),
-    Failed { row: usize, error: Error },
-}
 
 pub(super) fn write(
     connection: &rusqlite::Connection,
@@ -50,14 +43,7 @@ pub(super) fn write(
     });
     let applied = applied.and_then(|applied| committed.map(|()| applied));
     closed?;
-    Ok(match applied? {
-        Applied::Rows(rows) => WriteOutcome::Written {
-            rows,
-            elapsed: started.elapsed(),
-        },
-        Applied::Conflicts(conflicts) => WriteOutcome::Conflicts(conflicts),
-        Applied::Failed { row, error } => WriteOutcome::Failed { row, error },
-    })
+    Ok(applied?.outcome(started))
 }
 
 /// Puts back what a script may have left on the session and a write would
@@ -221,7 +207,7 @@ fn apply(
             )));
         }
         if found.len() > 1 {
-            return Err(Error::query("a row's key matches more than one row"));
+            return Err(more_than_one());
         }
         match found.pop() {
             None => conflicts.push(Conflict { row, server: None }),
@@ -278,14 +264,9 @@ fn apply(
         // that the key also finds, and then which one was saved is not
         // known.
         if found.len() > 1 {
-            return Err(Error::query("a row's key matches more than one row"));
+            return Err(more_than_one());
         }
-        rows.push(
-            found
-                .pop()
-                .ok_or_else(|| Error::query("a saved row could not be read back"))?
-                .values,
-        );
+        rows.push(found.pop().ok_or_else(not_read_back)?.values);
     }
     Ok(Applied::Rows(rows))
 }

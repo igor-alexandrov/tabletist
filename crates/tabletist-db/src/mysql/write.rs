@@ -11,17 +11,11 @@ use super::{
     status,
 };
 use crate::script::retry_cancelled;
-use crate::write::changed_since_loaded;
+use crate::write::{Applied, changed_since_loaded, more_than_one, not_read_back};
 use crate::{
-    ChangeSet, Conflict, Dialect, Error, ObjectRef, Result, RowChange, Sql, Value, WriteOutcome,
+    ChangeSet, ColumnMeta, Conflict, Dialect, Error, ObjectRef, Result, RowChange, Sql, Value,
+    WriteOutcome,
 };
-
-/// What the statements of a save came to, before its transaction ends.
-enum Applied {
-    Rows(Vec<Vec<Value>>),
-    Conflicts(Vec<Conflict>),
-    Failed { row: usize, error: Error },
-}
 
 /// One row's statements, built before anything is sent.
 struct Statements {
@@ -91,14 +85,7 @@ impl Conn {
         if let Some(refused) = uncommitted {
             return Err(refused);
         }
-        Ok(match applied? {
-            Applied::Rows(rows) => WriteOutcome::Written {
-                rows,
-                elapsed: started.elapsed(),
-            },
-            Applied::Conflicts(conflicts) => WriteOutcome::Conflicts(conflicts),
-            Applied::Failed { row, error } => WriteOutcome::Failed { row, error },
-        })
+        Ok(applied?.outcome(started))
     }
 }
 
@@ -163,12 +150,21 @@ fn build(object: &ObjectRef, change: &RowChange) -> Result<Statements> {
 /// promise of a save, and an engine without them (MyISAM) cannot roll back:
 /// a statement that failed would leave the rows before it written. A view
 /// has no engine, and is refused with them.
+///
+/// `information_schema.tables` does not list a TEMPORARY table, which hides
+/// a table of the same name: the engine found would then be the hidden
+/// one's. No session of the app has one. A script cannot create it, since
+/// its transaction is read-only, and the reset that ends every script drops
+/// the session's temporary tables.
+///
+/// With a `LIMIT` of its own: a server's default `sql_select_limit` can be
+/// 0, and the answer must still come.
 async fn transactional(conn: &mut mysql_async::Conn, object: &ObjectRef) -> Result<()> {
     let row: Option<mysql_async::Row> = conn
         .exec_first(
             "SELECT e.transactions FROM information_schema.tables t \
              JOIN information_schema.engines e ON e.engine = t.engine \
-             WHERE t.table_schema = ? AND t.table_name = ?",
+             WHERE t.table_schema = ? AND t.table_name = ? LIMIT 1",
             (&object.schema, &object.name),
         )
         .await
@@ -188,7 +184,16 @@ async fn transactional(conn: &mut mysql_async::Conn, object: &ObjectRef) -> Resu
 /// script's fence makes a writable session read-only while it runs), and
 /// holds the server to saying so. A `begin` that fails this check has a
 /// transaction open, which is why `write` rolls back after it too.
+///
+/// It starts from no transaction. `START TRANSACTION` commits one that is
+/// open, and though the app leaves none (a save and a script each end their
+/// own), a save whose future was dropped half way would leave its own, for
+/// this one to commit. The status the server sent with its last answer says
+/// whether one is open, at no cost, and that one is rolled back first.
 async fn begin(conn: &mut mysql_async::Conn) -> Result<()> {
+    if status(conn).contains(StatusFlags::SERVER_STATUS_IN_TRANS) {
+        execute(conn, ROLLBACK).await?;
+    }
     execute(conn, "START TRANSACTION READ WRITE").await?;
     started(status(conn))
 }
@@ -222,8 +227,11 @@ async fn prepare(conn: &mut mysql_async::Conn, sql: &Sql) -> Result<mysql_async:
     Ok(statement)
 }
 
-/// The rows of a statement, with their columns' names.
-async fn rows(conn: &mut mysql_async::Conn, sql: &Sql) -> Result<(Vec<String>, Vec<Vec<Value>>)> {
+/// The rows of a statement, with their columns.
+async fn rows(
+    conn: &mut mysql_async::Conn,
+    sql: &Sql,
+) -> Result<(Vec<ColumnMeta>, Vec<Vec<Value>>)> {
     let statement = prepare(conn, sql).await?;
     let mut result = conn
         .exec_iter(&statement, params(&sql.params))
@@ -235,8 +243,33 @@ async fn rows(conn: &mut mysql_async::Conn, sql: &Sql) -> Result<(Vec<String>, V
         rows.push(row_values(row, &columns));
     }
     result.drop_result().await.map_err(query_error)?;
-    let names = columns.into_iter().map(|column| column.name).collect();
-    Ok((names, rows))
+    Ok((columns, rows))
+}
+
+/// The type of a column, by the name the driver gives it (`type_name`),
+/// when a key of that type cannot be sure of its row:
+///
+/// - a `timestamp` is shown in the session's time zone, without the zone.
+///   In the hour a zone repeats when its clocks go back, two instants read
+///   alike, and the key of either finds the same one of them;
+/// - a `bit` is shown as its bytes, and the server reads bound bytes as a
+///   number written out, so the key finds no row, or another's;
+/// - a `float` is shown by its shortest text and goes as a double, which is
+///   not the float widened, so the key finds no row.
+///
+/// A `double`, a `datetime` and a `decimal` are matched as they are shown.
+fn inexact(type_name: &str) -> Option<&str> {
+    let name = type_name.split([' ', '(']).next().unwrap_or_default();
+    matches!(name, "timestamp" | "bit" | "float").then_some(name)
+}
+
+/// A key column of `change` that cannot be matched exactly, and its type,
+/// among the row's `columns`.
+fn inexact_key<'a>(change: &'a RowChange, columns: &'a [ColumnMeta]) -> Option<(&'a str, &'a str)> {
+    change.key.iter().find_map(|(name, _)| {
+        let column = columns.iter().find(|column| column.name == *name)?;
+        Some((name.as_str(), inexact(&column.type_name)?))
+    })
 }
 
 /// A name `change` uses, in its key or its set, that is not one of the
@@ -283,8 +316,13 @@ async fn update(conn: &mut mysql_async::Conn, sql: &Sql) -> Result<Option<Error>
         ))));
     }
     // Outside strict mode the server cuts or adjusts a value it cannot
-    // store and says so only in a warning; in any mode it rounds a decimal
-    // with a note. What was stored is then not what was typed.
+    // store and says so only in a warning, and in any mode it says in a
+    // note that it rounded a decimal to its column's scale (the session
+    // keeps notes on, see `prepare_session`). What was stored is then not
+    // what was typed, and the save fails. Not every such change is said:
+    // `'1.6'` goes into a TINYINT as 2 and `16777217` into a FLOAT as
+    // 16777216 without a warning or a note, in the default mode too. Those
+    // are written, and the row read back shows what was stored.
     if conn.get_warnings() > 0 {
         return warning(conn).await.map(Some);
     }
@@ -322,10 +360,19 @@ async fn apply(
     let mut conflicts = Vec::new();
     for (row, (change, statement)) in changes.rows.iter().zip(statements).enumerate() {
         let (columns, mut found) = rows(conn, &statement.lock).await?;
-        if let Some(name) = spelled_otherwise(change, &columns) {
+        let names: Vec<String> = columns.iter().map(|column| column.name.clone()).collect();
+        if let Some(name) = spelled_otherwise(change, &names) {
             return Err(Error::query(format!(
                 "the table spells {name} another way, so the save cannot be sure which column \
                  it names"
+            )));
+        }
+        // Known only now: a key comes without its columns' types, and the
+        // read's answer is the first to carry them.
+        if let Some((name, type_name)) = inexact_key(change, &columns) {
+            return Err(Error::query(format!(
+                "{name} is a {type_name} column, and a key of that type cannot be matched \
+                 exactly, so the save cannot be sure which row it names"
             )));
         }
         if found.len() > 1 {
@@ -334,7 +381,7 @@ async fn apply(
         match found.pop() {
             None => conflicts.push(Conflict { row, server: None }),
             Some(server) => {
-                if changed_since_loaded(change, &columns, &server)? {
+                if changed_since_loaded(change, &names, &server)? {
                     conflicts.push(Conflict {
                         row,
                         server: Some(server),
@@ -348,6 +395,14 @@ async fn apply(
     // engine found here is the engine the updates run on. Before the reads
     // someone could still have changed it, and on an engine without
     // transactions the updates would not be undone.
+    //
+    // The answer is current only because this is the transaction's first
+    // read that takes no lock. A locking read sees what is committed; a
+    // plain read sees the transaction's snapshot, which the first plain
+    // read takes. Here that is this one, once the table is held. A plain
+    // read before the locking reads would take the snapshot while someone
+    // could still change the engine, and `information_schema` would show
+    // this read the engine as it was then. So no plain read goes before it.
     transactional(conn, &changes.object).await?;
     if !conflicts.is_empty() {
         return Ok(Applied::Conflicts(conflicts));
@@ -367,17 +422,9 @@ async fn apply(
         if found.len() > 1 {
             return Err(more_than_one());
         }
-        saved.push(
-            found
-                .pop()
-                .ok_or_else(|| Error::query("a saved row could not be read back"))?,
-        );
+        saved.push(found.pop().ok_or_else(not_read_back)?);
     }
     Ok(Applied::Rows(saved))
-}
-
-fn more_than_one() -> Error {
-    Error::query("a row's key matches more than one row")
 }
 
 #[cfg(test)]
@@ -388,9 +435,10 @@ mod tests {
     use futures_util::FutureExt;
     use mysql_async::Opts;
 
+    use super::super::prepare_session;
     use super::super::tests::{session, test_url};
     use super::*;
-    use crate::{CellChange, NewValue, StopFlag};
+    use crate::{Access, CellChange, NewValue, RowQuery, StopFlag};
 
     /// The backend awaits a save on a task it spawned: its future must be
     /// `Send`. This fails to compile, not to run.
@@ -470,6 +518,55 @@ mod tests {
     }
 
     #[test]
+    fn a_key_of_a_type_that_is_not_matched_exactly_is_found_by_its_types_name() {
+        // As the driver names a result column's type, and as the catalog
+        // spells one in full.
+        for (type_name, inexact_as) in [
+            ("timestamp", Some("timestamp")),
+            ("timestamp(6)", Some("timestamp")),
+            ("bit", Some("bit")),
+            ("bit(8)", Some("bit")),
+            ("float", Some("float")),
+            ("float unsigned", Some("float")),
+            ("float(7,3) unsigned", Some("float")),
+            ("double", None),
+            ("double unsigned", None),
+            ("datetime", None),
+            ("datetime(6)", None),
+            ("decimal", None),
+            ("decimal(6,2)", None),
+            ("int", None),
+            ("varchar", None),
+            ("binary", None),
+            ("", None),
+        ] {
+            assert_eq!(inexact(type_name), inexact_as, "{type_name}");
+        }
+        let column = |name: &str, type_name: &str| ColumnMeta {
+            name: name.into(),
+            type_name: type_name.into(),
+            kind: crate::ValueKind::Other,
+        };
+        let columns = [
+            column("id", "int"),
+            column("at", "timestamp"),
+            column("ratio", "float unsigned"),
+            column("name", "varchar"),
+        ];
+        assert_eq!(inexact_key(&change(&["id"], &["name"]), &columns), None);
+        // Only a key's column: a save may set one of such a type.
+        assert_eq!(inexact_key(&change(&["id"], &["at"]), &columns), None);
+        assert_eq!(
+            inexact_key(&change(&["id", "at"], &["name"]), &columns),
+            Some(("at", "timestamp"))
+        );
+        assert_eq!(
+            inexact_key(&change(&["ratio"], &["name"]), &columns),
+            Some(("ratio", "float"))
+        );
+    }
+
+    #[test]
     fn only_a_name_spelled_as_the_table_spells_it_is_taken() {
         let columns = ["id".to_owned(), "Name".to_owned()];
         assert_eq!(
@@ -497,19 +594,34 @@ mod tests {
     /// dropped however the test ends. The fixture's tables are every
     /// test's, and no test writes to them.
     async fn on_its_own_table<T>(url: &str, table: &str, test: impl Future<Output = T>) -> T {
+        let columns = "id INT PRIMARY KEY, body VARCHAR(3), amount DECIMAL(6, 2)";
+        on_a_table_of(url, table, columns, "(1, 'abc', 1.00)", test).await
+    }
+
+    /// Runs `test` on a table of its own with these columns and rows,
+    /// dropped however the test ends. The rows are written with UTC as the
+    /// time zone.
+    async fn on_a_table_of<T>(
+        url: &str,
+        table: &str,
+        columns: &str,
+        rows: &str,
+        test: impl Future<Output = T>,
+    ) -> T {
         let mut admin = admin(url).await;
         let drop = format!("DROP TABLE IF EXISTS {table}");
         admin.query_drop(&drop).await.unwrap();
         let outcome = AssertUnwindSafe(async {
             admin
-                .query_drop(format!(
-                    "CREATE TABLE {table} (id INT PRIMARY KEY, body VARCHAR(3), \
-                     amount DECIMAL(6, 2))"
-                ))
+                .query_drop(format!("CREATE TABLE {table} ({columns})"))
                 .await
                 .unwrap();
             admin
-                .query_drop(format!("INSERT INTO {table} VALUES (1, 'abc', 1.00)"))
+                .query_drop("SET SESSION time_zone = '+00:00'")
+                .await
+                .unwrap();
+            admin
+                .query_drop(format!("INSERT INTO {table} VALUES {rows}"))
                 .await
                 .unwrap();
             test.await
@@ -727,6 +839,183 @@ mod tests {
                 "{outcome:?}"
             );
             assert_eq!(stored(&url, table).await.1, "99.95");
+        })
+        .await;
+    }
+
+    /// With `sql_notes` off, which a server can have as its default, the
+    /// server rounds a decimal without a word, and the warning check would
+    /// see nothing. The session's own setting stands in for the server's
+    /// default here, which a test cannot set: the settings every connect
+    /// and every reset end with are applied over it.
+    #[tokio::test]
+    async fn a_rounded_value_fails_the_save_where_the_servers_default_is_no_notes() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        async fn notes(conn: &Conn) -> Option<i64> {
+            conn.conn
+                .lock()
+                .await
+                .query_first("SELECT @@session.sql_notes LIMIT 1")
+                .await
+                .unwrap()
+        }
+        on_its_own_table(&url, "write_unit_notes", async {
+            let table = "write_unit_notes";
+            let conn = session(&url).await;
+            assert_eq!(notes(&conn).await, Some(1));
+            {
+                let mut conn = conn.conn.lock().await;
+                conn.query_drop("SET SESSION sql_notes = 0").await.unwrap();
+                prepare_session(&mut conn, Access::ReadOnly).await.unwrap();
+            }
+            assert_eq!(notes(&conn).await, Some(1));
+            let amount = Value::Text("1.00".into());
+            let outcome = conn
+                .write(&set(table, "amount", "decimal(6,2)", amount, "99.955"))
+                .await;
+            assert!(
+                matches!(
+                    &outcome,
+                    Ok(WriteOutcome::Failed { row: 0, error: Error::Query { message, .. } })
+                        if message.contains("truncated")
+                ),
+                "{outcome:?}"
+            );
+            assert_eq!(stored(&url, table).await.1, "1.00");
+            // And after a script, whose reset undoes what the connect set.
+            let script = ["SET sql_notes = 0".to_owned()];
+            conn.run_script(&script, 10, &StopFlag::new())
+                .await
+                .unwrap();
+            assert_eq!(notes(&conn).await, Some(1));
+        })
+        .await;
+    }
+
+    /// A save starts from no transaction. Nothing in the app leaves one
+    /// open (a save and a script each end their own), but a save whose
+    /// future was dropped half way would, and `START TRANSACTION` commits
+    /// what is open: the next save would commit that one's rows.
+    #[tokio::test]
+    async fn a_save_does_not_commit_what_a_transaction_left_open_wrote() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        on_its_own_table(&url, "write_unit_left_open", async {
+            let table = "write_unit_left_open";
+            let conn = session(&url).await;
+            {
+                let mut conn = conn.conn.lock().await;
+                conn.query_drop("START TRANSACTION READ WRITE")
+                    .await
+                    .unwrap();
+                conn.query_drop(format!("INSERT INTO {table} VALUES (2, 'pln', 2.00)"))
+                    .await
+                    .unwrap();
+            }
+            let outcome = conn.write(&body(table, "abc", "new")).await;
+            assert!(
+                matches!(outcome, Ok(WriteOutcome::Written { .. })),
+                "{outcome:?}"
+            );
+            assert_eq!(standing(&conn).await, (false, 1));
+            let bodies: Vec<String> = admin(&url)
+                .await
+                .query(format!("SELECT body FROM {table} ORDER BY id"))
+                .await
+                .unwrap();
+            assert_eq!(bodies, ["new"]);
+        })
+        .await;
+    }
+
+    /// The engine is asked for with a `LIMIT` of its own: a server whose
+    /// default `sql_select_limit` is 0 gives no row otherwise, and every
+    /// save would be refused as if its table had no transactions.
+    #[tokio::test]
+    async fn a_save_finds_the_tables_engine_whatever_the_select_limit() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        on_its_own_table(&url, "write_unit_limit", async {
+            let conn = session(&url).await;
+            conn.conn
+                .lock()
+                .await
+                .query_drop("SET SESSION sql_select_limit = 0")
+                .await
+                .unwrap();
+            let outcome = conn.write(&body("write_unit_limit", "abc", "new")).await;
+            assert!(
+                matches!(outcome, Ok(WriteOutcome::Written { .. })),
+                "{outcome:?}"
+            );
+            assert_eq!(stored(&url, "write_unit_limit").await.0, "new");
+        })
+        .await;
+    }
+
+    /// A `TIMESTAMP` is shown in the session's time zone, without the zone.
+    /// In the hour a zone repeats when its clocks go back, two instants
+    /// read alike, and the key of one would find the other: the second row
+    /// here, edited alone, was written to the first. So such a key is
+    /// refused, and neither row changes.
+    #[tokio::test]
+    async fn a_timestamp_key_is_refused_where_two_instants_read_alike() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        let table = "write_unit_instants";
+        let columns = "at TIMESTAMP PRIMARY KEY, body VARCHAR(8)";
+        // Half past two in Berlin, before and after the clocks go back.
+        let rows = "('2026-10-25 00:30:00', 'before'), ('2026-10-25 01:30:00', 'before')";
+        on_a_table_of(&url, table, columns, rows, async {
+            let conn = session(&url).await;
+            conn.conn
+                .lock()
+                .await
+                .query_drop("SET SESSION time_zone = 'Europe/Berlin'")
+                .await
+                .unwrap();
+            let object = ObjectRef::new("tabletist", table);
+            let page = conn
+                .fetch_rows(&RowQuery::new(object.clone(), 10))
+                .await
+                .unwrap();
+            let shown = Value::Text("2026-10-25 02:30:00".into());
+            assert_eq!(page.rows[0][0], shown);
+            assert_eq!(page.rows[1][0], shown);
+            let changes = ChangeSet {
+                object,
+                rows: vec![RowChange {
+                    key: vec![("at".into(), page.rows[1][0].clone())],
+                    set: vec![CellChange {
+                        column: "body".into(),
+                        type_name: "varchar(8)".into(),
+                        loaded: page.rows[1][1].clone(),
+                        new: NewValue::Text("after".into()),
+                    }],
+                }],
+            };
+            let outcome = conn.write(&changes).await;
+            assert!(
+                matches!(
+                    &outcome,
+                    Err(Error::Query { message, .. })
+                        if message.contains("at is a timestamp column")
+                            && message.contains("cannot be matched exactly")
+                ),
+                "{outcome:?}"
+            );
+            assert_eq!(standing(&conn).await, (false, 1));
+            let bodies: Vec<String> = admin(&url)
+                .await
+                .query(format!("SELECT body FROM {table} ORDER BY at"))
+                .await
+                .unwrap();
+            assert_eq!(bodies, ["before", "before"]);
         })
         .await;
     }
