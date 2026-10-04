@@ -49,6 +49,13 @@ pub const SHORTCUTS: &[(&str, &str)] = &[
     ),
     ("Arrows, Home/End, Enter", "Move in the tree"),
     ("Arrows, Page Up/Down, Home/End", "Move in the grid"),
+    ("Enter, F2", "Edit the cell"),
+    ("Tab, Shift+Tab", "Commit and move right or left"),
+    ("Esc", "Cancel the edit"),
+    ("Mod+Backspace", "Set NULL"),
+    ("Mod+Z", "Revert the cell"),
+    ("Mod+S", "Save all pending changes"),
+    ("Mod+Alt+Backspace", "Discard all pending changes"),
     (
         "j/k, h/l, Ctrl+H/L, [ ], i, Esc, /, y, s, d, gd, za, t, 1…9",
         "Omarchy: vim keys (shown in the status line)",
@@ -361,6 +368,11 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
     {
         actions.push(Action::ShowSettings);
     }
+    // Before `?`, which is typed text too and stays the shortcuts'.
+    if !terminal && app.dialog.is_none() {
+        let keyboard = !editing && grid && !tree_arrows && !focused;
+        editing_keys(app, ctx, keyboard, &mut actions);
+    }
     if !editing && app.dialog.is_none() {
         letters(app, ctx, &mut actions);
     }
@@ -524,6 +536,100 @@ fn take_press(input: &mut egui::InputState, modifiers: Modifiers, key: Key) -> u
         .events
         .retain(|event| !is_press(event, modifiers, key));
     before - input.events.len()
+}
+
+/// The keys that edit the cells of the table on screen, in the looks that
+/// edit on the cell: they open an editor on the selected cell, act on it
+/// without one, and save or drop what is pending. `keyboard` says the
+/// grid's keys are the grid's: no field or button has them, nor the tree.
+/// A SQL editor's result takes none of them.
+fn editing_keys(app: &App, ctx: &egui::Context, keyboard: bool, actions: &mut Vec<Action>) {
+    let Some((tab, id)) = app.active_object() else {
+        return;
+    };
+    let Some(object) = app
+        .workspace(tab)
+        .and_then(|workspace| workspace.object_tab(id))
+    else {
+        return;
+    };
+    let save = |input: &mut egui::InputState| take_press(input, Modifiers::COMMAND, Key::S) > 0;
+    // While the editor's field has the keyboard a save takes what is being
+    // typed. Whether this frame changed the text is not known yet: noting
+    // it as typed is harmless, since a text left as it was is no change.
+    let field = crate::ui::cell_editor::field_id(tab, id);
+    if object.edits.editor.is_some() && ctx.memory(|memory| memory.has_focus(field)) {
+        if ctx.input_mut(save) {
+            actions.push(Action::EditorTyped { tab, id });
+            actions.push(Action::WriteEdits { tab, id });
+        }
+        return;
+    }
+    // An open editor that is about to take the keyboard takes these keys
+    // with it: none of them opens another, and what is typed is its text.
+    if !keyboard || object.edits.editor.is_some() {
+        return;
+    }
+    ctx.input_mut(|input| {
+        if save(input) {
+            actions.push(Action::WriteEdits { tab, id });
+        }
+        // Each chord with exactly its modifiers: Mod+Alt+Backspace drops
+        // every change and Mod+Backspace touches one cell, and Mod+Shift+Z
+        // is not Mod+Z.
+        if take_press(input, Modifiers::COMMAND | Modifiers::ALT, Key::Backspace) > 0 {
+            actions.push(Action::DiscardEdits { tab, id });
+        }
+        if take_press(input, Modifiers::COMMAND, Key::Backspace) > 0 {
+            actions.push(Action::SetNull { tab, id });
+        }
+        if take_press(input, Modifiers::COMMAND, Key::Z) > 0 {
+            actions.push(Action::RevertCell { tab, id });
+        }
+        let Some(cell) = object.selection else {
+            return;
+        };
+        // A fresh press only: a held Enter would open, commit and move
+        // down the whole column.
+        let enter = consume_press(input, Modifiers::NONE, Key::Enter);
+        if enter || consume_press(input, Modifiers::NONE, Key::F2) {
+            let start = crate::model::EditStart::Value;
+            actions.push(Action::EditCell {
+                tab,
+                id,
+                cell,
+                start,
+            });
+            return;
+        }
+        // Typing starts the edit with what was typed. The text is taken,
+        // or the field that opens would get it again. Space and `?` keep
+        // their meaning (the row panel, the shortcuts), and a chord types
+        // nothing.
+        let chord = input.modifiers.command || input.modifiers.ctrl || input.modifiers.mac_cmd;
+        if chord {
+            return;
+        }
+        let starts =
+            |text: &str| !matches!(text, "" | " " | "?") && !text.chars().any(char::is_control);
+        let mut typed = String::new();
+        input.events.retain(|event| match event {
+            egui::Event::Text(text) if starts(text) => {
+                typed.push_str(text);
+                false
+            }
+            _ => true,
+        });
+        if !typed.is_empty() {
+            let start = crate::model::EditStart::Typed(typed);
+            actions.push(Action::EditCell {
+                tab,
+                id,
+                cell,
+                start,
+            });
+        }
+    });
 }
 
 /// Whether `sql` shows a result grid for the keys to move in: its last
@@ -815,10 +921,40 @@ mod tests {
             "Copy cell / copy row",
             "Move in the tree",
             "Move in the grid",
+            "Edit the cell",
+            "Commit and move right or left",
+            "Cancel the edit",
+            "Set NULL",
+            "Revert the cell",
+            "Save all pending changes",
+            "Discard all pending changes",
             "Shortcuts",
         ] {
             assert!(descriptions.contains(&expected), "{expected}");
         }
+    }
+
+    #[test]
+    fn the_shortcut_table_names_the_keys_that_edit_a_cell() {
+        let keys = |what: &str| {
+            SHORTCUTS
+                .iter()
+                .find(|(_, description)| *description == what)
+                .map(|(keys, _)| *keys)
+        };
+        assert_eq!(keys("Edit the cell"), Some("Enter, F2"));
+        assert_eq!(
+            keys("Commit and move right or left"),
+            Some("Tab, Shift+Tab")
+        );
+        assert_eq!(keys("Cancel the edit"), Some("Esc"));
+        assert_eq!(keys("Set NULL"), Some("Mod+Backspace"));
+        assert_eq!(keys("Revert the cell"), Some("Mod+Z"));
+        assert_eq!(keys("Save all pending changes"), Some("Mod+S"));
+        assert_eq!(
+            keys("Discard all pending changes"),
+            Some("Mod+Alt+Backspace")
+        );
     }
 
     #[test]
