@@ -2059,19 +2059,32 @@ impl App {
                 }
             }
             Event::SettingsWatch { live } => self.settings_file.live = live,
-            Event::SettingsFile { text } => {
-                // The app's own write coming back from the disk, or a save
-                // that changed nothing.
+            Event::SettingsFile { text, own } => {
+                // What the app holds already: its own write coming back,
+                // or a save that changed nothing.
                 if text == self.settings_file.text {
+                    return;
+                }
+                // A write of its own that is not what it holds. An older
+                // one was read between two of its writes: the newest is
+                // still to come, and applying this would undo the change
+                // made since. The newest itself landed over a change from
+                // outside that was applied in between: the disk has it.
+                if own && self.settings_file.saved.as_deref() != Some(text.as_str()) {
                     return;
                 }
                 let loaded = Settings::from_toml(&text);
                 loaded.warn_invalid(&self.dirs.settings_file());
                 let live = self.settings_file.live;
+                let saved = self.settings_file.saved.take();
                 let (settings, file) = loaded.into_parts();
                 // The file as its writer left it: not written back, so a
                 // line that was ignored stays where they can see it.
-                self.settings_file = SettingsFile { live, ..file };
+                self.settings_file = SettingsFile {
+                    live,
+                    saved,
+                    ..file
+                };
                 self.apply_settings(settings);
             }
             Event::Databases {
@@ -2226,6 +2239,7 @@ impl App {
     /// [`App::change_settings`] and the start that read the old
     /// settings.json call it.
     fn save_settings(&mut self) {
+        self.settings_file.saved = Some(self.settings.to_toml());
         self.backend.send(Command::Save {
             path: self.dirs.settings_file(),
             file: StateFile::Settings(self.settings.clone()),
@@ -2252,8 +2266,13 @@ impl App {
             return;
         }
         let live = self.settings_file.live;
+        let saved = self.settings_file.saved.take();
         let (settings, file) = loaded.into_parts();
-        self.settings_file = SettingsFile { live, ..file };
+        self.settings_file = SettingsFile {
+            live,
+            saved,
+            ..file
+        };
         self.apply_settings(settings);
         self.save_settings();
     }
@@ -4074,7 +4093,10 @@ mod tests {
     fn a_change_of_the_file_is_applied_and_not_written_back() {
         let (mut app, _dir) = app();
         let text = "[data]\npage_size = 500\ngroup_digits = \"yes\"\ntimestamps = \"full\"\n";
-        app.apply(Action::Backend(Event::SettingsFile { text: text.into() }));
+        app.apply(Action::Backend(Event::SettingsFile {
+            text: text.into(),
+            own: false,
+        }));
         assert_eq!(app.settings.page_size, 500);
         assert_eq!(app.settings.timestamps, crate::settings::Timestamps::Full);
         assert!(!app.settings.group_digits);
@@ -4099,10 +4121,66 @@ mod tests {
         // Something only a second reading would change.
         app.settings_file.invalid = vec![9];
         let text = app.settings_file.text.clone();
-        app.apply(Action::Backend(Event::SettingsFile { text }));
+        app.apply(Action::Backend(Event::SettingsFile { text, own: false }));
         assert_eq!(app.settings_file.invalid, vec![9]);
         assert_eq!(app.settings.sql_limit, 100);
         assert_eq!(settings_saves(&app).len(), saved);
+    }
+
+    /// The settings file's text coming from the disk.
+    fn from_disk(text: &str, own: bool) -> Action {
+        Action::Backend(Event::SettingsFile {
+            text: text.into(),
+            own,
+        })
+    }
+
+    #[test]
+    fn an_older_write_of_the_apps_own_coming_back_late_undoes_nothing() {
+        let (mut app, _dir) = app();
+        app.change_settings(|settings| settings.sql_limit = 100);
+        let first = app.settings_file.text.clone();
+        app.change_settings(|settings| settings.page_size = 500);
+        let second = app.settings_file.text.clone();
+        let saved = settings_saves(&app).len();
+        // The disk was read between the two writes.
+        app.apply(from_disk(&first, true));
+        assert_eq!(app.settings.page_size, 500, "the newer change stays");
+        assert_eq!(app.settings_file.text, second);
+        // Then the newest comes back.
+        app.apply(from_disk(&second, true));
+        assert_eq!(app.settings.page_size, 500);
+        assert_eq!(settings_saves(&app).len(), saved);
+    }
+
+    #[test]
+    fn the_same_older_text_from_someone_else_is_a_change() {
+        let (mut app, _dir) = app();
+        app.change_settings(|settings| settings.sql_limit = 100);
+        let first = app.settings_file.text.clone();
+        app.change_settings(|settings| settings.page_size = 500);
+        // Not the backend's write: someone put that text there.
+        app.apply(from_disk(&first, false));
+        assert_eq!(app.settings.page_size, Settings::DEFAULT_PAGE_SIZE);
+        assert_eq!(app.settings_file.text, first);
+    }
+
+    #[test]
+    fn the_apps_save_landing_over_a_change_from_outside_is_what_the_disk_has() {
+        let (mut app, _dir) = app();
+        app.change_settings(|settings| settings.sql_limit = 100);
+        let ours = app.settings_file.text.clone();
+        // An edit from outside is read before the app's save lands...
+        app.apply(from_disk("[data]\npage_size = 500\n", false));
+        assert_eq!(app.settings.page_size, 500);
+        assert_eq!(app.settings.sql_limit, 1_000);
+        let saved = settings_saves(&app).len();
+        // ...and then it lands, over the edit.
+        app.apply(from_disk(&ours, true));
+        assert_eq!(app.settings.sql_limit, 100);
+        assert_eq!(app.settings.page_size, Settings::DEFAULT_PAGE_SIZE);
+        assert_eq!(app.settings_file.text, ours);
+        assert_eq!(settings_saves(&app).len(), saved, "nothing is written back");
     }
 
     #[test]
@@ -4112,6 +4190,7 @@ mod tests {
         assert!(app.settings_file.live);
         app.apply(Action::Backend(Event::SettingsFile {
             text: "[data]\npage_size = 500\n".into(),
+            own: false,
         }));
         assert!(app.settings_file.live);
         app.change_settings(|settings| settings.sql_limit = 100);

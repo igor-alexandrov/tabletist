@@ -227,6 +227,9 @@ pub struct SettingsFile {
     pub lines: Vec<(Key, usize)>,
     /// Whether the backend watches the file for changes made outside.
     pub live: bool,
+    /// The text the app last asked to be written, if it asked: what tells
+    /// its newest write, coming back from the disk, from an older one.
+    pub saved: Option<String>,
 }
 
 impl Loaded {
@@ -237,6 +240,7 @@ impl Loaded {
             invalid: self.invalid,
             lines: self.lines,
             live: false,
+            saved: None,
         };
         (self.settings, file)
     }
@@ -852,6 +856,7 @@ sql_timeout_secs = 30  # 0 waits forever
                 invalid: vec![3],
                 lines: vec![(Key::PageSize, 2)],
                 live: false,
+                saved: None,
             }
         );
     }

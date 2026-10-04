@@ -747,6 +747,7 @@ mod tests {
         harness.app.apply(crate::model::Action::Backend(
             crate::backend::Event::SettingsFile {
                 text: "[data]\ngroup_digits = true\n".into(),
+                own: false,
             },
         ));
         harness.settle();
@@ -3989,7 +3990,10 @@ mod tests {
         let painted = |harness: &mut Harness, text: Option<&str>| {
             if let Some(text) = text {
                 harness.app.apply(crate::model::Action::Backend(
-                    crate::backend::Event::SettingsFile { text: text.into() },
+                    crate::backend::Event::SettingsFile {
+                        text: text.into(),
+                        own: false,
+                    },
                 ));
             }
             harness.settle();

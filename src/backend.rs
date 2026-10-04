@@ -262,9 +262,10 @@ pub enum Event {
     /// a directory that cannot be watched, or such a directory that can be
     /// watched after all.
     SettingsWatch { live: bool },
-    /// The settings file changed on disk: its text. The app's own writes
-    /// come this way too, and it knows them by their text.
-    SettingsFile { text: String },
+    /// The settings file changed on disk: its text. `own` when it is, byte
+    /// for byte, what the backend itself wrote there last: the app's own
+    /// save coming back, which it must not take for someone else's change.
+    SettingsFile { text: String, own: bool },
 }
 
 /// Who stopped a SQL editor run.
@@ -698,7 +699,14 @@ struct Saves {
     pending: Arc<Mutex<HashMap<PathBuf, Option<StateFile>>>>,
     /// Woken whenever a writer finishes.
     idle: Arc<tokio::sync::Notify>,
+    settings_written: Written,
 }
+
+/// The text the backend wrote to the settings file last, if it wrote one.
+/// Locked while it is written and while the reader reads the file and
+/// compares: a write cannot land between the reader's read and its
+/// comparison and make the app's own older text look like someone else's.
+type Written = Arc<Mutex<Option<String>>>;
 
 impl Saves {
     /// Queues `file` for `path`, starting a writer unless one runs.
@@ -729,7 +737,21 @@ impl Saves {
                     }
                 }
             };
-            let result = file.save(path).map_err(|error| error.to_string());
+            let result = match &file {
+                // Known to the settings file's reader for the app's own.
+                StateFile::Settings(settings) => {
+                    let mut written = lock(&self.settings_written);
+                    let result = file.save(path);
+                    // After a write that failed nothing on the disk is
+                    // known to be the app's: the text there may be an
+                    // older write of its own, but the app has moved on
+                    // from it, and someone putting it back must be heard.
+                    *written = result.is_ok().then(|| settings.to_toml());
+                    result
+                }
+                _ => file.save(path),
+            }
+            .map_err(|error| error.to_string());
             if let Err(error) = &result {
                 log::error!("could not save {}: {error}", path.display());
             }
@@ -952,7 +974,11 @@ impl Drop for SettingsReader {
 /// Watches the settings file `path` and starts the task that reads it
 /// whenever it changes, and once at the start. Says too whether every
 /// place an edit can be made is watched (see [`SettingsWatcher::follow`]).
-fn watch_settings(path: PathBuf, outbox: Outbox) -> notify::Result<(SettingsReader, bool)> {
+fn watch_settings(
+    path: PathBuf,
+    outbox: Outbox,
+    written: Written,
+) -> notify::Result<(SettingsReader, bool)> {
     use notify::Watcher as _;
     let (changed, changes) = tokio_mpsc::unbounded_channel();
     // The file as it is now: it was loaded before there was a watch, and a
@@ -1001,17 +1027,32 @@ fn watch_settings(path: PathBuf, outbox: Outbox) -> notify::Result<(SettingsRead
     };
     // The reader holds the watcher from here on, to turn it with the link.
     let follow = move || tokio::task::block_in_place(|| watch.follow());
-    let reader = tokio::spawn(read_settings(
-        path, live, changes, outbox, follow, read_file,
-    ));
+    let read = move |path| read_file(path, Arc::clone(&written));
+    let reader = tokio::spawn(read_settings(path, live, changes, outbox, follow, read));
     Ok((SettingsReader(reader.abort_handle()), live))
 }
 
+/// The settings file as the reader found it.
+struct Found {
+    bytes: Vec<u8>,
+    /// It is what the backend wrote there last.
+    own: bool,
+}
+
 /// Reads `path` on the blocking pool: a disk can be slow, and the runtime's
-/// threads serve every session.
-async fn read_file(path: PathBuf) -> std::io::Result<Vec<u8>> {
-    match tokio::task::spawn_blocking(move || std::fs::read(path)).await {
-        Ok(read) => read,
+/// threads serve every session. `written` is held across the read and the
+/// comparison, so that no write of the backend's lands between the two.
+async fn read_file(path: PathBuf, written: Written) -> std::io::Result<Found> {
+    let read = move || {
+        let written = lock(&written);
+        let bytes = std::fs::read(path)?;
+        let own = written
+            .as_deref()
+            .is_some_and(|text| text.as_bytes() == bytes.as_slice());
+        Ok(Found { bytes, own })
+    };
+    match tokio::task::spawn_blocking(read).await {
+        Ok(found) => found,
         Err(error) => Err(std::io::Error::other(error)),
     }
 }
@@ -1109,7 +1150,7 @@ async fn read_settings<W, R, F>(
 ) where
     W: FnMut() -> Result<(), String>,
     R: Fn(PathBuf) -> F,
-    F: Future<Output = std::io::Result<Vec<u8>>>,
+    F: Future<Output = std::io::Result<Found>>,
 {
     // What was sent last: the same text is not news, whatever woke us.
     let mut sent: Option<String> = None;
@@ -1128,7 +1169,7 @@ async fn read_settings<W, R, F>(
             Ok(None) => return,
             Err(_) => false,
         };
-        let bytes = 'settle: loop {
+        let found = 'settle: loop {
             if changed && !settled(&mut changes).await {
                 return;
             }
@@ -1153,7 +1194,7 @@ async fn read_settings<W, R, F>(
             let mut wait = SETTLE;
             loop {
                 match read(path.clone()).await {
-                    Ok(bytes) => match changes.try_recv() {
+                    Ok(found) => match changes.try_recv() {
                         // Changed while it was read (an editor truncating
                         // it, say): what was read may be half of that save,
                         // and sending it would have the app apply it until
@@ -1165,7 +1206,7 @@ async fn read_settings<W, R, F>(
                         }
                         // The end of the watch is not a change: this text
                         // is whole, and the task ends at its next wait.
-                        Err(_) => break 'settle Some(bytes),
+                        Err(_) => break 'settle Some(found),
                     },
                     // Deleted: the settings in memory stay, and the next
                     // change made in the app writes the file again. No
@@ -1195,14 +1236,17 @@ async fn read_settings<W, R, F>(
                 }
             }
         };
-        let Some(bytes) = bytes else {
+        let Some(found) = found else {
             continue;
         };
-        match String::from_utf8(bytes) {
+        match String::from_utf8(found.bytes) {
             Ok(text) if sent.as_deref() == Some(text.as_str()) => {}
             Ok(text) => {
                 sent = Some(text.clone());
-                outbox.emit(Event::SettingsFile { text });
+                outbox.emit(Event::SettingsFile {
+                    text,
+                    own: found.own,
+                });
             }
             // Half-written, or not a settings file at all: the settings in
             // memory stay, and nothing on disk is touched.
@@ -1428,7 +1472,8 @@ impl Worker {
             }
             Command::Save { path, file } => self.saves.save(path, file, &self.outbox),
             Command::WatchSettings { path } => {
-                let live = match watch_settings(path, self.outbox.clone()) {
+                let written = Arc::clone(&self.saves.settings_written);
+                let live = match watch_settings(path, self.outbox.clone(), written) {
                     Ok((reader, live)) => {
                         self.settings_watch = Some(reader);
                         live
@@ -4077,11 +4122,32 @@ mod tests {
         let deadline = std::time::Instant::now() + WAIT;
         let mut texts = Vec::new();
         while std::time::Instant::now() < deadline {
-            if let Some(Event::SettingsFile { text }) = backend.wait(Duration::from_millis(200)) {
+            if let Some(Event::SettingsFile { text, .. }) = backend.wait(Duration::from_millis(200))
+            {
                 let done = text == expected;
                 texts.push(text);
                 if done {
                     return texts;
+                }
+            }
+        }
+        Vec::new()
+    }
+
+    /// The settings file's texts the backend sends until `expected` comes,
+    /// that one included, each with whether it is the backend's own write;
+    /// empty when it never does.
+    fn files_until(backend: &mut Backend, expected: &str) -> Vec<(String, bool)> {
+        let deadline = std::time::Instant::now() + WAIT;
+        let mut files = Vec::new();
+        while std::time::Instant::now() < deadline {
+            if let Some(Event::SettingsFile { text, own }) =
+                backend.wait(Duration::from_millis(200))
+            {
+                let done = text == expected;
+                files.push((text, own));
+                if done {
+                    return files;
                 }
             }
         }
@@ -4146,7 +4212,7 @@ mod tests {
     /// at once with `answer(n)`: the channel that wakes it, what it sends,
     /// and when each read was.
     fn reader(
-        answer: impl Fn(usize) -> std::io::Result<Vec<u8>> + Send + 'static,
+        answer: impl Fn(usize) -> std::io::Result<Found> + Send + 'static,
     ) -> (
         tokio_mpsc::UnboundedSender<()>,
         mpsc::Receiver<Event>,
@@ -4166,7 +4232,7 @@ mod tests {
         Arc<Mutex<Vec<tokio::time::Instant>>>,
     )
     where
-        F: Future<Output = std::io::Result<Vec<u8>>> + Send + 'static,
+        F: Future<Output = std::io::Result<Found>> + Send + 'static,
     {
         let (outbox, events) = quiet_outbox();
         let (changed, changes) = tokio_mpsc::unbounded_channel();
@@ -4189,10 +4255,18 @@ mod tests {
         std::io::ErrorKind::PermissionDenied.into()
     }
 
+    /// What a read answers when it finds `text`, put there by someone else.
+    fn found(text: &str) -> std::io::Result<Found> {
+        Ok(Found {
+            bytes: text.into(),
+            own: false,
+        })
+    }
+
     /// The texts of the settings file sent so far.
     fn texts(events: &mpsc::Receiver<Event>) -> Vec<String> {
         let text = |event| match event {
-            Event::SettingsFile { text } => Some(text),
+            Event::SettingsFile { text, .. } => Some(text),
             _ => None,
         };
         events.try_iter().filter_map(text).collect()
@@ -4207,7 +4281,7 @@ mod tests {
             // without another change to say so.
             let (changed, events, reads) = reader(|read| match read {
                 0 | 1 => Err(held()),
-                _ => Ok(PAGE_500.into()),
+                _ => found(PAGE_500),
             });
             let start = tokio::time::Instant::now();
             changed.send(()).unwrap();
@@ -4223,7 +4297,7 @@ mod tests {
         paused().block_on(async {
             let (changed, events, reads) = reader(|read| match read {
                 0..6 => Err(held()),
-                _ => Ok(PAGE_500.into()),
+                _ => found(PAGE_500),
             });
             let start = tokio::time::Instant::now();
             changed.send(()).unwrap();
@@ -4258,7 +4332,7 @@ mod tests {
         paused().block_on(async {
             let (changed, events, reads) = reader(|read| match read {
                 0..4 => Err(held()),
-                _ => Ok(PAGE_500.into()),
+                _ => found(PAGE_500),
             });
             let start = tokio::time::Instant::now();
             changed.send(()).unwrap();
@@ -4273,10 +4347,10 @@ mod tests {
         });
     }
 
-    /// A read that takes 50 ms to answer with `answer`.
-    async fn after_50_ms(answer: Vec<u8>) -> std::io::Result<Vec<u8>> {
+    /// A read that takes 50 ms to answer with `bytes`, another's.
+    async fn after_50_ms(bytes: Vec<u8>) -> std::io::Result<Found> {
         tokio::time::sleep(Duration::from_millis(50)).await;
-        Ok(answer)
+        Ok(Found { bytes, own: false })
     }
 
     #[test]
@@ -4489,6 +4563,39 @@ mod tests {
         // into place, so that no read finds the file empty on the way.
         crate::util::write_atomic(&path, b"[data]\npage_size = 500\n").unwrap();
         assert!(backend.wait(Duration::from_millis(600)).is_none());
+    }
+
+    #[test]
+    fn a_write_of_the_backends_own_is_sent_as_its_own() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.toml");
+        let (mut backend, live) = watching(&path);
+        assert!(live);
+        // Another's save: the app is told it is not its own.
+        crate::util::write_atomic(&path, b"[data]\npage_size = 500\n").unwrap();
+        assert_eq!(
+            files_until(&mut backend, "[data]\npage_size = 500\n"),
+            vec![("[data]\npage_size = 500\n".to_owned(), false)]
+        );
+        // The app's save, through the backend.
+        let settings = crate::settings::Settings {
+            page_size: 100,
+            ..Default::default()
+        };
+        backend.send(Command::Save {
+            path: path.clone(),
+            file: StateFile::Settings(settings.clone()),
+        });
+        assert_eq!(
+            files_until(&mut backend, &settings.to_toml()),
+            vec![(settings.to_toml(), true)]
+        );
+        // The text before it, put back by someone else, is theirs.
+        crate::util::write_atomic(&path, b"[data]\npage_size = 500\n").unwrap();
+        assert_eq!(
+            files_until(&mut backend, "[data]\npage_size = 500\n"),
+            vec![("[data]\npage_size = 500\n".to_owned(), false)]
+        );
     }
 
     #[test]

@@ -2792,7 +2792,7 @@ fn settings_file(harness: &mut Harness, text: &str) {
     let text = text.to_owned();
     harness
         .app
-        .apply(Action::Backend(Event::SettingsFile { text }));
+        .apply(Action::Backend(Event::SettingsFile { text, own: false }));
 }
 
 #[test]

@@ -2335,7 +2335,7 @@ mod tests {
         let drawn = |harness: &mut Harness, text: Option<&str>| {
             if let Some(text) = text {
                 let text = text.to_owned();
-                let file = crate::backend::Event::SettingsFile { text };
+                let file = crate::backend::Event::SettingsFile { text, own: false };
                 harness.app.apply(Action::Backend(file));
             }
             let tree = harness.settle();
