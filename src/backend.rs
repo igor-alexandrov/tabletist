@@ -1048,10 +1048,21 @@ fn leaves(event: &notify::Event, directories: &[PathBuf]) -> bool {
 /// one the app reads as `settings.toml`, and its changes come under the
 /// spelling it is kept in. That goes for every letter, not for those of
 /// ASCII alone: a link may spell the file it leads to `Ä.toml` where it is
-/// kept as `ä.toml`. A name taken for the file's by mistake costs a read.
+/// kept as `ä.toml`. Beyond ASCII the systems' own rules cannot be told
+/// from here (Windows takes `Σ.toml` and `ς.toml` for one name, which no
+/// lower case does, and macOS a letter with its accent however the two are
+/// written), so there two names that both go beyond it are taken for one.
+/// A name taken for the file's by mistake costs a read.
 fn same_file(one: &std::ffi::OsStr, other: &std::ffi::OsStr) -> bool {
-    let folded = |name: &std::ffi::OsStr| name.to_string_lossy().to_lowercase();
-    one == other || (cfg!(any(windows, target_os = "macos")) && folded(one) == folded(other))
+    if one == other {
+        return true;
+    }
+    if !cfg!(any(windows, target_os = "macos")) {
+        return false;
+    }
+    // Through the upper case: `ς` and `σ` share one, and no lower one.
+    let folded = |name: &std::ffi::OsStr| name.to_string_lossy().to_uppercase().to_lowercase();
+    folded(one) == folded(other) || !(one.is_ascii() || other.is_ascii())
 }
 
 /// Waits until the changes have been quiet for `SETTLE`: a save is several
@@ -4396,6 +4407,32 @@ mod tests {
         let change = Event::new(EventKind::Modify(ModifyKind::Any));
         let change = change.add_path("/dotfiles/ä.toml".into());
         assert_eq!(concerns(&change, &linked), folds);
+    }
+
+    #[test]
+    fn names_beyond_ascii_that_cannot_be_told_apart_are_taken_for_one() {
+        use notify::event::ModifyKind;
+        use notify::{Event, EventKind};
+        let folds = cfg!(any(windows, target_os = "macos"));
+        let name = OsString::from;
+        // Windows compares names by their upper case, which the two small
+        // sigmas share. Their lower cases differ.
+        assert_eq!(same_file(&name("Σ.toml"), &name("ς.toml")), folds);
+        assert_eq!(same_file(&name("σ.toml"), &name("ς.toml")), folds);
+        let linked = [name("settings.toml"), name("Σ.toml")];
+        let change = Event::new(EventKind::Modify(ModifyKind::Any));
+        let change = change.add_path("/dotfiles/ς.toml".into());
+        assert_eq!(concerns(&change, &linked), folds);
+        // macOS takes a letter with its accent for the same however the
+        // two are written: as one character, or as two.
+        assert_eq!(
+            same_file(&name("\u{e4}.toml"), &name("a\u{308}.toml")),
+            folds
+        );
+        // A name within ASCII is no name beyond it, and the app's own file
+        // is not read for every such name in its directory.
+        assert!(!same_file(&name("settings.toml"), &name("настройки.toml")));
+        assert!(!same_file(&name("a.toml"), &name("\u{e4}.toml")));
     }
 
     #[test]

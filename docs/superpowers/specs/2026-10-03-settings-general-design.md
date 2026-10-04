@@ -428,6 +428,12 @@ answered them would read the file for ever. The file is matched by its name
 in the directory, since the paths of events come as the system has them;
 on macOS and Windows, which find a file whatever the case of its name, the
 match ignores case, so a file kept as `Settings.toml` is still followed.
+Beyond ASCII those systems' own rules cannot be reproduced here (Windows
+compares by an upper case of its own, under which `Σ.toml` and `ς.toml` are
+one name; macOS takes a letter with its accent for the same however the two
+are encoded), so two names that both go beyond ASCII are taken for one
+there. A name taken for the file's by mistake costs one read, and the same
+text is not sent again.
 The same text is never sent twice in a row.
 
 The file is read once when the watch starts, as if it had just changed:
