@@ -1398,10 +1398,13 @@ fn reveal_command(path: &std::path::Path) -> (String, Vec<std::ffi::OsString>) {
     }
     #[cfg(windows)]
     {
-        // One argument: explorer reads the path after the comma.
-        let mut select = std::ffi::OsString::from("/select,");
-        select.push(path);
-        ("explorer".into(), vec![select])
+        // The path as an argument of its own: one with a space in it is
+        // quoted on the command line, and explorer takes `/select,` for
+        // its switch only outside the quotes.
+        (
+            "explorer".into(),
+            vec!["/select,".into(), path.as_os_str().to_owned()],
+        )
     }
     #[cfg(all(unix, not(target_os = "macos")))]
     {
@@ -5525,11 +5528,18 @@ mod tests {
             (program.as_str(), args),
             ("open", vec!["-R".into(), path.as_os_str().to_owned()])
         );
-        // One argument: explorer takes the path after the comma.
+        // The switch, and the path on its own: quoted with the switch, a
+        // path with a space in it would not be selected.
         #[cfg(windows)]
         assert_eq!(
             (program.as_str(), args),
-            ("explorer", vec!["/select,/config/settings.toml".into()])
+            (
+                "explorer",
+                vec![
+                    std::ffi::OsString::from("/select,"),
+                    path.as_os_str().to_owned()
+                ]
+            )
         );
         // No file manager is asked to select a file the same way: the
         // directory is opened.

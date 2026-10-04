@@ -4466,11 +4466,12 @@ mod tests {
     #[test]
     fn export_offers_the_canonical_text_under_the_settings_name() {
         let (mut app, _dir) = app();
-        app.apply(Action::SetOption(crate::settings::OptionValue::PageSize(
-            500,
-        )));
-        app.apply(Action::ExportSettings);
+        // A file as someone wrote it: not the text the app would write.
+        app.apply(from_disk("[data]\npage_size = 500\n", false));
+        assert_eq!(app.settings.page_size, 500);
         let text = app.settings.to_toml();
+        assert_ne!(app.settings_file.text.len(), text.len());
+        app.apply(Action::ExportSettings);
         assert_eq!(
             app.backend.saves.last(),
             Some(&("tabletist-settings.toml".to_owned(), text.len()))
