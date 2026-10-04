@@ -1266,14 +1266,26 @@ async fn read_settings<W, R, F>(
 
 /// Opens the settings file `path` with `start`, writing `text` to it first
 /// when it is not there: the editor is given a file, and the UI thread
-/// never looked at the disk to know.
+/// never looked at the disk to know. That write is the backend's own, as a
+/// save's is: `written` is held from the look for the file to the end of
+/// the write and then holds `text`. Written past the lock, it could land
+/// after a save the app made meanwhile, and the reader would hand the
+/// older text to the app as someone else's change.
 fn open_in_editor(
     path: &std::path::Path,
     text: &str,
+    written: &Written,
     start: impl FnOnce(&std::path::Path) -> std::io::Result<()>,
 ) -> Result<(), String> {
-    if !path.exists() {
-        crate::util::write_atomic(path, text.as_bytes()).map_err(|error| error.to_string())?;
+    {
+        let mut written = lock(written);
+        if !path.exists() {
+            let result = crate::util::write_atomic(path, text.as_bytes());
+            // As after a save: a write that failed leaves nothing on the
+            // disk that is known to be the app's.
+            *written = result.is_ok().then(|| text.to_owned());
+            result.map_err(|error| error.to_string())?;
+        }
     }
     start(path).map_err(|error| error.to_string())
 }
@@ -1297,8 +1309,9 @@ fn editor_command(
     }
     #[cfg(all(unix, not(target_os = "macos")))]
     {
-        // Omarchy opens $EDITOR in a terminal of its own; any other
-        // desktop knows what edits a text file.
+        // Omarchy has a launcher for the editor it is set up with, which
+        // gives a terminal editor a terminal of its own; any other desktop
+        // knows what edits a text file.
         let program = if on_path("omarchy-launch-editor") {
             "omarchy-launch-editor"
         } else {
@@ -1308,25 +1321,52 @@ fn editor_command(
     }
 }
 
-/// Whether a command named `name` is in one of `PATH`'s directories.
-fn on_path(name: &str) -> bool {
-    std::env::var_os("PATH")
-        .is_some_and(|paths| std::env::split_paths(&paths).any(|dir| dir.join(name).is_file()))
+/// Whether a command named `name` can be run from one of `dirs`, which are
+/// `PATH`'s outside the tests.
+fn on_path(name: &str, dirs: impl IntoIterator<Item = PathBuf>) -> bool {
+    dirs.into_iter().any(|dir| can_run(&dir.join(name)))
+}
+
+/// Whether `file` is a file the system would start. A file of a command's
+/// name that nobody may run would be chosen, fail to start, and keep the
+/// next way to open the file from being tried.
+fn can_run(file: &std::path::Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        // Any of the three bits: whose it is, the system says at the start.
+        std::fs::metadata(file)
+            .is_ok_and(|file| file.is_file() && file.permissions().mode() & 0o111 != 0)
+    }
+    #[cfg(not(unix))]
+    {
+        file.is_file()
+    }
 }
 
 /// Starts the editor on `path` and lets it go: it is the user's window from
-/// here. A thread of its own waits for it, so it leaves no zombie.
+/// here. A thread of its own waits for it, so it leaves no zombie, and says
+/// in the log when it ended with a failure: a launcher with nothing to open
+/// the file with has no other way to be heard.
 fn start_editor(path: &std::path::Path) -> std::io::Result<()> {
     use std::process::Stdio;
-    let (program, args) = editor_command(path, on_path);
-    let mut child = std::process::Command::new(program)
+    let paths = std::env::var_os("PATH");
+    let found = |name: &str| {
+        paths
+            .as_deref()
+            .is_some_and(|paths| on_path(name, std::env::split_paths(paths)))
+    };
+    let (program, args) = editor_command(path, found);
+    let mut child = std::process::Command::new(&program)
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()?;
-    std::thread::spawn(move || {
-        let _ = child.wait();
+    std::thread::spawn(move || match child.wait() {
+        Ok(status) if status.success() => {}
+        Ok(status) => log::warn!("{program} ended with {status}"),
+        Err(error) => log::warn!("could not wait for {program}: {error}"),
     });
     Ok(())
 }
@@ -1563,8 +1603,9 @@ impl Worker {
             }
             Command::EditSettingsFile { path, text } => {
                 let outbox = self.outbox.clone();
+                let written = Arc::clone(&self.saves.settings_written);
                 tokio::task::spawn_blocking(move || {
-                    let result = open_in_editor(&path, &text, start_editor);
+                    let result = open_in_editor(&path, &text, &written, start_editor);
                     if let Err(error) = &result {
                         log::warn!("could not open {} in the editor: {error}", path.display());
                     }
@@ -5219,8 +5260,9 @@ mod tests {
     fn a_settings_file_that_is_not_there_is_written_before_the_editor_starts() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config").join("settings.toml");
+        let written = Written::default();
         let mut seen = None;
-        open_in_editor(&path, "[data]\npage_size = 300\n", |opened| {
+        open_in_editor(&path, "[data]\npage_size = 300\n", &written, |opened| {
             seen = Some((
                 opened.to_path_buf(),
                 std::fs::read_to_string(opened).unwrap(),
@@ -5234,7 +5276,7 @@ mod tests {
         );
         // A file that is there is opened as it is, whatever the app holds.
         std::fs::write(&path, "[data]\npage_size = 100\n").unwrap();
-        open_in_editor(&path, "[data]\npage_size = 300\n", |_| Ok(())).unwrap();
+        open_in_editor(&path, "[data]\npage_size = 300\n", &written, |_| Ok(())).unwrap();
         assert_eq!(
             std::fs::read_to_string(&path).unwrap(),
             "[data]\npage_size = 100\n"
@@ -5242,10 +5284,41 @@ mod tests {
     }
 
     #[test]
+    fn the_file_written_for_the_editor_is_the_backends_own_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.toml");
+        let written = Written::default();
+        open_in_editor(&path, PAGE_500, &written, |_| Ok(())).unwrap();
+        assert_eq!(lock(&written).as_deref(), Some(PAGE_500));
+        // So the reader knows it: a save of the app's that lands before
+        // this write does not leave it looking like someone else's text.
+        let found = runtime()
+            .block_on(read_file(path.clone(), Arc::clone(&written)))
+            .unwrap();
+        assert!(found.own);
+    }
+
+    #[test]
+    fn a_file_that_is_there_is_no_write_of_the_backends() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.toml");
+        let theirs = "[data]\npage_size = 100\n";
+        std::fs::write(&path, theirs).unwrap();
+        // Nothing written yet, or a text of the backend's from before
+        // someone else wrote the file: neither is touched.
+        for before in [None, Some("[data]\npage_size = 50\n".to_owned())] {
+            let written: Written = Arc::new(Mutex::new(before.clone()));
+            open_in_editor(&path, PAGE_500, &written, |_| Ok(())).unwrap();
+            assert_eq!(*lock(&written), before);
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), theirs);
+        }
+    }
+
+    #[test]
     fn an_editor_that_cannot_start_is_told_with_the_file_still_written() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("settings.toml");
-        let error = open_in_editor(&path, "[data]\n", |_| {
+        let error = open_in_editor(&path, "[data]\n", &Written::default(), |_| {
             Err(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
                 "no editor",
@@ -5276,5 +5349,25 @@ mod tests {
             args.last().map(|arg| arg.as_os_str()),
             Some(path.as_os_str())
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_command_is_on_the_path_only_where_it_can_be_run() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir().unwrap();
+        let dirs = || [dir.path().join("missing"), dir.path().to_path_buf()];
+        assert!(!on_path("launch-editor", dirs()));
+        // A file of the name that nobody may run: starting it would fail,
+        // and the next way to open the file would never be tried.
+        let file = dir.path().join("launch-editor");
+        std::fs::write(&file, "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(!on_path("launch-editor", dirs()));
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(on_path("launch-editor", dirs()));
+        // A folder of the name has the bits and is no command.
+        std::fs::create_dir(dir.path().join("a-folder")).unwrap();
+        assert!(!on_path("a-folder", dirs()));
     }
 }
