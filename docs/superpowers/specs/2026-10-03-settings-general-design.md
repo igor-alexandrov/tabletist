@@ -249,7 +249,7 @@ widths. In step 1 the options are fixed for a session and nothing is needed.
 
 The keys without a control have effects too, for a change that comes from
 the file: `show_system_schemas` is read when the sidebar draws and when
-objects are listed, so it shows at the next frame and the next listing;
+objects are listed, so it shows at the next frame and the next listing, and an open completion list is worked out again, since it offers the schemas that are shown;
 `sql_limit` and `sql_timeout_secs` reach the SQL tabs opened afterwards, as
 today; `appearance.theme` restarts the theme catalog with the new selection
 and resolves the palette again. Restarting the catalog needs the egui
