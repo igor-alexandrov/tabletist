@@ -2,11 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** In the standard and macOS looks, `Mod+,` opens the Settings window as a sheet: a nav, the General tab's four options as a menu, two segmented controls and a toggle, and a footer that says where the file is and offers Reveal, Export and Reset. macOS gets "Settings…" in the app menu. The key is listed in the shortcuts.
+**Goal:** In the standard and macOS looks, `Mod+,` opens the Settings window as a sheet: a nav, the General tab's four options as a menu, two segmented controls and a toggle, and a footer that says where the file is and offers Reveal, Export and Reset. The key is listed in the shortcuts. "Settings…" in the macOS app menu was planned here as Task 7 and is deferred to a plan and a pull request of its own.
 
-**Architecture:** Step 3 left everything the window needs but its second layout: `Dialog::Settings`, `OptionId` and `OptionValue`, `Action::SetOption` through `App::change_settings`, and `src/ui/settings/mod.rs` that picks a layout. This step adds `src/ui/settings/sheet.rs` for the looks that are not a terminal's, a `widgets::toggle`, three footer actions (Reveal on the backend beside the editor's launcher, Export through `Backend::save_bytes`, Reset with a question in place), and `SettingsItem` in `tabletist-appkit` for the macOS app menu. The gates that kept `Mod+,` and the shortcuts dialog's button to the terminal look go.
+**Architecture:** Step 3 left everything the window needs but its second layout: `Dialog::Settings`, `OptionId` and `OptionValue`, `Action::SetOption` through `App::change_settings`, and `src/ui/settings/mod.rs` that picks a layout. This step adds `src/ui/settings/sheet.rs` for the looks that are not a terminal's, a `widgets::toggle`, and three footer actions (Reveal on the backend beside the editor's launcher, Export through `Backend::save_bytes`, Reset with a question in place). The gates that kept `Mod+,` and the shortcuts dialog's button to the terminal look go.
 
-**Tech Stack:** Rust 2024, egui (crmne fork, 0.36), tokio, objc2 0.6 with objc2-app-kit 0.3 (macOS only). Headless UI tests through `src/testing.rs`; `harness.set_look(Look::standard())` and `Look::macos()` are the two looks this window is drawn in.
+**Tech Stack:** Rust 2024, egui (crmne fork, 0.36), tokio. Headless UI tests through `src/testing.rs`; `harness.set_look(Look::standard())` and `Look::macos()` are the two looks this window is drawn in.
 
 **Spec:** `docs/superpowers/specs/2026-10-03-settings-general-design.md`, sections "The window" (macOS and Windows, Opening), "The file's actions" (Reveal, Export) and "Testing". This plan is step 4 of its four and the last.
 
@@ -76,10 +76,6 @@ Texts, exactly:
 | `src/ui/keys.rs` | `Mod+,` in every look; its line in `SHORTCUTS` |
 | `src/ui/help.rs` | the Settings button in every look |
 | `src/ui/mod.rs` | the window's tests |
-| `crates/tabletist-appkit/src/target.rs` | new: the menu target class, moved out of `about.rs` and renamed |
-| `crates/tabletist-appkit/src/settings.rs` | new: `SettingsItem` |
-| `crates/tabletist-appkit/tests/settings_menu.rs` | new: the item's test, with its own `main` |
-| `src/macos.rs`, `src/entrypoint.rs` | `SettingsMenu`, and a chosen item becomes `Action::ShowSettings` |
 | `src/shots.rs` | scene `MacSettings` |
 | `docs/superpowers/specs/2026-10-03-settings-general-design.md` | what this step learned |
 
@@ -108,12 +104,29 @@ fn reveal_shows_the_file_where_it_is_kept() {
         (program.as_str(), args),
         ("open", vec!["-R".into(), path.as_os_str().to_owned()])
     );
-    // One argument: explorer takes the path after the comma.
+    // The switch, and the path in quotes of its own, as explorer's
+    // command line must read: a space or a comma in the path would
+    // otherwise end it there.
     #[cfg(windows)]
-    assert_eq!(
-        (program.as_str(), args),
-        ("explorer", vec!["/select,/config/settings.toml".into()])
-    );
+    {
+        assert_eq!(
+            (program.as_str(), args),
+            (
+                "explorer",
+                vec![std::ffi::OsString::from(
+                    "/select,\"/config/settings.toml\""
+                )]
+            )
+        );
+        let awkward = std::path::Path::new(r"C:\Users\Doe, John\My Settings\settings.toml");
+        let (_, args) = reveal_command(awkward);
+        assert_eq!(
+            args,
+            vec![std::ffi::OsString::from(
+                r#"/select,"C:\Users\Doe, John\My Settings\settings.toml""#
+            )]
+        );
+    }
     // No file manager is asked to select a file the same way: the
     // directory is opened.
     #[cfg(all(unix, not(target_os = "macos")))]
@@ -215,7 +228,8 @@ The program, beside `editor_command`:
 
 ```rust
 /// The program that shows where `path` is kept on this system, and what
-/// it is given.
+/// it is given. On Windows the one argument is explorer's command line as
+/// it must read, and is given to it as it is ([`start_reveal`]).
 fn reveal_command(path: &std::path::Path) -> (String, Vec<std::ffi::OsString>) {
     #[cfg(target_os = "macos")]
     {
@@ -223,9 +237,14 @@ fn reveal_command(path: &std::path::Path) -> (String, Vec<std::ffi::OsString>) {
     }
     #[cfg(windows)]
     {
-        // One argument: explorer reads the path after the comma.
-        let mut select = std::ffi::OsString::from("/select,");
+        // The switch, then the path in quotes of its own. Explorer reads
+        // its command line itself: it takes `/select,` for its switch only
+        // outside quotes, and splits what follows at a comma outside them,
+        // so a path with a space or a comma is whole only in quotes. A
+        // path on Windows holds no quote to escape.
+        let mut select = std::ffi::OsString::from("/select,\"");
         select.push(path);
+        select.push("\"");
         ("explorer".into(), vec![select])
     }
     #[cfg(all(unix, not(target_os = "macos")))]
@@ -241,14 +260,13 @@ fn reveal_command(path: &std::path::Path) -> (String, Vec<std::ffi::OsString>) {
 Split `start_editor` so both programs are started and reaped the same way:
 
 ```rust
-/// Starts `program` and lets it go: it is the user's window from here. A
-/// thread of its own waits for it, so it leaves no zombie, and says in the
-/// log when it ended with a failure: a launcher with nothing to open the
-/// file with has no other way to be heard.
-fn start(program: String, args: Vec<std::ffi::OsString>) -> std::io::Result<()> {
+/// Starts `command`, which runs `program`, and lets it go: it is the
+/// user's window from here. A thread of its own waits for it, so it leaves
+/// no zombie, and says in the log when it ended with a failure: a launcher
+/// with nothing to open the file with has no other way to be heard.
+fn start(program: String, mut command: std::process::Command) -> std::io::Result<()> {
     use std::process::Stdio;
-    let mut child = std::process::Command::new(&program)
-        .args(args)
+    let mut child = command
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -273,13 +291,27 @@ fn start_editor(path: &std::path::Path) -> std::io::Result<()> {
             .is_some_and(|paths| on_path(name, std::env::split_paths(paths)))
     };
     let (program, args) = editor_command(path, found);
-    start(program, args)
+    let mut command = std::process::Command::new(&program);
+    command.args(args);
+    start(program, command)
 }
 
 /// Starts the file manager where `path` is.
 fn start_reveal(path: &std::path::Path) -> std::io::Result<()> {
     let (program, args) = reveal_command(path);
-    start(program, args)
+    let mut command = std::process::Command::new(&program);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt as _;
+        // As it is written: quoted by the usual rules, the quotes around
+        // the path would be escaped and the switch taken into them.
+        for arg in &args {
+            command.raw_arg(arg);
+        }
+    }
+    #[cfg(not(windows))]
+    command.args(&args);
+    start(program, command)
 }
 ```
 
@@ -1336,252 +1368,9 @@ Expected: PASS, the terminal screen's tests with them: its pane still shows the 
 
 ---
 
-### Task 7: "Settings…" in the macOS app menu
+### Task 7: "Settings…" in the macOS app menu (deferred)
 
-Nothing here runs on Linux. The crate's code is `cfg(target_os = "macos")`; what an agent can do is type-check it for the Apple target, and CI's macOS job runs the test.
-
-**Files:**
-- Create: `crates/tabletist-appkit/src/target.rs`, `crates/tabletist-appkit/src/settings.rs`, `crates/tabletist-appkit/tests/settings_menu.rs`
-- Modify: `crates/tabletist-appkit/src/about.rs`, `crates/tabletist-appkit/src/lib.rs`, `crates/tabletist-appkit/Cargo.toml`
-- Modify: `src/macos.rs`, `src/entrypoint.rs`
-
-- [ ] **Step 1: Move the target class out of `about.rs`**
-
-`target.rs` holds the class `about.rs` defines today, renamed for what it is, with one action:
-
-```rust
-//! An object that calls a closure when a menu item is chosen: what a menu
-//! item of ours points at.
-
-// Defining an Objective-C class is a message the compiler cannot check.
-#![allow(unsafe_code)]
-
-use objc2::rc::Retained;
-use objc2::runtime::{AnyObject, NSObject};
-use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
-
-pub(crate) struct Ivars {
-    chosen: Box<dyn Fn()>,
-}
-
-define_class!(
-    // SAFETY: NSObject has no rules for its subclasses, and `MenuTarget`
-    // does not implement `Drop`.
-    #[unsafe(super(NSObject))]
-    #[thread_kind = MainThreadOnly]
-    #[ivars = Ivars]
-    pub(crate) struct MenuTarget;
-
-    impl MenuTarget {
-        // SAFETY: an action takes its sender (an object or nil) and returns
-        // nothing.
-        #[unsafe(method(menuItemChosen:))]
-        fn menu_item_chosen(&self, _sender: Option<&AnyObject>) {
-            (self.ivars().chosen)();
-        }
-    }
-);
-
-impl MenuTarget {
-    pub(crate) fn new(mtm: MainThreadMarker, chosen: Box<dyn Fn()>) -> Retained<Self> {
-        let this = mtm.alloc::<Self>().set_ivars(Ivars { chosen });
-        // SAFETY: NSObject's `init` takes nothing and returns the object.
-        unsafe { msg_send![super(this), init] }
-    }
-}
-```
-
-`about.rs` uses `crate::target::MenuTarget` and `sel!(menuItemChosen:)` in place of its own `Target` and `sel!(showAbout:)`. `tests/about_menu.rs` asserts the action it sets: change `sel!(showAbout:)` there to `sel!(menuItemChosen:)`. The `Cargo.toml` comment that says `unsafe_code` is allowed "only in `about.rs` and its test" names the new files too.
-
-- [ ] **Step 2: Write the test**
-
-`crates/tabletist-appkit/tests/settings_menu.rs`, beside `about_menu.rs` and shaped as it is (its own `main`, empty off macOS, `harness = false` in `Cargo.toml`). It builds the app menu as winit does (About, separator, Services, Hide, separator, Quit is enough) and checks:
-
-```rust
-// Before there is a menu there is nothing to insert into.
-assert!(SettingsItem::insert("Settings…", || {}).is_none());
-// ... build the menu: about, separator, hide, separator, quit ...
-let before = menu.numberOfItems();
-let item = SettingsItem::insert("Settings…", {
-    let chosen = chosen.clone();
-    move || chosen.set(chosen.get() + 1)
-})
-.expect("the Settings item");
-// After About's separator, with a separator of its own after it.
-assert_eq!(menu.numberOfItems(), before + 2);
-let settings = menu.itemAtIndex(2).expect("the item");
-assert_eq!(settings.title().to_string(), "Settings…");
-assert_eq!(settings.keyEquivalent().to_string(), ",");
-assert!(menu.itemAtIndex(3).expect("its separator").isSeparatorItem());
-assert_eq!(menu.itemAtIndex(0).expect("About").title().to_string(), "About tabletist");
-// What a click on the item does.
-menu.performActionForItemAtIndex(2);
-assert_eq!(chosen.get(), 1, "choosing Settings calls back");
-// Dropped, the menu is as winit made it.
-drop(item);
-assert_eq!(menu.numberOfItems(), before);
-assert!(menu.itemAtIndex(1).expect("the first separator").isSeparatorItem());
-println!("settings_menu: ok");
-```
-
-- [ ] **Step 3: Implement `SettingsItem`**
-
-```rust
-//! The app menu's Settings item, which winit's menu does not have.
-
-// Giving a menu item a target and an action are messages the compiler
-// cannot check.
-#![allow(unsafe_code)]
-
-use objc2::rc::Retained;
-use objc2::{MainThreadMarker, sel};
-use objc2_app_kit::{NSApplication, NSMenu, NSMenuItem};
-use objc2_foundation::{NSString, ns_string};
-
-use crate::target::MenuTarget;
-
-/// "Settings…" in the app menu, with `⌘,`, and the separator after it.
-/// Dropping it takes both out again.
-pub struct SettingsItem {
-    menu: Retained<NSMenu>,
-    item: Retained<NSMenuItem>,
-    separator: Retained<NSMenuItem>,
-    /// A menu item does not keep its target alive.
-    _target: Retained<MenuTarget>,
-}
-
-impl SettingsItem {
-    /// Puts the item, titled `title`, after the separator that follows
-    /// About: the place the platform gives it. It calls `chosen` (on the
-    /// main thread) when it is chosen, by a click or by `⌘,`.
-    ///
-    /// `None` off the main thread, before the menu exists, and when the app
-    /// menu has no separator to put it after.
-    pub fn insert(title: &str, chosen: impl Fn() + 'static) -> Option<Self> {
-        let mtm = MainThreadMarker::new()?;
-        let bar = NSApplication::sharedApplication(mtm).mainMenu()?;
-        // The app menu is the first one in the menu bar.
-        let menu = bar.itemArray().firstObject()?.submenu()?;
-        let after = menu
-            .itemArray()
-            .to_vec()
-            .iter()
-            .position(|item| item.isSeparatorItem())?;
-        let target = MenuTarget::new(mtm, Box::new(chosen));
-        // SAFETY: `target` implements `menuItemChosen:` as an action, and
-        // it lives as long as the item, which `Drop` takes out of the menu.
-        let item = unsafe {
-            let item = NSMenuItem::initWithTitle_action_keyEquivalent(
-                mtm.alloc(),
-                &NSString::from_str(title),
-                Some(sel!(menuItemChosen:)),
-                ns_string!(","),
-            );
-            item.setTarget(Some(&target));
-            item
-        };
-        let separator = NSMenuItem::separatorItem(mtm);
-        let at = (after + 1) as isize;
-        menu.insertItem_atIndex(&item, at);
-        menu.insertItem_atIndex(&separator, at + 1);
-        Some(Self {
-            menu,
-            item,
-            separator,
-            _target: target,
-        })
-    }
-}
-
-impl Drop for SettingsItem {
-    fn drop(&mut self) {
-        // Still where they were put: someone else may have rebuilt the menu.
-        for item in [&self.separator, &self.item] {
-            if self.menu.indexOfItem(item) >= 0 {
-                self.menu.removeItem(item);
-            }
-        }
-    }
-}
-```
-
-`lib.rs` declares `mod target;` and `mod settings;` under the same `cfg`, and `pub use settings::SettingsItem;`. `Cargo.toml` gets the second `[[test]]` with `harness = false`.
-
-- [ ] **Step 4: Type-check for macOS**
-
-The crate has only pure Rust dependencies, so it checks for the Apple target from Linux:
-
-Run: `CARGO_TARGET_DIR=target/xcheck ~/.cargo/bin/cargo clippy --locked -p tabletist-appkit --all-targets --target aarch64-apple-darwin -- -D warnings`
-Expected: clean. If a method name is not what objc2-app-kit 0.3 calls it, the error names the right one. Remove `target/xcheck` afterwards. Report this as "type-checked for macOS, not run": only CI's macOS job runs `about_menu` and `settings_menu`.
-
-If the check cannot run at all (a dependency's build script needs an Apple toolchain), say so in the report and leave the first compile to CI.
-
-- [ ] **Step 5: Wire it into the app**
-
-`src/macos.rs`, beside `AboutMenu` and shaped as it is:
-
-```rust
-/// The app menu's Settings item, asking for the Settings window.
-pub struct SettingsMenu {
-    chosen: Rc<Cell<bool>>,
-    /// The item is in the menu for as long as this lives.
-    _item: tabletist_appkit::SettingsItem,
-}
-
-impl SettingsMenu {
-    /// Adds the item, titled `title`. Choosing it draws a frame, which
-    /// finds it with [`SettingsMenu::take`]. `None` when the app menu is
-    /// not as winit builds it (or off the main thread).
-    pub fn attach(ctx: &egui::Context, title: &str) -> Option<Self> {
-        let chosen = Rc::new(Cell::new(false));
-        let item = tabletist_appkit::SettingsItem::insert(title, {
-            let chosen = chosen.clone();
-            let ctx = ctx.clone();
-            move || {
-                chosen.set(true);
-                ctx.request_repaint();
-            }
-        })?;
-        Some(Self {
-            chosen,
-            _item: item,
-        })
-    }
-
-    /// Whether the item was chosen since the last call.
-    pub fn take(&self) -> bool {
-        self.chosen.replace(false)
-    }
-}
-```
-
-The module's doc comment gains a sentence on it. `src/entrypoint.rs`: a `settings_menu: Option<crate::macos::SettingsMenu>` field beside `about_menu`, attached after it with the title `gettext(app.locale, "Settings…")` and a `log::warn!` when it is `None` ("the app menu has no place for a Settings item"), and in `Window::logic`:
-
-```rust
-#[cfg(target_os = "macos")]
-if self
-    .settings_menu
-    .as_ref()
-    .is_some_and(crate::macos::SettingsMenu::take)
-{
-    self.app.actions.push(crate::model::Action::ShowSettings);
-}
-```
-
-AppKit takes `⌘,` for the item before egui sees the key, so on macOS the key arrives here. Where the item could not be added, `keys.rs` still has it. `Action::ShowSettings` does nothing while the window is open, so a press that reached both would still open it once.
-
-`src/macos.rs` and the `cfg(target_os = "macos")` lines of `src/entrypoint.rs` cannot be checked from Linux in the workspace (ring needs an Apple C toolchain). Type-check them in an extract, as the memory note "cross-check other platforms" says, or say plainly that CI is their first compile.
-
-- [ ] **Step 6: Run the checks that run here**
-
-Run all four checks.
-Expected: PASS. `settings_menu` runs as an empty `main` on Linux.
-
-- [ ] **Step 7: Stage for the controller**
-
-Two commits:
-1. `crates/tabletist-appkit`: "Add a Settings item to the app menu on macOS".
-2. `src/macos.rs`, `src/entrypoint.rs`: "Open the Settings window from the macOS app menu".
+Not part of this plan's pull request. The item needs `tabletist-appkit`, and none of it can be run from Linux, so it has a plan of its own, `docs/superpowers/plans/2026-10-04-settings-macos-menu.md`, in the pull request that builds it. Until then `⌘,` reaches the window through the key handler, as `Mod+,` does elsewhere.
 
 ---
 
@@ -1605,7 +1394,6 @@ In `docs/superpowers/specs/2026-10-03-settings-general-design.md`:
 
 - "The window": `SettingsDialog` has `resetting`; the sheet takes none of the terminal screen's keys (its controls are reached with Tab; Escape answers the reset question before it closes the window).
 - "The file's actions": `Event::SettingsFileOpened { with, result }` and `Opened`; Export's dialog title is "Export settings".
-- "Opening": the target class's name (`MenuTarget`, `menuItemChosen:`), and that the item goes after the first separator of the app menu.
 - "Delivery", step 3: drop the sentence that says the ways in are offered only in the terminal look until step 4.
 - "Errors and edge cases": a notice raised while the sheet is open (a failed save, a file manager that did not start) shows in the app's notice bar under the dimmed window, and can be dismissed once the sheet closes. The terminal screen covers the bar and has a band of its own.
 
@@ -1627,15 +1415,15 @@ No agent's session can open the app's window. These are for the user, and go in 
 
 - Standard and macOS looks: `Mod+,` opens the sheet; each control changes an open grid at once; Tab reaches every control and each shows its focus ring; Escape closes.
 - The menu lists a page size set by hand in the file (say 250) in its place.
-- Reveal opens the file manager where the file is (Finder selects it on macOS, Explorer on Windows); with the file deleted first, it is written and then shown.
+- Reveal opens the file manager where the file is (Finder selects it on macOS, Explorer on Windows, also with a space or a comma in the path); with the file deleted first, it is written and then shown.
 - Export… asks where to save and writes the canonical text there; Cancel writes nothing.
 - Reset to defaults asks, Cancel leaves everything, Reset puts the four options back and leaves `show_system_schemas` and the SQL limit as they were.
 - A line the app cannot read, added in an editor while the sheet is open: the footer counts it.
-- macOS: "Settings…" is in the app menu under About, shows `⌘,`, and both the item and the key open the window once.
+- macOS: `⌘,` opens the window once (the app menu's item comes with its own pull request).
 - A window shorter than the sheet: the rows scroll and the footer stays.
 
 ## Self-review
 
-- Spec coverage: the sheet (Tasks 5, 6), the toggle (4), Reveal, Export, Reset and the count of ignored lines (1, 2, 3, 6), the macOS menu item (7), the ways in for every look and the `SHORTCUTS` line (5). Nothing of step 4 in "Delivery" is left out.
-- Names used across tasks: `Opened::{Editor, Folder}`, `Command::RevealSettingsFile { path, text }`, `Action::{RevealSettingsFile, ExportSettings, ResetSettings, ConfirmResetSettings(bool)}`, `SettingsDialog::resetting`, `widgets::toggle(ui, on, name, palette)`, `sheet::show(app, ctx, resetting, actions)`, `MenuTarget`, `SettingsItem::insert`, `SettingsMenu::{attach, take}`.
-- Known unknowns, each flagged where it stands: the sheet's layout code is a shape to follow, not text to paste (the helpers' signatures decide), the toggle's test needs the order of frames a neighbouring widget test uses, and nothing under `cfg(target_os = "macos")` can be run by an agent.
+- Spec coverage: the sheet (Tasks 5, 6), the toggle (4), Reveal, Export, Reset and the count of ignored lines (1, 2, 3, 6), the ways in for every look and the `SHORTCUTS` line (5). The macOS menu item (7) is deferred to its own plan; nothing else of step 4 in "Delivery" is left out.
+- Names used across tasks: `Opened::{Editor, Folder}`, `Command::RevealSettingsFile { path, text }`, `Action::{RevealSettingsFile, ExportSettings, ResetSettings, ConfirmResetSettings(bool)}`, `SettingsDialog::resetting`, `widgets::toggle(ui, on, name, palette)`, `sheet::show(app, ctx, resetting, actions)`.
+- Known unknowns, each flagged where it stands: the sheet's layout code is a shape to follow, not text to paste (the helpers' signatures decide), the toggle's test needs the order of frames a neighbouring widget test uses, and nothing under `cfg(target_os = "macos")` or `cfg(windows)` can be run by an agent.
