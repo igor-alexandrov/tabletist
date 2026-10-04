@@ -881,7 +881,10 @@ fn key_names(connection: &rusqlite::Connection, object: &ObjectRef) -> Result<Ve
 
 fn indexes(connection: &rusqlite::Connection, object: &ObjectRef) -> Result<Vec<IndexInfo>> {
     let mut list = connection
-        .prepare("SELECT name, \"unique\", origin FROM pragma_index_list(?1, ?2) ORDER BY name")
+        .prepare(
+            "SELECT name, \"unique\", origin, partial FROM pragma_index_list(?1, ?2) \
+             ORDER BY name",
+        )
         .map_err(map_error)?;
     let entries = list
         .query_map([&object.name, &object.schema], |row| {
@@ -889,6 +892,7 @@ fn indexes(connection: &rusqlite::Connection, object: &ObjectRef) -> Result<Vec<
                 row.get_ref(0)?.as_bytes()?.to_vec(),
                 row.get::<_, i64>(1)? != 0,
                 row.get::<_, String>(2)?,
+                row.get::<_, i64>(3)? != 0,
             ))
         })
         .map_err(map_error)?
@@ -898,7 +902,7 @@ fn indexes(connection: &rusqlite::Connection, object: &ObjectRef) -> Result<Vec<
         .prepare("SELECT name FROM pragma_index_info(?1, ?2) ORDER BY seqno")
         .map_err(map_error)?;
     let mut indexes = Vec::new();
-    for (name, unique, origin) in entries {
+    for (name, unique, origin, partial) in entries {
         // The name goes back to SQLite as the bytes it gave: one that is not
         // UTF-8 would find no index once its bytes were replaced.
         let columns = info
@@ -915,6 +919,7 @@ fn indexes(connection: &rusqlite::Connection, object: &ObjectRef) -> Result<Vec<
             unique,
             primary: origin == "pk",
             method: None,
+            partial,
         });
     }
     Ok(indexes)
@@ -1608,6 +1613,31 @@ mod tests {
                 ("shout", true)
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn a_partial_index_says_so_and_is_not_the_row_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("partial.db");
+        rusqlite::Connection::open(&path)
+            .unwrap()
+            .execute_batch(
+                "CREATE TABLE t (a INTEGER NOT NULL, b INTEGER NOT NULL);
+                 CREATE UNIQUE INDEX whole ON t (a);
+                 CREATE UNIQUE INDEX part ON t (b) WHERE b > 0;",
+            )
+            .unwrap();
+        let conn = Conn::open(&path, Access::ReadOnly).await.unwrap();
+        let structure = conn.describe(&ObjectRef::new("main", "t")).await.unwrap();
+        let partial: Vec<(&str, bool)> = structure
+            .indexes
+            .iter()
+            .map(|index| (index.name.as_str(), index.partial))
+            .collect();
+        assert_eq!(partial, [("part", true), ("whole", false)]);
+        // `part` comes first by name and its column cannot be NULL: only
+        // its condition keeps it from being the key.
+        assert_eq!(structure.row_key(), Some(vec!["a".to_owned()]));
     }
 
     #[tokio::test]

@@ -261,6 +261,7 @@ impl Conn {
                     unique: non_unique == 0,
                     method: Some(method.to_lowercase()),
                     columns: Vec::new(),
+                    partial: false,
                     name,
                 });
             }

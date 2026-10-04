@@ -522,9 +522,14 @@ impl Conn {
             .collect::<Result<_>>()?;
         let indexes = self
             .catalog(
-                "SELECT ic.relname::text, i.indisunique, i.indisprimary, am.amname::text, \
+                // An index that is not valid (a `CREATE UNIQUE INDEX
+                // CONCURRENTLY` that failed) does not hold its rows unique,
+                // whatever it is called.
+                "SELECT ic.relname::text, i.indisunique AND i.indisvalid, i.indisprimary, \
+                        am.amname::text, \
                         ARRAY(SELECT pg_get_indexdef(i.indexrelid, k, true) \
-                              FROM generate_series(1, i.indnkeyatts::int) AS k ORDER BY k) \
+                              FROM generate_series(1, i.indnkeyatts::int) AS k ORDER BY k), \
+                        i.indpred IS NOT NULL \
                  FROM pg_index i \
                  JOIN pg_class ic ON ic.oid = i.indexrelid \
                  JOIN pg_am am ON am.oid = ic.relam \
@@ -540,6 +545,7 @@ impl Conn {
                     primary: column(row, 2)?,
                     method: Some(column(row, 3)?),
                     columns: column(row, 4)?,
+                    partial: column(row, 5)?,
                 })
             })
             .collect::<Result<_>>()?;

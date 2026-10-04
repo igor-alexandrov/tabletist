@@ -196,6 +196,7 @@ fn structure() -> Structure {
                 unique: true,
                 primary: true,
                 method: Some("btree".into()),
+                partial: false,
             },
             IndexInfo {
                 name: "index_book_images_on_book_id_and_kind".into(),
@@ -203,6 +204,7 @@ fn structure() -> Structure {
                 unique: true,
                 primary: false,
                 method: Some("btree".into()),
+                partial: false,
             },
         ],
         foreign_keys: vec![ForeignKeyInfo {
