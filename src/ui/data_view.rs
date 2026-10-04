@@ -6,16 +6,20 @@ use egui::{
     CornerRadius, Frame, Id, Margin, Rect, Sense, Stroke, StrokeKind, WidgetInfo, WidgetType, pos2,
     vec2,
 };
-use tabletist_db::{SortDir, ValueKind};
+use std::collections::BTreeMap;
+
+use tabletist_db::{NewValue, SortDir, Value, ValueKind};
 
 use crate::app::App;
+use crate::edit::State;
 use crate::i18n::gettext;
-use crate::model::{Action, ConnTabId, ObjectTab, ObjectView, TabId};
+use crate::model::{Action, CellPos, ConnTabId, ObjectTab, ObjectView, TabId};
 use crate::theme::{Icon, Look, Palette};
 use crate::typography::{Text, TextRole};
+use crate::ui::cell_editor;
 use crate::ui::focus;
 use crate::ui::format;
-use crate::ui::grid::{self, Cell, Column, Style};
+use crate::ui::grid::{self, Cell, Column, Mark, Style};
 use crate::ui::states;
 use crate::ui::widgets;
 
@@ -1150,6 +1154,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
                 grouped: fit.grouped && !is_key(&column.name, structure),
             })
             .collect();
+        // What is pending, and what else of editing the cells show.
+        let changes = Changes::of(workspace, object, page, &ctx);
         // A fit come back to is fitted to the rows now on screen: what the
         // grid of the fit before kept goes when this one is drawn.
         let id = grid_id(tab, object_tab, fit);
@@ -1165,15 +1171,15 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
             workspace.pane == crate::model::Pane::Grid,
             &palette,
             &look,
+            &|row| changes.edits.row_mark(row),
             |row, col| {
-                cell(
-                    &ctx,
-                    &page.rows[row][col],
-                    &page.columns[col],
-                    &tags[col],
-                    &look,
-                    shown[col],
-                )
+                let loaded = &page.rows[row][col];
+                let column = &page.columns[col];
+                // A pending cell shows its new value, drawn as any value.
+                let value = changes.values.get(&(row, col)).unwrap_or(loaded);
+                let mut cell = cell(&ctx, value, column, &tags[col], &look, shown[col]);
+                changes.mark(&mut cell, (row, col), loaded, column, &look, locale);
+                cell
             },
         );
         if let Some(cell) = output.clicked {
@@ -1238,6 +1244,140 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
         }
     }
     app.actions.extend(actions);
+}
+
+/// What editing shows in a table's grid: the pending cells, the ones a save
+/// just wrote, and the columns no edit reaches.
+struct Changes<'a> {
+    edits: &'a crate::edit::Edits,
+    /// Each pending cell's new value, as a value a cell draws.
+    values: BTreeMap<(usize, usize), Value>,
+    /// The columns the database computes, in a table that can be edited.
+    computed: Vec<bool>,
+    /// The cells the last save wrote, while they show it.
+    saved: &'a [CellPos],
+}
+
+impl<'a> Changes<'a> {
+    fn of(
+        workspace: &crate::model::Workspace,
+        object: &'a ObjectTab,
+        page: &tabletist_db::RowPage,
+        ctx: &egui::Context,
+    ) -> Self {
+        let edits = &object.edits;
+        let values = edits
+            .cells
+            .iter()
+            .map(|(at, pending)| {
+                let value = match &pending.new {
+                    NewValue::Text(text) => Value::Text(text.as_str().into()),
+                    NewValue::Null => Value::Null,
+                };
+                (*at, value)
+            })
+            .collect();
+        // Decided once for each column, and not by asking why each cell is
+        // locked: a save and a fetch lock every cell for a while, and a
+        // computed column is drawn as one through both.
+        let table = crate::edit::Table::of(workspace, object)
+            .filter(|table| {
+                table.structure.is_some_and(|structure| {
+                    structure.columns.iter().any(|column| column.generated)
+                })
+            })
+            .filter(|table| table.never().is_none());
+        let computed = (0..page.columns.len())
+            .map(|col| {
+                let column = table.as_ref().and_then(|table| table.column(col));
+                column.is_some_and(|column| column.generated)
+            })
+            .collect();
+        let saved = edits.saved.as_ref().and_then(|saved| {
+            let left = crate::edit::SAVED_FOR.checked_sub(saved.at.elapsed())?;
+            // Come back when the moment is over, to draw them as they are.
+            ctx.request_repaint_after(left);
+            Some(saved.cells.as_slice())
+        });
+        Self {
+            edits,
+            values,
+            computed,
+            saved: saved.unwrap_or_default(),
+        }
+    }
+
+    /// Marks `cell`, the page's cell `at` (row, column) that loaded as
+    /// `loaded`, and says what it tells the pointer.
+    fn mark(
+        &self,
+        cell: &mut Cell<'_>,
+        at: (usize, usize),
+        loaded: &Value,
+        column: &tabletist_db::ColumnMeta,
+        look: &Look,
+        locale: crate::i18n::Locale,
+    ) {
+        let Some(pending) = self.edits.cells.get(&at) else {
+            let (row, col) = at;
+            cell.mark = if self.saved.contains(&CellPos { row, col }) {
+                Mark::Saved
+            } else if self.computed.get(col).copied().unwrap_or(false) {
+                Mark::Locked
+            } else {
+                Mark::None
+            };
+            return;
+        };
+        let saving = self.edits.saving.is_some();
+        match &pending.state {
+            State::Ready => {
+                cell.mark = if saving { Mark::Saving } else { Mark::Pending };
+                let was = format::cell_text(loaded);
+                cell.hint = Some(format!("{} {was}", gettext(locale, "was")));
+            }
+            State::ToFix(problem) => {
+                cell.mark = Mark::Trouble;
+                let typed = match &pending.new {
+                    NewValue::Text(text) => Some(text.as_str()),
+                    NewValue::Null => None,
+                };
+                let type_name = format::type_label(&column.type_name, column.kind);
+                let type_name = format::display_safe(&type_name);
+                let message = cell_editor::problem_text(problem, &type_name, typed, locale);
+                // The terminal has its own key for it, said in its own
+                // place.
+                cell.hint = Some(if look.terminal {
+                    message
+                } else {
+                    format!(
+                        "{message}\n{} · {}Z {}",
+                        gettext(locale, "Checked before saving"),
+                        look.command_key(),
+                        gettext(locale, "reverts")
+                    )
+                });
+            }
+            State::Failed(error) => {
+                // It is sent again by the save that is running.
+                cell.mark = if saving { Mark::Saving } else { Mark::Trouble };
+                cell.hint = Some(failure_text(error));
+            }
+        }
+    }
+}
+
+/// What the database said of a statement that failed, with its code: a
+/// failed cell's words.
+fn failure_text(error: &tabletist_db::Error) -> String {
+    match error {
+        tabletist_db::Error::Query {
+            code: Some(code),
+            message,
+            ..
+        } => format!("{code} {}", format::capped(message)),
+        other => format::capped(&other.to_string()).into_owned(),
+    }
 }
 
 /// The keys that cancel a query, as the look writes them: `⌘.`, `Ctrl+.`
@@ -1398,8 +1538,8 @@ pub fn cell<'a>(
     {
         return Cell {
             text: format::cell_text(value),
-            null: false,
             style,
+            ..Default::default()
         };
     }
     plain_cell(ctx, value, column, look, shown)
@@ -1419,14 +1559,14 @@ pub fn plain_cell<'a>(
     let kind = column.kind;
     let styled = |text: std::borrow::Cow<'a, str>, style| Cell {
         text,
-        null: false,
         style,
+        ..Default::default()
     };
     if value.is_null() {
         return Cell {
             text: "NULL".into(),
             null: true,
-            style: Style::Plain,
+            ..Default::default()
         };
     }
     if let tabletist_db::Value::Bytes(bytes) = value {

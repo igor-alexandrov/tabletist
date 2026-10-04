@@ -8,7 +8,7 @@ use std::time::Duration;
 use egui::{Align, Color32, CornerRadius, Frame, Margin, Rect, Sense, Stroke, StrokeKind, Ui};
 use egui::{pos2, vec2};
 
-use crate::env::{Platform, failure_tint, warning_tint};
+use crate::env::{Platform, failure_tint, success_tint, warning_tint};
 use crate::theme::{Icon, Look, Palette};
 use crate::typography::{Text, TextRole};
 use crate::ui::widgets::{self, ButtonSpec};
@@ -235,11 +235,13 @@ fn place(
     clicked
 }
 
-/// How a card reads: something failed, or something was held back.
-#[derive(Clone, Copy, PartialEq, Eq)]
+/// How a card or a cell reads: something failed, something was held back,
+/// or something went through.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tone {
     Danger,
     Warning,
+    Success,
 }
 
 impl Tone {
@@ -247,18 +249,20 @@ impl Tone {
         match self {
             Self::Danger => palette.danger,
             Self::Warning => palette.warning,
+            Self::Success => palette.success,
         }
     }
 
     /// The tint of this tone and the line over it, lent by the module
-    /// that owns them: a failure wears the production bar's red and a
-    /// warning the staging bar's amber. [`Tone::color`] is too dark to
-    /// tint with: it is text's.
+    /// that owns them: a failure wears the production bar's red, a warning
+    /// the staging bar's amber, and a success the palette's green at their
+    /// strength. [`Tone::color`] is too dark to tint with: it is text's.
     fn tints(self, look: &Look, palette: &Palette) -> (Color32, Color32) {
         let platform = Platform::of(look);
         match self {
             Self::Danger => failure_tint(platform, palette),
             Self::Warning => warning_tint(platform, palette),
+            Self::Success => success_tint(platform, palette),
         }
     }
 
@@ -787,6 +791,27 @@ mod tests {
             };
             for event in [egui::Event::PointerMoved(pos), press(true), press(false)] {
                 assert_eq!(frame(vec![event]).1, None, "{}", look.name);
+            }
+        }
+    }
+
+    #[test]
+    fn the_three_tones_tint_apart_from_each_other_and_from_the_window() {
+        for look in Look::ALL {
+            for palette in [Palette::light(), Palette::dark()] {
+                let said = format!("{}, dark: {}", look.name, palette.dark);
+                let tones = [Tone::Danger, Tone::Warning, Tone::Success];
+                let fills = tones.map(|tone| tone.fill(&look, &palette));
+                let lines = tones.map(|tone| tone.line(&look, &palette));
+                for (index, fill) in fills.iter().enumerate() {
+                    assert_ne!(*fill, palette.window, "{said}: {:?}", tones[index]);
+                    assert_ne!(*fill, lines[index], "{said}: {:?}", tones[index]);
+                    for other in &fills[index + 1..] {
+                        assert_ne!(fill, other, "{said}: {:?}", tones[index]);
+                    }
+                }
+                // What is written in the tone is the palette's green.
+                assert_eq!(Tone::Success.color(&palette), palette.success, "{said}");
             }
         }
     }

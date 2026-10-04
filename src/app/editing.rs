@@ -54,17 +54,7 @@ impl App {
     ) -> Option<T> {
         let workspace = self.workspace(tab)?;
         let object = workspace.object_tab(id)?;
-        let table = Table {
-            access: workspace.access,
-            kind: object.kind,
-            dialect: workspace.driver.dialect(),
-            structure: object.structure.value.as_ref(),
-            page: object.page()?,
-            // The structure too: what a describe in flight brings may have
-            // another key, and no edit starts on the one about to go.
-            refreshing: object.rows.is_loading() || object.structure.is_loading(),
-            saving: object.edits.saving.is_some(),
-        };
+        let table = Table::of(workspace, object)?;
         Some(read(&table, object))
     }
 
