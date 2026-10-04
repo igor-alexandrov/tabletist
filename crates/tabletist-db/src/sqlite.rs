@@ -898,23 +898,45 @@ fn indexes(connection: &rusqlite::Connection, object: &ObjectRef) -> Result<Vec<
         .map_err(map_error)?
         .collect::<std::result::Result<Vec<_>, _>>()
         .map_err(map_error)?;
+    // The key's entries: `key` is 0 for what an index only carries along,
+    // the rowid or the rest of a WITHOUT ROWID table's key.
     let mut info = connection
-        .prepare("SELECT name FROM pragma_index_info(?1, ?2) ORDER BY seqno")
+        .prepare(
+            "SELECT name, cid FROM pragma_index_xinfo(?1, ?2) WHERE \"key\" = 1 ORDER BY seqno",
+        )
         .map_err(map_error)?;
     let mut indexes = Vec::new();
     for (name, unique, origin, partial) in entries {
         // The name goes back to SQLite as the bytes it gave: one that is not
         // UTF-8 would find no index once its bytes were replaced.
-        let columns = info
+        let entries = info
             .query_map(rusqlite::params![name, object.schema], |row| {
-                optional_text(row, 0)
+                Ok((row.get::<_, Option<Lossy>>(0)?, row.get::<_, i64>(1)?))
             })
             .map_err(map_error)?
-            .map(|column| column.map(|c| c.unwrap_or_else(|| "<expression>".into())))
             .collect::<std::result::Result<Vec<_>, _>>()
             .map_err(map_error)?;
+        // A whole column has its place in the table as `cid` (an expression
+        // has -2, the rowid -1) and a name SQL can spell. The entry's
+        // collation is not compared with the column's: no pragma gives the
+        // one a column was declared with. So a unique index, or a primary
+        // key, that compares otherwise than its column is not detected
+        // here. What stops it is a save's own check: it reads the row by
+        // its key and refuses more than one.
+        let key_columns = entries
+            .iter()
+            .map(|(name, cid)| {
+                let name = name.as_ref().filter(|name| *cid >= 0 && name.exact)?;
+                Some(name.text.clone())
+            })
+            .collect();
+        let columns = entries
+            .into_iter()
+            .map(|(name, _)| name.map_or_else(|| "<expression>".into(), |name| name.text))
+            .collect();
         indexes.push(IndexInfo {
             name: String::from_utf8_lossy(&name).into_owned(),
+            key_columns,
             columns,
             unique,
             primary: origin == "pk",
@@ -1638,6 +1660,80 @@ mod tests {
         // `part` comes first by name and its column cannot be NULL: only
         // its condition keeps it from being the key.
         assert_eq!(structure.row_key(), Some(vec!["a".to_owned()]));
+    }
+
+    #[tokio::test]
+    async fn only_an_index_over_whole_columns_is_the_row_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("keys.db");
+        rusqlite::Connection::open(&path)
+            .unwrap()
+            .execute_batch(
+                r#"CREATE TABLE t (
+                       a INTEGER NOT NULL,
+                       b TEXT NOT NULL,
+                       c INTEGER NOT NULL,
+                       "<expression>" INTEGER NOT NULL
+                   );
+                   CREATE UNIQUE INDEX i1_expression ON t (a + 1);
+                   CREATE UNIQUE INDEX i2_mixed ON t (c, lower(b));
+                   CREATE UNIQUE INDEX i3_plain ON t (c, b DESC);"#,
+            )
+            .unwrap();
+        let conn = Conn::open(&path, Access::ReadOnly).await.unwrap();
+        let structure = conn.describe(&ObjectRef::new("main", "t")).await.unwrap();
+        let list = |names: &[&str]| -> Vec<String> {
+            names.iter().map(|name| (*name).to_owned()).collect()
+        };
+        let indexes: Vec<_> = structure
+            .indexes
+            .iter()
+            .map(|index| {
+                (
+                    index.name.as_str(),
+                    index.columns.clone(),
+                    index.key_columns.clone(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            indexes,
+            [
+                ("i1_expression", list(&["<expression>"]), None),
+                ("i2_mixed", list(&["c", "<expression>"]), None),
+                ("i3_plain", list(&["c", "b"]), Some(list(&["c", "b"]))),
+            ]
+        );
+        // Not the column that is called what an expression shows as.
+        assert_eq!(structure.row_key(), Some(list(&["c", "b"])));
+    }
+
+    #[tokio::test]
+    async fn a_primary_key_of_any_kind_is_the_row_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("primary.db");
+        rusqlite::Connection::open(&path)
+            .unwrap()
+            .execute_batch(
+                "CREATE TABLE alias (id INTEGER PRIMARY KEY, n INTEGER);
+                 CREATE TABLE named (code TEXT PRIMARY KEY, n INTEGER);
+                 CREATE TABLE pair (a INTEGER, b TEXT, n INTEGER, PRIMARY KEY (b, a));
+                 CREATE TABLE clustered (a INTEGER, b TEXT, n INTEGER, PRIMARY KEY (b, a))
+                     WITHOUT ROWID;",
+            )
+            .unwrap();
+        let conn = Conn::open(&path, Access::ReadOnly).await.unwrap();
+        for (table, key) in [
+            // The rowid's alias has no index of its own.
+            ("alias", vec!["id"]),
+            ("named", vec!["code"]),
+            ("pair", vec!["b", "a"]),
+            ("clustered", vec!["b", "a"]),
+        ] {
+            let structure = conn.describe(&ObjectRef::new("main", table)).await.unwrap();
+            let key: Vec<String> = key.into_iter().map(str::to_owned).collect();
+            assert_eq!(structure.row_key(), Some(key), "{table}");
+        }
     }
 
     #[tokio::test]

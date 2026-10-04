@@ -60,6 +60,10 @@ pub struct IndexInfo {
     pub name: String,
     /// Column names in index order; expressions appear as `<expression>`.
     pub columns: Vec<String>,
+    /// The index's columns by name, when every entry is one whole column of
+    /// the table, compared as the column compares; `None` for an index over
+    /// an expression, a prefix, or another collation.
+    pub key_columns: Option<Vec<String>>,
     pub unique: bool,
     pub primary: bool,
     /// `btree`, `hash`, `gin`...; `None` when the database does not say.
@@ -94,34 +98,32 @@ pub struct Structure {
 impl Structure {
     /// The columns that tell one row from every other, for a save to find
     /// the row by: the primary key, else the first unique index (by name)
-    /// that covers every row and whose entries are all columns that cannot
-    /// be NULL. `None` when the table has neither: a row there cannot be
-    /// targeted safely.
+    /// that covers every row and is over whole columns that cannot be NULL.
+    /// `None` when the table has neither: a row there cannot be targeted
+    /// safely. The caller checks the object's kind: a PostgreSQL
+    /// materialized view can have a unique index and still is not editable.
     pub fn row_key(&self) -> Option<Vec<String>> {
-        if !self.primary_key.is_empty() {
+        // MySQL takes a primary key over a prefix of a column, which lets
+        // two rows agree on the column. The key's index says so, where the
+        // catalog lists one (SQLite has none for a rowid's alias).
+        let primary = self.indexes.iter().find(|index| index.primary);
+        if !self.primary_key.is_empty() && primary.is_none_or(|index| index.key_columns.is_some()) {
             return Some(self.primary_key.clone());
         }
-        let mut candidates: Vec<&IndexInfo> = self
-            .indexes
+        self.indexes
             .iter()
-            .filter(|index| index.unique && !index.partial && !index.columns.is_empty())
-            .collect();
-        candidates.sort_by(|a, b| a.name.cmp(&b.name));
-        candidates.into_iter().find_map(|index| {
-            index
-                .columns
-                .iter()
-                .map(|entry| {
-                    let column = self.columns.iter().find(|column| {
-                        // PostgreSQL gives an index's column as it would be
-                        // written, so one that needs quotes comes quoted.
-                        column.name == *entry
-                            || format!("\"{}\"", column.name.replace('"', "\"\"")) == *entry
-                    })?;
-                    (!column.nullable).then(|| column.name.clone())
-                })
-                .collect()
-        })
+            .filter(|index| index.unique && !index.partial)
+            .filter_map(|index| Some((&index.name, index.key_columns.as_ref()?)))
+            .filter(|(_, key)| {
+                !key.is_empty()
+                    && key.iter().all(|name| {
+                        self.columns
+                            .iter()
+                            .any(|column| column.name == *name && !column.nullable)
+                    })
+            })
+            .min_by_key(|(name, _)| *name)
+            .map(|(_, key)| key.clone())
     }
 }
 
@@ -137,10 +139,13 @@ mod tests {
         }
     }
 
+    /// A unique index over whole columns, shown by their names.
     fn unique(name: &str, columns: &[&str]) -> IndexInfo {
+        let columns: Vec<String> = columns.iter().map(|column| (*column).to_owned()).collect();
         IndexInfo {
             name: name.into(),
-            columns: columns.iter().map(|column| (*column).to_owned()).collect(),
+            columns: columns.clone(),
+            key_columns: Some(columns),
             unique: true,
             ..IndexInfo::default()
         }
@@ -153,7 +158,7 @@ mod tests {
                 column("email", false),
                 column("code", false),
                 column("nick", true),
-                column("odd name", false),
+                column("<expression>", false),
             ],
             indexes,
             ..Structure::default()
@@ -165,6 +170,28 @@ mod tests {
         let mut structure = table(vec![unique("by_email", &["email"])]);
         structure.primary_key = vec!["id".into()];
         assert_eq!(structure.row_key(), Some(vec!["id".to_owned()]));
+        // Its own index, where the catalog lists one, changes nothing.
+        structure.indexes.push(IndexInfo {
+            primary: true,
+            ..unique("PRIMARY", &["id"])
+        });
+        assert_eq!(structure.row_key(), Some(vec!["id".to_owned()]));
+    }
+
+    #[test]
+    fn a_primary_key_that_is_not_over_whole_columns_is_passed_over() {
+        // MySQL's `PRIMARY KEY (email(1))`: the catalog names the column.
+        let prefix = IndexInfo {
+            primary: true,
+            key_columns: None,
+            ..unique("PRIMARY", &["email"])
+        };
+        let mut structure = table(vec![prefix.clone()]);
+        structure.primary_key = vec!["email".into()];
+        assert_eq!(structure.row_key(), None);
+        let mut structure = table(vec![prefix, unique("by_code", &["code"])]);
+        structure.primary_key = vec!["email".into()];
+        assert_eq!(structure.row_key(), Some(vec!["code".to_owned()]));
     }
 
     #[test]
@@ -180,11 +207,12 @@ mod tests {
             key(vec![unique("pair", &["code", "email"])]),
             Some(vec!["code".to_owned(), "email".to_owned()])
         );
-        // PostgreSQL gives a name that needs quotes quoted.
-        assert_eq!(
-            key(vec![unique("odd", &["\"odd name\""])]),
-            Some(vec!["odd name".to_owned()])
-        );
+        // By the key's columns, not by the text the index shows for them.
+        let shown_otherwise = IndexInfo {
+            columns: vec!["email DESC".into()],
+            ..unique("shown", &["email"])
+        };
+        assert_eq!(key(vec![shown_otherwise]), Some(vec!["email".to_owned()]));
     }
 
     #[test]
@@ -198,15 +226,25 @@ mod tests {
             partial: true,
             ..unique("partial", &["email"])
         };
+        // A prefix or another collation: shown as the column, and not it.
+        let not_whole = IndexInfo {
+            key_columns: None,
+            ..unique("not_whole", &["email"])
+        };
+        // An expression is not a column, whatever a column is called.
+        let expression = IndexInfo {
+            key_columns: None,
+            ..unique("expression", &["<expression>"])
+        };
         for index in [
             plain,
             partial,
+            not_whole,
+            expression,
             // A column that can be NULL: two rows may both hold NULL.
             unique("nullable", &["nick"]),
             unique("mixed", &["email", "nick"]),
-            // An expression is not a column.
-            unique("expression", &["<expression>"]),
-            unique("lowered", &["lower(email)"]),
+            unique("unknown", &["gone"]),
             unique("empty", &[]),
         ] {
             let name = index.name.clone();

@@ -329,6 +329,102 @@ async fn generated_columns_say_so() {
     );
 }
 
+/// The catalog names a column for an index over its first characters, and
+/// nothing for an expression. Neither tells rows apart by whole columns.
+#[tokio::test]
+async fn only_an_index_over_whole_columns_is_the_row_key() {
+    let Some(connection) = connect().await else {
+        return;
+    };
+    let mut admin = admin().await;
+    for statement in [
+        "DROP TABLE IF EXISTS catalog_keys",
+        "CREATE TABLE catalog_keys (
+             name VARCHAR(20) COLLATE utf8mb4_0900_ai_ci NOT NULL,
+             code INT NOT NULL,
+             title VARCHAR(20) NOT NULL,
+             `<expression>` INT NOT NULL,
+             UNIQUE KEY k0_expression ((code + 1)),
+             UNIQUE KEY k1_prefix (name(1)),
+             UNIQUE KEY k2_plain (code, title DESC)
+         )",
+        "INSERT INTO catalog_keys VALUES ('ssa', 1, 't', 1), ('ßa', 2, 'u', 2)",
+    ] {
+        admin.query_drop(statement).await.unwrap();
+    }
+    let structure = connection
+        .describe(&ObjectRef::new("tabletist", "catalog_keys"))
+        .await;
+    // Without the index, which finds only the row whose prefix agrees.
+    let twins: mysql_async::Result<Option<i64>> = admin
+        .query_first(
+            "SELECT COUNT(*) FROM catalog_keys IGNORE INDEX (k1_prefix) WHERE name = 'ssa'",
+        )
+        .await;
+    admin.query_drop("DROP TABLE catalog_keys").await.unwrap();
+    // Why the prefix is no key: its first characters differ, and the whole
+    // names are equal as the column compares them.
+    assert_eq!(twins.unwrap(), Some(2));
+    let structure = structure.unwrap();
+    let list =
+        |names: &[&str]| -> Vec<String> { names.iter().map(|name| (*name).to_owned()).collect() };
+    let indexes: Vec<_> = structure
+        .indexes
+        .iter()
+        .map(|index| {
+            (
+                index.name.as_str(),
+                index.columns.clone(),
+                index.key_columns.clone(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        indexes,
+        [
+            ("k0_expression", list(&["<expression>"]), None),
+            ("k1_prefix", list(&["name"]), None),
+            (
+                "k2_plain",
+                list(&["code", "title"]),
+                Some(list(&["code", "title"]))
+            ),
+        ]
+    );
+    assert_eq!(structure.row_key(), Some(list(&["code", "title"])));
+}
+
+/// MySQL takes a primary key over a prefix too, and its catalog still names
+/// the column as the key.
+#[tokio::test]
+async fn a_primary_key_over_a_prefix_is_not_the_row_key() {
+    let Some(connection) = connect().await else {
+        return;
+    };
+    let mut admin = admin().await;
+    for statement in [
+        "DROP TABLE IF EXISTS catalog_prefix_key",
+        "CREATE TABLE catalog_prefix_key (
+             name VARCHAR(20) NOT NULL,
+             code INT NOT NULL,
+             PRIMARY KEY (name(1)),
+             UNIQUE KEY by_code (code)
+         )",
+    ] {
+        admin.query_drop(statement).await.unwrap();
+    }
+    let structure = connection
+        .describe(&ObjectRef::new("tabletist", "catalog_prefix_key"))
+        .await;
+    admin
+        .query_drop("DROP TABLE catalog_prefix_key")
+        .await
+        .unwrap();
+    let structure = structure.unwrap();
+    assert_eq!(structure.primary_key, vec!["name".to_owned()]);
+    assert_eq!(structure.row_key(), Some(vec!["code".to_owned()]));
+}
+
 use tabletist_db::{Filter, FilterOp, RowPage, RowQuery, Sort, SortDir, Value, ValueKind};
 
 fn users(limit: u32) -> RowQuery {

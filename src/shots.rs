@@ -193,6 +193,7 @@ fn structure() -> Structure {
             IndexInfo {
                 name: "book_images_pkey".into(),
                 columns: vec!["id".into()],
+                key_columns: Some(vec!["id".into()]),
                 unique: true,
                 primary: true,
                 method: Some("btree".into()),
@@ -201,6 +202,7 @@ fn structure() -> Structure {
             IndexInfo {
                 name: "index_book_images_on_book_id_and_kind".into(),
                 columns: vec!["book_id".into(), "kind".into()],
+                key_columns: Some(vec!["book_id".into(), "kind".into()]),
                 unique: true,
                 primary: false,
                 method: Some("btree".into()),

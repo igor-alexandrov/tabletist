@@ -402,6 +402,114 @@ async fn a_partial_index_says_so_and_is_not_the_row_key() {
     assert_eq!(structure.row_key(), Some(vec!["a".to_owned()]));
 }
 
+/// An index shows `a` for a column under another collation or operator
+/// class, and an expression as its text, which a column may be called too.
+/// Only an index over whole columns, compared as they compare, is a key.
+#[tokio::test]
+async fn only_an_index_over_whole_columns_as_they_compare_is_the_row_key() {
+    let Some(connection) = connect().await else {
+        return;
+    };
+    let admin = admin().await;
+    admin
+        .batch_execute(
+            r#"DROP TABLE IF EXISTS catalog_keys;
+               DROP COLLATION IF EXISTS catalog_keys_nocase;
+               CREATE COLLATION catalog_keys_nocase
+                   (provider = icu, locale = 'und-u-ks-level2', deterministic = false);
+               CREATE TABLE catalog_keys (
+                   a text COLLATE catalog_keys_nocase NOT NULL,
+                   b text NOT NULL,
+                   "lower(b)" text NOT NULL,
+                   c integer NOT NULL,
+                   d text NOT NULL,
+                   "Odd name" text NOT NULL,
+                   e integer
+               );
+               CREATE UNIQUE INDEX catalog_keys_1_collated ON catalog_keys (a COLLATE "C");
+               CREATE UNIQUE INDEX catalog_keys_2_expression ON catalog_keys (lower(b));
+               CREATE UNIQUE INDEX catalog_keys_3_pattern ON catalog_keys (d text_pattern_ops);
+               CREATE UNIQUE INDEX catalog_keys_4_mixed ON catalog_keys (c, lower(b));
+               CREATE UNIQUE INDEX catalog_keys_5_plain
+                   ON catalog_keys (c, "Odd name" DESC) INCLUDE (e);
+               INSERT INTO catalog_keys VALUES
+                   ('x', 'p', 'q', 1, 'r', 's', NULL), ('X', 't', 'u', 2, 'v', 'w', NULL)"#,
+        )
+        .await
+        .unwrap();
+    let structure = connection
+        .describe(&ObjectRef::new("public", "catalog_keys"))
+        .await;
+    let twins = admin
+        .query_one("SELECT count(*) FROM catalog_keys WHERE a = 'x'", &[])
+        .await;
+    admin
+        .batch_execute("DROP TABLE catalog_keys; DROP COLLATION catalog_keys_nocase")
+        .await
+        .unwrap();
+    // Why the first index is no key: unique byte for byte, and the column
+    // compares without case.
+    assert_eq!(twins.unwrap().get::<_, i64>(0), 2);
+    let structure = structure.unwrap();
+    let list =
+        |names: &[&str]| -> Vec<String> { names.iter().map(|name| (*name).to_owned()).collect() };
+    let indexes: Vec<_> = structure
+        .indexes
+        .iter()
+        .map(|index| {
+            (
+                index.name.as_str(),
+                index.columns.clone(),
+                index.key_columns.clone(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        indexes,
+        [
+            ("catalog_keys_1_collated", list(&["a"]), None),
+            ("catalog_keys_2_expression", list(&["lower(b)"]), None),
+            ("catalog_keys_3_pattern", list(&["d"]), None),
+            ("catalog_keys_4_mixed", list(&["c", "lower(b)"]), None),
+            (
+                "catalog_keys_5_plain",
+                list(&["c", "\"Odd name\""]),
+                Some(list(&["c", "Odd name"]))
+            ),
+        ]
+    );
+    assert_eq!(structure.row_key(), Some(list(&["c", "Odd name"])));
+}
+
+/// The columns a primary key only carries along (`INCLUDE`) are in its index
+/// and are no part of the key: they may repeat, and may be NULL.
+#[tokio::test]
+async fn a_primary_keys_included_columns_are_not_key_columns() {
+    let Some(connection) = connect().await else {
+        return;
+    };
+    let admin = admin().await;
+    admin
+        .batch_execute(
+            "DROP TABLE IF EXISTS catalog_included;
+             CREATE TABLE catalog_included (
+                 id integer, payload text, PRIMARY KEY (id) INCLUDE (payload)
+             )",
+        )
+        .await
+        .unwrap();
+    let structure = connection
+        .describe(&ObjectRef::new("public", "catalog_included"))
+        .await;
+    admin
+        .batch_execute("DROP TABLE catalog_included")
+        .await
+        .unwrap();
+    let structure = structure.unwrap();
+    assert_eq!(structure.primary_key, vec!["id".to_owned()]);
+    assert_eq!(structure.row_key(), Some(vec!["id".to_owned()]));
+}
+
 /// A `CREATE UNIQUE INDEX CONCURRENTLY` that failed leaves its index behind,
 /// still called unique, over rows that are not.
 #[tokio::test]
@@ -695,7 +803,7 @@ async fn a_running_query_can_be_cancelled() {
 
 use tabletist_db::{Dialect, ScriptOutcome, StatementOutcome, StopFlag};
 
-/// A writable session for the bypass test's probe table.
+/// A writable session for arranging and probing, outside the adapter.
 async fn admin() -> tokio_postgres::Client {
     let mut config: tokio_postgres::Config = url().unwrap().parse().unwrap();
     config.ssl_mode(tokio_postgres::config::SslMode::Disable);

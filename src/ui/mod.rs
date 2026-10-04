@@ -3204,6 +3204,7 @@ mod tests {
                 indexes: vec![tabletist_db::IndexInfo {
                     name: "users_email_idx".into(),
                     columns: vec!["email".into()],
+                    key_columns: Some(vec!["email".into()]),
                     unique: true,
                     primary: false,
                     method: None,
@@ -6655,6 +6656,7 @@ mod tests {
             indexes: vec![tabletist_db::IndexInfo {
                 name: "users_email_idx".into(),
                 columns: vec!["email".into()],
+                key_columns: Some(vec!["email".into()]),
                 unique: true,
                 primary: false,
                 method: None,
@@ -9471,6 +9473,7 @@ mod tests {
             indexes: vec![tabletist_db::IndexInfo {
                 name: "users_email_idx".into(),
                 columns: vec!["email".into()],
+                key_columns: Some(vec!["email".into()]),
                 unique: true,
                 primary: false,
                 method: None,
@@ -9549,6 +9552,7 @@ mod tests {
             indexes: vec![tabletist_db::IndexInfo {
                 name: "users_email_idx".into(),
                 columns: vec!["email".into()],
+                key_columns: Some(vec!["email".into()]),
                 unique: true,
                 primary: false,
                 method: None,
@@ -9653,6 +9657,7 @@ mod tests {
                 indexes: vec![tabletist_db::IndexInfo {
                     name: "users_email_idx".into(),
                     columns: vec!["email".into()],
+                    key_columns: Some(vec!["email".into()]),
                     unique: true,
                     primary: false,
                     method: None,
