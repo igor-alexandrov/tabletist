@@ -364,7 +364,11 @@ The artboard's screen, over the whole window:
   line classifier (comment, table header, key, string, number or boolean),
   with the line of the cursor's option highlighted (from `Loaded::lines`)
   and the lines in `Loaded::invalid` in red. Under it: "edits in the file
-  reload live · invalid lines are shown here in red and ignored".
+  reload live · invalid lines are shown here in red and ignored". A text
+  that is no settings file is shown all the same, and can be megabytes: the
+  pane draws only the lines in view, reaches them by where they start
+  (`SettingsFile::line_starts`, found once when the text is set), and draws
+  no more than the first 400 bytes of a line.
 - Footer keys: `j/k` move, `h/l` change, `space` toggle, `ctrl+e` open file
   in $EDITOR, `R` reset option, `esc` close.
 
@@ -374,7 +378,9 @@ its choices (a toggle: off and on); `space` flips an option of two values
 (value tags, timestamps, numbers) and leaves the page size; `R` puts the
 cursor's option back to its default; `ctrl+e` opens the file; `Escape`
 closes. A click on a row moves the cursor to it, and a click on a value
-sets it.
+sets it. Keys that come in one frame act in their order, each on what the
+ones before it left: `j` then `l` steps the row `j` moved to, and `l`
+twice steps twice.
 
 A button of the screen that has the keyboard (reached with Tab) keeps
 Space, which presses it, and the arrows, which move focus from it, as in
@@ -560,7 +566,10 @@ footer: "2 lines in the file could not be read and were ignored".
   newest (its save landed over a change from outside that it had applied in
   between: the disk has it). A key held down on an option therefore never
   has its newest change undone, and the same older text put back by someone
-  else is still a change.
+  else is still a change. The text handed over with the file to be opened
+  (`SettingsFile::offered`) counts as the newest too, until a save is asked
+  for: the backend writes it when the file is gone by then, and the app may
+  have applied a change from outside since it handed the text over.
 - A change from outside that restores, within the settle after one of the
   app's own writes, the very text the backend sent last is not seen: the
   reader never sends the same text twice in a row. The app then holds the
