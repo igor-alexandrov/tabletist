@@ -286,18 +286,27 @@ value as the server sent it.
 `Dialog::Settings(Box<SettingsDialog>)`:
 
     pub struct SettingsDialog {
-        pub tab: SettingsTab,        // General
-        /// Omarchy: the option the keys act on.
+        /// The option the keys act on (Omarchy), as an index into
+        /// `OptionId::ALL`.
         pub row: usize,
-        /// The footer asked whether to reset.
-        pub confirm_reset: bool,
     }
 
-Actions: `ShowSettings`, `SetOption(OptionValue)`, `ResetOption(OptionId)`,
-`ResetSettings`, `ConfirmResetSettings(bool)`, `MoveSettingsRow(isize)`,
-`RevealSettingsFile`, `ExportSettings`, `EditSettingsFile`. The view pushes
-them; `App::apply` changes the settings. `ShowSettings` opens the window
-when no dialog is open or the shortcuts dialog is; `Escape` closes it.
+The window holds nothing of the settings: every change applies at once.
+Step 4 adds what its footer needs (whether Reset was asked for); a tab
+arrives with the second tab.
+
+An option is a value: `OptionId` names the four rows and `OptionValue` is
+one of them set to something (`src/settings.rs`). A key, a click, a reset
+and a menu all say the same thing with it.
+
+Actions: `ShowSettings`, `MoveSettingsRow(isize)`, `SelectSettingsRow(usize)`,
+`SetOption(OptionValue)` (a reset of one option is `SetOption` with its
+default), `EditSettingsFile`; step 4 adds `ResetSettings`,
+`ConfirmResetSettings(bool)`, `RevealSettingsFile` and `ExportSettings`.
+The view pushes them; `App::apply` changes the settings through
+`change_settings`. `ShowSettings` opens the window when no dialog is open or
+the shortcuts dialog is; asked for while it is open, it does nothing;
+`Escape` closes it.
 
 The view is `src/ui/settings/`: `mod.rs` (the options, their labels and
 hints, shared by both layouts), `sheet.rs` (macOS and Windows), and
@@ -338,6 +347,11 @@ The artboard's screen, over the whole window:
 
 - Header: `settings` `general`, and at the right "changes apply right away
   · ctrl+, opens this".
+- The app's notice, in a band under the header while there is one (a save
+  that failed, an editor that did not start), with its Dismiss button. The
+  screen covers the notice bar, so without the band a notice would go
+  unseen until the screen closes. The nav, the rows and the file pane start
+  under it.
 - Nav, 220 wide: `general`, selected.
 - Rows in three columns (the label, the value, a hint), under the section
   label `data`. The row with the keys carries the cursor mark and the
@@ -346,20 +360,42 @@ The artboard's screen, over the whole window:
   filled, `[x]` and `[ ]`.
 - The file pane, 620 wide or 40% of the window if that is less, hidden when
   the window is narrower than 1100. Its header is the path and `live` while
-  the file is watched. Its body is `App::settings_file.text`, coloured by a small
+  the file is watched. The path is written from `~` under the home
+  directory, which `AppDirs::discover` finds once at the start
+  (`AppDirs::home`): the lookup can ask the system's user database, and no
+  frame waits for it. Its body is `App::settings_file.text`, coloured by a small
   line classifier (comment, table header, key, string, number or boolean),
   with the line of the cursor's option highlighted (from `Loaded::lines`)
   and the lines in `Loaded::invalid` in red. Under it: "edits in the file
-  reload live · invalid lines are shown here in red and ignored".
+  reload live · invalid lines are shown here in red and ignored". A text
+  that is no settings file is shown all the same, and can be megabytes: the
+  pane draws only the lines in view, reaches them by where they start
+  (`SettingsFile::line_starts`, found once when the text is set), and draws
+  no more than the first 400 bytes of a line. Each line in view is told to
+  a screen reader as a label, whole, and an ignored one as "Ignored: " and
+  the line: its colour tells nothing to someone who does not see it.
 - Footer keys: `j/k` move, `h/l` change, `space` toggle, `ctrl+e` open file
   in $EDITOR, `R` reset option, `esc` close.
 
 Keys, taken by the screen while it is open: `j`/`k` and the up and down
 arrows move the cursor; `h`/`l` and left and right step the value through
-its choices (a toggle: off and on); `space` flips a toggle; `R` puts the
+its choices (a toggle: off and on); `space` flips an option of two values
+(value tags, timestamps, numbers) and leaves the page size; `R` puts the
 cursor's option back to its default; `ctrl+e` opens the file; `Escape`
 closes. A click on a row moves the cursor to it, and a click on a value
-sets it.
+sets it. Keys that come in one frame act in their order, each on what the
+ones before it left: `j` then `l` steps the row `j` moved to, and `l`
+twice steps twice.
+
+A button of the screen that has the keyboard (reached with Tab) keeps
+Space, which presses it, and the arrows, which move focus from it, as in
+the workspace. The letters, `R`, `ctrl+e` and `Escape` are the screen's
+wherever the keyboard is.
+
+A screen reader is told which value of an option is set. Each segment and
+each value of the check is a radio button, named by its option and its
+value, that says whether it is the one set. The page size has no button
+that is its value, so its row says the number.
 
 ### Opening
 
@@ -385,18 +421,29 @@ handles it. Either way one press opens the window once.
 
 All three run on the backend, as disk and process work does.
 
-- **Reveal**: `Command::OpenSettingsFile { path, text, how: Reveal }`.
-- **Open in the editor**: the same command with `how: Editor`.
-- **Export…**: `Backend::save_bytes`, the path a binary value is saved by
-  (its dialog title becomes a parameter), with the name
+- **Open in the editor** (step 3): `Command::EditSettingsFile { path, text }`.
+- **Reveal** (step 4): a command of its own, `RevealSettingsFile { path,
+  text }`, sharing the editor's "write it first if it is not there".
+- **Export…** (step 4): `Backend::save_bytes`, the path a binary value is
+  saved by (its dialog title becomes a parameter), with the name
   `tabletist-settings.toml` and the canonical text.
 
-`OpenSettingsFile` carries the canonical text: the backend writes it to
-`path` when no file is there, then starts the program, so the UI thread
-never looks at the disk and the write always comes first. The child is not
-waited for. `Event::SettingsFileOpened { result }` puts a failure in the
-app's notice, as a failed save is; a failed export is already reported that
-way.
+Both commands carry the text the app holds: the backend writes it to `path`
+when no file is there, then starts the program, so the UI thread never looks
+at the disk and the write always comes first. The program is not waited for
+by anything the app needs (a thread reaps it). `Event::SettingsFileOpened {
+result }` puts a failure in the app's notice, as a failed save is; a failed
+export is already reported that way.
+
+That first write of a missing file is recorded as the backend's own write,
+under the lock the writer and the reader share, as a save's is. The reader
+then says the text is the app's own, so it is not taken for a change from
+outside. The lock keeps out the backend's other writes, not an editor's: the
+file is made only where none is, in one step (`util::create_atomic`), so one
+that someone made after the look for it is opened as it is and is no write
+of the backend's. Otherwise a change made in the app while the editor was starting
+could be undone: its save lands first, the older text lands after it, and
+the app would apply that as someone else's edit.
 
 The program follows the operating system the app was built for (`cfg`), not
 the look, so a macOS look drawn in a Linux test still compiles and runs:
@@ -405,7 +452,17 @@ the look, so a macOS look drawn in a Linux test still compiles and runs:
 |---|---|---|
 | macOS | `open -R <path>` | `open -t <path>` |
 | Windows | `explorer /select,<path>` | `explorer <path>` |
-| Linux | `xdg-open <the directory>` | `omarchy-launch-editor <path>` when it is on `PATH`, else `xdg-open <path>` |
+| Linux | `xdg-open <the directory>` | `omarchy-launch-editor <path>` when it is on `PATH` and can be run, else `xdg-open <path>` |
+
+On Linux the Omarchy launcher is used only when it can be run: a file of
+that name on `PATH` that has no executable bit would fail to start, and
+`xdg-open` would never be tried. The launcher opens the editor Omarchy is
+set up with.
+
+A program that ends with a failure is logged as a warning, with its name
+and its status, by the thread that waits for it: an `xdg-open` with nothing
+to open the file with says so nowhere else. The app's notice tells only of
+a file that could not be written and of a program that did not start.
 
 The Reveal link's words follow the same `cfg`: Reveal in Finder, Show in
 Explorer, Show in folder.
@@ -447,7 +504,11 @@ time up to a second, six reads in all; a change meanwhile starts over, and a
 file that is gone is not retried.
 
 `App` drops an event whose text equals `settings_file.text`: that is its own
-write, or a change that changed nothing. Otherwise it runs
+write, or a change that changed nothing. (From step 3 the event also says
+whether the text is the backend's own write, `own`, and the app keeps the
+text it last asked to be written, `SettingsFile::saved`: see "Errors and
+edge cases" for what it does with an own write that is not the text it
+holds.) Otherwise it runs
 `Settings::from_toml`, keeps the text, the invalid lines and the key lines,
 and applies the settings through the same effects a change in the window
 has, without writing the file back.
@@ -504,13 +565,21 @@ footer: "2 lines in the file could not be read and were ignored".
 - Two writers: the user saves the file in an editor while changing an
   option in the window. The last write wins; neither is merged.
 - Two quick changes in the app can be read from the disk between their two
-  writes. The first text then comes back as if from outside and is applied
-  for a moment, until the second follows; nothing is written by either. A
-  third change made in the app inside that moment would be built on the
-  older settings and lose the second. Menus cannot be clicked that fast, but
-  a key held down on an option can: steps 3 and 4 must close this before
-  they let a key change a setting (hold the newest text until its own write
-  has come back, or step a value no faster than its save).
+  writes, so the first text comes back after the second was made. From step
+  3 the backend says which texts are its own writes (`Event::SettingsFile {
+  text, own }`, decided under a lock the writer and the reader share), and
+  the app keeps the text it last asked to be written (`SettingsFile::saved`).
+  A text of its own that is not the one it holds is dropped when it is an
+  older write (the newest is still to come) and applied when it is the
+  newest (its save landed over a change from outside that it had applied in
+  between: the disk has it). A key held down on an option therefore never
+  has its newest change undone, and the same older text put back by someone
+  else is still a change. A text handed over with the file to be opened
+  (`SettingsFile::offered`) counts as the newest too, until a save is asked
+  for: the backend writes it when the file is gone by then, and the app may
+  have applied a change from outside since it handed the text over. Every
+  text handed over since the last save is kept, not the last alone: two
+  requests can wait at once, and the first may be the one that writes.
 - A change from outside that restores, within the settle after one of the
   app's own writes, the very text the backend sent last is not seen: the
   reader never sends the same text twice in a row. The app then holds the
@@ -567,8 +636,9 @@ Every behaviour gets a focused test; UI behaviour goes through
   each control changes its setting and saves; `Escape` closes; Reset asks,
   then resets only the four options. Omarchy: each key; the pane shows the
   text, highlights the cursor's line and is hidden in a narrow window.
-- File actions: Reveal and the editor key push `OpenSettingsFile` with the
-  path, the text and the right `how`; Export reaches `Backend::save_bytes`
+- File actions: the editor key pushes `EditSettingsFile` and Reveal
+  `RevealSettingsFile`, each with the path and the text; Export reaches
+  `Backend::save_bytes`
   with the name and the text; a failure reaches the notice. A backend test
   in a temporary directory checks that a missing file is written before the
   program starts.

@@ -932,6 +932,34 @@ impl App {
                     self.dialog = Some(Dialog::About);
                 }
             }
+            Action::ShowSettings => {
+                // The shortcuts dialog offers it, and gives way to it. Asked
+                // for while it is open, it stays as it is.
+                if matches!(self.dialog, None | Some(Dialog::Help)) {
+                    self.dialog = Some(Dialog::Settings(Box::default()));
+                }
+            }
+            Action::MoveSettingsRow(by) => {
+                if let Some(Dialog::Settings(dialog)) = &mut self.dialog {
+                    let last = crate::settings::OptionId::ALL.len() - 1;
+                    dialog.row = dialog.row.saturating_add_signed(by).min(last);
+                }
+            }
+            Action::SelectSettingsRow(row) => {
+                if let Some(Dialog::Settings(dialog)) = &mut self.dialog
+                    && row < crate::settings::OptionId::ALL.len()
+                {
+                    dialog.row = row;
+                }
+            }
+            Action::SetOption(value) => self.change_settings(|settings| value.set(settings)),
+            Action::EditSettingsFile => {
+                let text = self.offer_settings_text();
+                self.backend.send(Command::EditSettingsFile {
+                    path: self.dirs.settings_file(),
+                    text,
+                });
+            }
             Action::OpenQuickOpen => {
                 let tab = self.active_tab_id();
                 if self.dialog.is_none() && self.workspace(tab).is_some() {
@@ -2077,20 +2105,48 @@ impl App {
                 }
             }
             Event::SettingsWatch { live } => self.settings_file.live = live,
-            Event::SettingsFile { text } => {
-                // The app's own write coming back from the disk, or a save
-                // that changed nothing.
+            Event::SettingsFile { text, own } => {
+                // What the app holds already: its own write coming back,
+                // or a save that changed nothing.
                 if text == self.settings_file.text {
+                    return;
+                }
+                // A write of its own that is not what it holds. An older
+                // one was read between two of its writes: the newest is
+                // still to come, and applying this would undo the change
+                // made since. The newest itself landed over a change from
+                // outside that was applied in between: the disk has it. So
+                // does a text handed over with the file to be opened, which
+                // the backend wrote because the file was gone by then.
+                let file = &self.settings_file;
+                let newest =
+                    file.saved.as_deref() == Some(text.as_str()) || file.offered.contains(&text);
+                if own && !newest {
                     return;
                 }
                 let loaded = Settings::from_toml(&text);
                 loaded.warn_invalid(&self.dirs.settings_file());
                 let live = self.settings_file.live;
+                let saved = self.settings_file.saved.take();
+                let offered = std::mem::take(&mut self.settings_file.offered);
                 let (settings, file) = loaded.into_parts();
                 // The file as its writer left it: not written back, so a
                 // line that was ignored stays where they can see it.
-                self.settings_file = SettingsFile { live, ..file };
+                self.settings_file = SettingsFile {
+                    live,
+                    saved,
+                    offered,
+                    ..file
+                };
                 self.apply_settings(settings);
+            }
+            Event::SettingsFileOpened { result } => {
+                if let Err(error) = result {
+                    self.notice = Some(format!(
+                        "Could not open {} in the editor: {error}.",
+                        self.dirs.settings_file().display()
+                    ));
+                }
             }
             Event::Databases {
                 session,
@@ -2244,10 +2300,26 @@ impl App {
     /// [`App::change_settings`] and the start that read the old
     /// settings.json call it.
     fn save_settings(&mut self) {
+        self.settings_file.saved = Some(self.settings.to_toml());
+        // The save is newer than any text handed over with the file: where
+        // one of those was written, this lands over it.
+        self.settings_file.offered.clear();
         self.backend.send(Command::Save {
             path: self.dirs.settings_file(),
             file: StateFile::Settings(self.settings.clone()),
         });
+    }
+
+    /// The text the app holds of its settings file, to hand over with the
+    /// file to be opened. The backend writes it when no file is there: a
+    /// write of the app's own, which is noted here to be known when it
+    /// comes back.
+    fn offer_settings_text(&mut self) -> String {
+        let text = self.settings_file.text.clone();
+        if !self.settings_file.offered.contains(&text) {
+            self.settings_file.offered.push(text.clone());
+        }
+        text
     }
 
     /// Asks the backend to watch the settings file, so an edit made outside
@@ -2270,8 +2342,13 @@ impl App {
             return;
         }
         let live = self.settings_file.live;
+        let saved = self.settings_file.saved.take();
         let (settings, file) = loaded.into_parts();
-        self.settings_file = SettingsFile { live, ..file };
+        self.settings_file = SettingsFile {
+            live,
+            saved,
+            ..file
+        };
         self.apply_settings(settings);
         self.save_settings();
     }
@@ -4183,7 +4260,10 @@ mod tests {
     fn a_change_of_the_file_is_applied_and_not_written_back() {
         let (mut app, _dir) = app();
         let text = "[data]\npage_size = 500\ngroup_digits = \"yes\"\ntimestamps = \"full\"\n";
-        app.apply(Action::Backend(Event::SettingsFile { text: text.into() }));
+        app.apply(Action::Backend(Event::SettingsFile {
+            text: text.into(),
+            own: false,
+        }));
         assert_eq!(app.settings.page_size, 500);
         assert_eq!(app.settings.timestamps, crate::settings::Timestamps::Full);
         assert!(!app.settings.group_digits);
@@ -4208,10 +4288,122 @@ mod tests {
         // Something only a second reading would change.
         app.settings_file.invalid = vec![9];
         let text = app.settings_file.text.clone();
-        app.apply(Action::Backend(Event::SettingsFile { text }));
+        app.apply(Action::Backend(Event::SettingsFile { text, own: true }));
         assert_eq!(app.settings_file.invalid, vec![9]);
         assert_eq!(app.settings.sql_limit, 100);
         assert_eq!(settings_saves(&app).len(), saved);
+    }
+
+    /// The settings file's text coming from the disk.
+    fn from_disk(text: &str, own: bool) -> Action {
+        Action::Backend(Event::SettingsFile {
+            text: text.into(),
+            own,
+        })
+    }
+
+    #[test]
+    fn an_older_write_of_the_apps_own_coming_back_late_undoes_nothing() {
+        let (mut app, _dir) = app();
+        app.change_settings(|settings| settings.sql_limit = 100);
+        let first = app.settings_file.text.clone();
+        app.change_settings(|settings| settings.page_size = 500);
+        let second = app.settings_file.text.clone();
+        let saved = settings_saves(&app).len();
+        // The disk was read between the two writes.
+        app.apply(from_disk(&first, true));
+        assert_eq!(app.settings.page_size, 500, "the newer change stays");
+        assert_eq!(app.settings_file.text, second);
+        // Then the newest comes back.
+        app.apply(from_disk(&second, true));
+        assert_eq!(app.settings.page_size, 500);
+        assert_eq!(settings_saves(&app).len(), saved);
+    }
+
+    #[test]
+    fn a_text_written_for_the_editor_is_the_apps_newest_write() {
+        let (mut app, _dir) = app();
+        let ours = app.settings_file.text.clone();
+        // The editor is asked for with the text the app holds...
+        app.apply(Action::EditSettingsFile);
+        // ...an edit from outside is read and applied, and the file is
+        // deleted, before the backend gets to it...
+        app.apply(from_disk("[data]\npage_size = 500\n", false));
+        assert_eq!(app.settings.page_size, 500);
+        // ...so the backend writes the text it was given, and that is
+        // what the disk and the editor have.
+        app.apply(from_disk(&ours, true));
+        assert_eq!(app.settings.page_size, Settings::DEFAULT_PAGE_SIZE);
+        assert_eq!(app.settings_file.text, ours);
+    }
+
+    #[test]
+    fn each_text_written_for_an_editor_that_waits_is_the_apps_own() {
+        let (mut app, _dir) = app();
+        let first = app.settings_file.text.clone();
+        // Two requests wait at once, with a change from outside between
+        // them: the file is deleted, the first of them writes its text,
+        // and the second finds a file and writes nothing.
+        app.apply(Action::EditSettingsFile);
+        let second = "[data]\npage_size = 500\n";
+        app.apply(from_disk(second, false));
+        app.apply(Action::EditSettingsFile);
+        assert_eq!(app.settings.page_size, 500);
+        app.apply(from_disk(&first, true));
+        assert_eq!(app.settings.page_size, Settings::DEFAULT_PAGE_SIZE);
+        assert_eq!(app.settings_file.text, first);
+        // The other way round: the second is the one that wrote.
+        app.apply(from_disk(second, true));
+        assert_eq!(app.settings.page_size, 500);
+        // Asked for again with a text already handed over, nothing is
+        // kept twice.
+        app.apply(Action::EditSettingsFile);
+        app.apply(Action::EditSettingsFile);
+        assert_eq!(app.settings_file.offered.len(), 2);
+    }
+
+    #[test]
+    fn a_save_made_since_the_editor_was_asked_for_is_the_newer_write() {
+        let (mut app, _dir) = app();
+        let offered = app.settings_file.text.clone();
+        app.apply(Action::EditSettingsFile);
+        app.change_settings(|settings| settings.page_size = 500);
+        let saved = settings_saves(&app).len();
+        // The text written for the editor is read before the save lands
+        // over it: the save is still to come.
+        app.apply(from_disk(&offered, true));
+        assert_eq!(app.settings.page_size, 500);
+        assert_eq!(settings_saves(&app).len(), saved);
+    }
+
+    #[test]
+    fn the_same_older_text_from_someone_else_is_a_change() {
+        let (mut app, _dir) = app();
+        app.change_settings(|settings| settings.sql_limit = 100);
+        let first = app.settings_file.text.clone();
+        app.change_settings(|settings| settings.page_size = 500);
+        // Not the backend's write: someone put that text there.
+        app.apply(from_disk(&first, false));
+        assert_eq!(app.settings.page_size, Settings::DEFAULT_PAGE_SIZE);
+        assert_eq!(app.settings_file.text, first);
+    }
+
+    #[test]
+    fn the_apps_save_landing_over_a_change_from_outside_is_what_the_disk_has() {
+        let (mut app, _dir) = app();
+        app.change_settings(|settings| settings.sql_limit = 100);
+        let ours = app.settings_file.text.clone();
+        // An edit from outside is read before the app's save lands...
+        app.apply(from_disk("[data]\npage_size = 500\n", false));
+        assert_eq!(app.settings.page_size, 500);
+        assert_eq!(app.settings.sql_limit, 1_000);
+        let saved = settings_saves(&app).len();
+        // ...and then it lands, over the edit.
+        app.apply(from_disk(&ours, true));
+        assert_eq!(app.settings.sql_limit, 100);
+        assert_eq!(app.settings.page_size, Settings::DEFAULT_PAGE_SIZE);
+        assert_eq!(app.settings_file.text, ours);
+        assert_eq!(settings_saves(&app).len(), saved, "nothing is written back");
     }
 
     #[test]
@@ -4221,10 +4413,80 @@ mod tests {
         assert!(app.settings_file.live);
         app.apply(Action::Backend(Event::SettingsFile {
             text: "[data]\npage_size = 500\n".into(),
+            own: false,
         }));
         assert!(app.settings_file.live);
         app.change_settings(|settings| settings.sql_limit = 100);
         assert!(app.settings_file.live);
+    }
+
+    fn settings_row(app: &App) -> Option<usize> {
+        match &app.dialog {
+            Some(Dialog::Settings(dialog)) => Some(dialog.row),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn settings_open_over_nothing_or_the_shortcuts_and_close() {
+        let (mut app, _dir) = app();
+        app.apply(Action::ShowSettings);
+        assert_eq!(settings_row(&app), Some(0));
+        // A second ask changes nothing: the cursor stays where it is.
+        app.apply(Action::MoveSettingsRow(2));
+        app.apply(Action::ShowSettings);
+        assert_eq!(settings_row(&app), Some(2));
+        app.apply(Action::CloseDialog);
+        assert!(app.dialog.is_none());
+        // The shortcuts dialog offers it, and gives way to it.
+        app.apply(Action::ShowHelp);
+        app.apply(Action::ShowSettings);
+        assert_eq!(settings_row(&app), Some(0));
+        // Another dialog does not.
+        app.apply(Action::CloseDialog);
+        app.apply(Action::ShowAbout);
+        app.apply(Action::ShowSettings);
+        assert!(matches!(app.dialog, Some(Dialog::About)));
+    }
+
+    #[test]
+    fn the_settings_cursor_stays_among_the_options() {
+        use crate::settings::OptionId;
+        let (mut app, _dir) = app();
+        app.apply(Action::ShowSettings);
+        app.apply(Action::MoveSettingsRow(-1));
+        assert_eq!(settings_row(&app), Some(0));
+        app.apply(Action::MoveSettingsRow(1));
+        assert_eq!(settings_row(&app), Some(1));
+        app.apply(Action::MoveSettingsRow(99));
+        assert_eq!(settings_row(&app), Some(OptionId::ALL.len() - 1));
+        app.apply(Action::SelectSettingsRow(2));
+        assert_eq!(settings_row(&app), Some(2));
+        app.apply(Action::SelectSettingsRow(99));
+        assert_eq!(
+            settings_row(&app),
+            Some(2),
+            "no such row: left where it was"
+        );
+        // Without the screen the cursor's actions do nothing.
+        app.apply(Action::CloseDialog);
+        app.apply(Action::MoveSettingsRow(1));
+        assert!(app.dialog.is_none());
+    }
+
+    #[test]
+    fn setting_an_option_changes_it_and_saves() {
+        use crate::settings::{OptionValue, Timestamps};
+        let (mut app, _dir) = app();
+        app.apply(Action::SetOption(OptionValue::Timestamps(Timestamps::Full)));
+        assert_eq!(app.settings.timestamps, Timestamps::Full);
+        assert_eq!(settings_saves(&app).len(), 1);
+        // The value it already has is not written again.
+        app.apply(Action::SetOption(OptionValue::Timestamps(Timestamps::Full)));
+        assert_eq!(settings_saves(&app).len(), 1);
+        // A page size out of range comes into it, as from the file.
+        app.apply(Action::SetOption(OptionValue::PageSize(5)));
+        assert_eq!(app.settings.page_size, Settings::MIN_PAGE_SIZE);
     }
 
     #[test]
@@ -4236,6 +4498,34 @@ mod tests {
             app.backend.sent.last(),
             Some(Command::WatchSettings { path: watched }) if *watched == path
         ));
+    }
+
+    #[test]
+    fn the_settings_file_is_opened_in_the_editor_through_the_backend() {
+        let (mut app, _dir) = app();
+        app.apply(Action::EditSettingsFile);
+        let path = app.dirs.settings_file();
+        let text = app.settings_file.text.clone();
+        assert!(matches!(
+            app.backend.sent.last(),
+            Some(Command::EditSettingsFile { path: sent, text: held })
+                if *sent == path && *held == text
+        ));
+    }
+
+    #[test]
+    fn an_editor_that_did_not_start_shows_a_notice() {
+        let (mut app, _dir) = app();
+        app.apply(Action::Backend(Event::SettingsFileOpened {
+            result: Err("no editor".into()),
+        }));
+        let notice = app.notice.clone().expect("a notice");
+        assert!(notice.contains("no editor"), "{notice}");
+        app.notice = None;
+        app.apply(Action::Backend(Event::SettingsFileOpened {
+            result: Ok(()),
+        }));
+        assert!(app.notice.is_none());
     }
 
     #[test]

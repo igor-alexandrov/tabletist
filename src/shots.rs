@@ -803,10 +803,12 @@ mod mock {
         OmarchyPicker,
         MacDialog,
         OmarchyDialog,
+        /// The Settings screen, wide enough for the file beside the options.
+        OmarchySettings,
     }
 
     impl Screen {
-        pub const ALL: [Screen; 9] = [
+        pub const ALL: [Screen; 10] = [
             Self::MacWorkspace,
             Self::MacWorkspaceDark,
             Self::MacValues,
@@ -816,6 +818,7 @@ mod mock {
             Self::OmarchyPicker,
             Self::MacDialog,
             Self::OmarchyDialog,
+            Self::OmarchySettings,
         ];
 
         /// The screen's name (screenshot files).
@@ -830,6 +833,7 @@ mod mock {
                 Self::OmarchyPicker => "omarchy-connections",
                 Self::MacDialog => "macos-connection-edit",
                 Self::OmarchyDialog => "omarchy-connection-edit",
+                Self::OmarchySettings => "omarchy-settings-general",
             }
         }
 
@@ -843,7 +847,8 @@ mod mock {
                 Self::OmarchyWorkspace
                 | Self::OmarchyValues
                 | Self::OmarchyPicker
-                | Self::OmarchyDialog => Look::omarchy(),
+                | Self::OmarchyDialog
+                | Self::OmarchySettings => Look::omarchy(),
             }
         }
 
@@ -856,7 +861,9 @@ mod mock {
                 | Self::MacValues
                 | Self::MacPicker
                 | Self::MacDialog => egui::vec2(1440.0, 900.0),
-                Self::OmarchyWorkspace | Self::OmarchyValues => egui::vec2(1896.0, 1056.0),
+                Self::OmarchyWorkspace | Self::OmarchyValues | Self::OmarchySettings => {
+                    egui::vec2(1896.0, 1056.0)
+                }
                 Self::OmarchyPicker | Self::OmarchyDialog => egui::vec2(936.0, 1016.0),
             }
         }
@@ -870,7 +877,9 @@ mod mock {
                 | Self::MacValues
                 | Self::MacPicker
                 | Self::MacDialog => 2000.0 / 1440.0,
-                Self::OmarchyWorkspace | Self::OmarchyValues => 2000.0 / 1920.0,
+                Self::OmarchyWorkspace | Self::OmarchyValues | Self::OmarchySettings => {
+                    2000.0 / 1920.0
+                }
                 Self::OmarchyPicker | Self::OmarchyDialog => 1846.0 / 960.0,
             }
         }
@@ -886,7 +895,8 @@ mod mock {
                 Self::OmarchyWorkspace
                 | Self::OmarchyValues
                 | Self::OmarchyPicker
-                | Self::OmarchyDialog => tokyo_night(),
+                | Self::OmarchyDialog
+                | Self::OmarchySettings => tokyo_night(),
             }
         }
 
@@ -939,6 +949,19 @@ mod mock {
                 Self::MacDialog | Self::OmarchyDialog => {
                     pickers(harness);
                     edit_production(harness);
+                }
+                // Over the Bookshop's workspace, which it covers: the
+                // cursor on the second option, and the file watched, as it
+                // is in the app. The harness keeps its files in a temporary
+                // directory of another name on every run: the pane's
+                // heading names one that stays, and that nothing is
+                // written to (the backend here only records).
+                Self::OmarchySettings => {
+                    workspace(harness);
+                    harness.app.dirs.config = PathBuf::from("/home/demo/.config/tabletist");
+                    harness.app.apply(Action::ShowSettings);
+                    harness.app.apply(Action::MoveSettingsRow(1));
+                    harness.app.settings_file.live = true;
                 }
             }
         }

@@ -111,6 +111,70 @@ impl Key {
     }
 }
 
+/// An option the Settings window shows: one row of it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OptionId {
+    PageSize,
+    Timestamps,
+    GroupDigits,
+    ValueTags,
+}
+
+impl OptionId {
+    /// In the order the window has them.
+    pub const ALL: [OptionId; 4] = [
+        Self::PageSize,
+        Self::Timestamps,
+        Self::GroupDigits,
+        Self::ValueTags,
+    ];
+
+    /// The key of the file the option is stored under.
+    pub fn key(self) -> Key {
+        match self {
+            Self::PageSize => Key::PageSize,
+            Self::Timestamps => Key::Timestamps,
+            Self::GroupDigits => Key::GroupDigits,
+            Self::ValueTags => Key::ValueTags,
+        }
+    }
+
+    /// What the option is before anyone sets it.
+    pub fn default_value(self) -> OptionValue {
+        Settings::default().value(self)
+    }
+}
+
+/// An option with a value: what a key, a click or a reset sets.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OptionValue {
+    PageSize(u32),
+    Timestamps(Timestamps),
+    GroupDigits(bool),
+    ValueTags(bool),
+}
+
+impl OptionValue {
+    pub fn option(self) -> OptionId {
+        match self {
+            Self::PageSize(_) => OptionId::PageSize,
+            Self::Timestamps(_) => OptionId::Timestamps,
+            Self::GroupDigits(_) => OptionId::GroupDigits,
+            Self::ValueTags(_) => OptionId::ValueTags,
+        }
+    }
+
+    /// Puts the value in `settings`.
+    pub fn set(self, settings: &mut Settings) {
+        match self {
+            Self::PageSize(size) => settings.page_size = size,
+            Self::Timestamps(choice) => settings.timestamps = choice,
+            Self::GroupDigits(on) => settings.group_digits = on,
+            Self::ValueTags(on) => settings.value_tags = on,
+        }
+    }
+}
+
 /// The file's first line.
 const HEADER: &str = "# written by tabletist, safe to edit by hand\n";
 
@@ -221,22 +285,69 @@ impl From<Settings> for Loaded {
 pub struct SettingsFile {
     /// The text as last read or written.
     pub text: String,
-    /// The lines that were ignored, counted from 1.
+    /// Where each line of the text starts, in bytes, found when the text
+    /// is set ([`Loaded::into_parts`]): what shows the file knows how tall
+    /// it is, and reaches the lines in view, without walking a long text on
+    /// every frame.
+    pub line_starts: Vec<usize>,
+    /// The lines that were ignored, counted from 1, in order.
     pub invalid: Vec<usize>,
     /// The line each key is on.
     pub lines: Vec<(Key, usize)>,
     /// Whether the backend watches the file for changes made outside.
     pub live: bool,
+    /// The text the app last asked to be written, if it asked: what tells
+    /// its newest write, coming back from the disk, from an older one.
+    pub saved: Option<String>,
+    /// The texts the app handed over with the file to be opened: the
+    /// backend writes one when no file is there, and that write is the
+    /// app's own too. Each of them, not the last alone: two requests can
+    /// wait at once, and the first may be the one that writes. None once a
+    /// save was asked for since: the save is newer than all of them.
+    pub offered: Vec<String>,
+}
+
+impl SettingsFile {
+    /// How many lines the text has, as [`str::lines`] counts them.
+    pub fn line_count(&self) -> usize {
+        self.line_starts.len()
+    }
+
+    /// The line numbered `index` from 0, without its line break, as
+    /// [`str::lines`] gives it. Nothing past the last.
+    pub fn line(&self, index: usize) -> Option<&str> {
+        let start = *self.line_starts.get(index)?;
+        let end = self.line_starts.get(index + 1).copied();
+        let line = &self.text[start..end.unwrap_or(self.text.len())];
+        let line = line.strip_suffix('\n').unwrap_or(line);
+        Some(line.strip_suffix('\r').unwrap_or(line))
+    }
+}
+
+/// Where each line of `text` starts, in bytes: a start for each line
+/// [`str::lines`] gives.
+fn line_starts(text: &str) -> Vec<usize> {
+    let mut start = 0;
+    text.split_inclusive('\n')
+        .map(|line| {
+            let at = start;
+            start += line.len();
+            at
+        })
+        .collect()
 }
 
 impl Loaded {
     /// The settings, and what the app keeps of their file.
     pub fn into_parts(self) -> (Settings, SettingsFile) {
         let file = SettingsFile {
+            line_starts: line_starts(&self.text),
             text: self.text,
             invalid: self.invalid,
             lines: self.lines,
             live: false,
+            saved: None,
+            offered: Vec::new(),
         };
         (self.settings, file)
     }
@@ -284,6 +395,8 @@ impl Settings {
     pub const DEFAULT_PAGE_SIZE: u32 = 300;
     pub const MIN_PAGE_SIZE: u32 = 10;
     pub const MAX_PAGE_SIZE: u32 = 10_000;
+    /// The page sizes the Settings window offers.
+    pub const PAGE_SIZES: [u32; 5] = [100, 300, 500, 1_000, 5_000];
     /// The most rows a SQL editor statement keeps.
     pub const MAX_SQL_LIMIT: u32 = 10_000;
     /// The row limits the SQL editor's Limit menu offers.
@@ -311,6 +424,58 @@ impl Settings {
     /// cancel every run at once, so it counts as no timeout.
     pub fn valid_sql_timeout(secs: Option<u32>) -> Option<u32> {
         secs.filter(|secs| *secs > 0)
+    }
+
+    /// What `option` is set to.
+    pub fn value(&self, option: OptionId) -> OptionValue {
+        match option {
+            OptionId::PageSize => OptionValue::PageSize(self.page_size),
+            OptionId::Timestamps => OptionValue::Timestamps(self.timestamps),
+            OptionId::GroupDigits => OptionValue::GroupDigits(self.group_digits),
+            OptionId::ValueTags => OptionValue::ValueTags(self.value_tags),
+        }
+    }
+
+    /// The value one step from `option`'s, towards the right (`forward`)
+    /// or the left, as the window draws its choices: the next page size
+    /// (none past the ends), the segment on that side, a check on to the
+    /// right and off to the left.
+    pub fn stepped(&self, option: OptionId, forward: bool) -> OptionValue {
+        match option {
+            OptionId::PageSize => {
+                let size = self.page_size;
+                let next = if forward {
+                    Self::PAGE_SIZES.into_iter().find(|choice| *choice > size)
+                } else {
+                    Self::PAGE_SIZES
+                        .into_iter()
+                        .rev()
+                        .find(|choice| *choice < size)
+                };
+                OptionValue::PageSize(next.unwrap_or(size))
+            }
+            OptionId::Timestamps => OptionValue::Timestamps(if forward {
+                Timestamps::Full
+            } else {
+                Timestamps::Second
+            }),
+            // Grouped is the left of the two.
+            OptionId::GroupDigits => OptionValue::GroupDigits(!forward),
+            OptionId::ValueTags => OptionValue::ValueTags(forward),
+        }
+    }
+
+    /// The other value of an option that has two; `None` for one with more.
+    pub fn flipped(&self, option: OptionId) -> Option<OptionValue> {
+        match option {
+            OptionId::PageSize => None,
+            OptionId::Timestamps => Some(OptionValue::Timestamps(match self.timestamps {
+                Timestamps::Second => Timestamps::Full,
+                Timestamps::Full => Timestamps::Second,
+            })),
+            OptionId::GroupDigits => Some(OptionValue::GroupDigits(!self.group_digits)),
+            OptionId::ValueTags => Some(OptionValue::ValueTags(!self.value_tags)),
+        }
     }
 
     /// `key`'s value as TOML writes it. `None` for a key the file leaves
@@ -849,11 +1014,38 @@ sql_timeout_secs = 30  # 0 waits forever
             file,
             SettingsFile {
                 text: text.into(),
+                line_starts: vec![0, 7, 23],
                 invalid: vec![3],
                 lines: vec![(Key::PageSize, 2)],
                 live: false,
+                saved: None,
+                offered: Vec::new(),
             }
         );
+        assert_eq!(file.line_count(), 3);
+    }
+
+    #[test]
+    fn the_lines_the_app_holds_are_the_ones_the_text_has() {
+        // Each kind of ending, a line with nothing on it, and a last line
+        // with no ending and one with.
+        for text in [
+            "",
+            "one",
+            "one\n",
+            "one\ntwo",
+            "one\r\ntwo\r\n",
+            "\n\none\n\n",
+            "a\rb\nc",
+            "ключ = 1\nä\n",
+        ] {
+            let (_, file) = Settings::from_toml(text).into_parts();
+            let lines: Vec<&str> = (0..file.line_count())
+                .filter_map(|index| file.line(index))
+                .collect();
+            assert_eq!(lines, text.lines().collect::<Vec<_>>(), "{text:?}");
+            assert_eq!(file.line(file.line_count()), None, "{text:?}");
+        }
     }
 
     #[test]
@@ -1093,5 +1285,136 @@ sql_timeout_secs = 30  # 0 waits forever
         assert_eq!(loaded.invalid, vec![3]);
         assert_eq!(loaded.settings.page_size, 100);
         assert_eq!(std::fs::read_to_string(dirs.settings_file()).unwrap(), text);
+    }
+
+    #[test]
+    fn an_option_is_read_and_set_as_a_value() {
+        let mut settings = Settings::default();
+        for (option, value) in [
+            (OptionId::PageSize, OptionValue::PageSize(500)),
+            (
+                OptionId::Timestamps,
+                OptionValue::Timestamps(Timestamps::Full),
+            ),
+            (OptionId::GroupDigits, OptionValue::GroupDigits(true)),
+            (OptionId::ValueTags, OptionValue::ValueTags(false)),
+        ] {
+            assert_eq!(value.option(), option);
+            assert_ne!(settings.value(option), value);
+            value.set(&mut settings);
+            assert_eq!(settings.value(option), value);
+        }
+        assert_eq!(settings.page_size, 500);
+        assert_eq!(settings.timestamps, Timestamps::Full);
+        assert!(settings.group_digits);
+        assert!(!settings.value_tags);
+    }
+
+    #[test]
+    fn every_option_is_stored_under_its_own_key_and_starts_at_the_default() {
+        let keys: Vec<Key> = OptionId::ALL.iter().map(|option| option.key()).collect();
+        assert_eq!(
+            keys,
+            vec![
+                Key::PageSize,
+                Key::Timestamps,
+                Key::GroupDigits,
+                Key::ValueTags
+            ]
+        );
+        let defaults = Settings::default();
+        for option in OptionId::ALL {
+            assert_eq!(option.default_value(), defaults.value(option));
+        }
+    }
+
+    #[test]
+    fn the_page_size_steps_through_its_choices_and_stops_at_the_ends() {
+        let step = |size: u32, forward: bool| {
+            let settings = Settings {
+                page_size: size,
+                ..Settings::default()
+            };
+            settings.stepped(OptionId::PageSize, forward)
+        };
+        assert_eq!(step(300, true), OptionValue::PageSize(500));
+        assert_eq!(step(300, false), OptionValue::PageSize(100));
+        assert_eq!(step(100, false), OptionValue::PageSize(100));
+        assert_eq!(step(5_000, true), OptionValue::PageSize(5_000));
+        // A size set by hand is between two choices: it steps to the next.
+        assert_eq!(step(250, true), OptionValue::PageSize(300));
+        assert_eq!(step(250, false), OptionValue::PageSize(100));
+        assert_eq!(step(9_000, true), OptionValue::PageSize(9_000));
+        assert_eq!(step(9_000, false), OptionValue::PageSize(5_000));
+    }
+
+    #[test]
+    fn an_option_of_two_values_steps_to_the_side_it_is_drawn_on() {
+        let settings = Settings::default();
+        // Timestamps: to the second on the left, full on the right.
+        assert_eq!(
+            settings.stepped(OptionId::Timestamps, true),
+            OptionValue::Timestamps(Timestamps::Full)
+        );
+        assert_eq!(
+            settings.stepped(OptionId::Timestamps, false),
+            OptionValue::Timestamps(Timestamps::Second)
+        );
+        // Numbers: grouped on the left, plain on the right.
+        assert_eq!(
+            settings.stepped(OptionId::GroupDigits, false),
+            OptionValue::GroupDigits(true)
+        );
+        assert_eq!(
+            settings.stepped(OptionId::GroupDigits, true),
+            OptionValue::GroupDigits(false)
+        );
+        // A check: off to the left, on to the right.
+        assert_eq!(
+            settings.stepped(OptionId::ValueTags, false),
+            OptionValue::ValueTags(false)
+        );
+        assert_eq!(
+            settings.stepped(OptionId::ValueTags, true),
+            OptionValue::ValueTags(true)
+        );
+    }
+
+    #[test]
+    fn space_flips_an_option_of_two_values_and_leaves_the_page_size() {
+        let settings = Settings::default();
+        assert_eq!(
+            settings.flipped(OptionId::ValueTags),
+            Some(OptionValue::ValueTags(false))
+        );
+        assert_eq!(
+            settings.flipped(OptionId::GroupDigits),
+            Some(OptionValue::GroupDigits(true))
+        );
+        assert_eq!(
+            settings.flipped(OptionId::Timestamps),
+            Some(OptionValue::Timestamps(Timestamps::Full))
+        );
+        assert_eq!(settings.flipped(OptionId::PageSize), None);
+        // And back, from the other value of each.
+        let settings = Settings {
+            value_tags: false,
+            group_digits: true,
+            timestamps: Timestamps::Full,
+            ..Default::default()
+        };
+        assert_eq!(
+            settings.flipped(OptionId::ValueTags),
+            Some(OptionValue::ValueTags(true))
+        );
+        assert_eq!(
+            settings.flipped(OptionId::GroupDigits),
+            Some(OptionValue::GroupDigits(false))
+        );
+        assert_eq!(
+            settings.flipped(OptionId::Timestamps),
+            Some(OptionValue::Timestamps(Timestamps::Second))
+        );
+        assert_eq!(settings.flipped(OptionId::PageSize), None);
     }
 }

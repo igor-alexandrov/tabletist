@@ -1272,8 +1272,19 @@ impl<'a> ButtonSpec<'a> {
     /// The button in `rect`, working but not drawn: an action that shows
     /// only under the pointer stays reachable by keyboard and screen reader.
     pub fn hidden_at(self, ui: &mut Ui, rect: Rect) -> Response {
+        self.hidden_sensing(ui, rect, Sense::click())
+    }
+
+    /// [`Self::hidden_at`] that Tab passes by: for a place too small for a
+    /// ring to show where the keyboard is. The pointer and a screen reader
+    /// press it all the same.
+    pub fn hidden_off_tab(self, ui: &mut Ui, rect: Rect) -> Response {
+        self.hidden_sensing(ui, rect, Sense::CLICK)
+    }
+
+    fn hidden_sensing(self, ui: &mut Ui, rect: Rect, sense: Sense) -> Response {
         let name = self.label.unwrap_or(self.text);
-        let response = ui.interact(rect, self.id(ui), Sense::click());
+        let response = ui.interact(rect, self.id(ui), sense);
         response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, name));
         // Not drawn, so the ring is all that shows where the keyboard is.
         focus::hint(ui, &response, rect, Ring::Outer { radius: 0 });

@@ -145,6 +145,13 @@ pub enum Command {
     WatchSettings {
         path: PathBuf,
     },
+    /// Opens the settings file `path` in the editor, written from `text`
+    /// first when it is not there. Answered with
+    /// [`Event::SettingsFileOpened`].
+    EditSettingsFile {
+        path: PathBuf,
+        text: String,
+    },
     /// Signals `done` once every save sent before it is on disk.
     Flush {
         done: mpsc::Sender<()>,
@@ -266,9 +273,12 @@ pub enum Event {
     /// a directory that cannot be watched, or such a directory that can be
     /// watched after all.
     SettingsWatch { live: bool },
-    /// The settings file changed on disk: its text. The app's own writes
-    /// come this way too, and it knows them by their text.
-    SettingsFile { text: String },
+    /// The settings file changed on disk: its text. `own` when it is, byte
+    /// for byte, what the backend itself wrote there last: the app's own
+    /// save coming back, which it must not take for someone else's change.
+    SettingsFile { text: String, own: bool },
+    /// The editor was started on the settings file, or why it was not.
+    SettingsFileOpened { result: Result<(), String> },
 }
 
 /// Who stopped a SQL editor run.
@@ -702,7 +712,14 @@ struct Saves {
     pending: Arc<Mutex<HashMap<PathBuf, Option<StateFile>>>>,
     /// Woken whenever a writer finishes.
     idle: Arc<tokio::sync::Notify>,
+    settings_written: Written,
 }
+
+/// The text the backend wrote to the settings file last, if it wrote one.
+/// Locked while it is written and while the reader reads the file and
+/// compares: a write cannot land between the reader's read and its
+/// comparison and make the app's own older text look like someone else's.
+type Written = Arc<Mutex<Option<String>>>;
 
 impl Saves {
     /// Queues `file` for `path`, starting a writer unless one runs.
@@ -733,7 +750,21 @@ impl Saves {
                     }
                 }
             };
-            let result = file.save(path).map_err(|error| error.to_string());
+            let result = match &file {
+                // Known to the settings file's reader for the app's own.
+                StateFile::Settings(settings) => {
+                    let mut written = lock(&self.settings_written);
+                    let result = file.save(path);
+                    // After a write that failed nothing on the disk is
+                    // known to be the app's: the text there may be an
+                    // older write of its own, but the app has moved on
+                    // from it, and someone putting it back must be heard.
+                    *written = result.is_ok().then(|| settings.to_toml());
+                    result
+                }
+                _ => file.save(path),
+            }
+            .map_err(|error| error.to_string());
             if let Err(error) = &result {
                 log::error!("could not save {}: {error}", path.display());
             }
@@ -956,7 +987,11 @@ impl Drop for SettingsReader {
 /// Watches the settings file `path` and starts the task that reads it
 /// whenever it changes, and once at the start. Says too whether every
 /// place an edit can be made is watched (see [`SettingsWatcher::follow`]).
-fn watch_settings(path: PathBuf, outbox: Outbox) -> notify::Result<(SettingsReader, bool)> {
+fn watch_settings(
+    path: PathBuf,
+    outbox: Outbox,
+    written: Written,
+) -> notify::Result<(SettingsReader, bool)> {
     use notify::Watcher as _;
     let (changed, changes) = tokio_mpsc::unbounded_channel();
     // The file as it is now: it was loaded before there was a watch, and a
@@ -1005,17 +1040,32 @@ fn watch_settings(path: PathBuf, outbox: Outbox) -> notify::Result<(SettingsRead
     };
     // The reader holds the watcher from here on, to turn it with the link.
     let follow = move || tokio::task::block_in_place(|| watch.follow());
-    let reader = tokio::spawn(read_settings(
-        path, live, changes, outbox, follow, read_file,
-    ));
+    let read = move |path| read_file(path, Arc::clone(&written));
+    let reader = tokio::spawn(read_settings(path, live, changes, outbox, follow, read));
     Ok((SettingsReader(reader.abort_handle()), live))
 }
 
+/// The settings file as the reader found it.
+struct Found {
+    bytes: Vec<u8>,
+    /// It is what the backend wrote there last.
+    own: bool,
+}
+
 /// Reads `path` on the blocking pool: a disk can be slow, and the runtime's
-/// threads serve every session.
-async fn read_file(path: PathBuf) -> std::io::Result<Vec<u8>> {
-    match tokio::task::spawn_blocking(move || std::fs::read(path)).await {
-        Ok(read) => read,
+/// threads serve every session. `written` is held across the read and the
+/// comparison, so that no write of the backend's lands between the two.
+async fn read_file(path: PathBuf, written: Written) -> std::io::Result<Found> {
+    let read = move || {
+        let written = lock(&written);
+        let bytes = std::fs::read(path)?;
+        let own = written
+            .as_deref()
+            .is_some_and(|text| text.as_bytes() == bytes.as_slice());
+        Ok(Found { bytes, own })
+    };
+    match tokio::task::spawn_blocking(read).await {
+        Ok(found) => found,
         Err(error) => Err(std::io::Error::other(error)),
     }
 }
@@ -1113,7 +1163,7 @@ async fn read_settings<W, R, F>(
 ) where
     W: FnMut() -> Result<(), String>,
     R: Fn(PathBuf) -> F,
-    F: Future<Output = std::io::Result<Vec<u8>>>,
+    F: Future<Output = std::io::Result<Found>>,
 {
     // What was sent last: the same text is not news, whatever woke us.
     let mut sent: Option<String> = None;
@@ -1132,7 +1182,7 @@ async fn read_settings<W, R, F>(
             Ok(None) => return,
             Err(_) => false,
         };
-        let bytes = 'settle: loop {
+        let found = 'settle: loop {
             if changed && !settled(&mut changes).await {
                 return;
             }
@@ -1157,7 +1207,7 @@ async fn read_settings<W, R, F>(
             let mut wait = SETTLE;
             loop {
                 match read(path.clone()).await {
-                    Ok(bytes) => match changes.try_recv() {
+                    Ok(found) => match changes.try_recv() {
                         // Changed while it was read (an editor truncating
                         // it, say): what was read may be half of that save,
                         // and sending it would have the app apply it until
@@ -1169,7 +1219,7 @@ async fn read_settings<W, R, F>(
                         }
                         // The end of the watch is not a change: this text
                         // is whole, and the task ends at its next wait.
-                        Err(_) => break 'settle Some(bytes),
+                        Err(_) => break 'settle Some(found),
                     },
                     // Deleted: the settings in memory stay, and the next
                     // change made in the app writes the file again. No
@@ -1199,20 +1249,155 @@ async fn read_settings<W, R, F>(
                 }
             }
         };
-        let Some(bytes) = bytes else {
+        let Some(found) = found else {
             continue;
         };
-        match String::from_utf8(bytes) {
+        match String::from_utf8(found.bytes) {
             Ok(text) if sent.as_deref() == Some(text.as_str()) => {}
             Ok(text) => {
                 sent = Some(text.clone());
-                outbox.emit(Event::SettingsFile { text });
+                outbox.emit(Event::SettingsFile {
+                    text,
+                    own: found.own,
+                });
             }
             // Half-written, or not a settings file at all: the settings in
             // memory stay, and nothing on disk is touched.
             Err(_) => log::warn!("{} is not text; it is not read", path.display()),
         }
     }
+}
+
+/// Opens the settings file `path` with `start`, writing `text` to it first
+/// when it is not there: the editor is given a file, and the UI thread
+/// never looked at the disk to know. That write is the backend's own, as a
+/// save's is: `written` is held from the look for the file to the end of
+/// the write and then holds `text`. Written past the lock, it could land
+/// after a save the app made meanwhile, and the reader would hand the
+/// older text to the app as someone else's change.
+fn open_in_editor(
+    path: &std::path::Path,
+    text: &str,
+    written: &Written,
+    start: impl FnOnce(&std::path::Path) -> std::io::Result<()>,
+) -> Result<(), String> {
+    open_where_missing(path, text, written, |path| !path.exists(), start)
+}
+
+/// [`open_in_editor`], with `missing` for the look at the disk: the tests
+/// have someone else make the file between that look and the write.
+fn open_where_missing(
+    path: &std::path::Path,
+    text: &str,
+    written: &Written,
+    missing: impl FnOnce(&std::path::Path) -> bool,
+    start: impl FnOnce(&std::path::Path) -> std::io::Result<()>,
+) -> Result<(), String> {
+    {
+        let mut written = lock(written);
+        // The lock keeps the backend's own writes out, not anyone else's:
+        // an editor can make the file after the look for it. So the file
+        // is made only where none is, in one step, and one that appeared
+        // meanwhile is opened as it is: theirs, and no write of the
+        // backend's.
+        if missing(path) {
+            match crate::util::create_atomic(path, text.as_bytes()) {
+                Ok(true) => *written = Some(text.to_owned()),
+                Ok(false) => {}
+                // As after a save: a write that failed leaves nothing on
+                // the disk that is known to be the app's.
+                Err(error) => {
+                    *written = None;
+                    return Err(error.to_string());
+                }
+            }
+        }
+    }
+    start(path).map_err(|error| error.to_string())
+}
+
+/// The program that opens a text file for editing on this system, and what
+/// it is given. `on_path` says whether a command of that name can be run.
+fn editor_command(
+    path: &std::path::Path,
+    on_path: impl Fn(&str) -> bool,
+) -> (String, Vec<std::ffi::OsString>) {
+    let file = path.as_os_str().to_owned();
+    #[cfg(target_os = "macos")]
+    {
+        let _ = on_path;
+        ("open".into(), vec!["-t".into(), file])
+    }
+    #[cfg(windows)]
+    {
+        let _ = on_path;
+        ("explorer".into(), vec![file])
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        // Omarchy has a launcher for the editor it is set up with, which
+        // gives a terminal editor a terminal of its own; any other desktop
+        // knows what edits a text file.
+        let program = if on_path("omarchy-launch-editor") {
+            "omarchy-launch-editor"
+        } else {
+            "xdg-open"
+        };
+        (program.into(), vec![file])
+    }
+}
+
+/// Whether a command named `name` can be run from one of `dirs`, which are
+/// `PATH`'s outside the tests.
+fn on_path(name: &str, dirs: impl IntoIterator<Item = PathBuf>) -> bool {
+    dirs.into_iter().any(|dir| can_run(&dir.join(name)))
+}
+
+/// Whether `file` is a file the system would start. A file of a command's
+/// name that nobody may run would be chosen, fail to start, and keep the
+/// next way to open the file from being tried.
+fn can_run(file: &std::path::Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        // Any of the three bits: whose it is, the system says at the start.
+        std::fs::metadata(file)
+            .is_ok_and(|file| file.is_file() && file.permissions().mode() & 0o111 != 0)
+    }
+    #[cfg(not(unix))]
+    {
+        file.is_file()
+    }
+}
+
+/// Starts the editor on `path` and lets it go: it is the user's window from
+/// here. A thread of its own waits for it, so it leaves no zombie, and says
+/// in the log when it ended with a failure: a launcher with nothing to open
+/// the file with has no other way to be heard.
+fn start_editor(path: &std::path::Path) -> std::io::Result<()> {
+    use std::process::Stdio;
+    let paths = std::env::var_os("PATH");
+    let found = |name: &str| {
+        paths
+            .as_deref()
+            .is_some_and(|paths| on_path(name, std::env::split_paths(paths)))
+    };
+    let (program, args) = editor_command(path, found);
+    let mut child = std::process::Command::new(&program)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+    std::thread::spawn(move || match child.wait() {
+        Ok(status) if status.success() => {}
+        // Windows' explorer ends with a failure whatever it did: its
+        // status says nothing, and a warning at every press would.
+        Ok(_) if cfg!(windows) => {}
+        Ok(status) => log::warn!("{program} ended with {status}"),
+        Err(error) => log::warn!("could not wait for {program}: {error}"),
+    });
+    Ok(())
 }
 
 /// Runs on the backend runtime. Owns every session.
@@ -1445,7 +1630,8 @@ impl Worker {
             }
             Command::Save { path, file } => self.saves.save(path, file, &self.outbox),
             Command::WatchSettings { path } => {
-                let live = match watch_settings(path, self.outbox.clone()) {
+                let written = Arc::clone(&self.saves.settings_written);
+                let live = match watch_settings(path, self.outbox.clone(), written) {
                     Ok((reader, live)) => {
                         self.settings_watch = Some(reader);
                         live
@@ -1456,6 +1642,17 @@ impl Worker {
                     }
                 };
                 self.outbox.emit(Event::SettingsWatch { live });
+            }
+            Command::EditSettingsFile { path, text } => {
+                let outbox = self.outbox.clone();
+                let written = Arc::clone(&self.saves.settings_written);
+                tokio::task::spawn_blocking(move || {
+                    let result = open_in_editor(&path, &text, &written, start_editor);
+                    if let Err(error) = &result {
+                        log::warn!("could not open {} in the editor: {error}", path.display());
+                    }
+                    outbox.emit(Event::SettingsFileOpened { result });
+                });
             }
             Command::Flush { done } => {
                 let saves = self.saves.clone();
@@ -1501,6 +1698,7 @@ fn session_of(command: &Command) -> SessionId {
         | Command::StoreSecret { .. }
         | Command::Save { .. }
         | Command::WatchSettings { .. }
+        | Command::EditSettingsFile { .. }
         | Command::Flush { .. } => SessionId(0),
     }
 }
@@ -1524,6 +1722,7 @@ fn request_of(command: &Command) -> Option<RequestId> {
         | Command::StoreSecret { .. }
         | Command::Save { .. }
         | Command::WatchSettings { .. }
+        | Command::EditSettingsFile { .. }
         | Command::Flush { .. } => None,
     }
 }
@@ -1593,6 +1792,7 @@ fn fail(outbox: &Outbox, command: Command, error: Error) {
         | Command::StoreSecret { .. }
         | Command::Save { .. }
         | Command::WatchSettings { .. }
+        | Command::EditSettingsFile { .. }
         | Command::Flush { .. } => return,
     };
     outbox.emit(event);
@@ -1828,6 +2028,7 @@ async fn run_session(
             | Command::StoreSecret { .. }
             | Command::Save { .. }
             | Command::WatchSettings { .. }
+            | Command::EditSettingsFile { .. }
             | Command::Flush { .. } => None,
         };
         end.command = None;
@@ -4122,11 +4323,32 @@ mod tests {
         let deadline = std::time::Instant::now() + WAIT;
         let mut texts = Vec::new();
         while std::time::Instant::now() < deadline {
-            if let Some(Event::SettingsFile { text }) = backend.wait(Duration::from_millis(200)) {
+            if let Some(Event::SettingsFile { text, .. }) = backend.wait(Duration::from_millis(200))
+            {
                 let done = text == expected;
                 texts.push(text);
                 if done {
                     return texts;
+                }
+            }
+        }
+        Vec::new()
+    }
+
+    /// The settings file's texts the backend sends until `expected` comes,
+    /// that one included, each with whether it is the backend's own write;
+    /// empty when it never does.
+    fn files_until(backend: &mut Backend, expected: &str) -> Vec<(String, bool)> {
+        let deadline = std::time::Instant::now() + WAIT;
+        let mut files = Vec::new();
+        while std::time::Instant::now() < deadline {
+            if let Some(Event::SettingsFile { text, own }) =
+                backend.wait(Duration::from_millis(200))
+            {
+                let done = text == expected;
+                files.push((text, own));
+                if done {
+                    return files;
                 }
             }
         }
@@ -4191,7 +4413,7 @@ mod tests {
     /// at once with `answer(n)`: the channel that wakes it, what it sends,
     /// and when each read was.
     fn reader(
-        answer: impl Fn(usize) -> std::io::Result<Vec<u8>> + Send + 'static,
+        answer: impl Fn(usize) -> std::io::Result<Found> + Send + 'static,
     ) -> (
         tokio_mpsc::UnboundedSender<()>,
         mpsc::Receiver<Event>,
@@ -4211,7 +4433,7 @@ mod tests {
         Arc<Mutex<Vec<tokio::time::Instant>>>,
     )
     where
-        F: Future<Output = std::io::Result<Vec<u8>>> + Send + 'static,
+        F: Future<Output = std::io::Result<Found>> + Send + 'static,
     {
         let (outbox, events) = quiet_outbox();
         let (changed, changes) = tokio_mpsc::unbounded_channel();
@@ -4234,10 +4456,18 @@ mod tests {
         std::io::ErrorKind::PermissionDenied.into()
     }
 
+    /// What a read answers when it finds `text`, put there by someone else.
+    fn found(text: &str) -> std::io::Result<Found> {
+        Ok(Found {
+            bytes: text.into(),
+            own: false,
+        })
+    }
+
     /// The texts of the settings file sent so far.
     fn texts(events: &mpsc::Receiver<Event>) -> Vec<String> {
         let text = |event| match event {
-            Event::SettingsFile { text } => Some(text),
+            Event::SettingsFile { text, .. } => Some(text),
             _ => None,
         };
         events.try_iter().filter_map(text).collect()
@@ -4252,7 +4482,7 @@ mod tests {
             // without another change to say so.
             let (changed, events, reads) = reader(|read| match read {
                 0 | 1 => Err(held()),
-                _ => Ok(PAGE_500.into()),
+                _ => found(PAGE_500),
             });
             let start = tokio::time::Instant::now();
             changed.send(()).unwrap();
@@ -4268,7 +4498,7 @@ mod tests {
         paused().block_on(async {
             let (changed, events, reads) = reader(|read| match read {
                 0..6 => Err(held()),
-                _ => Ok(PAGE_500.into()),
+                _ => found(PAGE_500),
             });
             let start = tokio::time::Instant::now();
             changed.send(()).unwrap();
@@ -4303,7 +4533,7 @@ mod tests {
         paused().block_on(async {
             let (changed, events, reads) = reader(|read| match read {
                 0..4 => Err(held()),
-                _ => Ok(PAGE_500.into()),
+                _ => found(PAGE_500),
             });
             let start = tokio::time::Instant::now();
             changed.send(()).unwrap();
@@ -4318,10 +4548,10 @@ mod tests {
         });
     }
 
-    /// A read that takes 50 ms to answer with `answer`.
-    async fn after_50_ms(answer: Vec<u8>) -> std::io::Result<Vec<u8>> {
+    /// A read that takes 50 ms to answer with `bytes`, another's.
+    async fn after_50_ms(bytes: Vec<u8>) -> std::io::Result<Found> {
         tokio::time::sleep(Duration::from_millis(50)).await;
-        Ok(answer)
+        Ok(Found { bytes, own: false })
     }
 
     #[test]
@@ -4534,6 +4764,116 @@ mod tests {
         // into place, so that no read finds the file empty on the way.
         crate::util::write_atomic(&path, b"[data]\npage_size = 500\n").unwrap();
         assert!(backend.wait(Duration::from_millis(600)).is_none());
+    }
+
+    #[test]
+    fn a_write_of_the_backends_own_is_sent_as_its_own() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.toml");
+        let (mut backend, live) = watching(&path);
+        assert!(live);
+        // Another's save: the app is told it is not its own.
+        crate::util::write_atomic(&path, b"[data]\npage_size = 500\n").unwrap();
+        assert_eq!(
+            files_until(&mut backend, "[data]\npage_size = 500\n"),
+            vec![("[data]\npage_size = 500\n".to_owned(), false)]
+        );
+        // The app's save, through the backend.
+        let settings = crate::settings::Settings {
+            page_size: 100,
+            ..Default::default()
+        };
+        backend.send(Command::Save {
+            path: path.clone(),
+            file: StateFile::Settings(settings.clone()),
+        });
+        assert_eq!(
+            files_until(&mut backend, &settings.to_toml()),
+            vec![(settings.to_toml(), true)]
+        );
+        // The text before it, put back by someone else, is theirs.
+        crate::util::write_atomic(&path, b"[data]\npage_size = 500\n").unwrap();
+        assert_eq!(
+            files_until(&mut backend, "[data]\npage_size = 500\n"),
+            vec![("[data]\npage_size = 500\n".to_owned(), false)]
+        );
+        // So is a text the backend did write, once it has written another:
+        // only its last write is its own.
+        let newer = crate::settings::Settings {
+            page_size: 50,
+            ..Default::default()
+        };
+        backend.send(Command::Save {
+            path: path.clone(),
+            file: StateFile::Settings(newer.clone()),
+        });
+        assert_eq!(
+            files_until(&mut backend, &newer.to_toml()),
+            vec![(newer.to_toml(), true)]
+        );
+        crate::util::write_atomic(&path, settings.to_toml().as_bytes()).unwrap();
+        assert_eq!(
+            files_until(&mut backend, &settings.to_toml()),
+            vec![(settings.to_toml(), false)]
+        );
+    }
+
+    #[test]
+    fn a_save_that_failed_leaves_no_write_of_the_backends_own() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.toml");
+        let (mut backend, live) = watching(&path);
+        assert!(live);
+        let first = crate::settings::Settings {
+            page_size: 100,
+            ..Default::default()
+        };
+        backend.send(Command::Save {
+            path: path.clone(),
+            file: StateFile::Settings(first.clone()),
+        });
+        assert_eq!(
+            files_until(&mut backend, &first.to_toml()),
+            vec![(first.to_toml(), true)]
+        );
+        // A folder where the file was: no system renames a file over one,
+        // so the next save fails.
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        let second = crate::settings::Settings {
+            page_size: 50,
+            ..Default::default()
+        };
+        backend.send(Command::Save {
+            path: path.clone(),
+            file: StateFile::Settings(second),
+        });
+        let deadline = std::time::Instant::now() + WAIT;
+        loop {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the save over a folder did not fail"
+            );
+            let event = backend.wait(Duration::from_millis(200));
+            if let Some(Event::Saved { result: Err(_), .. }) = event {
+                break;
+            }
+        }
+        // Someone else writes the file again. The reader does not send the
+        // text it sent last a second time, so another comes first.
+        std::fs::remove_dir(&path).unwrap();
+        crate::util::write_atomic(&path, PAGE_500.as_bytes()).unwrap();
+        assert_eq!(
+            files_until(&mut backend, PAGE_500),
+            vec![(PAGE_500.to_owned(), false)]
+        );
+        // The first text is the last the backend wrote that reached the
+        // disk. The app has moved on from it: put back, it is theirs.
+        crate::util::write_atomic(&path, first.to_toml().as_bytes()).unwrap();
+        assert_eq!(
+            files_until(&mut backend, &first.to_toml()),
+            vec![(first.to_toml(), false)]
+        );
     }
 
     #[test]
@@ -4984,5 +5324,155 @@ mod tests {
         let path = dir.path().join("missing").join("settings.toml");
         let (_backend, live) = watching(&path);
         assert!(!live);
+    }
+
+    #[test]
+    fn a_settings_file_that_is_not_there_is_written_before_the_editor_starts() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config").join("settings.toml");
+        let written = Written::default();
+        let mut seen = None;
+        open_in_editor(&path, "[data]\npage_size = 300\n", &written, |opened| {
+            seen = Some((
+                opened.to_path_buf(),
+                std::fs::read_to_string(opened).unwrap(),
+            ));
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(
+            seen,
+            Some((path.clone(), "[data]\npage_size = 300\n".to_owned()))
+        );
+        // A file that is there is opened as it is, whatever the app holds.
+        std::fs::write(&path, "[data]\npage_size = 100\n").unwrap();
+        open_in_editor(&path, "[data]\npage_size = 300\n", &written, |_| Ok(())).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "[data]\npage_size = 100\n"
+        );
+    }
+
+    #[test]
+    fn the_file_written_for_the_editor_is_the_backends_own_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.toml");
+        let written = Written::default();
+        open_in_editor(&path, PAGE_500, &written, |_| Ok(())).unwrap();
+        assert_eq!(lock(&written).as_deref(), Some(PAGE_500));
+        // So the reader knows it: a save of the app's that lands before
+        // this write does not leave it looking like someone else's text.
+        let found = runtime()
+            .block_on(read_file(path.clone(), Arc::clone(&written)))
+            .unwrap();
+        assert!(found.own);
+    }
+
+    #[test]
+    fn a_file_that_is_there_is_no_write_of_the_backends() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.toml");
+        let theirs = "[data]\npage_size = 100\n";
+        std::fs::write(&path, theirs).unwrap();
+        // Nothing written yet, or a text of the backend's from before
+        // someone else wrote the file: neither is touched.
+        for before in [None, Some("[data]\npage_size = 50\n".to_owned())] {
+            let written: Written = Arc::new(Mutex::new(before.clone()));
+            open_in_editor(&path, PAGE_500, &written, |_| Ok(())).unwrap();
+            assert_eq!(*lock(&written), before);
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), theirs);
+        }
+    }
+
+    #[test]
+    fn a_file_made_after_the_look_for_it_is_opened_as_it_is() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.toml");
+        let theirs = "[data]\npage_size = 100\n";
+        // Nothing written yet, or a text of the backend's from before:
+        // neither is touched by a file someone else made.
+        for before in [None, Some("[data]\npage_size = 50\n".to_owned())] {
+            let _ = std::fs::remove_file(&path);
+            let written: Written = Arc::new(Mutex::new(before.clone()));
+            let mut opened = None;
+            open_where_missing(
+                &path,
+                PAGE_500,
+                &written,
+                // Not there when it is looked for, and there a moment
+                // later: an editor saved it.
+                |path| {
+                    std::fs::write(path, theirs).unwrap();
+                    true
+                },
+                |path| {
+                    opened = Some(std::fs::read_to_string(path).unwrap());
+                    Ok(())
+                },
+            )
+            .unwrap();
+            assert_eq!(opened.as_deref(), Some(theirs));
+            assert_eq!(*lock(&written), before);
+            // And nothing is left beside it.
+            let files = std::fs::read_dir(dir.path()).unwrap().count();
+            assert_eq!(files, 1);
+        }
+    }
+
+    #[test]
+    fn an_editor_that_cannot_start_is_told_with_the_file_still_written() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.toml");
+        let error = open_in_editor(&path, "[data]\n", &Written::default(), |_| {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "no editor",
+            ))
+        })
+        .unwrap_err();
+        assert!(error.contains("no editor"), "{error}");
+        assert!(path.exists());
+    }
+
+    #[test]
+    fn the_editor_is_the_systems_way_to_open_a_text_file() {
+        let path = std::path::Path::new("/config/settings.toml");
+        let (program, args) = editor_command(path, |_| false);
+        #[cfg(target_os = "macos")]
+        assert_eq!((program.as_str(), args.len()), ("open", 2));
+        #[cfg(windows)]
+        assert_eq!((program.as_str(), args.len()), ("explorer", 1));
+        #[cfg(all(unix, not(target_os = "macos")))]
+        {
+            assert_eq!((program.as_str(), args.len()), ("xdg-open", 1));
+            // Omarchy's own launcher, where it is installed.
+            let (program, args) = editor_command(path, |name| name == "omarchy-launch-editor");
+            assert_eq!(program, "omarchy-launch-editor");
+            assert_eq!(args, vec![path.as_os_str().to_owned()]);
+        }
+        assert_eq!(
+            args.last().map(|arg| arg.as_os_str()),
+            Some(path.as_os_str())
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_command_is_on_the_path_only_where_it_can_be_run() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir().unwrap();
+        let dirs = || [dir.path().join("missing"), dir.path().to_path_buf()];
+        assert!(!on_path("launch-editor", dirs()));
+        // A file of the name that nobody may run: starting it would fail,
+        // and the next way to open the file would never be tried.
+        let file = dir.path().join("launch-editor");
+        std::fs::write(&file, "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(!on_path("launch-editor", dirs()));
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(on_path("launch-editor", dirs()));
+        // A folder of the name has the bits and is no command.
+        std::fs::create_dir(dir.path().join("a-folder")).unwrap();
+        assert!(!on_path("a-folder", dirs()));
     }
 }
