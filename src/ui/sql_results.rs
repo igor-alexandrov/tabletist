@@ -2319,6 +2319,64 @@ mod tests {
         assert!(!crate::ui::grid::remembered(&harness.ctx, second));
     }
 
+    /// The grid the editor's result was last drawn with.
+    fn result_grid(harness: &Harness, tab: ConnTabId, id: TabId) -> Option<Id> {
+        let kept: Option<LastGrid> = harness.ctx.data(|data| data.get_temp(results_id(tab, id)));
+        kept.map(|LastGrid(grid)| grid)
+    }
+
+    #[test]
+    fn a_result_on_screen_is_fitted_again_when_the_file_changes_value_tags() {
+        let (mut harness, tab) = editor(Look::standard(), "SELECT 1");
+        // A boolean column with no type under its name: its values decide
+        // how wide it is.
+        let mut page = crate::testing::page(3, false);
+        page.columns[2].name = "ok".into();
+        page.columns[2].type_name = String::new();
+        page.columns[2].kind = ValueKind::Bool;
+        for row in &mut page.rows {
+            row[2] = tabletist_db::Value::Bool(false);
+        }
+        let result = StatementOutcome::Rows {
+            columns: page.columns,
+            rows: page.rows,
+            truncated: false,
+        };
+        run(&mut harness);
+        harness.answer_sql(Ok(script_outcome(vec![result])), None);
+        let id = sql(&harness, tab).id;
+        let ran = sql(&harness, tab).run.loaded;
+        // The grid the result is drawn with once the file reads `text`, and
+        // how wide that grid makes the boolean column.
+        let drawn = |harness: &mut Harness, text: Option<&str>| {
+            if let Some(text) = text {
+                let text = text.to_owned();
+                let file = crate::backend::Event::SettingsFile { text };
+                harness.app.apply(Action::Backend(file));
+            }
+            let tree = harness.settle();
+            let grid = result_grid(harness, tab, id).expect("the result was drawn");
+            let column = bounds(&tree, "ok", Role::Label).expect("the column");
+            (grid, column.width())
+        };
+        let remembered = |harness: &Harness, grid| crate::ui::grid::remembered(&harness.ctx, grid);
+        let (tagged, padded) = drawn(&mut harness, None);
+        assert!(remembered(&harness, tagged));
+        // The same run under the other option is another grid, fitted on
+        // its own: a tag pads its text, and the plain text needs less. What
+        // egui kept for the grid before is dropped.
+        let (plain, bare) = drawn(&mut harness, Some("[data]\nvalue_tags = false\n"));
+        assert_eq!(sql(&harness, tab).run.loaded, ran, "nothing ran again");
+        assert_ne!(tagged, plain);
+        assert!(bare < padded, "{padded} then {bare}");
+        assert!(!remembered(&harness, tagged) && remembered(&harness, plain));
+        // And the other way: the widths of the plain text would cut a tag.
+        let (again, wide) = drawn(&mut harness, Some("[data]\nvalue_tags = true\n"));
+        assert_eq!(again, tagged);
+        assert_eq!(wide, padded);
+        assert!(remembered(&harness, tagged) && !remembered(&harness, plain));
+    }
+
     #[test]
     fn a_big_result_builds_only_the_rows_in_view() {
         use tabletist_db::{ColumnMeta, Value, ValueKind};

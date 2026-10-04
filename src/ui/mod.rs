@@ -3936,6 +3936,48 @@ mod tests {
     }
 
     #[test]
+    fn an_edit_of_the_file_changes_how_an_open_result_draws_a_boolean() {
+        let mut harness = Harness::new();
+        let tab = harness.connect_fake();
+        let mut page = crate::testing::page(1, false);
+        page.columns[2].kind = tabletist_db::ValueKind::Bool;
+        page.rows[0][2] = tabletist_db::Value::Bool(true);
+        with_sql_outcome(
+            &mut harness,
+            tab,
+            tabletist_db::StatementOutcome::Rows {
+                columns: page.columns,
+                rows: page.rows,
+                truncated: false,
+            },
+        );
+        // The boolean cell and the email cell, as the result on screen
+        // draws them once the file reads `text`.
+        let painted = |harness: &mut Harness, text: Option<&str>| {
+            if let Some(text) = text {
+                harness.app.apply(crate::model::Action::Backend(
+                    crate::backend::Event::SettingsFile { text: text.into() },
+                ));
+            }
+            harness.settle();
+            (
+                harness.painted_color("true").expect("the boolean cell"),
+                harness
+                    .painted_color("user1@example.com")
+                    .expect("the email cell"),
+            )
+        };
+        let (tag, plain) = painted(&mut harness, None);
+        assert_ne!(tag, plain, "a tag has its colour");
+        // Nothing is run again: the result that is up is drawn anew.
+        let (flat, plain) = painted(&mut harness, Some("[data]\nvalue_tags = false\n"));
+        assert_eq!(flat, plain);
+        let (again, plain) = painted(&mut harness, Some("[data]\nvalue_tags = true\n"));
+        assert_eq!(again, tag);
+        assert_ne!(again, plain);
+    }
+
+    #[test]
     fn a_tables_row_text_is_back_after_the_structure_view() {
         let mut harness = Harness::new();
         with_page(&mut harness);
