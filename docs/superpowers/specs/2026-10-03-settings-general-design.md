@@ -718,7 +718,7 @@ window to ship can already say `live` and mean it.
    4, so no look lists a key that does nothing there.
 4. **The window on macOS and Windows.** The sheet, the toggle, the footer's
    Reveal, Export, Reset and count of ignored lines, the ways in for every
-   look, and the `SHORTCUTS` line. The macOS menu item (see Opening) is
-   delivered after it, in a pull request of its own: it needs
-   `tabletist-appkit` and runs only on a Mac, and `⌘,` reaches the window
-   without it.
+   look, the `SHORTCUTS` line, and the macOS menu item (see Opening). The
+   menu item was planned and built apart from the rest, since it needs
+   `tabletist-appkit` and runs only on a Mac, and was merged into the
+   window's pull request: the two are delivered together.

@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** In the standard and macOS looks, `Mod+,` opens the Settings window as a sheet: a nav, the General tab's four options as a menu, two segmented controls and a toggle, and a footer that says where the file is and offers Reveal, Export and Reset. The key is listed in the shortcuts. "Settings…" in the macOS app menu was planned here as Task 7 and is deferred to a plan and a pull request of its own.
+**Goal:** In the standard and macOS looks, `Mod+,` opens the Settings window as a sheet: a nav, the General tab's four options as a menu, two segmented controls and a toggle, and a footer that says where the file is and offers Reveal, Export and Reset. The key is listed in the shortcuts. "Settings…" in the macOS app menu was planned here as Task 7 and is built by a plan of its own, `2026-10-04-settings-macos-menu.md`; its work was merged into this plan's pull request, so the two are delivered together.
 
 **Architecture:** Step 3 left everything the window needs but its second layout: `Dialog::Settings`, `OptionId` and `OptionValue`, `Action::SetOption` through `App::change_settings`, and `src/ui/settings/mod.rs` that picks a layout. This step adds `src/ui/settings/sheet.rs` for the looks that are not a terminal's, a `widgets::toggle`, and three footer actions (Reveal on the backend beside the editor's launcher, Export through `Backend::save_bytes`, Reset with a question in place). The gates that kept `Mod+,` and the shortcuts dialog's button to the terminal look go.
 
@@ -1368,9 +1368,9 @@ Expected: PASS, the terminal screen's tests with them: its pane still shows the 
 
 ---
 
-### Task 7: "Settings…" in the macOS app menu (deferred)
+### Task 7: "Settings…" in the macOS app menu (moved to its own plan)
 
-Not part of this plan's pull request. The item needs `tabletist-appkit`, and none of it can be run from Linux, so it has a plan of its own, `docs/superpowers/plans/2026-10-04-settings-macos-menu.md`, in the pull request that builds it. Until then `⌘,` reaches the window through the key handler, as `Mod+,` does elsewhere.
+Not built by this plan. The item needs `tabletist-appkit`, and none of it can be run from Linux, so it has a plan of its own, `docs/superpowers/plans/2026-10-04-settings-macos-menu.md`. That plan's work was merged into this plan's pull request, which therefore delivers the item too: on macOS `⌘,` reaches the window through the menu, and through the key handler where the item could not be added.
 
 ---
 
@@ -1419,11 +1419,11 @@ No agent's session can open the app's window. These are for the user, and go in 
 - Export… asks where to save and writes the canonical text there; Cancel writes nothing.
 - Reset to defaults asks, Cancel leaves everything, Reset puts the four options back and leaves `show_system_schemas` and the SQL limit as they were.
 - A line the app cannot read, added in an editor while the sheet is open: the footer counts it.
-- macOS: `⌘,` opens the window once (the app menu's item comes with its own pull request).
+- macOS: "Settings…" is in the app menu under About and shows `⌘,`; the item and the key each open the window once (the other plan's by-hand list has the rest).
 - A window shorter than the sheet: the rows scroll and the footer stays.
 
 ## Self-review
 
-- Spec coverage: the sheet (Tasks 5, 6), the toggle (4), Reveal, Export, Reset and the count of ignored lines (1, 2, 3, 6), the ways in for every look and the `SHORTCUTS` line (5). The macOS menu item (7) is deferred to its own plan; nothing else of step 4 in "Delivery" is left out.
+- Spec coverage: the sheet (Tasks 5, 6), the toggle (4), Reveal, Export, Reset and the count of ignored lines (1, 2, 3, 6), the ways in for every look and the `SHORTCUTS` line (5). The macOS menu item (7) is built by its own plan and delivered in the same pull request; nothing of step 4 in "Delivery" is left out.
 - Names used across tasks: `Opened::{Editor, Folder}`, `Command::RevealSettingsFile { path, text }`, `Action::{RevealSettingsFile, ExportSettings, ResetSettings, ConfirmResetSettings(bool)}`, `SettingsDialog::resetting`, `widgets::toggle(ui, on, name, palette)`, `sheet::show(app, ctx, resetting, actions)`.
 - Known unknowns, each flagged where it stands: the sheet's layout code is a shape to follow, not text to paste (the helpers' signatures decide), the toggle's test needs the order of frames a neighbouring widget test uses, and nothing under `cfg(target_os = "macos")` or `cfg(windows)` can be run by an agent.
