@@ -3,6 +3,7 @@
 //! whole window with its keys in the footer (`terminal.rs`); the other
 //! looks get their window in a later step.
 
+mod file_pane;
 mod terminal;
 
 use crate::app::App;

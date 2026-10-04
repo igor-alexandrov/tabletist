@@ -1,6 +1,7 @@
 //! The Settings window as the terminal look draws it: a screen over the
 //! whole window. A header, a nav of one item, the options in rows under a
-//! cursor, and the screen's keys in the footer.
+//! cursor, the settings file beside them where the window has the room,
+//! and the screen's keys in the footer.
 
 use egui::emath::GuiRounding as _;
 use egui::{CornerRadius, Rect, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
@@ -16,6 +17,7 @@ use crate::ui::keys::keys_label;
 use crate::ui::value_tags::terminal_slots;
 use crate::ui::widgets::{self, ButtonSpec};
 
+use super::file_pane::{shown_path, spans};
 use super::{choices, label};
 
 /// The header's and the footer's heights, each without its rule.
@@ -26,11 +28,24 @@ const NAV: f32 = 220.0;
 /// An option's row, and how far its words stand in from its sides.
 const ROW: f32 = 30.0;
 const ROW_SIDE: f32 = 16.0;
-/// The label's column and the value's; the hint has what is left.
+/// The label's column and the value's at their widest; the hint has what
+/// is left.
 const LABEL: f32 = 280.0;
 const VALUE: f32 = 320.0;
 /// The space at each side of a segment's word.
 const SEGMENT_PAD: f32 = 6.0;
+/// The file's pane: this wide, or this share of the window where that is
+/// less, and not there in a window narrower than `FILE_FROM`.
+const FILE: f32 = 620.0;
+const FILE_SHARE: f32 = 0.4;
+const FILE_FROM: f32 = 1100.0;
+/// The pane's header without its rule, how far its words stand in from its
+/// sides, and the space over the file's first line.
+const FILE_HEADER: f32 = 34.0;
+const FILE_SIDE: f32 = 14.0;
+const FILE_TOP: f32 = 12.0;
+/// The space over and under the pane's note.
+const FILE_NOTE: f32 = 10.0;
 
 /// How the screen draws: the look, the palette and the language.
 #[derive(Clone, Copy)]
@@ -91,13 +106,26 @@ pub(super) fn show(app: &App, ctx: &egui::Context, row: usize, actions: &mut Vec
             // The rows scroll when the window is short, so the header and
             // the footer stay on screen. They start past the nav's rule.
             let pane = pane.with_min_x((pane.left() + 1.0).min(pane.right()));
+            let option = OptionId::ALL.get(row).copied();
+            // The file has the right of the rows, in a window wide enough
+            // for both.
+            let (pane, beside) = if screen.width() >= FILE_FROM {
+                let width = FILE.min(screen.width() * FILE_SHARE);
+                let edge = (pane.right() - width).round_to_pixels(ui.pixels_per_point());
+                let (pane, beside) = pane.split_left_right_at_x(edge);
+                (pane, Some(beside))
+            } else {
+                (pane, None)
+            };
             let mut list = ui.new_child(egui::UiBuilder::new().id_salt("rows").max_rect(pane));
             egui::ScrollArea::vertical()
                 .auto_shrink([false, false])
                 .show(&mut list, |ui| {
                     rows(ui, &app.settings, row, &skin, actions);
                 });
-            let option = OptionId::ALL.get(row).copied();
+            if let Some(beside) = beside {
+                file(ui, beside, app, option, &skin);
+            }
             footer(ui, option, &app.settings, &skin, actions);
         });
 }
@@ -198,16 +226,87 @@ fn rows(ui: &mut Ui, settings: &Settings, cursor: usize, skin: &Skin, actions: &
         place.top() + 20.0 + line / 2.0,
         Text::one(look, role, &skin.say("Data"), palette.dim),
     );
+    let room = ui.available_width() - 2.0 * ROW_SIDE;
+    let columns = columns(ui, room, settings, skin);
     for (index, option) in OptionId::ALL.into_iter().enumerate() {
         option_row(
             ui,
             (index, option),
             index == cursor,
+            columns,
             settings,
             skin,
             actions,
         );
     }
+}
+
+/// The widths of the label's column and the value's in rows with `room`
+/// between their sides: `LABEL` and `VALUE` where the widest hint has room
+/// after them. Rows with less (the file is beside them) take from the space
+/// each column has past its widest words, from both alike, before a hint
+/// is left out.
+fn columns(ui: &Ui, room: f32, settings: &Settings, skin: &Skin) -> (f32, f32) {
+    let role = TextRole::OBody;
+    let width = |text: &str| role.width(ui.ctx(), skin.look.faces, text);
+    // Two cells stand between a column's widest words and the next column.
+    let gap = width("  ");
+    let labels = OptionId::ALL
+        .into_iter()
+        .map(|option| width(&format!("▌{}", skin.say(label(option)))))
+        .fold(0.0, f32::max);
+    let values = OptionId::ALL
+        .into_iter()
+        .map(|option| value_width(ui, option, settings, skin))
+        .fold(0.0, f32::max);
+    // The widest hint any value has, not only the ones shown: the columns
+    // stay where they are when a value changes.
+    let hints = OptionId::ALL
+        .into_iter()
+        .flat_map(|option| choices(option, settings))
+        .map(|(_, value)| {
+            let mut changed = settings.clone();
+            value.set(&mut changed);
+            hint(value.option(), &changed, skin)
+                .layout(ui.ctx())
+                .width()
+        })
+        .fold(0.0, f32::max);
+    let spare = [LABEL - labels - gap, VALUE - values - gap].map(|spare| spare.max(0.0));
+    // The shortfall in whole points: a hint that fits by the last fraction
+    // of one is not left out for a rounding.
+    let short = (LABEL + VALUE + hints - room)
+        .ceil()
+        .clamp(0.0, spare[0] + spare[1]);
+    let share = if short > 0.0 {
+        short / (spare[0] + spare[1])
+    } else {
+        0.0
+    };
+    (LABEL - share * spare[0], VALUE - share * spare[1])
+}
+
+/// How wide `option`'s value is drawn, at its widest.
+fn value_width(ui: &Ui, option: OptionId, settings: &Settings, skin: &Skin) -> f32 {
+    let role = TextRole::OBody;
+    let width = |text: &str| role.width(ui.ctx(), skin.look.faces, text);
+    match option {
+        // Between its chevrons, as the cursor's row has it.
+        OptionId::PageSize => width(&format!("‹ {} ›", settings.page_size)),
+        OptionId::Timestamps | OptionId::GroupDigits => {
+            let words = choices(option, settings);
+            let between = width(" ") * words.len().saturating_sub(1) as f32;
+            let segments = words.into_iter().map(|(word, _)| segment(ui, word, skin));
+            segments.sum::<f32>() + between
+        }
+        OptionId::ValueTags => width("[x]"),
+    }
+}
+
+/// How wide the segment of the choice `word` is.
+fn segment(ui: &Ui, word: &'static str, skin: &Skin) -> f32 {
+    let text = skin.say(word);
+    TextRole::OBody.width(ui.ctx(), skin.look.faces, &text) + 2.0 * SEGMENT_PAD
 }
 
 /// One option's row: its label, its value where a click sets it, and the
@@ -216,6 +315,7 @@ fn option_row(
     ui: &mut Ui,
     (index, option): (usize, OptionId),
     on_cursor: bool,
+    (label_width, value_width): (f32, f32),
     settings: &Settings,
     skin: &Skin,
     actions: &mut Vec<Action>,
@@ -251,10 +351,10 @@ fn option_row(
         Text::one(look, role, &text, palette.text)
     };
     widgets::paint_text(ui, left, y, text);
-    // A narrow window takes from the hint first, then from the value's
-    // column.
-    let label_width = LABEL.min(right - left);
-    let value_width = VALUE.min(right - left - label_width);
+    // A window too narrow for the columns takes from the hint first, then
+    // from the value's column.
+    let label_width = label_width.min(right - left);
+    let value_width = value_width.min(right - left - label_width);
     let cell = Cell {
         index,
         row,
@@ -371,7 +471,7 @@ fn segments(
     let mut left = cell.left;
     for (word, value) in choices(option, settings) {
         let text = skin.say(word);
-        let width = role.width(ui.ctx(), look.faces, &text) + 2.0 * SEGMENT_PAD;
+        let width = segment(ui, word, skin);
         let place = Rect::from_min_size(
             pos2(left, cell.row.center().y - line / 2.0),
             vec2(width, line),
@@ -453,6 +553,112 @@ fn hint(option: OptionId, settings: &Settings, skin: &Skin) -> Text {
                 .add(role, &skin.say("ebook"), second)
         }
     }
+}
+
+/// The settings file beside its options: where it is and whether it is
+/// watched, its text with the line of the cursor's option marked, and what
+/// its colours say.
+fn file(ui: &mut Ui, rect: Rect, app: &App, option: Option<OptionId>, skin: &Skin) {
+    let Skin { look, palette, .. } = *skin;
+    let role = widgets::code(look);
+    let file = &app.settings_file;
+    ui.painter()
+        .rect_filled(rect, CornerRadius::ZERO, palette.panel);
+    widgets::vline(ui, rect.left() + 0.5, rect.y_range(), palette.outline);
+    let left = rect.left() + 1.0 + FILE_SIDE;
+    let right = (rect.right() - FILE_SIDE).max(left);
+
+    let rule = (rect.top() + FILE_HEADER).min(rect.bottom());
+    widgets::hline(ui, rect.x_range(), rule + 0.5, palette.outline);
+    let y = rect.top() + FILE_HEADER / 2.0;
+    let mut room = right;
+    if file.live {
+        let live = Text::one(look, role, &skin.say("live"), palette.dim);
+        room -= widgets::paint_text_right(ui, right, y, live) + 12.0;
+    }
+    // The home directory from the environment: nothing here reads the disk.
+    let home = directories::BaseDirs::new();
+    let home = home.as_ref().map(directories::BaseDirs::home_dir);
+    let path = shown_path(&app.dirs.settings_file(), home);
+    let path = Text::one(look, role, &path, palette.text).layout(ui.ctx());
+    let clip = Rect::from_min_max(pos2(left, rect.top()), pos2(room.max(left), rule));
+    let clipped = ui.painter().with_clip_rect(clip);
+    // A path longer than the header keeps its end: the file's name is there.
+    if path.width() > clip.width() {
+        path.paint_right(&clipped, clip.right(), y);
+    } else {
+        path.paint_left(&clipped, left, y);
+    }
+    widgets::announce(ui, clip, path.galley.text());
+
+    // The note before the text: how tall it is says where the text ends.
+    let before = format!(
+        "{} · {} ",
+        skin.say("Edits in the file reload live"),
+        skin.say("invalid lines are shown here in")
+    );
+    let note = Text::new(look)
+        .add(role, &before, palette.dim)
+        .add(role, &skin.say("red"), palette.danger)
+        .add(role, &format!(" {}", skin.say("and ignored")), palette.dim)
+        .wrap(right - left)
+        .layout(ui.ctx());
+    let foot = (rect.bottom() - (2.0 * FILE_NOTE + note.height()).ceil() - 1.0).max(rule + 1.0);
+    widgets::hline(ui, rect.x_range(), foot + 0.5, palette.outline);
+    let under = Rect::from_min_max(pos2(rect.left(), foot + 1.0), rect.max);
+    note.paint(
+        &ui.painter().with_clip_rect(under),
+        pos2(left, under.top() + FILE_NOTE),
+    );
+
+    let marked = option.and_then(|option| {
+        let line = file.lines.iter().find(|(key, _)| *key == option.key());
+        line.map(|(_, line)| *line)
+    });
+    let line = role.row_height(ui.ctx(), look.faces);
+    // The text scrolls between the header and the note, past the pane's
+    // rule.
+    let body = Rect::from_min_max(
+        pos2(rect.left() + 1.0, rule + 1.0),
+        pos2(rect.right(), foot),
+    );
+    let mut text = ui.new_child(egui::UiBuilder::new().id_salt("file").max_rect(body));
+    egui::ScrollArea::vertical()
+        .auto_shrink([false, false])
+        .show(&mut text, |ui| {
+            // The lines as `Settings::from_toml` counts them, from 1. The
+            // end of a line as another system's editor wrote it is not
+            // drawn.
+            let count = file.text.lines().count();
+            let height = 2.0 * FILE_TOP + count as f32 * line;
+            let (place, _) =
+                ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::hover());
+            for (index, text) in file.text.lines().enumerate() {
+                let number = index + 1;
+                let top = place.top() + FILE_TOP + index as f32 * line;
+                let row = Rect::from_min_size(pos2(place.left(), top), vec2(place.width(), line));
+                if !ui.is_rect_visible(row) {
+                    continue;
+                }
+                if marked == Some(number) {
+                    let fill = snapped(ui, row);
+                    ui.painter()
+                        .rect_filled(fill, CornerRadius::ZERO, palette.selection);
+                }
+                let y = row.center().y;
+                let mut x = row.left() + FILE_SIDE;
+                // A line that was ignored is one colour: nothing in it was
+                // read.
+                if file.invalid.contains(&number) {
+                    widgets::paint_text(ui, x, y, Text::one(look, role, text, palette.danger));
+                    continue;
+                }
+                for (range, part) in spans(text) {
+                    let piece = Text::one(look, role, &text[range], part.color(palette));
+                    x += widgets::paint_text(ui, x, y, piece);
+                }
+            }
+        });
 }
 
 /// The screen's keys at the left. A hint whose key does one thing is that

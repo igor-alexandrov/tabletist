@@ -1059,6 +1059,76 @@ mod tests {
     }
 
     #[test]
+    fn the_settings_screen_shows_the_file_beside_the_options() {
+        let mut harness = settings_screen();
+        // The text the app holds, a line of the file per line.
+        assert!(harness.painted_color("[data]").is_some());
+        assert!(harness.painted_color("page_size    = ").is_some());
+        // The path, however the home directory is written.
+        assert!(
+            harness
+                .painted
+                .iter()
+                .any(|(text, _)| text.ends_with("settings.toml"))
+        );
+        // Not watched (a test never is): nothing claims it is live.
+        assert!(harness.painted_color("live").is_none());
+        harness.app.settings_file.live = true;
+        harness.settle();
+        assert!(harness.painted_color("live").is_some());
+    }
+
+    #[test]
+    fn a_line_of_the_file_that_was_ignored_is_shown_in_the_colour_of_an_error() {
+        let mut harness = settings_screen();
+        harness.app.apply(crate::model::Action::Backend(
+            crate::backend::Event::SettingsFile {
+                text: "[data]\npage_size = 500\ngroup_digits = \"yes\"\n".into(),
+                own: false,
+            },
+        ));
+        harness.settle();
+        let danger = harness.app.palette.danger;
+        assert_eq!(
+            harness.painted_color("group_digits = \"yes\""),
+            Some(danger)
+        );
+        // A line that was read is not.
+        assert_ne!(harness.painted_color("page_size = "), Some(danger));
+        // And the screen shows what the file set.
+        assert!(harness.painted_color("‹ 500 ›").is_some());
+    }
+
+    #[test]
+    fn the_file_pane_marks_the_line_of_the_cursors_option() {
+        let mut harness = settings_screen();
+        let selection = harness.app.palette.selection;
+        // The fill behind the line the text `key` starts.
+        let marked = |harness: &Harness, key: &str| {
+            let line = harness.painted_rect(key).expect("the key's line");
+            harness.fills.iter().any(|(rect, color)| {
+                *color == selection
+                    && rect.y_range().contains(line.center().y)
+                    && rect.x_range().contains(line.center().x)
+            })
+        };
+        assert!(marked(&harness, "page_size    = "));
+        assert!(!marked(&harness, "timestamps   = "));
+        harness.press(egui::Key::J, egui::Modifiers::NONE);
+        assert!(marked(&harness, "timestamps   = "));
+        assert!(!marked(&harness, "page_size    = "));
+    }
+
+    #[test]
+    fn a_narrow_window_has_the_options_and_not_the_file() {
+        let mut harness = Harness::with_size(egui::vec2(1000.0, 700.0));
+        harness.set_look(crate::theme::Look::omarchy());
+        harness.press(egui::Key::Comma, egui::Modifiers::COMMAND);
+        assert!(harness.painted_color("▌rows per page").is_some());
+        assert!(harness.painted_color("[data]").is_none());
+    }
+
+    #[test]
     fn the_timestamp_hint_gives_way_to_the_filter_chips() {
         use egui::accesskit::Role;
         for look in [crate::theme::Look::standard(), crate::theme::Look::macos()] {
