@@ -10,6 +10,8 @@
 
 **Spec:** `docs/superpowers/specs/2026-10-03-settings-general-design.md`, sections "The window" (macOS and Windows, Opening), "The file's actions" (Reveal, Export) and "Testing". This plan is step 4 of its four and the last.
 
+**Status:** executed. The spec is kept as the record of what was built. This plan is the record of what was set out: where a review changed the code afterwards (the sheet closes on a click outside it, its segments are named for their option, a key held on a link presses it once, the menu item is built by its own plan), the code and the spec are what hold, and the blocks below were brought up to date only where they would otherwise instruct a mistake.
+
 **Design:** the user's Design canvas, artboard "macOS – Settings, General". It is not in the repository and is not to be added. The values this plan needs are written out under "Design values" below.
 
 ---
@@ -407,17 +409,24 @@ fn reveal_sends_the_path_and_the_text_the_app_holds() {
 #[test]
 fn export_offers_the_canonical_text_under_the_settings_name() {
     let (mut app, _dir) = app();
-    app.apply(Action::SetOption(crate::settings::OptionValue::PageSize(500)));
-    app.apply(Action::ExportSettings);
+    // A file as someone wrote it: not the text the app would write.
+    app.apply(from_disk("[data]\npage_size = 500\n", false));
+    assert_eq!(app.settings.page_size, 500);
     let text = app.settings.to_toml();
+    assert_ne!(app.settings_file.text.len(), text.len());
+    app.apply(Action::ExportSettings);
     assert_eq!(
         app.backend.saves.last(),
-        Some(&("tabletist-settings.toml".to_owned(), text.len()))
+        Some(&(
+            "Export settings".to_owned(),
+            "tabletist-settings.toml".to_owned(),
+            text.len()
+        ))
     );
 }
 ```
 
-`Backend::saves` is the test field that records each save asked for: `Vec<(String, usize)>`, a name and a size.
+`Backend::saves` is the test field that records each save asked for: `Vec<(String, String, usize)>`, the dialog's title, the name it suggests and the size. The value-save test in `src/ui/row_panel.rs` asserts its title ("Save value") the same way.
 
 - [ ] **Step 2: Run them and see them fail**
 
@@ -1225,7 +1234,7 @@ fn the_settings_sheet_says_where_the_file_is_and_what_can_be_done_with_it() {
         }
         harness.click("Export…");
         assert_eq!(
-            harness.app.backend.saves.last().map(|(name, _)| name.as_str()),
+            harness.app.backend.saves.last().map(|(_, name, _)| name.as_str()),
             Some("tabletist-settings.toml")
         );
         assert!(settings_open(&harness), "the window stays open");
