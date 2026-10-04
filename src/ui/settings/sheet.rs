@@ -220,8 +220,11 @@ fn content(ui: &mut Ui, settings: &Settings, limit: f32, skin: &Skin, actions: &
         .max_height(room)
         .auto_shrink([false, true])
         .show(ui, |ui| {
-            for option in OptionId::ALL {
-                row(ui, option, column, settings, skin, actions);
+            // The last row stands on the footer's rule: one of its own
+            // right over that would read as a double line.
+            let last = OptionId::ALL.len() - 1;
+            for (index, option) in OptionId::ALL.into_iter().enumerate() {
+                row(ui, option, index < last, column, settings, skin, actions);
             }
         });
 }
@@ -243,10 +246,11 @@ fn label_column(ui: &Ui, skin: &Skin) -> f32 {
 
 /// One option's row: its label over its small print in a column `column`
 /// wide, its control, and the hint that shows what the value does, over a
-/// rule.
+/// rule when it is `ruled`.
 fn row(
     ui: &mut Ui,
     option: OptionId,
+    ruled: bool,
     column: f32,
     settings: &Settings,
     skin: &Skin,
@@ -270,7 +274,9 @@ fn row(
     let inner = words.max(control_height(option, look));
     let height = ROW_PAD + inner + ROW_PAD + 1.0;
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::hover());
-    widgets::hline(ui, rect.x_range(), rect.bottom() - 0.5, palette.surface);
+    if ruled {
+        widgets::hline(ui, rect.x_range(), rect.bottom() - 0.5, palette.surface);
+    }
     let middle = rect.top() + ROW_PAD + inner / 2.0;
     let mut top = middle - words / 2.0;
     for line in std::iter::once(name).chain(print) {
