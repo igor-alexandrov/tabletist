@@ -11433,13 +11433,24 @@ mod tests {
         Look::ALL.into_iter().filter(|look| !look.terminal)
     }
 
+    /// Selects the cell at `at` (row, column), as a click on it does.
+    fn select(harness: &mut Harness, tab: ConnTabId, id: TabId, at: (usize, usize)) {
+        let cell = CellPos {
+            row: at.0,
+            col: at.1,
+        };
+        harness.app.apply(Action::SelectCell { tab, id, cell });
+        harness.settle();
+    }
+
     #[test]
-    fn an_open_editor_takes_the_keyboard_and_enter_commits_and_moves_down() {
+    fn enter_edits_the_cell_and_enter_again_commits_and_moves_down() {
         for look in desktop_looks() {
             let (mut harness, tab, id) = editable_in(look);
             assert!(!harness.ctx.text_edit_focused());
             let before = harness.painted_rect("user2@example.com").unwrap();
-            open_editor(&mut harness, tab, id, (1, 1));
+            select(&mut harness, tab, id, (1, 1));
+            harness.press(Key::Enter, Modifiers::NONE);
             assert!(harness.ctx.text_edit_focused(), "{}", look.name);
             let text = editor_text(&harness, tab, id);
             assert_eq!(text.as_deref(), Some("user2@example.com"), "{}", look.name);
@@ -11477,12 +11488,246 @@ mod tests {
             );
             assert_eq!(selected(&harness, tab, id), Some((2, 1)), "{}", look.name);
             assert!(!harness.ctx.text_edit_focused(), "{}", look.name);
-            // An editor opened and left as it was changes nothing.
-            open_editor(&mut harness, tab, id, (3, 1));
+            // Enter again edits the cell the selection came to, and an
+            // editor opened and left as it was changes nothing.
+            harness.press(Key::Enter, Modifiers::NONE);
+            assert_eq!(
+                editor_text(&harness, tab, id).as_deref(),
+                Some("user3@example.com"),
+                "{}",
+                look.name
+            );
             harness.press(Key::Enter, Modifiers::NONE);
             assert_eq!(edits(&harness, tab, id).cells.len(), 1, "{}", look.name);
-            assert_eq!(selected(&harness, tab, id), Some((4, 1)), "{}", look.name);
+            assert_eq!(selected(&harness, tab, id), Some((3, 1)), "{}", look.name);
+            // A held Enter is one press: it does not run down the column.
+            let held = egui::Event::Key {
+                key: Key::Enter,
+                physical_key: None,
+                pressed: true,
+                repeat: true,
+                modifiers: Modifiers::NONE,
+            };
+            harness.frame(vec![crate::testing::key(Key::Enter, Modifiers::NONE)]);
+            for _ in 0..6 {
+                harness.frame(vec![held.clone()]);
+            }
+            harness.frame(vec![crate::testing::release(Key::Enter, Modifiers::NONE)]);
+            harness.settle();
+            assert!(edits(&harness, tab, id).editor.is_some(), "{}", look.name);
+            assert_eq!(selected(&harness, tab, id), Some((3, 1)), "{}", look.name);
         }
+    }
+
+    #[test]
+    fn typing_starts_the_edit_with_that_character() {
+        for look in desktop_looks() {
+            let (mut harness, tab, id) = editable_in(look);
+            select(&mut harness, tab, id, (1, 1));
+            type_text(&mut harness, "z");
+            assert_eq!(editor_text(&harness, tab, id).as_deref(), Some("z"));
+            assert!(harness.ctx.text_edit_focused(), "{}", look.name);
+            // What follows goes to the field, once.
+            type_text(&mut harness, "ed");
+            assert_eq!(editor_text(&harness, tab, id).as_deref(), Some("zed"));
+            harness.press(Key::Enter, Modifiers::NONE);
+            assert_eq!(
+                pending_text(&harness, tab, id, (1, 1)).as_deref(),
+                Some("zed")
+            );
+            // Typed in the frames before the field has the keyboard: none
+            // of it opens another editor, and none of it is lost.
+            select(&mut harness, tab, id, (3, 1));
+            harness.frame(vec![egui::Event::Text("a".into())]);
+            harness.frame(vec![egui::Event::Text("b".into())]);
+            harness.frame(vec![egui::Event::Text("c".into())]);
+            harness.settle();
+            assert_eq!(
+                editor_text(&harness, tab, id).as_deref(),
+                Some("abc"),
+                "{}",
+                look.name
+            );
+            harness.press(Key::Escape, Modifiers::NONE);
+            // Space is the row panel's and `?` the shortcuts': neither
+            // edits.
+            let panel = harness.app.workspace(tab).unwrap().row_panel;
+            type_key(&mut harness, Key::Space, " ");
+            assert!(edits(&harness, tab, id).editor.is_none(), "{}", look.name);
+            assert_ne!(harness.app.workspace(tab).unwrap().row_panel, panel);
+            type_text(&mut harness, "?");
+            assert!(edits(&harness, tab, id).editor.is_none(), "{}", look.name);
+            assert!(matches!(
+                harness.app.dialog,
+                Some(crate::model::Dialog::Help)
+            ));
+            harness.press(Key::Escape, Modifiers::NONE);
+            assert!(harness.app.dialog.is_none());
+            // On a cell that cannot be edited typing does nothing, and
+            // says nothing: the key column here.
+            select(&mut harness, tab, id, (1, 0));
+            type_text(&mut harness, "7");
+            let now = edits(&harness, tab, id);
+            assert!(now.editor.is_none() && now.why.is_none(), "{}", look.name);
+            assert!(!harness.ctx.text_edit_focused(), "{}", look.name);
+        }
+        // Nor on a connection that opens read-only.
+        for look in desktop_looks() {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            let tab = with_page(&mut harness);
+            harness.answer_structure(crate::testing::fixture_structure());
+            let id = harness.app.workspace(tab).unwrap().active_tab.unwrap();
+            focus_grid(&mut harness, tab);
+            select(&mut harness, tab, id, (1, 1));
+            type_text(&mut harness, "z");
+            let now = edits(&harness, tab, id);
+            assert!(now.editor.is_none() && now.why.is_none(), "{}", look.name);
+            assert!(!harness.ctx.text_edit_focused(), "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn mod_backspace_sets_null_and_mod_z_reverts() {
+        for look in desktop_looks() {
+            let (mut harness, tab, id) = editable_in(look);
+            // `meta` may be NULL; row 0 holds a document.
+            select(&mut harness, tab, id, (0, 2));
+            harness.press(Key::Backspace, Modifiers::COMMAND);
+            assert_eq!(
+                pending_text(&harness, tab, id, (0, 2)).as_deref(),
+                Some("NULL"),
+                "{}",
+                look.name
+            );
+            harness.press(Key::Z, Modifiers::COMMAND);
+            assert!(edits(&harness, tab, id).cells.is_empty(), "{}", look.name);
+            // `email` is NOT NULL: the key does nothing there.
+            select(&mut harness, tab, id, (1, 1));
+            harness.press(Key::Backspace, Modifiers::COMMAND);
+            assert!(edits(&harness, tab, id).cells.is_empty(), "{}", look.name);
+            // Mod+Z puts back the selected cell alone.
+            make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
+            make_pending(&mut harness, tab, id, (3, 1), "dan@example.com");
+            select(&mut harness, tab, id, (1, 1));
+            harness.press(Key::Z, Modifiers::COMMAND);
+            let cells: Vec<_> = edits(&harness, tab, id).cells.keys().copied().collect();
+            assert_eq!(cells, [(3, 1)], "{}", look.name);
+            // Redo is not this key, and neither is a part of it.
+            select(&mut harness, tab, id, (3, 1));
+            harness.press(Key::Z, Modifiers::COMMAND | Modifiers::SHIFT);
+            assert_eq!(edits(&harness, tab, id).cells.len(), 1, "{}", look.name);
+            // Inside an open editor both keys are the field's own.
+            harness.press(Key::Enter, Modifiers::NONE);
+            assert_eq!(
+                editor_text(&harness, tab, id).as_deref(),
+                Some("dan@example.com")
+            );
+            harness.press(Key::Z, Modifiers::COMMAND);
+            assert_eq!(edits(&harness, tab, id).cells.len(), 1, "{}", look.name);
+            assert!(edits(&harness, tab, id).editor.is_some(), "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn mod_s_saves_and_mod_alt_backspace_discards() {
+        use crate::backend::Command;
+        for look in desktop_looks() {
+            let (mut harness, tab, id) = editable_in(look);
+            make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
+            make_pending(&mut harness, tab, id, (3, 1), "dan@example.com");
+            harness.settle();
+            // Mod+Backspace is not Mod+Alt+Backspace: the set stays.
+            select(&mut harness, tab, id, (2, 1));
+            harness.press(Key::Backspace, Modifiers::COMMAND);
+            assert_eq!(edits(&harness, tab, id).cells.len(), 2, "{}", look.name);
+            harness.press(Key::Backspace, Modifiers::COMMAND | Modifiers::ALT);
+            assert!(edits(&harness, tab, id).cells.is_empty(), "{}", look.name);
+            // Mod+S sends the set.
+            make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
+            harness.settle();
+            let writes = |harness: &Harness| {
+                let sent = harness.app.backend.sent.iter();
+                sent.filter(|command| matches!(command, Command::Write { .. }))
+                    .count()
+            };
+            assert_eq!(writes(&harness), 0, "{}", look.name);
+            harness.press(Key::S, Modifiers::COMMAND);
+            assert_eq!(writes(&harness), 1, "{}", look.name);
+            assert!(edits(&harness, tab, id).saving.is_some(), "{}", look.name);
+            harness.answer_written(Ok(tabletist_db::WriteOutcome::Written {
+                rows: vec![vec![
+                    tabletist_db::Value::Int(2),
+                    tabletist_db::Value::Text("bob@example.com".into()),
+                    tabletist_db::Value::Null,
+                ]],
+                elapsed: std::time::Duration::from_millis(14),
+            }));
+            assert!(edits(&harness, tab, id).cells.is_empty(), "{}", look.name);
+            // With nothing pending the key sends nothing.
+            harness.press(Key::S, Modifiers::COMMAND);
+            assert_eq!(writes(&harness), 1, "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn mod_s_in_the_field_saves_what_is_being_typed() {
+        use crate::backend::Command;
+        let (mut harness, tab, id) = editable_in(Look::macos());
+        select(&mut harness, tab, id, (1, 1));
+        harness.press(Key::Enter, Modifiers::NONE);
+        // The keystroke and the chord in one frame: the text is noted as
+        // typed before the save takes it.
+        harness.frame(vec![
+            egui::Event::Text("x".into()),
+            crate::testing::key(Key::S, Modifiers::COMMAND),
+        ]);
+        harness.frame(vec![crate::testing::release(Key::S, Modifiers::COMMAND)]);
+        harness.settle();
+        assert!(edits(&harness, tab, id).editor.is_none());
+        let Some(Command::Write { changes, .. }) = harness.app.backend.sent.last() else {
+            panic!("a save was sent");
+        };
+        let sent = &changes.rows[0].set[0].new;
+        assert_eq!(
+            *sent,
+            tabletist_db::NewValue::Text("user2@example.comx".into())
+        );
+    }
+
+    #[test]
+    fn the_terminal_look_opens_no_editor() {
+        let (mut harness, tab, id) = editable_in(Look::omarchy());
+        select(&mut harness, tab, id, (0, 2));
+        let untouched = |harness: &Harness| {
+            let now = edits(harness, tab, id);
+            now.editor.is_none() && now.cells.is_empty() && now.why.is_none()
+        };
+        // Enter and `i` are the row panel's still.
+        let panel = |harness: &Harness| harness.app.workspace(tab).unwrap().row_panel;
+        let open = panel(&harness);
+        type_key(&mut harness, Key::I, "i");
+        assert_ne!(panel(&harness), open);
+        if panel(&harness) {
+            type_key(&mut harness, Key::I, "i");
+        }
+        harness.press(Key::Enter, Modifiers::NONE);
+        assert!(panel(&harness), "Enter opens the row panel");
+        assert!(untouched(&harness));
+        harness.press(Key::F2, Modifiers::NONE);
+        type_text(&mut harness, "q");
+        harness.press(Key::Backspace, Modifiers::COMMAND);
+        assert!(untouched(&harness));
+        assert!(!harness.ctx.text_edit_focused());
+        // Nor do the keys that act on a set made some other way.
+        make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
+        select(&mut harness, tab, id, (1, 1));
+        harness.press(Key::Z, Modifiers::COMMAND);
+        harness.press(Key::Backspace, Modifiers::COMMAND | Modifiers::ALT);
+        harness.press(Key::S, Modifiers::COMMAND);
+        let now = edits(&harness, tab, id);
+        assert_eq!(now.cells.len(), 1);
+        assert!(now.saving.is_none() && now.editor.is_none());
     }
 
     #[test]
@@ -11724,7 +11969,19 @@ mod tests {
     }
 
     #[test]
-    fn a_double_click_edits_the_cell() {
+    fn f2_and_a_double_click_edit_the_cell() {
+        for look in desktop_looks() {
+            let (mut harness, tab, id) = editable_in(look);
+            select(&mut harness, tab, id, (2, 1));
+            harness.press(Key::F2, Modifiers::NONE);
+            assert_eq!(
+                editor_text(&harness, tab, id).as_deref(),
+                Some("user3@example.com"),
+                "{}",
+                look.name
+            );
+            assert!(harness.ctx.text_edit_focused(), "{}", look.name);
+        }
         for look in Look::ALL {
             let (mut harness, tab, id) = editable_in(look);
             let at = cell_of(&harness, "user3@example.com");
@@ -11753,19 +12010,45 @@ mod tests {
     }
 
     #[test]
-    fn a_double_click_on_a_sql_result_edits_nothing() {
+    fn a_sql_result_takes_none_of_the_editing_keys() {
+        use crate::backend::Command;
         for look in Look::ALL {
             let mut harness = Harness::new();
             harness.set_look(look);
             let tab = harness.connect_fake_as(false);
-            with_sql_result(&mut harness, tab, 3);
+            let id = with_sql_result(&mut harness, tab, 3);
             focus_grid(&mut harness, tab);
             harness.settle();
             let at = cell_of(&harness, "user2@example.com");
             click_at(&mut harness, at);
             click_at(&mut harness, at);
             assert!(!harness.ctx.text_edit_focused(), "{}", look.name);
+            // The keyboard is the result's: its arrows move in it.
+            let cell = |harness: &Harness| {
+                let workspace = harness.app.workspace(tab).unwrap();
+                workspace.sql_tab(id).unwrap().selection
+            };
+            assert_eq!(cell(&harness), Some(CellPos { row: 1, col: 1 }));
+            let sent = harness.app.backend.sent.len();
+            harness.press(Key::Enter, Modifiers::NONE);
+            harness.press(Key::F2, Modifiers::NONE);
+            type_text(&mut harness, "z");
+            harness.press(Key::Backspace, Modifiers::COMMAND);
+            harness.press(Key::Z, Modifiers::COMMAND);
+            harness.press(Key::S, Modifiers::COMMAND);
+            harness.press(Key::Backspace, Modifiers::COMMAND | Modifiers::ALT);
+            assert!(!harness.ctx.text_edit_focused(), "{}", look.name);
+            assert!(harness.app.dialog.is_none(), "{}", look.name);
+            let writes = harness.app.backend.sent[sent..]
+                .iter()
+                .filter(|command| matches!(command, Command::Write { .. }))
+                .count();
+            assert_eq!(writes, 0, "{}", look.name);
+            assert_eq!(cell(&harness), Some(CellPos { row: 1, col: 1 }));
             assert!(harness.painted_rect("user2@example.com").is_some());
+            // And the script is as it was.
+            let workspace = harness.app.workspace(tab).unwrap();
+            assert_eq!(workspace.sql_tab(id).unwrap().text, "SELECT 1");
         }
     }
 
