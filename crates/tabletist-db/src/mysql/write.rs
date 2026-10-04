@@ -159,6 +159,12 @@ fn build(object: &ObjectRef, change: &RowChange) -> Result<Statements> {
 /// its transaction is read-only, and the reset that ends every script drops
 /// the session's temporary tables.
 ///
+/// The names are matched by their bytes as well: where table names keep
+/// their letters, `Foo` and `foo` are two tables, and older servers compare
+/// these columns without regard to case, so the engine found could be the
+/// other's. The plain comparison stays beside it, for the lookup it lets
+/// the server do.
+///
 /// With a `LIMIT` of its own: a server's default `sql_select_limit` can be
 /// 0, and the answer must still come.
 async fn transactional(conn: &mut mysql_async::Conn, object: &ObjectRef) -> Result<()> {
@@ -166,8 +172,10 @@ async fn transactional(conn: &mut mysql_async::Conn, object: &ObjectRef) -> Resu
         .exec_first(
             "SELECT e.transactions FROM information_schema.tables t \
              JOIN information_schema.engines e ON e.engine = t.engine \
-             WHERE t.table_schema = ? AND t.table_name = ? LIMIT 1",
-            (&object.schema, &object.name),
+             WHERE t.table_schema = ? AND t.table_name = ? \
+               AND CAST(t.table_schema AS BINARY) = CAST(? AS BINARY) \
+               AND CAST(t.table_name AS BINARY) = CAST(? AS BINARY) LIMIT 1",
+            (&object.schema, &object.name, &object.schema, &object.name),
         )
         .await
         .map_err(query_error)?;

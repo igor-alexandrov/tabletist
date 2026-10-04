@@ -2718,6 +2718,64 @@ async fn a_table_without_transactions_is_refused() {
     .await;
 }
 
+/// Where table names keep their letters, two tables can differ in them
+/// alone, and the engine asked about must be the table's own: a save to
+/// the one without transactions would not roll back.
+#[tokio::test]
+async fn a_table_is_judged_by_its_own_engine_not_a_namesakes() {
+    let Some(connection) = connect_as(Access::Writable).await else {
+        return;
+    };
+    let mut admin = admin().await;
+    let engines: Vec<String> = admin
+        .query("SELECT engine FROM information_schema.engines WHERE support IN ('YES', 'DEFAULT')")
+        .await
+        .unwrap();
+    let keeps_letters: Option<u8> = admin
+        .query_first("SELECT @@lower_case_table_names")
+        .await
+        .unwrap();
+    if !engines.iter().any(|engine| engine == "MyISAM") || keeps_letters != Some(0) {
+        eprintln!("skipped: the server has no MyISAM, or folds table names");
+        return;
+    }
+    on_its_own_tables(
+        "write_namesake, Write_Namesake",
+        &[
+            "CREATE TABLE write_namesake (id INT PRIMARY KEY, name VARCHAR(255)) ENGINE = MyISAM",
+            "CREATE TABLE Write_Namesake (id INT PRIMARY KEY, name VARCHAR(255)) ENGINE = InnoDB",
+            "INSERT INTO write_namesake VALUES (1, 'Ada')",
+            "INSERT INTO Write_Namesake VALUES (1, 'Ada')",
+        ],
+        async move {
+            let refused = save(
+                &connection,
+                "write_namesake",
+                1,
+                &[("name", VARCHAR, to("Grace"))],
+            )
+            .await;
+            assert!(matches!(refused, Err(Error::Unsupported(_))), "{refused:?}");
+            assert_eq!(
+                row_of(&connection, "write_namesake", 1).await.1,
+                [Value::Int(1), text("Ada")]
+            );
+            let written = save(
+                &connection,
+                "Write_Namesake",
+                1,
+                &[("name", VARCHAR, to("Grace"))],
+            )
+            .await;
+            assert!(
+                matches!(written, Ok(WriteOutcome::Written { .. })),
+                "{written:?}"
+            );
+        },
+    )
+    .await;
+}
+
 /// Waits until a statement of another session holding `marker` is in
 /// `state` on the server.
 async fn waits_on_the_server(admin: &mut mysql_async::Conn, marker: &str, state: &str) {
