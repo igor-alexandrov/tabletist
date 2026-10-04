@@ -923,6 +923,12 @@ mod tests {
             harness.press(egui::Key::Comma, egui::Modifiers::COMMAND);
             assert!(harness.app.dialog.is_none(), "{}", look.name);
             harness.frame(vec![egui::Event::Text("?".into())]);
+            // The shortcuts dialog is open, and does not offer one.
+            assert!(
+                matches!(harness.app.dialog, Some(crate::model::Dialog::Help)),
+                "{}",
+                look.name
+            );
             assert!(!harness.has("Settings"), "{}", look.name);
         }
     }
@@ -1025,12 +1031,48 @@ mod tests {
         let mut harness = Harness::new();
         harness.set_look(crate::theme::Look::omarchy());
         let tab = harness.connect_fake();
-        let pane = harness.app.workspace(tab).unwrap().pane;
+        let cursor = |harness: &Harness| harness.app.workspace(tab).unwrap().tree.cursor.clone();
+        // j is the tree's key in the workspace: it moves the tree's cursor.
+        harness.press(egui::Key::J, egui::Modifiers::NONE);
+        let before = cursor(&harness);
+        harness.press(egui::Key::J, egui::Modifiers::NONE);
+        let under = cursor(&harness);
+        assert_ne!(under, before);
+        // Over the workspace it is the screen's, and the tree's cursor
+        // stays where it was.
         harness.press(egui::Key::Comma, egui::Modifiers::COMMAND);
-        // j is the tree's key in the workspace: here it is the screen's.
         harness.press(egui::Key::J, egui::Modifiers::NONE);
         assert_eq!(settings_cursor(&harness), 1);
-        assert_eq!(harness.app.workspace(tab).unwrap().pane, pane);
+        assert_eq!(cursor(&harness), under);
+    }
+
+    #[test]
+    fn a_pointer_click_on_a_segment_sets_it() {
+        let mut harness = settings_screen();
+        let full = harness.painted_rect("full").expect("the segment");
+        click_at(&mut harness, full.center());
+        assert_eq!(
+            harness.app.settings.timestamps,
+            crate::settings::Timestamps::Full
+        );
+        assert_eq!(settings_cursor(&harness), 1, "the cursor follows the click");
+        assert_eq!(settings_saves(&harness), 1);
+    }
+
+    #[test]
+    fn the_set_segment_under_the_cursor_is_written_in_the_colour_for_the_accent() {
+        use crate::theme::Palette;
+        for palette in [Palette::dark(), Palette::light()] {
+            let mut harness = settings_screen();
+            harness.app.palette = palette;
+            harness.press(egui::Key::J, egui::Modifiers::NONE);
+            assert_eq!(
+                harness.painted_color("second"),
+                Some(palette.on_accent),
+                "dark: {}",
+                palette.dark
+            );
+        }
     }
 
     #[test]

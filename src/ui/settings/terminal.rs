@@ -18,7 +18,7 @@ use crate::ui::value_tags::terminal_slots;
 use crate::ui::widgets::{self, ButtonSpec};
 
 use super::file_pane::{shown_path, spans};
-use super::{choices, label};
+use super::{Said, choices, label};
 
 /// The header's and the footer's heights, each without its rule.
 const HEADER: f32 = 40.0;
@@ -63,6 +63,15 @@ impl Skin<'_> {
     /// `text` translated, in the look's case.
     fn say(&self, text: &'static str) -> String {
         self.look.label(&gettext(self.locale, text))
+    }
+
+    /// A choice as the screen writes it: a word as [`Self::say`] has it, a
+    /// sample as it is.
+    fn written(&self, choice: Said) -> String {
+        match choice {
+            Said::Word(word) => self.say(word),
+            Said::Sample(sample) => sample.to_owned(),
+        }
     }
 }
 
@@ -203,21 +212,15 @@ fn notice(ui: &mut Ui, app: &App, actions: &mut Vec<Action>) -> f32 {
 }
 
 /// The mark of the nav's item and of the cursor's row: the selection's
-/// fill, with a 2 pt bar in the accent at its left.
+/// fill, with a 2 pt bar in the accent at its left. Neither is put on whole
+/// pixels here, nor is any other fill or outline of the screen: epaint does
+/// that as it draws them, the bar too where it is thin enough to be drawn
+/// as a line.
 fn mark(ui: &Ui, rect: Rect, palette: &Palette) {
     let painter = ui.painter();
-    let rect = snapped(ui, rect);
     painter.rect_filled(rect, CornerRadius::ZERO, palette.selection);
-    let bar = snapped(ui, Rect::from_min_size(rect.min, vec2(2.0, rect.height())));
+    let bar = Rect::from_min_size(rect.min, vec2(2.0, rect.height()));
     painter.rect_filled(bar, CornerRadius::ZERO, palette.accent);
-}
-
-/// `rect` with its edges on whole pixels: a fill or an outline that ends
-/// between two is blurred there. A line of text is not a whole number of
-/// pixels tall at every scale, and what is centred on a row starts on half
-/// of one.
-fn snapped(ui: &Ui, rect: Rect) -> Rect {
-    rect.round_to_pixels(ui.pixels_per_point())
 }
 
 /// The tabs, down the left: the one there is, which is the one shown.
@@ -333,8 +336,8 @@ fn value_width(ui: &Ui, option: OptionId, settings: &Settings, skin: &Skin) -> f
 }
 
 /// How wide the segment of the choice `word` is.
-fn segment(ui: &Ui, word: &'static str, skin: &Skin) -> f32 {
-    let text = skin.say(word);
+fn segment(ui: &Ui, word: Said, skin: &Skin) -> f32 {
+    let text = skin.written(word);
     TextRole::OBody.width(ui.ctx(), skin.look.faces, &text) + 2.0 * SEGMENT_PAD
 }
 
@@ -430,7 +433,7 @@ fn choice(
     ui: &mut Ui,
     place: Rect,
     index: usize,
-    (word, value): (&'static str, OptionValue),
+    (word, value): (Said, OptionValue),
     press: Press,
     skin: &Skin,
     actions: &mut Vec<Action>,
@@ -438,7 +441,7 @@ fn choice(
     let name = format!(
         "{}: {}",
         gettext(skin.locale, label(value.option())),
-        gettext(skin.locale, word)
+        word.name(skin.locale)
     );
     let button = ButtonSpec::new(&name);
     let button = match press {
@@ -466,7 +469,7 @@ fn page_size(ui: &mut Ui, cell: Cell, settings: &Settings, skin: &Skin, actions:
         return;
     };
     let text = if cell.on_cursor {
-        let chevron = |(_, step): (&str, OptionValue)| {
+        let chevron = |(_, step): (Said, OptionValue)| {
             if step == current {
                 palette.dim
             } else {
@@ -531,25 +534,23 @@ fn segments(
     let gap = role.width(ui.ctx(), look.faces, " ");
     let mut left = cell.left;
     for (word, value) in choices(option, settings) {
-        let text = skin.say(word);
+        let text = skin.written(word);
         let width = segment(ui, word, skin);
         let place = Rect::from_min_size(
             pos2(left, cell.row.center().y - line / 2.0),
             vec2(width, line),
         );
         left += width + gap;
-        let edge = snapped(ui, place);
         let color = if value != current {
             palette.dim
         } else if cell.on_cursor {
             ui.painter()
-                .rect_filled(edge, CornerRadius::ZERO, palette.accent);
-            // The dark of the header and the footer.
-            palette.panel
+                .rect_filled(place, CornerRadius::ZERO, palette.accent);
+            palette.on_accent
         } else {
             let stroke = Stroke::new(1.0, palette.outline);
             ui.painter()
-                .rect_stroke(edge, CornerRadius::ZERO, stroke, StrokeKind::Inside);
+                .rect_stroke(place, CornerRadius::ZERO, stroke, StrokeKind::Inside);
             palette.text
         };
         let text = Text::one(look, role, &text, color);
@@ -606,7 +607,8 @@ fn hint(option: OptionId, settings: &Settings, skin: &Skin) -> Text {
             "grouping off"
         })),
         // Two tags as a grid shows them: in the first two slots' colours,
-        // or as plain values.
+        // or as plain values. They are values of a column, not words:
+        // no language has others.
         OptionId::ValueTags => {
             let slots = terminal_slots(palette);
             let [first, second] = if settings.value_tags {
@@ -615,9 +617,9 @@ fn hint(option: OptionId, settings: &Settings, skin: &Skin) -> Text {
                 [palette.dim; 2]
             };
             Text::new(look)
-                .add(role, &skin.say("print"), first)
+                .add(role, "print", first)
                 .space(role, "  ")
-                .add(role, &skin.say("ebook"), second)
+                .add(role, "ebook", second)
         }
     }
 }
@@ -647,7 +649,8 @@ fn file(ui: &mut Ui, rect: Rect, app: &App, option: Option<OptionId>, skin: &Ski
     let home = directories::BaseDirs::new();
     let home = home.as_ref().map(directories::BaseDirs::home_dir);
     let path = shown_path(&app.dirs.settings_file(), home);
-    let path = Text::one(look, role, &path, palette.text).layout(ui.ctx());
+    // The pane's heading: strong, as a heading over a rule is in this look.
+    let path = Text::one(look, TextRole::OGroup, &path, palette.text).layout(ui.ctx());
     let clip = Rect::from_min_max(pos2(left, rect.top()), pos2(room.max(left), rule));
     let clipped = ui.painter().with_clip_rect(clip);
     // A path longer than the header keeps its end: the file's name is there.
@@ -708,9 +711,8 @@ fn file(ui: &mut Ui, rect: Rect, app: &App, option: Option<OptionId>, skin: &Ski
                     continue;
                 }
                 if marked == Some(number) {
-                    let fill = snapped(ui, row);
                     ui.painter()
-                        .rect_filled(fill, CornerRadius::ZERO, palette.selection);
+                        .rect_filled(row, CornerRadius::ZERO, palette.selection);
                 }
                 let y = row.center().y;
                 let mut x = row.left() + FILE_SIDE;

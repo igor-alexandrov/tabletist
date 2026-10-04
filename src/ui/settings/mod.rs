@@ -6,7 +6,10 @@
 mod file_pane;
 mod terminal;
 
+use std::borrow::Cow;
+
 use crate::app::App;
+use crate::i18n::{Locale, gettext};
 use crate::model::{Action, Dialog};
 use crate::settings::{OptionId, OptionValue, Settings, Timestamps};
 
@@ -21,27 +24,49 @@ pub(super) fn label(option: OptionId) -> &'static str {
     }
 }
 
-/// The values a click can set on `option`'s row, each with the words that
-/// name it: what the row draws as segments or as a check, and what a
-/// screen reader and the tests call them.
-pub(super) fn choices(option: OptionId, settings: &Settings) -> Vec<(&'static str, OptionValue)> {
+/// What a choice is called.
+#[derive(Clone, Copy)]
+pub(super) enum Said {
+    /// A word. English: whoever writes it translates it.
+    Word(&'static str),
+    /// A value as the app shows one, the same in every language: put into
+    /// another, it would say something the app does not show.
+    Sample(&'static str),
+}
+
+impl Said {
+    /// What a screen reader and the tests call the choice.
+    pub(super) fn name(self, locale: Locale) -> Cow<'static, str> {
+        match self {
+            Self::Word(word) => gettext(locale, word),
+            Self::Sample(sample) => Cow::Borrowed(sample),
+        }
+    }
+}
+
+/// The values a click can set on `option`'s row, each with what it is
+/// called: what the row draws as segments or as a check, and what a screen
+/// reader and the tests call them.
+pub(super) fn choices(option: OptionId, settings: &Settings) -> Vec<(Said, OptionValue)> {
+    use Said::{Sample, Word};
     match option {
         // Stepped, not listed: one way and the other.
         OptionId::PageSize => vec![
-            ("fewer", settings.stepped(option, false)),
-            ("more", settings.stepped(option, true)),
+            (Word("fewer"), settings.stepped(option, false)),
+            (Word("more"), settings.stepped(option, true)),
         ],
         OptionId::Timestamps => vec![
-            ("second", OptionValue::Timestamps(Timestamps::Second)),
-            ("full", OptionValue::Timestamps(Timestamps::Full)),
+            (Word("second"), OptionValue::Timestamps(Timestamps::Second)),
+            (Word("full"), OptionValue::Timestamps(Timestamps::Full)),
         ],
+        // A number as each value writes it.
         OptionId::GroupDigits => vec![
-            ("1,240.50", OptionValue::GroupDigits(true)),
-            ("1240.50", OptionValue::GroupDigits(false)),
+            (Sample("1,240.50"), OptionValue::GroupDigits(true)),
+            (Sample("1240.50"), OptionValue::GroupDigits(false)),
         ],
         OptionId::ValueTags => vec![
-            ("off", OptionValue::ValueTags(false)),
-            ("on", OptionValue::ValueTags(true)),
+            (Word("off"), OptionValue::ValueTags(false)),
+            (Word("on"), OptionValue::ValueTags(true)),
         ],
     }
 }
