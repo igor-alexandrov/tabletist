@@ -977,6 +977,27 @@ impl App {
                 "tabletist-settings.toml".to_owned(),
                 self.settings.to_toml().into_bytes(),
             ),
+            Action::ResetSettings => {
+                if let Some(Dialog::Settings(dialog)) = &mut self.dialog {
+                    dialog.resetting = true;
+                }
+            }
+            Action::ConfirmResetSettings(reset) => {
+                // An answer to a question that was asked.
+                let asked = match &mut self.dialog {
+                    Some(Dialog::Settings(dialog)) => std::mem::take(&mut dialog.resetting),
+                    _ => false,
+                };
+                if asked && reset {
+                    // The options the window shows. A key it has no control
+                    // for is not the window's to change.
+                    self.change_settings(|settings| {
+                        for option in crate::settings::OptionId::ALL {
+                            option.default_value().set(settings);
+                        }
+                    });
+                }
+            }
             Action::OpenQuickOpen => {
                 let tab = self.active_tab_id();
                 if self.dialog.is_none() && self.workspace(tab).is_some() {
@@ -4454,6 +4475,49 @@ mod tests {
             app.backend.saves.last(),
             Some(&("tabletist-settings.toml".to_owned(), text.len()))
         );
+    }
+
+    #[test]
+    fn reset_asks_first_and_then_resets_only_the_four_options() {
+        let (mut app, _dir) = app();
+        app.apply(Action::ShowSettings);
+        // An option of the window, and a key it does not show.
+        app.change_settings(|settings| {
+            settings.page_size = 500;
+            settings.group_digits = true;
+            settings.show_system_schemas = true;
+            settings.sql_limit = 50;
+        });
+        let resetting = |app: &App| match &app.dialog {
+            Some(Dialog::Settings(dialog)) => dialog.resetting,
+            _ => panic!("the window is not open"),
+        };
+        app.apply(Action::ResetSettings);
+        assert!(resetting(&app));
+        assert_eq!(app.settings.page_size, 500, "nothing is reset yet");
+        // Cancel leaves everything.
+        app.apply(Action::ConfirmResetSettings(false));
+        assert!(!resetting(&app));
+        assert_eq!(app.settings.page_size, 500);
+        // Reset puts the four back and leaves the others.
+        app.apply(Action::ResetSettings);
+        app.apply(Action::ConfirmResetSettings(true));
+        assert!(!resetting(&app));
+        let defaults = Settings::default();
+        assert_eq!(app.settings.page_size, defaults.page_size);
+        assert_eq!(app.settings.group_digits, defaults.group_digits);
+        assert!(app.settings.show_system_schemas);
+        assert_eq!(app.settings.sql_limit, 50);
+        assert_eq!(app.settings_file.text, app.settings.to_toml());
+    }
+
+    #[test]
+    fn a_reset_nobody_asked_for_resets_nothing() {
+        let (mut app, _dir) = app();
+        app.apply(Action::ShowSettings);
+        app.change_settings(|settings| settings.page_size = 500);
+        app.apply(Action::ConfirmResetSettings(true));
+        assert_eq!(app.settings.page_size, 500);
     }
 
     #[test]
