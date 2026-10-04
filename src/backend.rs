@@ -780,14 +780,53 @@ struct SettingsWatcher {
     elsewhere: Vec<PathBuf>,
 }
 
+/// What lies behind a symbolic link at the settings file: the names of what
+/// the links lead through, and the directories those are in.
+type Behind = (Vec<OsString>, Vec<PathBuf>);
+
+/// How many times in a row the links may be found turned since they were
+/// last looked at before the watcher gives up for now.
+const LOOKS: usize = 3;
+
 impl SettingsWatcher {
     /// Looks where the settings file is now and watches there. A link can
     /// be made, turned elsewhere or replaced by a file while the app runs.
     /// An error, with what to log, when a link leads where nothing can be
     /// watched: an edit made there would not be seen.
     fn follow(&mut self) -> Result<(), String> {
+        self.follow_with(behind_link)
+    }
+
+    /// [`Self::follow`], with `look` for the look at the links: the tests
+    /// turn a link between that look and the watch that comes of it.
+    fn follow_with(
+        &mut self,
+        mut look: impl FnMut(&Path) -> std::io::Result<Behind>,
+    ) -> Result<(), String> {
+        // A link in a directory that is not watched yet can be turned
+        // between the look at it and the watch on its directory, and no
+        // event would say so. So once the watches are there the links are
+        // looked at again, until they are as they were when watched.
+        let mut watched = self.watch_behind(look(&self.path));
+        for _ in 0..LOOKS {
+            let again = self.watch_behind(look(&self.path));
+            if again == watched {
+                return watched.map(|_| ());
+            }
+            watched = again;
+        }
+        Err(format!(
+            "the link at {} keeps being turned",
+            self.path.display()
+        ))
+    }
+
+    /// Watches where `behind` says the links lead, and no longer where
+    /// they led before. Gives back what it was given, or why that cannot
+    /// be watched.
+    fn watch_behind(&mut self, behind: std::io::Result<Behind>) -> Result<Behind, String> {
         use notify::Watcher as _;
-        let behind = behind_link(&self.path).map_err(|error| {
+        let behind = behind.map_err(|error| {
             format!(
                 "could not follow the link at {}: {error}",
                 self.path.display()
@@ -814,7 +853,7 @@ impl SettingsWatcher {
                 self.elsewhere.push(directory);
             }
         }
-        behind.map(|_| ())
+        behind
     }
 }
 
@@ -822,7 +861,7 @@ impl SettingsWatcher {
 /// what the links lead through (each further link, and the file at the
 /// end), and the directories those are in, other than the link's own.
 /// Nothing for a path that is no link.
-fn behind_link(path: &Path) -> std::io::Result<(Vec<OsString>, Vec<PathBuf>)> {
+fn behind_link(path: &Path) -> std::io::Result<Behind> {
     let chain = crate::util::link_chain(path)?;
     let (mut names, mut directories) = (Vec::new(), Vec::new());
     let Some(behind) = chain.get(1..).filter(|behind| !behind.is_empty()) else {
@@ -4476,6 +4515,56 @@ mod tests {
             (names(&watch), &watch.elsewhere),
             (vec!["settings.toml".into()], &nowhere)
         );
+    }
+
+    #[test]
+    fn a_link_turned_before_its_directory_is_watched_is_not_missed() {
+        if !crate::util::can_symlink() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let (config, dotfiles) = config_and_dotfiles(dir.path());
+        let (first, second) = (dir.path().join("first"), dir.path().join("second"));
+        std::fs::create_dir(&first).unwrap();
+        std::fs::create_dir(&second).unwrap();
+        // config/settings.toml -> dotfiles/current -> first/settings.toml
+        let (path, current) = (config.join("settings.toml"), dotfiles.join("current"));
+        crate::util::symlink_file(first.join("settings.toml"), &current);
+        crate::util::symlink_file(&current, &path);
+        let mut watch = SettingsWatcher {
+            watcher: notify::recommended_watcher(|_| {}).unwrap(),
+            path,
+            names: Arc::default(),
+            elsewhere: Vec::new(),
+        };
+        // The second link is turned right after the first look at it, when
+        // its directory is not watched yet: no event will ever say so.
+        let mut looks = 0;
+        let followed = watch.follow_with(|path| {
+            let behind = behind_link(path);
+            looks += 1;
+            if looks == 1 {
+                link_anew(&second.join("settings.toml"), &current);
+            }
+            behind
+        });
+        assert_eq!(followed, Ok(()));
+        // What is watched is where the links lead now, not where the
+        // first look found them leading.
+        let real = |directory: &std::path::Path| std::fs::canonicalize(directory).unwrap();
+        assert_eq!(watch.elsewhere, [real(&dotfiles), real(&second)]);
+        assert_eq!(looks, 3, "looked at again until nothing had turned");
+
+        // A link that is turned at every look is not called followed.
+        let mut turns = 0;
+        let followed = watch.follow_with(|path| {
+            let behind = behind_link(path);
+            turns += 1;
+            let to = if turns % 2 == 0 { &second } else { &first };
+            link_anew(&to.join("settings.toml"), &current);
+            behind
+        });
+        assert!(followed.is_err(), "{followed:?}");
     }
 
     #[test]

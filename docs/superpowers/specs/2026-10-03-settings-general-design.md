@@ -459,7 +459,9 @@ turned. The reader wakes for any of their names: the link's in the config
 directory, the file's where it is, and those of the links between.
 Each time it wakes it resolves the link again before it reads, so a link
 made, turned elsewhere or replaced by a plain file while the app runs is
-followed. A link that leads where nothing can be watched (the directory is
+followed. Once the watches are in place it resolves once more, and again
+until it finds what it watched: a link turned between the look at it and
+the watch on its directory would otherwise be missed for good. A link that leads where nothing can be watched (the directory is
 not there, or no watch can be had on it) is logged and
 `Event::SettingsWatch { live: false }` is sent. While it is not live the
 watcher looks again every two seconds, since no event comes when the place
