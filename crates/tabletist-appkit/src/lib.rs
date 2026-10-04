@@ -7,4 +7,7 @@
 mod about;
 
 #[cfg(target_os = "macos")]
+mod target;
+
+#[cfg(target_os = "macos")]
 pub use about::AboutItem;

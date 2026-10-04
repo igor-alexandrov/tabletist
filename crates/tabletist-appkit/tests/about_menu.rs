@@ -51,7 +51,7 @@ fn main() {
     })
     .expect("the About item");
     assert_eq!(about.title().to_string(), "About Tabletist");
-    assert_eq!(about.action(), Some(sel!(showAbout:)));
+    assert_eq!(about.action(), Some(sel!(menuItemChosen:)));
     assert!(about.target().is_some(), "About has a target");
     assert_eq!(quit.action(), Some(sel!(terminate:)), "Quit is left alone");
     assert!(quit.target().is_none(), "Quit is left alone");

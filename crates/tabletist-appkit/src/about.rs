@@ -6,52 +6,22 @@
 //! process name and no version. [`AboutItem::take_over`] sends the item to
 //! an object of ours instead, so the app can show its own About dialog.
 
-// Defining an Objective-C class and wiring a target and an action are
-// messages the compiler cannot check.
+// Wiring a target and an action are messages the compiler cannot check.
 #![allow(unsafe_code)]
 
 use objc2::rc::Retained;
-use objc2::runtime::{AnyObject, NSObject};
-use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
+use objc2::{MainThreadMarker, sel};
 use objc2_app_kit::{NSApplication, NSMenuItem};
 use objc2_foundation::NSString;
 
-struct Ivars {
-    chosen: Box<dyn Fn()>,
-}
-
-define_class!(
-    // SAFETY: NSObject has no rules for its subclasses, and `Target` does
-    // not implement `Drop`.
-    #[unsafe(super(NSObject))]
-    #[thread_kind = MainThreadOnly]
-    #[ivars = Ivars]
-    struct Target;
-
-    impl Target {
-        // SAFETY: an action takes its sender (an object or nil) and returns
-        // nothing.
-        #[unsafe(method(showAbout:))]
-        fn show_about(&self, _sender: Option<&AnyObject>) {
-            (self.ivars().chosen)();
-        }
-    }
-);
-
-impl Target {
-    fn new(mtm: MainThreadMarker, chosen: Box<dyn Fn()>) -> Retained<Self> {
-        let this = mtm.alloc::<Self>().set_ivars(Ivars { chosen });
-        // SAFETY: NSObject's `init` takes nothing and returns the object.
-        unsafe { msg_send![super(this), init] }
-    }
-}
+use crate::target::MenuTarget;
 
 /// The app menu's About item while it calls back instead of opening AppKit's
 /// panel. Dropping it hands the item back to AppKit.
 pub struct AboutItem {
     item: Retained<NSMenuItem>,
     /// A menu item does not keep its target alive.
-    target: Retained<Target>,
+    target: Retained<MenuTarget>,
 }
 
 impl AboutItem {
@@ -70,12 +40,12 @@ impl AboutItem {
             .to_vec()
             .into_iter()
             .find(|item| item.action() == Some(sel!(orderFrontStandardAboutPanel:)))?;
-        let target = Target::new(mtm, Box::new(chosen));
-        // SAFETY: `target` implements `showAbout:` as an action, and it
+        let target = MenuTarget::new(mtm, Box::new(chosen));
+        // SAFETY: `target` implements `menuItemChosen:` as an action, and it
         // lives as long as the item points at it: `Drop` takes it back.
         unsafe {
             item.setTarget(Some(&target));
-            item.setAction(Some(sel!(showAbout:)));
+            item.setAction(Some(sel!(menuItemChosen:)));
         }
         item.setTitle(&NSString::from_str(title));
         Some(Self { item, target })

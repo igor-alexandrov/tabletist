@@ -9,8 +9,8 @@ publish = false
 # The workspace forbids unsafe code. Giving a menu item a target and an action
 # means defining an Objective-C class and sending messages the compiler cannot
 # check, so this crate carries the workspace's lints with `unsafe_code` lowered
-# to `deny`, allowed only in `about.rs` and its test, each use with a SAFETY
-# note. The app and the database layer keep `forbid`.
+# to `deny`, allowed only in `about.rs`, `target.rs` and the test, each use
+# with a SAFETY note. The app and the database layer keep `forbid`.
 [lints.rust]
 unsafe_code = "deny"
 
