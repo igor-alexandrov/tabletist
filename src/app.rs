@@ -953,10 +953,16 @@ impl App {
                 }
             }
             Action::SetOption(value) => self.change_settings(|settings| value.set(settings)),
-            Action::EditSettingsFile => self.backend.send(Command::EditSettingsFile {
-                path: self.dirs.settings_file(),
-                text: self.settings_file.text.clone(),
-            }),
+            Action::EditSettingsFile => {
+                // Written by the backend when no file is there: a write of
+                // the app's own, to be known when it comes back.
+                let text = self.settings_file.text.clone();
+                self.settings_file.offered = Some(text.clone());
+                self.backend.send(Command::EditSettingsFile {
+                    path: self.dirs.settings_file(),
+                    text,
+                });
+            }
             Action::OpenQuickOpen => {
                 let tab = self.active_tab_id();
                 if self.dialog.is_none() && self.workspace(tab).is_some() {
@@ -2094,20 +2100,28 @@ impl App {
                 // one was read between two of its writes: the newest is
                 // still to come, and applying this would undo the change
                 // made since. The newest itself landed over a change from
-                // outside that was applied in between: the disk has it.
-                if own && self.settings_file.saved.as_deref() != Some(text.as_str()) {
+                // outside that was applied in between: the disk has it. So
+                // does a text handed over with the file to be opened, which
+                // the backend wrote because the file was gone by then.
+                let file = &self.settings_file;
+                let newest = [&file.saved, &file.offered]
+                    .into_iter()
+                    .any(|asked| asked.as_deref() == Some(text.as_str()));
+                if own && !newest {
                     return;
                 }
                 let loaded = Settings::from_toml(&text);
                 loaded.warn_invalid(&self.dirs.settings_file());
                 let live = self.settings_file.live;
                 let saved = self.settings_file.saved.take();
+                let offered = self.settings_file.offered.take();
                 let (settings, file) = loaded.into_parts();
                 // The file as its writer left it: not written back, so a
                 // line that was ignored stays where they can see it.
                 self.settings_file = SettingsFile {
                     live,
                     saved,
+                    offered,
                     ..file
                 };
                 self.apply_settings(settings);
@@ -2273,6 +2287,9 @@ impl App {
     /// settings.json call it.
     fn save_settings(&mut self) {
         self.settings_file.saved = Some(self.settings.to_toml());
+        // The save is newer than a text handed over with the file: where
+        // that one was written, this one lands over it.
+        self.settings_file.offered = None;
         self.backend.send(Command::Save {
             path: self.dirs.settings_file(),
             file: StateFile::Settings(self.settings.clone()),
@@ -4182,6 +4199,37 @@ mod tests {
         assert_eq!(app.settings_file.text, second);
         // Then the newest comes back.
         app.apply(from_disk(&second, true));
+        assert_eq!(app.settings.page_size, 500);
+        assert_eq!(settings_saves(&app).len(), saved);
+    }
+
+    #[test]
+    fn a_text_written_for_the_editor_is_the_apps_newest_write() {
+        let (mut app, _dir) = app();
+        let ours = app.settings_file.text.clone();
+        // The editor is asked for with the text the app holds...
+        app.apply(Action::EditSettingsFile);
+        // ...an edit from outside is read and applied, and the file is
+        // deleted, before the backend gets to it...
+        app.apply(from_disk("[data]\npage_size = 500\n", false));
+        assert_eq!(app.settings.page_size, 500);
+        // ...so the backend writes the text it was given, and that is
+        // what the disk and the editor have.
+        app.apply(from_disk(&ours, true));
+        assert_eq!(app.settings.page_size, Settings::DEFAULT_PAGE_SIZE);
+        assert_eq!(app.settings_file.text, ours);
+    }
+
+    #[test]
+    fn a_save_made_since_the_editor_was_asked_for_is_the_newer_write() {
+        let (mut app, _dir) = app();
+        let offered = app.settings_file.text.clone();
+        app.apply(Action::EditSettingsFile);
+        app.change_settings(|settings| settings.page_size = 500);
+        let saved = settings_saves(&app).len();
+        // The text written for the editor is read before the save lands
+        // over it: the save is still to come.
+        app.apply(from_disk(&offered, true));
         assert_eq!(app.settings.page_size, 500);
         assert_eq!(settings_saves(&app).len(), saved);
     }

@@ -299,6 +299,11 @@ pub struct SettingsFile {
     /// The text the app last asked to be written, if it asked: what tells
     /// its newest write, coming back from the disk, from an older one.
     pub saved: Option<String>,
+    /// The text the app last handed over with the file to be opened: the
+    /// backend writes it when no file is there, and that write is the
+    /// app's own too. None once a save was asked for since: the save is
+    /// the newer of the two.
+    pub offered: Option<String>,
 }
 
 impl SettingsFile {
@@ -341,6 +346,7 @@ impl Loaded {
             lines: self.lines,
             live: false,
             saved: None,
+            offered: None,
         };
         (self.settings, file)
     }
@@ -1012,6 +1018,7 @@ sql_timeout_secs = 30  # 0 waits forever
                 lines: vec![(Key::PageSize, 2)],
                 live: false,
                 saved: None,
+                offered: None,
             }
         );
         assert_eq!(file.line_count(), 3);
