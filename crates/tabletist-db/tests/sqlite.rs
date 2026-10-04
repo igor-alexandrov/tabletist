@@ -6,18 +6,35 @@
 use std::time::Duration;
 
 use tabletist_db::{
-    ConnectSpec, Connection, Dialect, Driver, Error, Filter, FilterOp, ObjectRef, RowQuery,
-    Secrets, Sort, SortDir, StatementOutcome, StopFlag, Value, ValueKind,
+    Access, ConnectSpec, Connection, Dialect, Driver, Error, Filter, FilterOp, HostKeys, ObjectRef,
+    RowQuery, Secrets, Sort, SortDir, StatementOutcome, StopFlag, Value, ValueKind,
 };
 
-async fn fixture() -> (Connection, tempfile::TempDir) {
+async fn fixture_as(access: Access) -> (Connection, tempfile::TempDir) {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("fixture.db");
     tabletist_db::fixtures::write_sqlite_demo(&path).unwrap();
-    let connection = Connection::connect(&ConnectSpec::sqlite(&path), &Secrets::default())
-        .await
-        .unwrap();
+    let connection = Connection::connect_with(
+        &ConnectSpec::sqlite(&path),
+        &Secrets::default(),
+        &HostKeys::default(),
+        access,
+    )
+    .await
+    .unwrap();
     (connection, dir)
+}
+
+async fn fixture() -> (Connection, tempfile::TempDir) {
+    fixture_as(Access::ReadOnly).await
+}
+
+#[tokio::test]
+async fn a_connection_knows_the_access_it_was_opened_with() {
+    let (connection, _dir) = fixture().await;
+    assert_eq!(connection.access(), Access::ReadOnly);
+    let (writable, _dir) = fixture_as(Access::Writable).await;
+    assert_eq!(writable.access(), Access::Writable);
 }
 
 fn users(limit: u32) -> RowQuery {
@@ -164,20 +181,147 @@ async fn contains_matches_literal_percent_signs() {
     assert_eq!(ids(&connection.fetch_rows(&query).await.unwrap()), vec![4]);
 }
 
+/// A session setting, as a script reads it.
+async fn setting(connection: &Connection, name: &str) -> Value {
+    let outcome = run(connection, &format!("PRAGMA {name}")).await.unwrap();
+    match &outcome.results[0].outcome {
+        StatementOutcome::Rows { rows, .. } => rows[0][0].clone(),
+        other => panic!("{other:?}"),
+    }
+}
+
+/// The session's `query_only`, as a script reads it.
+async fn query_only(connection: &Connection) -> Value {
+    setting(connection, "query_only").await
+}
+
 #[tokio::test]
 async fn a_raw_where_cannot_modify_data() {
-    let (connection, _dir) = fixture().await;
-    let mut query = users(50);
-    // A plain syntax error, and one that closes the parenthesis to chain a
-    // real second statement (rusqlite refuses to prepare more than one).
-    for raw in [
-        "1 = 1; DELETE FROM users",
-        "1=1) ; DELETE FROM users; SELECT (1",
-    ] {
-        query.raw_where = Some(raw.into());
-        assert!(connection.fetch_rows(&query).await.is_err(), "{raw}");
+    for access in [Access::ReadOnly, Access::Writable] {
+        let (connection, _dir) = fixture_as(access).await;
+        let mut query = users(50);
+        // Each chains a second statement: a plain one, one that closes the
+        // parenthesis first, and a pragma SQLite applies as soon as it is
+        // prepared (rusqlite prepares what follows the first statement, and
+        // only then refuses the text). The `;` is refused before that.
+        for raw in [
+            "1 = 1; DELETE FROM users",
+            "1=1) ; DELETE FROM users; SELECT (1",
+            "1=1); PRAGMA query_only = 0; SELECT (1",
+        ] {
+            query.raw_where = Some(raw.into());
+            assert!(
+                connection.fetch_rows(&query).await.is_err(),
+                "{access:?} {raw}"
+            );
+            assert_eq!(query_only(&connection).await, Value::Int(1), "{raw}");
+            assert!(
+                connection.count_rows(&query).await.is_err(),
+                "{access:?} {raw}"
+            );
+            assert_eq!(query_only(&connection).await, Value::Int(1), "{raw}");
+        }
+        // To SQLite `:a(')` is one variable token, and so is each of the
+        // other four spellings up to its `)`; to our tokenizer a string or
+        // a comment starts inside it and hides the `;` after it. Only
+        // SQLite, asked when it prepares what follows, stops these, and
+        // nothing would put these two settings back.
+        let settings = async || {
+            (
+                setting(&connection, "foreign_keys").await,
+                setting(&connection, "synchronous").await,
+            )
+        };
+        let before = settings().await;
+        // The texts set both to 0, which only shows on another value.
+        assert_eq!(before, (Value::Int(1), Value::Int(2)), "{access:?}");
+        // What the fence refuses, as `Conn::browse` words it.
+        let fenced = |refused: &tabletist_db::Result<()>| {
+            matches!(
+                refused,
+                Err(Error::Query { code: Some(code), message, .. })
+                    if code == "23" && message == "A filter cannot use a PRAGMA \
+                        with an argument, ATTACH or a transaction statement."
+            )
+        };
+        for raw in [
+            "1=1 OR :a(') IS NULL); PRAGMA foreign_keys = 0; PRAGMA synchronous = 0; SELECT ('",
+            "1=1 OR $a(') IS NULL); PRAGMA foreign_keys = 0; SELECT ('",
+            "1=1 OR @a(\") IS NULL); PRAGMA foreign_keys = 0; SELECT (\"",
+            "1=1 OR #a(--) IS NULL); PRAGMA foreign_keys = 0; SELECT (1",
+            "1=1 OR :a(/*) IS NULL); PRAGMA foreign_keys = 0; SELECT (1 /* */",
+            // Hidden the same way, what else a filter may not hold. The
+            // second ATTACH names its file by an expression, and reaches
+            // the authorizer without the name.
+            "1=1 OR :a(') IS NULL); BEGIN; SELECT ('",
+            "1=1 OR :a(') IS NULL); SAVEPOINT x; SELECT ('",
+            "1=1 OR :a(') IS NULL); ATTACH 'x' AS y; SELECT ('",
+            "1=1 OR :a(') IS NULL); ATTACH 'x' || '' AS y; SELECT ('",
+            "1=1 OR :a(') IS NULL); PRAGMA wal_checkpoint; SELECT ('",
+        ] {
+            query.raw_where = Some(raw.into());
+            let page = connection.fetch_rows(&query).await.map(|_| ());
+            assert!(fenced(&page), "{access:?} {raw}: {page:?}");
+            assert_eq!(settings().await, before, "{access:?} {raw}");
+            let count = connection.count_rows(&query).await.map(|_| ());
+            assert!(fenced(&count), "{access:?} {raw}: {count:?}");
+            assert_eq!(settings().await, before, "{access:?} {raw}");
+        }
+        // A `$` inside a name is where a tokenizer that knew those variables
+        // would see one. Ours sees the `;`, and refuses the text itself.
+        query.raw_where = Some(
+            "1=1 OR EXISTS (WITH a$b(')') AS (SELECT 1) SELECT 1 FROM a$b)); \
+             PRAGMA foreign_keys = 0; SELECT ('"
+                .into(),
+        );
+        for refused in [
+            connection.fetch_rows(&query).await.map(|_| ()),
+            connection.count_rows(&query).await.map(|_| ()),
+        ] {
+            assert!(
+                matches!(
+                    &refused,
+                    Err(Error::Query { code: None, message, .. }) if message.contains("`;`")
+                ),
+                "{access:?}: {refused:?}"
+            );
+            assert_eq!(settings().await, before, "{access:?}");
+        }
+        assert_eq!(connection.count_rows(&users(50)).await.unwrap(), 5);
+        // A filter that only reads is none of the fence's business.
+        query.raw_where = Some("id IN (SELECT id FROM users WHERE id < 3)".into());
+        assert_eq!(
+            ids(&connection.fetch_rows(&query).await.unwrap()),
+            vec![1, 2]
+        );
+        assert_eq!(connection.count_rows(&query).await.unwrap(), 2);
+        // A pragma read as a table is none of its business either, unless
+        // it takes an argument: that reaches SQLite as the pragma's value,
+        // and behind a filter a pragma with a value is what sets something.
+        // An honest filter can do this, so it is told what it may not use.
+        query.raw_where = Some("name IN (SELECT name FROM pragma_table_info('users'))".into());
+        let page = connection.fetch_rows(&query).await.map(|_| ());
+        assert!(fenced(&page), "{access:?}: {page:?}");
+        let count = connection.count_rows(&query).await.map(|_| ());
+        assert!(fenced(&count), "{access:?}: {count:?}");
+        // A write a filter reaches is `query_only`'s to refuse, with the
+        // code the app tells a refused write by: `PRAGMA optimize` would
+        // run ANALYZE on `users`, whose index has no statistics.
+        query.raw_where = Some("EXISTS (SELECT 1 FROM pragma_optimize)".into());
+        for refused in [
+            connection.fetch_rows(&query).await.map(|_| ()),
+            connection.count_rows(&query).await.map(|_| ()),
+        ] {
+            assert!(
+                matches!(
+                    &refused,
+                    Err(Error::Query { code: Some(code), .. }) if code == "8"
+                ),
+                "{access:?}: {refused:?}"
+            );
+        }
+        assert_eq!(connection.count_rows(&users(50)).await.unwrap(), 5);
     }
-    assert_eq!(connection.count_rows(&users(50)).await.unwrap(), 5);
 }
 
 #[tokio::test]
@@ -216,6 +360,24 @@ async fn a_raw_where_cannot_drop_the_page_limit() {
     // A closed comment and comment markers in strings are fine.
     query.raw_where = Some("label <> '/*' /* note */".into());
     assert_eq!(ids(&connection.fetch_rows(&query).await.unwrap())[0], 11);
+}
+
+#[tokio::test]
+async fn a_raw_where_cannot_end_the_statement_at_a_nul() {
+    let (connection, _dir) = fixture().await;
+    // SQLite stops reading at a NUL, and rusqlite takes what follows for
+    // an empty second statement: the page would lose its ORDER BY, LIMIT
+    // and OFFSET, and the second page would repeat the first.
+    let mut query = users(2);
+    query.offset = 2;
+    query.raw_where = Some("1=1) \0".into());
+    let page = connection.fetch_rows(&query).await;
+    assert!(
+        matches!(&page, Err(Error::Query { message, .. }) if message.contains("NUL")),
+        "{:?}",
+        page.as_ref().map(ids)
+    );
+    assert!(connection.count_rows(&query).await.is_err());
 }
 
 #[tokio::test]
@@ -730,21 +892,29 @@ async fn a_script_stops_at_the_first_error_and_keeps_earlier_results() {
 
 #[tokio::test]
 async fn writes_fail_as_read_only_and_refusals_run_nothing() {
-    let (connection, _dir) = fixture().await;
-    let outcome = run(&connection, "DELETE FROM users").await.unwrap();
-    // SQLITE_READONLY itself, none of its extended codes: the app tells a
-    // refused write by it.
-    assert!(matches!(
-        &outcome.results[0].outcome,
-        StatementOutcome::Error {
-            error: Error::Query { code: Some(code), .. },
-            ..
-        } if code == "8"
-    ));
-    let refused = run(&connection, "SELECT 1;\nCOMMIT").await;
-    assert!(matches!(refused, Err(Error::Refused { line: 2, .. })));
-    let count = connection.count_rows(&users(10)).await.unwrap();
-    assert_eq!(count, 5);
+    for access in [Access::ReadOnly, Access::Writable] {
+        let (connection, _dir) = fixture_as(access).await;
+        let outcome = run(&connection, "DELETE FROM users").await.unwrap();
+        // SQLITE_READONLY itself, none of its extended codes: the app tells a
+        // refused write by it.
+        assert!(
+            matches!(
+                &outcome.results[0].outcome,
+                StatementOutcome::Error {
+                    error: Error::Query { code: Some(code), .. },
+                    ..
+                } if code == "8"
+            ),
+            "{access:?}"
+        );
+        let refused = run(&connection, "SELECT 1;\nCOMMIT").await;
+        assert!(
+            matches!(refused, Err(Error::Refused { line: 2, .. })),
+            "{access:?}"
+        );
+        let count = connection.count_rows(&users(10)).await.unwrap();
+        assert_eq!(count, 5, "{access:?}");
+    }
 }
 
 #[tokio::test]
@@ -824,15 +994,24 @@ async fn a_failing_statement_still_rolls_the_transaction_back() {
 
 #[tokio::test]
 async fn a_script_cannot_change_the_sessions_settings_for_later() {
+    // Setting query_only is refused outright: on a writable file it is
+    // what keeps a script from writing.
+    for access in [Access::ReadOnly, Access::Writable] {
+        let (connection, _dir) = fixture_as(access).await;
+        let refused = run(&connection, "SELECT 1;\nPRAGMA 'query_only' = OFF").await;
+        assert!(
+            matches!(refused, Err(Error::Refused { line: 2, .. })),
+            "{access:?}: {refused:?}"
+        );
+    }
     let (connection, _dir) = fixture().await;
     let changed = run(
         &connection,
-        "PRAGMA query_only = OFF; PRAGMA trusted_schema = ON; PRAGMA busy_timeout = 0; \
-         PRAGMA case_sensitive_like = ON",
+        "PRAGMA trusted_schema = ON; PRAGMA busy_timeout = 0; PRAGMA case_sensitive_like = ON",
     )
     .await
     .unwrap();
-    assert_eq!(changed.results.len(), 4, "{changed:?}");
+    assert_eq!(changed.results.len(), 3, "{changed:?}");
     assert!(
         !changed
             .results
@@ -855,6 +1034,37 @@ async fn a_script_cannot_change_the_sessions_settings_for_later() {
     assert_eq!(value(1), Value::Int(0));
     assert_eq!(value(2), Value::Int(5000));
     assert_eq!(value(3), Value::Int(1));
+}
+
+#[tokio::test]
+async fn a_script_on_a_writable_file_changes_no_file() {
+    let (connection, dir) = fixture_as(Access::Writable).await;
+    let path = dir.path().join("fixture.db");
+    let before = std::fs::read(&path).unwrap();
+    let missing = dir.path().join("missing.db");
+    let copy = dir.path().join("copy.db");
+    for text in [
+        format!("ATTACH '{}' AS other", missing.display()),
+        format!("ATTACH 'file:{}?mode=rwc' AS other", missing.display()),
+        format!("VACUUM INTO '{}'", copy.display()),
+        "PRAGMA journal_mode = WAL".to_owned(),
+        // Refused, not harmless: it does nothing to this file, which is
+        // not in WAL mode, and would rewrite one that is.
+        "PRAGMA wal_checkpoint(TRUNCATE)".to_owned(),
+        "UPDATE users SET email = 'x'".to_owned(),
+        "CREATE TABLE made (n)".to_owned(),
+    ] {
+        // Refused, failed or harmless: each is fine, a changed file is not.
+        let _ = run(&connection, &text).await;
+        assert_eq!(std::fs::read(&path).unwrap(), before, "{text}");
+        assert!(!missing.exists() && !copy.exists(), "{text}");
+    }
+    let mut names: Vec<_> = std::fs::read_dir(dir.path())
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect();
+    names.sort();
+    assert_eq!(names, ["fixture.db"]);
 }
 
 #[tokio::test]
@@ -1005,4 +1215,258 @@ async fn the_server_version_names_sqlite() {
     let (connection, _dir) = fixture().await;
     let version = within(connection.server_version()).await.unwrap();
     assert!(version.starts_with("SQLite 3."), "{version}");
+}
+
+/// `caf\xe9` ("café" in Latin-1) the way it reads once the byte that is not
+/// UTF-8 is replaced.
+const LOSSY: &str = "caf\u{FFFD}";
+
+/// A file with names that are not UTF-8: SQLite keeps a name's bytes as they
+/// were written. `t` has a column and a declared type named `caf\xe9` and an
+/// index named `caf\xe9_idx` on that column, `v` gives the column another
+/// name, `keyed` has it as its key and one table is named `caf\xe9s`. SQL
+/// text is a `str` here, so the file is written with `caf~` and the byte is
+/// put in afterwards.
+async fn latin1_names() -> (Connection, tempfile::TempDir) {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("latin1.db");
+    rusqlite::Connection::open(&path)
+        .unwrap()
+        .execute_batch(
+            r#"CREATE TABLE t (id INTEGER PRIMARY KEY, "caf~" TEXT, price "caf~");
+               INSERT INTO t VALUES (1, 'x', 2.5);
+               CREATE INDEX "caf~_idx" ON t ("caf~");
+               CREATE VIEW v AS SELECT id, "caf~" AS cafe FROM t;
+               CREATE TABLE keyed ("caf~" TEXT PRIMARY KEY, note TEXT);
+               INSERT INTO keyed VALUES ('b', 'second'), ('a', 'first');
+               CREATE TABLE "caf~s" (id INTEGER PRIMARY KEY);"#,
+        )
+        .unwrap();
+    let mut bytes = std::fs::read(&path).unwrap();
+    let mut replaced = 0;
+    for start in 0..bytes.len() - 3 {
+        if &bytes[start..start + 4] == b"caf~" {
+            bytes[start + 3] = 0xE9;
+            replaced += 1;
+        }
+    }
+    assert!(replaced >= 6, "{replaced} names were replaced");
+    std::fs::write(&path, bytes).unwrap();
+    let connection = Connection::connect(&ConnectSpec::sqlite(&path), &Secrets::default())
+        .await
+        .unwrap();
+    (connection, dir)
+}
+
+fn names(page: &tabletist_db::RowPage) -> Vec<&str> {
+    page.columns
+        .iter()
+        .map(|column| column.name.as_str())
+        .collect()
+}
+
+#[tokio::test]
+async fn a_table_with_names_that_are_not_utf8_is_browsed_and_described() {
+    let (connection, _dir) = latin1_names().await;
+    let object = ObjectRef::new("main", "t");
+    let query = RowQuery::new(object.clone(), 50);
+    let page = connection.fetch_rows(&query).await.unwrap();
+    assert_eq!(names(&page), ["id", LOSSY, "price"]);
+    assert_eq!(page.columns[2].type_name, LOSSY);
+    assert_eq!(
+        page.rows,
+        vec![vec![
+            Value::Int(1),
+            Value::Text("x".into()),
+            Value::Float(2.5)
+        ]]
+    );
+    assert!(page.ordered_by_key);
+    assert_eq!(connection.count_rows(&query).await.unwrap(), 1);
+    let structure = connection.describe(&object).await.unwrap();
+    let columns: Vec<(&str, &str)> = structure
+        .columns
+        .iter()
+        .map(|column| (column.name.as_str(), column.type_name.as_str()))
+        .collect();
+    assert_eq!(
+        columns,
+        [("id", "INTEGER"), (LOSSY, "TEXT"), ("price", LOSSY)]
+    );
+    assert_eq!(structure.primary_key, ["id"]);
+    let indexes: Vec<(&str, &[String])> = structure
+        .indexes
+        .iter()
+        .map(|index| (index.name.as_str(), index.columns.as_slice()))
+        .collect();
+    assert_eq!(
+        indexes,
+        [(
+            format!("{LOSSY}_idx").as_str(),
+            [LOSSY.to_owned()].as_slice()
+        )]
+    );
+}
+
+#[tokio::test]
+async fn a_view_over_a_name_that_is_not_utf8_is_browsed_and_described() {
+    let (connection, _dir) = latin1_names().await;
+    let object = ObjectRef::new("main", "v");
+    let query = RowQuery::new(object.clone(), 50);
+    let page = connection.fetch_rows(&query).await.unwrap();
+    assert_eq!(names(&page), ["id", "cafe"]);
+    assert_eq!(
+        page.rows,
+        vec![vec![Value::Int(1), Value::Text("x".into())]]
+    );
+    assert_eq!(connection.count_rows(&query).await.unwrap(), 1);
+    assert_eq!(connection.describe(&object).await.unwrap().columns.len(), 2);
+}
+
+#[tokio::test]
+async fn a_key_that_is_not_utf8_is_described_but_orders_no_page() {
+    let (connection, _dir) = latin1_names().await;
+    let object = ObjectRef::new("main", "keyed");
+    let page = connection
+        .fetch_rows(&RowQuery::new(object.clone(), 50))
+        .await
+        .unwrap();
+    assert_eq!(names(&page), [LOSSY, "note"]);
+    assert_eq!(page.rows.len(), 2);
+    assert!(!page.ordered_by_key);
+    let structure = connection.describe(&object).await.unwrap();
+    assert_eq!(structure.primary_key, [LOSSY]);
+    assert!(
+        structure
+            .indexes
+            .iter()
+            .any(|index| index.primary && index.columns == [LOSSY])
+    );
+}
+
+#[tokio::test]
+async fn a_name_that_is_not_utf8_is_listed_and_using_it_is_a_query_error() {
+    let (connection, _dir) = latin1_names().await;
+    let listed: Vec<String> = connection
+        .list_objects("main")
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|object| object.name)
+        .collect();
+    assert_eq!(listed, [format!("{LOSSY}s").as_str(), "keyed", "t", "v"]);
+    // The name as listed is not the table's name, and no text is.
+    let object = ObjectRef::new("main", format!("{LOSSY}s"));
+    let query = RowQuery::new(object.clone(), 50);
+    let fetched = connection.fetch_rows(&query).await;
+    assert!(matches!(fetched, Err(Error::Query { .. })), "{fetched:?}");
+    let counted = connection.count_rows(&query).await;
+    assert!(matches!(counted, Err(Error::Query { .. })), "{counted:?}");
+    let described = connection.describe(&object).await;
+    assert!(
+        matches!(described, Err(Error::Query { .. })),
+        "{described:?}"
+    );
+    let mut sorted = RowQuery::new(ObjectRef::new("main", "t"), 50);
+    sorted.sort = vec![Sort {
+        column: LOSSY.into(),
+        dir: SortDir::Asc,
+    }];
+    let fetched = connection.fetch_rows(&sorted).await;
+    assert!(matches!(fetched, Err(Error::Query { .. })), "{fetched:?}");
+}
+
+#[tokio::test]
+async fn a_script_reads_names_that_are_not_utf8() {
+    let (connection, _dir) = latin1_names().await;
+    let outcome = run(
+        &connection,
+        "SELECT * FROM t; SELECT count(*) FROM v; SELECT cafe FROM v",
+    )
+    .await
+    .unwrap();
+    let results: Vec<(Vec<&str>, &Vec<Vec<Value>>)> = outcome
+        .results
+        .iter()
+        .map(|result| match &result.outcome {
+            StatementOutcome::Rows { columns, rows, .. } => (
+                columns.iter().map(|column| column.name.as_str()).collect(),
+                rows,
+            ),
+            other => panic!("rows, not {other:?}"),
+        })
+        .collect();
+    assert_eq!(
+        results,
+        [
+            (
+                vec!["id", LOSSY, "price"],
+                &vec![vec![
+                    Value::Int(1),
+                    Value::Text("x".into()),
+                    Value::Float(2.5)
+                ]]
+            ),
+            (vec!["count(*)"], &vec![vec![Value::Int(1)]]),
+            (vec!["cafe"], &vec![vec![Value::Text("x".into())]]),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn the_fence_stands_over_names_that_are_not_utf8() {
+    let (connection, _dir) = latin1_names().await;
+    for name in ["t", "v"] {
+        // SQLite asks about the column that is not UTF-8 for each of these,
+        // with the filter's fence up.
+        let mut query = RowQuery::new(ObjectRef::new("main", name), 50);
+        query.raw_where = Some("id = 1".into());
+        assert_eq!(connection.fetch_rows(&query).await.unwrap().rows.len(), 1);
+        assert_eq!(connection.count_rows(&query).await.unwrap(), 1);
+        // To SQLite `:a(')` is one variable token; to our tokenizer a string
+        // starts inside it and hides the `;`. Only the fence stops these.
+        for raw in [
+            "1=1 OR :a(') IS NULL); PRAGMA foreign_keys = 0; SELECT ('",
+            "1=1 OR :a(') IS NULL); BEGIN; SELECT ('",
+        ] {
+            query.raw_where = Some(raw.into());
+            for refused in [
+                connection.fetch_rows(&query).await.map(|_| ()),
+                connection.count_rows(&query).await.map(|_| ()),
+            ] {
+                assert!(
+                    matches!(
+                        &refused,
+                        Err(Error::Query { code: Some(code), message, .. })
+                            if code == "23" && message.starts_with("A filter cannot use")
+                    ),
+                    "{name} {raw}: {refused:?}"
+                );
+            }
+        }
+    }
+    // A script's fence, around a statement that reads such a column too.
+    let outcome = run(
+        &connection,
+        "SELECT * FROM t; SELECT :a('); PRAGMA query_only = 0; --'",
+    )
+    .await
+    .unwrap();
+    assert!(
+        matches!(
+            outcome.results.first().map(|result| &result.outcome),
+            Some(StatementOutcome::Rows { rows, .. }) if rows.len() == 1
+        ),
+        "{outcome:?}"
+    );
+    assert!(
+        matches!(
+            outcome.results.last().map(|result| &result.outcome),
+            Some(StatementOutcome::Error {
+                error: Error::Query { code: Some(code), message, .. },
+                ..
+            }) if code == "23" && message.contains("not authorized")
+        ),
+        "{outcome:?}"
+    );
 }

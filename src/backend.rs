@@ -9,8 +9,8 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError, mpsc};
 use std::time::Duration;
 
 use tabletist_db::{
-    CancelHandle, ConnectSpec, Connection, Driver, Error, HostKeys, ObjectInfo, ObjectRef, RowPage,
-    RowQuery, ScriptOutcome, Secrets, StopFlag, Structure,
+    Access, CancelHandle, ConnectSpec, Connection, Driver, Error, HostKeys, ObjectInfo, ObjectRef,
+    RowPage, RowQuery, ScriptOutcome, Secrets, StopFlag, Structure,
 };
 use tokio::sync::mpsc as tokio_mpsc;
 
@@ -56,6 +56,8 @@ pub enum Command {
         secrets: Secrets,
         /// The SSH host keys the user trusts.
         host_keys: HostKeys,
+        /// Whether the session may write.
+        access: Access,
     },
     /// Connect and close again, for the dialog's Test button.
     Test {
@@ -184,6 +186,8 @@ pub enum Event {
         /// Whether the session runs over TLS (`prefer` may have fallen back
         /// to plain text).
         encrypted: bool,
+        /// What the session was opened as, as the session itself says.
+        access: Access,
     },
     ConnectFailed {
         session: SessionId,
@@ -698,7 +702,7 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 struct Ready {
     session: SessionId,
     request: RequestId,
-    outcome: Result<(Driver, bool, SessionHandle), Error>,
+    outcome: Result<(Driver, bool, Access, SessionHandle), Error>,
 }
 
 /// State files being written. A file is here while its writer runs, with
@@ -1456,7 +1460,7 @@ impl Worker {
         match done.outcome {
             // Dropping the handle stops the session task, which closes it.
             Ok(_) if closed => {}
-            Ok((driver, encrypted, handle)) => {
+            Ok((driver, encrypted, access, handle)) => {
                 #[cfg(test)]
                 lock(&self.watched).insert(done.session, Arc::clone(&handle.running));
                 self.sessions.insert(done.session, handle);
@@ -1465,6 +1469,7 @@ impl Worker {
                     request: done.request,
                     driver,
                     encrypted,
+                    access,
                 });
             }
             Err(error) => self.outbox.emit(Event::ConnectFailed {
@@ -1483,16 +1488,20 @@ impl Worker {
                 spec,
                 secrets,
                 host_keys,
+                access,
             } => {
                 self.connecting.insert(session);
                 let outbox = self.outbox.clone();
                 let ready = self.ready.clone();
                 tokio::spawn(async move {
-                    let outcome = Connection::connect_with(&spec, &secrets, &host_keys)
+                    let outcome = Connection::connect_with(&spec, &secrets, &host_keys, access)
                         .await
                         .map(|connection| {
                             let driver = connection.driver();
                             let encrypted = connection.is_encrypted();
+                            // What the session says it is, not what was
+                            // asked for: the UI shows and trusts this.
+                            let opened = connection.access();
                             let cancel = connection.cancel_handle();
                             let (queue, commands) = tokio_mpsc::unbounded_channel();
                             let (stop, stopped) = tokio::sync::oneshot::channel();
@@ -1508,6 +1517,7 @@ impl Worker {
                             (
                                 driver,
                                 encrypted,
+                                opened,
                                 SessionHandle {
                                     queue,
                                     cancel,
@@ -1531,7 +1541,14 @@ impl Worker {
             } => {
                 let outbox = self.outbox.clone();
                 tokio::spawn(async move {
-                    let result = match Connection::connect_with(&spec, &secrets, &host_keys).await {
+                    let result = match Connection::connect_with(
+                        &spec,
+                        &secrets,
+                        &host_keys,
+                        Access::ReadOnly,
+                    )
+                    .await
+                    {
                         Ok(connection) => connection.close().await,
                         Err(error) => Err(error),
                     };
@@ -2243,6 +2260,27 @@ mod tests {
     }
 
     #[test]
+    fn a_session_says_what_it_was_opened_as() {
+        for access in [Access::ReadOnly, Access::Writable] {
+            let (_dir, spec) = fixture();
+            let (waker, _wakes) = woken();
+            let mut backend = Backend::start_with(waker, Keyring::memory());
+            backend.send(Command::Connect {
+                session: SessionId(1),
+                request: RequestId(10),
+                spec,
+                secrets: Secrets::default(),
+                host_keys: HostKeys::default(),
+                access,
+            });
+            match backend.wait(WAIT) {
+                Some(Event::Connected { access: opened, .. }) => assert_eq!(opened, access),
+                other => panic!("expected a session opened {access:?}, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
     fn a_session_connects_lists_and_fetches_then_wakes_the_ui() {
         let (_dir, spec) = fixture();
         let (waker, wakes) = woken();
@@ -2254,6 +2292,7 @@ mod tests {
             spec,
             secrets: Secrets::default(),
             host_keys: HostKeys::default(),
+            access: Access::ReadOnly,
         });
         assert!(matches!(
             backend.wait(WAIT),
@@ -2308,6 +2347,7 @@ mod tests {
             spec: ConnectSpec::sqlite("/definitely/not/here.db"),
             secrets: Secrets::default(),
             host_keys: HostKeys::default(),
+            access: Access::ReadOnly,
         });
         assert!(matches!(
             backend.wait(WAIT),
@@ -2363,6 +2403,7 @@ mod tests {
             spec,
             secrets: Secrets::default(),
             host_keys: HostKeys::default(),
+            access: Access::ReadOnly,
         });
         assert!(matches!(backend.wait(WAIT), Some(Event::Connected { .. })));
         let mut slow = RowQuery::new(ObjectRef::new("main", "big"), 10);
@@ -2419,6 +2460,7 @@ mod tests {
             spec,
             secrets: Secrets::default(),
             host_keys: HostKeys::default(),
+            access: Access::ReadOnly,
         });
         assert!(matches!(backend.wait(WAIT), Some(Event::Connected { .. })));
         (backend, session)
@@ -4022,6 +4064,7 @@ mod tests {
             spec,
             secrets: Secrets::default(),
             host_keys: HostKeys::default(),
+            access: Access::ReadOnly,
         });
         assert!(matches!(backend.wait(WAIT), Some(Event::Connected { .. })));
         backend.send(Command::Close { session });
@@ -4048,6 +4091,7 @@ mod tests {
             spec,
             secrets: Secrets::default(),
             host_keys: HostKeys::default(),
+            access: Access::ReadOnly,
         });
         assert!(matches!(backend.wait(WAIT), Some(Event::Connected { .. })));
         let mut slow = RowQuery::new(ObjectRef::new("main", "big"), 10);
@@ -4238,6 +4282,7 @@ mod tests {
             spec,
             secrets: Secrets::default(),
             host_keys: HostKeys::default(),
+            access: Access::ReadOnly,
         });
         assert!(matches!(backend.wait(WAIT), Some(Event::Connected { .. })));
         backend.send(Command::ListDatabases {

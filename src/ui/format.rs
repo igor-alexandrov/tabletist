@@ -767,11 +767,13 @@ pub fn capped(text: &str) -> Cow<'_, str> {
     }
 }
 
-/// Whether `error` is the read-only session refusing a write: Tabletist's
-/// own guard, or the server's refusal. PostgreSQL and MySQL say SQLSTATE
-/// 25006; SQLite says SQLITE_READONLY (8) and no more. Its extended codes
-/// keep the 8 in their low byte and are not a refused write: a journal to
-/// recover, a lock or a directory it cannot have, which a SELECT can meet.
+/// Whether `error` is a write that was refused: by Tabletist's own guard,
+/// or by the database, be it a read-only session or, on a writable one,
+/// the script's read-only transaction (SQLite's `query_only`). PostgreSQL
+/// and MySQL say SQLSTATE 25006; SQLite says SQLITE_READONLY (8) and no
+/// more. Its extended codes keep the 8 in their low byte and are not a
+/// refused write: a journal to recover, a lock or a directory it cannot
+/// have, which a SELECT can meet.
 pub fn refuses_writes(error: &tabletist_db::Error, driver: tabletist_db::Driver) -> bool {
     use tabletist_db::{Driver, Error};
     match error {

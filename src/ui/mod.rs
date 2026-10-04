@@ -1168,7 +1168,7 @@ mod tests {
                 .any(|(text, _)| text.ends_with("settings.toml"))
         );
         // Under the home directory the app found at its start, it is
-        // written from `~`.
+        // written from `~`, with the system's separator.
         let home = harness
             .app
             .dirs
@@ -1177,12 +1177,8 @@ mod tests {
             .map(|home| home.to_path_buf());
         harness.app.dirs.home = home;
         harness.settle();
-        // The separator after `config` is the system's.
-        assert!(
-            harness.painted.iter().any(|(text, _)| {
-                text.starts_with("~/config") && text.ends_with("settings.toml")
-            })
-        );
+        let shown = ["~", "config", "settings.toml"].join(std::path::MAIN_SEPARATOR_STR);
+        assert!(harness.painted_color(&shown).is_some());
         // Not watched (a test never is): nothing claims it is live.
         assert!(harness.painted_color("live").is_none());
         harness.app.settings_file.live = true;
@@ -5369,7 +5365,7 @@ mod tests {
         let tab = with_page(&mut harness);
         focus_grid(&mut harness, tab);
         harness.click("Row 1");
-        let note = "read-only in 0.1.0 · editing arrives in a later version";
+        let note = "read-only connection · editing arrives in a later version";
         let pieces = |harness: &mut Harness| -> Vec<String> {
             harness.settle();
             let painted = harness.painted.iter();
@@ -5387,7 +5383,7 @@ mod tests {
         assert!(
             narrow
                 .iter()
-                .any(|piece| piece.starts_with("read-only in 0.1.0") && piece.ends_with('…')),
+                .any(|piece| piece.starts_with("read-only connection") && piece.ends_with('…')),
             "{narrow:?}"
         );
         // And a cell too narrow for its words keeps its key alone.
@@ -5396,6 +5392,59 @@ mod tests {
             !narrow.iter().any(|piece| piece.contains("duplicate")),
             "{narrow:?}"
         );
+    }
+
+    #[test]
+    fn only_a_read_only_connection_carries_the_mark() {
+        for look in crate::theme::Look::ALL {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            let tab = with_page(&mut harness);
+            focus_grid(&mut harness, tab);
+            harness.click("Row 1");
+            // What says "read-only": by name, and as the frame painted it
+            // (the status line's tag has no name of its own).
+            let marks = |harness: &mut Harness| -> (Vec<String>, Vec<String>) {
+                let tree = harness.settle();
+                let said = |text: &String| text.to_lowercase().contains("read-only");
+                let named = crate::testing::labels(&tree).into_iter().filter(said);
+                let painted = harness.painted.iter().map(|(text, _)| text.clone());
+                let mut painted: Vec<String> = painted.filter(said).collect();
+                painted.sort();
+                (named.collect(), painted)
+            };
+            // The fixture connection is read-only.
+            let (named, painted) = marks(&mut harness);
+            if look.terminal {
+                assert_eq!(named, ["read-only"], "{}", look.name);
+                // The bar's tag, the status line's, and the row panel's
+                // note.
+                assert_eq!(
+                    painted,
+                    [
+                        "read-only",
+                        "read-only",
+                        "read-only connection · editing arrives in a later version"
+                    ],
+                    "{}",
+                    look.name
+                );
+            } else {
+                // The bar's pill and the footer.
+                let marks = ["Read-only", "1 row selected · read-only"];
+                assert_eq!(named, marks, "{}", look.name);
+            }
+            harness.app.workspace_mut(tab).unwrap().access = tabletist_db::Access::Writable;
+            let (named, painted) = marks(&mut harness);
+            assert_eq!(named, Vec::<String>::new(), "{}", look.name);
+            assert_eq!(painted, Vec::<String>::new(), "{}", look.name);
+            if look.terminal {
+                // The row panel's note says the rest of what it said.
+                let note = "editing arrives in a later version";
+                let mut pieces = harness.painted.iter();
+                assert!(pieces.any(|(text, _)| text == note), "{}", look.name);
+            }
+        }
     }
 
     #[test]
@@ -6381,41 +6430,92 @@ mod tests {
     }
 
     #[test]
-    fn the_dialog_shows_every_connection_read_only() {
+    fn the_read_only_box_follows_the_environment_until_it_is_set() {
         // The sheet says it under the box; the terminal look after it.
         for (look, said) in [
             (
                 crate::theme::Look::standard(),
-                "Blocks every write from this app. Every connection is read-only in 0.1.0.",
+                "Blocks every write from this app. On by default for production; turn off to edit.",
             ),
             (
                 crate::theme::Look::macos(),
-                "Blocks every write from this app. Every connection is read-only in 0.1.0.",
+                "Blocks every write from this app. On by default for production; turn off to edit.",
             ),
-            (crate::theme::Look::omarchy(), "· always on in 0.1.0"),
+            (crate::theme::Look::omarchy(), "· default for production"),
         ] {
             let mut harness = Harness::new();
             harness.set_look(look);
             harness.press(Key::N, Modifiers::COMMAND);
-            let tree = harness.settle();
-            let (_, node) = tree
-                .nodes
-                .iter()
-                .find(|(_, node)| {
-                    node.role() == egui::accesskit::Role::CheckBox
-                        && node.label() == Some("Open read-only")
-                })
-                .expect("the read-only box");
-            assert_eq!(
-                node.toggled(),
-                Some(egui::accesskit::Toggled::True),
-                "{}",
-                look.name
-            );
-            assert!(node.is_disabled(), "{}", look.name);
             assert!(harness.has(said), "{}", look.name);
-            // The box is locked: a new connection has nothing set.
-            assert_eq!(form(&harness).read_only, None, "{}", look.name);
+            let read_only = |harness: &mut Harness| {
+                let tree = harness.settle();
+                let (_, node) = tree
+                    .nodes
+                    .iter()
+                    .find(|(_, node)| {
+                        node.role() == egui::accesskit::Role::CheckBox
+                            && node.label() == Some("Open read-only")
+                    })
+                    .expect("the read-only box");
+                assert!(!node.is_disabled(), "{}", look.name);
+                node.toggled() == Some(egui::accesskit::Toggled::True)
+            };
+            let click_box = |harness: &mut Harness| {
+                let tree = harness.settle();
+                let place = crate::testing::bounds(
+                    &tree,
+                    "Open read-only",
+                    egui::accesskit::Role::CheckBox,
+                )
+                .expect("the read-only box");
+                click_at(harness, place.center());
+            };
+            // A new connection is not production: writable, nothing set.
+            assert!(!read_only(&mut harness), "{}", look.name);
+            // The terminal look names its choices in lower case.
+            harness.click(&look.label("Production"));
+            assert!(read_only(&mut harness), "{}", look.name);
+            assert_eq!(form(&harness).read_only, None, "the default, not a choice");
+            // The box is the user's from the first click. Clicked by its
+            // role: the sheet's title beside it has the same name.
+            click_box(&mut harness);
+            assert!(!read_only(&mut harness), "{}", look.name);
+            assert_eq!(form(&harness).read_only, Some(false), "{}", look.name);
+            click_box(&mut harness);
+            assert_eq!(form(&harness).read_only, Some(true), "{}", look.name);
+            // The keyboard has it too: Tab to the box, and Space toggles.
+            tab_to(&mut harness, "Open read-only");
+            harness.press(Key::Space, Modifiers::NONE);
+            assert_eq!(form(&harness).read_only, Some(false), "{}", look.name);
+            harness.press(Key::Space, Modifiers::NONE);
+            assert_eq!(form(&harness).read_only, Some(true), "{}", look.name);
+            if !look.terminal {
+                // The sheet's title beside the box toggles it as the box
+                // does (the terminal's box is its whole line).
+                let tree = harness.settle();
+                let title =
+                    crate::testing::bounds(&tree, "Open read-only", egui::accesskit::Role::Label)
+                        .expect("the title");
+                click_at(&mut harness, title.center());
+                assert_eq!(form(&harness).read_only, Some(false), "{}", look.name);
+                assert!(!read_only(&mut harness), "{}", look.name);
+            }
+            // For all that there is one box of the name, and one Tab stop.
+            let mut boxes = std::collections::HashSet::new();
+            let mut stops = std::collections::HashSet::new();
+            for _ in 0..80 {
+                harness.press(Key::Tab, Modifiers::NONE);
+                let tree = harness.settle();
+                if focused_name(&tree) == "Open read-only" {
+                    stops.insert(tree.focus);
+                }
+                boxes.extend(tree.nodes.iter().filter_map(|(id, node)| {
+                    (node.role() == egui::accesskit::Role::CheckBox
+                        && node.label() == Some("Open read-only"))
+                    .then_some(*id)
+                }));
+            }
+            assert_eq!((boxes.len(), stops.len()), (1, 1), "{}", look.name);
             // And what a connection was saved with comes back as it was.
             let mut harness = Harness::new();
             harness.set_look(look);
@@ -6426,6 +6526,9 @@ mod tests {
             harness
                 .app
                 .apply(crate::model::Action::EditConnection(id.clone()));
+            // The dialog is measured, unseen, before it is shown.
+            harness.settle();
+            assert!(!read_only(&mut harness), "{}", look.name);
             harness.click("Save");
             assert!(harness.app.dialog.is_none(), "{}", look.name);
             assert_eq!(
@@ -6435,6 +6538,52 @@ mod tests {
                 look.name
             );
         }
+    }
+
+    /// Tabs until the widget named `name` has the keyboard.
+    fn tab_to(harness: &mut Harness, name: &str) {
+        for _ in 0..80 {
+            harness.press(Key::Tab, Modifiers::NONE);
+            if focused_name(&harness.settle()) == name {
+                return;
+            }
+        }
+        panic!("{name} is no Tab stop");
+    }
+
+    #[test]
+    fn a_terminal_check_has_one_ring_and_only_from_the_keyboard() {
+        let mut harness = Harness::new();
+        harness.set_look(crate::theme::Look::omarchy());
+        harness.press(Key::N, Modifiers::COMMAND);
+        harness.click("postgresql");
+        let accent = harness.app.palette.accent;
+        // The accent outlines round the check named `name`.
+        let rings = |harness: &mut Harness, name: &str| {
+            let tree = harness.settle();
+            let place = crate::testing::bounds(&tree, name, egui::accesskit::Role::CheckBox)
+                .expect("the check");
+            let outlines = harness.outlines.iter();
+            outlines
+                .filter(|(rect, stroke)| {
+                    stroke.color == accent
+                        && rect.expand(1.0).contains_rect(place)
+                        && place.expand(8.0).contains_rect(*rect)
+                })
+                .count()
+        };
+        for name in ["Keyring", "Connect through SSH tunnel", "Open read-only"] {
+            tab_to(&mut harness, name);
+            assert_eq!(rings(&mut harness, name), 1, "{name}");
+        }
+        // The pointer gives a check the keyboard too, and no ring.
+        let tree = harness.settle();
+        let name = "Open read-only";
+        let place = crate::testing::bounds(&tree, name, egui::accesskit::Role::CheckBox)
+            .expect("the read-only box");
+        click_at(&mut harness, place.center());
+        assert_eq!(focused_name(&harness.settle()), name);
+        assert_eq!(rings(&mut harness, name), 0);
     }
 
     #[test]
@@ -7387,9 +7536,9 @@ mod tests {
             harness.settle();
             let title = look.label("Edit connection");
             let last = if look.terminal {
-                "· always on in 0.1.0"
+                "· default for production"
             } else {
-                "Blocks every write from this app. Every connection is read-only in 0.1.0."
+                "Blocks every write from this app. On by default for production; turn off to edit."
             };
             // The first time, and again: egui remembers the dialog's size.
             for opening in ["first", "second"] {
@@ -8125,6 +8274,7 @@ mod tests {
                     request,
                     driver: tabletist_db::Driver::Postgres,
                     encrypted,
+                    access: crate::testing::asked_access(&harness.app),
                 },
             ));
         }

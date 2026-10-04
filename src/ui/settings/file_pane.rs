@@ -141,10 +141,11 @@ pub(super) fn spans(line: &str) -> Vec<(Range<usize>, Part)> {
     out
 }
 
-/// `path` as the screen writes it: the home directory as `~`.
+/// `path` as the screen writes it: the home directory as `~`, and what is
+/// under it after the system's own separator, as the rest of the path has it.
 pub(super) fn shown_path(path: &Path, home: Option<&Path>) -> String {
     match home.and_then(|home| path.strip_prefix(home).ok()) {
-        Some(rest) => format!("~/{}", rest.display()),
+        Some(rest) => Path::new("~").join(rest).display().to_string(),
         None => path.display().to_string(),
     }
 }
@@ -404,14 +405,15 @@ mod tests {
 
     #[test]
     fn the_home_directory_is_written_as_a_tilde() {
-        use std::path::Path;
+        use std::path::{MAIN_SEPARATOR_STR, Path, PathBuf};
         let home = Path::new("/home/ada");
+        // Joined name by name, so the path has the system's separator, and
+        // so has what is written for it.
+        let names = [".config", "tabletist", "settings.toml"];
+        let file = home.join(names.iter().collect::<PathBuf>());
         assert_eq!(
-            shown_path(
-                Path::new("/home/ada/.config/tabletist/settings.toml"),
-                Some(home)
-            ),
-            "~/.config/tabletist/settings.toml"
+            shown_path(&file, Some(home)),
+            format!("~{MAIN_SEPARATOR_STR}{}", names.join(MAIN_SEPARATOR_STR))
         );
         assert_eq!(
             shown_path(Path::new("/etc/tabletist/settings.toml"), Some(home)),

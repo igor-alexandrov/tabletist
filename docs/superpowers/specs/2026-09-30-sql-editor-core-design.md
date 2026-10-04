@@ -12,7 +12,9 @@ tab: type SQL, run the statement at the cursor or the whole script, and read
 the result in the same grid the table tabs use. The app still cannot change
 table data: every run happens in a read-only transaction that is rolled back,
 and scripts that would leave that transaction are refused before anything
-runs.
+runs. That holds on a writable connection too, whose session is read-write
+between runs: the editor is fenced there as on a read-only one (see
+`2026-10-03-value-editing-core-design.md`, "Writable connections").
 
 Success: on each driver, a user opens a SQL tab, runs a query, sees its rows
 with column types, sees the database's error when a statement fails, and can
@@ -24,7 +26,8 @@ outside table data that a read-only transaction allows stay possible for a
 user with the privileges: PostgreSQL session advisory locks (held until
 the run ends), `pg_terminate_backend`, `dblink_exec`, `lo_export`; MySQL `KILL`; SQLite
 `ATTACH` and connection `PRAGMA`s for the life of the session (apart from
-the few settings every run puts back, see the cleanup below).
+the pragmas the guard refuses and the few settings every run puts back, see
+the guard and the cleanup below).
 
 The designs are the "SQL editor" artboards (macOS and Omarchy) in the design
 canvas Artifact. They are not copied into the repository.
@@ -92,7 +95,8 @@ A new module `sql` in `tabletist-db`, with no UI dependencies:
   guard refuses changing `sql_mode`, so the server lexes as we do).
   `/*! ... */` and MariaDB's `/*M! ... */` executable comments are their own
   token kind (the server runs their contents).
-- SQLite: `--` comments; `"quoted"`, `[bracket]` and backtick identifiers.
+- SQLite: `--` comments; `"quoted"`, `[bracket]` and backtick identifiers;
+  a byte-order mark where a token starts is whitespace, as SQLite reads it.
 - `sql::statements(dialect, text) -> Vec<Statement>`, splitting on `;`
   tokens (a `;` inside a string, comment or dollar body is not a token of its
   own). `Statement { range, end, start_line, start_column, first_line, text }`:
@@ -178,7 +182,18 @@ Four layers, all in `tabletist-db`, so no caller can skip them.
      statement behind a leading `SET`; any statement with the tokens
      `INTO OUTFILE` or `INTO DUMPFILE` (they write files on the server); and
      any statement holding a `/*! ... */` or `/*M! ... */` executable
-     comment.
+     comment;
+   - SQLite only: `PRAGMA query_only` and `PRAGMA writable_schema` whenever
+     the statement sets them (`query_only` is what refuses a write on a
+     writable connection; only a plain read, `PRAGMA query_only` or
+     `PRAGMA main.query_only`, passes), and `PRAGMA wal_checkpoint` in
+     every form, the bare one included (a checkpoint rewrites a file in WAL
+     mode, and `query_only` does not stop it). The name is matched in every
+     spelling SQLite takes: bare, quoted, as a string, with a schema in
+     front, with the value after `=` or in parentheses, and behind
+     `EXPLAIN`. Since the tokenizer reads a byte-order mark as whitespace
+     for SQLite, one in front of `COMMIT` or `PRAGMA` hides nothing from
+     the list.
    The list is matched on tokens, never on raw text, so `SELECT 'COMMIT'`
    and a column named `end_date` are fine. It errs toward refusing: a `SET`
    naming a guarded word anywhere is refused.
@@ -189,17 +204,37 @@ Four layers, all in `tabletist-db`, so no caller can skip them.
    setting changed by one statement can never split another. mysql_async
    refuses `LOAD DATA LOCAL INFILE` unless a handler is configured, and none
    is.
+
+   On SQLite the list has a backstop that does not depend on our tokenizer
+   agreeing with SQLite's: the connection's authorizer (the `sqlite::fence`
+   module). SQLite asks it whenever it prepares a statement, after its own
+   parse, the second statement included that rusqlite prepares before it
+   refuses a text holding two. A script's statement is denied transaction
+   and savepoint statements, `query_only` and `writable_schema` with a
+   value, and `wal_checkpoint` in any form. Everything else is
+   allowed: a write is left to `query_only`, whose error is the database's
+   own read-only error, and `ATTACH` and the other pragmas stay possible.
+   The statements the driver runs around the script (`BEGIN`, the checks,
+   the cleanup) are not fenced. A denial is that statement's error ("not
+   authorized"), after which the run stops as after any failed statement;
+   it is not `LeftReadOnly`, and the session stays open. A table's page and
+   count, which hold the raw WHERE, have a stricter fence of their own (see
+   `2026-10-03-value-editing-core-design.md`).
 2. **Snapshot first (PostgreSQL).** After `BEGIN READ ONLY`, the session runs
    `SELECT 1` before any user statement. PostgreSQL refuses to make a
    transaction read-write once a snapshot is taken, so even a statement the
-   list missed cannot flip it. MySQL's session is already read-only
-   (`SET SESSION TRANSACTION READ ONLY` at connect), and the list keeps it
-   so. SQLite is opened read-only by the driver.
+   list missed cannot flip it. On a read-only connection MySQL's session is
+   already read-only (`SET SESSION TRANSACTION READ ONLY` at connect); on a
+   writable one the run sends that statement before it starts its
+   transaction (once more when a cancel interrupts it), because only the
+   session's setting makes the server refuse DDL after the commit DDL
+   implies, and the checks below read it. The list keeps it so. SQLite is
+   opened read-only by the driver, or, on a writable connection, read-write
+   under `PRAGMA query_only = ON`.
 3. **Check before every statement.** So that a statement the list missed
-   can end the transaction but never be followed by a write, PostgreSQL and
-   MySQL confirm the session is still where it started before running the
-   next statement (SQLite is opened read-only and has no such mode to leave,
-   so it needs no check):
+   can end the transaction but never be followed by a write, every driver
+   confirms the session is still where it started before running the next
+   statement:
    PostgreSQL keeps one savepoint from the start of the run and swaps it
    (`RELEASE tabletist_guard; SAVEPOINT tabletist_guard`): that fails
    outside a transaction block and in a transaction the script chained to
@@ -215,13 +250,21 @@ Four layers, all in `tabletist-db`, so no caller can skip them.
    server that does not mark its read-only transactions at all (every
    supported MySQL and MariaDB does) cannot be checked, so the run is not
    started.
+   SQLite asks whether its transaction is still open and reads
+   `PRAGMA query_only`, which must be 1. `query_only` refuses writes to
+   tables, but only the open transaction stops `PRAGMA journal_mode = WAL`
+   and `VACUUM INTO`, and on a writable connection nothing but `query_only`
+   would stop the next statement's write. A transaction that is gone, a
+   `query_only` that is off and a question that fails for any reason but a
+   cancel all mean the script left.
    A failed check ends the run with `Error::LeftReadOnly` before the
    statement runs.
-   After the last statement the same check runs once more, so on
-   PostgreSQL a statement that ended the transaction in last position closes
-   the session rather than leaving a committed setting behind. On MySQL a
-   session merely found outside a transaction is not closed: nothing there
-   is transactional, and the reset below wipes its state.
+   After the last statement the same check runs once more (on SQLite as
+   layer 4's read of `query_only`), so on PostgreSQL a statement that ended
+   the transaction in last position closes the session rather than leaving
+   a committed setting behind. On MySQL a session merely found outside a
+   transaction is not closed: nothing there is transactional, and the reset
+   below wipes its state.
 4. **Check before rolling back.** After the last statement, when the
    transaction is still usable, PostgreSQL asks `SHOW transaction_read_only`
    and MySQL `SELECT @@session.transaction_read_only` (falling back to
@@ -232,6 +275,11 @@ Four layers, all in `tabletist-db`, so no caller can skip them.
    inside it): it cannot write, and `ROLLBACK` ends it. The driver tracks
    that state itself (open, aborted or left) rather than reading it off the
    last result, so a run stopped between statements is still checked.
+   SQLite reads `PRAGMA query_only` once more, before the rollback, whose
+   cleanup sets it again and would hide a last statement that turned it
+   off. Anything but 1 is `Error::LeftReadOnly`, returned once the rollback
+   is done; a cancel can land on the question, so it is asked a second
+   time, and no answer counts as left.
 
 Cleanup after every script, on every path:
 
@@ -244,12 +292,17 @@ Cleanup after every script, on every path:
   then `SET NAMES utf8mb4 COLLATE utf8mb4_general_ci` (the reset drops the
   handshake's character set, which the tokenizer relies on), then the
   `sql_mode` without `NO_BACKSLASH_ESCAPES`, `ANSI_QUOTES` and the
-  combination modes that imply it (`ANSI` and the like). MySQL
-  session state is not transactional; the reset makes sure nothing a script
-  set (`sql_select_limit` below, a user's `SET time_zone`, `SET NAMES`)
-  reaches table browsing or the next run. `reset()` answering `false` (the
-  server predates `COM_RESET_CONNECTION`: MySQL 5.7.2, MariaDB 10.2.3 or
-  older) is a cleanup failure.
+  combination modes that imply it (`ANSI` and the like). On a writable
+  session the list has no `READ ONLY` and ends with `SET SESSION
+  TRANSACTION READ WRITE`, but only after a run that ended cleanly. After
+  one that did not (the script left read-only, a check could not be made,
+  the transaction could not start, or the `ROLLBACK` or the reset failed)
+  the session gets the read-only list and stays read-only until the
+  backend closes it. MySQL session state is not transactional; the reset
+  makes sure nothing a script set (`sql_select_limit` below, a user's
+  `SET time_zone`, `SET NAMES`) reaches table browsing or the next run.
+  `reset()` answering `false` (the server predates `COM_RESET_CONNECTION`:
+  MySQL 5.7.2, MariaDB 10.2.3 or older) is a cleanup failure.
 - SQLite: `ROLLBACK` when a transaction is still open, then the
   connect-time settings again: the busy timeout, `PRAGMA query_only = ON`,
   `PRAGMA trusted_schema = OFF` and `PRAGMA case_sensitive_like = OFF`, so a
@@ -268,12 +321,13 @@ a `Cancelled` result for the statement it was stopped in or before.
 One that lands on the checks after the last statement or on the cleanup is
 ignored for the outcome, and the interrupted step runs once more (the driver
 marks the run as finishing first, so the backend stops repeating its
-cancel); a MySQL session is never left read-write after a reset because a
-`SET` was interrupted. On PostgreSQL a cancel aborts the transaction; the
-driver then asks the server once more where it stands: still inside (a
-failed transaction, which cannot write) means a clean `ROLLBACK`, outside
-means `LeftReadOnly`. A `BEGIN` that fails for any reason but a cancel
-closes the session, since it would fail the same way on every later run.
+cancel); a MySQL session is never left in the wrong mode after a reset
+because a `SET` was interrupted. On PostgreSQL a cancel aborts the
+transaction; the driver then asks the server once more where it stands:
+still inside (a failed transaction, which cannot write) means a clean
+`ROLLBACK`, outside means `LeftReadOnly`. A `BEGIN` that fails for any
+reason but a cancel closes the session, since it would fail the same way on
+every later run.
 If `LeftReadOnly` is found, or a cleanup
 step fails (including a retried step that fails again), `run_script`
 returns the error and the backend closes the session, so its
@@ -650,8 +704,9 @@ tab's result grid as on a table's.
   and hint a database gave follow on lines of their own. What a database
   said is cut at 2,000 characters where it is shown.
 - Writes fail through the database's own read-only error (PostgreSQL and
-  MySQL read-only transactions; SQLite is opened read-only); escaping the
-  transaction is refused by the guard.
+  MySQL read-only transactions; SQLite's `query_only`, with the read-only
+  open behind it on a read-only connection); escaping the transaction is
+  refused by the guard.
 - A timeout reads "Cancelled after 30 s (timeout)", a user cancel
   "Cancelled". A `Cancelled` outcome without a reason (a user-set
   `statement_timeout`, say) also reads "Cancelled". The cancelled

@@ -15,8 +15,9 @@ MySQL, SQLite) on egui/eframe and fastframe. The design lives in
   (`src/backend.rs`), never on the UI thread.
 - `crates/tabletist-db` has no UI dependencies.
 - The workspace forbids `unsafe`. AppKit calls that cannot be made without it
-  go in `crates/tabletist-appkit`, behind a safe API, each with a SAFETY note;
-  `src/macos.rs` and everything else stay free of it.
+  go in `crates/tabletist-appkit`, and SQLite calls in
+  `crates/tabletist-sqlite-ffi`, behind a safe API, each with a SAFETY note;
+  `src/macos.rs`, `crates/tabletist-db` and everything else stay free of it.
 - Platform code sits behind `cfg`. A fix for one platform keeps Linux, macOS,
   and Windows compiling.
 - Settings and state files stay readable, backward compatible, and atomically
@@ -75,8 +76,32 @@ waits for it.
 
 ## Releasing
 
-1. Bump `version` in `Cargo.toml`, run `cargo update -p tabletist`, commit.
-2. `git tag -s v0.1.0 -m v0.1.0 && git push origin v0.1.0`.
+The version has one source: `version` under `[package]` in the root
+`Cargo.toml`. The About window, `tabletist --version`, the log and the
+Windows version details all read it at build time, and `release.yml` takes the
+package file names from the tag. So the tag follows `Cargo.toml`, never the
+other way round.
+
+- The bump lands on `main` before the tag exists. Tag the commit that carries
+  it, nothing earlier.
+- The tag is `v` plus the version in `Cargo.toml`, character for character
+  (`0.2.0-rc1` is tagged `v0.2.0-rc1`). `release.yml` checks this first and
+  builds nothing for a tag that disagrees.
+- `Cargo.toml` and the `tabletist` entry in `Cargo.lock` change in the same
+  commit: every release build is `--locked`. That one line is the whole
+  `Cargo.lock` diff. The crates under `crates/` keep their own versions.
+- Never create the release, or its tag, in the GitHub UI or with
+  `gh release create`. `release.yml` creates the release from the pushed tag.
+  One made by hand has no packages, and its tag points at whatever `main` was.
+- Never move a tag a release was built from. If a tag went out on the wrong
+  commit and nothing was built from it, delete it and tag again; otherwise
+  bump to the next patch version.
+- A user-facing string that names a version ("read-only in 0.1.0") is not
+  bumped with it. Check on each release whether it is still true.
+
+1. Bump `version` in `Cargo.toml`, run `cargo update -p tabletist`, commit,
+   and get the commit onto `main`.
+2. On that commit: `git tag -s v0.1.1 -m v0.1.1 && git push origin v0.1.1`.
 3. `release.yml` builds Linux (x86_64, aarch64 `.tar.gz`), Windows (x64,
    arm64 `.zip` and `-setup.exe`) and macOS (universal `.dmg`), publishes a
    GitHub release with `checksums.txt`, then updates the AUR. A tag with a

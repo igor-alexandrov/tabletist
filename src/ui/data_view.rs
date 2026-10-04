@@ -36,6 +36,19 @@ fn note(ui: &mut egui::Ui, text: &str, color: egui::Color32, look: &Look) -> egu
         .label(ui)
 }
 
+/// What the footer says of the selection and of a read-only connection;
+/// empty when there is nothing to say.
+fn state_note(selected: bool, read_only: bool, locale: crate::i18n::Locale) -> String {
+    let mut parts = Vec::new();
+    if selected {
+        parts.push(gettext(locale, "1 row selected"));
+    }
+    if read_only {
+        parts.push(gettext(locale, "read-only"));
+    }
+    parts.join(" · ")
+}
+
 /// The parts of "13 rows · 6 columns · public", as far as it is known.
 fn subtitle(object: &ObjectTab, look: &Look, locale: crate::i18n::Locale) -> Vec<String> {
     let mut parts = Vec::new();
@@ -863,6 +876,10 @@ pub fn footer(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabI
     let timing = page.map(|page| format::elapsed(page.elapsed));
     let unordered = page.is_some_and(|page| !page.ordered_by_key) && object.query.sort.is_empty();
     let selected = object.selection.is_some();
+    let read_only = app
+        .workspace(tab)
+        .is_some_and(|workspace| workspace.access == tabletist_db::Access::ReadOnly);
+    let state = state_note(selected, read_only, locale);
     let columns = app
         .workspace(tab)
         .filter(|_| view == ObjectView::Data)
@@ -932,21 +949,17 @@ pub fn footer(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabI
                         let width = |text: &str| {
                             widgets::secondary(&look).width(ui.ctx(), look.faces, text)
                         };
-                        let state = if selected {
-                            format!(
-                                "{} · {}",
-                                gettext(locale, "1 row selected"),
-                                gettext(locale, "read-only")
-                            )
-                        } else {
-                            gettext(locale, "read-only").into_owned()
-                        };
                         let query = timing
                             .as_ref()
                             .map(|timing| format!("{} {timing}", gettext(locale, "Query")));
-                        let taken = width(&state)
-                            + query.as_deref().map_or(0.0, |query| 16.0 + width(query))
-                            + 16.0;
+                        // A state with nothing to say takes no room.
+                        let state_width = if state.is_empty() {
+                            0.0
+                        } else {
+                            width(&state) + 16.0
+                        };
+                        let taken =
+                            state_width + query.as_deref().map_or(0.0, |query| 16.0 + width(query));
                         if ui.available_width() >= width(columns) + 16.0 + taken {
                             note(ui, columns, status, &look);
                         }
@@ -1008,16 +1021,9 @@ pub fn footer(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabI
                             &look,
                         );
                     }
-                    let state = if selected {
-                        format!(
-                            "{} · {}",
-                            gettext(locale, "1 row selected"),
-                            gettext(locale, "read-only")
-                        )
-                    } else {
-                        gettext(locale, "read-only").into_owned()
-                    };
-                    note(ui, &state, status, &look);
+                    if !state.is_empty() {
+                        note(ui, &state, status, &look);
+                    }
                 });
             });
         });

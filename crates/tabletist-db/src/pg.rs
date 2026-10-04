@@ -12,9 +12,9 @@ use tokio_postgres::tls::{MakeTlsConnect, TlsConnect};
 use tokio_postgres::{SimpleQueryMessage, Socket};
 
 use crate::{
-    ColumnInfo, ColumnMeta, ConnectSpec, Dialect, Error, ForeignKeyInfo, IndexInfo, MAX_LISTED,
-    ObjectInfo, ObjectKind, ObjectRef, Result, RowPage, RowQuery, Secrets, Structure, Value,
-    ValueKind, value_from_pg_text,
+    Access, ColumnInfo, ColumnMeta, ConnectSpec, Dialect, Error, ForeignKeyInfo, IndexInfo,
+    MAX_LISTED, ObjectInfo, ObjectKind, ObjectRef, Result, RowPage, RowQuery, Secrets, Structure,
+    Value, ValueKind, value_from_pg_text,
 };
 use tokio_postgres::error::SqlState;
 use tokio_postgres_rustls::MakeRustlsConnect;
@@ -228,7 +228,12 @@ impl Conn {
     }
 
     /// Connects to the spec's server, or through a tunnel's local port `via`.
-    pub async fn connect(spec: &ConnectSpec, secrets: &Secrets, via: Option<u16>) -> Result<Self> {
+    pub async fn connect(
+        spec: &ConnectSpec,
+        secrets: &Secrets,
+        via: Option<u16>,
+        access: Access,
+    ) -> Result<Self> {
         if spec.user.trim().is_empty() {
             return Err(Error::InvalidSpec("enter a user name".into()));
         }
@@ -253,12 +258,17 @@ impl Conn {
                 log::info!("PostgreSQL connection ended: {error}");
             }
         });
-        client
-            .batch_execute(
-                "SET default_transaction_read_only = on; SET standard_conforming_strings = on",
-            )
-            .await
-            .map_err(query_error)?;
+        // A writable session keeps the server's default. Row fetches,
+        // counts and the script runner open read-only transactions of
+        // their own, and none of the script guard's checks read the
+        // session's default.
+        let setup = match access {
+            Access::ReadOnly => {
+                "SET default_transaction_read_only = on; SET standard_conforming_strings = on"
+            }
+            Access::Writable => "SET standard_conforming_strings = on",
+        };
+        client.batch_execute(setup).await.map_err(query_error)?;
         let cancel = client.cancel_token();
         Ok(Self {
             client: tokio::sync::Mutex::new(client),
@@ -783,7 +793,9 @@ mod tests {
             ConnectSpec::from_url(&format!("postgres://me@127.0.0.1:{main_port}/app_pool"))
                 .unwrap();
         spec.tls = crate::TlsMode::Prefer;
-        let mut conn = Conn::connect(&spec, &secrets, None).await.unwrap();
+        let mut conn = Conn::connect(&spec, &secrets, None, Access::ReadOnly)
+            .await
+            .unwrap();
         spec.port = port;
         conn.config = config(&spec, &secrets, None);
         (conn, task)
@@ -876,7 +888,9 @@ mod tests {
     pub(super) async fn session(url: &str) -> Conn {
         let (mut spec, secrets) = ConnectSpec::from_url(url).unwrap();
         spec.tls = crate::TlsMode::Disable;
-        Conn::connect(&spec, &secrets, None).await.unwrap()
+        Conn::connect(&spec, &secrets, None, Access::ReadOnly)
+            .await
+            .unwrap()
     }
 
     /// A server that declines TLS and accepts anyone, answering every
@@ -922,7 +936,9 @@ mod tests {
         let (mut spec, secrets) =
             ConnectSpec::from_url(&format!("postgres://me@127.0.0.1:{port}/app")).unwrap();
         spec.tls = crate::TlsMode::Prefer;
-        let conn = Conn::connect(&spec, &secrets, None).await.unwrap();
+        let conn = Conn::connect(&spec, &secrets, None, Access::ReadOnly)
+            .await
+            .unwrap();
         assert!(!conn.encrypted);
     }
 }
