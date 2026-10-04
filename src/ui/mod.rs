@@ -1168,7 +1168,7 @@ mod tests {
                 .any(|(text, _)| text.ends_with("settings.toml"))
         );
         // Under the home directory the app found at its start, it is
-        // written from `~`.
+        // written from `~`, with the system's separator.
         let home = harness
             .app
             .dirs
@@ -1177,7 +1177,8 @@ mod tests {
             .map(|home| home.to_path_buf());
         harness.app.dirs.home = home;
         harness.settle();
-        assert!(harness.painted_color("~/config/settings.toml").is_some());
+        let shown = ["~", "config", "settings.toml"].join(std::path::MAIN_SEPARATOR_STR);
+        assert!(harness.painted_color(&shown).is_some());
         // Not watched (a test never is): nothing claims it is live.
         assert!(harness.painted_color("live").is_none());
         harness.app.settings_file.live = true;
