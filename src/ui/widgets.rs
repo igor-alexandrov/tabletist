@@ -1951,4 +1951,35 @@ mod tests {
             assert!(clicked);
         }
     }
+
+    #[test]
+    fn space_and_enter_flip_a_toggle_that_has_the_keyboard() {
+        use crate::testing::Harness;
+        let mut harness = Harness::new();
+        let palette = harness.app.palette;
+        let press = |key| egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        };
+        for key in [egui::Key::Space, egui::Key::Enter] {
+            // The keyboard comes to it, as Tab would bring it.
+            harness.frame_with(|ui| {
+                toggle(ui, false, "Value tags", &palette).request_focus();
+            });
+            let mut clicked = false;
+            harness.frame_with_events(vec![press(key)], |ui| {
+                clicked = toggle(ui, false, "Value tags", &palette).clicked();
+            });
+            assert!(clicked, "{key:?}");
+            // And a key that is not one of its two does nothing.
+            let mut clicked = false;
+            harness.frame_with_events(vec![press(egui::Key::A)], |ui| {
+                clicked = toggle(ui, false, "Value tags", &palette).clicked();
+            });
+            assert!(!clicked, "{key:?}");
+        }
+    }
 }
