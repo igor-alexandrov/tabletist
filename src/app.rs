@@ -16,8 +16,8 @@ use crate::model::{Action, ConnTab, ConnTabContent, ConnTabId, PickerState};
 use crate::model::{
     Advance, CellPos, Completion, ConnectionForm, Dialog, EditStart, Fetch, FilterBar, FilterRow,
     HostKeyPrompt, ObjectTab, ObjectView, Pane, PasswordPrompt, PickTarget, QuickOpen, ResultPane,
-    SecretKind, SessionStatus, SqlTab, Tab, TabId, TestState, TextPrint, Tree, TreeKey, TreeNode,
-    Wanted, Workspace,
+    SaveBlock, SecretKind, SessionStatus, SqlTab, Tab, TabId, TestState, TextPrint, Tree, TreeKey,
+    TreeNode, Wanted, Workspace,
 };
 use crate::paths::AppDirs;
 use crate::secrets::{SecretString, password_account, ssh_account};
@@ -789,20 +789,27 @@ impl App {
             }
             Action::SetNull { tab, id } => self.set_null(tab, id),
             Action::RevertCell { tab, id } => {
+                // Not under a save: its answer is put into this set.
                 if let Some(object) = self.object_tab_mut(tab, id)
                     && let Some(cell) = object.selection
                     && object.edits.editor.is_none()
+                    && object.edits.saving.is_none()
                 {
                     object.edits.cells.remove(&(cell.row, cell.col));
                     object.fields = None;
                 }
             }
             Action::DiscardEdits { tab, id } => {
-                if let Some(object) = self.object_tab_mut(tab, id) {
+                // Not under a save: dropping the set would drop the save
+                // with it, and its answer would find no tab to tell.
+                if let Some(object) = self.object_tab_mut(tab, id)
+                    && object.edits.saving.is_none()
+                {
                     object.edits = crate::edit::Edits::default();
                     object.fields = None;
                 }
             }
+            Action::WriteEdits { tab, id } => self.write_edits(tab, id),
             Action::MoveSelection {
                 tab,
                 id,
@@ -2046,6 +2053,11 @@ impl App {
                     return;
                 };
                 object.rows.finish(request, result);
+                // The marks of the last save and the note of a locked cell
+                // were about the page this one replaces. Nothing is pending
+                // here: a tab that holds edits is never fetched again (the
+                // guard at the top of `apply` is what makes that so).
+                object.edits = crate::edit::Edits::default();
                 let (height, width) = object
                     .page()
                     .map(|page| (page.rows.len(), page.columns.len()))
@@ -2258,9 +2270,95 @@ impl App {
                     workspace.server_version.finish(request, result);
                 }
             }
-            // Nothing sends a Write yet: editing in the grid (step 3 of
-            // the value-editing spec) is what reads this.
-            Event::Written { .. } => {}
+            Event::Written {
+                session,
+                request,
+                result,
+            } => {
+                // An answer for a closed tab, or for a save a reconnect gave
+                // up, finds no tab saving.
+                let Some(tab) = self.tab_for_session(session) else {
+                    return;
+                };
+                let Some(workspace) = self.workspace_mut(tab) else {
+                    return;
+                };
+                let Some(object) = workspace.object_tabs_mut().find(|object| {
+                    object
+                        .edits
+                        .saving
+                        .as_ref()
+                        .is_some_and(|saving| saving.request == request)
+                }) else {
+                    return;
+                };
+                let id = object.id;
+                let Some(saving) = object.edits.saving.take() else {
+                    return;
+                };
+                // The page's row of the set's row `index`.
+                let place = |index: usize| saving.rows.get(index).copied().unwrap_or(0);
+                match result {
+                    Ok(tabletist_db::WriteOutcome::Written { rows, elapsed }) => {
+                        let counts = object.edits.counts();
+                        let cells = object
+                            .edits
+                            .cells
+                            .keys()
+                            .map(|&(row, col)| CellPos { row, col })
+                            .collect();
+                        object.edits = crate::edit::Edits::default();
+                        object.fields = None;
+                        let fits = object.rows.value.as_ref().is_some_and(|page| {
+                            rows.len() == saving.rows.len()
+                                && rows.iter().all(|row| row.len() == page.columns.len())
+                                && saving.rows.iter().all(|&at| at < page.rows.len())
+                        });
+                        if fits {
+                            if let Some(page) = object.rows.value.as_mut() {
+                                for (row, &at) in rows.into_iter().zip(&saving.rows) {
+                                    page.rows[at] = row;
+                                }
+                            }
+                            object.edits.saved = Some(crate::edit::Saved {
+                                at: std::time::Instant::now(),
+                                cells,
+                                changes: counts.changes,
+                                rows: counts.rows,
+                                elapsed,
+                            });
+                        } else {
+                            // The table is not the one the page was read
+                            // from: read it again.
+                            self.fetch_rows(tab, id);
+                        }
+                    }
+                    Ok(tabletist_db::WriteOutcome::Conflicts(conflicts)) => {
+                        object.edits.note =
+                            conflicts.first().map(|first| crate::edit::Note::Conflict {
+                                row: place(first.row),
+                                gone: first.server.is_none(),
+                                others: conflicts.len() - 1,
+                            });
+                    }
+                    Ok(tabletist_db::WriteOutcome::Failed { row, error }) => {
+                        let at = place(row);
+                        for (_, cell) in object.edits.cells.range_mut((at, 0)..=(at, usize::MAX)) {
+                            cell.state = crate::edit::State::Failed(error.clone());
+                        }
+                        object.edits.note = Some(crate::edit::Note::Failed { row: at, error });
+                    }
+                    Err(error) => {
+                        object.edits.note = Some(if error.is_connection_lost() {
+                            crate::edit::Note::Lost
+                        } else if error == Error::Cancelled {
+                            crate::edit::Note::Cancelled
+                        } else {
+                            crate::edit::Note::Refused(error)
+                        });
+                    }
+                }
+            }
             Event::SqlRan {
                 session,
                 request,
@@ -2759,9 +2857,75 @@ impl App {
             structure: object.structure.value.as_ref(),
             page: object.page()?,
             refreshing: object.rows.is_loading(),
-            saving: false,
+            saving: object.edits.saving.is_some(),
         };
         Some(read(&table, object))
+    }
+
+    /// Why the tab's pending changes cannot be saved now, if they cannot.
+    /// The view shows it on the disabled Save.
+    pub fn save_blocked(&self, tab: ConnTabId, id: TabId) -> Option<SaveBlock> {
+        let workspace = self.workspace(tab)?;
+        let object = workspace.object_tab(id)?;
+        if object.edits.saving.is_some() {
+            return Some(SaveBlock::Saving);
+        }
+        if object.edits.counts().to_fix > 0 {
+            return Some(SaveBlock::ToFix);
+        }
+        if !matches!(workspace.status, SessionStatus::Connected) {
+            return Some(SaveBlock::Disconnected);
+        }
+        if workspace.access == tabletist_db::Access::ReadOnly {
+            return Some(SaveBlock::ReadOnly);
+        }
+        None
+    }
+
+    fn write_edits(&mut self, tab: ConnTabId, id: TabId) {
+        // The text being typed is part of what is saved.
+        self.close_editor(tab, id, true);
+        if self.save_blocked(tab, id).is_some() {
+            return;
+        }
+        let built = self
+            .table(tab, id, |table, object| {
+                crate::edit::change_set(&object.object, table, &object.edits.cells)
+            })
+            .flatten();
+        let Some((changes, rows)) = built else {
+            return;
+        };
+        self.send_write(tab, id, changes, rows);
+    }
+
+    fn send_write(
+        &mut self,
+        tab: ConnTabId,
+        id: TabId,
+        changes: tabletist_db::ChangeSet,
+        rows: Vec<usize>,
+    ) {
+        let request = RequestId(self.next_id());
+        let Some(workspace) = self.workspace_mut(tab) else {
+            return;
+        };
+        let session = workspace.session;
+        let Some(object) = workspace.object_tab_mut(id) else {
+            return;
+        };
+        object.edits.note = None;
+        object.edits.saved = None;
+        object.edits.saving = Some(crate::edit::Saving {
+            request,
+            rows,
+            started: std::time::Instant::now(),
+        });
+        self.backend.send(Command::Write {
+            session,
+            request,
+            changes,
+        });
     }
 
     fn editor_mut(&mut self, tab: ConnTabId, id: TabId) -> Option<&mut crate::edit::Editor> {
@@ -9611,7 +9775,7 @@ mod tests {
         use super::*;
         use crate::edit::{Lock, Problem, State};
         use crate::model::{Advance, EditStart};
-        use tabletist_db::NewValue;
+        use tabletist_db::{Conflict, NewValue, Value, WriteOutcome};
 
         fn at(row: usize, col: usize) -> CellPos {
             CellPos { row, col }
@@ -9958,6 +10122,243 @@ mod tests {
             // So the next single click opens beside it, not over it.
             open(&mut harness, tab, "orders", false);
             assert_eq!(object(&harness, tab, id).edits.cells.len(), 1);
+        }
+
+        /// The newest `Write` sent, if any since `from`.
+        fn write_since(harness: &Harness, from: usize) -> Option<&tabletist_db::ChangeSet> {
+            harness.app.backend.sent[from..]
+                .iter()
+                .rev()
+                .find_map(|command| match command {
+                    Command::Write { changes, .. } => Some(changes),
+                    _ => None,
+                })
+        }
+
+        fn row(id: i64, email: &str) -> Vec<Value> {
+            vec![Value::Int(id), Value::Text(email.into()), Value::Null]
+        }
+
+        #[test]
+        fn a_save_sends_the_set_and_the_written_rows_replace_the_loaded_ones() {
+            let mut harness = Harness::new();
+            let (tab, id) = harness.editable();
+            type_into(&mut harness, tab, id, at(1, 1), "bob@example.com");
+            type_into(&mut harness, tab, id, at(3, 1), "dan@example.com");
+            let before = harness.app.backend.sent.len();
+            harness.app.apply(Action::WriteEdits { tab, id });
+            let changes = write_since(&harness, before).expect("a Write");
+            assert_eq!(changes.object, users());
+            assert_eq!(changes.rows.len(), 2);
+            // While it runs the cells are locked, and the save is the tab's to
+            // cancel.
+            let saving = object(&harness, tab, id).edits.saving.as_ref().unwrap();
+            assert_eq!(saving.rows, [1, 3]);
+            assert!(
+                object(&harness, tab, id)
+                    .pending()
+                    .any(|r| r == saving.request)
+            );
+            harness.app.apply(Action::EditCell {
+                tab,
+                id,
+                cell: at(0, 1),
+                start: EditStart::Value,
+            });
+            assert_eq!(
+                object(&harness, tab, id).edits.why,
+                Some((at(0, 1), Lock::Saving))
+            );
+            harness.answer_written(Ok(WriteOutcome::Written {
+                rows: vec![row(2, "bob@example.com"), row(4, "dan@example.com")],
+                elapsed: std::time::Duration::from_millis(14),
+            }));
+            let tab_now = object(&harness, tab, id);
+            assert!(tab_now.edits.cells.is_empty() && tab_now.edits.saving.is_none());
+            let page = tab_now.page().unwrap();
+            assert_eq!(page.rows[1][1], Value::Text("bob@example.com".into()));
+            assert_eq!(page.rows[3][1], Value::Text("dan@example.com".into()));
+            let saved = tab_now.edits.saved.as_ref().unwrap();
+            assert_eq!((saved.changes, saved.rows), (2, 2));
+            assert_eq!(saved.cells, [at(1, 1), at(3, 1)]);
+            // The row panel's text is formatted again.
+            assert!(tab_now.fields.is_none());
+        }
+
+        #[test]
+        fn a_conflict_a_failure_and_a_refusal_keep_the_set_and_say_what_happened() {
+            let mut harness = Harness::new();
+            let (tab, id) = harness.editable();
+            type_into(&mut harness, tab, id, at(1, 1), "bob@example.com");
+            type_into(&mut harness, tab, id, at(3, 1), "dan@example.com");
+            harness.app.apply(Action::WriteEdits { tab, id });
+            harness.answer_written(Ok(WriteOutcome::Conflicts(vec![Conflict {
+                row: 1,
+                server: None,
+            }])));
+            let edits = &object(&harness, tab, id).edits;
+            assert_eq!(edits.cells.len(), 2);
+            // The conflict's row is the set's second, which is the page's row 3.
+            assert_eq!(
+                edits.note,
+                Some(crate::edit::Note::Conflict {
+                    row: 3,
+                    gone: true,
+                    others: 0
+                })
+            );
+            harness.app.apply(Action::WriteEdits { tab, id });
+            harness.answer_written(Ok(WriteOutcome::Failed {
+                row: 0,
+                error: tabletist_db::Error::query("violates check"),
+            }));
+            let edits = &object(&harness, tab, id).edits;
+            assert!(matches!(
+                edits.cells.get(&(1, 1)).map(|cell| &cell.state),
+                Some(State::Failed(_))
+            ));
+            assert!(matches!(
+                edits.cells.get(&(3, 1)).map(|cell| &cell.state),
+                Some(State::Ready)
+            ));
+            // A failed cell does not block the next save.
+            let before = harness.app.backend.sent.len();
+            harness.app.apply(Action::WriteEdits { tab, id });
+            assert!(write_since(&harness, before).is_some());
+            harness.answer_written(Err(tabletist_db::Error::Cancelled));
+            let edits = &object(&harness, tab, id).edits;
+            assert_eq!(edits.note, Some(crate::edit::Note::Cancelled));
+            assert_eq!(edits.cells.len(), 2);
+        }
+
+        #[test]
+        fn a_save_is_not_sent_while_a_cell_is_to_fix_the_session_is_down_or_one_runs() {
+            let mut harness = Harness::new();
+            let (tab, id) = harness.editable();
+            type_into(&mut harness, tab, id, at(1, 2), "{oops");
+            harness.app.apply(Action::LeaveEdit { tab, id });
+            let before = harness.app.backend.sent.len();
+            harness.app.apply(Action::WriteEdits { tab, id });
+            assert!(write_since(&harness, before).is_none());
+            harness.app.apply(Action::DiscardEdits { tab, id });
+            type_into(&mut harness, tab, id, at(1, 1), "bob@example.com");
+            // Disconnected: the set is kept, nothing is sent.
+            let session = harness.app.workspace(tab).unwrap().session;
+            harness.app.apply(Action::Backend(Event::Disconnected {
+                session,
+                error: tabletist_db::Error::ConnectionLost("gone".into()),
+            }));
+            harness.app.apply(Action::WriteEdits { tab, id });
+            assert!(write_since(&harness, before).is_none());
+            assert_eq!(object(&harness, tab, id).edits.cells.len(), 1);
+        }
+
+        #[test]
+        fn a_reconnect_under_a_save_abandons_it_and_keeps_the_set() {
+            let mut harness = Harness::new();
+            let (tab, id) = harness.editable();
+            type_into(&mut harness, tab, id, at(1, 1), "bob@example.com");
+            harness.app.apply(Action::WriteEdits { tab, id });
+            harness.app.apply(Action::Reconnect(tab));
+            let edits = &object(&harness, tab, id).edits;
+            assert!(edits.saving.is_none());
+            assert_eq!(edits.note, Some(crate::edit::Note::Lost));
+            assert_eq!(edits.cells.len(), 1);
+        }
+
+        #[test]
+        fn a_written_row_of_another_width_fetches_the_page_again() {
+            let mut harness = Harness::new();
+            let (tab, id) = harness.editable();
+            type_into(&mut harness, tab, id, at(1, 1), "bob@example.com");
+            harness.app.apply(Action::WriteEdits { tab, id });
+            let before = harness.app.backend.sent.len();
+            harness.answer_written(Ok(WriteOutcome::Written {
+                rows: vec![vec![Value::Int(2)]],
+                elapsed: std::time::Duration::ZERO,
+            }));
+            assert!(!object(&harness, tab, id).edits.holds());
+            assert!(matches!(
+                harness.app.backend.sent[before..].last(),
+                Some(Command::FetchRows { .. })
+            ));
+        }
+
+        #[test]
+        fn a_new_page_forgets_the_last_save() {
+            let mut harness = Harness::new();
+            let (tab, id) = harness.editable();
+            harness
+                .app
+                .workspace_mut(tab)
+                .unwrap()
+                .object_tab_mut(id)
+                .unwrap()
+                .rows
+                .value
+                .as_mut()
+                .unwrap()
+                .has_more = true;
+            type_into(&mut harness, tab, id, at(1, 1), "bob@example.com");
+            harness.app.apply(Action::WriteEdits { tab, id });
+            harness.answer_written(Ok(WriteOutcome::Written {
+                rows: vec![row(2, "bob@example.com")],
+                elapsed: std::time::Duration::ZERO,
+            }));
+            // A cell that cannot be edited leaves its note.
+            harness.app.apply(Action::EditCell {
+                tab,
+                id,
+                cell: at(0, 0),
+                start: EditStart::Value,
+            });
+            let edits = &object(&harness, tab, id).edits;
+            assert!(edits.saved.is_some() && edits.why.is_some());
+            // Neither holds the page: the next one is fetched without a question,
+            // and both were about the page it replaces.
+            harness.app.apply(Action::NextPage {
+                tab,
+                object_tab: id,
+            });
+            assert!(harness.app.dialog.is_none());
+            harness.answer_rows(page(5, false));
+            let edits = &object(&harness, tab, id).edits;
+            assert!(edits.saved.is_none() && edits.why.is_none());
+        }
+
+        #[test]
+        fn discard_and_revert_do_nothing_while_a_save_runs() {
+            let mut harness = Harness::new();
+            let (tab, id) = harness.editable();
+            type_into(&mut harness, tab, id, at(1, 1), "bob@example.com");
+            harness.app.apply(Action::WriteEdits { tab, id });
+            let request = object(&harness, tab, id)
+                .edits
+                .saving
+                .as_ref()
+                .unwrap()
+                .request;
+            // The pending cell is the active one, as a revert needs it.
+            assert_eq!(object(&harness, tab, id).selection, Some(at(1, 1)));
+            harness.app.apply(Action::RevertCell { tab, id });
+            harness.app.apply(Action::DiscardEdits { tab, id });
+            let edits = &object(&harness, tab, id).edits;
+            assert_eq!(edits.cells.len(), 1);
+            assert_eq!(
+                edits.saving.as_ref().map(|saving| saving.request),
+                Some(request)
+            );
+            // So the answer still finds the tab it was sent for.
+            harness.answer_written(Ok(WriteOutcome::Written {
+                rows: vec![row(2, "bob@example.com")],
+                elapsed: std::time::Duration::ZERO,
+            }));
+            let tab_now = object(&harness, tab, id);
+            assert!(tab_now.edits.cells.is_empty() && tab_now.edits.saved.is_some());
+            assert_eq!(
+                tab_now.page().unwrap().rows[1][1],
+                Value::Text("bob@example.com".into())
+            );
         }
     }
 }

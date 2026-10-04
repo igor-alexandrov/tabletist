@@ -632,6 +632,31 @@ impl Harness {
             result: Ok(structure),
         }));
     }
+
+    /// Answers the newest `Write` sent.
+    pub fn answer_written(
+        &mut self,
+        result: Result<tabletist_db::WriteOutcome, tabletist_db::Error>,
+    ) {
+        let (session, request) = self
+            .app
+            .backend
+            .sent
+            .iter()
+            .rev()
+            .find_map(|command| match command {
+                Command::Write {
+                    session, request, ..
+                } => Some((*session, *request)),
+                _ => None,
+            })
+            .expect("a Write was sent");
+        self.app.apply(Action::Backend(Event::Written {
+            session,
+            request,
+            result,
+        }));
+    }
 }
 
 /// A SQL editor statement's result, shaped like the fixture's users table.
