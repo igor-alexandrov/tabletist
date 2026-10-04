@@ -347,6 +347,11 @@ The artboard's screen, over the whole window:
 
 - Header: `settings` `general`, and at the right "changes apply right away
   · ctrl+, opens this".
+- The app's notice, in a band under the header while there is one (a save
+  that failed, an editor that did not start), with its Dismiss button. The
+  screen covers the notice bar, so without the band a notice would go
+  unseen until the screen closes. The nav, the rows and the file pane start
+  under it.
 - Nav, 220 wide: `general`, selected.
 - Rows in three columns (the label, the value, a hint), under the section
   label `data`. The row with the keys carries the cursor mark and the
@@ -370,6 +375,16 @@ its choices (a toggle: off and on); `space` flips an option of two values
 cursor's option back to its default; `ctrl+e` opens the file; `Escape`
 closes. A click on a row moves the cursor to it, and a click on a value
 sets it.
+
+A button of the screen that has the keyboard (reached with Tab) keeps
+Space, which presses it, and the arrows, which move focus from it, as in
+the workspace. The letters, `R`, `ctrl+e` and `Escape` are the screen's
+wherever the keyboard is.
+
+A screen reader is told which value of an option is set. Each segment and
+each value of the check is a radio button, named by its option and its
+value, that says whether it is the one set. The page size has no button
+that is its value, so its row says the number.
 
 ### Opening
 
@@ -409,6 +424,13 @@ by anything the app needs (a thread reaps it). `Event::SettingsFileOpened {
 result }` puts a failure in the app's notice, as a failed save is; a failed
 export is already reported that way.
 
+That first write of a missing file is recorded as the backend's own write,
+under the lock the writer and the reader share, as a save's is. The reader
+then says the text is the app's own, so it is not taken for a change from
+outside. Otherwise a change made in the app while the editor was starting
+could be undone: its save lands first, the older text lands after it, and
+the app would apply that as someone else's edit.
+
 The program follows the operating system the app was built for (`cfg`), not
 the look, so a macOS look drawn in a Linux test still compiles and runs:
 
@@ -416,7 +438,17 @@ the look, so a macOS look drawn in a Linux test still compiles and runs:
 |---|---|---|
 | macOS | `open -R <path>` | `open -t <path>` |
 | Windows | `explorer /select,<path>` | `explorer <path>` |
-| Linux | `xdg-open <the directory>` | `omarchy-launch-editor <path>` when it is on `PATH`, else `xdg-open <path>` |
+| Linux | `xdg-open <the directory>` | `omarchy-launch-editor <path>` when it is on `PATH` and can be run, else `xdg-open <path>` |
+
+On Linux the Omarchy launcher is used only when it can be run: a file of
+that name on `PATH` that has no executable bit would fail to start, and
+`xdg-open` would never be tried. The launcher opens the editor Omarchy is
+set up with.
+
+A program that ends with a failure is logged as a warning, with its name
+and its status, by the thread that waits for it: an `xdg-open` with nothing
+to open the file with says so nowhere else. The app's notice tells only of
+a file that could not be written and of a program that did not start.
 
 The Reveal link's words follow the same `cfg`: Reveal in Finder, Show in
 Explorer, Show in folder.
