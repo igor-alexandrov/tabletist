@@ -43,6 +43,13 @@ pub(super) fn sample_timestamp(timestamps: Timestamps) -> &'static str {
     }
 }
 
+/// The settings file's path as the window writes it: the home directory
+/// as `~`. The home directory was found at the start, with the app's own:
+/// no frame looks it up.
+pub(super) fn path_shown(app: &App) -> String {
+    file_pane::shown_path(&app.dirs.settings_file(), app.dirs.home.as_deref())
+}
+
 /// What a choice is called.
 #[derive(Clone, Copy)]
 pub(super) enum Said {
@@ -205,7 +212,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
     let Some(Dialog::Settings(dialog)) = &app.dialog else {
         return;
     };
-    let row = dialog.row;
+    let (row, resetting) = (dialog.row, dialog.resetting);
     let mut actions = Vec::new();
     if app.look.terminal {
         // The screen's keys act on its cursor. The sheet has none: its
@@ -213,7 +220,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
         keys(app, ctx, row, &mut actions);
         terminal::show(app, ctx, row, &mut actions);
     } else {
-        sheet::show(app, ctx, &mut actions);
+        sheet::show(app, ctx, resetting, &mut actions);
     }
     app.actions.extend(actions);
 }

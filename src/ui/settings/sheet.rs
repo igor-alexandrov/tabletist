@@ -1,11 +1,12 @@
 //! The Settings window in the looks that are not a terminal's: a sheet
 //! over the dimmed window, with the nav at its left and the tab's options
-//! in rows, each with a control that changes it.
+//! in rows, each with a control that changes it. Under the rows, the footer
+//! says where the file is and what can be done with it.
 
 use egui::{CornerRadius, Rect, Sense, Stroke, Ui, WidgetInfo, WidgetType, pos2, vec2};
 
 use crate::app::App;
-use crate::i18n::{Locale, gettext};
+use crate::i18n::{Locale, gettext, ngettext};
 use crate::model::Action;
 use crate::settings::{OptionId, OptionValue, Settings, Timestamps};
 use crate::theme::{Look, Palette};
@@ -15,7 +16,7 @@ use crate::ui::format::group_digits;
 use crate::ui::value_tags::slot_colors;
 use crate::ui::widgets::{self, Segment};
 
-use super::{label, sample_timestamp, small_print};
+use super::{label, path_shown, sample_timestamp, small_print};
 
 /// The sheet at its widest, and what it leaves of the window at each side.
 const WIDTH: f32 = 1040.0;
@@ -24,8 +25,7 @@ const MARGIN: f32 = 40.0;
 const NAV: f32 = 210.0;
 const NAV_PAD: egui::Vec2 = vec2(10.0, 14.0);
 const NAV_ITEM: f32 = 28.0;
-/// The content's padding: over the title and under the last row, and at
-/// its sides.
+/// The content's padding: over the title, and at its sides.
 const TOP: f32 = 22.0;
 const SIDE: f32 = 28.0;
 /// A row: its label's column, the gap after it, and the space over and
@@ -43,6 +43,18 @@ const MENU: f32 = 120.0;
 /// A segment's height, and the switch's.
 const SEGMENT: f32 = 22.0;
 const SWITCH: f32 = 18.0;
+/// What a short window leaves of the rows at the least: about one of them.
+const ROWS_MIN: f32 = 56.0;
+/// The footer: the space over and under what it says, and between its
+/// parts.
+const FOOT_PAD: f32 = 12.0;
+const FOOT_GAP: f32 = 12.0;
+/// Between "Stored in" and the path: a space.
+const WORD_GAP: f32 = 4.0;
+/// Under the footer's line about ignored lines.
+const WARNING_GAP: f32 = 4.0;
+/// How tall a link is to the pointer.
+const LINK: f32 = 18.0;
 
 /// How the sheet draws: the look, the palette and the language.
 #[derive(Clone, Copy)]
@@ -59,7 +71,7 @@ impl Skin<'_> {
     }
 }
 
-pub(super) fn show(app: &App, ctx: &egui::Context, actions: &mut Vec<Action>) {
+pub(super) fn show(app: &App, ctx: &egui::Context, resetting: bool, actions: &mut Vec<Action>) {
     let skin = Skin {
         look: &app.look,
         palette: &app.palette,
@@ -91,19 +103,30 @@ pub(super) fn show(app: &App, ctx: &egui::Context, actions: &mut Vec<Action>) {
             ui.set_width(width);
             ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
             let room = ui.available_rect_before_wrap();
-            // The nav is as tall as the content, which is laid out after
-            // it: its fill waits here, under its words, for that height.
+            // The nav is as tall as the content and the footer, which are
+            // laid out after it: its fill waits here, under its words, for
+            // that height.
             let fill = ui.painter().add(egui::Shape::Noop);
             nav(ui, room.min, &skin);
             let pane = Rect::from_min_max(
                 pos2(room.left() + NAV + SIDE, room.top() + TOP),
                 pos2(room.right() - SIDE, room.bottom()),
             );
+            // The footer's height before the content's: a window too short
+            // for the sheet takes from the rows, which scroll, and the
+            // footer stays.
+            let ignored = ignored_lines(ui, app.settings_file.invalid.len(), pane.width(), &skin);
+            let foot = footer_height(ui, ignored.as_ref(), &skin);
+            let limit = room.top() + screen.height() - 2.0 * MARGIN - foot;
             let builder = egui::UiBuilder::new().id_salt("content").max_rect(pane);
             let mut pane = ui.new_child(builder.layout(egui::Layout::top_down(egui::Align::Min)));
-            content(&mut pane, &app.settings, &skin, actions);
-            let bottom = pane.min_rect().bottom() + TOP;
+            content(&mut pane, &app.settings, limit, &skin, actions);
+            let rows = pane.min_rect().bottom();
+            let bottom = rows + foot;
             ui.allocate_rect(room.with_max_y(bottom), Sense::hover());
+            let under =
+                Rect::from_min_max(pos2(room.left() + NAV, rows), pos2(room.right(), bottom));
+            footer(ui, under, app, resetting, ignored.as_ref(), &skin, actions);
             let side = Rect::from_min_max(room.min, pos2(room.left() + NAV, bottom));
             // The sheet's own corners, inside its border.
             let radius = skin.look.dialog_radius.saturating_sub(1);
@@ -119,11 +142,16 @@ pub(super) fn show(app: &App, ctx: &egui::Context, actions: &mut Vec<Action>) {
             widgets::vline(ui, side.right() - 0.5, side.y_range(), skin.palette.outline);
         });
     // Escape closes the sheet, unless it is closing the open menu first.
+    // While the footer asks, it answers that first: no.
     if modal.is_top_modal
         && !modal.any_popup_open
         && ctx.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
     {
-        actions.push(Action::CloseDialog);
+        actions.push(if resetting {
+            Action::ConfirmResetSettings(false)
+        } else {
+            Action::CloseDialog
+        });
     }
 }
 
@@ -161,8 +189,9 @@ fn nav(ui: &mut Ui, corner: egui::Pos2, skin: &Skin) {
 }
 
 /// The tab: its title, what it is for, and its options under the heading
-/// of their group.
-fn content(ui: &mut Ui, settings: &Settings, skin: &Skin, actions: &mut Vec<Action>) {
+/// of their group. The rows end at `limit` at the latest, and scroll when
+/// they are taller than that leaves them.
+fn content(ui: &mut Ui, settings: &Settings, limit: f32, skin: &Skin, actions: &mut Vec<Action>) {
     let Skin { look, palette, .. } = *skin;
     widgets::label(
         ui,
@@ -185,9 +214,16 @@ fn content(ui: &mut Ui, settings: &Settings, skin: &Skin, actions: &mut Vec<Acti
         .label(ui);
     ui.add_space(2.0);
     let column = label_column(ui, skin);
-    for option in OptionId::ALL {
-        row(ui, option, column, settings, skin, actions);
-    }
+    let room = (limit - ui.cursor().top()).max(ROWS_MIN);
+    egui::ScrollArea::vertical()
+        .id_salt("rows")
+        .max_height(room)
+        .auto_shrink([false, true])
+        .show(ui, |ui| {
+            for option in OptionId::ALL {
+                row(ui, option, column, settings, skin, actions);
+            }
+        });
 }
 
 /// How wide the rows' labels have it: `LABEL`, or what the widest small
@@ -434,9 +470,212 @@ fn tags(ui: &Ui, at: egui::Pos2, right: f32, on: bool, skin: &Skin) {
     }
 }
 
+/// What the link that shows the file in the file manager says: the words
+/// of the system the app was built for, as the program it starts is that
+/// system's. English.
+fn reveal_words() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "Reveal in Finder"
+    } else if cfg!(windows) {
+        "Show in Explorer"
+    } else {
+        "Show in folder"
+    }
+}
+
+/// What the footer says while the app ignores `count` lines of the file,
+/// wrapped at `width`.
+fn ignored_lines(ui: &Ui, count: usize, width: f32, skin: &Skin) -> Option<Laid> {
+    if count == 0 {
+        return None;
+    }
+    let lines = u32::try_from(count).unwrap_or(u32::MAX);
+    let said = ngettext(
+        skin.locale,
+        "line in the file could not be read and was ignored",
+        "lines in the file could not be read and were ignored",
+        lines,
+    );
+    let said = format!("{count} {said}");
+    let text = Text::one(skin.look, TextRole::Secondary, &said, skin.palette.warning);
+    Some(text.wrap(width).layout(ui.ctx()))
+}
+
+/// How tall the footer is: its rule, and its line between its padding,
+/// with what it says of `ignored` lines over that.
+fn footer_height(ui: &Ui, ignored: Option<&Laid>, skin: &Skin) -> f32 {
+    let line = TextRole::Secondary.row_height(ui.ctx(), skin.look.faces);
+    let ignored = ignored.map_or(0.0, |ignored| ignored.height() + WARNING_GAP);
+    (1.0 + FOOT_PAD + ignored + line + FOOT_PAD).ceil()
+}
+
+/// The footer, in `rect` under the content: where the settings file is
+/// and, at the right, what can be done with it. While `resetting`, the
+/// question Reset to defaults asks stands where those links were.
+fn footer(
+    ui: &Ui,
+    rect: Rect,
+    app: &App,
+    resetting: bool,
+    ignored: Option<&Laid>,
+    skin: &Skin,
+    actions: &mut Vec<Action>,
+) {
+    let Skin { look, palette, .. } = *skin;
+    let role = TextRole::Secondary;
+    // The sheet's own corner, inside its border.
+    let corners = CornerRadius {
+        se: look.dialog_radius.saturating_sub(1),
+        ..CornerRadius::ZERO
+    };
+    ui.painter().rect_filled(rect, corners, palette.panel);
+    widgets::hline(ui, rect.x_range(), rect.top() + 0.5, palette.outline);
+    let (left, right) = (rect.left() + SIDE, rect.right() - SIDE);
+    let mut top = rect.top() + 1.0 + FOOT_PAD;
+    if let Some(ignored) = ignored {
+        write(ui, left, top + ignored.middle(), ignored);
+        top += ignored.height() + WARNING_GAP;
+    }
+    let middle = top + role.row_height(ui.ctx(), look.faces) / 2.0;
+
+    // The right side first: what it leaves is the path's.
+    let parts = if resetting {
+        vec![
+            (skin.say("Reset every option on this tab?"), None),
+            (
+                skin.say("Reset"),
+                Some((palette.danger, Action::ConfirmResetSettings(true))),
+            ),
+            (
+                skin.say("Cancel"),
+                Some((palette.accent, Action::ConfirmResetSettings(false))),
+            ),
+        ]
+    } else {
+        vec![
+            (
+                skin.say(reveal_words()),
+                Some((palette.accent, Action::RevealSettingsFile)),
+            ),
+            (
+                skin.say("Export…"),
+                Some((palette.accent, Action::ExportSettings)),
+            ),
+            (
+                skin.say("Reset to defaults"),
+                Some((palette.danger, Action::ResetSettings)),
+            ),
+        ]
+    };
+    let widths: Vec<f32> = parts
+        .iter()
+        .map(|(text, _)| role.width(ui.ctx(), look.faces, text).ceil())
+        .collect();
+    let taken = widths.iter().sum::<f32>() + FOOT_GAP * (parts.len() - 1) as f32;
+    let first = right - taken;
+    let mut x = first;
+    let count = parts.len();
+    for (index, ((text, linked), width)) in parts.into_iter().zip(widths).enumerate() {
+        match linked {
+            None => {
+                widgets::paint_label(ui, x, middle, Text::one(look, role, &text, palette.text));
+            }
+            Some((color, action)) => {
+                // Known by its place from the right, which Reset to
+                // defaults shares with Cancel: the keyboard that asked is
+                // on the answer that changes nothing, and back on the link
+                // once it has answered.
+                let id = ui.id().with(("link", count - 1 - index));
+                if link(ui, id, pos2(x, middle), width, &text, color, skin).clicked() {
+                    actions.push(action);
+                }
+            }
+        }
+        x += width + FOOT_GAP;
+    }
+
+    // "Stored in" whole or left out, then as much of the path as there is
+    // room for before the links.
+    let stored = Text::one(look, role, &skin.say("Stored in"), palette.secondary).layout(ui.ctx());
+    let room = first - FOOT_GAP;
+    if left + stored.width() > room {
+        return;
+    }
+    write(ui, left, middle, &stored);
+    let at = left + stored.width() + WORD_GAP;
+    let path = path_shown(app);
+    let mono = TextRole::MonoSecondary;
+    let fits = |text: &str| at + mono.width(ui.ctx(), look.faces, text) <= room;
+    if let Some(cut) = cut_start(&path, fits) {
+        let width = widgets::paint_text(
+            ui,
+            at,
+            middle,
+            Text::one(look, mono, &cut, palette.secondary),
+        );
+        // A screen reader is told all of it.
+        let place = Rect::from_center_size(pos2(at + width / 2.0, middle), vec2(width, LINK));
+        widgets::announce(ui, place, &path);
+    }
+}
+
+/// A link of the footer: `text`, `width` wide from `at` on its middle, in
+/// `color`. Tab reaches it, and Space and Enter press it.
+fn link(
+    ui: &Ui,
+    id: egui::Id,
+    at: egui::Pos2,
+    width: f32,
+    text: &str,
+    color: egui::Color32,
+    skin: &Skin,
+) -> egui::Response {
+    let Skin { look, palette, .. } = *skin;
+    let rect = Rect::from_min_size(pos2(at.x, at.y - LINK / 2.0), vec2(width, LINK));
+    let response = ui.interact(rect, id, Sense::click());
+    response.widget_info(|| WidgetInfo::labeled(WidgetType::Link, true, text));
+    // The accent has a colour of its own under the pointer. The danger
+    // colour has none.
+    let color = if response.hovered() && color == palette.accent {
+        palette.accent_hover
+    } else {
+        color
+    };
+    let role = TextRole::Secondary;
+    widgets::paint_text(ui, at.x, at.y, Text::one(look, role, text, color));
+    focus::hint(ui, &response, rect, Ring::Outer { radius: 3 });
+    response
+}
+
+/// `text` if it `fits`, or the most of its end that does after `…`: a
+/// path keeps the file's name. None when no character of it fits.
+fn cut_start(text: &str, fits: impl Fn(&str) -> bool) -> Option<String> {
+    if fits(text) {
+        return Some(text.to_owned());
+    }
+    text.char_indices()
+        .skip(1)
+        .map(|(at, _)| format!("…{}", &text[at..]))
+        .find(|cut| fits(cut))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_path_too_long_for_its_room_is_cut_at_its_start() {
+        let path = "~/.config/tabletist/settings.toml";
+        let within = |room: usize| cut_start(path, |text| text.chars().count() <= room);
+        assert_eq!(within(40).as_deref(), Some(path));
+        assert_eq!(within(33).as_deref(), Some(path));
+        assert_eq!(within(24).as_deref(), Some("…tabletist/settings.toml"));
+        assert_eq!(within(2).as_deref(), Some("…l"));
+        assert_eq!(within(1), None);
+        // Cut between characters, never inside one.
+        let cut = cut_start("~/Büro/settings.toml", |text| text.chars().count() <= 18);
+        assert_eq!(cut.as_deref(), Some("…üro/settings.toml"));
+    }
 
     #[test]
     fn a_size_that_is_not_in_the_list_takes_its_place_among_the_others() {

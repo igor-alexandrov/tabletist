@@ -1041,6 +1041,143 @@ mod tests {
     }
 
     #[test]
+    fn the_settings_sheet_says_where_the_file_is_and_what_can_be_done_with_it() {
+        for look in SHEET_LOOKS {
+            let mut harness = settings_sheet(look());
+            assert!(harness.has("Stored in"));
+            let reveal = if cfg!(target_os = "macos") {
+                "Reveal in Finder"
+            } else if cfg!(windows) {
+                "Show in Explorer"
+            } else {
+                "Show in folder"
+            };
+            harness.click(reveal);
+            match crate::testing::last_sent(&harness.app) {
+                Command::RevealSettingsFile { path, text } => {
+                    assert_eq!(path, &harness.app.dirs.settings_file());
+                    assert_eq!(text, &harness.app.settings_file.text);
+                }
+                other => panic!("{other:?}"),
+            }
+            harness.click("Export…");
+            assert_eq!(
+                harness
+                    .app
+                    .backend
+                    .saves
+                    .last()
+                    .map(|(name, _)| name.as_str()),
+                Some("tabletist-settings.toml")
+            );
+            assert!(settings_open(&harness), "the window stays open");
+        }
+    }
+
+    #[test]
+    fn reset_to_defaults_asks_in_place_of_the_footers_links() {
+        for look in SHEET_LOOKS {
+            let mut harness = settings_sheet(look());
+            harness.click("Full precision");
+            harness.click("Reset to defaults");
+            assert!(harness.has("Reset every option on this tab?"));
+            assert!(!harness.has("Export…"), "the links give way");
+            harness.click("Cancel");
+            assert!(harness.has("Export…"));
+            assert_eq!(
+                harness.app.settings.timestamps,
+                crate::settings::Timestamps::Full
+            );
+            harness.click("Reset to defaults");
+            harness.click("Reset");
+            assert_eq!(
+                harness.app.settings.timestamps,
+                crate::settings::Timestamps::Second
+            );
+            assert!(harness.has("Export…"));
+        }
+    }
+
+    #[test]
+    fn the_settings_sheet_counts_the_lines_the_app_ignores() {
+        let mut harness = settings_sheet(crate::theme::Look::standard());
+        let ignored = "1 line in the file could not be read and was ignored";
+        assert!(!harness.has(ignored));
+        harness.app.apply(crate::model::Action::Backend(
+            crate::backend::Event::SettingsFile {
+                text: "[data]\ngroup_digits = \"yes\"\npage_size = 500\n".into(),
+                own: false,
+            },
+        ));
+        assert!(harness.has(ignored));
+        assert_eq!(harness.app.settings.page_size, 500);
+    }
+
+    #[test]
+    fn escape_answers_the_reset_question_before_it_closes_the_window() {
+        let mut harness = settings_sheet(crate::theme::Look::macos());
+        harness.click("Reset to defaults");
+        harness.press(egui::Key::Escape, egui::Modifiers::NONE);
+        assert!(settings_open(&harness));
+        assert!(harness.has("Export…"));
+        harness.press(egui::Key::Escape, egui::Modifiers::NONE);
+        assert!(harness.app.dialog.is_none());
+    }
+
+    #[test]
+    fn the_keyboard_that_asks_for_a_reset_is_on_cancel_and_then_back_on_the_link() {
+        use crate::settings::Timestamps;
+        let mut harness = settings_sheet(crate::theme::Look::standard());
+        harness.click("Full precision");
+        tab_to_settings(&mut harness, "Reset to defaults");
+        harness.press(egui::Key::Enter, egui::Modifiers::NONE);
+        assert!(harness.has("Reset every option on this tab?"));
+        assert_eq!(focused_name(&harness.settle()), "Cancel");
+        // A second Enter is the answer that changes nothing.
+        harness.press(egui::Key::Enter, egui::Modifiers::NONE);
+        assert_eq!(harness.app.settings.timestamps, Timestamps::Full);
+        assert_eq!(focused_name(&harness.settle()), "Reset to defaults");
+        // Reset is a Tab stop of its own, before Cancel.
+        harness.press(egui::Key::Enter, egui::Modifiers::NONE);
+        harness.press(egui::Key::Tab, egui::Modifiers::SHIFT);
+        assert_eq!(focused_name(&harness.settle()), "Reset");
+        harness.press(egui::Key::Space, egui::Modifiers::NONE);
+        assert_eq!(harness.app.settings.timestamps, Timestamps::Second);
+    }
+
+    #[test]
+    fn the_settings_sheet_writes_the_files_path_from_the_home_directory() {
+        let mut harness = settings_sheet(crate::theme::Look::standard());
+        let file = harness.app.dirs.settings_file();
+        assert!(harness.has(&file.display().to_string()));
+        // Under the home directory the app found at its start, it is
+        // written from `~`, with the system's separator after `config`.
+        let home = harness.app.dirs.config.parent();
+        harness.app.dirs.home = home.map(std::path::Path::to_path_buf);
+        let sep = std::path::MAIN_SEPARATOR;
+        assert!(harness.has(&format!("~/config{sep}settings.toml")));
+    }
+
+    #[test]
+    fn a_window_too_short_for_the_settings_sheet_keeps_its_footer() {
+        for look in SHEET_LOOKS {
+            let size = egui::vec2(1280.0, 300.0);
+            let mut harness = Harness::with_size(size);
+            harness.set_look(look());
+            harness.press(egui::Key::Comma, egui::Modifiers::COMMAND);
+            harness.settle();
+            // The rows gave way: the footer is whole, in the window, under
+            // the first of them.
+            let stored = harness.painted_rect("Stored in").expect("the footer");
+            assert!(stored.bottom() < size.y, "{stored:?}");
+            let row = harness.painted_rect("Rows per page").expect("a row");
+            assert!(row.bottom() < stored.top(), "{row:?} {stored:?}");
+            harness.click("Export…");
+            assert_eq!(harness.app.backend.saves.len(), 1);
+        }
+    }
+
+    #[test]
     fn the_settings_cursor_moves_with_j_and_k_and_the_arrows() {
         let mut harness = settings_screen();
         assert_eq!(settings_cursor(&harness), 0);
