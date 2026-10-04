@@ -36,7 +36,7 @@ pub mod workspace;
 use egui::Frame;
 
 use crate::app::App;
-use crate::model::ConnTabContent;
+use crate::model::{Action, ConnTabContent};
 
 pub fn show(app: &mut App, ui: &mut egui::Ui) {
     notice(app, ui);
@@ -66,32 +66,39 @@ fn notice(app: &mut App, ui: &mut egui::Ui) {
     let Some(message) = app.notice.clone() else {
         return;
     };
-    let palette = app.palette;
-    let look = app.look;
-    let mut dismiss = false;
+    let mut actions = Vec::new();
     egui::Panel::top(egui::Id::new("notice"))
         .resizable(false)
         .show_separator_line(false)
         .frame(
             Frame::new()
-                .fill(palette.warning.gamma_multiply(0.15))
+                .fill(notice_fill(&app.palette))
                 .inner_margin(egui::Margin::symmetric(12, 8)),
         )
-        .show(ui, |ui| {
-            ui.horizontal(|ui| {
-                crate::typography::Text::one(&look, widgets::body(&look), &message, palette.text)
-                    .layout(ui.ctx())
-                    .label(ui);
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    dismiss =
-                        widgets::button(ui, &crate::i18n::gettext(app.locale, "Dismiss"), &look)
-                            .clicked();
-                });
-            });
+        .show(ui, |ui| notice_line(app, ui, &message, &mut actions));
+    app.actions.extend(actions);
+}
+
+/// What a notice stands on.
+fn notice_fill(palette: &crate::theme::Palette) -> egui::Color32 {
+    palette.warning.gamma_multiply(0.15)
+}
+
+/// A notice on one line: what it says, and at the right the button that
+/// dismisses it. The bar has it, and so has a screen that covers the bar.
+fn notice_line(app: &App, ui: &mut egui::Ui, message: &str, actions: &mut Vec<Action>) {
+    let look = &app.look;
+    ui.horizontal(|ui| {
+        crate::typography::Text::one(look, widgets::body(look), message, app.palette.text)
+            .layout(ui.ctx())
+            .label(ui);
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let dismiss = crate::i18n::gettext(app.locale, "Dismiss");
+            if widgets::button(ui, &dismiss, look).clicked() {
+                actions.push(Action::DismissNotice);
+            }
         });
-    if dismiss {
-        app.actions.push(crate::model::Action::DismissNotice);
-    }
+    });
 }
 
 /// Where the window's own buttons (the macOS traffic lights) centre, in egui
@@ -1163,6 +1170,62 @@ mod tests {
             .filter(|command| matches!(command, Command::EditSettingsFile { .. }))
             .count();
         assert_eq!(opened, 1);
+    }
+
+    /// Where the Settings screen shows `message`: in a band of its own,
+    /// under the header and over the rows. The bar under the screen paints
+    /// the message as well, where nobody sees it.
+    fn settings_notice(harness: &mut Harness, message: &str) -> Option<egui::Rect> {
+        harness.settle();
+        let title = harness.painted_rect("settings").expect("the title");
+        let heading = harness.painted_rect("data").expect("the rows' heading");
+        let mut painted = harness.text_rects.iter();
+        painted
+            .find(|(text, rect)| {
+                text == message && rect.top() >= title.bottom() && rect.bottom() <= heading.top()
+            })
+            .map(|(_, rect)| *rect)
+    }
+
+    #[test]
+    fn the_settings_screen_shows_a_notice_until_it_is_dismissed() {
+        let mut harness = settings_screen();
+        let message = "Could not save the password in the keyring.";
+        harness.app.notice = Some(message.into());
+        let shown = settings_notice(&mut harness, message).expect("the notice on the screen");
+        // The file's pane starts under it, as the rows do.
+        let file = harness.painted_rect("[data]").expect("the file");
+        assert!(file.top() >= shown.bottom());
+        // The covered bar has a button of this name too: the screen's is
+        // the one on the message's line, where the pointer reaches it.
+        let tree = harness.settle();
+        let buttons = buttons_named(&tree, "Dismiss");
+        let on_the_line =
+            |(_, button): &(_, egui::Rect)| button.y_range().contains(shown.center().y);
+        let (_, dismiss) = buttons
+            .into_iter()
+            .find(on_the_line)
+            .expect("the screen's Dismiss");
+        click_at(&mut harness, dismiss.center());
+        assert!(harness.app.notice.is_none());
+        assert!(settings_open(&harness), "the screen stays");
+        assert!(settings_notice(&mut harness, message).is_none());
+    }
+
+    #[test]
+    fn a_save_that_fails_while_the_settings_screen_is_open_is_shown_on_it() {
+        let mut harness = settings_screen();
+        harness.press(egui::Key::L, egui::Modifiers::NONE);
+        assert_eq!(settings_saves(&harness), 1);
+        let path = harness.app.dirs.settings_file();
+        harness.app.apply(crate::model::Action::Backend(
+            crate::backend::Event::Saved {
+                path,
+                result: Err("Permission denied".into()),
+            },
+        ));
+        let notice = harness.app.notice.clone().expect("a notice");
+        assert!(settings_notice(&mut harness, &notice).is_some(), "{notice}");
     }
 
     #[test]

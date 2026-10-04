@@ -1,7 +1,7 @@
 //! The Settings window as the terminal look draws it: a screen over the
-//! whole window. A header, a nav of one item, the options in rows under a
-//! cursor, the settings file beside them where the window has the room,
-//! and the screen's keys in the footer.
+//! whole window. A header, the app's notice while it has one, a nav of one
+//! item, the options in rows under a cursor, the settings file beside them
+//! where the window has the room, and the screen's keys in the footer.
 
 use egui::emath::GuiRounding as _;
 use egui::{CornerRadius, Rect, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
@@ -23,6 +23,10 @@ use super::{choices, label};
 /// The header's and the footer's heights, each without its rule.
 const HEADER: f32 = 40.0;
 const FOOTER: f32 = 30.0;
+/// A notice's band without its rule, and how far its line stands in from
+/// the band's sides.
+const NOTICE: f32 = 36.0;
+const NOTICE_SIDE: f32 = 14.0;
 /// The nav's width.
 const NAV: f32 = 220.0;
 /// An option's row, and how far its words stand in from its sides.
@@ -97,8 +101,9 @@ pub(super) fn show(app: &App, ctx: &egui::Context, row: usize, actions: &mut Vec
             ui.set_height(screen.height());
             ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
             header(ui, &skin);
-            // What the header, the footer and their rules leave.
-            let height = (screen.height() - HEADER - FOOTER - 2.0).max(0.0);
+            let notice = notice(ui, app, actions);
+            // What the header, a notice, the footer and their rules leave.
+            let height = (screen.height() - HEADER - notice - FOOTER - 2.0).max(0.0);
             let (body, _) =
                 ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::hover());
             let (side, pane) = body.split_left_right_at_x((body.left() + NAV).min(body.right()));
@@ -171,6 +176,30 @@ fn header(ui: &mut Ui, skin: &Skin) {
     if right - note.width() >= x + 12.0 {
         note.paint_right(ui.painter(), right, y);
     }
+}
+
+/// The app's notice, in a band under the header: the bar that shows it is
+/// under the screen, and a save that fails here would go unseen until the
+/// screen closes. Returns the band's height with its rule, nothing when
+/// there is no notice.
+fn notice(ui: &mut Ui, app: &App, actions: &mut Vec<Action>) -> f32 {
+    let Some(message) = &app.notice else {
+        return 0.0;
+    };
+    let (rect, _) =
+        ui.allocate_exact_size(vec2(ui.available_width(), NOTICE + 1.0), Sense::hover());
+    let fill = crate::ui::notice_fill(&app.palette);
+    ui.painter().rect_filled(rect, CornerRadius::ZERO, fill);
+    widgets::hline(ui, rect.x_range(), rect.bottom() - 0.5, app.palette.outline);
+    let left = rect.left() + NOTICE_SIDE;
+    let right = (rect.right() - NOTICE_SIDE).max(left);
+    let line = Rect::from_min_max(pos2(left, rect.top()), pos2(right, rect.bottom() - 1.0));
+    // The bar's own line, centred on the band.
+    let centred = egui::Layout::left_to_right(egui::Align::Center);
+    let builder = egui::UiBuilder::new().id_salt("notice").max_rect(line);
+    let mut line = ui.new_child(builder.layout(centred));
+    crate::ui::notice_line(app, &mut line, message, actions);
+    rect.height()
 }
 
 /// The mark of the nav's item and of the cursor's row: the selection's
