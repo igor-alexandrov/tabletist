@@ -59,6 +59,15 @@ impl Environment {
         }
     }
 
+    /// Whether a save to a connection in this environment is confirmed
+    /// first, with its statements on screen.
+    pub fn confirms_writes(self) -> bool {
+        match self {
+            Self::Production => true,
+            Self::Local | Self::Dev | Self::Staging | Self::None => false,
+        }
+    }
+
     /// The badge text: the lower-case name in a macOS or Windows pill, the
     /// terminal's upper-case tag on Omarchy.
     pub fn label(self, platform: Platform) -> &'static str {
@@ -494,6 +503,17 @@ mod tests {
                 env.read_only_by_default(),
                 env == Environment::Production,
                 "{env:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn only_production_asks_before_a_write() {
+        for environment in Environment::ALL {
+            assert_eq!(
+                environment.confirms_writes(),
+                environment == Environment::Production,
+                "{environment:?}"
             );
         }
     }
