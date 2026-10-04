@@ -70,6 +70,27 @@ pub struct Key<'a> {
     pub button: Option<&'a str>,
     /// The key the dialog is for: it takes the accent.
     pub lead: bool,
+    /// Why its button cannot be pressed, while it cannot.
+    pub disabled: Option<&'a str>,
+}
+
+impl<'a> Key<'a> {
+    /// Its button, as [`keys`] makes it.
+    fn spec(&self) -> Option<ButtonSpec<'a>> {
+        let button = ButtonSpec::new(self.button?);
+        Some(match self.disabled {
+            Some(reason) => button.disabled(reason),
+            None => button,
+        })
+    }
+}
+
+/// The place in `keys` of the one whose button has the keyboard. Asked
+/// before [`keys`] draws them, by a box that reads Enter itself: a button
+/// that has the keyboard would take the key as a press of itself.
+pub fn keyboard_on(ui: &Ui, keys: &[Key<'_>]) -> Option<usize> {
+    let has = |key: &Key<'_>| key.spec().is_some_and(|button| button.has_keyboard(ui));
+    keys.iter().position(has)
 }
 
 /// The keys of a foot, ending 14 in from its right edge, 16 apart. Each
@@ -125,8 +146,8 @@ pub fn keys(
             left += width + 16.0;
             place
         };
-        if let Some(name) = key.button
-            && ButtonSpec::new(name).hidden_at(ui, place).clicked()
+        if let Some(button) = key.spec()
+            && button.hidden_at(ui, place).clicked()
         {
             pressed = Some(index);
         }

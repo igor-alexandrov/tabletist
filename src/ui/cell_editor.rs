@@ -117,6 +117,25 @@ fn hold_keys(ctx: &egui::Context, id: Id) {
     });
 }
 
+/// Keeps the keyboard on a field that has it, for this frame. egui decides
+/// where Tab and the arrows move the keyboard when a pass begins, by what
+/// the widget that has it holds, and a field holds them only from the frame
+/// after it first had the keyboard (see `hold_keys`). In its first frames
+/// the move is called off here, before the field is added: the keys are the
+/// field's from the start.
+fn keep_keyboard(ctx: &egui::Context) {
+    ctx.memory_mut(|memory| memory.move_focus(egui::FocusDirection::None));
+}
+
+/// How much of `space` a field's frame takes as a margin, which egui keeps
+/// in whole points and up to 127 of them, and what is left over: the field
+/// begins or ends that much inside the cell, so its text is where the
+/// cell's was.
+fn margin(space: f32) -> (i8, f32) {
+    let whole = space.clamp(0.0, f32::from(i8::MAX)).floor();
+    (whole as i8, space - whole)
+}
+
 /// The editor on its cell: a one-line field over `rect`, the cell's. It
 /// edits `editor.text` and takes `editor.focus`; everything else it says in
 /// its [`Outcome`].
@@ -134,6 +153,9 @@ pub fn field(
     }
     let has = ui.memory(|memory| memory.has_focus(id));
     let had = had_keyboard(ui.ctx(), id);
+    if has {
+        keep_keyboard(ui.ctx());
+    }
     ending_keys(ui, has, had, &mut outcome);
 
     // Over the cell: the row's fill would show through a field with none.
@@ -150,9 +172,28 @@ pub fn field(
         right -= laid.paint_right(ui.painter(), right, center) + pad;
     }
     let line = role.row_height(ui.ctx(), look.faces);
-    let place = Rect::from_min_max(
+    // Where the text is: where the cell had it.
+    let inner = Rect::from_min_max(
         pos2(rect.left() + pad, center - line / 2.0),
         pos2(right.max(rect.left() + pad), center + line / 2.0),
+    );
+    // The field is the whole cell, the text inside its margins: a click
+    // beside the text, in the cell's own padding or on the count, places
+    // the cursor as one on the text does. It is no click on the row, which
+    // would end the edit.
+    let (left, shift_x) = margin(inner.left() - rect.left());
+    let (top, shift_y) = margin(inner.top() - rect.top());
+    let (right, _) = margin(rect.right() - inner.right());
+    let (bottom, _) = margin(rect.bottom() - inner.bottom());
+    let inside = Margin {
+        left,
+        right,
+        top,
+        bottom,
+    };
+    let place = Rect::from_min_max(
+        rect.min + vec2(shift_x, shift_y),
+        inner.max + vec2(f32::from(right), f32::from(bottom)),
     );
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(place));
     let mut layouter = crate::typography::layouter(look, role, palette.text);
@@ -160,8 +201,7 @@ pub fn field(
         egui::TextEdit::singleline(&mut editor.text)
             .id(id)
             .font(role.font_id(look.faces))
-            .frame(egui::Frame::NONE)
-            .margin(Margin::ZERO)
+            .frame(egui::Frame::new().inner_margin(inside))
             .desired_width(place.width())
             // Tab ends the edit; it is not egui's to move the keyboard with.
             .lock_focus(true)
@@ -263,6 +303,9 @@ pub fn large(
             }
             let has = ui.memory(|memory| memory.has_focus(id));
             let had = had_keyboard(ui.ctx(), id);
+            if has {
+                keep_keyboard(ui.ctx());
+            }
             // Read before the field is added, which would take Esc as the
             // keyboard given up. No popup is open for the other owners of
             // Esc to see: the key is taken here, so none of them acts on

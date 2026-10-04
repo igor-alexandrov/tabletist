@@ -274,6 +274,12 @@ pub enum Action {
         tab: ConnTabId,
         id: TabId,
     },
+    /// Take away what the tab's last save came to, and nothing else: an
+    /// editor that is open keeps its text.
+    DismissNote {
+        tab: ConnTabId,
+        id: TabId,
+    },
     /// Save the tab's pending changes, in one transaction.
     WriteEdits {
         tab: ConnTabId,
@@ -1153,6 +1159,9 @@ pub struct LeavePrompt {
     pub can_save: bool,
     /// How many changes would be dropped, over all the tabs.
     pub changes: usize,
+    /// One of the tabs is saving: only the window's close is asked about
+    /// then, and the prompt says what leaving a save comes to.
+    pub saving: bool,
 }
 
 /// Asks before a save to production.

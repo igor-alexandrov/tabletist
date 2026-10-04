@@ -104,6 +104,7 @@ pub(super) fn terminal_footer(
             button: name.as_deref(),
             // Saving is what the dialog is for: its key takes the accent.
             lead: *key == "ctrl+s",
+            disabled: None,
         })
         .collect();
     // What the status leaves, 16 clear of it.

@@ -11053,13 +11053,18 @@ mod tests {
                 .fold(f32::INFINITY, f32::min);
             assert!(moved < 0.6, "{}: by {moved}", look.name);
             // The field is on the cell: the cell's text is the field's now.
+            // It is the whole cell, its padding too: it begins that much
+            // left of the text of the cell under it, and ends over it.
             let tree = harness.settle();
             let field =
                 crate::testing::bounds(&tree, "Edit email", egui::accesskit::Role::TextInput)
                     .expect("the field");
             let cell = harness.painted_rect("user3@example.com").unwrap();
-            assert!((field.left() - cell.left()).abs() < 1.0, "{}", look.name);
+            let pad = crate::ui::grid::cell_pad(&look);
+            let aside = cell.left() - field.left();
+            assert!((aside - pad).abs() < 1.0, "{}: {aside}", look.name);
             assert!(field.bottom() <= cell.top(), "{}", look.name);
+            assert!(field.height() > look.grid_row - 2.0, "{}", look.name);
             // Typed at the end of the text.
             type_text(&mut harness, "x");
             assert_eq!(
@@ -11406,6 +11411,91 @@ mod tests {
     }
 
     #[test]
+    fn mod_c_copies_the_pending_value_the_cell_shows() {
+        for look in desktop_looks() {
+            let (mut harness, tab, id) = editable_in(look);
+            make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
+            select(&mut harness, tab, id, (1, 1));
+            assert!(painted(&harness, "bob@example.com"), "{}", look.name);
+            harness.copy(false);
+            assert_eq!(
+                harness.copied.as_deref(),
+                Some("bob@example.com"),
+                "{}",
+                look.name
+            );
+            // And the row as it shows, with Shift.
+            harness.copy(true);
+            let row = harness.copied.clone().unwrap_or_default();
+            assert!(
+                row.starts_with("2\tbob@example.com\t"),
+                "{}: {row}",
+                look.name
+            );
+        }
+    }
+
+    #[test]
+    fn mod_s_saves_wherever_the_bar_offers_it() {
+        use crate::model::{ObjectView, Pane};
+        for look in desktop_looks() {
+            // The bar is up, with Save and its key.
+            let pending = || {
+                let (mut harness, tab, id) = editable_in(look);
+                make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
+                harness.settle();
+                let keys = format!("{}S", look.command_key());
+                assert!(painted(&harness, &keys), "{}", look.name);
+                (harness, tab, id)
+            };
+            // With the arrows on the sidebar's tree.
+            let (mut harness, tab, id) = pending();
+            harness.app.workspace_mut(tab).unwrap().pane = Pane::Tree;
+            harness.press(Key::S, Modifiers::COMMAND);
+            assert_eq!(writes(&harness), 1, "{}: the tree", look.name);
+            assert!(edits(&harness, tab, id).saving.is_some(), "{}", look.name);
+            // In the Structure view, where no grid shows.
+            let (mut harness, tab, id) = pending();
+            let view = ObjectView::Structure;
+            harness.app.apply(Action::SetView {
+                tab,
+                object_tab: id,
+                view,
+            });
+            harness.settle();
+            assert!(harness.has("Save"), "{}", look.name);
+            harness.press(Key::S, Modifiers::COMMAND);
+            assert_eq!(writes(&harness), 1, "{}: Structure", look.name);
+            // With the keyboard in the filter's field.
+            let (mut harness, tab, id) = pending();
+            harness.press(Key::F, Modifiers::COMMAND);
+            assert!(crate::ui::filter_bar::is_open(&harness.app, tab, id));
+            assert!(harness.ctx.text_edit_focused(), "{}", look.name);
+            harness.press(Key::S, Modifiers::COMMAND);
+            assert_eq!(writes(&harness), 1, "{}: the filter", look.name);
+            // And on a button: here the one that shows the row panel.
+            let (mut harness, _tab, _id) = pending();
+            harness.press(Key::Tab, Modifiers::NONE);
+            assert!(crate::ui::focus::on_control(&harness.ctx), "{}", look.name);
+            harness.press(Key::S, Modifiers::COMMAND);
+            assert_eq!(writes(&harness), 1, "{}: a button", look.name);
+            // Not from a SQL editor: the set is another tab's, and its bar
+            // is not on screen.
+            let (mut harness, tab, _id) = pending();
+            harness.app.apply(Action::NewSqlTab(tab));
+            harness.settle();
+            harness.press(Key::S, Modifiers::COMMAND);
+            assert_eq!(writes(&harness), 0, "{}: a SQL editor", look.name);
+        }
+        // The terminal look saves from none of them yet.
+        let (mut harness, tab, id) = editable_in(Look::omarchy());
+        make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
+        harness.app.workspace_mut(tab).unwrap().pane = Pane::Tree;
+        harness.press(Key::S, Modifiers::COMMAND);
+        assert_eq!(writes(&harness), 0);
+    }
+
+    #[test]
     fn mod_s_in_the_field_saves_what_is_being_typed() {
         use crate::backend::Command;
         let (mut harness, tab, id) = editable_in(Look::macos());
@@ -11428,6 +11518,291 @@ mod tests {
             *sent,
             tabletist_db::NewValue::Text("user2@example.comx".into())
         );
+    }
+
+    #[test]
+    fn the_keys_of_the_frame_an_editor_opens_in_are_the_editors() {
+        for look in desktop_looks() {
+            let (mut harness, tab, id) = editable_in(look);
+            let panel = |harness: &Harness| harness.app.workspace(tab).unwrap().row_panel;
+            let shown = panel(&harness);
+            select(&mut harness, tab, id, (1, 1));
+            // Enter opens the editor, and Space comes in the next frame:
+            // the one its field is first drawn in, and takes the keyboard
+            // in. It is a space of the text, not the row panel's key.
+            harness.frame(vec![crate::testing::key(Key::Enter, Modifiers::NONE)]);
+            harness.frame(vec![
+                crate::testing::release(Key::Enter, Modifiers::NONE),
+                crate::testing::key(Key::Space, Modifiers::NONE),
+                egui::Event::Text(" ".into()),
+            ]);
+            harness.frame(vec![crate::testing::release(Key::Space, Modifiers::NONE)]);
+            harness.settle();
+            assert_eq!(panel(&harness), shown, "{}", look.name);
+            assert_eq!(
+                editor_text(&harness, tab, id).as_deref(),
+                Some("user2@example.com "),
+                "{}",
+                look.name
+            );
+            harness.press(Key::Escape, Modifiers::NONE);
+            assert!(edits(&harness, tab, id).cells.is_empty(), "{}", look.name);
+            // An arrow in that frame is the field's too: it ends no edit
+            // and moves no selection.
+            harness.frame(vec![crate::testing::key(Key::Enter, Modifiers::NONE)]);
+            harness.frame(vec![
+                crate::testing::release(Key::Enter, Modifiers::NONE),
+                crate::testing::key(Key::ArrowDown, Modifiers::NONE),
+            ]);
+            harness.frame(vec![crate::testing::release(
+                Key::ArrowDown,
+                Modifiers::NONE,
+            )]);
+            harness.settle();
+            assert!(edits(&harness, tab, id).editor.is_some(), "{}", look.name);
+            assert_eq!(selected(&harness, tab, id), Some((1, 1)), "{}", look.name);
+            assert!(harness.ctx.text_edit_focused(), "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn tab_in_the_second_frame_of_an_editor_leaves_the_grid_its_keys() {
+        for look in desktop_looks() {
+            let (mut harness, tab, id) = editable_in(look);
+            select(&mut harness, tab, id, (1, 1));
+            // The field takes the keyboard in the frame after Enter, and
+            // holds the Tab key only from the frame after that: this Tab
+            // comes between the two.
+            harness.frame(vec![crate::testing::key(Key::Enter, Modifiers::NONE)]);
+            harness.frame(vec![crate::testing::release(Key::Enter, Modifiers::NONE)]);
+            harness.frame(vec![crate::testing::key(Key::Tab, Modifiers::NONE)]);
+            harness.frame(vec![crate::testing::release(Key::Tab, Modifiers::NONE)]);
+            harness.settle();
+            assert!(edits(&harness, tab, id).editor.is_none(), "{}", look.name);
+            assert_eq!(selected(&harness, tab, id), Some((1, 2)), "{}", look.name);
+            // The keyboard is on no header or button: the arrows move.
+            assert!(!crate::ui::focus::on_control(&harness.ctx), "{}", look.name);
+            harness.press(Key::ArrowDown, Modifiers::NONE);
+            assert_eq!(selected(&harness, tab, id), Some((2, 2)), "{}", look.name);
+            // Shift+Tab in that frame, the other way.
+            select(&mut harness, tab, id, (1, 1));
+            harness.frame(vec![crate::testing::key(Key::Enter, Modifiers::NONE)]);
+            harness.frame(vec![crate::testing::release(Key::Enter, Modifiers::NONE)]);
+            harness.frame(vec![crate::testing::key(Key::Tab, Modifiers::SHIFT)]);
+            harness.frame(vec![crate::testing::release(Key::Tab, Modifiers::SHIFT)]);
+            harness.settle();
+            assert!(edits(&harness, tab, id).editor.is_none(), "{}", look.name);
+            assert_eq!(selected(&harness, tab, id), Some((1, 0)), "{}", look.name);
+            assert!(!crate::ui::focus::on_control(&harness.ctx), "{}", look.name);
+            harness.press(Key::ArrowDown, Modifiers::NONE);
+            assert_eq!(selected(&harness, tab, id), Some((2, 0)), "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn an_arrow_in_the_first_frames_of_the_large_editor_is_its_texts() {
+        for look in desktop_looks() {
+            // The popover is sized in its first frame and takes the
+            // keyboard in its second; it holds the arrows from the one
+            // after. An arrow in any of them moves no keyboard away.
+            for wait in 0..4 {
+                let (mut harness, tab, id) = editable_in(look);
+                select(&mut harness, tab, id, (0, 2));
+                harness.frame(vec![crate::testing::key(Key::Enter, Modifiers::NONE)]);
+                harness.frame(vec![crate::testing::release(Key::Enter, Modifiers::NONE)]);
+                for _ in 0..wait {
+                    harness.frame(Vec::new());
+                }
+                harness.frame(vec![crate::testing::key(Key::ArrowDown, Modifiers::NONE)]);
+                harness.frame(vec![crate::testing::release(
+                    Key::ArrowDown,
+                    Modifiers::NONE,
+                )]);
+                harness.settle();
+                assert!(is_large(&harness, tab, id), "{}: {wait}", look.name);
+                assert!(harness.ctx.text_edit_focused(), "{}: {wait}", look.name);
+                assert_eq!(selected(&harness, tab, id), Some((0, 2)), "{}", look.name);
+            }
+        }
+    }
+
+    #[test]
+    fn a_click_in_the_edited_cells_padding_keeps_the_editor() {
+        for look in desktop_looks() {
+            let (mut harness, tab, id) = editable_in(look);
+            open_editor(&mut harness, tab, id, (1, 1));
+            // (The row panel writes the value too: the grid's is leftmost.)
+            let texts = harness.text_rects.iter();
+            let text = texts
+                .filter(|(text, _)| text == "user2@example.com")
+                .map(|(_, rect)| *rect)
+                .min_by(|a, b| a.left().total_cmp(&b.left()))
+                .expect("the field's text");
+            // Beside the text, in the cell's own padding, and under it.
+            for at in [
+                egui::pos2(text.left() - 6.0, text.center().y),
+                egui::pos2(text.center().x, text.bottom() + 2.0),
+            ] {
+                click_at(&mut harness, at);
+                assert!(edits(&harness, tab, id).editor.is_some(), "{}", look.name);
+                assert!(edits(&harness, tab, id).cells.is_empty(), "{}", look.name);
+                assert!(harness.ctx.text_edit_focused(), "{}", look.name);
+            }
+            // The cursor is where the click put it: before the text.
+            click_at(&mut harness, egui::pos2(text.left() - 6.0, text.center().y));
+            type_text(&mut harness, "x");
+            assert_eq!(
+                editor_text(&harness, tab, id).as_deref(),
+                Some("xuser2@example.com"),
+                "{}",
+                look.name
+            );
+        }
+    }
+
+    #[test]
+    fn the_structure_view_leaves_an_open_editor() {
+        for look in desktop_looks() {
+            let (mut harness, tab, id) = editable_in(look);
+            open_editor(&mut harness, tab, id, (1, 1));
+            type_text(&mut harness, "x");
+            let view = crate::model::ObjectView::Structure;
+            harness.app.apply(Action::SetView {
+                tab,
+                object_tab: id,
+                view,
+            });
+            harness.settle();
+            // No editor stays open where no grid shows it: what was typed
+            // is the cell's pending value.
+            assert!(edits(&harness, tab, id).editor.is_none(), "{}", look.name);
+            assert_eq!(
+                pending_text(&harness, tab, id, (1, 1)).as_deref(),
+                Some("user2@example.comx"),
+                "{}",
+                look.name
+            );
+            assert!(!harness.ctx.text_edit_focused(), "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn a_locked_cells_note_is_not_drawn_over_a_dialog() {
+        for look in desktop_looks() {
+            let (mut harness, tab, id) = editable_in(look);
+            let why = "Part of the row's key";
+            select(&mut harness, tab, id, (1, 0));
+            harness.press(Key::Enter, Modifiers::NONE);
+            assert!(painted(&harness, why), "{}", look.name);
+            harness.app.apply(Action::ShowHelp);
+            harness.finish_animations();
+            assert!(!painted(&harness, why), "{}", look.name);
+            // It is the cell's still, once the dialog is gone.
+            harness.press(Key::Escape, Modifiers::NONE);
+            assert!(harness.app.dialog.is_none(), "{}", look.name);
+            assert!(painted(&harness, why), "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn a_confirmation_whose_connection_is_gone_closes() {
+        for look in Look::ALL {
+            let (mut harness, _tab, _id, _) = confirming(look);
+            // Its tab cannot close under it. Were it gone all the same,
+            // the prompt has nothing to draw, and must not stay for good.
+            if let Some(crate::model::Dialog::ConfirmWrite(prompt)) = &mut harness.app.dialog {
+                prompt.tab = ConnTabId(u64::MAX);
+            }
+            harness.settle();
+            assert!(harness.app.dialog.is_none(), "{}", look.name);
+            assert_eq!(writes(&harness), 0, "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn text_that_comes_with_a_shortcut_starts_no_edit() {
+        for look in desktop_looks() {
+            let (mut harness, tab, id) = editable_in(look);
+            select(&mut harness, tab, id, (1, 1));
+            // Some systems send the letter of a chord as text too.
+            for held in [
+                Modifiers::COMMAND,
+                Modifiers::CTRL,
+                Modifiers::MAC_CMD | Modifiers::COMMAND,
+            ] {
+                harness.frame(vec![
+                    egui::Event::ModifiersChanged(held),
+                    egui::Event::Text("j".into()),
+                ]);
+                harness.frame(vec![egui::Event::ModifiersChanged(Modifiers::NONE)]);
+                harness.settle();
+                let now = edits(&harness, tab, id);
+                assert!(now.editor.is_none(), "{}: {held:?}", look.name);
+                assert!(!harness.ctx.text_edit_focused(), "{}: {held:?}", look.name);
+            }
+            // Without one it does.
+            type_text(&mut harness, "j");
+            assert_eq!(editor_text(&harness, tab, id).as_deref(), Some("j"));
+        }
+    }
+
+    #[test]
+    fn escape_in_the_first_frames_of_an_editor_cancels_it() {
+        for look in desktop_looks() {
+            let (mut harness, tab, id) = editable_in(look);
+            let gone = |harness: &Harness| {
+                let now = edits(harness, tab, id);
+                now.editor.is_none() && now.cells.is_empty()
+            };
+            // Typed into being, so a text that was only left would stay as
+            // a pending cell. Esc in the frame its field is first drawn in:
+            select(&mut harness, tab, id, (1, 1));
+            harness.frame(vec![egui::Event::Text("z".into())]);
+            assert_eq!(editor_text(&harness, tab, id).as_deref(), Some("z"));
+            harness.frame(vec![crate::testing::key(Key::Escape, Modifiers::NONE)]);
+            harness.frame(vec![crate::testing::release(Key::Escape, Modifiers::NONE)]);
+            harness.settle();
+            assert!(gone(&harness), "{}: the first frame", look.name);
+            // And one frame later, where egui drops the keyboard on Esc
+            // before the field is asked.
+            select(&mut harness, tab, id, (2, 1));
+            harness.frame(vec![egui::Event::Text("z".into())]);
+            harness.frame(Vec::new());
+            harness.frame(vec![crate::testing::key(Key::Escape, Modifiers::NONE)]);
+            harness.frame(vec![crate::testing::release(Key::Escape, Modifiers::NONE)]);
+            harness.settle();
+            assert!(gone(&harness), "{}: the second frame", look.name);
+            assert_eq!(selected(&harness, tab, id), Some((2, 1)), "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn a_keystroke_in_the_frame_a_prompt_opens_is_saved_with_it() {
+        let (mut harness, tab, id) = editable_in(Look::macos());
+        open_editor(&mut harness, tab, id, (1, 1));
+        // The first keystroke, and with it the key that closes the tab:
+        // the prompt is up before the field says its text changed.
+        harness.frame(vec![
+            egui::Event::Text("x".into()),
+            crate::testing::key(Key::W, Modifiers::COMMAND),
+        ]);
+        harness.frame(vec![crate::testing::release(Key::W, Modifiers::COMMAND)]);
+        harness.finish_animations();
+        assert!(leaving(&harness));
+        assert_eq!(
+            editor_text(&harness, tab, id).as_deref(),
+            Some("user2@example.comx")
+        );
+        click_dialog(&mut harness, "Save");
+        let Some(crate::backend::Command::Write { changes, .. }) = harness.app.backend.sent.last()
+        else {
+            panic!("a save was sent");
+        };
+        assert_eq!(
+            changes.rows[0].set[0].new,
+            tabletist_db::NewValue::Text("user2@example.comx".into())
+        );
+        assert!(open(&harness, tab, id), "the tab closes once it is written");
     }
 
     #[test]
@@ -12469,6 +12844,38 @@ mod tests {
         assert!(edits(&harness, tab, id).note.is_none());
     }
 
+    #[test]
+    fn dismissing_a_note_keeps_what_is_being_typed() {
+        for look in desktop_looks() {
+            let (mut harness, tab, id) = editable_in(look);
+            make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
+            harness.click("Save");
+            harness.answer_written(Err(tabletist_db::Error::Cancelled));
+            select(&mut harness, tab, id, (1, 1));
+            harness.app.apply(Action::RevertCell { tab, id });
+            // Only the line of the save is left, and an editor is opened
+            // and typed into under it.
+            open_editor(&mut harness, tab, id, (3, 1));
+            type_text(&mut harness, "x");
+            let tree = harness.settle();
+            let dismiss = crate::testing::bounds(&tree, "Dismiss", egui::accesskit::Role::Button)
+                .expect("Dismiss");
+            // The click takes the field's keyboard: the edit is left, and
+            // its text is the cell's pending value.
+            click_at(&mut harness, dismiss.center());
+            let now = edits(&harness, tab, id);
+            assert!(now.note.is_none(), "{}", look.name);
+            assert!(now.editor.is_none(), "{}", look.name);
+            assert_eq!(
+                pending_text(&harness, tab, id, (3, 1)).as_deref(),
+                Some("user4@example.comx"),
+                "{}",
+                look.name
+            );
+            assert!(!harness.has("Save cancelled. Nothing was written."));
+        }
+    }
+
     /// The buttons named `label` that can be pressed, highest first. A
     /// dialog's stand above the pending bar, which has a Save of its own.
     pub(super) fn pressable(harness: &mut Harness, label: &str) -> Vec<egui::accesskit::NodeId> {
@@ -12759,6 +13166,157 @@ mod tests {
         }
     }
 
+    /// Gives the keyboard to the open dialog's button `label`, as a screen
+    /// reader does.
+    fn focus_dialog(harness: &mut Harness, label: &str) {
+        let target = *pressable(harness, label)
+            .first()
+            .unwrap_or_else(|| panic!("no button {label}"));
+        harness.frame(vec![egui::Event::AccessKitActionRequest(
+            egui::accesskit::ActionRequest {
+                target_tree: egui::accesskit::TreeId::ROOT,
+                target_node: target,
+                action: egui::accesskit::Action::Focus,
+                data: None,
+            },
+        )]);
+        harness.settle();
+    }
+
+    /// The fixture's table with one change that can be saved, and its tab
+    /// asked to close: the Leave prompt is up, with nothing focused in it.
+    fn leaving_one_change(look: Look) -> (Harness, ConnTabId, TabId) {
+        let (mut harness, tab, id) = editable_in(look);
+        make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
+        harness.app.apply(Action::CloseTab { tab, id });
+        harness.finish_animations();
+        assert!(leaving(&harness), "{}", look.name);
+        (harness, tab, id)
+    }
+
+    #[test]
+    fn enter_in_the_leave_prompt_follows_the_button_that_has_the_keyboard() {
+        for look in desktop_looks() {
+            // On Cancel it stays: nothing is sent, and the tab and its
+            // change are as they were.
+            let (mut harness, tab, id) = leaving_one_change(look);
+            focus_dialog(&mut harness, "Cancel");
+            harness.press(Key::Enter, Modifiers::NONE);
+            assert!(harness.app.dialog.is_none(), "{}", look.name);
+            assert_eq!(writes(&harness), 0, "{}", look.name);
+            assert!(open(&harness, tab, id), "{}", look.name);
+            assert_eq!(edits(&harness, tab, id).cells.len(), 1, "{}", look.name);
+            assert!(edits(&harness, tab, id).saving.is_none(), "{}", look.name);
+            // And when the Tab key put the keyboard there: Cancel is the
+            // first it comes to.
+            let (mut harness, tab, id) = leaving_one_change(look);
+            harness.press(Key::Tab, Modifiers::NONE);
+            harness.press(Key::Enter, Modifiers::NONE);
+            assert!(harness.app.dialog.is_none(), "{}", look.name);
+            assert_eq!(writes(&harness), 0, "{}", look.name);
+            assert!(open(&harness, tab, id), "{}", look.name);
+            assert_eq!(edits(&harness, tab, id).cells.len(), 1, "{}", look.name);
+            // On Discard it does nothing: Enter never discards, and it
+            // does not save past the button the keyboard is on either.
+            let (mut harness, tab, id) = leaving_one_change(look);
+            focus_dialog(&mut harness, "Discard");
+            harness.press(Key::Enter, Modifiers::NONE);
+            assert!(leaving(&harness), "{}", look.name);
+            assert_eq!(writes(&harness), 0, "{}", look.name);
+            assert!(open(&harness, tab, id), "{}", look.name);
+            assert_eq!(edits(&harness, tab, id).cells.len(), 1, "{}", look.name);
+            // On Save it saves.
+            let (mut harness, tab, id) = leaving_one_change(look);
+            focus_dialog(&mut harness, "Save");
+            harness.press(Key::Enter, Modifiers::NONE);
+            assert!(harness.app.dialog.is_none(), "{}", look.name);
+            assert_eq!(writes(&harness), 1, "{}", look.name);
+            assert!(edits(&harness, tab, id).saving.is_some(), "{}", look.name);
+            // And with the keyboard on no button of it.
+            let (mut harness, tab, id) = leaving_one_change(look);
+            harness.press(Key::Enter, Modifiers::NONE);
+            assert!(harness.app.dialog.is_none(), "{}", look.name);
+            assert_eq!(writes(&harness), 1, "{}", look.name);
+            assert!(edits(&harness, tab, id).saving.is_some(), "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn enter_in_the_terminal_box_follows_the_button_that_has_the_keyboard() {
+        let look = Look::omarchy();
+        // On Stay it stays.
+        let (mut harness, tab, id) = leaving_one_change(look);
+        focus_dialog(&mut harness, "Stay");
+        harness.press(Key::Enter, Modifiers::NONE);
+        assert!(harness.app.dialog.is_none());
+        assert_eq!(writes(&harness), 0);
+        assert!(open(&harness, tab, id));
+        assert_eq!(edits(&harness, tab, id).cells.len(), 1);
+        // On Discard it does nothing.
+        let (mut harness, tab, id) = leaving_one_change(look);
+        focus_dialog(&mut harness, "Discard");
+        harness.press(Key::Enter, Modifiers::NONE);
+        assert!(leaving(&harness));
+        assert_eq!(writes(&harness), 0);
+        assert_eq!(edits(&harness, tab, id).cells.len(), 1);
+        // On Write it saves, as the button's own key does.
+        let (mut harness, tab, id) = leaving_one_change(look);
+        focus_dialog(&mut harness, "Write");
+        harness.press(Key::Enter, Modifiers::NONE);
+        assert!(harness.app.dialog.is_none());
+        assert_eq!(writes(&harness), 1);
+        assert!(edits(&harness, tab, id).saving.is_some());
+        // With the keyboard on none of them it answers nothing: the box
+        // has its letters.
+        let (mut harness, tab, id) = leaving_one_change(look);
+        harness.press(Key::Enter, Modifiers::NONE);
+        assert!(leaving(&harness));
+        assert_eq!(writes(&harness), 0);
+        assert_eq!(edits(&harness, tab, id).cells.len(), 1);
+    }
+
+    #[test]
+    fn enter_on_the_confirmations_cancel_cancels() {
+        for look in Look::ALL {
+            let (mut harness, tab, id, _) = confirming(look);
+            if look.terminal {
+                // The word is typed: Enter would confirm from the field.
+                type_text(&mut harness, "write");
+            }
+            focus_dialog(&mut harness, "Cancel");
+            harness.press(Key::Enter, Modifiers::NONE);
+            assert!(harness.app.dialog.is_none(), "{}", look.name);
+            assert_eq!(writes(&harness), 0, "{}", look.name);
+            assert_eq!(edits(&harness, tab, id).cells.len(), 2, "{}", look.name);
+            assert!(edits(&harness, tab, id).saving.is_none(), "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn the_terminal_confirmations_button_cannot_be_pressed_before_the_word() {
+        use egui::accesskit::Role;
+        let (mut harness, _tab, _id, _) = confirming(Look::omarchy());
+        // What a screen reader is told of the button that sends.
+        let button = |harness: &mut Harness| {
+            let tree = harness.settle();
+            let id = crate::testing::node(&tree, "Save to production", Role::Button)
+                .expect("the button");
+            let (_, node) = tree.nodes.iter().find(|(node, _)| *node == id).unwrap();
+            (node.is_disabled(), node.description().map(str::to_owned))
+        };
+        assert_eq!(
+            button(&mut harness),
+            (true, Some("type write to confirm".into()))
+        );
+        type_text(&mut harness, "wri");
+        assert!(button(&mut harness).0);
+        type_text(&mut harness, "te");
+        assert_eq!(button(&mut harness), (false, None));
+        click_dialog(&mut harness, "Save to production");
+        assert!(harness.app.dialog.is_none());
+        assert_eq!(writes(&harness), 1);
+    }
+
     /// The fixture's table on a production connection, with two changes in
     /// two rows and the save asked for: the confirmation is up.
     fn confirming(look: Look) -> (Harness, ConnTabId, TabId, Vec<String>) {
@@ -12808,8 +13366,12 @@ mod tests {
                 harness.press(Key::Enter, Modifiers::NONE);
                 assert!(harness.app.dialog.is_some());
                 assert_eq!(writes(&harness), 0);
-                // Nor does its button, to the pointer or a screen reader.
-                click_dialog(&mut harness, "Save to production");
+                // Nor does its button, to the pointer or a screen reader:
+                // it cannot be pressed before the word is typed.
+                assert!(pressable(&mut harness, "Save to production").is_empty());
+                let hint = harness.painted_rect("enter confirm").expect("the hint");
+                click_at(&mut harness, hint.center());
+                assert!(harness.app.dialog.is_some());
                 assert_eq!(writes(&harness), 0);
                 // Esc cancels: nothing is sent and the set stays.
                 harness.press(Key::Escape, Modifiers::NONE);
@@ -13003,12 +13565,15 @@ mod tests {
             answer_leave(&mut harness, Leave::Save);
             assert_eq!(writes(&harness), 1, "{}", look.name);
             assert!(!harness.app.closing, "{}", look.name);
-            // While the save runs a close request is held back, and
-            // nothing is asked: the user closes again once it ends.
+            // While the save runs a close request is held back and asked
+            // about. Kept waiting, the save's end closes the window, as
+            // was asked of it.
             ask_to_close(&mut harness);
             assert!(sends(&harness, CancelClose), "{}", look.name);
-            assert!(harness.app.dialog.is_none(), "{}", look.name);
+            assert!(leaving(&harness), "{}", look.name);
             assert!(harness.app.notice.is_none(), "{}", look.name);
+            answer_leave(&mut harness, Leave::Stay);
+            assert!(!harness.app.closing, "{}", look.name);
             harness.answer_written(Ok(written_row("bob@example.com")));
             harness.settle();
             assert!(harness.app.closing, "{}", look.name);
@@ -13023,6 +13588,90 @@ mod tests {
             assert!(!harness.app.closing, "{}", look.name);
             assert!(!sends(&harness, Close), "{}", look.name);
             assert_eq!(edits(&harness, tab, id).cells.len(), 1, "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn a_close_request_under_a_save_asks_and_offers_no_save() {
+        use egui::ViewportCommand::{CancelClose, Close};
+        use egui::accesskit::Role;
+        let running = "A save is still running. It writes everything or nothing, \
+                       and closing now means not seeing which.";
+        for look in Look::ALL {
+            let (mut harness, tab, id) = editable_in(look);
+            make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
+            harness.app.apply(Action::WriteEdits { tab, id });
+            assert!(edits(&harness, tab, id).saving.is_some(), "{}", look.name);
+            // Any other action the guard covers is ignored under a save.
+            harness.app.apply(Action::Refresh(tab));
+            harness.app.apply(Action::CloseTab { tab, id });
+            assert!(harness.app.dialog.is_none(), "{}", look.name);
+            assert!(open(&harness, tab, id), "{}", look.name);
+            // The window's close is held back, and asked about.
+            ask_to_close(&mut harness);
+            assert!(sends(&harness, CancelClose), "{}", look.name);
+            assert!(leaving(&harness), "{}", look.name);
+            harness.finish_animations();
+            assert!(harness.has(&look.label(running)), "{}", look.name);
+            if look.terminal {
+                assert!(!harness.has("Write"), "{}", look.name);
+                assert!(!painted(&harness, "[w] write"), "{}", look.name);
+                assert!(harness.has("Discard") && harness.has("Stay"));
+                type_key(&mut harness, Key::W, "w");
+            } else {
+                assert!(harness.has("Discard 1 change before closing the window?"));
+                assert!(!harness.has("It has not been written."), "{}", look.name);
+                // The one Save is the bar's, behind the dialog.
+                let tree = harness.settle();
+                let saves = tree.nodes.iter().filter(|(_, node)| {
+                    node.role() == Role::Button && node.label() == Some("Save")
+                });
+                assert_eq!(saves.count(), 1, "{}", look.name);
+                assert_eq!(pressable(&mut harness, "Discard").len(), 1);
+                assert_eq!(pressable(&mut harness, "Cancel").len(), 1);
+            }
+            // Enter answers nothing.
+            harness.press(Key::Enter, Modifiers::NONE);
+            assert!(leaving(&harness), "{}", look.name);
+            assert_eq!(writes(&harness), 1, "{}", look.name);
+            // Cancel stays: the save runs on, and its answer still lands.
+            answer_leave(&mut harness, Leave::Stay);
+            assert!(harness.app.dialog.is_none(), "{}", look.name);
+            assert!(!harness.app.closing, "{}", look.name);
+            assert!(!sends(&harness, Close), "{}", look.name);
+            assert!(edits(&harness, tab, id).saving.is_some(), "{}", look.name);
+            harness.answer_written(Ok(written_row("bob@example.com")));
+            harness.settle();
+            let now = edits(&harness, tab, id);
+            assert!(
+                now.saving.is_none() && now.cells.is_empty(),
+                "{}",
+                look.name
+            );
+            assert!(now.saved.is_some(), "{}", look.name);
+            assert!(!harness.app.closing, "{}", look.name);
+            // Discard drops the set and the save's place with it, and the
+            // window closes: a save that never answers does not keep it.
+            make_pending(&mut harness, tab, id, (3, 1), "dan@example.com");
+            harness.app.apply(Action::WriteEdits { tab, id });
+            assert!(edits(&harness, tab, id).saving.is_some(), "{}", look.name);
+            ask_to_close(&mut harness);
+            assert!(leaving(&harness), "{}", look.name);
+            answer_leave(&mut harness, Leave::Discard);
+            assert!(harness.app.dialog.is_none(), "{}", look.name);
+            assert!(harness.app.closing, "{}", look.name);
+            assert!(sends(&harness, Close), "{}", look.name);
+            let now = edits(&harness, tab, id);
+            assert!(
+                now.saving.is_none() && now.cells.is_empty(),
+                "{}",
+                look.name
+            );
+            // Its answer, if one comes, finds no tab to tell.
+            harness.answer_written(Err(tabletist_db::Error::Cancelled));
+            harness.settle();
+            assert!(edits(&harness, tab, id).note.is_none(), "{}", look.name);
+            assert!(harness.app.closing, "{}", look.name);
         }
     }
 

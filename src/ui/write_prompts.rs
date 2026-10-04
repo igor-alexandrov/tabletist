@@ -29,6 +29,11 @@ const BAND: f32 = 4.0;
 /// The word the terminal's confirmation takes.
 const WORD: &str = "write";
 
+/// What the Leave prompt says of a save that is running when the window is
+/// asked to close.
+const SAVING: &str = "A save is still running. It writes everything or nothing, \
+                      and closing now means not seeing which.";
+
 pub fn show(app: &mut App, ctx: &egui::Context) {
     leave(app, ctx);
     confirm_write(app, ctx);
@@ -116,8 +121,16 @@ fn button_row(
     (row, pressed)
 }
 
+/// The place in `buttons` of the one that has the keyboard. Asked before
+/// [`button_row`] draws them in `ui`.
+fn keyboard_on(ui: &egui::Ui, buttons: &[ButtonSpec<'_>]) -> Option<usize> {
+    buttons.iter().position(|button| button.has_keyboard(ui))
+}
+
 /// Asks before pending changes are dropped. Enter never discards: it
-/// saves where Save is offered, and answers nothing where it is not.
+/// answers as the button that has the keyboard where that is Cancel or
+/// Save, saves where Save is offered and the keyboard is on no button, and
+/// answers nothing anywhere else.
 fn leave(app: &mut App, ctx: &egui::Context) {
     let (look, palette) = (app.look, app.palette);
     let skin = Skin {
@@ -130,16 +143,14 @@ fn leave(app: &mut App, ctx: &egui::Context) {
     };
     // Taken before anything is drawn: a button that has the keyboard would
     // read Enter as a press of itself, and Discard is one of them. Space
-    // presses a button.
+    // presses a button. What the key answers is for the buttons to say,
+    // where they are made.
     let enter = ctx.input_mut(|input| consume_press(input, Modifiers::NONE, Key::Enter));
     let mut actions = Vec::new();
     let top = if look.terminal {
-        leave_box(ctx, prompt, skin, &mut actions)
+        leave_box(ctx, prompt, skin, enter, &mut actions)
     } else {
-        if enter && prompt.can_save {
-            actions.push(Action::LeaveSave);
-        }
-        leave_sheet(ctx, prompt, skin, &mut actions)
+        leave_sheet(ctx, prompt, skin, enter, &mut actions)
     };
     if top && ctx.input_mut(|input| input.consume_key(Modifiers::NONE, Key::Escape)) {
         actions.push(Action::LeaveStay);
@@ -147,12 +158,15 @@ fn leave(app: &mut App, ctx: &egui::Context) {
     app.actions.extend(actions);
 }
 
-/// macOS and Windows: what is asked, and Cancel, Discard and Save. Returns
-/// whether the prompt is the dialog on top.
+/// macOS and Windows: what is asked, and Cancel, Discard and Save. `enter`
+/// says Enter was pressed: it follows the button that has the keyboard,
+/// and saves from anywhere else. Returns whether the prompt is the dialog
+/// on top.
 fn leave_sheet(
     ctx: &egui::Context,
     prompt: &LeavePrompt,
     skin: Skin<'_>,
+    enter: bool,
     actions: &mut Vec<Action>,
 ) -> bool {
     let Skin {
@@ -182,12 +196,16 @@ fn leave_sheet(
         ),
     };
     let plural = u32::try_from(prompt.changes).unwrap_or(u32::MAX);
-    let text = ngettext(
-        locale,
-        "It has not been written.",
-        "They have not been written.",
-        plural,
-    );
+    let text = if prompt.saving {
+        gettext(locale, SAVING)
+    } else {
+        ngettext(
+            locale,
+            "It has not been written.",
+            "They have not been written.",
+            plural,
+        )
+    };
     let modal = widgets::modal(Id::new("leave-prompt"), look, palette).show(ctx, |ui| {
         ui.set_width(fitted(ui.ctx(), 420.0));
         widgets::label(ui, widgets::dialog_title(look), &title, palette.text, look);
@@ -207,6 +225,15 @@ fn leave_sheet(
         if prompt.can_save {
             buttons.push(ButtonSpec::new(&save).primary().padding(16.0));
         }
+        if enter {
+            match keyboard_on(ui, &buttons) {
+                Some(0) => actions.push(Action::LeaveStay),
+                // Enter never discards.
+                Some(1) => {}
+                _ if prompt.can_save => actions.push(Action::LeaveSave),
+                _ => {}
+            }
+        }
         match button_row(ui, buttons, skin).1 {
             Some(0) => actions.push(Action::LeaveStay),
             Some(1) => actions.push(Action::LeaveDiscard),
@@ -218,12 +245,15 @@ fn leave_sheet(
 }
 
 /// The terminal look: what is being left, how much is pending, and the
-/// answers as keys in the foot, each its button too. Returns whether the
-/// prompt is the dialog on top.
+/// answers as keys in the foot, each its button too. `enter` says Enter
+/// was pressed: it presses Write or Stay when the keyboard is on that
+/// button, and answers nothing anywhere else. Returns whether the prompt
+/// is the dialog on top.
 fn leave_box(
     ctx: &egui::Context,
     prompt: &LeavePrompt,
     skin: Skin<'_>,
+    enter: bool,
     actions: &mut Vec<Action>,
 ) -> bool {
     let Skin {
@@ -276,11 +306,17 @@ fn leave_box(
             skin.say("tabs")
         ));
     }
-    let count = format!(
-        "{} {}",
-        look.label(&counted(locale, prompt.changes, "change", "changes")),
-        skin.say("not written")
-    );
+    // Under a save there is no telling what is written: the box says
+    // what closing comes to.
+    let count = if prompt.saving {
+        skin.say(SAVING)
+    } else {
+        format!(
+            "{} {}",
+            look.label(&counted(locale, prompt.changes, "change", "changes")),
+            skin.say("not written")
+        )
+    };
     let (frame, radius) = skin.frame();
     let modal = widgets::modal(Id::new("leave-prompt"), look, palette)
         .frame(frame)
@@ -293,7 +329,11 @@ fn leave_box(
                     ui.set_width(ui.available_width());
                     widgets::label(ui, TextRole::OGroup, &line, palette.text, look);
                     ui.add_space(4.0);
-                    widgets::label(ui, TextRole::OBody, &count, palette.dim, look);
+                    let width = ui.available_width();
+                    Text::one(look, TextRole::OBody, &count, palette.dim)
+                        .wrap(width)
+                        .layout(ui.ctx())
+                        .label(ui);
                 });
             let foot = terminal_dialog::foot(ui, radius, palette);
             let (write, discard, stay) = (skin.say("write"), skin.say("discard"), skin.say("stay"));
@@ -307,6 +347,7 @@ fn leave_box(
                 label,
                 button: Some(name),
                 lead,
+                disabled: None,
             };
             let mut keys = vec![
                 (
@@ -323,10 +364,13 @@ fn leave_box(
                 let write = key("[w]", write.as_str(), &*names[0], true);
                 keys.insert(0, (write, Action::LeaveSave));
             }
-            let (hints, answers): (Vec<_>, Vec<_>) = keys.into_iter().unzip();
+            let (hints, mut answers): (Vec<_>, Vec<_>) = keys.into_iter().unzip();
+            // Enter never discards, on its button either.
+            let entered = terminal_dialog::keyboard_on(ui, &hints)
+                .filter(|&index| enter && !matches!(answers[index], Action::LeaveDiscard));
             let pressed = terminal_dialog::keys(ui, foot, 0.0, &hints, look, palette);
-            if let Some(answer) = pressed.and_then(|index| answers.into_iter().nth(index)) {
-                actions.push(answer);
+            if let Some(index) = pressed.or(entered) {
+                actions.push(answers.swap_remove(index));
             }
         });
     modal.is_top_modal
@@ -358,6 +402,9 @@ fn confirm_write(app: &mut App, ctx: &egui::Context) {
         return;
     };
     let Some(workspace) = app.workspace(prompt.tab) else {
+        // Nothing to draw, so nothing to answer it with: it closes, or it
+        // would keep the keyboard for good.
+        app.actions.push(Action::CancelWrite);
         return;
     };
     let table = format::display_safe(&prompt.changeset.object.name).into_owned();
@@ -391,13 +438,9 @@ fn confirm_write(app: &mut App, ctx: &egui::Context) {
         return;
     };
     let top = if look.terminal {
-        // The terminal's Enter confirms, once the field holds the word.
-        if enter && prompt.typed == WORD {
-            actions.push(Action::ConfirmWrite);
-        }
-        confirm_box(ctx, prompt, &facts, skin, &mut actions)
+        confirm_box(ctx, prompt, &facts, skin, enter, &mut actions)
     } else {
-        confirm_sheet(ctx, &prompt.statements, &facts, skin, &mut actions)
+        confirm_sheet(ctx, &prompt.statements, &facts, skin, enter, &mut actions)
     };
     if top && ctx.input_mut(|input| input.consume_key(Modifiers::NONE, Key::Escape)) {
         actions.push(Action::CancelWrite);
@@ -438,12 +481,14 @@ fn statements(ui: &mut egui::Ui, list: &[String], skin: Skin<'_>) {
 
 /// macOS and Windows: a band of the production red along the top, what is
 /// saved and where, the statements, and Cancel and the button that sends.
-/// Returns whether the prompt is the dialog on top.
+/// `enter` says Enter was pressed: it cancels with the keyboard on Cancel,
+/// and never confirms. Returns whether the prompt is the dialog on top.
 fn confirm_sheet(
     ctx: &egui::Context,
     list: &[String],
     facts: &Facts,
     skin: Skin<'_>,
+    enter: bool,
     actions: &mut Vec<Action>,
 ) -> bool {
     let Skin {
@@ -498,6 +543,9 @@ fn confirm_sheet(
                         ButtonSpec::new(&cancel),
                         ButtonSpec::new(&save).danger().padding(16.0),
                     ];
+                    if enter && keyboard_on(ui, &buttons) == Some(0) {
+                        actions.push(Action::CancelWrite);
+                    }
                     let (row, pressed) = button_row(ui, buttons, skin);
                     match pressed {
                         Some(0) => actions.push(Action::CancelWrite),
@@ -522,13 +570,15 @@ fn confirm_sheet(
 
 /// The terminal look: the box in the danger colour, its head with the
 /// environment's tag and the question, what is saved and where, the
-/// statements, and the field that takes the word. Returns whether the
-/// prompt is the dialog on top.
+/// statements, and the field that takes the word. `enter` says Enter was
+/// pressed: it confirms once the field holds the word, and cancels with
+/// the keyboard on Cancel. Returns whether the prompt is the dialog on top.
 fn confirm_box(
     ctx: &egui::Context,
     prompt: &mut crate::model::WritePrompt,
     facts: &Facts,
     skin: Skin<'_>,
+    enter: bool,
     actions: &mut Vec<Action>,
 ) -> bool {
     let Skin {
@@ -541,6 +591,9 @@ fn confirm_box(
     let frame = frame.stroke(Stroke::new(2.0, danger));
     let radius = look.dialog_radius.saturating_sub(2);
     let armed = prompt.typed == WORD;
+    // What the field asks for, and why the button that sends cannot be
+    // pressed before it has it.
+    let ask = format!("{} {WORD} {}", skin.say("type"), skin.say("to confirm"));
     let modal = widgets::modal(Id::new("write-prompt"), look, palette)
         .frame(frame)
         .show(ctx, |ui| {
@@ -582,7 +635,6 @@ fn confirm_box(
                     ui.add_space(10.0);
                     statements(ui, &prompt.statements, skin);
                     ui.add_space(12.0);
-                    let ask = format!("{} {WORD} {}", skin.say("type"), skin.say("to confirm"));
                     let ask = widgets::label(ui, role, &ask, palette.dim, look);
                     ui.add_space(6.0);
                     // The field's border in the danger colour, with the
@@ -621,17 +673,29 @@ fn confirm_box(
                     key: "enter",
                     label: &confirm,
                     button: Some(&names[0]),
-                    // Its key answers once the word is typed.
+                    // Its key answers once the word is typed, and so does
+                    // its button.
                     lead: armed,
+                    disabled: (!armed).then_some(ask.as_str()),
                 },
                 terminal_dialog::Key {
                     key: "esc",
                     label: &cancel,
                     button: Some(&names[1]),
                     lead: false,
+                    disabled: None,
                 },
             ];
-            match terminal_dialog::keys(ui, foot, 0.0, &keys, look, palette) {
+            // The terminal's Enter confirms, once the field holds the
+            // word: from the field and from the button that sends, not
+            // from Cancel.
+            let entered = match terminal_dialog::keyboard_on(ui, &keys) {
+                _ if !enter => None,
+                Some(1) => Some(1),
+                _ => Some(0),
+            };
+            let pressed = terminal_dialog::keys(ui, foot, 0.0, &keys, look, palette);
+            match pressed.or(entered) {
                 // The button confirms what its key does, and no more.
                 Some(0) if armed => actions.push(Action::ConfirmWrite),
                 Some(1) => actions.push(Action::CancelWrite),

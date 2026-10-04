@@ -232,12 +232,13 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, id: TabId) {
                     actions.push(Action::DiscardEdits { tab, id });
                 }
             } else {
-                // Only what the last save came to is left: nothing is
-                // pending for the button to drop but the line itself.
+                // Only what the last save came to is left: the button takes
+                // the line away and nothing else. An editor may be open,
+                // and what is typed in it is not the line's to drop.
                 let button = ButtonSpec::new(&dismiss);
                 let at = place(ui, &button);
                 if button.show_at(ui, at, &look, &palette).clicked() {
-                    actions.push(Action::DiscardEdits { tab, id });
+                    actions.push(Action::DismissNote { tab, id });
                 }
             }
             if saving {

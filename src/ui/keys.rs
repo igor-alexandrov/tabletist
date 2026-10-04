@@ -85,20 +85,25 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
         && app
             .workspace(active)
             .is_some_and(|workspace| workspace.can_give_up());
+    // Whether the table on screen has an editor open on a cell.
+    let open = object.is_some_and(|(tab, id)| {
+        app.workspace(tab)
+            .and_then(|workspace| workspace.object_tab(id))
+            .is_some_and(|object| object.edits.editor.is_some())
+    });
     // The field of a cell's editor that just closed holds egui's focus
     // until the frame it is not drawn in ends. The keys are the grid's
     // already: what is pressed right after a commit is not lost.
-    if let Some((tab, id)) = object {
-        let open = app
-            .workspace(tab)
-            .and_then(|workspace| workspace.object_tab(id))
-            .is_some_and(|object| object.edits.editor.is_some());
-        if !open {
-            let field = crate::ui::cell_editor::field_id(tab, id);
-            ctx.memory_mut(|memory| memory.surrender_focus(field));
-        }
+    if let Some((tab, id)) = object
+        && !open
+    {
+        let field = crate::ui::cell_editor::field_id(tab, id);
+        ctx.memory_mut(|memory| memory.surrender_focus(field));
     }
-    let editing = ctx.text_edit_focused();
+    // An editor that just opened takes the keyboard when its field is
+    // first drawn, later in this frame: the keys are its own already, and
+    // none of them is the grid's (Space, an arrow).
+    let editing = ctx.text_edit_focused() || open;
     // Grid keys act only on a visible grid: the Data view of the active tab.
     let grid = object.is_some_and(|(tab, id)| {
         app.workspace(tab)
@@ -555,7 +560,8 @@ fn take_press(input: &mut egui::InputState, modifiers: Modifiers, key: Key) -> u
 /// edit on the cell: they open an editor on the selected cell, act on it
 /// without one, and save or drop what is pending. `keyboard` says the
 /// grid's keys are the grid's: no field or button has them, nor the tree.
-/// A SQL editor's result takes none of them.
+/// Mod+S does not wait for that: it saves from wherever the table's tab
+/// shows. A SQL editor's result takes none of them.
 fn editing_keys(app: &App, ctx: &egui::Context, keyboard: bool, actions: &mut Vec<Action>) {
     let Some((tab, id)) = app.active_object() else {
         return;
@@ -567,26 +573,29 @@ fn editing_keys(app: &App, ctx: &egui::Context, keyboard: bool, actions: &mut Ve
         return;
     };
     let save = |input: &mut egui::InputState| take_press(input, Modifiers::COMMAND, Key::S) > 0;
-    // While the editor's field has the keyboard a save takes what is being
-    // typed. Whether this frame changed the text is not known yet: noting
-    // it as typed is harmless, since a text left as it was is no change.
+    let open = object.edits.editor.is_some();
     let field = crate::ui::cell_editor::field_id(tab, id);
-    if object.edits.editor.is_some() && ctx.memory(|memory| memory.has_focus(field)) {
-        if ctx.input_mut(save) {
+    let typing = open && ctx.memory(|memory| memory.has_focus(field));
+    // Mod+S saves wherever the pending bar offers it with that key: there
+    // is something to save, whatever has the keyboard (the grid, the tree,
+    // a button, the filter's field) and in the Structure view as well.
+    if (open || !object.edits.cells.is_empty()) && ctx.input_mut(save) {
+        // While the editor's field has the keyboard a save takes what is
+        // being typed. Whether this frame changed the text is not known
+        // yet: noting it as typed is harmless, since a text left as it was
+        // is no change.
+        if typing {
             actions.push(Action::EditorTyped { tab, id });
-            actions.push(Action::WriteEdits { tab, id });
         }
-        return;
+        actions.push(Action::WriteEdits { tab, id });
     }
-    // An open editor that is about to take the keyboard takes these keys
-    // with it: none of them opens another, and what is typed is its text.
-    if !keyboard || object.edits.editor.is_some() {
+    // An open editor has the keyboard or is about to take it, and takes
+    // the keys below with it: none of them opens another, and what is typed
+    // is its text.
+    if !keyboard || open {
         return;
     }
     ctx.input_mut(|input| {
-        if save(input) {
-            actions.push(Action::WriteEdits { tab, id });
-        }
         // Each chord with exactly its modifiers: Mod+Alt+Backspace drops
         // every change and Mod+Backspace touches one cell, and Mod+Shift+Z
         // is not Mod+Z.

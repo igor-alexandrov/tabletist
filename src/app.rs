@@ -638,6 +638,16 @@ impl App {
                 object_tab,
                 view,
             } => {
+                // An editor is the grid's: on another view it would stay
+                // open where nothing shows it. Left, as when the keyboard
+                // goes elsewhere: what was typed is kept.
+                let changes = self
+                    .workspace(tab)
+                    .and_then(|workspace| workspace.object_tab(object_tab))
+                    .is_some_and(|object| object.view != view);
+                if changes {
+                    self.close_editor(tab, object_tab, true);
+                }
                 let describe = self.object_tab_mut(tab, object_tab).is_some_and(|object| {
                     object.view = view;
                     view == ObjectView::Structure && object.structure.needs_load()
@@ -835,6 +845,12 @@ impl App {
                     object.fields = None;
                 }
             }
+            Action::DismissNote { tab, id } => {
+                if let Some(object) = self.object_tab_mut(tab, id) {
+                    object.edits.note = None;
+                    object.edits.saved = None;
+                }
+            }
             Action::WriteEdits { tab, id } => self.write_edits(tab, id, None),
             Action::LeaveStay => {
                 if matches!(self.dialog, Some(Dialog::Leave(_))) {
@@ -851,6 +867,8 @@ impl App {
                     return;
                 };
                 let LeavePrompt { held, tabs, .. } = *prompt;
+                // A save one of them runs goes with its set: its answer
+                // finds no tab saving, and tells none.
                 for (tab, id) in tabs {
                     if let Some(object) = self.object_tab_mut(tab, id) {
                         object.edits = crate::edit::Edits::default();
@@ -3436,15 +3454,30 @@ impl App {
     }
 
     /// Text for the clipboard: the selected cell, or its whole row as TSV.
+    /// What the grid shows: a pending cell gives its new value, as the row
+    /// panel's copy does.
     pub fn copy_text(&self, whole_row: bool) -> Option<String> {
+        use tabletist_db::{NewValue, Value};
         let (tab, id) = self.active_object()?;
         let object = self.workspace(tab)?.object_tab(id)?;
         let cell = object.selection?;
         let row = object.page()?.rows.get(cell.row)?;
+        let shown = |col: usize, loaded: &Value| match object.edits.cells.get(&(cell.row, col)) {
+            Some(pending) => match &pending.new {
+                NewValue::Text(text) => Value::Text(text.as_str().into()),
+                NewValue::Null => Value::Null,
+            },
+            None => loaded.clone(),
+        };
         Some(if whole_row {
-            crate::ui::format::tsv_row(row)
+            let row: Vec<Value> = row
+                .iter()
+                .enumerate()
+                .map(|(col, loaded)| shown(col, loaded))
+                .collect();
+            crate::ui::format::tsv_row(&row)
         } else {
-            crate::ui::format::plain_text(row.get(cell.col)?)
+            crate::ui::format::plain_text(&shown(cell.col, row.get(cell.col)?))
         })
     }
 
@@ -10882,11 +10915,16 @@ mod tests {
             });
             harness.app.apply(Action::CloseTab { tab, id });
             assert_eq!(leave_prompt(&harness), Some(true));
-            harness.app.apply(Action::EditorTyped { tab, id });
             harness.app.apply(Action::EditorBreak { tab, id });
             let editor = object(&harness, tab, id).edits.editor.as_ref().unwrap();
             assert_eq!(editor.text, "user2@example.com");
             assert!(!editor.touched && !editor.large);
+            // What the field says of its text is heard all the same: it
+            // changes nothing but what the editor knows of it.
+            harness.app.apply(Action::EditorTyped { tab, id });
+            let editor = object(&harness, tab, id).edits.editor.as_ref().unwrap();
+            assert_eq!(editor.text, "user2@example.com");
+            assert!(editor.touched && !editor.large);
             for closes in [
                 Action::CommitEdit {
                     tab,
@@ -10903,6 +10941,46 @@ mod tests {
             // Staying finds it open.
             harness.app.apply(Action::LeaveStay);
             assert!(object(&harness, tab, id).edits.editor.is_some());
+        }
+
+        #[test]
+        fn a_first_keystroke_under_a_prompt_that_just_opened_is_saved() {
+            let mut harness = Harness::new();
+            let (tab, id) = harness.editable();
+            harness.app.apply(Action::EditCell {
+                tab,
+                id,
+                cell: at(1, 1),
+                start: EditStart::Value,
+            });
+            // One frame's actions, in their order: the key that asks to
+            // close the tab, read before anything is drawn, then the field
+            // that took a keystroke in that frame.
+            harness.app.apply(Action::CloseTab { tab, id });
+            assert_eq!(leave_prompt(&harness), Some(true));
+            let editor = harness
+                .app
+                .workspace_mut(tab)
+                .unwrap()
+                .object_tab_mut(id)
+                .unwrap()
+                .edits
+                .editor
+                .as_mut()
+                .expect("an editor");
+            editor.text = "user2@example.comx".to_owned();
+            harness.app.apply(Action::EditorTyped { tab, id });
+            // Save takes what was typed, and closes once it is written.
+            harness.app.apply(Action::LeaveSave);
+            assert_eq!(writes(&harness), 1);
+            let Some(Command::Write { changes, .. }) = harness.app.backend.sent.last() else {
+                panic!("a save was sent");
+            };
+            assert_eq!(
+                changes.rows[0].set[0].new,
+                NewValue::Text("user2@example.comx".into())
+            );
+            assert!(harness.app.workspace(tab).unwrap().object_tab(id).is_some());
         }
 
         #[test]
@@ -11546,6 +11624,56 @@ mod tests {
                 Some(&State::Ready)
             );
             assert!(edits.saving.is_none() && edits.saved.is_none());
+        }
+
+        #[test]
+        fn copying_takes_the_pending_value_the_cell_shows() {
+            let mut harness = Harness::new();
+            let (tab, id) = harness.editable();
+            type_into(&mut harness, tab, id, at(0, 1), "ada@example.com");
+            harness.app.apply(Action::SelectCell {
+                tab,
+                id,
+                cell: at(0, 1),
+            });
+            assert_eq!(
+                harness.app.copy_text(false).as_deref(),
+                Some("ada@example.com")
+            );
+            // The row, column by column: what is pending in it, and what
+            // was loaded where nothing is.
+            assert_eq!(
+                harness.app.copy_text(true).as_deref(),
+                Some("1\tada@example.com\t{\"plan\":\"pro\"}")
+            );
+            // A cell set to NULL copies as a loaded NULL does.
+            harness.app.apply(Action::SelectCell {
+                tab,
+                id,
+                cell: at(1, 2),
+            });
+            let null = harness.app.copy_text(false);
+            harness.app.apply(Action::SelectCell {
+                tab,
+                id,
+                cell: at(0, 2),
+            });
+            harness.app.apply(Action::SetNull { tab, id });
+            assert_eq!(harness.app.copy_text(false), null);
+            assert_eq!(
+                harness.app.copy_text(true),
+                null.map(|null| format!("1\tada@example.com\t{null}"))
+            );
+            // Another row's changes are not this row's.
+            harness.app.apply(Action::SelectCell {
+                tab,
+                id,
+                cell: at(1, 1),
+            });
+            assert_eq!(
+                harness.app.copy_text(false).as_deref(),
+                Some("user2@example.com")
+            );
         }
     }
 }
