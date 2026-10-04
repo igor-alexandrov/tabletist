@@ -4474,7 +4474,11 @@ mod tests {
         app.apply(Action::ExportSettings);
         assert_eq!(
             app.backend.saves.last(),
-            Some(&("tabletist-settings.toml".to_owned(), text.len()))
+            Some(&(
+                "Export settings".to_owned(),
+                "tabletist-settings.toml".to_owned(),
+                text.len()
+            ))
         );
     }
 

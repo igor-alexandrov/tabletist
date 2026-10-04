@@ -1075,7 +1075,7 @@ mod tests {
                     .backend
                     .saves
                     .last()
-                    .map(|(name, _)| name.as_str()),
+                    .map(|(_, name, _)| name.as_str()),
                 Some("tabletist-settings.toml")
             );
             assert!(settings_open(&harness), "the window stays open");

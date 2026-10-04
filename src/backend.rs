@@ -327,9 +327,10 @@ pub struct Backend {
     outbox: Outbox,
     #[cfg(test)]
     pub sent: Vec<Command>,
-    /// The names and sizes of the values a test asked to save.
+    /// What a test asked to save: the dialog's title, the name it
+    /// suggests, and the size of what is saved.
     #[cfg(test)]
-    pub saves: Vec<(String, usize)>,
+    pub saves: Vec<(String, String, usize)>,
     #[cfg(test)]
     watched: Watched,
 }
@@ -494,7 +495,8 @@ impl Backend {
     /// is told as any failed save is.
     pub fn save_bytes(&mut self, title: &str, name: String, bytes: Vec<u8>) {
         #[cfg(test)]
-        self.saves.push((name.clone(), bytes.len()));
+        self.saves
+            .push((title.to_owned(), name.clone(), bytes.len()));
         let Some(runtime) = &self.runtime else {
             return;
         };

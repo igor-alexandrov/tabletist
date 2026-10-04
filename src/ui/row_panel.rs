@@ -1694,11 +1694,15 @@ mod tests {
             let mut harness = awkward(look);
             let link = look.label("Save to file…");
             harness.click(&link);
-            // The dialog is the system's; the backend was asked with the
-            // whole value and a name that says what it is.
+            // The dialog is the system's; the backend was asked with its
+            // title, the whole value and a name that says what it is.
             assert_eq!(
                 harness.app.backend.saves,
-                [("editions-cover.jpg".to_owned(), 100)],
+                [(
+                    "Save value".to_owned(),
+                    "editions-cover.jpg".to_owned(),
+                    100
+                )],
                 "{}",
                 look.name
             );
