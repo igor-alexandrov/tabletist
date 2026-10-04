@@ -1499,6 +1499,47 @@ impl<'a> ButtonSpec<'a> {
     }
 }
 
+/// A switch's track and its knob.
+const TOGGLE: egui::Vec2 = vec2(30.0, 18.0);
+const TOGGLE_KNOB: f32 = 14.0;
+
+/// A switch: off or `on`, flipped by a click, by Space or by Enter. To a
+/// screen reader it is a checkbox named `name`. The caller flips what it
+/// shows when the response says it was clicked.
+pub fn toggle(ui: &mut Ui, on: bool, name: &str, palette: &Palette) -> Response {
+    let (rect, response) = ui.allocate_exact_size(TOGGLE, Sense::click());
+    response.widget_info(|| WidgetInfo::selected(WidgetType::Checkbox, true, on, name));
+    if ui.is_rect_visible(rect) {
+        let track = if on {
+            palette.accent
+        } else {
+            // Darker than a border: the knob and the track are told apart
+            // on the window and on a panel alike.
+            palette.border.lerp_to_gamma(palette.faint, 0.23)
+        };
+        let radius = (TOGGLE.y / 2.0) as u8;
+        ui.painter()
+            .rect_filled(rect, CornerRadius::same(radius), track);
+        let inset = (TOGGLE.y - TOGGLE_KNOB) / 2.0;
+        let left = if on {
+            rect.right() - inset - TOGGLE_KNOB
+        } else {
+            rect.left() + inset
+        };
+        let knob = Rect::from_min_size(
+            egui::pos2(left, rect.top() + inset),
+            vec2(TOGGLE_KNOB, TOGGLE_KNOB),
+        );
+        ui.painter().rect_filled(
+            knob,
+            CornerRadius::same((TOGGLE_KNOB / 2.0) as u8),
+            palette.window,
+        );
+    }
+    focus::hint(ui, &response, rect, Ring::Outer { radius: 9 });
+    response
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1865,6 +1906,40 @@ mod tests {
             assert_eq!(frame.corner_radius, CornerRadius::same(12));
             assert_ne!(frame.shadow, egui::epaint::Shadow::NONE);
             assert_eq!(frame.shadow.color, palette.shadow);
+        }
+    }
+
+    #[test]
+    fn a_toggle_is_a_checkbox_that_says_what_it_is_set_to_and_takes_a_click() {
+        use crate::testing::Harness;
+        use egui::accesskit::{Action, ActionRequest, Role, Toggled, TreeId};
+        let mut harness = Harness::new();
+        let palette = harness.app.palette;
+        for on in [false, true] {
+            let tree = harness.frame_with(|ui| {
+                toggle(ui, on, "Value tags", &palette);
+            });
+            let id = crate::testing::node(&tree, "Value tags", Role::CheckBox).expect("the toggle");
+            let node = tree
+                .nodes
+                .iter()
+                .find(|(node, _)| *node == id)
+                .map(|(_, node)| node)
+                .expect("its node");
+            let expected = if on { Toggled::True } else { Toggled::False };
+            assert_eq!(node.toggled(), Some(expected));
+            // A click, as a screen reader makes one.
+            let click = egui::Event::AccessKitActionRequest(ActionRequest {
+                target_tree: TreeId::ROOT,
+                target_node: id,
+                action: Action::Click,
+                data: None,
+            });
+            let mut clicked = false;
+            harness.frame_with_events(vec![click], |ui| {
+                clicked = toggle(ui, on, "Value tags", &palette).clicked();
+            });
+            assert!(clicked);
         }
     }
 }
