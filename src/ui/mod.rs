@@ -31,6 +31,7 @@ pub mod sql_results;
 pub mod sql_text;
 pub mod states;
 pub mod structure;
+pub mod terminal_dialog;
 pub mod value_tags;
 pub mod widgets;
 pub mod workspace;
@@ -12880,5 +12881,470 @@ mod tests {
         harness.click("Dismiss");
         assert!(!harness.has("Save cancelled. Nothing was written."));
         assert!(edits(&harness, tab, id).note.is_none());
+    }
+
+    /// The buttons named `label` that can be pressed, highest first. A
+    /// dialog's stand above the pending bar, which has a Save of its own.
+    pub(super) fn pressable(harness: &mut Harness, label: &str) -> Vec<egui::accesskit::NodeId> {
+        let tree = harness.settle();
+        let mut found: Vec<_> = tree
+            .nodes
+            .iter()
+            .filter(|(_, node)| {
+                node.role() == egui::accesskit::Role::Button
+                    && node.label() == Some(label)
+                    && !node.is_disabled()
+            })
+            .filter_map(|(id, node)| Some((*id, node.bounds()?.y0)))
+            .collect();
+        found.sort_by(|(_, a), (_, b)| a.total_cmp(b));
+        found.into_iter().map(|(id, _)| id).collect()
+    }
+
+    /// Presses the open dialog's button `label`.
+    pub(super) fn click_dialog(harness: &mut Harness, label: &str) {
+        let target = *pressable(harness, label)
+            .first()
+            .unwrap_or_else(|| panic!("no button {label}"));
+        harness.frame(vec![egui::Event::AccessKitActionRequest(
+            egui::accesskit::ActionRequest {
+                target_tree: egui::accesskit::TreeId::ROOT,
+                target_node: target,
+                action: egui::accesskit::Action::Click,
+                data: None,
+            },
+        )]);
+        harness.settle();
+    }
+
+    /// An answer to the question before pending changes are dropped.
+    #[derive(Clone, Copy)]
+    enum Leave {
+        Save,
+        Discard,
+        Stay,
+    }
+
+    /// Gives `answer` as the look takes it: a button, or the terminal's key.
+    fn answer_leave(harness: &mut Harness, answer: Leave) {
+        if harness.app.look.terminal {
+            match answer {
+                Leave::Save => type_key(harness, Key::W, "w"),
+                Leave::Discard => type_key(harness, Key::D, "d"),
+                Leave::Stay => harness.press(Key::Escape, Modifiers::NONE),
+            }
+        } else {
+            click_dialog(
+                harness,
+                match answer {
+                    Leave::Save => "Save",
+                    Leave::Discard => "Discard",
+                    Leave::Stay => "Cancel",
+                },
+            );
+        }
+    }
+
+    fn leaving(harness: &Harness) -> bool {
+        matches!(harness.app.dialog, Some(crate::model::Dialog::Leave(_)))
+    }
+
+    /// Whether the table's tab is still open.
+    fn open(harness: &Harness, tab: ConnTabId, id: TabId) -> bool {
+        let workspace = harness.app.workspace(tab).unwrap();
+        workspace.object_tab(id).is_some()
+    }
+
+    #[test]
+    fn leaving_asks_and_each_choice_does_what_it_says() {
+        for look in Look::ALL {
+            let (mut harness, tab, id) = editable_in(look);
+            make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
+            harness.app.apply(Action::CloseTab { tab, id });
+            harness.finish_animations();
+            assert!(leaving(&harness), "{}", look.name);
+            // What is asked, as the look words it.
+            let (title, body) = if look.terminal {
+                ("closing with pending edits", "1 change not written")
+            } else {
+                (
+                    "Save 1 change before closing the tab?",
+                    "It has not been written.",
+                )
+            };
+            assert!(harness.has(title), "{}", look.name);
+            assert!(harness.has(body), "{}", look.name);
+            // Stay keeps the tab and what is pending in it.
+            answer_leave(&mut harness, Leave::Stay);
+            assert!(harness.app.dialog.is_none(), "{}", look.name);
+            assert!(open(&harness, tab, id), "{}", look.name);
+            assert_eq!(edits(&harness, tab, id).cells.len(), 1, "{}", look.name);
+            // Discard closes it.
+            harness.app.apply(Action::CloseTab { tab, id });
+            answer_leave(&mut harness, Leave::Discard);
+            assert!(harness.app.dialog.is_none(), "{}", look.name);
+            assert!(!open(&harness, tab, id), "{}", look.name);
+            assert_eq!(writes(&harness), 0, "{}", look.name);
+            // Save writes, and closes once everything is written.
+            let (mut harness, tab, id) = editable_in(look);
+            make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
+            make_pending(&mut harness, tab, id, (1, 2), "{}");
+            harness.app.apply(Action::CloseTab { tab, id });
+            harness.finish_animations();
+            let (title, body) = if look.terminal {
+                ("closing with pending edits", "2 changes not written")
+            } else {
+                (
+                    "Save 2 changes before closing the tab?",
+                    "They have not been written.",
+                )
+            };
+            assert!(harness.has(title), "{}", look.name);
+            assert!(harness.has(body), "{}", look.name);
+            answer_leave(&mut harness, Leave::Save);
+            assert!(harness.app.dialog.is_none(), "{}", look.name);
+            assert_eq!(writes(&harness), 1, "{}", look.name);
+            assert!(open(&harness, tab, id), "{}", look.name);
+            harness.answer_written(Ok(tabletist_db::WriteOutcome::Written {
+                rows: vec![vec![
+                    tabletist_db::Value::Int(2),
+                    tabletist_db::Value::Text("bob@example.com".into()),
+                    tabletist_db::Value::Text("{}".into()),
+                ]],
+                elapsed: std::time::Duration::from_millis(14),
+            }));
+            assert!(!open(&harness, tab, id), "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn the_question_names_what_was_asked_for() {
+        // The held action in the question's words: the macOS and Windows
+        // title, and the terminal's line.
+        type Held = fn(ConnTabId, TabId) -> Action;
+        let cases: [(Held, &str, &str); 4] = [
+            (
+                |tab, _| Action::Refresh(tab),
+                "Save 1 change before reloading?",
+                "reloading with pending edits",
+            ),
+            (
+                |tab, object_tab| Action::SortBy {
+                    tab,
+                    object_tab,
+                    column: "email".into(),
+                },
+                "Save 1 change before sorting?",
+                "sorting with pending edits",
+            ),
+            (
+                |tab, _| Action::Disconnect(tab),
+                "Save 1 change before disconnecting?",
+                "disconnecting with pending edits",
+            ),
+            (
+                |tab, _| Action::SwitchDatabase {
+                    tab,
+                    database: "other".into(),
+                },
+                "Save 1 change before switching database?",
+                "switching database with pending edits",
+            ),
+        ];
+        for look in Look::ALL {
+            for (held, title, line) in &cases {
+                let (mut harness, tab, id) = editable_in(look);
+                make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
+                harness.app.apply(held(tab, id));
+                assert!(leaving(&harness), "{title} in {}", look.name);
+                let said = if look.terminal { line } else { title };
+                assert!(harness.has(said), "{said} in {}", look.name);
+            }
+        }
+    }
+
+    #[test]
+    fn no_save_is_offered_where_save_is_disabled() {
+        for look in Look::ALL {
+            let (mut harness, tab, id) = editable_in(look);
+            // A value its column does not take: Save is disabled.
+            leave_pending(&mut harness, tab, id, (1, 2), "{oops");
+            harness.app.apply(Action::CloseTab { tab, id });
+            harness.finish_animations();
+            assert!(leaving(&harness), "{}", look.name);
+            if look.terminal {
+                assert!(!harness.has("Write"), "{}", look.name);
+                assert!(!painted(&harness, "[w] write"), "{}", look.name);
+                assert!(harness.has("Discard") && harness.has("Stay"));
+                // Its key does nothing.
+                type_key(&mut harness, Key::W, "w");
+            } else {
+                // The bar's Save, behind the dialog, cannot be pressed.
+                assert!(pressable(&mut harness, "Save").is_empty(), "{}", look.name);
+                assert!(harness.has("Discard 1 change before closing the tab?"));
+                assert_eq!(pressable(&mut harness, "Discard").len(), 1);
+                assert_eq!(pressable(&mut harness, "Cancel").len(), 1);
+            }
+            assert!(leaving(&harness), "{}", look.name);
+            assert_eq!(writes(&harness), 0, "{}", look.name);
+            assert_eq!(edits(&harness, tab, id).cells.len(), 1, "{}", look.name);
+            // Where it can be saved, the terminal offers its key.
+            let (mut harness, tab, id) = editable_in(look);
+            make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
+            harness.app.apply(Action::CloseTab { tab, id });
+            harness.finish_animations();
+            if look.terminal {
+                assert!(harness.has("Write"), "{}", look.name);
+                assert!(painted(&harness, "[w] write"), "{}", look.name);
+            } else {
+                // The dialog's and the bar's.
+                assert_eq!(pressable(&mut harness, "Save").len(), 2, "{}", look.name);
+            }
+        }
+    }
+
+    #[test]
+    fn several_tabs_are_only_discarded_or_kept() {
+        for look in Look::ALL {
+            let (mut harness, tab, id) = editable_in(look);
+            make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
+            make_pending(&mut harness, tab, id, (3, 1), "dan@example.com");
+            // A second table with a change of its own.
+            harness.app.apply(Action::OpenObject {
+                tab,
+                object: tabletist_db::ObjectRef::new("main", "orders"),
+                kind: tabletist_db::ObjectKind::Table,
+                pin: true,
+            });
+            harness.answer_structure(crate::testing::fixture_structure());
+            harness.answer_rows(crate::testing::page(5, false));
+            let other = harness.app.workspace(tab).unwrap().active_tab.unwrap();
+            make_pending(&mut harness, tab, other, (0, 1), "amy@example.com");
+            harness.app.apply(Action::Disconnect(tab));
+            harness.finish_animations();
+            assert!(leaving(&harness), "{}", look.name);
+            if look.terminal {
+                assert!(harness.has("disconnecting with pending edits in 2 tabs"));
+                assert!(harness.has("3 changes not written"));
+                assert!(!harness.has("Write"));
+            } else {
+                assert!(harness.has("Discard 3 changes in 2 tabs?"), "{}", look.name);
+                assert!(pressable(&mut harness, "Save").len() <= 1, "{}", look.name);
+            }
+            answer_leave(&mut harness, Leave::Stay);
+            assert_eq!(edits(&harness, tab, id).cells.len(), 2, "{}", look.name);
+            assert_eq!(edits(&harness, tab, other).cells.len(), 1, "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn enter_never_discards() {
+        for look in Look::ALL {
+            let (mut harness, tab, id) = editable_in(look);
+            leave_pending(&mut harness, tab, id, (1, 2), "{oops");
+            harness.app.apply(Action::CloseTab { tab, id });
+            harness.finish_animations();
+            harness.press(Key::Enter, Modifiers::NONE);
+            assert!(leaving(&harness), "{}", look.name);
+            assert_eq!(edits(&harness, tab, id).cells.len(), 1, "{}", look.name);
+            // Nor with the keyboard on Discard: Space presses a button.
+            focus(&mut harness, "Discard", egui::accesskit::Role::Button);
+            harness.press(Key::Enter, Modifiers::NONE);
+            assert!(leaving(&harness), "{}", look.name);
+            assert!(open(&harness, tab, id), "{}", look.name);
+            assert_eq!(edits(&harness, tab, id).cells.len(), 1, "{}", look.name);
+            harness.press(Key::Space, Modifiers::NONE);
+            assert!(!open(&harness, tab, id), "{}", look.name);
+            // Where Save is offered it is what Enter does, in the looks
+            // whose prompt has buttons. The terminal's has its letters.
+            let (mut harness, tab, id) = editable_in(look);
+            make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
+            harness.app.apply(Action::CloseTab { tab, id });
+            harness.finish_animations();
+            harness.press(Key::Enter, Modifiers::NONE);
+            if look.terminal {
+                assert!(leaving(&harness));
+                assert_eq!(writes(&harness), 0);
+            } else {
+                assert!(harness.app.dialog.is_none(), "{}", look.name);
+                assert_eq!(writes(&harness), 1, "{}", look.name);
+            }
+            assert_eq!(edits(&harness, tab, id).cells.len(), 1, "{}", look.name);
+        }
+    }
+
+    /// The fixture's table on a production connection, with two changes in
+    /// two rows and the save asked for: the confirmation is up.
+    fn confirming(look: Look) -> (Harness, ConnTabId, TabId, Vec<String>) {
+        let (mut harness, tab, id) = editable_in(look);
+        harness.app.workspace_mut(tab).unwrap().environment = crate::env::Environment::Production;
+        make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
+        make_pending(&mut harness, tab, id, (3, 1), "dan@example.com");
+        harness.app.apply(Action::WriteEdits { tab, id });
+        harness.finish_animations();
+        let statements = match &harness.app.dialog {
+            Some(crate::model::Dialog::ConfirmWrite(prompt)) => prompt.statements.clone(),
+            other => panic!("expected the confirmation, got {other:?}"),
+        };
+        (harness, tab, id, statements)
+    }
+
+    #[test]
+    fn a_save_to_production_shows_its_statements_and_is_confirmed() {
+        for look in Look::ALL {
+            let (mut harness, tab, id, statements) = confirming(look);
+            assert_eq!(statements.len(), 2, "{}", look.name);
+            // What it is about, and every statement it would send.
+            let (title, facts) = if look.terminal {
+                ("write 2 changes?", "2 rows in users · email")
+            } else {
+                (
+                    "Save 2 changes to production?",
+                    "Fixture · fixture.db · 2 rows in users",
+                )
+            };
+            assert!(harness.has(title), "{}", look.name);
+            assert!(harness.has(facts), "{}", look.name);
+            for statement in &statements {
+                assert!(statement.starts_with("UPDATE"), "{statement}");
+                assert!(painted(&harness, statement), "{}: {statement}", look.name);
+            }
+            assert_eq!(writes(&harness), 0, "{}", look.name);
+            // Enter alone confirms nothing.
+            harness.press(Key::Enter, Modifiers::NONE);
+            assert!(harness.app.dialog.is_some(), "{}", look.name);
+            assert_eq!(writes(&harness), 0, "{}", look.name);
+            if look.terminal {
+                assert!(harness.has("Fixture · fixture.db"));
+                assert!(painted(&harness, "type write to confirm"));
+                // The field has the keyboard: the word is typed into it.
+                type_text(&mut harness, "wri");
+                harness.press(Key::Enter, Modifiers::NONE);
+                assert!(harness.app.dialog.is_some());
+                assert_eq!(writes(&harness), 0);
+                // Nor does its button, to the pointer or a screen reader.
+                click_dialog(&mut harness, "Save to production");
+                assert_eq!(writes(&harness), 0);
+                // Esc cancels: nothing is sent and the set stays.
+                harness.press(Key::Escape, Modifiers::NONE);
+                assert!(harness.app.dialog.is_none());
+                assert_eq!(edits(&harness, tab, id).cells.len(), 2);
+                assert_eq!(writes(&harness), 0);
+                harness.app.apply(Action::WriteEdits { tab, id });
+                harness.finish_animations();
+                type_text(&mut harness, "write");
+                harness.press(Key::Enter, Modifiers::NONE);
+                assert!(harness.app.dialog.is_none());
+                assert_eq!(writes(&harness), 1);
+            } else {
+                assert!(painted(&harness, "One transaction"), "{}", look.name);
+                click_dialog(&mut harness, "Cancel");
+                assert!(harness.app.dialog.is_none(), "{}", look.name);
+                assert_eq!(edits(&harness, tab, id).cells.len(), 2, "{}", look.name);
+                assert_eq!(writes(&harness), 0, "{}", look.name);
+                // Nor with the keyboard on the button: Space presses it.
+                harness.app.apply(Action::WriteEdits { tab, id });
+                harness.finish_animations();
+                focus(
+                    &mut harness,
+                    "Save to production",
+                    egui::accesskit::Role::Button,
+                );
+                harness.press(Key::Enter, Modifiers::NONE);
+                assert_eq!(writes(&harness), 0, "{}", look.name);
+                click_dialog(&mut harness, "Save to production");
+                assert!(harness.app.dialog.is_none(), "{}", look.name);
+                assert_eq!(writes(&harness), 1, "{}", look.name);
+            }
+        }
+    }
+
+    #[test]
+    fn the_production_prompt_wears_the_danger_colour() {
+        for look in Look::ALL {
+            let (harness, ..) = confirming(look);
+            let danger = Tone::Danger.color(&harness.app.palette);
+            if look.terminal {
+                // The box's own edge, 2 pt of it, and the chip in its head.
+                let edged = harness.outlines.iter().any(|(rect, stroke)| {
+                    stroke.color == danger && stroke.width == 2.0 && rect.width() > 400.0
+                });
+                assert!(edged, "{}", look.name);
+                let chip = harness.painted_rect("PROD").expect("the chip");
+                let filled = harness
+                    .fills
+                    .iter()
+                    .any(|(rect, fill)| *fill == danger && rect.contains_rect(chip));
+                assert!(filled, "{}", look.name);
+            } else {
+                // The band along the dialog's top, 4 pt of it, and the
+                // button that sends.
+                let band = harness.fills.iter().any(|(rect, fill)| {
+                    *fill == danger && (rect.height() - 4.0).abs() < 0.01 && rect.width() > 400.0
+                });
+                assert!(band, "{}", look.name);
+                let button = harness
+                    .painted_rect("Save to production")
+                    .expect("the button");
+                let filled = harness
+                    .fills
+                    .iter()
+                    .any(|(rect, fill)| *fill == danger && rect.contains_rect(button));
+                assert!(filled, "{}", look.name);
+            }
+        }
+    }
+
+    #[test]
+    fn a_letter_typed_into_a_field_as_the_box_opens_is_no_answer() {
+        let (mut harness, tab, id) = editable_in(Look::omarchy());
+        make_pending(&mut harness, tab, id, (3, 1), "dan@example.com");
+        open_editor(&mut harness, tab, id, (1, 1));
+        type_text(&mut harness, "x");
+        assert!(harness.ctx.text_edit_focused());
+        // The question comes up while the cell's field has the keyboard,
+        // and the field keeps it for the frame the box is first drawn in:
+        // what is typed then is the field's, and answers nothing.
+        harness.app.apply(Action::CloseTab { tab, id });
+        for letter in [(Key::W, "w"), (Key::D, "d")] {
+            let (key, text) = letter;
+            harness.frame(vec![
+                crate::testing::key(key, Modifiers::NONE),
+                egui::Event::Text(text.into()),
+            ]);
+            assert!(leaving(&harness), "{text}");
+            assert_eq!(writes(&harness), 0, "{text}");
+            assert_eq!(edits(&harness, tab, id).cells.len(), 1, "{text}");
+            // Each on a first frame: the box is closed and asked for again.
+            harness.frame(vec![crate::testing::release(key, Modifiers::NONE)]);
+            harness.press(Key::Escape, Modifiers::NONE);
+            assert!(harness.app.dialog.is_none(), "{text}");
+            harness.settle();
+            assert!(harness.ctx.text_edit_focused(), "{text}");
+            harness.app.apply(Action::CloseTab { tab, id });
+        }
+        // Once the box has the keyboard its letters answer.
+        type_key(&mut harness, Key::D, "d");
+        assert!(!open(&harness, tab, id));
+    }
+
+    #[test]
+    fn a_held_key_answers_nothing_in_the_terminal_box() {
+        let (mut harness, tab, id) = editable_in(Look::omarchy());
+        make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
+        // The key that asked may still be down (the `d` of `gd`): what a
+        // held key repeats is not typed as an answer. egui reads a press
+        // of a key that is down already as a repeat.
+        harness.frame(vec![crate::testing::key(Key::D, Modifiers::NONE)]);
+        harness.app.apply(Action::CloseTab { tab, id });
+        harness.finish_animations();
+        harness.frame(vec![
+            crate::testing::key(Key::D, Modifiers::NONE),
+            egui::Event::Text("d".into()),
+        ]);
+        harness.settle();
+        assert!(leaving(&harness));
+        assert!(open(&harness, tab, id));
+        assert_eq!(edits(&harness, tab, id).cells.len(), 1);
     }
 }

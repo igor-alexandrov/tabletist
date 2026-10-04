@@ -694,6 +694,16 @@ pub fn primary_fill(hovered: bool, focused: bool, pressed: bool, palette: &Palet
     }
 }
 
+/// The colour of text on `fill`: whichever of the window's two tones reads
+/// on it. A dark theme's danger colour is a light one.
+pub fn ink_on(fill: Color32, palette: &Palette) -> Color32 {
+    if crate::theme::contrast(palette.window, fill) >= crate::theme::contrast(palette.text, fill) {
+        palette.window
+    } else {
+        palette.text
+    }
+}
+
 /// The one accent-filled button in a dialog or view. Its own fill replaces
 /// egui's state visuals, so it draws hover and press itself; its focus ring
 /// is the one every control gets (see [`crate::ui::focus`]).
@@ -719,37 +729,82 @@ pub fn primary_button(ui: &mut Ui, text: &str, look: &Look, palette: &Palette) -
     ui.add(button)
 }
 
-/// A dialog: a soft shadow over a dimmed window, or Omarchy's accent border
-/// over a scrim.
-pub fn modal(id: egui::Id, look: &Look, palette: &Palette) -> egui::Modal {
+/// A dialog's frame: a soft shadow round it, or Omarchy's accent border.
+/// A dialog whose parts fill it edge to edge takes the margin off.
+pub fn modal_frame(look: &Look, palette: &Palette) -> egui::Frame {
     let frame = egui::Frame::new()
         .fill(palette.overlay)
         .corner_radius(CornerRadius::same(look.dialog_radius))
         .inner_margin(egui::Margin::same(20));
     match look.dialog {
         DialogStyle::Shadow => {
-            egui::Modal::new(id)
-                .frame(frame.stroke(Stroke::new(1.0, palette.outline)).shadow(
-                    egui::epaint::Shadow {
-                        offset: [0, 10],
-                        blur: 36,
-                        spread: 0,
-                        color: palette.shadow,
-                    },
-                ))
-                .backdrop_color(Color32::from_black_alpha(if palette.dark {
-                    120
-                } else {
-                    70
-                }))
+            frame
+                .stroke(Stroke::new(1.0, palette.outline))
+                .shadow(egui::epaint::Shadow {
+                    offset: [0, 10],
+                    blur: 36,
+                    spread: 0,
+                    color: palette.shadow,
+                })
         }
+        DialogStyle::AccentBorder => frame.stroke(Stroke::new(2.0, palette.accent)),
+    }
+}
+
+/// A dialog: a soft shadow over a dimmed window, or Omarchy's accent border
+/// over a scrim.
+pub fn modal(id: egui::Id, look: &Look, palette: &Palette) -> egui::Modal {
+    let modal = egui::Modal::new(id).frame(modal_frame(look, palette));
+    match look.dialog {
+        DialogStyle::Shadow => modal.backdrop_color(Color32::from_black_alpha(if palette.dark {
+            120
+        } else {
+            70
+        })),
         DialogStyle::AccentBorder => {
             let [r, g, b, _] = palette.window.to_array();
-            egui::Modal::new(id)
-                .frame(frame.stroke(Stroke::new(2.0, palette.accent)))
-                .backdrop_color(Color32::from_rgba_unmultiplied(r, g, b, 128))
+            modal.backdrop_color(Color32::from_rgba_unmultiplied(r, g, b, 128))
         }
     }
+}
+
+/// The top `height` points of `rect` with its top corners rounded at
+/// `radius`: a stripe that follows the dialog's corners, which a rounded
+/// rectangle that thin cannot.
+pub fn top_cap(rect: Rect, radius: f32, height: f32) -> Vec<egui::Pos2> {
+    let bottom = rect.top() + height;
+    let radius = radius.max(0.0);
+    let from = if radius > 0.0 {
+        ((radius - height).max(0.0) / radius).asin()
+    } else {
+        std::f32::consts::FRAC_PI_2
+    };
+    // From the stripe's lower edge up to the top: how far in from the
+    // side, how far down from the top.
+    const STEPS: usize = 8;
+    let arc: Vec<(f32, f32)> = (0..=STEPS)
+        .map(|step| {
+            let angle = from + (std::f32::consts::FRAC_PI_2 - from) * step as f32 / STEPS as f32;
+            (radius - radius * angle.cos(), radius - radius * angle.sin())
+        })
+        .collect();
+    let mut points = Vec::with_capacity(2 * arc.len() + 2);
+    if height > radius {
+        points.push(egui::pos2(rect.left(), bottom));
+    }
+    points.extend(
+        arc.iter()
+            .map(|(dx, dy)| egui::pos2(rect.left() + dx, rect.top() + dy)),
+    );
+    points.extend(
+        arc.iter()
+            .rev()
+            .map(|(dx, dy)| egui::pos2(rect.right() - dx, rect.top() + dy)),
+    );
+    if height > radius {
+        points.push(egui::pos2(rect.right(), bottom));
+    }
+    points
 }
 
 /// One physical pixel, in points: the width of hairlines, which the
@@ -1143,13 +1198,17 @@ pub fn segmented(
 enum ButtonKind {
     Secondary,
     Primary,
+    /// The one button of a dialog that writes where a write is asked
+    /// about first: filled with the danger colour.
+    Danger,
     /// Shown but not yet possible; the text says why.
     Disabled,
 }
 
 /// A button in the designs' style: secondary (bordered), primary (ink on
-/// macOS, accent outline in the terminal look) or disabled with a reason,
-/// with an optional icon and shortcut.
+/// macOS, accent outline in the terminal look), danger (primary, in the
+/// danger colour) or disabled with a reason, with an optional icon and
+/// shortcut.
 pub struct ButtonSpec<'a> {
     text: &'a str,
     /// The accessible name, when it says more than the text.
@@ -1310,6 +1369,13 @@ impl<'a> ButtonSpec<'a> {
         self
     }
 
+    /// The primary button of a question about a write that cannot be
+    /// taken back: filled with the danger colour.
+    pub fn danger(mut self) -> Self {
+        self.kind = ButtonKind::Danger;
+        self
+    }
+
     /// Shown, but not clickable; `reason` is its tooltip.
     pub fn disabled(mut self, reason: &'a str) -> Self {
         self.kind = ButtonKind::Disabled;
@@ -1318,7 +1384,8 @@ impl<'a> ButtonSpec<'a> {
     }
 
     fn text_role(&self, look: &Look) -> TextRole {
-        self.role.unwrap_or(if self.kind == ButtonKind::Primary {
+        let leads = matches!(self.kind, ButtonKind::Primary | ButtonKind::Danger);
+        self.role.unwrap_or(if leads {
             TextRole::pick(look, TextRole::UiBodyStrong, TextRole::OGroup)
         } else {
             body(look)
@@ -1404,6 +1471,25 @@ impl<'a> ButtonSpec<'a> {
                     .lerp_to_gamma(palette.accent, if hovered { 0.24 } else { 0.15 }),
                 Some(Stroke::new(1.0, palette.accent)),
                 palette.accent,
+                palette.dim,
+            ),
+            (ButtonKind::Danger, false) => {
+                let fill = if pressed {
+                    palette.danger.lerp_to_gamma(palette.window, 0.25)
+                } else if hovered {
+                    palette.danger.lerp_to_gamma(palette.window, 0.15)
+                } else {
+                    palette.danger
+                };
+                let ink = ink_on(fill, palette);
+                (fill, None, ink, ink.gamma_multiply(0.72))
+            }
+            (ButtonKind::Danger, true) => (
+                palette
+                    .panel
+                    .lerp_to_gamma(palette.danger, if hovered { 0.24 } else { 0.15 }),
+                Some(Stroke::new(1.0, palette.danger)),
+                palette.danger,
                 palette.dim,
             ),
             (ButtonKind::Secondary, false) => (

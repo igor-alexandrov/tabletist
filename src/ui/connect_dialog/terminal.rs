@@ -1,13 +1,14 @@
 //! The connection dialog as the terminal look draws it: a two-column form
 //! of labels and fields under headings, with its keys in the footer.
 
-use egui::{Color32, CornerRadius, Rect, Response, Sense, Ui, WidgetInfo, WidgetType, pos2, vec2};
+use egui::{Color32, Rect, Response, Sense, Ui, WidgetInfo, WidgetType, pos2, vec2};
 use tabletist_db::Driver;
 
 use crate::connections::PasswordMode;
 use crate::i18n::gettext;
 use crate::model::{Action, ConnectionForm, SshAuthKind};
 use crate::typography::{Text, TextRole};
+use crate::ui::terminal_dialog::{self, Key};
 use crate::ui::widgets::{self, ButtonSpec};
 
 use super::choice::{Choice, Group, choose, driver_choice, environment_choice};
@@ -22,20 +23,8 @@ use super::{
 /// the key that shows the URL field.
 pub(super) fn terminal_header(ui: &mut Ui, form: &mut ConnectionForm, skin: &Skin) {
     let Skin { look, palette, .. } = *skin;
-    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 41.0), Sense::hover());
-    let radius = skin.inner_radius();
-    ui.painter().rect_filled(
-        rect,
-        CornerRadius {
-            nw: radius,
-            ne: radius,
-            sw: 0,
-            se: 0,
-        },
-        skin.env.bar_bg(),
-    );
-    widgets::hline(ui, rect.x_range(), rect.bottom() - 0.5, palette.outline);
-    let y = rect.top() + 20.0;
+    let rect = terminal_dialog::head(ui, skin.inner_radius(), skin.env.bar_bg(), palette);
+    let y = terminal_dialog::head_line(rect);
     let label = skin.say("Paste URL");
     let hint = [("u", label.as_str(), true)];
     let width = widgets::key_hints_width(ui, &hint, 0.0, look, palette);
@@ -83,22 +72,9 @@ pub(super) fn terminal_footer(
     actions: &mut Vec<Action>,
 ) {
     let Skin { look, palette, .. } = *skin;
-    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 41.0), Sense::hover());
-    let radius = skin.inner_radius();
-    ui.painter().rect_filled(
-        rect,
-        CornerRadius {
-            nw: 0,
-            ne: 0,
-            sw: radius,
-            se: radius,
-        },
-        palette.panel,
-    );
-    widgets::hline(ui, rect.x_range(), rect.top() + 0.5, palette.outline);
-    let y = rect.top() + 1.0 + 20.0;
+    let rect = terminal_dialog::foot(ui, skin.inner_radius(), palette);
+    let y = terminal_dialog::foot_line(rect);
     let status = paint_status(ui, form, StatusAt::Left(rect.left() + 14.0), y, skin);
-    let role = widgets::secondary(look);
     // The key, what it does, the button it stands for, and what that does.
     let keys = [
         ("tab", "next", None),
@@ -115,51 +91,28 @@ pub(super) fn terminal_footer(
         ),
         ("esc", "cancel", Some(("Cancel", Action::CloseDialog))),
     ];
-    let hint = |key: &str, label: &str| {
-        // Saving is what the dialog is for: its key takes the accent.
-        let color = if key == "ctrl+s" {
-            palette.accent
-        } else {
-            palette.text
-        };
-        Text::new(look)
-            .add(role, key, color)
-            .space(role, " ")
-            .add(role, label, palette.dim)
-    };
-    let widths: Vec<f32> = keys
+    let names: Vec<_> = keys
         .iter()
-        .map(|(key, label, _)| widgets::measure(ui, hint(key, label)))
+        .map(|(_, _, button)| button.as_ref().map(|(name, _)| gettext(skin.locale, name)))
+        .collect();
+    let hints: Vec<Key<'_>> = keys
+        .iter()
+        .zip(&names)
+        .map(|((key, label, _), name)| Key {
+            key,
+            label,
+            button: name.as_deref(),
+            // Saving is what the dialog is for: its key takes the accent.
+            lead: *key == "ctrl+s",
+        })
         .collect();
     // What the status leaves, 16 clear of it.
-    let room = rect.width() - 28.0 - if status > 0.0 { status + 16.0 } else { 0.0 };
-    let mut total = widths.iter().sum::<f32>() + 16.0 * (keys.len() - 1) as f32;
-    let mut dropped = 0;
-    while dropped < keys.len() && total > room {
-        total -= widths[dropped] + 16.0;
-        dropped += 1;
-    }
-    let mut left = rect.right() - 14.0 - total.max(0.0);
-    // Where a hint that is left out keeps its button.
-    let edge = Rect::from_min_size(pos2(rect.right() - 1.0, rect.top() + 1.0), vec2(1.0, 1.0));
-    for (index, ((key, label, button), width)) in keys.into_iter().zip(widths).enumerate() {
-        let place = if index < dropped {
-            edge
-        } else {
-            widgets::paint_text(ui, left, y, hint(key, label));
-            let place = Rect::from_min_max(
-                pos2(left, rect.top() + 1.0),
-                pos2(left + width, rect.bottom()),
-            );
-            left += width + 16.0;
-            place
-        };
-        if let Some((name, action)) = button {
-            let name = gettext(skin.locale, name);
-            if ButtonSpec::new(&name).hidden_at(ui, place).clicked() {
-                actions.push(action);
-            }
-        }
+    let taken = if status > 0.0 { status + 16.0 } else { 0.0 };
+    let pressed = terminal_dialog::keys(ui, rect, taken, &hints, look, palette);
+    if let Some(index) = pressed
+        && let Some((_, _, Some((_, action)))) = keys.into_iter().nth(index)
+    {
+        actions.push(action);
     }
 }
 
