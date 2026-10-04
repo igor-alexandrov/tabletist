@@ -362,6 +362,86 @@ async fn generated_and_always_identity_columns_say_so() {
     );
 }
 
+#[tokio::test]
+async fn a_partial_index_says_so_and_is_not_the_row_key() {
+    let Some(connection) = connect().await else {
+        return;
+    };
+    let admin = admin().await;
+    admin
+        .batch_execute(
+            "DROP TABLE IF EXISTS catalog_partial;
+             CREATE TABLE catalog_partial (a integer NOT NULL, b integer NOT NULL);
+             CREATE UNIQUE INDEX catalog_partial_whole ON catalog_partial (a);
+             CREATE UNIQUE INDEX catalog_partial_part ON catalog_partial (b) WHERE b > 0",
+        )
+        .await
+        .unwrap();
+    let structure = connection
+        .describe(&ObjectRef::new("public", "catalog_partial"))
+        .await;
+    admin
+        .batch_execute("DROP TABLE catalog_partial")
+        .await
+        .unwrap();
+    let structure = structure.unwrap();
+    let partial: Vec<(&str, bool)> = structure
+        .indexes
+        .iter()
+        .map(|index| (index.name.as_str(), index.partial))
+        .collect();
+    assert_eq!(
+        partial,
+        [
+            ("catalog_partial_part", true),
+            ("catalog_partial_whole", false)
+        ]
+    );
+    // `catalog_partial_part` comes first by name and its column cannot be
+    // NULL: only its condition keeps it from being the key.
+    assert_eq!(structure.row_key(), Some(vec!["a".to_owned()]));
+}
+
+/// A `CREATE UNIQUE INDEX CONCURRENTLY` that failed leaves its index behind,
+/// still called unique, over rows that are not.
+#[tokio::test]
+async fn an_index_left_invalid_does_not_count_as_unique() {
+    let Some(connection) = connect().await else {
+        return;
+    };
+    let admin = admin().await;
+    admin
+        .batch_execute(
+            "DROP TABLE IF EXISTS catalog_invalid;
+             CREATE TABLE catalog_invalid (a integer NOT NULL);
+             INSERT INTO catalog_invalid VALUES (1), (1)",
+        )
+        .await
+        .unwrap();
+    // On its own: it cannot run in the transaction a batch is.
+    let built = admin
+        .batch_execute(
+            "CREATE UNIQUE INDEX CONCURRENTLY catalog_invalid_broken ON catalog_invalid (a)",
+        )
+        .await;
+    let structure = connection
+        .describe(&ObjectRef::new("public", "catalog_invalid"))
+        .await;
+    admin
+        .batch_execute("DROP TABLE catalog_invalid")
+        .await
+        .unwrap();
+    assert!(built.is_err(), "the duplicates must fail the build");
+    let structure = structure.unwrap();
+    let unique: Vec<(&str, bool)> = structure
+        .indexes
+        .iter()
+        .map(|index| (index.name.as_str(), index.unique))
+        .collect();
+    assert_eq!(unique, [("catalog_invalid_broken", false)]);
+    assert_eq!(structure.row_key(), None);
+}
+
 use std::time::Duration;
 
 use tabletist_db::{Filter, FilterOp, RowPage, RowQuery, Sort, SortDir, Value, ValueKind};

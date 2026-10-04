@@ -1714,6 +1714,7 @@ mod tests {
                     unique: true,
                     primary: false,
                     method: None,
+                    partial: false,
                 }],
                 ..Default::default()
             });
@@ -5119,6 +5120,7 @@ mod tests {
                 unique: true,
                 primary: false,
                 method: None,
+                partial: false,
             }],
             foreign_keys: Vec::new(),
         };
@@ -7934,6 +7936,7 @@ mod tests {
                 unique: true,
                 primary: false,
                 method: None,
+                partial: false,
             }],
             ..Default::default()
         });
@@ -8011,6 +8014,7 @@ mod tests {
                 unique: true,
                 primary: false,
                 method: None,
+                partial: false,
             }],
             ..Default::default()
         });
@@ -8114,6 +8118,7 @@ mod tests {
                     unique: true,
                     primary: false,
                     method: None,
+                    partial: false,
                 }],
                 ..Default::default()
             });
