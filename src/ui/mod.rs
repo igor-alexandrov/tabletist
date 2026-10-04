@@ -1308,6 +1308,25 @@ mod tests {
     }
 
     #[test]
+    fn a_screen_reader_is_told_the_lines_of_the_file_and_which_are_ignored() {
+        let mut harness = settings_screen();
+        harness.app.apply(crate::model::Action::Backend(
+            crate::backend::Event::SettingsFile {
+                text: "[data]\npage_size = 500\ngroup_digits = \"yes\"\n".into(),
+                own: false,
+            },
+        ));
+        // A line as it is written, whole, though it is painted in pieces.
+        assert!(harness.has("[data]"));
+        assert!(harness.has("page_size = 500"));
+        // The one that was ignored says so: its colour tells no one who
+        // does not see it.
+        assert!(harness.has("Ignored: group_digits = \"yes\""));
+        assert!(!harness.has("group_digits = \"yes\""));
+        assert!(!harness.has("Ignored: page_size = 500"));
+    }
+
+    #[test]
     fn a_line_of_megabytes_is_drawn_no_further_than_the_pane_could_show() {
         let mut harness = settings_screen();
         // No settings file: one line, far past what one is read to.

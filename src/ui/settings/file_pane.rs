@@ -300,7 +300,17 @@ pub(super) fn show(ui: &mut Ui, rect: Rect, app: &App, option: Option<OptionId>,
                 // A line that was ignored is one colour: nothing in it was
                 // read. The ignored lines are in order, and a text that was
                 // not read has every line among them.
-                if file.invalid.binary_search(&number).is_ok() {
+                let ignored = file.invalid.binary_search(&number).is_ok();
+                // Painted text is nothing to a screen reader: each line in
+                // view is told to it, and an ignored one is said to be, in
+                // words where the eye has a colour.
+                if ignored {
+                    let said = format!("{}: {text}", gettext(skin.locale, "Ignored"));
+                    widgets::announce(ui, row, &said);
+                } else if !text.is_empty() {
+                    widgets::announce(ui, row, text);
+                }
+                if ignored {
                     widgets::paint_text(ui, x, y, Text::one(look, role, text, palette.danger));
                     continue;
                 }
