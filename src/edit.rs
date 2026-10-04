@@ -664,9 +664,10 @@ pub enum Note {
     /// The statement of the page's row `row` failed.
     Failed { row: usize, error: Error },
     /// What was written is not known: the connection was lost while
-    /// saving or before the save was sent, or the answer is about a row
-    /// the save did not send.
+    /// saving, or the answer is about a row the save did not send.
     Lost,
+    /// The session went before the save was sent: nothing was written.
+    NotSent,
     /// The save was cancelled.
     Cancelled,
     /// The save was refused or undone, with the database's or the app's

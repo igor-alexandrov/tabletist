@@ -11128,8 +11128,9 @@ mod tests {
             let edits = &object(&harness, tab, id).edits;
             assert!(edits.saving.is_none());
             assert_eq!(edits.cells.len(), 1);
-            // And says why, where the prompt was.
-            assert_eq!(edits.note, Some(crate::edit::Note::Lost));
+            // And says why, where the prompt was: nothing went out, which
+            // is not what a save lost in flight says.
+            assert_eq!(edits.note, Some(crate::edit::Note::NotSent));
             // Any other reason shows on the Save itself: nothing is added.
             let mut harness = Harness::new();
             let (tab, id) = production(&mut harness);

@@ -179,6 +179,40 @@ mod tests {
             .count()
     }
 
+    /// The buttons named `label` that can be pressed, highest first. A
+    /// dialog's stand above the pending bar, which has a Save of its own.
+    fn buttons(harness: &mut Harness, label: &str) -> Vec<egui::accesskit::NodeId> {
+        let tree = harness.settle();
+        let mut found: Vec<_> = tree
+            .nodes
+            .iter()
+            .filter(|(_, node)| {
+                node.role() == egui::accesskit::Role::Button
+                    && node.label() == Some(label)
+                    && !node.is_disabled()
+            })
+            .filter_map(|(id, node)| Some((*id, node.bounds()?.y0)))
+            .collect();
+        found.sort_by(|(_, a), (_, b)| a.total_cmp(b));
+        found.into_iter().map(|(id, _)| id).collect()
+    }
+
+    /// Presses the dialog's button `label`.
+    fn click_dialog(harness: &mut Harness, label: &str) {
+        let target = *buttons(harness, label)
+            .first()
+            .unwrap_or_else(|| panic!("no button {label}"));
+        harness.frame(vec![egui::Event::AccessKitActionRequest(
+            egui::accesskit::ActionRequest {
+                target_tree: egui::accesskit::TreeId::ROOT,
+                target_node: target,
+                action: egui::accesskit::Action::Click,
+                data: None,
+            },
+        )]);
+        harness.settle();
+    }
+
     fn pending(harness: &Harness, (tab, id): (ConnTabId, TabId)) -> usize {
         let workspace = harness.app.workspace(tab).unwrap();
         workspace.object_tab(id).unwrap().edits.cells.len()
@@ -226,8 +260,10 @@ mod tests {
         let (tab, id) = harness.editable();
         change(&mut harness, (tab, id), 1, 1, "bob@example.com");
         harness.app.apply(Action::CloseTab { tab, id });
-        assert!(harness.has("Save") && harness.has("Discard") && harness.has("Cancel"));
-        harness.click("Save");
+        assert!(harness.has("Discard") && harness.has("Cancel"));
+        // The dialog's Save, and the pending bar's behind it.
+        assert_eq!(buttons(&mut harness, "Save").len(), 2);
+        click_dialog(&mut harness, "Save");
         assert!(harness.app.dialog.is_none());
         assert_eq!(writes(&harness), 1);
         // A value to fix disables the save, and the prompt has no Save.
@@ -236,7 +272,8 @@ mod tests {
         change(&mut harness, (tab, id), 1, 2, "{oops");
         harness.app.apply(Action::CloseTab { tab, id });
         assert!(matches!(harness.app.dialog, Some(Dialog::Leave(_))));
-        assert!(!harness.has("Save"));
+        // No Save in the dialog, and the bar's cannot be pressed.
+        assert!(buttons(&mut harness, "Save").is_empty());
         assert!(harness.has("Discard") && harness.has("Cancel"));
         // Enter never discards.
         harness.press(egui::Key::Enter, egui::Modifiers::NONE);

@@ -36,22 +36,25 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
     let Some(workspace) = app.workspace(tab) else {
         return;
     };
-    // Each tab's id, name, whether it is pinned and whether it is a SQL
-    // editor (never a preview, so it draws like a pinned tab).
-    let tabs: Vec<(TabId, String, bool, bool)> = workspace
+    // Each tab's id, name, whether it is pinned, whether it is a SQL
+    // editor (never a preview, so it draws like a pinned tab) and whether
+    // it holds changes that are not saved.
+    let tabs: Vec<(TabId, String, bool, bool, bool)> = workspace
         .tabs
         .iter()
         .map(|open| match open {
             model::Tab::Object(object) => {
                 let shared = workspace.name_is_shared(&object.object);
                 let name = crate::ui::format::object_title(&object.object, shared);
-                (object.id, name, object.pinned, false)
+                let unsaved = !object.edits.cells.is_empty();
+                (object.id, name, object.pinned, false, unsaved)
             }
             model::Tab::Sql(sql) => (
                 sql.id,
                 format!("{} {}", gettext(locale, "Query"), sql.number),
                 true,
                 true,
+                false,
             ),
         })
         .collect();
@@ -109,7 +112,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                     .show(ui, |ui| {
                         ui.horizontal(|ui| {
                             ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
-                            for (index, (id, name, pinned, sql)) in tabs.iter().enumerate() {
+                            for (index, (id, name, pinned, sql, unsaved)) in tabs.iter().enumerate()
+                            {
                                 let is_active = Some(*id) == active;
                                 let one = Tab {
                                     index,
@@ -117,6 +121,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                                     pinned: *pinned,
                                     active: is_active,
                                     sql: *sql,
+                                    unsaved: *unsaved,
                                 };
                                 let response = if look.terminal {
                                     terminal_tab(ui, &one, bar, &look, &palette)
@@ -126,7 +131,13 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                                 if is_active {
                                     focus::claim(ui, focus::Region::Tabs, &response);
                                 }
-                                let label = format!("{name} {}", gettext(locale, "tab"));
+                                let label = if *unsaved {
+                                    let (tab, unsaved) =
+                                        (gettext(locale, "tab"), gettext(locale, "unsaved"));
+                                    format!("{name} {tab}, {unsaved}")
+                                } else {
+                                    format!("{name} {}", gettext(locale, "tab"))
+                                };
                                 response.widget_info(|| {
                                     WidgetInfo::selected(
                                         WidgetType::Button,
@@ -147,23 +158,20 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                                     actions.push(Action::CloseTab { tab, id: *id });
                                 }
                                 // The close button: on the active tab, or
-                                // where the pointer is (macOS).
-                                if !look.terminal
-                                    && (is_active
-                                        || response.hovered()
-                                        || ui.rect_contains_pointer(response.rect))
-                                {
-                                    let close_rect = Rect::from_center_size(
-                                        pos2(
-                                            response.rect.right() - 17.0,
-                                            response.rect.center().y,
-                                        ),
-                                        vec2(22.0, 22.0),
-                                    );
+                                // where the pointer is (macOS). Away from
+                                // the pointer, a tab with pending changes
+                                // shows its mark in the button's place: the
+                                // button is there, and not drawn.
+                                let over = pointer_over(ui, &response);
+                                if !look.terminal && (is_active || over) {
+                                    let close_rect =
+                                        Rect::from_center_size(close_center(response.rect), CLOSE);
                                     let mut close_ui =
                                         ui.new_child(egui::UiBuilder::new().max_rect(close_rect));
                                     let close = format!("{} {name}", gettext(locale, "Close"));
-                                    if small_close(&mut close_ui, &close, &look, &palette).clicked()
+                                    let drawn = over || !*unsaved;
+                                    if small_close(&mut close_ui, &close, drawn, &look, &palette)
+                                        .clicked()
                                     {
                                         actions.push(Action::CloseTab { tab, id: *id });
                                     }
@@ -258,6 +266,23 @@ fn new_sql(
     }
 }
 
+/// The room a macOS tab keeps for its close button.
+const CLOSE: egui::Vec2 = vec2(22.0, 22.0);
+
+/// Where a macOS tab's close button centres: 6 in from its right edge.
+fn close_center(tab: Rect) -> egui::Pos2 {
+    pos2(tab.right() - 17.0, tab.center().y)
+}
+
+/// Whether the pointer is over the tab `response` is of, or over the close
+/// button drawn on it.
+fn pointer_over(ui: &egui::Ui, response: &egui::Response) -> bool {
+    response.hovered() || ui.rect_contains_pointer(response.rect)
+}
+
+/// The unsaved mark's size: the dot the pending bar leads with.
+const MARK: f32 = 8.0;
+
 /// One tab to draw.
 struct Tab<'a> {
     index: usize,
@@ -266,6 +291,8 @@ struct Tab<'a> {
     active: bool,
     /// A SQL editor, not a table or view.
     sql: bool,
+    /// A table with pending changes.
+    unsaved: bool,
 }
 
 /// macOS: full-height tabs; the active one white with an accent line on
@@ -317,6 +344,15 @@ fn mac_tab(
         text_rect.left(),
         center,
     );
+    // Pending changes: a dot where the close button stands, which shows
+    // in its place under the pointer.
+    if tab.unsaved && !pointer_over(ui, &response) {
+        ui.painter().circle_filled(
+            close_center(rect),
+            MARK / 2.0,
+            crate::ui::states::Tone::Warning.color(palette),
+        );
+    }
     response
 }
 
@@ -374,8 +410,16 @@ fn terminal_tab(
     response
 }
 
-/// The small × that closes a macOS tab.
-fn small_close(ui: &mut egui::Ui, label: &str, look: &Look, palette: &Palette) -> egui::Response {
+/// The small × that closes a macOS tab. Not `drawn`, it is there for the
+/// keyboard and a screen reader, and the tab's unsaved mark shows in its
+/// place.
+fn small_close(
+    ui: &mut egui::Ui,
+    label: &str,
+    drawn: bool,
+    look: &Look,
+    palette: &Palette,
+) -> egui::Response {
     let (rect, response) = ui.allocate_exact_size(vec2(20.0, 20.0), Sense::click());
     response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, label));
     if response.hovered() {
@@ -385,9 +429,11 @@ fn small_close(ui: &mut egui::Ui, label: &str, look: &Look, palette: &Palette) -
             palette.surface_hover,
         );
     }
-    Icon::X
-        .image(palette.dim, 13.0)
-        .paint_at(ui, Rect::from_center_size(rect.center(), vec2(13.0, 13.0)));
+    if drawn {
+        Icon::X
+            .image(palette.dim, 13.0)
+            .paint_at(ui, Rect::from_center_size(rect.center(), vec2(13.0, 13.0)));
+    }
     response.on_hover_text(label)
 }
 
@@ -410,14 +456,19 @@ mod tests {
                     for (active, pinned) in
                         [(true, true), (true, false), (false, true), (false, false)]
                     {
-                        let tab = Tab {
-                            index: 0,
-                            name,
-                            pinned,
-                            active,
-                            sql: false,
-                        };
-                        widths.push(mac_tab(ui, &tab, bar, &look, &palette).rect.width());
+                        // With pending changes or without: the mark stands
+                        // where the close button does.
+                        for unsaved in [false, true] {
+                            let tab = Tab {
+                                index: 0,
+                                name,
+                                pinned,
+                                active,
+                                sql: false,
+                                unsaved,
+                            };
+                            widths.push(mac_tab(ui, &tab, bar, &look, &palette).rect.width());
+                        }
                     }
                 });
             });
@@ -444,5 +495,65 @@ mod tests {
         let before = place(&mut harness);
         harness.click("Query 1 tab");
         assert_eq!(place(&mut harness), before);
+    }
+
+    #[test]
+    fn a_tab_with_pending_changes_carries_the_mark_and_keeps_its_width() {
+        use crate::model::{Action, Advance, CellPos, EditStart};
+        use egui::accesskit::Role;
+        for look in Look::ALL {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            let (tab, id) = harness.editable();
+            let palette = harness.app.palette;
+            let tree = harness.settle();
+            let before = crate::testing::bounds(&tree, "users tab", Role::Button)
+                .unwrap_or_else(|| panic!("{}: the tab", look.name));
+            // The mark: a dot of the pending colour, inside the tab.
+            let marked = |harness: &Harness, tab: Rect| {
+                harness.fills.iter().any(|(rect, fill)| {
+                    *fill == palette.warning && rect.width() == 8.0 && tab.contains_rect(*rect)
+                })
+            };
+            assert!(!marked(&harness, before), "{}", look.name);
+            let start = EditStart::Replace("bob@example.com".into());
+            let cell = CellPos { row: 1, col: 1 };
+            harness.app.apply(Action::EditCell {
+                tab,
+                id,
+                cell,
+                start,
+            });
+            let then = Advance::Stay;
+            harness.app.apply(Action::CommitEdit { tab, id, then });
+            // The pointer is elsewhere: over the tab the close button shows.
+            harness.frame(vec![egui::Event::PointerMoved(pos2(600.0, 500.0))]);
+            let tree = harness.settle();
+            assert!(
+                crate::testing::node(&tree, "users tab", Role::Button).is_none(),
+                "{}: named as before",
+                look.name
+            );
+            let after = crate::testing::bounds(&tree, "users tab, unsaved", Role::Button)
+                .unwrap_or_else(|| panic!("{}: the tab says it is unsaved", look.name));
+            assert_eq!(after, before, "{}", look.name);
+            // The terminal's mark is its own, and not a dot.
+            assert_eq!(marked(&harness, after), !look.terminal, "{}", look.name);
+            if look.terminal {
+                continue;
+            }
+            // Its close button is still there to press, and under the
+            // pointer it shows in the dot's place.
+            assert!(crate::testing::node(&tree, "Close users", Role::Button).is_some());
+            harness.frame(vec![egui::Event::PointerMoved(after.center())]);
+            harness.settle();
+            assert!(!marked(&harness, after), "{}", look.name);
+            // Reverted, the tab is as it was.
+            harness.app.apply(Action::RevertCell { tab, id });
+            harness.frame(vec![egui::Event::PointerMoved(pos2(600.0, 500.0))]);
+            let tree = harness.settle();
+            assert!(crate::testing::node(&tree, "users tab", Role::Button).is_some());
+            assert!(!marked(&harness, after), "{}", look.name);
+        }
     }
 }
