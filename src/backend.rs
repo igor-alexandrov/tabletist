@@ -9,8 +9,8 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError, mpsc};
 use std::time::Duration;
 
 use tabletist_db::{
-    Access, CancelHandle, ConnectSpec, Connection, Driver, Error, HostKeys, ObjectInfo, ObjectRef,
-    RowPage, RowQuery, ScriptOutcome, Secrets, StopFlag, Structure,
+    Access, CancelHandle, ChangeSet, ConnectSpec, Connection, Driver, Error, HostKeys, ObjectInfo,
+    ObjectRef, RowPage, RowQuery, ScriptOutcome, Secrets, StopFlag, Structure, WriteOutcome,
 };
 use tokio::sync::mpsc as tokio_mpsc;
 
@@ -99,6 +99,14 @@ pub enum Command {
         session: SessionId,
         request: RequestId,
         query: RowQuery,
+    },
+    /// Write a save's changes (see `Connection::write`). Awaited to its
+    /// end like every command: a cancel reaches it through the session's
+    /// cancel handle, and the save rolls back.
+    Write {
+        session: SessionId,
+        request: RequestId,
+        changes: ChangeSet,
     },
     /// Read a saved password from the keyring.
     LoadSecret {
@@ -232,6 +240,14 @@ pub enum Event {
         session: SessionId,
         request: RequestId,
         result: Result<u64, Error>,
+    },
+    /// A `Write` ended. `Ok` holds how: written, conflicts, or a statement
+    /// that failed, and only the first changed anything. `Err` is a save
+    /// that never ran or whose session failed under it.
+    Written {
+        session: SessionId,
+        request: RequestId,
+        result: Result<WriteOutcome, Error>,
     },
     FilePicked {
         request: RequestId,
@@ -1812,6 +1828,7 @@ fn session_of(command: &Command) -> SessionId {
         | Command::Describe { session, .. }
         | Command::FetchRows { session, .. }
         | Command::CountRows { session, .. }
+        | Command::Write { session, .. }
         | Command::ListDatabases { session, .. }
         | Command::RunSql { session, .. }
         | Command::ServerVersion { session, .. } => *session,
@@ -1834,6 +1851,7 @@ fn request_of(command: &Command) -> Option<RequestId> {
         | Command::Describe { request, .. }
         | Command::FetchRows { request, .. }
         | Command::CountRows { request, .. }
+        | Command::Write { request, .. }
         | Command::ListDatabases { request, .. }
         | Command::RunSql { request, .. }
         | Command::ServerVersion { request, .. } => Some(*request),
@@ -1886,6 +1904,13 @@ fn fail(outbox: &Outbox, command: Command, error: Error) {
         Command::CountRows {
             session, request, ..
         } => Event::Count {
+            session,
+            request,
+            result: Err(error),
+        },
+        Command::Write {
+            session, request, ..
+        } => Event::Written {
             session,
             request,
             result: Err(error),
@@ -2084,6 +2109,24 @@ async fn run_session(
                 let result = connection.count_rows(query).await;
                 let lost = lost_error(&result);
                 outbox.emit(Event::Count {
+                    session: *session,
+                    request: *request,
+                    result,
+                });
+                lost
+            }
+            Command::Write {
+                session,
+                request,
+                changes,
+            } => {
+                // Awaited to its end whatever stops it: the save ends its
+                // own transaction. One it could not end comes back as a
+                // lost connection, and the session is dropped below: it may
+                // still be able to write.
+                let result = connection.write(changes).await;
+                let lost = lost_error(&result);
+                outbox.emit(Event::Written {
                     session: *session,
                     request: *request,
                     result,
@@ -2365,7 +2408,7 @@ fn cancel_reason(
 mod tests {
     use super::*;
     use std::time::Duration;
-    use tabletist_db::{ConnectSpec, Error, ObjectRef, RowQuery, Secrets};
+    use tabletist_db::{ConnectSpec, Error, ObjectRef, RowQuery, Secrets, Value};
 
     const WAIT: Duration = Duration::from_secs(10);
 
@@ -4428,6 +4471,248 @@ mod tests {
         match backend.wait(Duration::from_secs(5)) {
             Some(Event::SshHosts { request, .. }) => assert_eq!(request, RequestId(9)),
             other => panic!("{other:?}"),
+        }
+    }
+
+    /// A save that renames the fixture's first user.
+    fn rename(new: &str) -> tabletist_db::ChangeSet {
+        tabletist_db::ChangeSet {
+            object: ObjectRef::new("main", "users"),
+            rows: vec![tabletist_db::RowChange {
+                key: vec![("id".into(), Value::Int(1))],
+                set: vec![tabletist_db::CellChange {
+                    column: "name".into(),
+                    type_name: "TEXT".into(),
+                    // What the fixture's first user is called.
+                    loaded: Value::Text("Ada Lovelace".into()),
+                    new: tabletist_db::NewValue::Text(new.into()),
+                }],
+            }],
+        }
+    }
+
+    /// A session on a fixture of its own, opened as `access`.
+    fn connected_as(access: Access) -> (tempfile::TempDir, Backend, SessionId) {
+        let (dir, spec) = fixture();
+        let mut backend = Backend::start_with(Waker::default(), Keyring::memory());
+        let session = SessionId(1);
+        backend.send(Command::Connect {
+            session,
+            request: RequestId(1),
+            spec,
+            secrets: Secrets::default(),
+            host_keys: HostKeys::default(),
+            access,
+        });
+        assert!(matches!(backend.wait(WAIT), Some(Event::Connected { .. })));
+        (dir, backend, session)
+    }
+
+    /// What the fixture's first user is called now, asked as `request`.
+    fn first_users_name(backend: &mut Backend, session: SessionId, request: RequestId) -> Value {
+        backend.send(Command::FetchRows {
+            session,
+            request,
+            query: RowQuery::new(ObjectRef::new("main", "users"), 1),
+        });
+        match backend.wait(WAIT) {
+            Some(Event::Rows {
+                result: Ok(page), ..
+            }) => page.rows[0][2].clone(),
+            other => panic!("expected rows, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_save_on_a_writable_session_is_written() {
+        let (_dir, mut backend, session) = connected_as(Access::Writable);
+        backend.send(Command::Write {
+            session,
+            request: RequestId(11),
+            changes: rename("Grace"),
+        });
+        match backend.wait(WAIT) {
+            Some(Event::Written {
+                session: SessionId(1),
+                request: RequestId(11),
+                result: Ok(WriteOutcome::Written { rows, .. }),
+            }) => assert_eq!(rows[0][2], Value::Text("Grace".into())),
+            other => panic!("expected a written save, got {other:?}"),
+        }
+        assert_eq!(
+            first_users_name(&mut backend, session, RequestId(12)),
+            Value::Text("Grace".into())
+        );
+        // What a save comes to without writing is an answer too, not an
+        // error: here the page's value is no longer the row's.
+        backend.send(Command::Write {
+            session,
+            request: RequestId(13),
+            changes: rename("Hopper"),
+        });
+        assert!(matches!(
+            backend.wait(WAIT),
+            Some(Event::Written {
+                request: RequestId(13),
+                result: Ok(WriteOutcome::Conflicts(_)),
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn a_save_on_a_read_only_session_is_refused_and_the_session_lives() {
+        let (_dir, mut backend, session) = connected_as(Access::ReadOnly);
+        backend.send(Command::Write {
+            session,
+            request: RequestId(11),
+            changes: rename("Grace"),
+        });
+        match backend.wait(WAIT) {
+            Some(Event::Written {
+                session: SessionId(1),
+                request: RequestId(11),
+                result,
+            }) => assert_eq!(result, Err(Error::ReadOnly)),
+            other => panic!("expected a refused save, got {other:?}"),
+        }
+        // Refused is not lost: the session answers the next request.
+        backend.send(Command::CountRows {
+            session,
+            request: RequestId(12),
+            query: RowQuery::new(ObjectRef::new("main", "users"), 10),
+        });
+        assert!(matches!(
+            backend.wait(WAIT),
+            Some(Event::Count {
+                request: RequestId(12),
+                result: Ok(5),
+                ..
+            })
+        ));
+        assert_eq!(
+            first_users_name(&mut backend, session, RequestId(13)),
+            Value::Text("Ada Lovelace".into())
+        );
+    }
+
+    #[test]
+    fn a_save_that_is_skipped_or_fails_with_its_session_says_so() {
+        // Cancelled while it was still queued: it never runs.
+        let (_dir, mut backend, session) = connected_as(Access::Writable);
+        backend.send(Command::CountRows {
+            session,
+            request: RequestId(2),
+            query: slow_count(100_000),
+        });
+        backend.send(Command::Write {
+            session,
+            request: RequestId(3),
+            changes: rename("Grace"),
+        });
+        backend.send(Command::Cancel {
+            session,
+            request: RequestId(3),
+        });
+        let deadline = std::time::Instant::now() + WAIT;
+        let mut events = Vec::new();
+        while events.len() < 2 {
+            assert!(std::time::Instant::now() < deadline, "both must answer");
+            backend.send(Command::Cancel {
+                session,
+                request: RequestId(2),
+            });
+            events.extend(backend.wait(Duration::from_millis(200)));
+        }
+        assert!(
+            matches!(
+                events.as_slice(),
+                [
+                    Event::Count {
+                        request: RequestId(2),
+                        result: Err(Error::Cancelled),
+                        ..
+                    },
+                    Event::Written {
+                        session: SessionId(1),
+                        request: RequestId(3),
+                        result: Err(Error::Cancelled),
+                    },
+                ]
+            ),
+            "{events:?}"
+        );
+        assert_eq!(
+            first_users_name(&mut backend, session, RequestId(4)),
+            Value::Text("Ada Lovelace".into())
+        );
+        // Sent to a session that is gone.
+        backend.send(Command::Write {
+            session: SessionId(99),
+            request: RequestId(5),
+            changes: rename("Grace"),
+        });
+        match backend.wait(WAIT) {
+            Some(Event::Written {
+                session: SessionId(99),
+                request: RequestId(5),
+                result: Err(error),
+            }) => assert!(error.is_connection_lost()),
+            other => panic!("expected a lost-connection error, got {other:?}"),
+        }
+        // Still queued when the session's connection was lost.
+        let (sender, mut commands) = tokio_mpsc::unbounded_channel();
+        let (outbox, received) = quiet_outbox();
+        let queued = Command::Write {
+            session: SessionId(7),
+            request: RequestId(6),
+            changes: rename("Grace"),
+        };
+        assert_eq!(session_of(&queued), SessionId(7));
+        assert_eq!(request_of(&queued), Some(RequestId(6)));
+        sender.send(queued).unwrap();
+        fail_queued(&mut commands, &outbox, &Error::LeftReadOnly);
+        let answered: Vec<Event> = received.try_iter().collect();
+        assert!(
+            matches!(
+                answered.as_slice(),
+                [Event::Written {
+                    session: SessionId(7),
+                    request: RequestId(6),
+                    result: Err(Error::LeftReadOnly),
+                }]
+            ),
+            "{answered:?}"
+        );
+    }
+
+    /// A save whose transaction could not be ended says the connection is
+    /// lost, and the crate does not close the handle itself: the session
+    /// may still be able to write. The session's loop drops it on that
+    /// answer, as it drops one a script lost. Nothing a save comes to in
+    /// order, and no refusal, ends the session.
+    #[test]
+    fn a_save_that_loses_the_session_counts_as_lost() {
+        let unended: Result<WriteOutcome, Error> = Err(Error::ConnectionLost(
+            "could not end the save's transaction".into(),
+        ));
+        assert!(lost_error(&unended).is_some());
+        for kept in [
+            Error::ReadOnly,
+            Error::Cancelled,
+            Error::Unsupported("saving needs a table whose engine has transactions"),
+            Error::query("a row's key matches more than one row"),
+        ] {
+            assert_eq!(lost_error(&Err::<WriteOutcome, _>(kept)), None);
+        }
+        for outcome in [
+            WriteOutcome::Conflicts(Vec::new()),
+            WriteOutcome::Failed {
+                row: 0,
+                error: Error::query("no"),
+            },
+        ] {
+            assert_eq!(lost_error(&Ok(outcome)), None);
         }
     }
 

@@ -2228,6 +2228,9 @@ impl App {
                     workspace.server_version.finish(request, result);
                 }
             }
+            // Nothing sends a Write yet: editing in the grid (step 3 of
+            // the value-editing spec) is what reads this.
+            Event::Written { .. } => {}
             Event::SqlRan {
                 session,
                 request,
