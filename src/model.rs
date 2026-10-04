@@ -337,6 +337,10 @@ pub enum Action {
     SetOption(crate::settings::OptionValue),
     /// Open the settings file in the editor.
     EditSettingsFile,
+    /// Show the settings file in the file manager.
+    RevealSettingsFile,
+    /// Save a copy of the settings where the user says.
+    ExportSettings,
     /// Open quick open for the active connection tab.
     OpenQuickOpen,
     /// Move quick open's selection by this many results.

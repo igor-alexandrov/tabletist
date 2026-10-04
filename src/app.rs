@@ -709,7 +709,7 @@ impl App {
                     Some((name, bytes.to_vec()))
                 });
                 if let Some((name, bytes)) = found {
-                    self.backend.save_bytes(name, bytes);
+                    self.backend.save_bytes("Save value", name, bytes);
                 }
             }
             Action::GridKeys(tab) => {
@@ -960,6 +960,23 @@ impl App {
                     text,
                 });
             }
+            // As for the editor: the backend writes the text when no file is
+            // there, and that write is the app's own, to be known when it
+            // comes back.
+            Action::RevealSettingsFile => {
+                let text = self.offer_settings_text();
+                self.backend.send(Command::RevealSettingsFile {
+                    path: self.dirs.settings_file(),
+                    text,
+                });
+            }
+            // The app's own text, whatever the file holds: a line the app
+            // ignores is not a setting to hand on.
+            Action::ExportSettings => self.backend.save_bytes(
+                "Export settings",
+                "tabletist-settings.toml".to_owned(),
+                self.settings.to_toml().into_bytes(),
+            ),
             Action::OpenQuickOpen => {
                 let tab = self.active_tab_id();
                 if self.dialog.is_none() && self.workspace(tab).is_some() {
@@ -4408,6 +4425,35 @@ mod tests {
             Some(Command::EditSettingsFile { path: sent, text: held })
                 if *sent == path && *held == text
         ));
+    }
+
+    #[test]
+    fn reveal_sends_the_path_and_the_text_the_app_holds() {
+        let (mut app, _dir) = app();
+        app.apply(Action::RevealSettingsFile);
+        match crate::testing::last_sent(&app) {
+            Command::RevealSettingsFile { path, text } => {
+                assert_eq!(path, &app.dirs.settings_file());
+                assert_eq!(text, &app.settings_file.text);
+            }
+            other => panic!("{other:?}"),
+        }
+        // Written by the backend if the file is gone: the app's own write.
+        assert!(app.settings_file.offered.contains(&app.settings_file.text));
+    }
+
+    #[test]
+    fn export_offers_the_canonical_text_under_the_settings_name() {
+        let (mut app, _dir) = app();
+        app.apply(Action::SetOption(crate::settings::OptionValue::PageSize(
+            500,
+        )));
+        app.apply(Action::ExportSettings);
+        let text = app.settings.to_toml();
+        assert_eq!(
+            app.backend.saves.last(),
+            Some(&("tabletist-settings.toml".to_owned(), text.len()))
+        );
     }
 
     #[test]

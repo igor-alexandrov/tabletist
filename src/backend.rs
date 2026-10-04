@@ -488,18 +488,18 @@ impl Backend {
         });
     }
 
-    /// Asks where to save `bytes` (a binary value), suggesting `name`, and
-    /// writes them there off the UI thread. A dialog closed without a
-    /// choice saves nothing and says nothing; a write that fails is told as
-    /// any failed save is.
-    pub fn save_bytes(&mut self, name: String, bytes: Vec<u8>) {
+    /// Asks where to save `bytes`, in a dialog titled `title`, suggesting
+    /// `name`, and writes them there off the UI thread. A dialog closed
+    /// without a choice saves nothing and says nothing; a write that fails
+    /// is told as any failed save is.
+    pub fn save_bytes(&mut self, title: &str, name: String, bytes: Vec<u8>) {
         #[cfg(test)]
         self.saves.push((name.clone(), bytes.len()));
         let Some(runtime) = &self.runtime else {
             return;
         };
         let dialog = rfd::AsyncFileDialog::new()
-            .set_title("Save value")
+            .set_title(title)
             .set_file_name(name)
             .save_file();
         let outbox = self.outbox.clone();
