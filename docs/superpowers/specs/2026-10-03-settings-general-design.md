@@ -368,7 +368,9 @@ The artboard's screen, over the whole window:
   that is no settings file is shown all the same, and can be megabytes: the
   pane draws only the lines in view, reaches them by where they start
   (`SettingsFile::line_starts`, found once when the text is set), and draws
-  no more than the first 400 bytes of a line.
+  no more than the first 400 bytes of a line. Each line in view is told to
+  a screen reader as a label, whole, and an ignored one as "Ignored: " and
+  the line: its colour tells nothing to someone who does not see it.
 - Footer keys: `j/k` move, `h/l` change, `space` toggle, `ctrl+e` open file
   in $EDITOR, `R` reset option, `esc` close.
 
@@ -433,7 +435,10 @@ export is already reported that way.
 That first write of a missing file is recorded as the backend's own write,
 under the lock the writer and the reader share, as a save's is. The reader
 then says the text is the app's own, so it is not taken for a change from
-outside. Otherwise a change made in the app while the editor was starting
+outside. The lock keeps out the backend's other writes, not an editor's: the
+file is made only where none is, in one step (`util::create_atomic`), so one
+that someone made after the look for it is opened as it is and is no write
+of the backend's. Otherwise a change made in the app while the editor was starting
 could be undone: its save lands first, the older text lands after it, and
 the app would apply that as someone else's edit.
 
