@@ -274,6 +274,11 @@ pub enum Action {
         tab: ConnTabId,
         id: TabId,
     },
+    /// Save the tab's pending changes, in one transaction.
+    WriteEdits {
+        tab: ConnTabId,
+        id: TabId,
+    },
     /// Arrow keys (±1), Page Up/Down (±page), Home/End (isize::MIN/MAX).
     MoveSelection {
         tab: ConnTabId,
@@ -1598,6 +1603,19 @@ pub enum Advance {
     Left,
 }
 
+/// Why a tab's pending changes cannot be saved now. The view words it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SaveBlock {
+    /// A save is running.
+    Saving,
+    /// A cell fails its check.
+    ToFix,
+    /// The session is not connected.
+    Disconnected,
+    /// The session came back read-only.
+    ReadOnly,
+}
+
 /// One open table or view.
 #[derive(Debug)]
 pub struct ObjectTab {
@@ -1718,12 +1736,14 @@ impl ObjectTab {
         std::mem::take(&mut self.count).pending
     }
 
-    /// Every request this tab still waits for.
+    /// Every request this tab still waits for: what it loads, and the save
+    /// it sent.
     pub fn pending(&self) -> impl Iterator<Item = RequestId> {
         [
             self.rows.pending,
             self.structure.pending,
             self.count.pending,
+            self.edits.saving.as_ref().map(|saving| saving.request),
         ]
         .into_iter()
         .flatten()
@@ -2570,10 +2590,18 @@ impl Workspace {
     /// left pending would look like it runs for ever. The server may differ
     /// too, so its version is asked for again (see `App::after_connect`),
     /// and so are the columns a completion list offers.
-    /// Object tabs are not touched: the connect reloads them.
+    /// What object tabs load is not touched: the connect reloads them. A
+    /// save one of them sent is given up.
     pub fn forget_session_requests(&mut self) {
         for sql in self.sql_tabs_mut() {
             sql.abandon_run();
+        }
+        // A save sent on the old session will not be answered here: what it
+        // wrote is not known. The set is kept.
+        for object in self.object_tabs_mut() {
+            if object.edits.saving.take().is_some() {
+                object.edits.note = Some(crate::edit::Note::Lost);
+            }
         }
         self.server_version = Fetch::default();
         // Fetches the old session will never answer, and names that may
@@ -3363,6 +3391,16 @@ mod tests {
         object.rows.start(RequestId(3));
         object.count.start(RequestId(4));
         assert_eq!(tab.pending(), vec![RequestId(3), RequestId(4)]);
+        // A save is the tab's to cancel too.
+        tab.as_object_mut().unwrap().edits.saving = Some(crate::edit::Saving {
+            request: RequestId(5),
+            rows: vec![0],
+            started: std::time::Instant::now(),
+        });
+        assert_eq!(
+            tab.pending(),
+            vec![RequestId(3), RequestId(4), RequestId(5)]
+        );
         assert!(tab.as_sql().is_none() && tab.as_object().is_some());
     }
 

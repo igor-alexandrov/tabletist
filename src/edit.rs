@@ -4,12 +4,14 @@
 //! `app.rs` owns every transition.
 
 use std::collections::BTreeMap;
+use std::time::{Duration, Instant};
 
 use tabletist_db::{
-    Access, ColumnClass, ColumnInfo, Dialect, Error, NewValue, ObjectKind, RowPage, Structure,
-    Value, column_class,
+    Access, CellChange, ChangeSet, ColumnClass, ColumnInfo, Dialect, Error, NewValue, ObjectKind,
+    ObjectRef, RowChange, RowPage, Structure, Value, column_class,
 };
 
+use crate::backend::RequestId;
 use crate::model::CellPos;
 
 /// The largest value an editor opens, in bytes of its text: a field that
@@ -414,6 +416,12 @@ pub struct Edits {
     pub editor: Option<Editor>,
     /// Why the cell last asked for could not be edited.
     pub why: Option<(CellPos, Lock)>,
+    /// The save that is running.
+    pub saving: Option<Saving>,
+    /// The last save that wrote, for the cells' green and the status.
+    pub saved: Option<Saved>,
+    /// What the last save came to when it wrote nothing.
+    pub note: Option<Note>,
 }
 
 /// How much is pending.
@@ -436,10 +444,10 @@ pub enum RowMark {
 }
 
 impl Edits {
-    /// Whether the tab's page must stay: something is pending, or an
-    /// editor is open.
+    /// Whether the tab's page must stay: something is pending, an editor
+    /// is open, or a save is running.
     pub fn holds(&self) -> bool {
-        !self.cells.is_empty() || self.editor.is_some()
+        !self.cells.is_empty() || self.editor.is_some() || self.saving.is_some()
     }
 
     pub fn counts(&self) -> Counts {
@@ -479,19 +487,111 @@ impl std::fmt::Debug for Edits {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "Edits {{ cells: {}, editor: {:?}, why: {:?} }}",
+            "Edits {{ cells: {}, editor: {:?}, why: {:?}, saving: {} }}",
             self.cells.len(),
             self.editor.as_ref().map(|editor| editor.cell),
-            self.why
+            self.why,
+            self.saving.is_some()
         )
     }
+}
+
+/// A save in flight.
+#[derive(Debug)]
+pub struct Saving {
+    pub request: RequestId,
+    /// The page's row of each row of the change set, in its order: the
+    /// answer names rows by their place in the set.
+    pub rows: Vec<usize>,
+    pub started: Instant,
+}
+
+/// A save that wrote.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Saved {
+    /// When, for the cells that show it for a moment.
+    pub at: Instant,
+    pub cells: Vec<CellPos>,
+    pub changes: usize,
+    pub rows: usize,
+    pub elapsed: Duration,
+}
+
+/// How long a saved cell shows it.
+pub const SAVED_FOR: Duration = Duration::from_millis(1200);
+
+/// What a save came to when it wrote nothing. The view words it.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Note {
+    /// The page's row `row` changed on the server, or is `gone`; `others`
+    /// more rows conflict too.
+    Conflict {
+        row: usize,
+        gone: bool,
+        others: usize,
+    },
+    /// The statement of the page's row `row` failed.
+    Failed { row: usize, error: Error },
+    /// The connection was lost while saving: what was written is not known.
+    Lost,
+    /// The save was cancelled.
+    Cancelled,
+    /// The save was refused or undone, with the database's or the app's
+    /// reason.
+    Refused(Error),
+}
+
+/// The change set a save sends for the pending `cells`, and the page's row
+/// of each of its rows. `None` when nothing is pending or the table has no
+/// key.
+pub fn change_set(
+    object: &ObjectRef,
+    table: &Table<'_>,
+    cells: &BTreeMap<(usize, usize), Pending>,
+) -> Option<(ChangeSet, Vec<usize>)> {
+    let key = table.key()?;
+    let mut rows: Vec<RowChange> = Vec::new();
+    let mut places = Vec::new();
+    // The map is ordered by row, then column, so a row's cells are together.
+    for (&(row, col), pending) in cells {
+        let values = table.page.rows.get(row)?;
+        let column = table.column(col)?;
+        if places.last() != Some(&row) {
+            places.push(row);
+            rows.push(RowChange {
+                key: key
+                    .iter()
+                    .map(|&place| {
+                        let name = table.page.columns.get(place)?.name.clone();
+                        Some((name, values.get(place)?.clone()))
+                    })
+                    .collect::<Option<_>>()?,
+                set: Vec::new(),
+            });
+        }
+        rows.last_mut()?.set.push(CellChange {
+            column: column.name.clone(),
+            type_name: column.type_name.clone(),
+            loaded: values.get(col)?.clone(),
+            new: pending.new.clone(),
+        });
+    }
+    (!rows.is_empty()).then(|| {
+        (
+            ChangeSet {
+                object: object.clone(),
+                rows,
+            },
+            places,
+        )
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::time::Duration;
-    use tabletist_db::{ColumnMeta, IndexInfo, ValueKind};
+    use tabletist_db::{ColumnMeta, IndexInfo, ObjectRef, ValueKind};
 
     fn column(name: &str, type_name: &str) -> ColumnInfo {
         ColumnInfo {
@@ -914,5 +1014,40 @@ mod tests {
         let printed = format!("{edits:?}");
         assert!(!printed.contains("secret"), "{printed}");
         assert!(printed.contains("cells: 1"), "{printed}");
+    }
+
+    #[test]
+    fn the_change_set_names_each_row_by_its_key_and_carries_what_was_loaded() {
+        let (structure, page) = (structure(), page(rows()));
+        let table = table(Some(&structure), &page);
+        let ready = |new: NewValue| Pending {
+            new,
+            state: State::Ready,
+        };
+        let mut cells = BTreeMap::new();
+        cells.insert((1, 2), ready(NewValue::Null));
+        cells.insert((1, 1), ready(NewValue::Text("b@example.com".into())));
+        cells.insert((0, 1), ready(NewValue::Text("a@example.com".into())));
+        let (changes, places) =
+            change_set(&ObjectRef::new("main", "users"), &table, &cells).unwrap();
+        // One change per row, in the page's order, and where each came from.
+        assert_eq!(places, [0, 1]);
+        assert_eq!(changes.rows.len(), 2);
+        assert_eq!(changes.rows[0].key, [("id".to_owned(), Value::Int(1))]);
+        let second = &changes.rows[1];
+        assert_eq!(second.key, [("id".to_owned(), Value::Int(2))]);
+        assert_eq!(
+            second
+                .set
+                .iter()
+                .map(|cell| (cell.column.as_str(), cell.type_name.as_str()))
+                .collect::<Vec<_>>(),
+            [("email", "TEXT"), ("meta", "JSON")]
+        );
+        assert_eq!(second.set[1].loaded, text("{}"));
+        assert_eq!(second.set[1].new, NewValue::Null);
+        assert_eq!(changes.check(), Ok(()));
+        // Nothing pending is nothing to send.
+        assert!(change_set(&ObjectRef::new("main", "users"), &table, &BTreeMap::new()).is_none());
     }
 }
