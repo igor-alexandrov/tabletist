@@ -806,8 +806,24 @@ async fn read_file(path: PathBuf) -> std::io::Result<Vec<u8>> {
 /// not always as the directory was given.
 fn concerns(event: &notify::Event, name: Option<&std::ffi::OsStr>) -> bool {
     !event.kind.is_access()
-        && name.is_some()
-        && event.paths.iter().any(|path| path.file_name() == name)
+        && name.is_some_and(|name| {
+            event.paths.iter().any(|path| {
+                path.file_name()
+                    .is_some_and(|changed| same_file(changed, name))
+            })
+        })
+}
+
+/// Whether two file names are one file's. macOS and Windows find a file
+/// whatever the case of its name, so one kept as `Settings.toml` is the
+/// one the app reads as `settings.toml`, and its changes come under the
+/// spelling it is kept in.
+fn same_file(one: &std::ffi::OsStr, other: &std::ffi::OsStr) -> bool {
+    if cfg!(any(windows, target_os = "macos")) {
+        one.eq_ignore_ascii_case(other)
+    } else {
+        one == other
+    }
 }
 
 /// Waits until the changes have been quiet for `SETTLE`: a save is several
@@ -4007,6 +4023,33 @@ mod tests {
             Some(name)
         ));
         assert!(!concerns(&at(data, "/config/settings.toml"), None));
+    }
+
+    #[test]
+    fn a_settings_file_kept_in_another_case_is_the_same_where_case_does_not_count() {
+        use notify::event::{AccessKind, ModifyKind};
+        use notify::{Event, EventKind};
+        let name = std::ffi::OsStr::new("settings.toml");
+        let at = |kind: EventKind, path: &str| Event::new(kind).add_path(path.into());
+        let data = EventKind::Modify(ModifyKind::Any);
+        // macOS and Windows open `Settings.toml` under the lower-case name
+        // the app asks for, and report its changes as it is spelled.
+        let folds = cfg!(any(windows, target_os = "macos"));
+        assert_eq!(
+            concerns(&at(data, "/config/Settings.toml"), Some(name)),
+            folds
+        );
+        assert_eq!(
+            concerns(&at(data, "/config/SETTINGS.TOML"), Some(name)),
+            folds
+        );
+        // Another file is another file in any case, and a look is a look.
+        assert!(!concerns(&at(data, "/config/Settings.json"), Some(name)));
+        assert!(!concerns(
+            &at(EventKind::Access(AccessKind::Any), "/config/Settings.toml"),
+            Some(name)
+        ));
+        assert!(same_file(name, std::ffi::OsStr::new("settings.toml")));
     }
 
     #[test]

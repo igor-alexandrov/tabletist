@@ -421,7 +421,9 @@ logged and nothing is sent: the settings in memory stay.
 The watcher ignores events that only say the file was looked at: Linux
 reports every open, and the backend's own read is one, so a watcher that
 answered them would read the file for ever. The file is matched by its name
-in the directory, since the paths of events come as the system has them.
+in the directory, since the paths of events come as the system has them;
+on macOS and Windows, which find a file whatever the case of its name, the
+match ignores case, so a file kept as `Settings.toml` is still followed.
 The same text is never sent twice in a row.
 
 The file is read once when the watch starts, as if it had just changed:
