@@ -1,6 +1,6 @@
-//! Editing a cell: the field that sits on the cell, the keys that end an
-//! edit, and the words for what a typed value fails and for why a cell
-//! cannot be edited.
+//! Editing a cell: the field that sits on the cell, the popover for a
+//! value too large for it, the keys that end an edit, and the words for
+//! what a typed value fails and for why a cell cannot be edited.
 
 use egui::text::{CCursor, CCursorRange};
 use egui::{CornerRadius, Id, Key, Margin, Modifiers, Rect, Stroke, StrokeKind, Ui, pos2, vec2};
@@ -14,7 +14,7 @@ use crate::ui::focus::{self, Ring};
 use crate::ui::format::display_safe;
 use crate::ui::keys::consume_press;
 use crate::ui::states::Tone;
-use crate::ui::{grid, widgets};
+use crate::ui::{grid, sql_complete, widgets};
 
 /// What a frame of an open editor asks for.
 #[derive(Debug, Default, PartialEq)]
@@ -50,9 +50,10 @@ pub fn field_id(tab: ConnTabId, id: TabId) -> Id {
     Id::new(("cell-editor", tab.0, id.0))
 }
 
-/// Whether the field `id` had the keyboard when it was last drawn. egui
-/// says a widget lost the keyboard only when it had it a frame ago, and a
-/// field is not drawn every frame (its tab may be behind another).
+/// Where egui's memory keeps whether the field `id` had the keyboard when
+/// it was last drawn. egui says a widget lost the keyboard only when it
+/// had it a frame ago, and only when nothing else asked for it meanwhile;
+/// and a field is not drawn every frame (its tab may be behind another).
 fn had_id(id: Id) -> Id {
     id.with("had-keyboard")
 }
@@ -60,16 +61,16 @@ fn had_id(id: Id) -> Id {
 /// Gives the field `id` the keyboard, its cursor at the end of `text` and
 /// nothing to undo: it is one field for every cell, and each edit is its
 /// own.
-fn take_keyboard(ui: &Ui, id: Id, text: &str) {
+fn take_keyboard(ctx: &egui::Context, id: Id, text: &str) {
     let mut state = egui::text_edit::TextEditState::default();
     let end = CCursor::new(text.chars().count());
     state.cursor.set_char_range(Some(CCursorRange::one(end)));
-    state.store(ui.ctx(), id);
-    ui.memory_mut(|memory| memory.request_focus(id));
+    state.store(ctx, id);
+    ctx.memory_mut(|memory| memory.request_focus(id));
     // The keys a field holds (Tab, Esc) are its own from the frame after
     // it has the keyboard: ask for that frame, since no event need follow
     // the one that opened the editor.
-    ui.ctx().request_repaint();
+    ctx.request_repaint();
 }
 
 /// The keys that end an edit, read before the field is added: it would
@@ -102,8 +103,8 @@ fn ending_keys(ui: &Ui, has: bool, had: bool, outcome: &mut Outcome) {
 /// set its own filter while it drew (the arrows, Tab); egui replaces the
 /// whole filter, so those are named again. It holds from the frame after
 /// the field first had the keyboard.
-fn hold_keys(ui: &Ui, id: Id) {
-    ui.memory_mut(|memory| {
+fn hold_keys(ctx: &egui::Context, id: Id) {
+    ctx.memory_mut(|memory| {
         memory.set_focus_lock_filter(
             id,
             egui::EventFilter {
@@ -129,10 +130,10 @@ pub fn field(
     let mut outcome = Outcome::default();
     let id = target.id;
     if std::mem::take(&mut editor.focus) {
-        take_keyboard(ui, id, &editor.text);
+        take_keyboard(ui.ctx(), id, &editor.text);
     }
     let has = ui.memory(|memory| memory.has_focus(id));
-    let had: bool = ui.data(|data| data.get_temp(had_id(id))).unwrap_or(false);
+    let had = had_keyboard(ui.ctx(), id);
     ending_keys(ui, has, had, &mut outcome);
 
     // Over the cell: the row's fill would show through a field with none.
@@ -173,7 +174,7 @@ pub fn field(
     });
     let has = response.has_focus();
     if has {
-        hold_keys(ui, id);
+        hold_keys(ui.ctx(), id);
     }
     // The ring is the cell's: red while the text fails its check.
     let ring = if editor.problem.is_some() {
@@ -187,17 +188,230 @@ pub fn field(
         say_under(ui, rect, id, &message, look, palette);
     }
     outcome.changed = response.changed();
+    keyboard_after(ui.ctx(), target, has, had, &mut outcome);
+    outcome
+}
+
+/// Whether the field `id` had the keyboard when it was last drawn.
+fn had_keyboard(ctx: &egui::Context, id: Id) -> bool {
+    ctx.data(|data| data.get_temp(had_id(id))).unwrap_or(false)
+}
+
+/// What a field's frame comes to for the keyboard, once the field is
+/// drawn: `has` it now, `had` it when last drawn. Says whether it went
+/// elsewhere, and takes it back for an editor that is still open after its
+/// leaving was not taken.
+fn keyboard_after(
+    ctx: &egui::Context,
+    target: &Target,
+    has: bool,
+    had: bool,
+    outcome: &mut Outcome,
+) {
     let ended = outcome.commit.is_some() || outcome.cancel || outcome.large;
     // The keyboard went elsewhere: to a click, to another field.
     outcome.left = had && !has && !ended;
     if target.hold && !has && !had {
-        // An editor whose leaving was not taken (a prompt was up) is still
-        // open: it has the keyboard again once nothing else is asked.
-        response.request_focus();
-        ui.ctx().request_repaint();
+        // A prompt was up when it left, and the editor is open still: it
+        // has the keyboard again once nothing else is asked.
+        ctx.memory_mut(|memory| memory.request_focus(target.id));
+        ctx.request_repaint();
     }
-    ui.data_mut(|data| data.insert_temp(had_id(id), has));
+    ctx.data_mut(|data| data.insert_temp(had_id(target.id), has));
+}
+
+/// The large editor's size, and the height of the band under its text.
+const LARGE: egui::Vec2 = vec2(420.0, 180.0);
+const BAND: f32 = 28.0;
+/// The room round the large editor's text, and at the band's sides.
+const LARGE_PAD: f32 = 10.0;
+
+/// The large editor: a popover anchored to `anchor`, the cell, for a value
+/// of several lines, a long one, or a document. Its text is a field of
+/// several lines, where Enter and Tab are the text's own; Mod+Enter
+/// applies it and Esc drops it. Under the text a band counts what it holds
+/// and names those keys, or says what the text fails.
+pub fn large(
+    ctx: &egui::Context,
+    anchor: Rect,
+    editor: &mut Editor,
+    target: &Target,
+    (look, palette, locale): (&Look, &Palette, Locale),
+) -> Outcome {
+    let mut outcome = Outcome::default();
+    let id = target.id;
+    // One area for the editors of every table: only the table on screen
+    // has one, and egui keeps each area's place for good.
+    let area = Id::new("cell-editor-large");
+    egui::Area::new(area)
+        .order(egui::Order::Foreground)
+        .fade_in(false)
+        // Placed inside the screen by the size it has, not by the one
+        // egui remembers.
+        .constrain(false)
+        .fixed_pos(sql_complete::place(anchor, LARGE, ctx.content_rect()))
+        .show(ctx, |ui| {
+            // egui sizes a new area in a pass that paints nothing and
+            // whose widgets take no keyboard: the field drawn in it would
+            // give up the one it is handed. The editor starts with the
+            // frame after.
+            let sizing = ui.is_sizing_pass();
+            if sizing {
+                ui.ctx().request_repaint();
+            } else if std::mem::take(&mut editor.focus) {
+                take_keyboard(ui.ctx(), id, &editor.text);
+            }
+            let has = ui.memory(|memory| memory.has_focus(id));
+            let had = had_keyboard(ui.ctx(), id);
+            // Read before the field is added, which would take Esc as the
+            // keyboard given up. No popup is open for the other owners of
+            // Esc to see: the key is taken here, so none of them acts on
+            // it.
+            ui.input_mut(|input| {
+                if has && consume_press(input, Modifiers::COMMAND, Key::Enter) {
+                    outcome.commit = Some(Advance::Stay);
+                }
+                if (has || had) && consume_press(input, Modifiers::NONE, Key::Escape) {
+                    outcome.cancel = true;
+                }
+            });
+            let (rect, _) = ui.allocate_exact_size(LARGE, egui::Sense::hover());
+            // A press beside the text (the band, the padding) is the
+            // editor's: it is no click on the row under the popover, and
+            // the text keeps the keyboard.
+            let whole = ui.interact(rect, area.with("panel"), egui::Sense::CLICK);
+            let clicked_over =
+                ui.input(|input| input.pointer.any_click()) && ui.rect_contains_pointer(rect);
+            let pressed = whole.is_pointer_button_down_on() || whole.clicked() || clicked_over;
+            let corner = if look.terminal { 3 } else { 8 };
+            // The panel's own border gives way to the editor's line.
+            let _ = sql_complete::panel(ui, rect, corner, look, palette);
+            let role = grid::data_role(look);
+            let text_rect = Rect::from_min_max(
+                rect.min + vec2(LARGE_PAD, LARGE_PAD),
+                pos2(
+                    rect.right() - LARGE_PAD,
+                    rect.bottom() - BAND - LARGE_PAD / 2.0,
+                ),
+            );
+            let line = role.row_height(ui.ctx(), look.faces);
+            let rows = (text_rect.height() / line).floor().max(1.0) as usize;
+            let mut child = ui.new_child(egui::UiBuilder::new().max_rect(text_rect));
+            let mut layouter = crate::typography::layouter(look, role, palette.text);
+            let response = egui::ScrollArea::vertical()
+                .id_salt(area.with("text"))
+                .auto_shrink([false, false])
+                .show(&mut child, |ui| {
+                    ui.add(
+                        egui::TextEdit::multiline(&mut editor.text)
+                            .id(id)
+                            .font(role.font_id(look.faces))
+                            .frame(egui::Frame::NONE)
+                            .margin(Margin::ZERO)
+                            .desired_width(f32::INFINITY)
+                            .desired_rows(rows)
+                            // Tab is the text's own.
+                            .lock_focus(true)
+                            .layouter(&mut layouter),
+                    )
+                })
+                .inner;
+            // The name only: the field keeps the role and the value egui
+            // gave it.
+            let name = format!("{} {}", gettext(locale, "Edit"), display_safe(&target.name));
+            ui.ctx().accesskit_node_builder(id, |node| {
+                node.set_label(name);
+            });
+            let mut has = response.has_focus();
+            if !has && had && pressed {
+                // The press landed outside the field, which gave the keys
+                // up: they stay the editor's.
+                ui.memory_mut(|memory| memory.request_focus(id));
+                has = true;
+            }
+            if has {
+                hold_keys(ui.ctx(), id);
+            }
+            // The popover's line: the accent of a field being typed in,
+            // red while the text fails its check.
+            let (color, ring) = if editor.problem.is_some() {
+                (palette.danger, Ring::Failing { radius: corner })
+            } else {
+                (palette.accent, Ring::Field { radius: corner })
+            };
+            ui.painter().rect_stroke(
+                rect,
+                CornerRadius::same(corner),
+                Stroke::new(1.0, color),
+                StrokeKind::Inside,
+            );
+            focus::hint(ui, &response, rect, ring);
+            band(ui, rect, editor, target, (look, palette, locale));
+            outcome.changed = response.changed();
+            if !sizing {
+                keyboard_after(ui.ctx(), target, has, had, &mut outcome);
+            }
+        });
     outcome
+}
+
+/// The band under the large editor's text: how much it holds, or what it
+/// fails, and at the right the keys that end the edit.
+fn band(
+    ui: &Ui,
+    rect: Rect,
+    editor: &Editor,
+    target: &Target,
+    (look, palette, locale): (&Look, &Palette, Locale),
+) {
+    let top = rect.bottom() - BAND;
+    let line = if look.terminal {
+        palette.outline
+    } else {
+        palette.border
+    };
+    widgets::hline(ui, rect.x_range().shrink(1.0), top, line);
+    let y = top + BAND / 2.0;
+    let role = widgets::secondary(look);
+    let keys = format!(
+        "{}↩ {} · esc {}",
+        look.command_key(),
+        gettext(locale, "apply"),
+        gettext(locale, "cancel")
+    );
+    let right = rect.right() - LARGE_PAD;
+    let taken = widgets::paint_text_right(ui, right, y, Text::one(look, role, &keys, palette.dim));
+    let left = rect.left() + LARGE_PAD;
+    let room = (right - taken - LARGE_PAD - left).max(0.0);
+    let (said, color) = match &editor.problem {
+        Some(problem) => (
+            problem_text(problem, &target.type_name, Some(&editor.text), locale),
+            palette.danger,
+        ),
+        None => {
+            let count = |count: usize, one: &'static str, many: &'static str| {
+                let noun = ngettext(locale, one, many, u32::try_from(count).unwrap_or(u32::MAX));
+                let count = crate::ui::format::group_digits(count as u64);
+                format!("{count} {noun}")
+            };
+            let chars = editor.text.chars().count();
+            let lines = editor.text.matches('\n').count() + 1;
+            (
+                format!(
+                    "{} · {}",
+                    count(chars, "char", "chars"),
+                    count(lines, "line", "lines")
+                ),
+                palette.dim,
+            )
+        }
+    };
+    let width = |text: &str| role.width(ui.ctx(), look.faces, text);
+    let shown = grid::ellipsize(&said, room, false, width);
+    let wide = widgets::paint_text(ui, left, y, Text::one(look, role, &shown, color));
+    // The whole of it for a screen reader, cut or not.
+    let place = Rect::from_min_size(pos2(left, top), vec2(wide.max(1.0), BAND));
+    widgets::announce(ui, place, &said);
 }
 
 /// Paints `message` under the field at `rect`, or over it where the grid

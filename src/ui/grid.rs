@@ -124,6 +124,9 @@ pub struct GridOutput {
     pub clicked: Option<CellPos>,
     /// The cell a second click landed on, soon after the first.
     pub double_clicked: Option<CellPos>,
+    /// Where the cell being edited is, in view or not: what an editor that
+    /// does not sit on the cell is anchored to.
+    pub editing_rect: Option<Rect>,
     pub sort_clicked: Option<usize>,
     /// The keyboard came to the grid this frame (the Tab key, a screen
     /// reader): the arrows should be the grid's.
@@ -555,8 +558,6 @@ pub fn show<'a>(
     // edited is the grid's own: the pane has not lost the keyboard to it.
     let lit =
         keys && focus::visible(ui.ctx()) && (editing.is_some() || !focus::on_control(ui.ctx()));
-    // Whether the editor's field was drawn with its row.
-    let mut placed = false;
 
     let scroll = egui::ScrollArea::both()
         .id_salt(id)
@@ -711,13 +712,14 @@ pub fn show<'a>(
                     } else {
                         cell_rect
                     };
-                    if editing == Some(CellPos { row, col })
-                        && let Some(editor) = editor.as_deref_mut()
-                    {
+                    let edited = editing == Some(CellPos { row, col });
+                    if edited {
+                        output.editing_rect = Some(cell_rect);
+                    }
+                    if edited && let Some(editor) = editor.as_deref_mut() {
                         // The field in place of the cell's text, in view
                         // or not: it is drawn as long as it is open.
                         editor(ui, cell_rect);
-                        placed = true;
                         continue;
                     }
                     if !ui.is_rect_visible(cell_rect) {
@@ -754,7 +756,7 @@ pub fn show<'a>(
                         Mark::None | Mark::Locked => None,
                     };
                     let locked = content.mark == Mark::Locked && !look.terminal;
-                    if here && lit && look.terminal && tone.is_none() {
+                    if here && lit && look.terminal && tone.is_none() && !edited {
                         // Reverse video, as a terminal marks its cursor:
                         // the accent behind, the text in the window's tone.
                         painter.rect_filled(cell_rect, CornerRadius::ZERO, palette.accent);
@@ -861,7 +863,10 @@ pub fn show<'a>(
                         look,
                         &written,
                     );
-                    if here && lit {
+                    // A cell edited in an editor of its own keeps its
+                    // value and the cursor's line, lit or not: the line
+                    // says which cell the editor is for.
+                    if (here && lit) || edited {
                         // Inside the cell: nothing the grid scrolls under
                         // cuts it.
                         painter.rect_stroke(
@@ -884,9 +889,9 @@ pub fn show<'a>(
             });
 
             // A row scrolled out of view is not built, and its cell's
-            // field must be drawn all the same to keep the keyboard: where
+            // editor must be drawn all the same to keep the keyboard: where
             // the cell is, until the grid has scrolled back to it.
-            if let (Some(at), Some(editor), false) = (editing, editor, placed)
+            if let (Some(at), None) = (editing, output.editing_rect)
                 && at.row < row_count
                 && at.col < widths.len()
             {
@@ -894,10 +899,11 @@ pub fn show<'a>(
                     origin.x + gutter + lefts[at.col],
                     origin.y + header_height + at.row as f32 * row_height,
                 );
-                editor(
-                    ui,
-                    Rect::from_min_size(place, vec2(widths[at.col], row_height)),
-                );
+                let rect = Rect::from_min_size(place, vec2(widths[at.col], row_height));
+                output.editing_rect = Some(rect);
+                if let Some(editor) = editor {
+                    editor(ui, rect);
+                }
             }
 
             // The header, painted over the rows at the top of the visible
