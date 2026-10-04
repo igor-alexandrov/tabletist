@@ -276,7 +276,8 @@ impl Connection {
         changes.check()?;
         match &self.inner {
             Inner::Sqlite(conn) => conn.write(changes).await,
-            Inner::Postgres(_) | Inner::MySql(_) => Err(Error::Unsupported(
+            Inner::Postgres(conn) => conn.write(changes).await,
+            Inner::MySql(_) => Err(Error::Unsupported(
                 "saving is not built for this database yet",
             )),
         }

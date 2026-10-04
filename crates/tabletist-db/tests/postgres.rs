@@ -1513,3 +1513,1159 @@ async fn the_server_version_has_no_distribution_suffix() {
     assert!(version.starts_with("PostgreSQL "), "{version}");
     assert!(!version.contains('('), "{version}");
 }
+
+use std::future::Future;
+use std::panic::AssertUnwindSafe;
+
+use futures_util::FutureExt;
+use tabletist_db::{CellChange, ChangeSet, Conflict, NewValue, RowChange, WriteOutcome};
+
+/// Runs `test` on tables of its own. The fixture is loaded once and shared
+/// by every test of this suite, so a test that writes never touches it, nor
+/// its types (the fixture drops those without CASCADE when it loads, and a
+/// table left using one would fail every test from then on). `create` makes
+/// what the test writes to, under names no other test uses, and `drop`
+/// removes it however the test ends, a failed assertion included, and
+/// before anything else, for what a run that was killed left behind.
+async fn on_its_own_tables<T>(drop: &str, create: &str, test: impl Future<Output = T>) -> T {
+    let admin = admin().await;
+    admin.batch_execute(drop).await.unwrap();
+    let outcome = AssertUnwindSafe(async {
+        admin.batch_execute(create).await.unwrap();
+        test.await
+    })
+    .catch_unwind()
+    .await;
+    // A save that left its transaction open would hold the table, and the
+    // drop would wait for it for good: it gives up, and the test fails.
+    let dropped = admin
+        .batch_execute(&format!("SET lock_timeout = '10s'; {drop}"))
+        .await;
+    let value = outcome.unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+    dropped.unwrap();
+    value
+}
+
+/// A table of three people named `table`, for a test to write to.
+fn people(table: &str) -> String {
+    format!(
+        "CREATE TABLE {table} (
+             id integer PRIMARY KEY,
+             email text NOT NULL UNIQUE,
+             name text,
+             score double precision
+         );
+         INSERT INTO {table} VALUES
+             (1, 'a@x', 'Ada', 0.1), (2, 'b@x', 'Bea', NULL), (3, 'c@x', 'Cy', 3)"
+    )
+}
+
+fn drop_table(table: &str) -> String {
+    format!("DROP TABLE IF EXISTS {table}")
+}
+
+/// The rows of `table` as a page gives them, in key order, and the names
+/// of their columns.
+async fn page_of(connection: &Connection, table: &str) -> (Vec<String>, Vec<Vec<Value>>) {
+    let query = RowQuery::new(ObjectRef::new("public", table), 50);
+    let page = connection.fetch_rows(&query).await.unwrap();
+    (
+        page.columns.into_iter().map(|column| column.name).collect(),
+        page.rows,
+    )
+}
+
+/// The row of `table` with this id, as a page gives it, and the names of
+/// its columns.
+async fn row_of(connection: &Connection, table: &str, id: i64) -> (Vec<String>, Vec<Value>) {
+    let (columns, rows) = page_of(connection, table).await;
+    let row = rows
+        .into_iter()
+        .find(|row| row[0] == Value::Int(id))
+        .unwrap_or_else(|| panic!("{table} has no row {id}"));
+    (columns, row)
+}
+
+/// One cell's change: `column`, of the type `describe` names, becomes
+/// `new`, from what `row` holds.
+fn cell(
+    columns: &[String],
+    row: &[Value],
+    column: &str,
+    type_name: &str,
+    new: NewValue,
+) -> CellChange {
+    let index = columns.iter().position(|name| name == column).unwrap();
+    CellChange {
+        column: column.into(),
+        type_name: type_name.into(),
+        loaded: row[index].clone(),
+        new,
+    }
+}
+
+/// The changes to the row of this id.
+fn by_id(id: i64, set: Vec<CellChange>) -> RowChange {
+    RowChange {
+        key: vec![("id".into(), Value::Int(id))],
+        set,
+    }
+}
+
+fn changes_to(table: &str, rows: Vec<RowChange>) -> ChangeSet {
+    ChangeSet {
+        object: ObjectRef::new("public", table),
+        rows,
+    }
+}
+
+/// A save of one row of `table`: each (column, type, new value), with what
+/// the page holds now as the loaded value.
+async fn save(
+    connection: &Connection,
+    table: &str,
+    id: i64,
+    cells: &[(&str, &str, NewValue)],
+) -> tabletist_db::Result<WriteOutcome> {
+    let (columns, row) = row_of(connection, table, id).await;
+    let set = cells
+        .iter()
+        .map(|(column, type_name, new)| cell(&columns, &row, column, type_name, new.clone()))
+        .collect();
+    within(connection.write(&changes_to(table, vec![by_id(id, set)]))).await
+}
+
+fn to(text: &str) -> NewValue {
+    NewValue::Text(text.into())
+}
+
+fn text(value: &str) -> Value {
+    Value::Text(value.into())
+}
+
+/// The server process of `connection`'s session.
+async fn backend_pid(connection: &Connection) -> i32 {
+    let outcome = run(connection, "SELECT pg_backend_pid()", 1).await.unwrap();
+    match &outcome.results[0].outcome {
+        StatementOutcome::Rows { rows, .. } => match rows[0][0] {
+            Value::Int(pid) => i32::try_from(pid).unwrap(),
+            ref other => panic!("{other:?}"),
+        },
+        other => panic!("{other:?}"),
+    }
+}
+
+/// What the server says the session of `pid` is doing: `idle` when no
+/// transaction is open on it.
+async fn state_of(admin: &tokio_postgres::Client, pid: i32) -> String {
+    admin
+        .query_one("SELECT state FROM pg_stat_activity WHERE pid = $1", &[&pid])
+        .await
+        .unwrap()
+        .get(0)
+}
+
+#[tokio::test]
+async fn a_save_writes_every_kind_of_value_and_reads_the_row_back() {
+    let Some(connection) = connect_as(Access::Writable).await else {
+        return;
+    };
+    on_its_own_tables(
+        "DROP TABLE IF EXISTS write_types; DROP TYPE IF EXISTS write_mood",
+        "CREATE TYPE write_mood AS ENUM ('happy', 'sad');
+         CREATE TABLE write_types (
+             id integer PRIMARY KEY,
+             email text NOT NULL UNIQUE,
+             name text,
+             created_at timestamptz NOT NULL DEFAULT '2026-01-01 00:00:00+00',
+             active boolean NOT NULL DEFAULT true,
+             meta jsonb,
+             score double precision,
+             balance numeric(14, 2),
+             tags text[],
+             mood write_mood,
+             uid uuid
+         );
+         INSERT INTO write_types VALUES
+             (1, 'a@x', 'Ada', '2026-01-01 00:00:00+00', true, '{\"a\": 1}', 0.1, 12.50,
+              '{x,y}', 'happy', '0199a3f2-7c1e-7abc-8def-0123456789ab'),
+             (2, 'b@x', 'Bea', '2026-01-02 00:00:00+00', false, NULL, NULL, NULL, NULL, NULL,
+              NULL)",
+        async move {
+            let (columns, untouched) = row_of(&connection, "write_types", 2).await;
+            let outcome = save(
+                &connection,
+                "write_types",
+                1,
+                &[
+                    ("email", "text", to("new@example.com")),
+                    ("name", "text", NewValue::Null),
+                    (
+                        "created_at",
+                        "timestamp with time zone",
+                        to("2027-02-03 04:05:06+00"),
+                    ),
+                    ("active", "boolean", to("false")),
+                    ("meta", "jsonb", to(r#"{"plan": "pro"}"#)),
+                    ("score", "double precision", to("12.5")),
+                    ("balance", "numeric(14,2)", to("99.95")),
+                    ("tags", "text[]", to("{a,b,c}")),
+                    ("mood", "write_mood", to("sad")),
+                    ("uid", "uuid", to("11111111-2222-3333-4444-555555555555")),
+                ],
+            )
+            .await;
+            let WriteOutcome::Written { rows, .. } = outcome.unwrap() else {
+                panic!("not written");
+            };
+            // What came back is what a page now shows.
+            let (_, after) = row_of(&connection, "write_types", 1).await;
+            assert_eq!(rows, std::slice::from_ref(&after));
+            let at = |name: &str| {
+                after[columns.iter().position(|column| column == name).unwrap()].clone()
+            };
+            assert_eq!(at("id"), Value::Int(1));
+            assert_eq!(at("email"), text("new@example.com"));
+            assert_eq!(at("name"), Value::Null);
+            assert_eq!(at("created_at"), text("2027-02-03 04:05:06+00"));
+            assert_eq!(at("active"), Value::Bool(false));
+            assert_eq!(at("meta"), text(r#"{"plan": "pro"}"#));
+            assert_eq!(at("score"), Value::Float(12.5));
+            assert_eq!(at("balance"), text("99.95"));
+            assert_eq!(at("tags"), text("{a,b,c}"));
+            assert_eq!(at("mood"), text("sad"));
+            assert_eq!(at("uid"), text("11111111-2222-3333-4444-555555555555"));
+            // The other row is as it was.
+            assert_eq!(row_of(&connection, "write_types", 2).await.1, untouched);
+            // And the row never conflicts with itself: every one of those
+            // columns written again, from what the page holds now. That is
+            // what proves each type's loaded value equals itself read again.
+            let again = save(
+                &connection,
+                "write_types",
+                1,
+                &[
+                    ("email", "text", to("back@example.com")),
+                    ("name", "text", to("Ada")),
+                    (
+                        "created_at",
+                        "timestamp with time zone",
+                        to("2026-01-01 00:00:00+00"),
+                    ),
+                    ("active", "boolean", to("true")),
+                    ("meta", "jsonb", NewValue::Null),
+                    ("score", "double precision", to("0.1")),
+                    ("balance", "numeric(14,2)", to("12.50")),
+                    ("tags", "text[]", to("{}")),
+                    ("mood", "write_mood", to("happy")),
+                    ("uid", "uuid", NewValue::Null),
+                ],
+            )
+            .await;
+            assert!(
+                matches!(again, Ok(WriteOutcome::Written { .. })),
+                "{again:?}"
+            );
+        },
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn a_row_changed_by_someone_else_is_a_conflict_and_nothing_is_written() {
+    let Some(connection) = connect_as(Access::Writable).await else {
+        return;
+    };
+    on_its_own_tables(
+        &drop_table("write_conflict"),
+        &people("write_conflict"),
+        async move {
+            // Loaded, then changed behind the page's back.
+            let (columns, first) = row_of(&connection, "write_conflict", 1).await;
+            let (_, second) = row_of(&connection, "write_conflict", 2).await;
+            let changes = changes_to(
+                "write_conflict",
+                vec![
+                    by_id(
+                        2,
+                        vec![cell(&columns, &second, "name", "text", to("Second"))],
+                    ),
+                    by_id(1, vec![cell(&columns, &first, "name", "text", to("Mine"))]),
+                ],
+            );
+            admin()
+                .await
+                .batch_execute("UPDATE write_conflict SET name = 'Theirs' WHERE id = 1")
+                .await
+                .unwrap();
+            let outcome = within(connection.write(&changes)).await.unwrap();
+            let theirs = row_of(&connection, "write_conflict", 1).await.1;
+            assert_eq!(theirs[2], text("Theirs"));
+            // The row's place in the set, and the row as the server holds it.
+            assert_eq!(
+                outcome,
+                WriteOutcome::Conflicts(vec![Conflict {
+                    row: 1,
+                    server: Some(theirs),
+                }])
+            );
+            // The other row of the set was not written either.
+            assert_eq!(row_of(&connection, "write_conflict", 2).await.1, second);
+        },
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn a_change_to_a_column_the_save_leaves_alone_is_no_conflict() {
+    let Some(connection) = connect_as(Access::Writable).await else {
+        return;
+    };
+    on_its_own_tables(
+        &drop_table("write_elsewhere"),
+        &people("write_elsewhere"),
+        async move {
+            let (columns, row) = row_of(&connection, "write_elsewhere", 1).await;
+            let changes = changes_to(
+                "write_elsewhere",
+                vec![by_id(
+                    1,
+                    vec![cell(&columns, &row, "name", "text", to("Mine"))],
+                )],
+            );
+            admin()
+                .await
+                .batch_execute("UPDATE write_elsewhere SET score = 99 WHERE id = 1")
+                .await
+                .unwrap();
+            let outcome = within(connection.write(&changes)).await;
+            assert!(
+                matches!(outcome, Ok(WriteOutcome::Written { .. })),
+                "{outcome:?}"
+            );
+            // Their change stands beside this one.
+            assert_eq!(
+                row_of(&connection, "write_elsewhere", 1).await.1[2..],
+                [text("Mine"), Value::Float(99.0)]
+            );
+        },
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn a_row_that_is_gone_is_a_conflict_without_a_row() {
+    let Some(connection) = connect_as(Access::Writable).await else {
+        return;
+    };
+    on_its_own_tables(
+        &drop_table("write_gone"),
+        &people("write_gone"),
+        async move {
+            let (columns, row) = row_of(&connection, "write_gone", 3).await;
+            let changes = changes_to(
+                "write_gone",
+                vec![by_id(
+                    3,
+                    vec![cell(&columns, &row, "name", "text", to("Late"))],
+                )],
+            );
+            admin()
+                .await
+                .batch_execute("DELETE FROM write_gone WHERE id = 3")
+                .await
+                .unwrap();
+            assert_eq!(
+                within(connection.write(&changes)).await,
+                Ok(WriteOutcome::Conflicts(vec![Conflict {
+                    row: 0,
+                    server: None
+                }]))
+            );
+        },
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn a_statement_that_fails_undoes_the_rows_before_it() {
+    let Some(connection) = connect_as(Access::Writable).await else {
+        return;
+    };
+    on_its_own_tables(
+        &drop_table("write_undone"),
+        &people("write_undone"),
+        async move {
+            let (columns, first) = row_of(&connection, "write_undone", 1).await;
+            let (_, second) = row_of(&connection, "write_undone", 2).await;
+            let changes = changes_to(
+                "write_undone",
+                vec![
+                    by_id(
+                        1,
+                        vec![cell(&columns, &first, "name", "text", to("Written first"))],
+                    ),
+                    // NOT NULL: the database refuses it.
+                    by_id(
+                        2,
+                        vec![cell(&columns, &second, "email", "text", NewValue::Null)],
+                    ),
+                ],
+            );
+            let outcome = within(connection.write(&changes)).await.unwrap();
+            assert!(
+                matches!(
+                    &outcome,
+                    WriteOutcome::Failed { row: 1, error: Error::Query { code, .. } }
+                        if code.as_deref() == Some("23502")
+                ),
+                "{outcome:?}"
+            );
+            assert_eq!(row_of(&connection, "write_undone", 1).await.1, first);
+            assert_eq!(row_of(&connection, "write_undone", 2).await.1, second);
+        },
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn a_value_the_column_cannot_take_is_the_databases_error() {
+    let Some(connection) = connect_as(Access::Writable).await else {
+        return;
+    };
+    on_its_own_tables(
+        &drop_table("write_refused"),
+        &people("write_refused"),
+        async move {
+            let before = row_of(&connection, "write_refused", 1).await.1;
+            let outcome = save(
+                &connection,
+                "write_refused",
+                1,
+                &[("score", "double precision", to("high"))],
+            )
+            .await
+            .unwrap();
+            assert!(
+                matches!(
+                    &outcome,
+                    WriteOutcome::Failed { row: 0, error: Error::Query { code, .. } }
+                        if code.as_deref() == Some("22P02")
+                ),
+                "{outcome:?}"
+            );
+            assert_eq!(row_of(&connection, "write_refused", 1).await.1, before);
+        },
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn a_save_on_a_read_only_connection_is_refused() {
+    let Some(connection) = connect().await else {
+        return;
+    };
+    on_its_own_tables(
+        &drop_table("write_read_only"),
+        &people("write_read_only"),
+        async move {
+            let before = row_of(&connection, "write_read_only", 1).await.1;
+            let outcome = save(
+                &connection,
+                "write_read_only",
+                1,
+                &[("name", "text", to("Grace"))],
+            )
+            .await;
+            assert_eq!(outcome, Err(Error::ReadOnly));
+            assert_eq!(row_of(&connection, "write_read_only", 1).await.1, before);
+        },
+    )
+    .await;
+}
+
+/// However a save ends, its transaction ends with it: the session is in
+/// none, holds no row, and is what a script and a page expect.
+#[tokio::test]
+async fn a_save_leaves_no_transaction_open_however_it_ends() {
+    let Some(connection) = connect_as(Access::Writable).await else {
+        return;
+    };
+    on_its_own_tables(
+        "DROP TABLE IF EXISTS write_session, write_session_twins",
+        &format!(
+            "{};
+             CREATE TABLE write_session_twins (id integer, name text);
+             INSERT INTO write_session_twins VALUES (1, 'a'), (1, 'b')",
+            people("write_session")
+        ),
+        async move {
+            let admin = admin().await;
+            admin
+                .batch_execute("SET lock_timeout = '5s'")
+                .await
+                .unwrap();
+            let pid = backend_pid(&connection).await;
+            let (columns, row) = row_of(&connection, "write_session", 1).await;
+            let mut stale = row.clone();
+            stale[2] = text("What the page never held");
+            type Ended = fn(&tabletist_db::Result<WriteOutcome>) -> bool;
+            let exits: [(&str, ChangeSet, Ended); 8] = [
+                (
+                    "a conflict",
+                    changes_to(
+                        "write_session",
+                        vec![by_id(
+                            1,
+                            vec![cell(&columns, &stale, "name", "text", to("Mine"))],
+                        )],
+                    ),
+                    |ended| matches!(ended, Ok(WriteOutcome::Conflicts(_))),
+                ),
+                (
+                    "a row that is gone",
+                    changes_to(
+                        "write_session",
+                        vec![by_id(
+                            99,
+                            vec![cell(&columns, &row, "name", "text", to("Mine"))],
+                        )],
+                    ),
+                    |ended| matches!(ended, Ok(WriteOutcome::Conflicts(_))),
+                ),
+                (
+                    "a statement the database refuses",
+                    changes_to(
+                        "write_session",
+                        vec![by_id(
+                            1,
+                            vec![cell(&columns, &row, "email", "text", NewValue::Null)],
+                        )],
+                    ),
+                    |ended| matches!(ended, Ok(WriteOutcome::Failed { row: 0, .. })),
+                ),
+                (
+                    "a statement that cannot be sent",
+                    changes_to(
+                        "write_session",
+                        vec![by_id(
+                            1,
+                            vec![cell(&columns, &row, "name", "text", to("a\0b"))],
+                        )],
+                    ),
+                    |ended| matches!(ended, Ok(WriteOutcome::Failed { row: 0, .. })),
+                ),
+                (
+                    "a column the table does not have",
+                    changes_to(
+                        "write_session",
+                        vec![by_id(
+                            1,
+                            vec![CellChange {
+                                column: "nick".into(),
+                                type_name: "text".into(),
+                                loaded: Value::Null,
+                                new: to("Mine"),
+                            }],
+                        )],
+                    ),
+                    |ended| matches!(ended, Err(Error::Query { .. })),
+                ),
+                (
+                    "a table that is not there",
+                    changes_to(
+                        "write_session_nowhere",
+                        vec![by_id(
+                            1,
+                            vec![cell(&columns, &row, "name", "text", to("Mine"))],
+                        )],
+                    ),
+                    |ended| matches!(ended, Err(Error::Query { .. })),
+                ),
+                (
+                    "a key that matches two rows",
+                    changes_to(
+                        "write_session_twins",
+                        vec![by_id(
+                            1,
+                            vec![CellChange {
+                                column: "name".into(),
+                                type_name: "text".into(),
+                                loaded: text("a"),
+                                new: to("Mine"),
+                            }],
+                        )],
+                    ),
+                    |ended| matches!(ended, Err(Error::Query { .. })),
+                ),
+                (
+                    "a save that is written",
+                    changes_to(
+                        "write_session",
+                        vec![by_id(
+                            1,
+                            vec![cell(&columns, &row, "name", "text", to("Grace"))],
+                        )],
+                    ),
+                    |ended| matches!(ended, Ok(WriteOutcome::Written { .. })),
+                ),
+            ];
+            for (exit, changes, ended_so) in exits {
+                let ended = within(connection.write(&changes)).await;
+                assert!(ended_so(&ended), "{exit}: {ended:?}");
+                assert_eq!(state_of(&admin, pid).await, "idle", "{exit}");
+                // No row is still held: someone else changes them at once.
+                let free = admin
+                    .batch_execute(
+                        "UPDATE write_session SET score = score;
+                         UPDATE write_session_twins SET name = name",
+                    )
+                    .await;
+                assert!(free.is_ok(), "{exit}: {free:?}");
+            }
+            // Only the last of them wrote.
+            assert_eq!(
+                row_of(&connection, "write_session", 1).await.1[1..3],
+                [text("a@x"), text("Grace")]
+            );
+            // A script is fenced as before, and the session's own default
+            // is the one it connected with.
+            let outcome = run(
+                &connection,
+                "SHOW default_transaction_read_only; SHOW transaction_read_only; \
+                 INSERT INTO write_session VALUES (9, 'z@x', 'Z', 1)",
+                10,
+            )
+            .await
+            .unwrap();
+            let shown = |index: usize| match &outcome.results[index].outcome {
+                StatementOutcome::Rows { rows, .. } => rows[0][0].clone(),
+                other => panic!("{other:?}"),
+            };
+            assert_eq!(shown(0), text("off"));
+            assert_eq!(shown(1), text("on"));
+            assert!(
+                matches!(
+                    &outcome.results[2].outcome,
+                    StatementOutcome::Error { error: Error::Query { code: Some(code), .. }, .. }
+                        if code == "25006"
+                ),
+                "{outcome:?}"
+            );
+            assert_eq!(state_of(&admin, pid).await, "idle");
+        },
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn a_composite_and_a_binary_key_find_their_row() {
+    let Some(connection) = connect_as(Access::Writable).await else {
+        return;
+    };
+    on_its_own_tables(
+        &drop_table("write_composite"),
+        "CREATE TABLE write_composite (a integer, b bytea, note text, PRIMARY KEY (a, b));
+         INSERT INTO write_composite VALUES
+             (1, '\\x00ff10', 'first'), (1, '\\x00ff11', 'second'), (2, '\\x00ff10', 'third')",
+        async move {
+            let (_, before) = page_of(&connection, "write_composite").await;
+            let bytes = Value::Bytes(vec![0x00, 0xff, 0x10].into());
+            assert_eq!(before[0][1], bytes);
+            let changes = changes_to(
+                "write_composite",
+                vec![RowChange {
+                    key: vec![("a".into(), Value::Int(1)), ("b".into(), bytes.clone())],
+                    set: vec![CellChange {
+                        column: "note".into(),
+                        type_name: "text".into(),
+                        loaded: text("first"),
+                        new: to("changed"),
+                    }],
+                }],
+            );
+            let outcome = within(connection.write(&changes)).await.unwrap();
+            let changed = vec![Value::Int(1), bytes, text("changed")];
+            assert!(
+                matches!(&outcome, WriteOutcome::Written { rows, .. } if *rows == [changed.clone()]),
+                "{outcome:?}"
+            );
+            // Its neighbours, which share half the key each, are as they were.
+            let (_, after) = page_of(&connection, "write_composite").await;
+            assert_eq!(after, [changed, before[1].clone(), before[2].clone()]);
+        },
+    )
+    .await;
+}
+
+/// A key is a row's only when one row has it. Where two do (nothing holds
+/// the column unique), the save cannot say which it means.
+#[tokio::test]
+async fn a_key_that_matches_two_rows_is_an_error_and_nothing_is_written() {
+    let Some(connection) = connect_as(Access::Writable).await else {
+        return;
+    };
+    on_its_own_tables(
+        &drop_table("write_twins"),
+        "CREATE TABLE write_twins (id integer, name text);
+         INSERT INTO write_twins VALUES (1, 'same'), (1, 'same'), (2, 'other')",
+        async move {
+            let changes = changes_to(
+                "write_twins",
+                vec![by_id(
+                    1,
+                    vec![CellChange {
+                        column: "name".into(),
+                        type_name: "text".into(),
+                        loaded: text("same"),
+                        new: to("Mine"),
+                    }],
+                )],
+            );
+            let outcome = within(connection.write(&changes)).await;
+            assert!(
+                matches!(&outcome, Err(Error::Query { message, .. }) if message.contains("more than one row")),
+                "{outcome:?}"
+            );
+            let admin = admin().await;
+            let names: Vec<String> = admin
+                .query("SELECT name FROM write_twins ORDER BY id", &[])
+                .await
+                .unwrap()
+                .iter()
+                .map(|row| row.get(0))
+                .collect();
+            assert_eq!(names, ["same", "same", "other"]);
+        },
+    )
+    .await;
+}
+
+/// An `UPDATE` that changes no row (here a trigger drops it) is not a save:
+/// the row before it is put back.
+#[tokio::test]
+async fn an_update_that_does_not_change_one_row_fails_and_is_undone() {
+    let Some(connection) = connect_as(Access::Writable).await else {
+        return;
+    };
+    on_its_own_tables(
+        "DROP TABLE IF EXISTS write_skipped; DROP FUNCTION IF EXISTS write_skipped_skip()",
+        &format!(
+            "{};
+             CREATE FUNCTION write_skipped_skip() RETURNS trigger LANGUAGE plpgsql AS $$
+             BEGIN
+                 IF NEW.name = 'Skip' THEN RETURN NULL; END IF;
+                 RETURN NEW;
+             END $$;
+             CREATE TRIGGER skip BEFORE UPDATE ON write_skipped
+                 FOR EACH ROW EXECUTE FUNCTION write_skipped_skip()",
+            people("write_skipped")
+        ),
+        async move {
+            let (columns, first) = row_of(&connection, "write_skipped", 1).await;
+            let (_, second) = row_of(&connection, "write_skipped", 2).await;
+            let changes = changes_to(
+                "write_skipped",
+                vec![
+                    by_id(
+                        1,
+                        vec![cell(&columns, &first, "name", "text", to("Written first"))],
+                    ),
+                    by_id(2, vec![cell(&columns, &second, "name", "text", to("Skip"))]),
+                ],
+            );
+            let outcome = within(connection.write(&changes)).await.unwrap();
+            assert!(
+                matches!(
+                    &outcome,
+                    WriteOutcome::Failed { row: 1, error: Error::Query { message, .. } }
+                        if message.contains("0 rows")
+                ),
+                "{outcome:?}"
+            );
+            assert_eq!(row_of(&connection, "write_skipped", 1).await.1, first);
+            assert_eq!(row_of(&connection, "write_skipped", 2).await.1, second);
+        },
+    )
+    .await;
+}
+
+/// The text a save stores, and the key it finds its row by, is the text it
+/// was given, character for character.
+const AWKWARD: [&str; 12] = [
+    "O'Brien",
+    r"C:\temp\new",
+    r"a backslash before a quote \' and after '\",
+    r"two of each '' \\",
+    "naïve café, 漢字, 🙂",
+    r#"both "double" and 'single' and \ and é"#,
+    "'",
+    r"\",
+    "$1 $$ ; -- /* not a comment */",
+    "a line\nand a\ttab",
+    "E'x'",
+    r"\x00ff",
+];
+
+/// A script cannot change how the server reads a save's text: what it set
+/// goes with its transaction.
+#[tokio::test]
+async fn text_is_stored_exactly_also_after_a_script_set_how_strings_are_read() {
+    let Some(connection) = connect_as(Access::Writable).await else {
+        return;
+    };
+    on_its_own_tables(
+        &drop_table("write_text"),
+        "CREATE TABLE write_text (id text PRIMARY KEY, body text)",
+        async move {
+            let admin = admin().await;
+            for text in AWKWARD {
+                admin
+                    .execute("INSERT INTO write_text VALUES ($1, 'before')", &[&text])
+                    .await
+                    .unwrap();
+            }
+            // The refusal stops a plain SET of the first two, so they are
+            // set where it does not read: inside a block.
+            let outcome = run(
+                &connection,
+                "DO $$ BEGIN
+                     SET standard_conforming_strings = off;
+                     SET client_encoding = 'LATIN1';
+                 END $$;
+                 SET backslash_quote = on;
+                 SET search_path = pg_catalog;
+                 SET DateStyle = 'German, DMY';
+                 SHOW standard_conforming_strings",
+                10,
+            )
+            .await
+            .unwrap();
+            assert!(
+                matches!(
+                    &outcome.results[4].outcome,
+                    StatementOutcome::Rows { rows, .. } if rows[0][0] == text("off")
+                ),
+                "{outcome:?}"
+            );
+            let rows = AWKWARD
+                .iter()
+                .map(|awkward| RowChange {
+                    key: vec![("id".into(), text(awkward))],
+                    set: vec![CellChange {
+                        column: "body".into(),
+                        type_name: "text".into(),
+                        loaded: text("before"),
+                        new: to(awkward),
+                    }],
+                })
+                .collect();
+            let outcome = within(connection.write(&changes_to("write_text", rows))).await;
+            assert!(
+                matches!(outcome, Ok(WriteOutcome::Written { .. })),
+                "{outcome:?}"
+            );
+            // Read by another session, through the protocol that carries
+            // values as they are.
+            let stored = admin
+                .query("SELECT id, body FROM write_text", &[])
+                .await
+                .unwrap();
+            let mut ids: Vec<String> = Vec::new();
+            for row in &stored {
+                let (id, body): (String, String) = (row.get(0), row.get(1));
+                assert_eq!(body, id);
+                ids.push(id);
+            }
+            let mut awkward = AWKWARD.map(str::to_owned).to_vec();
+            awkward.sort();
+            ids.sort();
+            assert_eq!(ids, awkward);
+        },
+    )
+    .await;
+}
+
+/// PostgreSQL text cannot hold a NUL, and the driver cannot send one: it
+/// fails in a way that reads as a lost session. So such a save is the
+/// row's failure before anything is sent, and the session lives.
+#[tokio::test]
+async fn text_holding_a_nul_is_refused_before_anything_is_sent() {
+    let Some(connection) = connect_as(Access::Writable).await else {
+        return;
+    };
+    on_its_own_tables(&drop_table("write_nul"), &people("write_nul"), async move {
+        let (columns, first) = row_of(&connection, "write_nul", 1).await;
+        let (_, second) = row_of(&connection, "write_nul", 2).await;
+        let changes = changes_to(
+            "write_nul",
+            vec![
+                by_id(1, vec![cell(&columns, &first, "name", "text", to("Fine"))]),
+                by_id(2, vec![cell(&columns, &second, "name", "text", to("a\0b"))]),
+            ],
+        );
+        let outcome = within(connection.write(&changes)).await;
+        assert!(
+            matches!(
+                &outcome,
+                Ok(WriteOutcome::Failed { row: 1, error: Error::Query { message, .. } })
+                    if message.contains("NUL")
+            ),
+            "{outcome:?}"
+        );
+        assert_eq!(row_of(&connection, "write_nul", 1).await.1, first);
+    })
+    .await;
+}
+
+/// The row is read locked. While someone else's change to it is not yet
+/// committed the save waits, and then compares what they committed: read
+/// without the lock, it would see the row as it was, find no conflict, and
+/// write over their change.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_save_waits_for_a_change_in_flight_and_then_sees_it() {
+    let Some(connection) = connect_as(Access::Writable).await else {
+        return;
+    };
+    on_its_own_tables(
+        &drop_table("write_locked"),
+        &people("write_locked"),
+        async move {
+            let (columns, row) = row_of(&connection, "write_locked", 1).await;
+            let changes = changes_to(
+                "write_locked",
+                vec![by_id(
+                    1,
+                    vec![cell(&columns, &row, "name", "text", to("Mine"))],
+                )],
+            );
+            let theirs = admin().await;
+            theirs
+                .batch_execute("BEGIN; UPDATE write_locked SET name = 'Theirs' WHERE id = 1")
+                .await
+                .unwrap();
+            let connection = std::sync::Arc::new(connection);
+            let saving = {
+                let connection = std::sync::Arc::clone(&connection);
+                tokio::spawn(async move { connection.write(&changes).await })
+            };
+            // Until the save waits for their lock.
+            let admin = admin().await;
+            within(async {
+                loop {
+                    let waiting: i64 = admin
+                        .query_one(
+                            "SELECT count(*) FROM pg_stat_activity \
+                             WHERE wait_event_type = 'Lock' AND pid <> pg_backend_pid() \
+                               AND position('write_locked' in query) > 0",
+                            &[],
+                        )
+                        .await
+                        .unwrap()
+                        .get(0);
+                    if waiting > 0 {
+                        break;
+                    }
+                    assert!(!saving.is_finished(), "the save did not wait");
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await;
+            theirs.batch_execute("COMMIT").await.unwrap();
+            let outcome = within(saving).await.unwrap().unwrap();
+            let now = row_of(&connection, "write_locked", 1).await.1;
+            assert_eq!(now[2], text("Theirs"));
+            assert_eq!(
+                outcome,
+                WriteOutcome::Conflicts(vec![Conflict {
+                    row: 0,
+                    server: Some(now),
+                }])
+            );
+        },
+    )
+    .await;
+}
+
+/// A `COMMIT` the database refuses (a constraint checked only then) wrote
+/// nothing: it is the save's error, on a session that lives.
+#[tokio::test]
+async fn a_commit_the_database_refuses_is_the_saves_error_and_nothing_is_written() {
+    let Some(connection) = connect_as(Access::Writable).await else {
+        return;
+    };
+    on_its_own_tables(
+        &drop_table("write_deferred"),
+        "CREATE TABLE write_deferred (
+             id integer PRIMARY KEY,
+             email text NOT NULL,
+             CONSTRAINT write_deferred_email UNIQUE (email) DEFERRABLE INITIALLY DEFERRED
+         );
+         INSERT INTO write_deferred VALUES (1, 'a@x'), (2, 'b@x')",
+        async move {
+            let admin = admin().await;
+            let pid = backend_pid(&connection).await;
+            let before = page_of(&connection, "write_deferred").await.1;
+            let outcome = save(&connection, "write_deferred", 1, &[("email", "text", to("b@x"))]).await;
+            assert!(
+                matches!(&outcome, Err(Error::Query { code, .. }) if code.as_deref() == Some("23505")),
+                "{outcome:?}"
+            );
+            assert_eq!(page_of(&connection, "write_deferred").await.1, before);
+            assert_eq!(state_of(&admin, pid).await, "idle");
+            // And the session saves as before.
+            let outcome = save(&connection, "write_deferred", 1, &[("email", "text", to("c@x"))]).await;
+            assert!(
+                matches!(outcome, Ok(WriteOutcome::Written { .. })),
+                "{outcome:?}"
+            );
+        },
+    )
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_cancel_during_a_save_undoes_it() {
+    let Some(connection) = connect_as(Access::Writable).await else {
+        return;
+    };
+    on_its_own_tables(
+        "DROP TABLE IF EXISTS write_cancel; DROP FUNCTION IF EXISTS write_cancel_slow()",
+        // For one name only, the UPDATE runs far longer than the test waits.
+        &format!(
+            "{};
+             CREATE FUNCTION write_cancel_slow() RETURNS trigger LANGUAGE plpgsql AS $$
+             BEGIN
+                 IF NEW.name = 'Slow' THEN PERFORM pg_sleep(20); END IF;
+                 RETURN NEW;
+             END $$;
+             CREATE TRIGGER slow BEFORE UPDATE ON write_cancel
+                 FOR EACH ROW EXECUTE FUNCTION write_cancel_slow()",
+            people("write_cancel")
+        ),
+        async move {
+            let admin = admin().await;
+            let pid = backend_pid(&connection).await;
+            let (columns, first) = row_of(&connection, "write_cancel", 1).await;
+            let (_, second) = row_of(&connection, "write_cancel", 2).await;
+            let changes = changes_to(
+                "write_cancel",
+                vec![
+                    by_id(
+                        1,
+                        vec![cell(&columns, &first, "name", "text", to("Written first"))],
+                    ),
+                    by_id(2, vec![cell(&columns, &second, "name", "text", to("Slow"))]),
+                ],
+            );
+            let cancel = connection.cancel_handle();
+            let connection = std::sync::Arc::new(connection);
+            let saving = {
+                let connection = std::sync::Arc::clone(&connection);
+                tokio::spawn(async move { connection.write(&changes).await })
+            };
+            runs_on_the_server(&admin, "SET \"name\" = 'Slow'").await;
+            let deadline = std::time::Instant::now() + Duration::from_secs(15);
+            while !saving.is_finished() {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "cancel must stop the save"
+                );
+                cancel.cancel().await.unwrap();
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            // The save's own end, not a row's failure.
+            assert_eq!(saving.await.unwrap(), Err(Error::Cancelled));
+            // Nothing was written, the row before the cancelled one included.
+            assert_eq!(row_of(&connection, "write_cancel", 1).await.1, first);
+            assert_eq!(row_of(&connection, "write_cancel", 2).await.1, second);
+            assert_eq!(state_of(&admin, pid).await, "idle");
+            // And the session saves as before.
+            let outcome = save(
+                &connection,
+                "write_cancel",
+                1,
+                &[("name", "text", to("Quick"))],
+            )
+            .await;
+            assert!(
+                matches!(outcome, Ok(WriteOutcome::Written { .. })),
+                "{outcome:?}"
+            );
+        },
+    )
+    .await;
+}
+
+/// A trigger the update fires can give a second row the key, or take the
+/// key from the row. The save then has no one row to hand back: it is an
+/// error, and what it wrote (and what the trigger wrote) is undone.
+#[tokio::test]
+async fn a_row_that_cannot_be_read_back_alone_is_an_error_and_is_undone() {
+    let Some(connection) = connect_as(Access::Writable).await else {
+        return;
+    };
+    on_its_own_tables(
+        "DROP TABLE IF EXISTS write_twinned, write_moved;
+         DROP FUNCTION IF EXISTS write_twinned_twin(), write_moved_move()",
+        "CREATE TABLE write_twinned (id integer, name text);
+         INSERT INTO write_twinned VALUES (1, 'one'), (2, 'two');
+         CREATE FUNCTION write_twinned_twin() RETURNS trigger LANGUAGE plpgsql AS $$
+         BEGIN
+             INSERT INTO write_twinned VALUES (NEW.id, 'twin');
+             RETURN NEW;
+         END $$;
+         CREATE TRIGGER twin AFTER UPDATE ON write_twinned
+             FOR EACH ROW EXECUTE FUNCTION write_twinned_twin();
+         CREATE TABLE write_moved (id integer, name text);
+         INSERT INTO write_moved VALUES (1, 'one'), (2, 'two');
+         CREATE FUNCTION write_moved_move() RETURNS trigger LANGUAGE plpgsql AS $$
+         BEGIN
+             NEW.id := NEW.id + 100;
+             RETURN NEW;
+         END $$;
+         CREATE TRIGGER move BEFORE UPDATE ON write_moved
+             FOR EACH ROW EXECUTE FUNCTION write_moved_move()",
+        async move {
+            let admin = admin().await;
+            for (table, said) in [
+                ("write_twinned", "more than one row"),
+                ("write_moved", "could not be read back"),
+            ] {
+                let changes = changes_to(
+                    table,
+                    vec![by_id(
+                        1,
+                        vec![CellChange {
+                            column: "name".into(),
+                            type_name: "text".into(),
+                            loaded: text("one"),
+                            new: to("Mine"),
+                        }],
+                    )],
+                );
+                let outcome = within(connection.write(&changes)).await;
+                assert!(
+                    matches!(&outcome, Err(Error::Query { message, .. }) if message.contains(said)),
+                    "{table}: {outcome:?}"
+                );
+                let rows: Vec<(i32, String)> = admin
+                    .query(
+                        &format!("SELECT id, name FROM {table} ORDER BY id, name"),
+                        &[],
+                    )
+                    .await
+                    .unwrap()
+                    .iter()
+                    .map(|row| (row.get(0), row.get(1)))
+                    .collect();
+                assert_eq!(
+                    rows,
+                    [(1, "one".to_owned()), (2, "two".to_owned())],
+                    "{table}"
+                );
+            }
+        },
+    )
+    .await;
+}
