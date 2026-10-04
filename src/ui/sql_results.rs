@@ -1122,8 +1122,11 @@ fn results(ui: &mut Ui, run: &SqlRun, place: &Place<'_>, env: &Env<'_>, actions:
         keys,
         palette,
         look,
-        // A result has nothing pending: no row is marked.
+        // A result has nothing pending and is never edited: no row is
+        // marked, and no cell has an editor.
         &|_| crate::edit::RowMark::None,
+        None,
+        None,
         |row, col| {
             data_view::cell(
                 &ctx,

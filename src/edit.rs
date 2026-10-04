@@ -593,14 +593,21 @@ impl Edits {
     }
 
     pub fn row_mark(&self, row: usize) -> RowMark {
-        let mut cells = self.cells.range((row, 0)..=(row, usize::MAX)).peekable();
-        if cells.peek().is_none() {
-            RowMark::None
-        } else if cells.any(|(_, cell)| cell.state != State::Ready) {
-            RowMark::Trouble
-        } else {
-            RowMark::Changed
-        }
+        row_mark(&self.cells, row)
+    }
+}
+
+/// What the pending `cells` of the page's row `row` come to. A view that
+/// holds the open editor's text reads the cells beside it, not through the
+/// whole set.
+pub fn row_mark(cells: &BTreeMap<(usize, usize), Pending>, row: usize) -> RowMark {
+    let mut cells = cells.range((row, 0)..=(row, usize::MAX)).peekable();
+    if cells.peek().is_none() {
+        RowMark::None
+    } else if cells.any(|(_, cell)| cell.state != State::Ready) {
+        RowMark::Trouble
+    } else {
+        RowMark::Changed
     }
 }
 

@@ -29,6 +29,9 @@ pub enum Ring {
     Edge { radius: u8 },
     /// A text field: its border in the accent and a soft halo round it.
     Field { radius: u8 },
+    /// A text field whose text fails its check: as [`Ring::Field`], in the
+    /// danger colour.
+    Failing { radius: u8 },
     /// The widget shows it by itself (a caret in text that has no box, the
     /// terminal's reversed button).
     Own,
@@ -383,21 +386,26 @@ pub fn paint(ctx: &egui::Context, look: &Look, palette: &Palette) {
                 StrokeKind::Outside,
             );
         }
-        Ring::Field { radius } => {
+        Ring::Field { radius } | Ring::Failing { radius } => {
+            let color = if matches!(ring, Ring::Failing { .. }) {
+                palette.danger
+            } else {
+                palette.accent
+            };
             let painter = painter.with_clip_rect(clip.expand(HALO));
             // The terminal's fields are square and take the border alone.
             if !look.terminal {
                 painter.rect_stroke(
                     rect,
                     round(radius, 0.0),
-                    Stroke::new(HALO, halo(palette)),
+                    Stroke::new(HALO, halo_of(color)),
                     StrokeKind::Outside,
                 );
             }
             painter.rect_stroke(
                 rect,
                 CornerRadius::same(radius),
-                Stroke::new(BORDER, palette.accent),
+                Stroke::new(BORDER, color),
                 StrokeKind::Inside,
             );
         }
@@ -407,7 +415,13 @@ pub fn paint(ctx: &egui::Context, look: &Look, palette: &Palette) {
 
 /// A field's halo: the accent at a quarter.
 pub fn halo(palette: &Palette) -> Color32 {
-    palette.accent.gamma_multiply(0.25)
+    halo_of(palette.accent)
+}
+
+/// The halo round a field whose border is `color`: that colour at a
+/// quarter.
+fn halo_of(color: Color32) -> Color32 {
+    color.gamma_multiply(0.25)
 }
 
 #[cfg(test)]
@@ -531,6 +545,58 @@ mod tests {
                 rings.contains(&(StrokeKind::Outside, HALO)),
                 !look.terminal,
                 "{}: {rings:?}",
+                look.name
+            );
+        }
+    }
+
+    #[test]
+    fn a_failing_field_takes_the_same_ring_in_the_danger_colour() {
+        for look in Look::ALL {
+            let palette = Palette::light();
+            let ctx = context(&look, &palette);
+            let draw = |events: Vec<egui::Event>| {
+                let input = egui::RawInput {
+                    events,
+                    ..Default::default()
+                };
+                let mut output = ctx.run_ui(input, |ui| {
+                    begin_frame(ui.ctx());
+                    egui::CentralPanel::default().show(ui, |ui| {
+                        let mut text = String::new();
+                        let field = ui.text_edit_singleline(&mut text);
+                        hint(ui, &field, field.rect, Ring::Failing { radius: 0 });
+                    });
+                    paint(ui.ctx(), &look, &palette);
+                });
+                output.textures_delta.clear();
+                output.shapes
+            };
+            draw(tab());
+            let strokes: Vec<(StrokeKind, f32, Color32)> = draw(Vec::new())
+                .iter()
+                .filter_map(|clipped| match &clipped.shape {
+                    egui::Shape::Rect(rect) if rect.fill == Color32::TRANSPARENT => {
+                        Some((rect.stroke_kind, rect.stroke.width, rect.stroke.color))
+                    }
+                    _ => None,
+                })
+                .collect();
+            let border = (StrokeKind::Inside, BORDER, palette.danger);
+            assert!(strokes.contains(&border), "{}: {strokes:?}", look.name);
+            let around = (StrokeKind::Outside, HALO, halo_of(palette.danger));
+            assert_eq!(
+                strokes.contains(&around),
+                !look.terminal,
+                "{}: {strokes:?}",
+                look.name
+            );
+            // Nothing of the accent's ring beside it.
+            assert!(
+                !strokes.iter().any(|(_, width, color)| {
+                    (*color == palette.accent && *width == WIDTH) || *color == halo(&palette)
+                }),
+                "{}: {strokes:?}",
                 look.name
             );
         }
