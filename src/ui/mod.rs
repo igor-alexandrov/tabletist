@@ -12933,4 +12933,169 @@ mod tests {
         assert!(open(&harness, tab, id));
         assert_eq!(edits(&harness, tab, id).cells.len(), 1);
     }
+
+    /// One frame in which the window is asked to close.
+    fn ask_to_close(harness: &mut Harness) {
+        harness.settle();
+        harness.close_requested = true;
+        harness.frame(Vec::new());
+    }
+
+    fn sends(harness: &Harness, command: egui::ViewportCommand) -> bool {
+        harness.viewport_commands.contains(&command)
+    }
+
+    #[test]
+    fn closing_the_window_with_pending_changes_asks_first() {
+        use egui::ViewportCommand::{CancelClose, Close};
+        for look in Look::ALL {
+            // Without edits a close request goes ahead.
+            let (mut harness, tab, id) = editable_in(look);
+            ask_to_close(&mut harness);
+            assert!(!sends(&harness, CancelClose), "{}", look.name);
+            assert!(harness.app.dialog.is_none(), "{}", look.name);
+            // With a pending cell it is held back, and asked about.
+            make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
+            ask_to_close(&mut harness);
+            assert!(sends(&harness, CancelClose), "{}", look.name);
+            assert!(leaving(&harness), "{}", look.name);
+            let said = if look.terminal {
+                "closing the window with pending edits"
+            } else {
+                "Save 1 change before closing the window?"
+            };
+            assert!(harness.has(said), "{}", look.name);
+            // Asked once more while the question is up: held back again,
+            // and the question stays as it is.
+            ask_to_close(&mut harness);
+            assert!(sends(&harness, CancelClose), "{}", look.name);
+            assert!(leaving(&harness), "{}", look.name);
+            assert!(harness.app.notice.is_none(), "{}", look.name);
+            // Stay: the window and the change are as they were.
+            answer_leave(&mut harness, Leave::Stay);
+            assert!(harness.app.dialog.is_none(), "{}", look.name);
+            assert!(!harness.app.closing, "{}", look.name);
+            assert!(!sends(&harness, Close), "{}", look.name);
+            assert_eq!(edits(&harness, tab, id).cells.len(), 1, "{}", look.name);
+            // Discard: the window closes, in this frame and every one after.
+            ask_to_close(&mut harness);
+            answer_leave(&mut harness, Leave::Discard);
+            assert!(harness.app.closing, "{}", look.name);
+            assert!(sends(&harness, Close), "{}", look.name);
+            harness.frame(Vec::new());
+            assert!(sends(&harness, Close), "{}", look.name);
+            // The close it asked for is not held back, whatever is typed
+            // into the window on its way out: answered Discard, it goes.
+            make_pending(&mut harness, tab, id, (3, 1), "dan@example.com");
+            ask_to_close(&mut harness);
+            assert!(!sends(&harness, CancelClose), "{}", look.name);
+            assert!(harness.app.dialog.is_none(), "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn saving_before_the_window_closes_closes_it_once_everything_is_written() {
+        use egui::ViewportCommand::{CancelClose, Close};
+        for look in Look::ALL {
+            let (mut harness, tab, id) = editable_in(look);
+            make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
+            ask_to_close(&mut harness);
+            answer_leave(&mut harness, Leave::Save);
+            assert_eq!(writes(&harness), 1, "{}", look.name);
+            assert!(!harness.app.closing, "{}", look.name);
+            // While the save runs a close request is held back, and
+            // nothing is asked: the user closes again once it ends.
+            ask_to_close(&mut harness);
+            assert!(sends(&harness, CancelClose), "{}", look.name);
+            assert!(harness.app.dialog.is_none(), "{}", look.name);
+            assert!(harness.app.notice.is_none(), "{}", look.name);
+            harness.answer_written(Ok(written_row("bob@example.com")));
+            harness.settle();
+            assert!(harness.app.closing, "{}", look.name);
+            assert!(sends(&harness, Close), "{}", look.name);
+            // A save that wrote nothing keeps the window.
+            let (mut harness, tab, id) = editable_in(look);
+            make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
+            ask_to_close(&mut harness);
+            answer_leave(&mut harness, Leave::Save);
+            harness.answer_written(Err(tabletist_db::Error::Cancelled));
+            harness.settle();
+            assert!(!harness.app.closing, "{}", look.name);
+            assert!(!sends(&harness, Close), "{}", look.name);
+            assert_eq!(edits(&harness, tab, id).cells.len(), 1, "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn closing_the_window_on_several_tabs_offers_no_save() {
+        use egui::ViewportCommand::{CancelClose, Close};
+        for look in Look::ALL {
+            let (mut harness, tab, id) = editable_in(look);
+            make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
+            harness.app.apply(Action::OpenObject {
+                tab,
+                object: tabletist_db::ObjectRef::new("main", "orders"),
+                kind: tabletist_db::ObjectKind::Table,
+                pin: true,
+            });
+            harness.answer_structure(crate::testing::fixture_structure());
+            harness.answer_rows(crate::testing::page(5, false));
+            let other = harness.app.workspace(tab).unwrap().active_tab.unwrap();
+            make_pending(&mut harness, tab, other, (0, 1), "amy@example.com");
+            ask_to_close(&mut harness);
+            assert!(sends(&harness, CancelClose), "{}", look.name);
+            assert!(leaving(&harness), "{}", look.name);
+            if look.terminal {
+                assert!(harness.has("closing the window with pending edits in 2 tabs"));
+                assert!(!harness.has("Write"));
+            } else {
+                assert!(harness.has("Discard 2 changes in 2 tabs?"), "{}", look.name);
+            }
+            // Enter answers nothing here.
+            harness.press(Key::Enter, Modifiers::NONE);
+            assert!(leaving(&harness), "{}", look.name);
+            answer_leave(&mut harness, Leave::Discard);
+            assert!(harness.app.closing, "{}", look.name);
+            assert!(sends(&harness, Close), "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn a_close_request_under_another_dialog_is_held_back_with_a_notice() {
+        use egui::ViewportCommand::CancelClose;
+        let (mut harness, tab, id) = editable_in(Look::macos());
+        make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
+        harness.app.apply(Action::ShowHelp);
+        ask_to_close(&mut harness);
+        assert!(sends(&harness, CancelClose));
+        assert!(matches!(
+            harness.app.dialog,
+            Some(crate::model::Dialog::Help)
+        ));
+        assert_eq!(
+            harness.app.notice.as_deref(),
+            Some("Save or discard the pending changes first.")
+        );
+        assert_eq!(edits(&harness, tab, id).cells.len(), 1);
+    }
+
+    #[test]
+    fn a_close_request_while_the_window_is_hidden_is_held_back_too() {
+        // A hidden window draws nothing: only the app's logic runs, and it
+        // is what answers the request.
+        let (mut harness, tab, id) = editable_in(Look::macos());
+        make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
+        harness.settle();
+        let mut input = egui::RawInput::default();
+        let root = input.viewports.entry(egui::ViewportId::ROOT).or_default();
+        root.events.push(egui::ViewportEvent::Close);
+        let app = &mut harness.app;
+        let output = harness.ctx.run_logic(&input, |ctx| app.logic(ctx));
+        let commands = output.viewport_commands.get(&egui::ViewportId::ROOT);
+        assert!(
+            commands.is_some_and(|commands| commands.contains(&egui::ViewportCommand::CancelClose))
+        );
+        assert!(leaving(&harness));
+        assert_eq!(edits(&harness, tab, id).cells.len(), 1);
+    }
 }

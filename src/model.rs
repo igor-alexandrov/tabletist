@@ -1139,6 +1139,8 @@ pub enum Dialog {
 #[derive(Debug)]
 pub enum Held {
     Action(Box<Action>),
+    /// The window was asked to close.
+    CloseWindow,
 }
 
 /// Asks before pending changes are dropped.
