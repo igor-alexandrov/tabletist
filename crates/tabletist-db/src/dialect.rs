@@ -369,12 +369,32 @@ impl Dialect {
         }
     }
 
+    /// The operand as a literal. What SQLite's parser would not read as the
+    /// value has a form of its own there, so the text a person copies runs
+    /// and stores what the bound statement does.
     fn shown(self, operand: &Operand) -> String {
         match operand {
             Operand::Null => "NULL".to_owned(),
             Operand::Int(number) => number.to_string(),
+            // SQLite reads `inf` as a column's name. A number past the
+            // largest real is infinity to it, and is how it writes one.
+            Operand::Float(number) if self == Self::Sqlite && number.is_infinite() => {
+                if number.is_sign_positive() {
+                    "9e999".to_owned()
+                } else {
+                    "-9e999".to_owned()
+                }
+            }
             // With its point, so a real never reads as a whole number.
             Operand::Float(number) => format!("{number:?}"),
+            // SQLite's parser ends the statement at a NUL, inside a string
+            // too, so such text is joined around `char(0)`. Not a cast of
+            // its bytes: that reads them in the file's encoding, and a
+            // UTF-16 file would store other text.
+            Operand::Text(text) if self == Self::Sqlite && text.contains('\0') => {
+                let parts: Vec<String> = text.split('\0').map(|part| self.literal(part)).collect();
+                format!("({})", parts.join(" || char(0) || "))
+            }
             Operand::Text(text) => self.literal(text),
             Operand::Bytes(bytes) => self.bytes_literal(bytes),
         }
@@ -1283,6 +1303,71 @@ mod tests {
             let refused = shown(dialect, cell).unwrap_err().to_string();
             assert!(refused.starts_with(&column), "{refused}");
         }
+    }
+
+    #[test]
+    fn sqlite_is_shown_what_its_parser_reads() {
+        let update = |dialect: Dialect, key: Value, new: &str| {
+            dialect
+                .update_row(
+                    &books(),
+                    &one(vec![("k", key)], vec![typed("t", "text", new)]),
+                )
+                .unwrap()
+        };
+        // SQLite's parser stops at a NUL, in a string too, so the text is
+        // joined around `char(0)`. The bound statement holds the text
+        // itself.
+        let nul = update(Dialect::Sqlite, text("a\0'"), "x\0y");
+        assert_eq!(
+            nul.shown,
+            r#"UPDATE "public"."books" SET "t" = ('x' || char(0) || 'y') WHERE "k" = ('a' || char(0) || '''')"#
+        );
+        // A NUL at either end leaves an empty string beside it.
+        assert!(
+            update(Dialect::Sqlite, Value::Int(1), "\0")
+                .shown
+                .contains(r#""t" = ('' || char(0) || '')"#)
+        );
+        assert_eq!(nul.sql.params, [text("x\0y"), text("a\0'")]);
+        // Text without one stays a plain string.
+        assert!(
+            update(Dialect::Sqlite, Value::Int(1), "x0y")
+                .shown
+                .contains(r#""t" = 'x0y'"#)
+        );
+        // `inf` would be read as a column's name. A number past the largest
+        // real is how SQLite itself writes infinity.
+        for (number, shown) in [(f64::INFINITY, "9e999"), (f64::NEG_INFINITY, "-9e999")] {
+            let update = update(Dialect::Sqlite, Value::Float(number), "x");
+            assert!(
+                update.shown.ends_with(&format!(r#" WHERE "k" = {shown}"#)),
+                "{}",
+                update.shown
+            );
+            assert_eq!(update.sql.params[1], Value::Float(number));
+        }
+        // The others keep their own forms.
+        assert!(
+            update(Dialect::MySql, text("a\0'"), "x\0y")
+                .shown
+                .ends_with("SET `t` = 'x\0y' WHERE `k` = 'a\0'''")
+        );
+        assert!(
+            update(Dialect::Postgres, Value::Int(1), "x\0y")
+                .shown
+                .contains("\"t\" = 'x\0y'")
+        );
+        assert!(
+            update(Dialect::MySql, Value::Float(f64::INFINITY), "x")
+                .shown
+                .ends_with("WHERE `k` = inf")
+        );
+        assert!(
+            update(Dialect::Postgres, Value::Float(f64::INFINITY), "x")
+                .shown
+                .ends_with(r#"WHERE "k" = 'inf'"#)
+        );
     }
 
     #[test]

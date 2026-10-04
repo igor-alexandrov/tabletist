@@ -1784,13 +1784,39 @@ async fn a_statement_that_fails_undoes_the_rows_before_it() {
 async fn a_value_sqlite_would_store_as_text_is_refused_before_anything_is_sent() {
     let (connection, dir) = fixture_as(Access::Writable).await;
     let before = std::fs::read(dir.path().join("fixture.db")).unwrap();
+    // Another program holds the file for writing. A save that asked for
+    // the file would wait for it and come back with the database's error,
+    // not with the row's.
+    let other = other_program(&dir);
+    other.execute_batch("BEGIN IMMEDIATE").unwrap();
+    let started = std::time::Instant::now();
     let (_, outcome) = save(&connection, 1, &[("active", "BOOLEAN", to("maybe"))]).await;
     assert!(
         matches!(outcome, Ok(WriteOutcome::Failed { row: 0, .. })),
         "{outcome:?}"
     );
     let (_, outcome) = save(&connection, 1, &[("score", "REAL", to("high"))]).await;
-    assert!(matches!(outcome, Ok(WriteOutcome::Failed { row: 0, .. })));
+    assert!(
+        matches!(outcome, Ok(WriteOutcome::Failed { row: 0, .. })),
+        "{outcome:?}"
+    );
+    // So is a key that may not have been read exactly.
+    let keyed = one_cell(
+        "events",
+        ("kind", Value::Text("log\u{FFFD}n".into())),
+        "payload",
+        "TEXT",
+        Value::Text("ada".into()),
+        to("mine"),
+    );
+    let outcome = connection.write(&keyed).await;
+    assert!(
+        matches!(outcome, Ok(WriteOutcome::Failed { row: 0, .. })),
+        "{outcome:?}"
+    );
+    // None of them sat out the session's wait for a busy file.
+    assert!(started.elapsed() < Duration::from_secs(4));
+    other.execute_batch("ROLLBACK").unwrap();
     assert_eq!(
         std::fs::read(dir.path().join("fixture.db")).unwrap(),
         before
@@ -1833,6 +1859,147 @@ async fn a_save_does_not_inherit_what_a_script_left_on_the_session() {
         "{outcome:?}"
     );
     assert_eq!(setting(&connection, "journal_mode").await, mode);
+}
+
+/// Runs `text` on the session as a SQL editor would, every statement of it
+/// succeeding: what it sets is left for whatever the session does next.
+async fn script_leaves(connection: &Connection, text: &str) {
+    let outcome = run(connection, text).await.unwrap();
+    assert!(
+        !outcome
+            .results
+            .iter()
+            .any(|result| matches!(result.outcome, StatementOutcome::Error { .. })),
+        "{outcome:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_script_cannot_make_a_saves_triggers_fire_themselves() {
+    let (connection, dir) = fixture_as(Access::Writable).await;
+    other_program(&dir)
+        .execute_batch(
+            "CREATE TABLE counted (id INTEGER PRIMARY KEY, label TEXT, n INTEGER);
+             INSERT INTO counted VALUES (1, 'a', 0);
+             CREATE TRIGGER bump AFTER UPDATE ON counted WHEN NEW.n < 5 BEGIN
+                 UPDATE counted SET n = n + 1 WHERE id = NEW.id;
+             END;",
+        )
+        .unwrap();
+    script_leaves(&connection, "PRAGMA recursive_triggers = ON").await;
+    let changes = one_cell(
+        "counted",
+        ("id", Value::Int(1)),
+        "label",
+        "TEXT",
+        Value::Text("a".into()),
+        to("b"),
+    );
+    // Once, for the save's own update: the trigger's update does not fire
+    // it again, which would count to 5.
+    let outcome = connection.write(&changes).await;
+    assert!(
+        matches!(
+            &outcome,
+            Ok(WriteOutcome::Written { rows, .. })
+                if rows == &[vec![Value::Int(1), Value::Text("b".into()), Value::Int(1)]]
+        ),
+        "{outcome:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_save_is_written_after_a_script_asked_for_change_counts() {
+    let (connection, _dir) = fixture_as(Access::Writable).await;
+    // With it an UPDATE gives a row, the count, which a save does not
+    // expect of one.
+    script_leaves(&connection, "PRAGMA count_changes = ON").await;
+    let (_, outcome) = save(&connection, 1, &[("name", "TEXT", to("Mine"))]).await;
+    assert!(
+        matches!(outcome, Ok(WriteOutcome::Written { .. })),
+        "{outcome:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_script_cannot_rename_the_columns_of_what_runs_after_it() {
+    let (connection, _dir) = fixture_as(Access::Writable).await;
+    let both = "PRAGMA full_column_names = ON; PRAGMA short_column_names = OFF";
+    for left in [
+        "PRAGMA full_column_names = ON",
+        "PRAGMA short_column_names = OFF",
+        both,
+    ] {
+        script_leaves(&connection, left).await;
+        // Either of them names a column asked for by its table `users.id`,
+        // and would for every script after this one.
+        let outcome = run(&connection, "SELECT users.id FROM users LIMIT 1")
+            .await
+            .unwrap();
+        let StatementOutcome::Rows { columns, .. } = &outcome.results[0].outcome else {
+            panic!("{left}: {outcome:?}");
+        };
+        assert_eq!(columns[0].name, "id", "{left}");
+    }
+    // The two together name a table's own columns so, which a page shows,
+    // and by which a save finds the columns it changes.
+    script_leaves(&connection, both).await;
+    let page = connection.fetch_rows(&users(1)).await.unwrap();
+    assert_eq!(names(&page)[..3], ["id", "email", "name"]);
+    let (_, outcome) = save(&connection, 1, &[("name", "TEXT", to("Mine"))]).await;
+    assert!(
+        matches!(outcome, Ok(WriteOutcome::Written { .. })),
+        "{outcome:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_save_puts_back_the_journal_mode_a_script_left() {
+    for left in ["PERSIST", "TRUNCATE", "MEMORY"] {
+        let (connection, dir) = fixture_as(Access::Writable).await;
+        let mode = setting(&connection, "journal_mode").await;
+        assert_eq!(mode, Value::Text("delete".into()));
+        script_leaves(&connection, &format!("PRAGMA journal_mode = {left}")).await;
+        assert_eq!(
+            setting(&connection, "journal_mode").await,
+            Value::Text(left.to_lowercase().into()),
+        );
+        let (_, outcome) = save(&connection, 1, &[("name", "TEXT", to("Mine"))]).await;
+        assert!(
+            matches!(outcome, Ok(WriteOutcome::Written { .. })),
+            "{left}: {outcome:?}"
+        );
+        assert_eq!(setting(&connection, "journal_mode").await, mode, "{left}");
+        // The journal went when the save ended, as the file's own mode has
+        // it: none is left beside the user's file.
+        assert!(!dir.path().join("fixture.db-journal").exists(), "{left}");
+    }
+}
+
+#[tokio::test]
+async fn a_save_leaves_the_journal_mode_another_program_gave_the_file() {
+    let (connection, dir) = fixture_as(Access::Writable).await;
+    assert_eq!(
+        setting(&connection, "journal_mode").await,
+        Value::Text("delete".into())
+    );
+    // WAL is the file's, not a session's: every program that opens the
+    // file finds it so.
+    let mode = |other: &rusqlite::Connection, sql: &str| {
+        other
+            .query_row(sql, [], |row| row.get::<_, String>(0))
+            .unwrap()
+    };
+    assert_eq!(
+        mode(&other_program(&dir), "PRAGMA journal_mode = WAL"),
+        "wal"
+    );
+    let (_, outcome) = save(&connection, 1, &[("name", "TEXT", to("Mine"))]).await;
+    assert!(
+        matches!(outcome, Ok(WriteOutcome::Written { .. })),
+        "{outcome:?}"
+    );
+    assert_eq!(mode(&other_program(&dir), "PRAGMA journal_mode"), "wal");
 }
 
 #[tokio::test]
@@ -2136,5 +2303,483 @@ async fn a_name_two_columns_read_as_is_refused() {
             "{twin}: {refused:?}"
         );
         assert_eq!(std::fs::read(&path).unwrap(), bytes, "{twin}");
+    }
+}
+
+/// A writable session on the file at `path`.
+async fn writable(path: &std::path::Path) -> Connection {
+    Connection::connect_with(
+        &ConnectSpec::sqlite(path),
+        &Secrets::default(),
+        &HostKeys::default(),
+        Access::Writable,
+    )
+    .await
+    .unwrap()
+}
+
+/// A save of one cell of the row of `table` that `key` finds.
+fn one_cell(
+    table: &str,
+    key: (&str, Value),
+    column: &str,
+    type_name: &str,
+    loaded: Value,
+    new: NewValue,
+) -> ChangeSet {
+    ChangeSet {
+        object: ObjectRef::new("main", table),
+        rows: vec![RowChange {
+            key: vec![(key.0.into(), key.1)],
+            set: vec![CellChange {
+                column: column.into(),
+                type_name: type_name.into(),
+                loaded,
+                new,
+            }],
+        }],
+    }
+}
+
+/// Each row of `sql`, a statement of two text columns, read by another
+/// program.
+fn pairs(other: &rusqlite::Connection, sql: &str) -> Vec<(String, String)> {
+    other
+        .prepare(sql)
+        .unwrap()
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap()
+}
+
+#[tokio::test]
+async fn a_key_that_may_not_have_been_read_exactly_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("twins.db");
+    let other = rusqlite::Connection::open(&path).unwrap();
+    // Text that is not UTF-8 reads with U+FFFD for its bad bytes, and
+    // another row's key can be exactly that text.
+    other
+        .execute_batch(
+            "CREATE TABLE k (code TEXT PRIMARY KEY, note TEXT);
+             INSERT INTO k VALUES (CAST(X'636166E9' AS TEXT), 'same'), ('caf\u{FFFD}', 'same');",
+        )
+        .unwrap();
+    let stored = || pairs(&other, "SELECT hex(code), note FROM k ORDER BY code");
+    let before = stored();
+    assert_eq!(
+        before,
+        [
+            ("636166E9".to_owned(), "same".to_owned()),
+            ("636166EFBFBD".to_owned(), "same".to_owned()),
+        ]
+    );
+    let connection = writable(&path).await;
+    let object = ObjectRef::new("main", "k");
+    let page = connection
+        .fetch_rows(&RowQuery::new(object, 5))
+        .await
+        .unwrap();
+    // The page shows the two keys alike.
+    assert_eq!(page.rows[0][0], Value::Text("caf\u{FFFD}".into()));
+    assert_eq!(page.rows[1][0], page.rows[0][0]);
+    // A save of the first row would find the second by that text.
+    let changes = one_cell(
+        "k",
+        ("code", page.rows[0][0].clone()),
+        "note",
+        "TEXT",
+        page.rows[0][1].clone(),
+        to("mine"),
+    );
+    let outcome = connection.write(&changes).await;
+    assert!(
+        matches!(
+            &outcome,
+            Ok(WriteOutcome::Failed { row: 0, error })
+                if error.to_string().contains("may not have been read exactly")
+        ),
+        "{outcome:?}"
+    );
+    assert_eq!(stored(), before);
+}
+
+/// A writable session on a file whose table `notes` holds text that is not
+/// UTF-8 (`A\xE9`, which reads as `A` and U+FFFD): in the `body` of row 1
+/// and in the `tag` of row 2. Row 3's `body` really is `A` and U+FFFD.
+async fn text_that_is_not_utf8() -> (Connection, tempfile::TempDir) {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("fixture.db");
+    rusqlite::Connection::open(&path)
+        .unwrap()
+        .execute_batch(
+            "CREATE TABLE notes (id INTEGER PRIMARY KEY, body TEXT, tag TEXT);
+             INSERT INTO notes VALUES
+                 (1, CAST(X'41E9' AS TEXT), 'a'),
+                 (2, 'plain', CAST(X'41E9' AS TEXT)),
+                 (3, 'A\u{FFFD}', 'c');",
+        )
+        .unwrap();
+    (writable(&path).await, dir)
+}
+
+/// A save of the `body` of the row of `notes` with this id, from what a
+/// page holds now.
+async fn body(connection: &Connection, id: i64, new: &str) -> ChangeSet {
+    let page = connection
+        .fetch_rows(&RowQuery::new(ObjectRef::new("main", "notes"), 5))
+        .await
+        .unwrap();
+    let row = page
+        .rows
+        .iter()
+        .find(|row| row[0] == Value::Int(id))
+        .unwrap();
+    one_cell(
+        "notes",
+        ("id", Value::Int(id)),
+        "body",
+        "TEXT",
+        row[1].clone(),
+        to(new),
+    )
+}
+
+#[tokio::test]
+async fn a_changed_column_holding_text_that_is_not_utf8_is_refused() {
+    let (connection, dir) = text_that_is_not_utf8().await;
+    let changes = body(&connection, 1, "mine").await;
+    assert_eq!(
+        changes.rows[0].set[0].loaded,
+        Value::Text("A\u{FFFD}".into())
+    );
+    // Changed behind the page's back, to other bytes that read the same.
+    let other = other_program(&dir);
+    other
+        .execute(
+            "UPDATE notes SET body = CAST(X'41E8' AS TEXT) WHERE id = 1",
+            [],
+        )
+        .unwrap();
+    let outcome = connection.write(&changes).await;
+    // Not a conflict, which would offer to overwrite.
+    assert!(
+        matches!(
+            &outcome,
+            Ok(WriteOutcome::Failed { row: 0, error })
+                if error.to_string().contains("body") && error.to_string().contains("UTF-8")
+        ),
+        "{outcome:?}"
+    );
+    assert_eq!(
+        pairs(&other, "SELECT hex(body), tag FROM notes WHERE id = 1"),
+        [("41E8".to_owned(), "a".to_owned())]
+    );
+    assert_eq!(query_only(&connection).await, Value::Int(1));
+}
+
+#[tokio::test]
+async fn text_that_is_not_utf8_in_another_column_does_not_stop_a_save() {
+    let (connection, dir) = text_that_is_not_utf8().await;
+    let changes = body(&connection, 2, "mine").await;
+    let outcome = connection.write(&changes).await;
+    assert!(
+        matches!(
+            &outcome,
+            Ok(WriteOutcome::Written { rows, .. }) if rows == &[vec![
+                Value::Int(2),
+                Value::Text("mine".into()),
+                Value::Text("A\u{FFFD}".into()),
+            ]]
+        ),
+        "{outcome:?}"
+    );
+    // The other column keeps its bytes.
+    assert_eq!(
+        pairs(
+            &other_program(&dir),
+            "SELECT body, hex(tag) FROM notes WHERE id = 2"
+        ),
+        [("mine".to_owned(), "41E9".to_owned())]
+    );
+}
+
+#[tokio::test]
+async fn text_that_really_holds_the_replacement_character_is_saved() {
+    let (connection, dir) = text_that_is_not_utf8().await;
+    let changes = body(&connection, 3, "mine").await;
+    assert_eq!(
+        changes.rows[0].set[0].loaded,
+        Value::Text("A\u{FFFD}".into())
+    );
+    let outcome = connection.write(&changes).await;
+    assert!(
+        matches!(outcome, Ok(WriteOutcome::Written { .. })),
+        "{outcome:?}"
+    );
+    assert_eq!(
+        pairs(
+            &other_program(&dir),
+            "SELECT body, tag FROM notes WHERE id = 3"
+        ),
+        [("mine".to_owned(), "c".to_owned())]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_cancel_during_a_save_undoes_it() {
+    let (connection, dir) = fixture_as(Access::Writable).await;
+    let other = other_program(&dir);
+    // For one name only, the UPDATE runs far longer than the test waits:
+    // ten billion row pairs.
+    other
+        .execute_batch(
+            "CREATE TRIGGER slow AFTER UPDATE OF name ON users WHEN NEW.name = 'Slow' BEGIN
+                 SELECT count(*) FROM big a, big b;
+             END;",
+        )
+        .unwrap();
+    let (_, before) = user(&connection, 1).await;
+    let cancel = connection.cancel_handle();
+    let connection = std::sync::Arc::new(connection);
+    let running = {
+        let connection = std::sync::Arc::clone(&connection);
+        tokio::spawn(async move { connection.write(&rename(1, "Ada Lovelace", "Slow")).await })
+    };
+    // Wait until the save holds the file, and a moment more for the read of
+    // its row: what the cancel then lands on is the UPDATE. Landing on an
+    // earlier statement would end the save the same way, so the timing
+    // decides only how much this proves, never whether it passes.
+    other.busy_timeout(Duration::ZERO).unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while other.execute_batch("BEGIN IMMEDIATE; ROLLBACK").is_ok() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the save never took the file"
+        );
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    // SQLite ignores an interrupt when nothing runs, so keep cancelling
+    // until the save stops.
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !running.is_finished() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "cancel must stop the save"
+        );
+        cancel.cancel().await.unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    // The save's own end, not a row's failure.
+    assert_eq!(running.await.unwrap(), Err(Error::Cancelled));
+    // Nothing was written, by the session's own reading and by another's.
+    assert_eq!(user(&connection, 1).await.1, before);
+    assert_eq!(
+        pairs(&other, "SELECT name, email FROM users WHERE id = 1"),
+        [("Ada Lovelace".to_owned(), "ada@example.com".to_owned())]
+    );
+    // The session refuses writes again, and saves as before.
+    assert_eq!(query_only(&connection).await, Value::Int(1));
+    let outcome = connection.write(&rename(1, "Ada Lovelace", "Quick")).await;
+    assert!(
+        matches!(outcome, Ok(WriteOutcome::Written { .. })),
+        "{outcome:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_key_finds_the_row_whose_key_is_that_kind_of_value() {
+    let (connection, dir) = fixture_as(Access::Writable).await;
+    let other = other_program(&dir);
+    // A column with no declared type converts nothing: the number and the
+    // text are two keys, and a filter's guess that `5` is a number would
+    // read, and write, the wrong one of them.
+    other
+        .execute_batch(
+            "CREATE TABLE loose (k PRIMARY KEY, n);
+             INSERT INTO loose VALUES (5, 'int'), ('5', 'text');",
+        )
+        .unwrap();
+    for (key, loaded) in [(Value::Text("5".into()), "text"), (Value::Int(5), "int")] {
+        let saved = format!("{loaded}, saved");
+        let changes = one_cell(
+            "loose",
+            ("k", key.clone()),
+            "n",
+            "",
+            Value::Text(loaded.into()),
+            to(&saved),
+        );
+        let outcome = connection.write(&changes).await;
+        assert!(
+            matches!(
+                &outcome,
+                Ok(WriteOutcome::Written { rows, .. })
+                    if rows == &[vec![key.clone(), Value::Text(saved.as_str().into())]]
+            ),
+            "{key:?}: {outcome:?}"
+        );
+    }
+    assert_eq!(
+        pairs(&other, "SELECT typeof(k), n FROM loose ORDER BY typeof(k)"),
+        [
+            ("integer".to_owned(), "int, saved".to_owned()),
+            ("text".to_owned(), "text, saved".to_owned()),
+        ]
+    );
+}
+
+/// Every cell of `table`, as SQLite holds it: its storage class and its
+/// value.
+fn stored(other: &rusqlite::Connection, table: &str) -> Vec<Vec<rusqlite::types::Value>> {
+    let mut statement = other
+        .prepare(&format!("SELECT * FROM {table} ORDER BY rowid"))
+        .unwrap();
+    let width = statement.column_count();
+    statement
+        .query_map([], |row| {
+            (0..width)
+                .map(|index| row.get_ref(index).map(rusqlite::types::Value::from))
+                .collect()
+        })
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap()
+}
+
+#[tokio::test]
+async fn what_a_save_shows_stores_what_it_binds() {
+    // In a UTF-16 file too: a literal that spells text by its bytes would
+    // be read there as other text.
+    for encoding in ["UTF-8", "UTF-16le"] {
+        // Two files alike: one takes each statement as a person would copy it
+        // and run it by hand, the other takes the save.
+        let dir = tempfile::tempdir().unwrap();
+        let fill = |name: &str| {
+            let path = dir.path().join(name);
+            let file = rusqlite::Connection::open(&path).unwrap();
+            file.pragma_update(None, "encoding", encoding).unwrap();
+            file.execute_batch(
+            "CREATE TABLE vals (id INTEGER PRIMARY KEY, t TEXT, loose, n INTEGER, r REAL, d NUMERIC);
+             INSERT INTO vals VALUES (1, 'old', 'old', 1, 1.5, 1), (2, 'old', 7, 1, 1.5, 1);
+             CREATE TABLE named (k TEXT PRIMARY KEY, v TEXT);
+             CREATE TABLE measured (k REAL PRIMARY KEY, v TEXT);
+             INSERT INTO measured VALUES (9e999, 'old'), (-9e999, 'old'), (0.1, 'old');",
+        )
+        .unwrap();
+            // A NUL ends SQL text, so these keys are bound.
+            for key in ["it's", "nul\0'key", ""] {
+                file.execute("INSERT INTO named VALUES (?1, 'old')", [key])
+                    .unwrap();
+            }
+            (path, file)
+        };
+        let (_, by_hand) = fill("shown.db");
+        let (path, bound) = fill("bound.db");
+        let connection = writable(&path).await;
+        let text = |value: &str| Value::Text(value.into());
+        let old = || text("old");
+        let id = |id: i64| ("id", Value::Int(id));
+        let smallest = i64::MIN.to_string();
+        let largest = i64::MAX.to_string();
+        for (table, key, column, type_name, loaded, new) in [
+            (
+                "vals",
+                id(1),
+                "t",
+                "TEXT",
+                old(),
+                to("it's \"quoted\" \\ here"),
+            ),
+            (
+                "vals",
+                id(1),
+                "t",
+                "TEXT",
+                text("it's \"quoted\" \\ here"),
+                to("a\0b'c"),
+            ),
+            ("vals", id(1), "t", "TEXT", text("a\0b'c"), to("")),
+            ("vals", id(1), "t", "TEXT", text(""), NewValue::Null),
+            // Text that reads as a number stays text where the cell held
+            // text, and is a number where it held one.
+            ("vals", id(1), "loose", "", old(), to("12")),
+            ("vals", id(2), "loose", "", Value::Int(7), to("12")),
+            ("vals", id(2), "loose", "", Value::Int(12), to("1.50")),
+            ("vals", id(1), "n", "INTEGER", Value::Int(1), to(&smallest)),
+            ("vals", id(2), "n", "INTEGER", Value::Int(1), to(&largest)),
+            ("vals", id(1), "r", "REAL", Value::Float(1.5), to("0.1")),
+            ("vals", id(2), "r", "REAL", Value::Float(1.5), to("-1e300")),
+            ("vals", id(1), "r", "REAL", Value::Float(0.1), to("3")),
+            ("vals", id(1), "d", "NUMERIC", Value::Int(1), to("12.50")),
+            ("vals", id(2), "d", "NUMERIC", Value::Int(1), NewValue::Null),
+            // And the key finds the same row either way.
+            (
+                "named",
+                ("k", text("it's")),
+                "v",
+                "TEXT",
+                old(),
+                to("quoted"),
+            ),
+            (
+                "named",
+                ("k", text("nul\0'key")),
+                "v",
+                "TEXT",
+                old(),
+                to("nul"),
+            ),
+            ("named", ("k", text("")), "v", "TEXT", old(), to("empty")),
+            (
+                "measured",
+                ("k", Value::Float(f64::INFINITY)),
+                "v",
+                "TEXT",
+                old(),
+                to("most"),
+            ),
+            (
+                "measured",
+                ("k", Value::Float(f64::NEG_INFINITY)),
+                "v",
+                "TEXT",
+                old(),
+                to("least"),
+            ),
+            (
+                "measured",
+                ("k", Value::Float(0.1)),
+                "v",
+                "TEXT",
+                old(),
+                to("a tenth"),
+            ),
+        ] {
+            let changes = one_cell(table, key, column, type_name, loaded, new);
+            let case = format!("{:?}", changes.rows[0]);
+            let update = Dialect::Sqlite
+                .update_row(&changes.object, &changes.rows[0])
+                .unwrap();
+            let touched = by_hand.execute(&update.shown, []);
+            assert_eq!(touched, Ok(1), "{}: {case}", update.shown);
+            let outcome = connection.write(&changes).await;
+            assert!(
+                matches!(outcome, Ok(WriteOutcome::Written { .. })),
+                "{case}: {outcome:?}"
+            );
+            assert_eq!(
+                stored(&by_hand, table),
+                stored(&bound, table),
+                "{encoding} {}: {case}",
+                update.shown
+            );
+        }
+        let kept: String = by_hand
+            .query_row("PRAGMA encoding", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(kept, encoding);
     }
 }

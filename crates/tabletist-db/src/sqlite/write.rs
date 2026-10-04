@@ -3,6 +3,8 @@
 
 use std::time::Instant;
 
+use rusqlite::types::ValueRef;
+
 use super::{end_transaction, from_sqlite, map_error};
 use crate::dialect::RowUpdate;
 use crate::write::changed_since_loaded;
@@ -20,11 +22,14 @@ pub(super) fn write(
     changes: &ChangeSet,
     journal_mode: &str,
 ) -> Result<WriteOutcome> {
-    // Every statement is built first: a value that cannot be sent fails
-    // the save before the file is even asked for.
+    // Every statement is built first: a key that may not be the row's, or
+    // a value that cannot be sent, fails the save before the file is even
+    // asked for.
     let mut updates = Vec::with_capacity(changes.rows.len());
     for (row, change) in changes.rows.iter().enumerate() {
-        match Dialect::Sqlite.update_row(&changes.object, change) {
+        let built = key_read_exactly(change)
+            .and_then(|()| Dialect::Sqlite.update_row(&changes.object, change));
+        match built {
             Ok(update) => updates.push(update),
             Err(error) => return Ok(WriteOutcome::Failed { row, error }),
         }
@@ -56,17 +61,23 @@ pub(super) fn write(
 }
 
 /// Puts back what a script may have left on the session and a write would
-/// feel (a journal kept in memory, exclusive locking, CHECK constraints
-/// ignored), lifts `query_only`, and takes the file.
+/// feel (a journal mode of its own, exclusive locking, CHECK constraints
+/// ignored, triggers that fire themselves, an UPDATE that gives its count
+/// as a row), lifts `query_only`, and takes the file.
 fn begin(connection: &rusqlite::Connection, journal_mode: &str) -> Result<()> {
-    // `main` only, and only from `memory`, which is what a script can leave
-    // (`off` is refused in defensive mode). With no schema the pragma would
-    // set every attached database's mode too, and any other mode is one
-    // another program gave the file, not ours to undo.
+    // Only WAL is a property of the file: every program that opens it finds
+    // it so, and it is not ours to undo, nor to bring back. Any other mode
+    // is the session's own, and a script can set it (`memory`, `truncate`,
+    // `persist`, which leaves a journal beside the user's file; `off` is
+    // refused in defensive mode). So a mode that is no longer the one the
+    // session opened with goes back to it, unless either is WAL. `main`
+    // only: with no schema the pragma would set every attached database's
+    // mode too.
     let now: String = connection
         .query_row("PRAGMA main.journal_mode", [], |row| row.get(0))
         .map_err(map_error)?;
-    if now.eq_ignore_ascii_case("memory") && !journal_mode.eq_ignore_ascii_case("memory") {
+    let wal = |mode: &str| mode.eq_ignore_ascii_case("wal");
+    if !now.eq_ignore_ascii_case(journal_mode) && !wal(&now) && !wal(journal_mode) {
         connection
             .pragma_update(Some("main"), "journal_mode", journal_mode)
             .map_err(map_error)?;
@@ -74,9 +85,32 @@ fn begin(connection: &rusqlite::Connection, journal_mode: &str) -> Result<()> {
     connection
         .pragma_update(None, "locking_mode", "NORMAL")
         .and_then(|()| connection.pragma_update(None, "ignore_check_constraints", false))
+        // With them on, a trigger's own statements fire it again, and so
+        // write other than what the file's triggers write for anyone else.
+        .and_then(|()| connection.pragma_update(None, "recursive_triggers", false))
+        // With it on an UPDATE gives a row, its count, and running it as a
+        // statement without rows fails.
+        .and_then(|()| connection.pragma_update(None, "count_changes", false))
         .and_then(|()| connection.pragma_update(None, "query_only", false))
         .and_then(|()| connection.execute_batch("BEGIN IMMEDIATE"))
         .map_err(map_error)
+}
+
+/// Refuses a key that may not be the row's. Text that is not UTF-8 is read
+/// with U+FFFD for its bad bytes (`from_sqlite`), so a key that holds one
+/// may stand for other bytes, and bound as it reads it finds another row,
+/// whose key really is that text. A key that really holds U+FFFD is refused
+/// with it, since the page's value cannot tell the two apart. That is
+/// accepted.
+fn key_read_exactly(change: &RowChange) -> Result<()> {
+    let lossy = |value: &Value| matches!(value, Value::Text(text) if text.contains('\u{FFFD}'));
+    if change.key.iter().any(|(_, value)| lossy(value)) {
+        return Err(Error::query(
+            "the row's key holds text that may not have been read exactly, so the save cannot \
+             be sure which row it names",
+        ));
+    }
+    Ok(())
 }
 
 /// A value bound exactly as it is. The filter path turns text that reads
@@ -93,8 +127,16 @@ fn exact(value: &Value) -> rusqlite::types::Value {
     }
 }
 
+/// A row as a statement gave it.
+struct Found {
+    values: Vec<Value>,
+    /// The places of the cells whose text is not UTF-8. Their values hold
+    /// U+FFFD for the bad bytes, and so equal what other bytes read as.
+    inexact: Vec<usize>,
+}
+
 /// The rows of a statement, with their columns' names.
-fn read(connection: &rusqlite::Connection, sql: &Sql) -> Result<(Vec<String>, Vec<Vec<Value>>)> {
+fn read(connection: &rusqlite::Connection, sql: &Sql) -> Result<(Vec<String>, Vec<Found>)> {
     let mut statement = connection.prepare(&sql.text).map_err(map_error)?;
     // Through the driver's own reader, never rusqlite's: a name that is
     // not UTF-8 panics there.
@@ -105,15 +147,38 @@ fn read(connection: &rusqlite::Connection, sql: &Sql) -> Result<(Vec<String>, Ve
     let mut rows = statement
         .query(rusqlite::params_from_iter(sql.params.iter().map(exact)))
         .map_err(map_error)?;
-    let mut values = Vec::new();
+    let mut found = Vec::new();
     while let Some(row) = rows.next().map_err(map_error)? {
-        let mut cells = Vec::with_capacity(columns.len());
+        let mut values = Vec::with_capacity(columns.len());
+        let mut inexact = Vec::new();
         for index in 0..columns.len() {
-            cells.push(from_sqlite(row.get_ref(index).map_err(map_error)?));
+            let cell = row.get_ref(index).map_err(map_error)?;
+            if matches!(cell, ValueRef::Text(bytes) if std::str::from_utf8(bytes).is_err()) {
+                inexact.push(index);
+            }
+            values.push(from_sqlite(cell));
         }
-        values.push(cells);
+        found.push(Found { values, inexact });
     }
-    Ok((columns, values))
+    Ok((columns, found))
+}
+
+/// A column `change` sets whose stored text, in the row `server`, is not
+/// UTF-8. What the page loaded from it and what the file holds now can be
+/// different bytes that read alike, so the save cannot tell whether the
+/// cell changed. Only the columns the save sets are compared; such text in
+/// another column is not its business.
+fn unreadable<'a>(change: &'a RowChange, columns: &[String], server: &Found) -> Option<&'a str> {
+    change
+        .set
+        .iter()
+        .map(|cell| cell.column.as_str())
+        .find(|name| {
+            columns
+                .iter()
+                .position(|column| column == name)
+                .is_some_and(|index| server.inexact.contains(&index))
+        })
 }
 
 /// A name `change` uses, in its key or its set, that more than one of the
@@ -161,10 +226,21 @@ fn apply(
         match found.pop() {
             None => conflicts.push(Conflict { row, server: None }),
             Some(server) => {
-                if changed_since_loaded(change, &columns, &server)? {
+                // A failure, not a conflict: a conflict offers to write
+                // over what the file holds, which would still be unknown.
+                if let Some(name) = unreadable(change, &columns, &server) {
+                    return Ok(Applied::Failed {
+                        row,
+                        error: Error::query(format!(
+                            "{name} holds text that is not UTF-8, so the save cannot tell \
+                             whether it changed since it was loaded"
+                        )),
+                    });
+                }
+                if changed_since_loaded(change, &columns, &server.values)? {
                     conflicts.push(Conflict {
                         row,
-                        server: Some(server),
+                        server: Some(server.values),
                     });
                 }
             }
@@ -201,7 +277,8 @@ fn apply(
         rows.push(
             found
                 .pop()
-                .ok_or_else(|| Error::query("a saved row could not be read back"))?,
+                .ok_or_else(|| Error::query("a saved row could not be read back"))?
+                .values,
         );
     }
     Ok(Applied::Rows(rows))

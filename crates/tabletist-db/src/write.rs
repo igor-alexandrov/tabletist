@@ -73,7 +73,15 @@ impl ChangeSet {
         if self.rows.is_empty() {
             return Err(Error::query("there is nothing to save"));
         }
-        for row in &self.rows {
+        for (index, row) in self.rows.iter().enumerate() {
+            // The same row twice: both changes would be compared with the
+            // row as it was, and the second written over the first.
+            if self.rows[..index]
+                .iter()
+                .any(|earlier| same_key(&earlier.key, &row.key))
+            {
+                return Err(Error::query("two rows to save have the same key"));
+            }
             if row.key.is_empty() {
                 return Err(Error::query("a row to save has no key"));
             }
@@ -114,6 +122,15 @@ pub(crate) fn same(a: &Value, b: &Value) -> bool {
         (Value::Float(a), Value::Float(b)) => a.to_bits() == b.to_bits(),
         _ => a == b,
     }
+}
+
+/// Whether two keys find the same row: the same columns in the same order,
+/// each with the same value.
+fn same_key(a: &[(String, Value)], b: &[(String, Value)]) -> bool {
+    a.len() == b.len()
+        && a.iter()
+            .zip(b)
+            .all(|((column, value), (other, theirs))| column == other && same(value, theirs))
 }
 
 /// Whether the row as the database holds it (`server`, whose values
@@ -194,9 +211,52 @@ mod tests {
                 set(vec![row(id(), vec![cell("name"), cell("name")])]),
                 "changed twice",
             ),
+            // Both would be compared with the row as it was, and the second
+            // written over the first.
+            (
+                set(vec![
+                    row(id(), vec![cell("name")]),
+                    row(vec![("id", Value::Int(2))], vec![cell("name")]),
+                    row(id(), vec![cell("email")]),
+                ]),
+                "the same key",
+            ),
+            (
+                set(vec![
+                    row(vec![("x", Value::Float(f64::NAN))], vec![cell("name")]),
+                    row(vec![("x", Value::Float(f64::NAN))], vec![cell("name")]),
+                ]),
+                "the same key",
+            ),
         ] {
             let refused = changes.check().unwrap_err().to_string();
             assert!(refused.contains(said), "{said}: {refused}");
+        }
+    }
+
+    #[test]
+    fn rows_with_different_keys_are_different_rows() {
+        let pair = |a: Value, b: Value| vec![("a", a), ("b", b)];
+        for (first, second) in [
+            (
+                vec![("id", Value::Int(1))],
+                vec![("id", Value::Text("1".into()))],
+            ),
+            (vec![("id", Value::Int(1))], vec![("code", Value::Int(1))]),
+            (
+                pair(Value::Int(1), Value::Int(2)),
+                pair(Value::Int(1), Value::Int(3)),
+            ),
+            (
+                vec![("a", Value::Int(1))],
+                pair(Value::Int(1), Value::Int(2)),
+            ),
+        ] {
+            let changes = set(vec![
+                row(first, vec![cell("name")]),
+                row(second, vec![cell("name")]),
+            ]);
+            assert_eq!(changes.check(), Ok(()), "{changes:?}");
         }
     }
 
