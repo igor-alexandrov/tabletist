@@ -19,6 +19,9 @@ pub struct Harness {
     pub viewport_commands: Vec<egui::ViewportCommand>,
     /// Whether the window reports itself fullscreen.
     pub fullscreen: bool,
+    /// Asks the window to close in the next frame, as its close button or
+    /// the desktop does. Taken by that frame.
+    pub close_requested: bool,
     /// Every piece of text the last frame painted, with its color.
     pub painted: Vec<(String, egui::Color32)>,
     /// Where the last frame painted each piece of text, in points.
@@ -69,6 +72,15 @@ impl Harness {
             .entry(egui::ViewportId::ROOT)
             .or_default()
             .fullscreen = Some(self.fullscreen);
+        if std::mem::take(&mut self.close_requested) {
+            // What `ViewportInfo::close_requested` reads.
+            input
+                .viewports
+                .entry(egui::ViewportId::ROOT)
+                .or_default()
+                .events
+                .push(egui::ViewportEvent::Close);
+        }
         let app = &mut self.app;
         let mut output = self.ctx.run_ui(input, |ui| app.frame_ui(ui));
         #[cfg(feature = "shots")]
@@ -768,6 +780,7 @@ impl Harness {
             scale: 1.0,
             viewport_commands: Vec::new(),
             fullscreen: false,
+            close_requested: false,
             painted: Vec::new(),
             text_rects: Vec::new(),
             fills: Vec::new(),

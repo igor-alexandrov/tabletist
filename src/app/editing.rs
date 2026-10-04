@@ -177,6 +177,53 @@ impl App {
     pub(super) fn perform(&mut self, held: Held) {
         match held {
             Held::Action(action) => self.apply(*action),
+            Held::CloseWindow => {
+                let tabs = self.holding_edits();
+                if tabs.is_empty() {
+                    self.closing = true;
+                } else {
+                    self.hold(Held::CloseWindow, tabs);
+                }
+            }
+        }
+    }
+
+    /// Every table tab that holds edits, over all the open connections:
+    /// what closing the window would drop.
+    fn holding_edits(&self) -> Vec<(ConnTabId, TabId)> {
+        self.open_connections()
+            .flat_map(|(tab, workspace)| {
+                workspace
+                    .object_tabs()
+                    .filter(|object| object.edits.holds())
+                    .map(move |object| (tab, object.id))
+            })
+            .collect()
+    }
+
+    /// Answers a request to close the window, when this frame brings one:
+    /// while a tab holds edits the request is cancelled and the user is
+    /// asked, as before any action that would drop them. Under a save
+    /// nothing is asked: the user closes again once it ends. It runs with
+    /// the app's logic too, which is all that runs while the window is
+    /// hidden, and more than once in a frame changes nothing.
+    pub(super) fn hold_close(&mut self, ctx: &egui::Context) {
+        // The close this app asked for, once nothing was in its way.
+        if self.closing || !ctx.input(|input| input.viewport().close_requested()) {
+            return;
+        }
+        let tabs = self.holding_edits();
+        if tabs.is_empty() {
+            return;
+        }
+        ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+        // Asked already: the question is up, and stays as it is.
+        let asked = matches!(
+            &self.dialog,
+            Some(Dialog::Leave(prompt)) if matches!(prompt.held, Held::CloseWindow)
+        );
+        if !asked {
+            self.hold(Held::CloseWindow, tabs);
         }
     }
 

@@ -79,6 +79,7 @@ fn doing(held: &Held, terminal: bool) -> &'static str {
             }
             _ => "going on",
         },
+        Held::CloseWindow => "closing the window",
     }
 }
 

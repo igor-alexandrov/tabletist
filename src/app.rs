@@ -104,6 +104,9 @@ pub struct App {
     /// (its undo history holds copies of the script) is dropped once a
     /// frame has the `egui::Context` to drop it from.
     pub closed_editors: Vec<(ConnTabId, TabId)>,
+    /// The window is closing: it was asked to, and no tab holds edits any
+    /// more, or the user gave them up.
+    pub closing: bool,
     next_id: u64,
 }
 
@@ -145,6 +148,7 @@ impl App {
             theme_changed: false,
             window_title: "Tabletist".into(),
             closed_editors: Vec::new(),
+            closing: false,
             next_id: 1,
         };
         let tab = app.picker_tab();
@@ -3514,7 +3518,8 @@ impl App {
         )
     }
 
-    /// Work that does not draw: theme changes on disk or in the OS.
+    /// Work that does not draw: theme changes on disk or in the OS, and a
+    /// request to close the window.
     pub fn logic(&mut self, ctx: &egui::Context) {
         // The settings named another theme: where the desktop is followed
         // the catalog reads that file first, as it does at the start.
@@ -3537,12 +3542,18 @@ impl App {
                 theme::apply(ctx, &palette, &self.look);
             }
         }
+        // A hidden window draws no frame: its close request is answered
+        // here, or nothing would hold it back.
+        self.hold_close(ctx);
     }
 
     /// Draws one frame, then applies what the frame asked for.
     pub fn frame_ui(&mut self, ui: &mut egui::Ui) {
         self.poll_backend();
         self.apply_actions();
+        // Before anything is drawn: a close request that pending changes
+        // hold back is asked about in this frame.
+        self.hold_close(ui.ctx());
         // Before the shortcuts take their keys: what the user works with.
         crate::ui::focus::begin_frame(ui.ctx());
         // Before the keys and the view, which read the list: it is the one
@@ -3567,6 +3578,11 @@ impl App {
             ui.ctx()
                 .send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
             self.window_title = title;
+        }
+        // Asked every frame until the window goes: a window that is
+        // closing has nothing else to do.
+        if self.closing {
+            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
         }
         // After the frame drew them for the last time.
         for (tab, id) in self.closed_editors.drain(..) {
