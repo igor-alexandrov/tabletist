@@ -19,6 +19,7 @@ pub mod json_view;
 pub mod keys;
 pub mod object_tabs;
 pub mod password_prompt;
+pub mod pending_bar;
 pub mod picker;
 pub mod quick_open;
 pub mod row_panel;
@@ -12571,5 +12572,313 @@ mod tests {
         );
         // Nor is it a click on the row under the popover.
         assert_eq!(selected(&harness, tab, id), Some((0, 2)));
+    }
+
+    /// How many saves were sent.
+    fn writes(harness: &Harness) -> usize {
+        let sent = harness.app.backend.sent.iter();
+        sent.filter(|command| matches!(command, crate::backend::Command::Write { .. }))
+            .count()
+    }
+
+    /// Makes `text` the pending value of the cell at `at`, as an editor
+    /// that was typed into and left does: a text its column does not take
+    /// stays, as a cell to fix.
+    fn leave_pending(
+        harness: &mut Harness,
+        tab: ConnTabId,
+        id: TabId,
+        at: (usize, usize),
+        text: &str,
+    ) {
+        let cell = CellPos {
+            row: at.0,
+            col: at.1,
+        };
+        let start = EditStart::Replace(text.into());
+        harness.app.apply(Action::EditCell {
+            tab,
+            id,
+            cell,
+            start,
+        });
+        harness.app.apply(Action::LeaveEdit { tab, id });
+    }
+
+    /// The row `id 2` of the fixture's page as a save reads it back.
+    fn written_row(email: &str) -> tabletist_db::WriteOutcome {
+        tabletist_db::WriteOutcome::Written {
+            rows: vec![vec![
+                tabletist_db::Value::Int(2),
+                tabletist_db::Value::Text(email.into()),
+                tabletist_db::Value::Null,
+            ]],
+            elapsed: std::time::Duration::from_millis(14),
+        }
+    }
+
+    #[test]
+    fn the_bar_counts_what_is_pending_and_save_writes_it() {
+        for look in desktop_looks() {
+            let (mut harness, tab, id) = editable_in(look);
+            // No bar without edits.
+            assert!(!harness.has("Discard all"), "{}", look.name);
+            make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
+            assert!(harness.has("1 change in 1 row"), "{}", look.name);
+            make_pending(&mut harness, tab, id, (3, 1), "dan@example.com");
+            assert!(harness.has("2 changes in 2 rows"), "{}", look.name);
+            // The key beside Save, as the look writes it.
+            let keys = format!("{}S", look.command_key());
+            assert!(painted(&harness, &keys), "{}", look.name);
+            assert_eq!(writes(&harness), 0);
+            harness.click("Save");
+            assert_eq!(writes(&harness), 1, "{}", look.name);
+            // While it runs the bar says so, and nothing is discarded.
+            assert!(harness.has("Saving…"), "{}", look.name);
+            harness.click("Discard all");
+            assert_eq!(edits(&harness, tab, id).cells.len(), 2, "{}", look.name);
+            // Its cancel is the query's.
+            harness.click("Cancel save");
+            let cancelled = harness
+                .app
+                .backend
+                .sent
+                .iter()
+                .any(|command| matches!(command, crate::backend::Command::Cancel { .. }));
+            assert!(cancelled, "{}", look.name);
+            harness.answer_written(Err(tabletist_db::Error::Cancelled));
+            assert!(
+                harness.has("Save cancelled. Nothing was written."),
+                "{}",
+                look.name
+            );
+            harness.click("Discard all");
+            assert!(edits(&harness, tab, id).cells.is_empty(), "{}", look.name);
+            // And the bar goes.
+            assert!(!harness.has("Discard all"), "{}", look.name);
+        }
+        // The terminal says it in its mode line, not in a bar.
+        let (mut harness, tab, id) = editable_in(Look::omarchy());
+        make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
+        assert!(!harness.has("Discard all"));
+    }
+
+    #[test]
+    fn save_is_disabled_with_its_reason() {
+        use egui::accesskit::Role;
+        // Whether Save cannot be pressed, and what it says of that.
+        let save = |harness: &mut Harness| {
+            let tree = harness.settle();
+            let id = crate::testing::node(&tree, "Save", Role::Button).expect("Save");
+            let (_, node) = tree.nodes.iter().find(|(node, _)| *node == id).unwrap();
+            (node.is_disabled(), node.description().map(str::to_owned))
+        };
+        for look in desktop_looks() {
+            let (mut harness, tab, id) = editable_in(look);
+            make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
+            assert_eq!(save(&mut harness), (false, None), "{}", look.name);
+            // A value its column does not take.
+            leave_pending(&mut harness, tab, id, (1, 2), "{oops");
+            assert_eq!(
+                save(&mut harness),
+                (true, Some("Fix 1 value to save".into())),
+                "{}",
+                look.name
+            );
+            assert!(harness.has("1 to fix"), "{}", look.name);
+            harness.click("Save");
+            assert_eq!(writes(&harness), 0, "{}", look.name);
+            // Fixed, on a session that came back read-only.
+            leave_pending(&mut harness, tab, id, (1, 2), "{}");
+            assert!(!harness.has("1 to fix"), "{}", look.name);
+            harness.app.workspace_mut(tab).unwrap().access = tabletist_db::Access::ReadOnly;
+            assert_eq!(
+                save(&mut harness),
+                (true, Some("This connection opens read-only".into())),
+                "{}",
+                look.name
+            );
+            harness.app.workspace_mut(tab).unwrap().access = tabletist_db::Access::Writable;
+            // Disconnected: the set is kept, and waits.
+            let session = harness.app.workspace(tab).unwrap().session;
+            harness
+                .app
+                .apply(Action::Backend(crate::backend::Event::Disconnected {
+                    session,
+                    error: tabletist_db::Error::ConnectionLost("gone".into()),
+                }));
+            assert_eq!(
+                save(&mut harness),
+                (true, Some("Not connected".into())),
+                "{}",
+                look.name
+            );
+            harness.click("Save");
+            assert_eq!(writes(&harness), 0, "{}", look.name);
+            assert_eq!(edits(&harness, tab, id).cells.len(), 2, "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn a_conflict_is_a_line_in_the_bar_and_the_set_stays() {
+        use tabletist_db::{Conflict, WriteOutcome};
+        for look in desktop_looks() {
+            let (mut harness, tab, id) = editable_in(look);
+            make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
+            make_pending(&mut harness, tab, id, (3, 1), "dan@example.com");
+            harness.click("Save");
+            let changed = Conflict {
+                row: 0,
+                server: Some(vec![
+                    tabletist_db::Value::Int(2),
+                    tabletist_db::Value::Text("other@example.com".into()),
+                    tabletist_db::Value::Null,
+                ]),
+            };
+            harness.answer_written(Ok(WriteOutcome::Conflicts(vec![changed])));
+            assert!(
+                harness.has("Row id 2 changed on the server. Nothing was written."),
+                "{}",
+                look.name
+            );
+            assert_eq!(edits(&harness, tab, id).cells.len(), 2, "{}", look.name);
+            assert!(harness.has("2 changes in 2 rows"), "{}", look.name);
+            // A row that is gone, and another that changed with it.
+            harness.click("Save");
+            let conflicts = vec![
+                Conflict {
+                    row: 1,
+                    server: None,
+                },
+                Conflict {
+                    row: 0,
+                    server: None,
+                },
+            ];
+            harness.answer_written(Ok(WriteOutcome::Conflicts(conflicts)));
+            assert!(
+                harness.has(
+                    "Row id 4 no longer exists on the server. Nothing was written. \
+                     1 more row too."
+                ),
+                "{}",
+                look.name
+            );
+            assert_eq!(edits(&harness, tab, id).cells.len(), 2, "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn a_failed_save_marks_the_row_red_and_says_the_databases_words() {
+        for look in desktop_looks() {
+            let (mut harness, tab, id) = editable_in(look);
+            let palette = harness.app.palette;
+            make_pending(&mut harness, tab, id, (1, 1), "b@x.io");
+            // The row panel has the row's values too: the grid alone is
+            // looked at here.
+            harness.app.workspace_mut(tab).unwrap().row_panel = false;
+            harness.click("Save");
+            harness.answer_written(Ok(tabletist_db::WriteOutcome::Failed {
+                row: 0,
+                error: tabletist_db::Error::Query {
+                    code: Some("23514".into()),
+                    message: "new row violates check constraint \"users_email_check\"".into(),
+                    detail: None,
+                    hint: None,
+                },
+            }));
+            assert!(
+                harness.has(
+                    "23514 · new row violates check constraint \"users_email_check\". \
+                     Nothing was written."
+                ),
+                "{}",
+                look.name
+            );
+            // The cell and its row are red, and the set stays to be fixed.
+            let red = Tone::Danger.fill(&look, &palette);
+            assert!(filled_behind(&harness, "b@x.io", red), "{}", look.name);
+            let row = cell_of(&harness, "b@x.io").y;
+            let barred = harness.fills.iter().any(|(rect, fill)| {
+                *fill == palette.danger && rect.width() == 3.0 && rect.y_range().contains(row)
+            });
+            assert!(barred, "{}", look.name);
+            assert_eq!(edits(&harness, tab, id).cells.len(), 1, "{}", look.name);
+            // A save lost on its way says what is not known.
+            harness.click("Save");
+            harness.app.apply(Action::Reconnect(tab));
+            assert!(
+                harness
+                    .has("The connection was lost while saving. Reload to see what was written."),
+                "{}",
+                look.name
+            );
+        }
+    }
+
+    #[test]
+    fn a_confirmation_answered_without_a_session_says_nothing_was_sent() {
+        let (mut harness, tab, id) = editable_in(Look::macos());
+        harness.app.workspace_mut(tab).unwrap().environment = crate::env::Environment::Production;
+        make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
+        harness.app.apply(Action::WriteEdits { tab, id });
+        let session = harness.app.workspace(tab).unwrap().session;
+        harness
+            .app
+            .apply(Action::Backend(crate::backend::Event::Disconnected {
+                session,
+                error: tabletist_db::Error::ConnectionLost("gone".into()),
+            }));
+        harness.app.apply(Action::ConfirmWrite);
+        assert_eq!(writes(&harness), 0);
+        assert!(harness.has("Not connected. Nothing was sent."));
+        assert!(
+            !harness.has("The connection was lost while saving. Reload to see what was written.")
+        );
+    }
+
+    #[test]
+    fn a_written_save_is_summed_up_in_the_footer() {
+        for look in desktop_looks() {
+            let (mut harness, tab, id) = editable_in(look);
+            assert!(harness.has("Query 12 ms"), "{}", look.name);
+            make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
+            harness.click("Save");
+            harness.answer_written(Ok(written_row("bob@example.com")));
+            assert!(
+                harness.has("written 1 change · 1 row · 14 ms"),
+                "{}",
+                look.name
+            );
+            assert!(!harness.has("Query 12 ms"), "{}", look.name);
+            // The bar went with the set.
+            assert!(!harness.has("Discard all"), "{}", look.name);
+            // The next edit takes the line away.
+            make_pending(&mut harness, tab, id, (3, 1), "dan@example.com");
+            assert!(harness.has("Query 12 ms"), "{}", look.name);
+            assert!(
+                !harness.has("written 1 change · 1 row · 14 ms"),
+                "{}",
+                look.name
+            );
+        }
+    }
+
+    #[test]
+    fn a_note_with_nothing_left_pending_is_dismissed() {
+        let (mut harness, tab, id) = editable_in(Look::macos());
+        make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
+        harness.click("Save");
+        harness.answer_written(Err(tabletist_db::Error::Cancelled));
+        // The one change is taken back: the line of the save stays, with
+        // nothing to save or to discard under it.
+        select(&mut harness, tab, id, (1, 1));
+        harness.app.apply(Action::RevertCell { tab, id });
+        assert!(harness.has("Save cancelled. Nothing was written."));
+        assert!(!harness.has("Save") && !harness.has("Discard all"));
+        assert!(!harness.has("0 changes in 0 rows"));
+        harness.click("Dismiss");
+        assert!(!harness.has("Save cancelled. Nothing was written."));
+        assert!(edits(&harness, tab, id).note.is_none());
     }
 }

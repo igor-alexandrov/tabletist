@@ -100,6 +100,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                     }
                     if !look.terminal {
                         super::data_view::footer(app, ui, tab, object_tab);
+                        // Bottom panels stack upwards: the bar of pending
+                        // changes stands on the footer.
+                        super::pending_bar::show(app, ui, tab, object_tab);
                     }
                     egui::CentralPanel::default()
                         .frame(Frame::new().fill(app.palette.window))

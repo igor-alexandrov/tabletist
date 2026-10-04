@@ -168,6 +168,26 @@ fn facts(
     }
 }
 
+/// A row by its key: each of the `key` columns' names and the row's value
+/// in it, both as the grid shows them (short, and nothing hidden). The
+/// panel's title names a row so (`id 2`), and so does what a save says of
+/// one. `None` when the page does not hold every column of the key.
+pub fn key_parts(
+    columns: &[tabletist_db::ColumnMeta],
+    row: &[Value],
+    key: &[String],
+) -> Option<Vec<(String, String)>> {
+    key.iter()
+        .map(|name| {
+            let col = columns.iter().position(|column| column.name == *name)?;
+            Some((
+                format::display_safe(name).into_owned(),
+                format::cell_text(row.get(col)?).into_owned(),
+            ))
+        })
+        .collect()
+}
+
 /// What the panel shows a row of: a table's page, or a SQL editor's result.
 struct Source<'a> {
     /// The table's name, or "Query 3": under the title in the macOS header.
@@ -346,18 +366,12 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, id: TabId) {
                 .map(|column| crate::ui::value_tags::Tags::of(column, structure).when(value_tags))
                 .collect();
             let tag_of = |col: usize, value: &Value| tags[col].style(value);
-            // The row's name: its key, else its number. Both as the grid
-            // shows them: short, and nothing hidden.
-            let key_column = structure
-                .and_then(|s| (s.primary_key.len() == 1).then(|| s.primary_key[0].as_str()));
-            let key_value = key_column.and_then(|key| {
-                source
-                    .columns
-                    .iter()
-                    .position(|column| column.name == key)
-                    .map(|col| format::cell_text(&row[col]).into_owned())
-            });
-            let key_column = key_column.map(|key| format::display_safe(key).into_owned());
+            // The row's name: its key, else its number.
+            let (key_column, key_value) = structure
+                .filter(|structure| structure.primary_key.len() == 1)
+                .and_then(|structure| key_parts(source.columns, row, &structure.primary_key))
+                .and_then(|mut parts| parts.pop())
+                .unzip();
             let number = source.offset + cell.row as u64 + 1;
             let side = side(&look);
             // Header: 52 (macOS) or 40 (terminal), and its rule.

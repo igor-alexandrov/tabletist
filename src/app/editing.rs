@@ -319,11 +319,11 @@ impl App {
         match self.save_blocked(tab, id) {
             None => {}
             // The session went while the prompt was up: the tab says so,
-            // where the save would have said how it ended. Any other reason
-            // is the Save's own to show.
+            // where the save would have said how it ended, and says that
+            // nothing went out. Any other reason is the Save's own to show.
             Some(SaveBlock::Disconnected) => {
                 if let Some(object) = self.object_tab_mut(tab, id) {
-                    object.edits.note = Some(Note::Lost);
+                    object.edits.note = Some(Note::NotSent);
                 }
                 return;
             }

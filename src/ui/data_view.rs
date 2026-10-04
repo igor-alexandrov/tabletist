@@ -877,7 +877,23 @@ pub fn footer(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabI
     });
     let can_next = page.is_some_and(|page| page.has_more) && !object.rows.is_loading();
     let can_prev = object.query.offset > 0 && !object.rows.is_loading();
-    let timing = page.map(|page| format::elapsed(page.elapsed));
+    // What the footer's end says: how long the page took, or what the last
+    // save wrote, until the next edit or page.
+    let written = object
+        .edits
+        .saved
+        .as_ref()
+        .filter(|_| !object.edits.holds())
+        .map(|saved| super::pending_bar::written_text(saved, locale));
+    let timing = written.or_else(|| {
+        page.map(|page| {
+            format!(
+                "{} {}",
+                gettext(locale, "Query"),
+                format::elapsed(page.elapsed)
+            )
+        })
+    });
     let unordered = page.is_some_and(|page| !page.ordered_by_key) && object.query.sort.is_empty();
     let selected = object.selection.is_some();
     let read_only = app
@@ -953,17 +969,14 @@ pub fn footer(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabI
                         let width = |text: &str| {
                             widgets::secondary(&look).width(ui.ctx(), look.faces, text)
                         };
-                        let query = timing
-                            .as_ref()
-                            .map(|timing| format!("{} {timing}", gettext(locale, "Query")));
+                        let query = timing.as_ref();
                         // A state with nothing to say takes no room.
                         let state_width = if state.is_empty() {
                             0.0
                         } else {
                             width(&state) + 16.0
                         };
-                        let taken =
-                            state_width + query.as_deref().map_or(0.0, |query| 16.0 + width(query));
+                        let taken = state_width + query.map_or(0.0, |query| 16.0 + width(query));
                         if ui.available_width() >= width(columns) + 16.0 + taken {
                             note(ui, columns, status, &look);
                         }
@@ -1018,12 +1031,7 @@ pub fn footer(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabI
                         }
                         ui.spinner();
                     } else if let Some(timing) = &timing {
-                        note(
-                            ui,
-                            &format!("{} {timing}", gettext(locale, "Query")),
-                            status,
-                            &look,
-                        );
+                        note(ui, timing, status, &look);
                     }
                     if !state.is_empty() {
                         note(ui, &state, status, &look);
