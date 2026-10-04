@@ -2629,6 +2629,53 @@ async fn a_cancel_during_a_save_undoes_it() {
 }
 
 #[tokio::test]
+async fn a_name_in_other_letters_than_the_tables_is_refused() {
+    let (connection, dir) = fixture_as(Access::Writable).await;
+    let before = std::fs::read(dir.path().join("fixture.db")).unwrap();
+    let change = |key: &str, column: &str, loaded: &str| RowChange {
+        key: vec![(key.into(), Value::Int(1))],
+        set: vec![CellChange {
+            column: column.into(),
+            type_name: "TEXT".into(),
+            loaded: Value::Text(loaded.into()),
+            new: to("mine"),
+        }],
+    };
+    // SQLite reads `ID` as the column `id`, so these two are one row, and
+    // the check for a row named twice, which compares names exactly, lets
+    // them through as two.
+    let twice = ChangeSet {
+        object: ObjectRef::new("main", "users"),
+        rows: vec![
+            change("id", "name", "Ada Lovelace"),
+            change("ID", "email", "ada@example.com"),
+        ],
+    };
+    assert_eq!(twice.check(), Ok(()));
+    // A set's name too, alone.
+    let set = ChangeSet {
+        object: ObjectRef::new("main", "users"),
+        rows: vec![change("id", "NAME", "Ada Lovelace")],
+    };
+    for (changes, name) in [(twice, "ID"), (set, "NAME")] {
+        let refused = connection.write(&changes).await;
+        assert!(
+            matches!(
+                &refused,
+                Err(Error::Query { message, .. })
+                    if message.contains(&format!("spells {name} another way"))
+            ),
+            "{refused:?}"
+        );
+    }
+    assert_eq!(
+        std::fs::read(dir.path().join("fixture.db")).unwrap(),
+        before
+    );
+    assert_eq!(query_only(&connection).await, Value::Int(1));
+}
+
+#[tokio::test]
 async fn a_key_finds_the_row_whose_key_is_that_kind_of_value() {
     let (connection, dir) = fixture_as(Access::Writable).await;
     let other = other_program(&dir);

@@ -11,7 +11,9 @@ use super::{
     status,
 };
 use crate::script::retry_cancelled;
-use crate::write::{Applied, changed_since_loaded, more_than_one, not_read_back};
+use crate::write::{
+    Applied, changed_since_loaded, more_than_one, not_read_back, spelled_otherwise,
+};
 use crate::{
     ChangeSet, ColumnMeta, Conflict, Dialect, Error, ObjectRef, Result, RowChange, Sql, Value,
     WriteOutcome,
@@ -270,20 +272,6 @@ fn inexact_key<'a>(change: &'a RowChange, columns: &'a [ColumnMeta]) -> Option<(
         let column = columns.iter().find(|column| column.name == *name)?;
         Some((name.as_str(), inexact(&column.type_name)?))
     })
-}
-
-/// A name `change` uses, in its key or its set, that is not one of the
-/// row's `columns` as the table spells them. MySQL would take it for the
-/// column all the same, and the save's own checks, which compare names
-/// exactly, would take it for another: only a name spelled as the table
-/// spells it is known to be the column it reads as.
-fn spelled_otherwise<'a>(change: &'a RowChange, columns: &[String]) -> Option<&'a str> {
-    change
-        .key
-        .iter()
-        .map(|(name, _)| name.as_str())
-        .chain(change.set.iter().map(|cell| cell.column.as_str()))
-        .find(|name| !columns.iter().any(|column| column == name))
 }
 
 /// A failure that is the statement's own. A cancel or a lost session ends

@@ -7,7 +7,9 @@ use rusqlite::types::ValueRef;
 
 use super::{end_transaction, from_sqlite, map_error};
 use crate::dialect::RowUpdate;
-use crate::write::{Applied, changed_since_loaded, more_than_one, not_read_back};
+use crate::write::{
+    Applied, changed_since_loaded, more_than_one, not_read_back, spelled_otherwise,
+};
 use crate::{ChangeSet, Conflict, Dialect, Error, Result, RowChange, Sql, Value, WriteOutcome};
 
 pub(super) fn write(
@@ -204,6 +206,13 @@ fn apply(
             return Err(Error::query(format!(
                 "{name} names more than one column of the table, so the save cannot tell which \
                  it changes"
+            )));
+        }
+        // SQLite takes a name in other ASCII letters for the column too.
+        if let Some(name) = spelled_otherwise(change, &columns) {
+            return Err(Error::query(format!(
+                "the table spells {name} another way, so the save cannot be sure which column \
+                 it names"
             )));
         }
         if found.len() > 1 {

@@ -443,7 +443,9 @@ impl Dialect {
         // A binary column is never sent text (MySQL would store a `bit`'s
         // text as the characters' codes), and is not edited at all yet: a
         // NULL for one is refused with the rest.
-        if class == ColumnClass::Binary {
+        // By what the cell held too: a SQLite column of any declared type
+        // can hold a blob.
+        if class == ColumnClass::Binary || matches!(change.loaded, Value::Bytes(_)) {
             return Err(Error::query(format!(
                 "{}: binary values cannot be edited yet",
                 change.column
@@ -1312,6 +1314,21 @@ mod tests {
             (Dialect::MySql, change("flags", "bit(8)", NewValue::Null)),
             (Dialect::Postgres, change("cover", "bytea", NewValue::Null)),
             (Dialect::Sqlite, change("cover", "BLOB", NewValue::Null)),
+            // Nor a blob held by a column of another type, or of none.
+            (
+                Dialect::Sqlite,
+                CellChange {
+                    loaded: Value::Bytes(vec![1, 2].into()),
+                    ..typed("note", "TEXT", "x")
+                },
+            ),
+            (
+                Dialect::Sqlite,
+                CellChange {
+                    loaded: Value::Bytes(vec![1, 2].into()),
+                    ..change("loose", "", NewValue::Null)
+                },
+            ),
         ] {
             let column = cell.column.clone();
             let refused = shown(dialect, cell).unwrap_err().to_string();

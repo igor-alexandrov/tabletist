@@ -88,6 +88,18 @@ impl ChangeSet {
             if row.set.is_empty() {
                 return Err(Error::query("a row to save has no change"));
             }
+            // A key that names a column twice would not compare as the key
+            // it is: the check for the same row twice counts its columns.
+            if let Some((column, _)) = row.key.iter().enumerate().find_map(|(index, named)| {
+                row.key[..index]
+                    .iter()
+                    .any(|(earlier, _)| *earlier == named.0)
+                    .then_some(named)
+            }) {
+                return Err(Error::query(format!(
+                    "{column} is named twice in the row's key"
+                )));
+            }
             if row.key.iter().any(|(_, value)| value.is_null()) {
                 return Err(Error::query(
                     "a row to save cannot be found: its key is NULL",
@@ -156,6 +168,21 @@ pub(crate) fn same(a: &Value, b: &Value) -> bool {
         (Value::Float(a), Value::Float(b)) => a.to_bits() == b.to_bits(),
         _ => a == b,
     }
+}
+
+/// A name `change` uses, in its key or its set, that is not one of the
+/// row's `columns` as the table spells them. MySQL and SQLite take a name
+/// in other letters for the column all the same, and the save's own
+/// checks, which compare names exactly, would take it for another: two
+/// changes keyed by `ID` and by `id` would pass for two rows. Only a name
+/// spelled as the table spells it is known to be the column it reads as.
+pub(crate) fn spelled_otherwise<'a>(change: &'a RowChange, columns: &[String]) -> Option<&'a str> {
+    change
+        .key
+        .iter()
+        .map(|(name, _)| name.as_str())
+        .chain(change.set.iter().map(|cell| cell.column.as_str()))
+        .find(|name| !columns.iter().any(|column| column == name))
 }
 
 /// Whether two keys find the same row: the same columns, each with the
@@ -245,6 +272,18 @@ mod tests {
             (
                 set(vec![row(id(), vec![cell("name"), cell("name")])]),
                 "changed twice",
+            ),
+            // A key with a column twice would not count as the key it is,
+            // beside the same row keyed once.
+            (
+                set(vec![
+                    row(id(), vec![cell("name")]),
+                    row(
+                        vec![("id", Value::Int(1)), ("id", Value::Int(1))],
+                        vec![cell("email")],
+                    ),
+                ]),
+                "named twice in the row's key",
             ),
             // Both would be compared with the row as it was, and the second
             // written over the first.
