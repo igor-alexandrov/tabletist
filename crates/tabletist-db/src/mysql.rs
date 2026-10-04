@@ -211,9 +211,10 @@ impl Conn {
 
     pub async fn describe(&self, object: &ObjectRef) -> Result<Structure> {
         let at = (&object.schema, &object.name);
-        let columns: Vec<(String, String, String, Option<String>, String)> = self
+        let columns: Vec<(String, String, String, Option<String>, String, String)> = self
             .catalog(
-                "SELECT column_name, column_type, is_nullable, column_default, column_comment \
+                "SELECT column_name, column_type, is_nullable, column_default, column_comment, \
+                        extra \
                  FROM information_schema.columns \
                  WHERE table_schema = ? AND table_name = ? ORDER BY ordinal_position",
                 at,
@@ -227,14 +228,22 @@ impl Conn {
         }
         let columns = columns
             .into_iter()
-            .map(|(name, type_name, nullable, default, comment)| ColumnInfo {
-                name,
-                type_name,
-                nullable: nullable == "YES",
-                default,
-                comment: (!comment.is_empty()).then_some(comment),
-                allowed_values: None,
-            })
+            .map(
+                |(name, type_name, nullable, default, comment, extra)| ColumnInfo {
+                    name,
+                    type_name,
+                    nullable: nullable == "YES",
+                    default,
+                    comment: (!comment.is_empty()).then_some(comment),
+                    allowed_values: None,
+                    // `VIRTUAL GENERATED`, `STORED GENERATED`, and on an older
+                    // MariaDB `VIRTUAL` or `PERSISTENT`. Not `DEFAULT_GENERATED`,
+                    // which MySQL 8 says of a default that is an expression.
+                    generated: ["VIRTUAL", "STORED", "PERSISTENT"]
+                        .iter()
+                        .any(|word| extra.to_ascii_uppercase().contains(word)),
+                },
+            )
             .collect();
         let index_rows: Vec<(String, i64, String, String)> = self
             .catalog(

@@ -808,7 +808,7 @@ impl Conn {
 fn columns(connection: &rusqlite::Connection, object: &ObjectRef) -> Result<Vec<ColumnInfo>> {
     let mut statement = connection
         .prepare(
-            "SELECT name, type, \"notnull\", dflt_value FROM pragma_table_xinfo(?1, ?2) \
+            "SELECT name, type, \"notnull\", dflt_value, hidden FROM pragma_table_xinfo(?1, ?2) \
              WHERE hidden <> 1 ORDER BY cid",
         )
         .map_err(map_error)?;
@@ -821,6 +821,8 @@ fn columns(connection: &rusqlite::Connection, object: &ObjectRef) -> Result<Vec<
                 default: optional_text(row, 3)?,
                 comment: None,
                 allowed_values: None,
+                // 2 is a virtual generated column, 3 a stored one.
+                generated: matches!(row.get::<_, i64>(4)?, 2 | 3),
             })
         })
         .map_err(map_error)?
@@ -1569,6 +1571,42 @@ mod tests {
                 .await
                 .unwrap()
                 .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_generated_column_says_so() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("generated.db");
+        rusqlite::Connection::open(&path)
+            .unwrap()
+            .execute_batch(
+                "CREATE TABLE books (
+                     id INTEGER PRIMARY KEY,
+                     title TEXT NOT NULL,
+                     slug TEXT GENERATED ALWAYS AS (lower(title)) VIRTUAL,
+                     shout TEXT GENERATED ALWAYS AS (upper(title)) STORED
+                 )",
+            )
+            .unwrap();
+        let conn = Conn::open(&path, Access::ReadOnly).await.unwrap();
+        let structure = conn
+            .describe(&ObjectRef::new("main", "books"))
+            .await
+            .unwrap();
+        let generated: Vec<(&str, bool)> = structure
+            .columns
+            .iter()
+            .map(|column| (column.name.as_str(), column.generated))
+            .collect();
+        assert_eq!(
+            generated,
+            [
+                ("id", false),
+                ("title", false),
+                ("slug", true),
+                ("shout", true)
+            ]
         );
     }
 
