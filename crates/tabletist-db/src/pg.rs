@@ -22,6 +22,17 @@ use tokio_postgres_rustls::MakeRustlsConnect;
 mod script;
 mod write;
 
+/// How every session prints a float and a time, whatever the server, the
+/// database or the role has as a default: what a page shows is what a save
+/// sends back, to find the row again and to say what it held. With
+/// `extra_float_digits` at 0 or below (the default before PostgreSQL 12)
+/// two neighbouring floats print alike, and the key of one finds the other.
+/// A `DateStyle` other than ISO prints a zone as its abbreviation, which
+/// can read back as another zone (`IST` is India's and, to the server,
+/// Israel's); ISO prints the offset in numbers. A script's own `SET` of
+/// either goes with its rollback.
+const PRINTS_EXACTLY: &str = "SET extra_float_digits = 3; SET DateStyle = 'ISO'";
+
 pub struct Conn {
     pub(crate) client: tokio::sync::Mutex<tokio_postgres::Client>,
     pub(crate) cancel: tokio_postgres::CancelToken,
@@ -242,9 +253,19 @@ impl Conn {
             spec.tls,
             spec.ca_file.as_deref(),
         )?);
+        let config = config(spec, secrets, via);
+        Self::open(config, tls, database_name(spec), access).await
+    }
+
+    /// Opens the session `config` describes and sets it up for `access`.
+    async fn open(
+        config: tokio_postgres::Config,
+        tls: MakeRustlsConnect,
+        database: &str,
+        access: Access,
+    ) -> Result<Self> {
         // The config's own timeout covers only the TCP connect, which is
         // instant to a tunnel's local port: bound the whole startup instead.
-        let config = config(spec, secrets, via);
         let handshake = Arc::new(AtomicBool::new(false));
         let connecting = config.connect(Noted {
             inner: tls.clone(),
@@ -263,20 +284,19 @@ impl Conn {
         // counts and the script runner open read-only transactions of
         // their own, and none of the script guard's checks read the
         // session's default.
-        let setup = match access {
-            Access::ReadOnly => {
-                "SET default_transaction_read_only = on; SET standard_conforming_strings = on"
-            }
-            Access::Writable => "SET standard_conforming_strings = on",
+        let read_only = match access {
+            Access::ReadOnly => "SET default_transaction_read_only = on; ",
+            Access::Writable => "",
         };
-        client.batch_execute(setup).await.map_err(query_error)?;
+        let setup = format!("{read_only}SET standard_conforming_strings = on; {PRINTS_EXACTLY}");
+        client.batch_execute(&setup).await.map_err(query_error)?;
         let cancel = client.cancel_token();
         Ok(Self {
             client: tokio::sync::Mutex::new(client),
             cancel,
             tls,
             config,
-            requested_database: database_name(spec).to_owned(),
+            requested_database: database.to_owned(),
             encrypted: handshake.load(Ordering::Relaxed),
         })
     }
@@ -929,6 +949,21 @@ mod tests {
         let (mut spec, secrets) = ConnectSpec::from_url(url).unwrap();
         spec.tls = crate::TlsMode::Disable;
         Conn::connect(&spec, &secrets, None, Access::ReadOnly)
+            .await
+            .unwrap()
+    }
+
+    /// A fresh session opened as `access`, on a server whose own defaults
+    /// are `options`: startup options give a session what a server's
+    /// configuration, a database's or a role's would, and what the driver
+    /// sets when it connects comes after them all the same.
+    pub(super) async fn session_with(url: &str, access: Access, options: &str) -> Conn {
+        let (mut spec, secrets) = ConnectSpec::from_url(url).unwrap();
+        spec.tls = crate::TlsMode::Disable;
+        let tls = MakeRustlsConnect::new(crate::tls::client_config(spec.tls, None).unwrap());
+        let mut config = config(&spec, &secrets, None);
+        config.options(options);
+        Conn::open(config, tls, database_name(&spec), access)
             .await
             .unwrap()
     }

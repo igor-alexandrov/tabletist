@@ -8,15 +8,8 @@ use tokio_postgres::SimpleQueryMessage;
 use super::{Conn, column_metas, query_error, row_values};
 use crate::dialect::RowUpdate;
 use crate::script::retry_cancelled;
-use crate::write::changed_since_loaded;
+use crate::write::{Applied, changed_since_loaded, more_than_one, not_read_back};
 use crate::{ChangeSet, ColumnMeta, Conflict, Dialect, Error, Result, Value, WriteOutcome};
-
-/// What the statements of a save came to, before its transaction ends.
-enum Applied {
-    Rows(Vec<Vec<Value>>),
-    Conflicts(Vec<Conflict>),
-    Failed { row: usize, error: Error },
-}
 
 impl Conn {
     /// See [`crate::Connection::write`]. Rows are read through the
@@ -66,14 +59,7 @@ impl Conn {
         if let Some(refused) = uncommitted {
             return Err(refused);
         }
-        Ok(match applied? {
-            Applied::Rows(rows) => WriteOutcome::Written {
-                rows,
-                elapsed: started.elapsed(),
-            },
-            Applied::Conflicts(conflicts) => WriteOutcome::Conflicts(conflicts),
-            Applied::Failed { row, error } => WriteOutcome::Failed { row, error },
-        })
+        Ok(applied?.outcome(started))
     }
 }
 
@@ -103,12 +89,19 @@ async fn execute(client: &tokio_postgres::Client, statement: &str) -> Result<()>
 /// pooler can hand a transaction a server session someone else left
 /// otherwise. `LOCAL`: it ends with the transaction.
 ///
-/// One message, so a failure of either statement leaves at most a failed
+/// The `ROLLBACK` before it makes the save start from no transaction. The
+/// app leaves none open: a save and a script each end their own. But a save
+/// whose future was dropped half way would leave its transaction, in which
+/// `START TRANSACTION` only warns, and this save's `COMMIT` would then
+/// commit that one's rows with its own. With nothing open the `ROLLBACK`
+/// is a warning and no more.
+///
+/// One message, so a failure of any statement leaves at most a failed
 /// transaction, which the rollback every save ends with takes away.
 async fn begin(client: &tokio_postgres::Client) -> Result<()> {
     execute(
         client,
-        "START TRANSACTION READ WRITE; SET LOCAL client_encoding = 'UTF8'",
+        "ROLLBACK; START TRANSACTION READ WRITE; SET LOCAL client_encoding = 'UTF8'",
     )
     .await
 }
@@ -214,17 +207,9 @@ async fn apply(
         if found.len() > 1 {
             return Err(more_than_one());
         }
-        saved.push(
-            found
-                .pop()
-                .ok_or_else(|| Error::query("a saved row could not be read back"))?,
-        );
+        saved.push(found.pop().ok_or_else(not_read_back)?);
     }
     Ok(Applied::Rows(saved))
-}
-
-fn more_than_one() -> Error {
-    Error::query("a row's key matches more than one row")
 }
 
 #[cfg(test)]
@@ -235,9 +220,9 @@ mod tests {
     use futures_util::FutureExt;
 
     use super::super::first_text;
-    use super::super::tests::{session, test_url};
+    use super::super::tests::{session, session_with, test_url};
     use super::*;
-    use crate::{CellChange, NewValue, ObjectRef, RowChange, StopFlag};
+    use crate::{Access, CellChange, NewValue, ObjectRef, RowChange, RowQuery, StopFlag};
 
     /// The backend spawns nothing for a save, but awaits it on a task that
     /// was spawned: its future must be `Send`. This fails to compile, not
@@ -282,14 +267,23 @@ mod tests {
     /// text)`, dropped however the test ends. The fixture's tables are every
     /// test's, and no test writes to them.
     async fn on_its_own_table<T>(url: &str, table: &str, test: impl Future<Output = T>) -> T {
+        on_a_table_of(url, table, "id text PRIMARY KEY, body text", test).await
+    }
+
+    /// Runs `test` on a table of its own with these columns, dropped
+    /// however the test ends.
+    async fn on_a_table_of<T>(
+        url: &str,
+        table: &str,
+        columns: &str,
+        test: impl Future<Output = T>,
+    ) -> T {
         let admin = admin(url).await;
         let drop = format!("DROP TABLE IF EXISTS {table}");
         admin.batch_execute(&drop).await.unwrap();
         let outcome = AssertUnwindSafe(async {
             admin
-                .batch_execute(&format!(
-                    "CREATE TABLE {table} (id text PRIMARY KEY, body text)"
-                ))
+                .batch_execute(&format!("CREATE TABLE {table} ({columns})"))
                 .await
                 .unwrap();
             test.await
@@ -358,6 +352,155 @@ mod tests {
             assert_eq!(stored, "after");
             // The session's own default is as it was.
             assert_eq!(setting(&conn, "default_transaction_read_only").await, "on");
+        })
+        .await;
+    }
+
+    /// Defaults under which the server prints values a save cannot send
+    /// back: a float cut to fifteen digits (the default before PostgreSQL
+    /// 12), and a time with its zone as an abbreviation that reads back as
+    /// another zone (`IST` is Israel's to the server, not India's).
+    const LOSSY: &str = "-c extra_float_digits=0 -c DateStyle=German,DMY -c TimeZone=Asia/Kolkata";
+
+    /// What a page shows is what a save sends back, so the driver's session
+    /// prints every digit of a float and a time with its offset, whatever
+    /// the server, the database or the role has as a default.
+    #[tokio::test]
+    async fn a_session_prints_values_exactly_whatever_the_servers_defaults() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        for access in [Access::ReadOnly, Access::Writable] {
+            let conn = session_with(&url, access, LOSSY).await;
+            assert_eq!(
+                setting(&conn, "extra_float_digits").await,
+                "3",
+                "{access:?}"
+            );
+            let style = setting(&conn, "DateStyle").await;
+            assert!(style.starts_with("ISO"), "{access:?}: {style}");
+            // The zone is the server's still: only how it prints changed.
+            assert_eq!(setting(&conn, "TimeZone").await, "Asia/Kolkata");
+        }
+    }
+
+    /// Two rows whose keys a lossy session prints alike: neighbouring
+    /// floats, and two times of which one, printed with its zone's
+    /// abbreviation, reads back as the other. The second row's key, as the
+    /// page shows it, finds the second row.
+    #[tokio::test]
+    async fn a_key_finds_its_own_row_whatever_the_servers_defaults_print() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        let table = "write_unit_exact";
+        let columns = "k float8 PRIMARY KEY, at timestamptz NOT NULL UNIQUE, body text";
+        on_a_table_of(&url, table, columns, async {
+            let admin = admin(&url).await;
+            // 06:00 in India is 00:30 UTC, and `06:00 IST` read as Israel's
+            // time is 04:00 UTC, the first row's.
+            admin
+                .batch_execute(&format!(
+                    "INSERT INTO {table} VALUES
+                         (0.3, '2026-03-29 04:00:00.123456+00', 'before'),
+                         (0.30000000000000004, '2026-03-29 00:30:00.123456+00', 'before')"
+                ))
+                .await
+                .unwrap();
+            let conn = session_with(&url, Access::Writable, LOSSY).await;
+            let object = ObjectRef::new("public", table);
+            for (index, key, new) in [(0, "k", "by its number"), (1, "at", "by its time")] {
+                let page = conn
+                    .fetch_rows(&RowQuery::new(object.clone(), 10))
+                    .await
+                    .unwrap();
+                // In key order: the second row is the greater float's.
+                let second = &page.rows[1];
+                let changes = ChangeSet {
+                    object: object.clone(),
+                    rows: vec![RowChange {
+                        key: vec![(key.into(), second[index].clone())],
+                        set: vec![CellChange {
+                            column: "body".into(),
+                            type_name: "text".into(),
+                            loaded: second[2].clone(),
+                            new: NewValue::Text(new.into()),
+                        }],
+                    }],
+                };
+                let outcome = conn.write(&changes).await;
+                assert!(
+                    matches!(outcome, Ok(WriteOutcome::Written { .. })),
+                    "{key}: {outcome:?}"
+                );
+                // Read by another session, through the protocol that
+                // carries values as they are.
+                let bodies: Vec<String> = admin
+                    .query(&format!("SELECT body FROM {table} ORDER BY k"), &[])
+                    .await
+                    .unwrap()
+                    .iter()
+                    .map(|row| row.get(0))
+                    .collect();
+                assert_eq!(bodies, ["before", new], "{key}");
+            }
+        })
+        .await;
+    }
+
+    /// A save starts from no transaction. Nothing in the app leaves one
+    /// open (a save and a script each end their own), but a save whose
+    /// future was dropped half way would: its rows must not be committed
+    /// by the next save, nor its failure be the next save's.
+    #[tokio::test]
+    async fn a_save_does_not_commit_what_a_transaction_left_open_wrote() {
+        let Some(url) = test_url() else {
+            return;
+        };
+        on_its_own_table(&url, "write_unit_left_open", async {
+            let table = "write_unit_left_open";
+            let admin = admin(&url).await;
+            admin
+                .batch_execute(&format!("INSERT INTO {table} VALUES ('a', 'before')"))
+                .await
+                .unwrap();
+            let mut held = "before";
+            for (left, new) in [
+                (
+                    format!("BEGIN READ WRITE; INSERT INTO {table} VALUES ('planted', 'planted')"),
+                    "after a transaction left open",
+                ),
+                // One that failed is left by its statement's error.
+                (
+                    format!(
+                        "BEGIN READ WRITE; INSERT INTO {table} VALUES ('planted', 'planted'); \
+                         SELECT 1 / 0"
+                    ),
+                    "after a transaction left failed",
+                ),
+                // And none: the usual start.
+                ("SELECT 1".to_owned(), "after no transaction"),
+            ] {
+                let conn = session(&url).await;
+                let planted = conn.client.lock().await.batch_execute(&left).await;
+                assert_eq!(planted.is_err(), left.contains("1 / 0"), "{left}");
+                let mut changes = body(table, "a", new);
+                changes.rows[0].set[0].loaded = Value::Text(held.into());
+                held = new;
+                let outcome = conn.write(&changes).await;
+                assert!(
+                    matches!(outcome, Ok(WriteOutcome::Written { .. })),
+                    "{new}: {outcome:?}"
+                );
+                let rows: Vec<(String, String)> = admin
+                    .query(&format!("SELECT id, body FROM {table} ORDER BY id"), &[])
+                    .await
+                    .unwrap()
+                    .iter()
+                    .map(|row| (row.get(0), row.get(1)))
+                    .collect();
+                assert_eq!(rows, [("a".to_owned(), new.to_owned())], "{new}");
+            }
         })
         .await;
     }
@@ -449,7 +592,7 @@ mod tests {
         let Some(url) = test_url() else {
             return;
         };
-        const SETS: [(&str, &str); 14] = [
+        let mut sets = vec![
             ("standard_conforming_strings", "off"),
             ("backslash_quote", "on"),
             ("client_encoding", "'LATIN1'"),
@@ -463,15 +606,17 @@ mod tests {
             ("row_security", "off"),
             ("lock_timeout", "1"),
             ("statement_timeout", "100000"),
-            // For a superuser only; the test server's user is one.
-            ("session_replication_role", "replica"),
         ];
         let conn = session(&url).await;
+        // Whether triggers run is a superuser's to set.
+        if setting(&conn, "is_superuser").await == "on" {
+            sets.push(("session_replication_role", "replica"));
+        }
         let mut before = Vec::new();
-        for (name, _) in SETS {
+        for (name, _) in &sets {
             before.push(setting(&conn, name).await);
         }
-        let mut script: Vec<String> = SETS
+        let mut script: Vec<String> = sets
             .iter()
             .map(|(name, value)| format!("SET {name} = {value}"))
             .collect();
@@ -491,8 +636,12 @@ mod tests {
             ),
             "{outcome:?}"
         );
-        for ((name, _), before) in SETS.iter().zip(&before) {
+        for ((name, _), before) in sets.iter().zip(&before) {
             assert_eq!(&setting(&conn, name).await, before, "{name}");
         }
+        // And how the session prints a float and a time is the driver's
+        // own again, which a save's keys rely on.
+        assert_eq!(setting(&conn, "extra_float_digits").await, "3");
+        assert!(setting(&conn, "DateStyle").await.starts_with("ISO"));
     }
 }

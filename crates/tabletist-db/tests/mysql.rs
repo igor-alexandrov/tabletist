@@ -2522,6 +2522,88 @@ async fn a_composite_and_a_binary_key_find_their_row() {
     .await;
 }
 
+/// A key the save cannot match exactly is refused, and nothing is written:
+/// a `TIMESTAMP` is shown without its zone, so two instants can read
+/// alike; a `BIT` goes as bytes, which the server reads as a number's text;
+/// a `FLOAT` goes as a double, which is not the float it was read from. A
+/// `DOUBLE`, a `DATETIME` and a `DECIMAL` are matched as they are shown.
+#[tokio::test]
+async fn a_key_that_cannot_be_matched_exactly_is_refused() {
+    let Some(connection) = connect_as(Access::Writable).await else {
+        return;
+    };
+    on_its_own_tables(
+        "write_inexact",
+        &[
+            "CREATE TABLE write_inexact (
+                 id INT PRIMARY KEY,
+                 at TIMESTAMP NOT NULL UNIQUE,
+                 at_micro TIMESTAMP(6) NOT NULL UNIQUE,
+                 bits BIT(8) NOT NULL UNIQUE,
+                 ratio FLOAT NOT NULL UNIQUE,
+                 share FLOAT UNSIGNED NOT NULL UNIQUE,
+                 width DOUBLE NOT NULL UNIQUE,
+                 seen DATETIME NOT NULL UNIQUE,
+                 amount DECIMAL(6, 2) NOT NULL UNIQUE,
+                 note VARCHAR(255)
+             )",
+            "INSERT INTO write_inexact VALUES
+                 (1, '2026-10-25 00:30:00', '2026-10-25 00:30:00.123456', b'00110001', 0.1, 0.1,
+                  0.1, '2026-10-25 02:30:00', 1.50, 'before')",
+        ],
+        async move {
+            let (columns, row) = row_of(&connection, "write_inexact", 1).await;
+            let held = |name: &str| {
+                let index = columns.iter().position(|column| column == name).unwrap();
+                (name.to_owned(), row[index].clone())
+            };
+            let note = |key: Vec<(String, Value)>, loaded: &str, new: &str| {
+                changes_to(
+                    "write_inexact",
+                    vec![RowChange {
+                        key,
+                        set: one("note", VARCHAR, text(loaded), to(new)),
+                    }],
+                )
+            };
+            for (name, type_name) in [
+                ("at", "timestamp"),
+                ("at_micro", "timestamp"),
+                ("bits", "bit"),
+                ("ratio", "float"),
+                ("share", "float"),
+            ] {
+                // Alone, and beside a column that is matched exactly.
+                for key in [vec![held(name)], vec![held("id"), held(name)]] {
+                    let outcome = within(connection.write(&note(key, "before", "after"))).await;
+                    assert!(
+                        matches!(
+                            &outcome,
+                            Err(Error::Query { message, .. })
+                                if message.contains(&format!("{name} is a {type_name} column"))
+                                    && message.contains("cannot be matched exactly")
+                        ),
+                        "{name}: {outcome:?}"
+                    );
+                    assert_eq!(row_of(&connection, "write_inexact", 1).await.1, row);
+                }
+            }
+            let mut loaded = "before";
+            for name in ["width", "seen", "amount"] {
+                let outcome = within(connection.write(&note(vec![held(name)], loaded, name))).await;
+                assert!(
+                    matches!(outcome, Ok(WriteOutcome::Written { .. })),
+                    "{name}: {outcome:?}"
+                );
+                let now = row_of(&connection, "write_inexact", 1).await.1;
+                assert_eq!(now.last(), Some(&text(name)), "{name}");
+                loaded = name;
+            }
+        },
+    )
+    .await;
+}
+
 #[tokio::test]
 async fn a_boolean_goes_as_one_or_zero() {
     let Some(connection) = connect_as(Access::Writable).await else {

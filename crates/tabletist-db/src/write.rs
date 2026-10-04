@@ -1,6 +1,6 @@
 //! Changing rows: what a save asks for, and what came of it.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::{Error, ObjectRef, Result, Value};
 
@@ -113,6 +113,40 @@ impl ChangeSet {
         }
         Ok(())
     }
+}
+
+/// What the statements of a save came to, before its transaction ends.
+/// Each driver ends its own: committed for `Rows`, rolled back for the
+/// others.
+pub(crate) enum Applied {
+    Rows(Vec<Vec<Value>>),
+    Conflicts(Vec<Conflict>),
+    Failed { row: usize, error: Error },
+}
+
+impl Applied {
+    /// The outcome of a save that began at `started`, once its transaction
+    /// has ended.
+    pub(crate) fn outcome(self, started: Instant) -> WriteOutcome {
+        match self {
+            Self::Rows(rows) => WriteOutcome::Written {
+                rows,
+                elapsed: started.elapsed(),
+            },
+            Self::Conflicts(conflicts) => WriteOutcome::Conflicts(conflicts),
+            Self::Failed { row, error } => WriteOutcome::Failed { row, error },
+        }
+    }
+}
+
+/// A key is a row's only while one row has it.
+pub(crate) fn more_than_one() -> Error {
+    Error::query("a row's key matches more than one row")
+}
+
+/// The row a save changed is no longer found by its key.
+pub(crate) fn not_read_back() -> Error {
+    Error::query("a saved row could not be read back")
 }
 
 /// Whether two values are the same value. Floats by their bits: NaN is NaN,
