@@ -150,6 +150,13 @@ pub enum Command {
         path: PathBuf,
         text: String,
     },
+    /// Shows the settings file `path` in the file manager, written from
+    /// `text` first when it is not there. Answered with
+    /// [`Event::SettingsFileOpened`].
+    RevealSettingsFile {
+        path: PathBuf,
+        text: String,
+    },
     /// Signals `done` once every save sent before it is on disk.
     Flush {
         done: mpsc::Sender<()>,
@@ -273,8 +280,20 @@ pub enum Event {
     /// for byte, what the backend itself wrote there last: the app's own
     /// save coming back, which it must not take for someone else's change.
     SettingsFile { text: String, own: bool },
-    /// The editor was started on the settings file, or why it was not.
-    SettingsFileOpened { result: Result<(), String> },
+    /// A program was started on the settings file, or why it was not.
+    SettingsFileOpened {
+        with: Opened,
+        result: Result<(), String>,
+    },
+}
+
+/// What the settings file was handed to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Opened {
+    /// The editor.
+    Editor,
+    /// The file manager, to show where the file is.
+    Folder,
 }
 
 /// Who stopped a SQL editor run.
@@ -1264,7 +1283,8 @@ async fn read_settings<W, R, F>(
     }
 }
 
-/// Opens the settings file `path` with `start`, writing `text` to it first
+/// Opens the settings file `path` with `start` (the editor or the file
+/// manager), writing `text` to it first
 /// when it is not there: the editor is given a file, and the UI thread
 /// never looked at the disk to know. That write is the backend's own, as a
 /// save's is: `written` is held from the look for the file to the end of
@@ -1366,19 +1386,38 @@ fn can_run(file: &std::path::Path) -> bool {
     }
 }
 
-/// Starts the editor on `path` and lets it go: it is the user's window from
-/// here. A thread of its own waits for it, so it leaves no zombie, and says
-/// in the log when it ended with a failure: a launcher with nothing to open
-/// the file with has no other way to be heard.
-fn start_editor(path: &std::path::Path) -> std::io::Result<()> {
+/// The program that shows where `path` is kept on this system, and what
+/// it is given.
+fn reveal_command(path: &std::path::Path) -> (String, Vec<std::ffi::OsString>) {
+    #[cfg(target_os = "macos")]
+    {
+        (
+            "open".into(),
+            vec!["-R".into(), path.as_os_str().to_owned()],
+        )
+    }
+    #[cfg(windows)]
+    {
+        // One argument: explorer reads the path after the comma.
+        let mut select = std::ffi::OsString::from("/select,");
+        select.push(path);
+        ("explorer".into(), vec![select])
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        // No two file managers select a file the same way; every desktop
+        // opens a directory.
+        let directory = crate::util::directory_of(path).as_os_str().to_owned();
+        ("xdg-open".into(), vec![directory])
+    }
+}
+
+/// Starts `program` and lets it go: it is the user's window from here. A
+/// thread of its own waits for it, so it leaves no zombie, and says in the
+/// log when it ended with a failure: a launcher with nothing to open the
+/// file with has no other way to be heard.
+fn start(program: String, args: Vec<std::ffi::OsString>) -> std::io::Result<()> {
     use std::process::Stdio;
-    let paths = std::env::var_os("PATH");
-    let found = |name: &str| {
-        paths
-            .as_deref()
-            .is_some_and(|paths| on_path(name, std::env::split_paths(paths)))
-    };
-    let (program, args) = editor_command(path, found);
     let mut child = std::process::Command::new(&program)
         .args(args)
         .stdin(Stdio::null())
@@ -1394,6 +1433,51 @@ fn start_editor(path: &std::path::Path) -> std::io::Result<()> {
         Err(error) => log::warn!("could not wait for {program}: {error}"),
     });
     Ok(())
+}
+
+/// Starts the editor on `path`.
+fn start_editor(path: &std::path::Path) -> std::io::Result<()> {
+    let paths = std::env::var_os("PATH");
+    let found = |name: &str| {
+        paths
+            .as_deref()
+            .is_some_and(|paths| on_path(name, std::env::split_paths(paths)))
+    };
+    let (program, args) = editor_command(path, found);
+    start(program, args)
+}
+
+/// Starts the file manager where `path` is.
+fn start_reveal(path: &std::path::Path) -> std::io::Result<()> {
+    let (program, args) = reveal_command(path);
+    start(program, args)
+}
+
+/// Hands the settings file to a program: `open_in_editor` with `start`,
+/// then the answer, logged when it is a failure and sent to the app.
+fn open_settings_file(
+    path: &std::path::Path,
+    text: &str,
+    written: &Written,
+    with: Opened,
+    start: impl FnOnce(&std::path::Path) -> std::io::Result<()>,
+    outbox: &Outbox,
+) {
+    let result = open_in_editor(path, text, written, start);
+    if let Err(error) = &result {
+        match with {
+            Opened::Editor => {
+                log::warn!("could not open {} in the editor: {error}", path.display());
+            }
+            Opened::Folder => {
+                log::warn!(
+                    "could not show {} in the file manager: {error}",
+                    path.display()
+                );
+            }
+        }
+    }
+    outbox.emit(Event::SettingsFileOpened { with, result });
 }
 
 /// Runs on the backend runtime. Owns every session.
@@ -1630,11 +1714,28 @@ impl Worker {
                 let outbox = self.outbox.clone();
                 let written = Arc::clone(&self.saves.settings_written);
                 tokio::task::spawn_blocking(move || {
-                    let result = open_in_editor(&path, &text, &written, start_editor);
-                    if let Err(error) = &result {
-                        log::warn!("could not open {} in the editor: {error}", path.display());
-                    }
-                    outbox.emit(Event::SettingsFileOpened { result });
+                    open_settings_file(
+                        &path,
+                        &text,
+                        &written,
+                        Opened::Editor,
+                        start_editor,
+                        &outbox,
+                    );
+                });
+            }
+            Command::RevealSettingsFile { path, text } => {
+                let outbox = self.outbox.clone();
+                let written = Arc::clone(&self.saves.settings_written);
+                tokio::task::spawn_blocking(move || {
+                    open_settings_file(
+                        &path,
+                        &text,
+                        &written,
+                        Opened::Folder,
+                        start_reveal,
+                        &outbox,
+                    );
                 });
             }
             Command::Flush { done } => {
@@ -1682,6 +1783,7 @@ fn session_of(command: &Command) -> SessionId {
         | Command::Save { .. }
         | Command::WatchSettings { .. }
         | Command::EditSettingsFile { .. }
+        | Command::RevealSettingsFile { .. }
         | Command::Flush { .. } => SessionId(0),
     }
 }
@@ -1706,6 +1808,7 @@ fn request_of(command: &Command) -> Option<RequestId> {
         | Command::Save { .. }
         | Command::WatchSettings { .. }
         | Command::EditSettingsFile { .. }
+        | Command::RevealSettingsFile { .. }
         | Command::Flush { .. } => None,
     }
 }
@@ -1776,6 +1879,7 @@ fn fail(outbox: &Outbox, command: Command, error: Error) {
         | Command::Save { .. }
         | Command::WatchSettings { .. }
         | Command::EditSettingsFile { .. }
+        | Command::RevealSettingsFile { .. }
         | Command::Flush { .. } => return,
     };
     outbox.emit(event);
@@ -2012,6 +2116,7 @@ async fn run_session(
             | Command::Save { .. }
             | Command::WatchSettings { .. }
             | Command::EditSettingsFile { .. }
+            | Command::RevealSettingsFile { .. }
             | Command::Flush { .. } => None,
         };
         end.command = None;
@@ -5409,6 +5514,57 @@ mod tests {
             args.last().map(|arg| arg.as_os_str()),
             Some(path.as_os_str())
         );
+    }
+
+    #[test]
+    fn reveal_shows_the_file_where_it_is_kept() {
+        let path = std::path::Path::new("/config/settings.toml");
+        let (program, args) = reveal_command(path);
+        #[cfg(target_os = "macos")]
+        assert_eq!(
+            (program.as_str(), args),
+            ("open", vec!["-R".into(), path.as_os_str().to_owned()])
+        );
+        // One argument: explorer takes the path after the comma.
+        #[cfg(windows)]
+        assert_eq!(
+            (program.as_str(), args),
+            ("explorer", vec!["/select,/config/settings.toml".into()])
+        );
+        // No file manager is asked to select a file the same way: the
+        // directory is opened.
+        #[cfg(all(unix, not(target_os = "macos")))]
+        assert_eq!(
+            (program.as_str(), args),
+            ("xdg-open", vec![std::ffi::OsString::from("/config")])
+        );
+    }
+
+    #[test]
+    fn what_starts_the_program_is_told_with_its_answer() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.toml");
+        let (outbox, events) = quiet_outbox();
+        // A file that is not there is written first, whichever program it is
+        // for, and a program that does not start is told with which it was.
+        open_settings_file(
+            &path,
+            PAGE_500,
+            &Written::default(),
+            Opened::Folder,
+            |shown| {
+                assert_eq!(std::fs::read_to_string(shown).unwrap(), PAGE_500);
+                Err(std::io::Error::other("no file manager"))
+            },
+            &outbox,
+        );
+        match events.try_recv() {
+            Ok(Event::SettingsFileOpened {
+                with: Opened::Folder,
+                result: Err(error),
+            }) => assert!(error.contains("no file manager"), "{error}"),
+            other => panic!("{other:?}"),
+        }
     }
 
     #[cfg(unix)]

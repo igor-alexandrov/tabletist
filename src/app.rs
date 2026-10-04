@@ -8,7 +8,7 @@ use tabletist_db::{
     Driver, Error, FilterOp, HostKeys, ObjectKind, ObjectRef, Secrets, Sort, SortDir, SshStage,
 };
 
-use crate::backend::{CancelReason, Command, Event, RequestId, StateFile};
+use crate::backend::{CancelReason, Command, Event, Opened, RequestId, StateFile};
 use crate::completion::Need;
 use crate::connections::{PasswordMode, SavedConnection};
 use crate::i18n::Locale;
@@ -2122,12 +2122,18 @@ impl App {
                 };
                 self.apply_settings(settings);
             }
-            Event::SettingsFileOpened { result } => {
+            Event::SettingsFileOpened { with, result } => {
                 if let Err(error) = result {
-                    self.notice = Some(format!(
-                        "Could not open {} in the editor: {error}.",
-                        self.dirs.settings_file().display()
-                    ));
+                    let path = self.dirs.settings_file();
+                    self.notice = Some(match with {
+                        Opened::Editor => {
+                            format!("Could not open {} in the editor: {error}.", path.display())
+                        }
+                        Opened::Folder => format!(
+                            "Could not show {} in the file manager: {error}.",
+                            path.display()
+                        ),
+                    });
                 }
             }
             Event::Databases {
@@ -4405,15 +4411,29 @@ mod tests {
     }
 
     #[test]
+    fn a_reveal_that_fails_is_told_in_the_notice() {
+        let (mut app, _dir) = app();
+        app.apply(Action::Backend(Event::SettingsFileOpened {
+            with: crate::backend::Opened::Folder,
+            result: Err("no file manager".into()),
+        }));
+        let notice = app.notice.expect("a notice");
+        assert!(notice.contains("Could not show"), "{notice}");
+        assert!(notice.contains("no file manager"), "{notice}");
+    }
+
+    #[test]
     fn an_editor_that_did_not_start_shows_a_notice() {
         let (mut app, _dir) = app();
         app.apply(Action::Backend(Event::SettingsFileOpened {
+            with: crate::backend::Opened::Editor,
             result: Err("no editor".into()),
         }));
         let notice = app.notice.clone().expect("a notice");
         assert!(notice.contains("no editor"), "{notice}");
         app.notice = None;
         app.apply(Action::Backend(Event::SettingsFileOpened {
+            with: crate::backend::Opened::Editor,
             result: Ok(()),
         }));
         assert!(app.notice.is_none());
