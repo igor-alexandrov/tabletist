@@ -274,6 +274,12 @@ fn apply(
     for change in &changes.rows {
         let select = dialect.select_row(&changes.object, &change.key, false);
         let (_, mut found) = read(connection, &select)?;
+        // One row still: a trigger the update fired can have made another
+        // that the key also finds, and then which one was saved is not
+        // known.
+        if found.len() > 1 {
+            return Err(Error::query("a row's key matches more than one row"));
+        }
         rows.push(
             found
                 .pop()

@@ -62,7 +62,10 @@ pub struct IndexInfo {
     pub columns: Vec<String>,
     /// The index's columns by name, when every entry is one whole column of
     /// the table, compared as the column compares; `None` for an index over
-    /// an expression, a prefix, or another collation.
+    /// an expression, a prefix, or another collation. On SQLite another
+    /// collation goes unseen (it does not say a column's declared one), so
+    /// `Some` there is no proof that the columns name one row: a save still
+    /// reads the row by them and refuses more than one.
     pub key_columns: Option<Vec<String>>,
     pub unique: bool,
     pub primary: bool,
@@ -102,6 +105,9 @@ impl Structure {
     /// `None` when the table has neither: a row there cannot be targeted
     /// safely. The caller checks the object's kind: a PostgreSQL
     /// materialized view can have a unique index and still is not editable.
+    /// On SQLite the key can be one that compares otherwise than its
+    /// columns (see `IndexInfo::key_columns`), so a save does not take it
+    /// on trust.
     pub fn row_key(&self) -> Option<Vec<String>> {
         // MySQL takes a primary key over a prefix of a column, which lets
         // two rows agree on the column. The key's index says so, where the

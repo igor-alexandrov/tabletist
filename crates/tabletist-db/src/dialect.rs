@@ -439,6 +439,16 @@ impl Dialect {
     /// on SQLite, and a boolean on SQLite and MySQL, which keep one as 1 or
     /// 0. Text that cannot be converted is refused, naming the column.
     fn new_operand(self, change: &CellChange) -> Result<Operand> {
+        let class = column_class(self, &change.type_name);
+        // A binary column is never sent text (MySQL would store a `bit`'s
+        // text as the characters' codes), and is not edited at all yet: a
+        // NULL for one is refused with the rest.
+        if class == ColumnClass::Binary {
+            return Err(Error::query(format!(
+                "{}: binary values cannot be edited yet",
+                change.column
+            )));
+        }
         let NewValue::Text(text) = &change.new else {
             return Ok(Operand::Null);
         };
@@ -462,13 +472,7 @@ impl Dialect {
                 .filter(|number| number.is_finite())
                 .map(Operand::Float)
         };
-        match (self, column_class(self, &change.type_name)) {
-            // Never as text: MySQL would store a `bit`'s text as the
-            // characters' codes.
-            (_, ColumnClass::Binary) => Err(Error::query(format!(
-                "{}: binary values cannot be edited yet",
-                change.column
-            ))),
+        match (self, class) {
             (Self::Postgres, _) => Ok(Operand::Text(text.clone())),
             // A tinyint(1) holds any tinyint, and some tables keep more
             // than a flag in one.
@@ -546,7 +550,10 @@ impl Dialect {
     }
 
     /// The row of `key`, whole. With `lock` it is held until the
-    /// transaction ends, where the database has row locks.
+    /// transaction ends, where the database has row locks. Two rows at
+    /// most: a caller only needs to tell none, one and more than one
+    /// apart, and a key that is not one (SQLite cannot say that an index
+    /// compares otherwise than its column) could match a whole table.
     pub fn select_row(self, object: &ObjectRef, key: &[(String, Value)], lock: bool) -> Sql {
         let mut params = Vec::new();
         let (_, clause) = self.key_clause(key, &mut params);
@@ -556,7 +563,10 @@ impl Dialect {
             ""
         };
         Sql {
-            text: format!("SELECT * FROM {}{clause}{lock}", self.qualified(object)),
+            text: format!(
+                "SELECT * FROM {}{clause} LIMIT 2{lock}",
+                self.qualified(object)
+            ),
             params,
         }
     }
@@ -1298,6 +1308,10 @@ mod tests {
             (Dialect::MySql, typed("flags", "bit(8)", "1")),
             (Dialect::Postgres, typed("cover", "bytea", "x")),
             (Dialect::Sqlite, typed("cover", "BLOB", "x")),
+            // Nor set to NULL: they are not edited at all.
+            (Dialect::MySql, change("flags", "bit(8)", NewValue::Null)),
+            (Dialect::Postgres, change("cover", "bytea", NewValue::Null)),
+            (Dialect::Sqlite, change("cover", "BLOB", NewValue::Null)),
         ] {
             let column = cell.column.clone();
             let refused = shown(dialect, cell).unwrap_err().to_string();
@@ -1378,11 +1392,11 @@ mod tests {
         };
         assert_eq!(
             select(Dialect::Postgres, Value::Int(2), true).text,
-            r#"SELECT * FROM "public"."books" WHERE "id" = 2 FOR UPDATE"#
+            r#"SELECT * FROM "public"."books" WHERE "id" = 2 LIMIT 2 FOR UPDATE"#
         );
         assert_eq!(
             select(Dialect::Postgres, text("a-b"), false).text,
-            r#"SELECT * FROM "public"."books" WHERE "id" = 'a-b'"#
+            r#"SELECT * FROM "public"."books" WHERE "id" = 'a-b' LIMIT 2"#
         );
         assert_eq!(
             select(
@@ -1391,28 +1405,28 @@ mod tests {
                 false
             )
             .text,
-            r#"SELECT * FROM "public"."books" WHERE "id" = E'\\x01ab'"#
+            r#"SELECT * FROM "public"."books" WHERE "id" = E'\\x01ab' LIMIT 2"#
         );
         assert_eq!(
             select(Dialect::Postgres, Value::Bool(true), false).text,
-            r#"SELECT * FROM "public"."books" WHERE "id" = 'true'"#
+            r#"SELECT * FROM "public"."books" WHERE "id" = 'true' LIMIT 2"#
         );
         let mysql = select(Dialect::MySql, Value::Bytes(vec![0x01, 0xab].into()), true);
         assert_eq!(
             mysql.text,
-            "SELECT * FROM `public`.`books` WHERE `id` = ? FOR UPDATE"
+            "SELECT * FROM `public`.`books` WHERE `id` = ? LIMIT 2 FOR UPDATE"
         );
         assert_eq!(mysql.params, [Value::Bytes(vec![0x01, 0xab].into())]);
         // SQLite has no row locks: its transaction holds the file.
         assert_eq!(
             select(Dialect::Sqlite, Value::Int(2), true).text,
-            r#"SELECT * FROM "public"."books" WHERE "id" = ?"#
+            r#"SELECT * FROM "public"."books" WHERE "id" = ? LIMIT 2"#
         );
         // Several columns are all asked for.
         let pair = vec![("a".to_owned(), Value::Int(1)), ("b".to_owned(), text("x"))];
         assert_eq!(
             Dialect::Postgres.select_row(&books(), &pair, false).text,
-            r#"SELECT * FROM "public"."books" WHERE "a" = 1 AND "b" = 'x'"#
+            r#"SELECT * FROM "public"."books" WHERE "a" = 1 AND "b" = 'x' LIMIT 2"#
         );
     }
 }
