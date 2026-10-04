@@ -4686,6 +4686,83 @@ mod tests {
             files_until(&mut backend, "[data]\npage_size = 500\n"),
             vec![("[data]\npage_size = 500\n".to_owned(), false)]
         );
+        // So is a text the backend did write, once it has written another:
+        // only its last write is its own.
+        let newer = crate::settings::Settings {
+            page_size: 50,
+            ..Default::default()
+        };
+        backend.send(Command::Save {
+            path: path.clone(),
+            file: StateFile::Settings(newer.clone()),
+        });
+        assert_eq!(
+            files_until(&mut backend, &newer.to_toml()),
+            vec![(newer.to_toml(), true)]
+        );
+        crate::util::write_atomic(&path, settings.to_toml().as_bytes()).unwrap();
+        assert_eq!(
+            files_until(&mut backend, &settings.to_toml()),
+            vec![(settings.to_toml(), false)]
+        );
+    }
+
+    #[test]
+    fn a_save_that_failed_leaves_no_write_of_the_backends_own() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.toml");
+        let (mut backend, live) = watching(&path);
+        assert!(live);
+        let first = crate::settings::Settings {
+            page_size: 100,
+            ..Default::default()
+        };
+        backend.send(Command::Save {
+            path: path.clone(),
+            file: StateFile::Settings(first.clone()),
+        });
+        assert_eq!(
+            files_until(&mut backend, &first.to_toml()),
+            vec![(first.to_toml(), true)]
+        );
+        // A folder where the file was: no system renames a file over one,
+        // so the next save fails.
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        let second = crate::settings::Settings {
+            page_size: 50,
+            ..Default::default()
+        };
+        backend.send(Command::Save {
+            path: path.clone(),
+            file: StateFile::Settings(second),
+        });
+        let deadline = std::time::Instant::now() + WAIT;
+        loop {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the save over a folder did not fail"
+            );
+            let event = backend.wait(Duration::from_millis(200));
+            if let Some(Event::Saved { result: Err(_), .. }) = event {
+                break;
+            }
+        }
+        // Someone else writes the file again. The reader does not send the
+        // text it sent last a second time, so another comes first.
+        std::fs::remove_dir(&path).unwrap();
+        crate::util::write_atomic(&path, PAGE_500.as_bytes()).unwrap();
+        assert_eq!(
+            files_until(&mut backend, PAGE_500),
+            vec![(PAGE_500.to_owned(), false)]
+        );
+        // The first text is the last the backend wrote that reached the
+        // disk. The app has moved on from it: put back, it is theirs.
+        crate::util::write_atomic(&path, first.to_toml().as_bytes()).unwrap();
+        assert_eq!(
+            files_until(&mut backend, &first.to_toml()),
+            vec![(first.to_toml(), false)]
+        );
     }
 
     #[test]

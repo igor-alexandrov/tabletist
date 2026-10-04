@@ -4154,7 +4154,7 @@ mod tests {
         // Something only a second reading would change.
         app.settings_file.invalid = vec![9];
         let text = app.settings_file.text.clone();
-        app.apply(Action::Backend(Event::SettingsFile { text, own: false }));
+        app.apply(Action::Backend(Event::SettingsFile { text, own: true }));
         assert_eq!(app.settings_file.invalid, vec![9]);
         assert_eq!(app.settings.sql_limit, 100);
         assert_eq!(settings_saves(&app).len(), saved);

@@ -1327,5 +1327,25 @@ sql_timeout_secs = 30  # 0 waits forever
             Some(OptionValue::Timestamps(Timestamps::Full))
         );
         assert_eq!(settings.flipped(OptionId::PageSize), None);
+        // And back, from the other value of each.
+        let settings = Settings {
+            value_tags: false,
+            group_digits: true,
+            timestamps: Timestamps::Full,
+            ..Default::default()
+        };
+        assert_eq!(
+            settings.flipped(OptionId::ValueTags),
+            Some(OptionValue::ValueTags(true))
+        );
+        assert_eq!(
+            settings.flipped(OptionId::GroupDigits),
+            Some(OptionValue::GroupDigits(false))
+        );
+        assert_eq!(
+            settings.flipped(OptionId::Timestamps),
+            Some(OptionValue::Timestamps(Timestamps::Second))
+        );
+        assert_eq!(settings.flipped(OptionId::PageSize), None);
     }
 }
