@@ -382,13 +382,16 @@ fn declared_columns(
 }
 
 /// The settings every session has from the start: read-only, an untrusted
-/// schema, a busy timeout and LIKE ignoring case (the filters rely on it).
-/// `open` sets them, and a script run sets them again afterwards, since a
-/// script may have changed any of them.
+/// schema, a busy timeout, LIKE ignoring case (the filters rely on it) and
+/// result columns named by the column alone (a page shows the names, and a
+/// save finds its columns by them; the other way a table's are
+/// `users.id`). `open` sets them, and a script run sets them again
+/// afterwards, since a script may have changed any of them.
 fn set_session_pragmas(connection: &rusqlite::Connection) -> rusqlite::Result<()> {
     connection.busy_timeout(std::time::Duration::from_secs(5))?;
     connection.execute_batch(
-        "PRAGMA query_only = ON; PRAGMA trusted_schema = OFF; PRAGMA case_sensitive_like = OFF;",
+        "PRAGMA query_only = ON; PRAGMA trusted_schema = OFF; PRAGMA case_sensitive_like = OFF; \
+         PRAGMA full_column_names = OFF; PRAGMA short_column_names = ON;",
     )
 }
 
@@ -1449,6 +1452,72 @@ mod tests {
             .unwrap();
         assert_eq!(changed, 0);
         assert!(matches!(ran, Err(Error::LeftReadOnly)), "{ran:?}");
+    }
+
+    #[tokio::test]
+    async fn a_save_that_cannot_take_the_file_leaves_the_session_as_it_was() {
+        let (conn, dir) = fixture_as(Access::Writable).await;
+        // Another program is in the middle of a write.
+        let other = rusqlite::Connection::open(dir.path().join("fixture.db")).unwrap();
+        other
+            .execute_batch("BEGIN IMMEDIATE; UPDATE users SET name = 'Theirs' WHERE id = 2")
+            .unwrap();
+        // The session waits five seconds for a busy file, and a save does
+        // not set that wait. The test shortens it here, where it can reach
+        // it, rather than sit it out.
+        conn.run(|connection| {
+            connection
+                .busy_timeout(std::time::Duration::ZERO)
+                .map_err(map_error)
+        })
+        .await
+        .unwrap();
+        let changes = ChangeSet {
+            object: ObjectRef::new("main", "users"),
+            rows: vec![crate::RowChange {
+                key: vec![("id".into(), Value::Int(1))],
+                set: vec![crate::CellChange {
+                    column: "name".into(),
+                    type_name: "TEXT".into(),
+                    loaded: Value::Text("Ada Lovelace".into()),
+                    new: crate::NewValue::Text("Mine".into()),
+                }],
+            }],
+        };
+        // The save's own error, at its BEGIN, which asks for the file. A
+        // transaction that asked only at its first write would have read
+        // the row and failed at the UPDATE, as that row's failure.
+        let refused = conn.write(&changes).await;
+        assert!(
+            matches!(
+                &refused,
+                Err(Error::Query { code: Some(code), message, .. })
+                    if code == "5" && message.contains("locked")
+            ),
+            "{refused:?}"
+        );
+        // The session refuses writes as before, the usual way.
+        assert_eq!(standing(&conn).await, (1, true));
+        let ran = run_unrefused(&conn, &["UPDATE users SET email = 'x'"])
+            .await
+            .unwrap();
+        assert!(
+            matches!(
+                &ran.results[0].outcome,
+                StatementOutcome::Error {
+                    error: Error::Query { code: Some(code), .. },
+                    ..
+                } if code == "8"
+            ),
+            "{ran:?}"
+        );
+        // Once the other program lets go, the same save is written.
+        other.execute_batch("ROLLBACK").unwrap();
+        let outcome = conn.write(&changes).await;
+        assert!(
+            matches!(outcome, Ok(WriteOutcome::Written { .. })),
+            "{outcome:?}"
+        );
     }
 
     #[test]
