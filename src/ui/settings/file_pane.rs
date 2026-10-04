@@ -26,6 +26,10 @@ const SIDE: f32 = 14.0;
 const TOP: f32 = 12.0;
 /// The space over and under the pane's note.
 const NOTE: f32 = 10.0;
+/// The most of a line that is drawn, in bytes: several times what the pane
+/// is wide. A text that is no settings file can be one line of megabytes,
+/// and a line is laid out whole before it is clipped.
+const LINE_MAX: usize = 400;
 
 /// The pane's note, whole: a language has its own place for the word that
 /// stands between the marks, which is written in the colour it names.
@@ -172,6 +176,19 @@ pub(super) fn lines_in_view(top: f32, line: f32, count: usize, view: Rangef) -> 
     first..last.max(first)
 }
 
+/// What is drawn of `line`: all of it, or its first `LINE_MAX` bytes, less
+/// what would cut a character in two.
+pub(super) fn drawn(line: &str) -> &str {
+    if line.len() <= LINE_MAX {
+        return line;
+    }
+    let mut end = LINE_MAX;
+    while !line.is_char_boundary(end) {
+        end -= 1;
+    }
+    &line[..end]
+}
+
 /// The home directory, looked up the first time the pane is drawn and kept:
 /// with `HOME` set the lookup reads the environment, but without it Unix
 /// asks the passwd database, and Windows makes several system calls. None
@@ -250,22 +267,25 @@ pub(super) fn show(ui: &mut Ui, rect: Rect, app: &App, option: Option<OptionId>,
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
         .show(&mut scroll, |ui| {
-            // As tall as all its lines, which were counted when the text
-            // was set: a text that is no settings file can be megabytes
-            // long, and is shown all the same.
-            let height = 2.0 * TOP + file.line_count as f32 * line;
+            // As tall as all its lines, which were found when the text was
+            // set: a text that is no settings file can be megabytes long,
+            // and is shown all the same.
+            let count = file.line_count();
+            let height = 2.0 * TOP + count as f32 * line;
             let (place, _) =
                 ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::hover());
             let top = place.top() + TOP;
             // For the same reason only the lines in view are told apart and
-            // painted: the ones before them are passed over, and the ones
-            // after them are not reached.
-            let shown = lines_in_view(top, line, file.line_count, ui.clip_rect().y_range());
-            // The lines as `Settings::from_toml` counts them, from 1. The
-            // end of a line as another system's editor wrote it is not
-            // drawn.
-            let lines = file.text.lines().enumerate();
-            for (index, text) in lines.skip(shown.start).take(shown.len()) {
+            // painted, each reached by where it starts: the ones before
+            // them are not walked, and the ones after them are not reached.
+            let shown = lines_in_view(top, line, count, ui.clip_rect().y_range());
+            for index in shown {
+                // The lines as `Settings::from_toml` counts them, from 1.
+                // The end of a line as another system's editor wrote it is
+                // not drawn, nor is more of a line than the pane could show.
+                let Some(text) = file.line(index).map(drawn) else {
+                    break;
+                };
                 let number = index + 1;
                 let row = Rect::from_min_size(
                     pos2(place.left(), top + index as f32 * line),
@@ -301,6 +321,22 @@ mod tests {
             .into_iter()
             .map(|(range, part)| (&line[range], part))
             .collect()
+    }
+
+    #[test]
+    fn a_line_longer_than_the_pane_could_show_is_drawn_to_a_whole_character() {
+        assert_eq!(drawn(""), "");
+        assert_eq!(drawn("page_size = 300"), "page_size = 300");
+        let exact = "x".repeat(LINE_MAX);
+        assert_eq!(drawn(&exact), exact);
+        let long = "x".repeat(1_000_000);
+        assert_eq!(drawn(&long).len(), LINE_MAX);
+        // `ä` is two bytes, and the cut would fall inside one: it is left
+        // out whole.
+        let accents = format!("x{}", "ä".repeat(LINE_MAX));
+        let cut = drawn(&accents);
+        assert_eq!(cut.len(), LINE_MAX - 1);
+        assert!(accents.starts_with(cut));
     }
 
     #[test]

@@ -1308,6 +1308,33 @@ mod tests {
     }
 
     #[test]
+    fn a_line_of_megabytes_is_drawn_no_further_than_the_pane_could_show() {
+        let mut harness = settings_screen();
+        // No settings file: one line, far past what one is read to.
+        let line = "x".repeat(2_000_000);
+        harness.app.apply(crate::model::Action::Backend(
+            crate::backend::Event::SettingsFile {
+                text: format!("{line}\n# after\n"),
+                own: false,
+            },
+        ));
+        harness.settle();
+        // The text is kept as it is.
+        assert_eq!(harness.app.settings_file.text.len(), line.len() + 9);
+        let danger = harness.app.palette.danger;
+        let longest = harness
+            .text_rects
+            .iter()
+            .map(|(text, _)| text.len())
+            .max()
+            .expect("something is painted");
+        assert!(longest <= 400, "{longest} bytes laid out for one line");
+        assert!(harness.text_rects.iter().any(|(text, _)| text.len() == 400));
+        // And the line after it is where the second line goes.
+        assert_eq!(harness.painted_color("# after"), Some(danger));
+    }
+
+    #[test]
     fn a_narrow_window_has_the_options_and_not_the_file() {
         let mut harness = Harness::with_size(egui::vec2(1000.0, 700.0));
         harness.set_look(crate::theme::Look::omarchy());

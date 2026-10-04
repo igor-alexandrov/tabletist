@@ -285,10 +285,11 @@ impl From<Settings> for Loaded {
 pub struct SettingsFile {
     /// The text as last read or written.
     pub text: String,
-    /// How many lines the text has, counted when it is set
-    /// ([`Loaded::into_parts`]): what shows the file knows how tall it is
-    /// without walking a long text on every frame.
-    pub line_count: usize,
+    /// Where each line of the text starts, in bytes, found when the text
+    /// is set ([`Loaded::into_parts`]): what shows the file knows how tall
+    /// it is, and reaches the lines in view, without walking a long text on
+    /// every frame.
+    pub line_starts: Vec<usize>,
     /// The lines that were ignored, counted from 1, in order.
     pub invalid: Vec<usize>,
     /// The line each key is on.
@@ -300,11 +301,41 @@ pub struct SettingsFile {
     pub saved: Option<String>,
 }
 
+impl SettingsFile {
+    /// How many lines the text has, as [`str::lines`] counts them.
+    pub fn line_count(&self) -> usize {
+        self.line_starts.len()
+    }
+
+    /// The line numbered `index` from 0, without its line break, as
+    /// [`str::lines`] gives it. Nothing past the last.
+    pub fn line(&self, index: usize) -> Option<&str> {
+        let start = *self.line_starts.get(index)?;
+        let end = self.line_starts.get(index + 1).copied();
+        let line = &self.text[start..end.unwrap_or(self.text.len())];
+        let line = line.strip_suffix('\n').unwrap_or(line);
+        Some(line.strip_suffix('\r').unwrap_or(line))
+    }
+}
+
+/// Where each line of `text` starts, in bytes: a start for each line
+/// [`str::lines`] gives.
+fn line_starts(text: &str) -> Vec<usize> {
+    let mut start = 0;
+    text.split_inclusive('\n')
+        .map(|line| {
+            let at = start;
+            start += line.len();
+            at
+        })
+        .collect()
+}
+
 impl Loaded {
     /// The settings, and what the app keeps of their file.
     pub fn into_parts(self) -> (Settings, SettingsFile) {
         let file = SettingsFile {
-            line_count: self.text.lines().count(),
+            line_starts: line_starts(&self.text),
             text: self.text,
             invalid: self.invalid,
             lines: self.lines,
@@ -976,13 +1007,37 @@ sql_timeout_secs = 30  # 0 waits forever
             file,
             SettingsFile {
                 text: text.into(),
-                line_count: 3,
+                line_starts: vec![0, 7, 23],
                 invalid: vec![3],
                 lines: vec![(Key::PageSize, 2)],
                 live: false,
                 saved: None,
             }
         );
+        assert_eq!(file.line_count(), 3);
+    }
+
+    #[test]
+    fn the_lines_the_app_holds_are_the_ones_the_text_has() {
+        // Each kind of ending, a line with nothing on it, and a last line
+        // with no ending and one with.
+        for text in [
+            "",
+            "one",
+            "one\n",
+            "one\ntwo",
+            "one\r\ntwo\r\n",
+            "\n\none\n\n",
+            "a\rb\nc",
+            "ключ = 1\nä\n",
+        ] {
+            let (_, file) = Settings::from_toml(text).into_parts();
+            let lines: Vec<&str> = (0..file.line_count())
+                .filter_map(|index| file.line(index))
+                .collect();
+            assert_eq!(lines, text.lines().collect::<Vec<_>>(), "{text:?}");
+            assert_eq!(file.line(file.line_count()), None, "{text:?}");
+        }
     }
 
     #[test]
