@@ -289,11 +289,13 @@ value as the server sent it.
         /// The option the keys act on (Omarchy), as an index into
         /// `OptionId::ALL`.
         pub row: usize,
+        /// Reset to defaults was chosen and waits for its answer.
+        pub resetting: bool,
     }
 
-The window holds nothing of the settings: every change applies at once.
-Step 4 adds what its footer needs (whether Reset was asked for); a tab
-arrives with the second tab.
+The window holds nothing of the settings: every change applies at once. It
+holds what its footer needs (whether Reset was asked for); a tab arrives
+with the second tab.
 
 An option is a value: `OptionId` names the four rows and `OptionValue` is
 one of them set to something (`src/settings.rs`). A key, a click, a reset
@@ -340,6 +342,21 @@ Focus rings come from `src/ui/focus.rs`, as for every control.
 Reset to defaults asks first, in place: the three links give way to "Reset
 every option on this tab?" with Reset and Cancel. Reset puts the four
 options back and saves. It leaves the keys the window does not show alone.
+The keyboard that asked is on Cancel when the question shows, and back on
+Reset to defaults once it is answered, so a held Enter never reaches Reset.
+Escape answers the question as Cancel does before it closes the window.
+
+The sheet takes none of the terminal screen's keys: its controls are reached
+with Tab, the arrows choose within a segmented control, and Escape closes
+it. The page size menu's button is named for its option, and its entries
+for the option and the size ("Rows per page 500").
+
+The label column is 300, or as wide as the widest small print where a face
+writes it wider. In a sheet narrower than its controls need, the labels give
+way and the small print wraps; a hint that does not fit is left out whole.
+In a window too short for the sheet the rows scroll, and the title and the
+footer stay. A path too long for what the links leave is cut at its start;
+a screen reader is told it whole.
 
 ### Omarchy
 
@@ -432,8 +449,10 @@ Both commands carry the text the app holds: the backend writes it to `path`
 when no file is there, then starts the program, so the UI thread never looks
 at the disk and the write always comes first. The program is not waited for
 by anything the app needs (a thread reaps it). `Event::SettingsFileOpened {
-result }` puts a failure in the app's notice, as a failed save is; a failed
-export is already reported that way.
+with, result }` puts a failure in the app's notice, as a failed save is, and
+`with` (`Opened::Editor` or `Opened::Folder`) says which program it was; a
+failed export is already reported that way. Export's dialog is titled
+"Export settings".
 
 That first write of a missing file is recorded as the backend's own write,
 under the lock the writer and the reader share, as a save's is. The reader
@@ -609,6 +628,10 @@ footer: "2 lines in the file could not be read and were ignored".
   through it fails for the same reason, so nothing is replaced.
 - The config directory is read-only: the change applies for the session and
   the failed save is reported in the notice, as today.
+- A notice raised while the sheet is open (a failed save, a file manager
+  that did not start) shows in the app's notice bar, under the dimmed
+  window, and can be dismissed once the sheet closes. The terminal screen
+  covers the bar and has a band of its own.
 - `page_size = 250` by hand: honoured, and shown in the menu as its own
   entry.
 - `group_digits = "yes"`: ignored, red on Omarchy, counted in the footer
@@ -673,9 +696,7 @@ window to ship can already say `live` and mean it.
 3. **The Omarchy screen.** `Dialog::Settings`, the rows, the keys, the file
    pane with its highlighted and red lines, the editor key, `Mod+,` and the
    shortcuts dialog's button. The key's line in `SHORTCUTS` waits for step
-   4, so no look lists a key that does nothing there. Until step 4, both ways in are offered only
-   in the terminal look: in the other looks the key does nothing and the
-   button is not drawn.
+   4, so no look lists a key that does nothing there.
 4. **The window on macOS and Windows.** The sheet, the toggle, the footer's
    Reveal, Export, Reset and count of ignored lines, the macOS menu item,
    the ways in for every look, and the `SHORTCUTS` line.
