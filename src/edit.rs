@@ -504,6 +504,8 @@ pub struct Saving {
     /// answer names rows by their place in the set.
     pub rows: Vec<usize>,
     pub started: Instant,
+    /// What to do once everything is written.
+    pub then: Option<crate::model::Held>,
 }
 
 /// A save that wrote.

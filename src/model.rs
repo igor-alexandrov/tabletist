@@ -279,6 +279,19 @@ pub enum Action {
         tab: ConnTabId,
         id: TabId,
     },
+    /// The Leave prompt's Save: save, then do what was held if everything
+    /// was written.
+    LeaveSave,
+    /// The Leave prompt's Discard: drop the pending changes and do what was
+    /// held.
+    LeaveDiscard,
+    /// The Leave prompt's Cancel: keep the pending changes and drop what
+    /// was held.
+    LeaveStay,
+    /// Send the save the production confirmation shows.
+    ConfirmWrite,
+    /// Close the production confirmation and send nothing.
+    CancelWrite,
     /// Arrow keys (±1), Page Up/Down (±page), Home/End (isize::MIN/MAX).
     MoveSelection {
         tab: ConnTabId,
@@ -1124,6 +1137,44 @@ pub enum Dialog {
     About,
     /// The Settings window.
     Settings(Box<SettingsDialog>),
+    /// Pending changes are about to be dropped: save, discard or stay.
+    Leave(Box<LeavePrompt>),
+    /// A save to production, with its statements, before anything is sent.
+    ConfirmWrite(Box<WritePrompt>),
+}
+
+/// What waits for the user's answer about pending changes.
+#[derive(Debug)]
+pub enum Held {
+    Action(Box<Action>),
+}
+
+/// Asks before pending changes are dropped.
+#[derive(Debug)]
+pub struct LeavePrompt {
+    pub held: Held,
+    /// The tabs whose pending changes the held action would drop.
+    pub tabs: Vec<(ConnTabId, TabId)>,
+    /// One tab, and its save is not disabled: Save is offered.
+    pub can_save: bool,
+    /// How many changes would be dropped, over all the tabs.
+    pub changes: usize,
+}
+
+/// Asks before a save to production.
+pub struct WritePrompt {
+    pub tab: ConnTabId,
+    pub id: TabId,
+    /// The statements as a person reads them, one per row.
+    pub statements: Vec<String>,
+    pub changes: usize,
+    pub rows: usize,
+    /// What the Omarchy box's field holds: `write` confirms.
+    pub typed: String,
+    pub focus: bool,
+    pub(crate) changeset: tabletist_db::ChangeSet,
+    pub(crate) places: Vec<usize>,
+    pub(crate) then: Option<Held>,
 }
 
 /// Cmd/Ctrl+P: find a loaded table or view by name.
@@ -2629,6 +2680,19 @@ impl std::fmt::Debug for ConnectionForm {
     }
 }
 
+// Only the counts: the statements and the change set hold the values the
+// user typed.
+impl std::fmt::Debug for WritePrompt {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WritePrompt")
+            .field("tab", &self.tab)
+            .field("id", &self.id)
+            .field("changes", &self.changes)
+            .field("rows", &self.rows)
+            .finish_non_exhaustive()
+    }
+}
+
 impl std::fmt::Debug for PasswordPrompt {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PasswordPrompt")
@@ -3396,6 +3460,7 @@ mod tests {
             request: RequestId(5),
             rows: vec![0],
             started: std::time::Instant::now(),
+            then: None,
         });
         assert_eq!(
             tab.pending(),

@@ -32,6 +32,7 @@ pub mod structure;
 pub mod value_tags;
 pub mod widgets;
 pub mod workspace;
+pub mod write_prompts;
 
 use egui::Frame;
 
@@ -58,6 +59,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     help::show(app, &ui.ctx().clone());
     about::show(app, &ui.ctx().clone());
     settings::show(app, &ui.ctx().clone());
+    write_prompts::show(app, &ui.ctx().clone());
 }
 
 /// A problem worth the user's attention that belongs to no one tab (a
@@ -11054,5 +11056,38 @@ mod tests {
             .filter(|(text, _)| text == "main.users")
             .count();
         assert_eq!(named, 2, "{:?}", harness.painted);
+    }
+
+    #[test]
+    fn closing_a_tab_with_a_pending_change_asks_first_and_discard_closes_it() {
+        use crate::model::{Action, Advance, CellPos, Dialog, EditStart};
+        let mut harness = Harness::new();
+        let (tab, id) = harness.editable();
+        harness.app.apply(Action::EditCell {
+            tab,
+            id,
+            cell: CellPos { row: 1, col: 1 },
+            start: EditStart::Replace("bob@example.com".into()),
+        });
+        harness.app.apply(Action::CommitEdit {
+            tab,
+            id,
+            then: Advance::Stay,
+        });
+        let pending = |harness: &Harness| {
+            let workspace = harness.app.workspace(tab).unwrap();
+            workspace.object_tab(id).map(|open| open.edits.cells.len())
+        };
+        harness.click("Close users");
+        assert!(matches!(harness.app.dialog, Some(Dialog::Leave(_))));
+        assert_eq!(pending(&harness), Some(1), "nothing is dropped yet");
+        // Esc stays: the tab and its change are as they were.
+        harness.press(Key::Escape, Modifiers::NONE);
+        assert!(harness.app.dialog.is_none());
+        assert_eq!(pending(&harness), Some(1));
+        harness.click("Close users");
+        harness.click("Discard");
+        assert!(harness.app.dialog.is_none());
+        assert_eq!(pending(&harness), None, "the tab closed");
     }
 }
