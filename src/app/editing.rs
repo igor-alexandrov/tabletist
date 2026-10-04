@@ -20,12 +20,13 @@ use crate::model::{
 /// editor; of any tab, nothing is told apart), and what takes the dialog's
 /// place whatever dialog it is, and with it what the prompt holds. The
 /// prompts' own answers, `CloseDialog` and what the backend says are not
-/// among them.
+/// among them. Nor is `EditorTyped`: it changes no text, and a keystroke
+/// that shares its frame with the key that raised the prompt must be noted,
+/// or the prompt's Save would close the editor without it.
 pub(super) fn dropped_under_a_prompt(action: &Action) -> bool {
     matches!(
         action,
         Action::EditCell { .. }
-            | Action::EditorTyped { .. }
             | Action::EditorBreak { .. }
             | Action::CommitEdit { .. }
             | Action::LeaveEdit { .. }
@@ -135,19 +136,21 @@ impl App {
         }
     }
 
-    /// Keeps `held` and asks. While one of the tabs is saving the action is
+    /// Keeps `held` and asks. While one of the tabs is saving an action is
     /// ignored (the actions the guard covers are disabled until a save
-    /// ends), and a dialog the user is in is never replaced.
+    /// ends), but not the window's close: no control of the app's asks for
+    /// it, and a save that never answers must not keep the window open
+    /// for good. A dialog the user is in is never replaced.
     pub(super) fn hold(&mut self, held: Held, tabs: Vec<(ConnTabId, TabId)>) {
         let edits = |&(tab, id): &(ConnTabId, TabId)| {
             self.workspace(tab)
                 .and_then(|workspace| workspace.object_tab(id))
                 .map(|object| &object.edits)
         };
-        if tabs
+        let saving = tabs
             .iter()
-            .any(|at| edits(at).is_some_and(|edits| edits.saving.is_some()))
-        {
+            .any(|at| edits(at).is_some_and(|edits| edits.saving.is_some()));
+        if saving && !matches!(held, Held::CloseWindow) {
             return;
         }
         if self.dialog.is_some() {
@@ -160,6 +163,7 @@ impl App {
             .filter_map(edits)
             .map(|edits| edits.counts().changes.max(1))
             .sum();
+        // Never under a save, which blocks the tab's Save as well.
         let can_save = match tabs.as_slice() {
             [(tab, id)] => self.save_blocked(*tab, *id).is_none(),
             _ => false,
@@ -169,6 +173,7 @@ impl App {
             tabs,
             can_save,
             changes,
+            saving,
         })));
     }
 
@@ -203,10 +208,11 @@ impl App {
 
     /// Answers a request to close the window, when this frame brings one:
     /// while a tab holds edits the request is cancelled and the user is
-    /// asked, as before any action that would drop them. Under a save
-    /// nothing is asked: the user closes again once it ends. It runs with
-    /// the app's logic too, which is all that runs while the window is
-    /// hidden, and more than once in a frame changes nothing.
+    /// asked, as before any action that would drop them. Under a save too:
+    /// the question then offers no Save, and its Discard gives the save up
+    /// and closes. It runs with the app's logic too, which is all that
+    /// runs while the window is hidden, and more than once in a frame
+    /// changes nothing.
     pub(super) fn hold_close(&mut self, ctx: &egui::Context) {
         // The close this app asked for, once nothing was in its way.
         if self.closing || !ctx.input(|input| input.viewport().close_requested()) {

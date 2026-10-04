@@ -1189,11 +1189,12 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
             &ctx,
         );
         // Why the cell last asked for cannot be edited, at that cell. The
-        // terminal says it in its mode line.
+        // terminal says it in its mode line. Not under a dialog: the note
+        // is drawn over everything, and would stand on it.
         changes.why = object
             .edits
             .why
-            .filter(|_| !look.terminal)
+            .filter(|_| !look.terminal && hold)
             .map(|(cell, lock)| {
                 let table = format::display_safe(&object.object.name);
                 (cell, cell_editor::lock_text(lock, &table, locale))

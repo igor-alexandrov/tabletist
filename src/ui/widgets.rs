@@ -1331,6 +1331,13 @@ impl<'a> ButtonSpec<'a> {
             .with(("button", self.label.unwrap_or(self.text), self.salt))
     }
 
+    /// Whether the keyboard is on this button as `ui` draws it. For what
+    /// reads a key before the button is drawn: a button that has the
+    /// keyboard would take Enter as a press of itself.
+    pub fn has_keyboard(&self, ui: &Ui) -> bool {
+        ui.memory(|memory| memory.has_focus(self.id(ui)))
+    }
+
     /// The name screen readers announce ("Connect to Bookshop").
     pub fn label(mut self, label: &'a str) -> Self {
         self.label = Some(label);
@@ -1352,8 +1359,21 @@ impl<'a> ButtonSpec<'a> {
 
     fn hidden_sensing(self, ui: &mut Ui, rect: Rect, sense: Sense) -> Response {
         let name = self.label.unwrap_or(self.text);
+        let enabled = self.kind != ButtonKind::Disabled;
+        // As a drawn one: a button that cannot be pressed still takes the
+        // Tab key where it took it, so the keyboard can read why.
+        let sense = match (enabled, sense.is_focusable()) {
+            (true, _) => sense,
+            (false, true) => Sense::focusable_noninteractive(),
+            (false, false) => Sense::hover(),
+        };
         let response = ui.interact(rect, self.id(ui), sense);
-        response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, name));
+        response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, enabled, name));
+        if let Some(reason) = self.reason {
+            ui.ctx().accesskit_node_builder(response.id, |node| {
+                node.set_description(reason);
+            });
+        }
         // Not drawn, so the ring is all that shows where the keyboard is.
         focus::hint(ui, &response, rect, Ring::Outer { radius: 0 });
         response
