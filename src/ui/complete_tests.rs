@@ -2786,6 +2786,39 @@ fn enter_repairs_a_name_postgres_reads_in_another_case() {
     assert_eq!(sql(&harness, tab).text, "select * from \"Users\"");
 }
 
+/// The settings file as its writer left it, as the backend's watch
+/// reports it.
+fn settings_file(harness: &mut Harness, text: &str) {
+    let text = text.to_owned();
+    harness
+        .app
+        .apply(Action::Backend(Event::SettingsFile { text, own: false }));
+}
+
+#[test]
+fn an_open_list_follows_the_option_that_shows_system_schemas() {
+    let (mut harness, tab) = postgres_editor(&["categories", "orders"]);
+    // PostgreSQL keeps `pg_catalog` for itself: the fixture's SQLite has no
+    // schema of that kind to hide.
+    let workspace = harness.app.workspace_mut(tab).unwrap();
+    workspace.tree.schemas.value = Some(vec!["public".into(), "pg_catalog".into()]);
+    workspace.catalog_changed();
+    settings_file(&mut harness, "[sidebar]\nshow_system_schemas = true\n");
+    paste(&mut harness, "select * from ");
+    type_text(&mut harness, "ca");
+    assert_eq!(labels(&harness, tab), ["categories", "pg_catalog"]);
+    // The file hides them under the open list: the next frame takes the
+    // schema off it, with nothing typed.
+    settings_file(&mut harness, "[sidebar]\nshow_system_schemas = false\n");
+    harness.frame(Vec::new());
+    assert_eq!(labels(&harness, tab), ["categories"]);
+    // And puts it back when the file shows them again.
+    settings_file(&mut harness, "[sidebar]\nshow_system_schemas = true\n");
+    harness.frame(Vec::new());
+    assert_eq!(labels(&harness, tab), ["categories", "pg_catalog"]);
+    assert_eq!(sql(&harness, tab).text, "select * from ca");
+}
+
 #[test]
 fn an_answer_for_columns_that_were_forgotten_is_dropped() {
     let (mut harness, tab) = editor();

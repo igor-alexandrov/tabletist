@@ -165,8 +165,11 @@ only if that table knows them.
 
 The JSON is read at every start that finds no `settings.toml`, not only the
 first: after the TOML is deleted, or kept aside as `.bad`, the next start
-carries the old JSON over again. Whether a reset should ignore it is left
-to step 2.
+carries the old JSON over again. That is kept: the reset a user reaches for
+is the window's Reset to defaults (step 4), which writes a `settings.toml` of
+defaults, so the JSON does not come back that way; and a user who deletes
+the TOML by hand gets the settings they had before the TOML existed, which
+is a defensible reading of "start over".
 
 Then, for each known key:
 
@@ -221,8 +224,11 @@ Two functions, one inside the other:
 - `App::change_settings(&mut self, change: impl FnOnce(&mut Settings))` is
   a change made in the app (the window, the SQL editor's menus): it calls
   `apply_settings`, renders the canonical text, keeps it as
-  `App::settings_text`, clears the invalid lines, takes the key lines of the
-  new text, and saves. `App::save_settings` is replaced by it.
+  `App::settings_file` (`SettingsFile { text, invalid, lines, live }`, what
+  the app holds of the file), with no invalid lines and the key lines of the
+  new text, and saves. A change that changes nothing writes nothing.
+  `App::save_settings` becomes private: only `change_settings` and the start
+  that read the old JSON call it.
 
 A change that arrives from the file (Live reload) calls `apply_settings`
 only, and keeps the file's own text, invalid lines and key lines.
@@ -233,17 +239,21 @@ again. Grouped numbers and value tags change a cell's width too (a tag adds
 its padding), so once these options can change while a grid is open (step 2
 onward) they join the grid ids, or `apply_settings` forgets the grids'
 widths. In step 1 the options are fixed for a session and nothing is needed.
+A view remembers which grid it last drew and forgets the one before it when
+the id changes (`grid::keep`), a table as a SQL result does: an option set
+back to what it was fits the rows then on screen, not the page its grid last
+saw.
 
 | Option | Control | Effect |
 |---|---|---|
-| Rows per page | A menu: 100, 300, 500, 1,000, 5,000. A value from the file that is not in the list is shown as an extra entry. | Every open table tab takes the new size as its `query.limit` and fetches its page again from the offset it is at, so Next and Previous keep moving by the size of the page shown and no row is skipped. Only a tab that holds a page on a connected session fetches; the others take the size and use it when they next load. New tabs open with it. |
+| Rows per page | A menu: 100, 300, 500, 1,000, 5,000. A value from the file that is not in the list is shown as an extra entry. | A table's `query.limit` is the size of the page it shows or awaits, and `fetch_rows` brings it to the settings' size each time it fetches, dropping a page of another size first, whoever asked for the fetch (a Refresh and a reconnect keep the page they have otherwise); Next moves by `query.limit` (the page on screen) and Previous by the settings' size (the page it is about to fetch, which must end where the one on screen begins), so no row is skipped in either direction whichever size comes next. Nearer the start than one page, Previous fetches only the rows before the page on screen: a shorter leading page, whose limit is its own size, so Next from it comes back to where the user was. On a change, every table that shows a page or waits for one on a connected session drops the page it shows (as Next does, so a failed fetch leaves no page of the old size on screen) and fetches again from the offset it is at. The others take the size at their next fetch. New tabs open with it. |
 | Timestamps | Two segments: To the second, Full precision. | Sets `full_precision` on every open workspace and on new ones. The grid's own link still switches one workspace until the option changes again. |
 | Numbers | Two segments, each showing a sample: `1,240.50`, `1240.50`. | Grid cells of numeric columns, in the data view and in SQL results. |
 | Value tags | A toggle. | Off: enum, CHECK and boolean columns draw as plain text in the data view and the row panel, and booleans in SQL results (the only tags that view has). |
 
 The keys without a control have effects too, for a change that comes from
 the file: `show_system_schemas` is read when the sidebar draws and when
-objects are listed, so it shows at the next frame and the next listing;
+objects are listed, so it shows at the next frame and the next listing, and an open completion list is worked out again, since it offers the schemas that are shown;
 `sql_limit` and `sql_timeout_secs` reach the SQL tabs opened afterwards, as
 today; `appearance.theme` restarts the theme catalog with the new selection
 and resolves the palette again. Restarting the catalog needs the egui
@@ -276,18 +286,27 @@ value as the server sent it.
 `Dialog::Settings(Box<SettingsDialog>)`:
 
     pub struct SettingsDialog {
-        pub tab: SettingsTab,        // General
-        /// Omarchy: the option the keys act on.
+        /// The option the keys act on (Omarchy), as an index into
+        /// `OptionId::ALL`.
         pub row: usize,
-        /// The footer asked whether to reset.
-        pub confirm_reset: bool,
     }
 
-Actions: `ShowSettings`, `SetOption(OptionValue)`, `ResetOption(OptionId)`,
-`ResetSettings`, `ConfirmResetSettings(bool)`, `MoveSettingsRow(isize)`,
-`RevealSettingsFile`, `ExportSettings`, `EditSettingsFile`. The view pushes
-them; `App::apply` changes the settings. `ShowSettings` opens the window
-when no dialog is open or the shortcuts dialog is; `Escape` closes it.
+The window holds nothing of the settings: every change applies at once.
+Step 4 adds what its footer needs (whether Reset was asked for); a tab
+arrives with the second tab.
+
+An option is a value: `OptionId` names the four rows and `OptionValue` is
+one of them set to something (`src/settings.rs`). A key, a click, a reset
+and a menu all say the same thing with it.
+
+Actions: `ShowSettings`, `MoveSettingsRow(isize)`, `SelectSettingsRow(usize)`,
+`SetOption(OptionValue)` (a reset of one option is `SetOption` with its
+default), `EditSettingsFile`; step 4 adds `ResetSettings`,
+`ConfirmResetSettings(bool)`, `RevealSettingsFile` and `ExportSettings`.
+The view pushes them; `App::apply` changes the settings through
+`change_settings`. `ShowSettings` opens the window when no dialog is open or
+the shortcuts dialog is; asked for while it is open, it does nothing;
+`Escape` closes it.
 
 The view is `src/ui/settings/`: `mod.rs` (the options, their labels and
 hints, shared by both layouts), `sheet.rs` (macOS and Windows), and
@@ -328,6 +347,11 @@ The artboard's screen, over the whole window:
 
 - Header: `settings` `general`, and at the right "changes apply right away
   · ctrl+, opens this".
+- The app's notice, in a band under the header while there is one (a save
+  that failed, an editor that did not start), with its Dismiss button. The
+  screen covers the notice bar, so without the band a notice would go
+  unseen until the screen closes. The nav, the rows and the file pane start
+  under it.
 - Nav, 220 wide: `general`, selected.
 - Rows in three columns (the label, the value, a hint), under the section
   label `data`. The row with the keys carries the cursor mark and the
@@ -336,20 +360,42 @@ The artboard's screen, over the whole window:
   filled, `[x]` and `[ ]`.
 - The file pane, 620 wide or 40% of the window if that is less, hidden when
   the window is narrower than 1100. Its header is the path and `live` while
-  the file is watched. Its body is `App::settings_text`, coloured by a small
+  the file is watched. The path is written from `~` under the home
+  directory, which `AppDirs::discover` finds once at the start
+  (`AppDirs::home`): the lookup can ask the system's user database, and no
+  frame waits for it. Its body is `App::settings_file.text`, coloured by a small
   line classifier (comment, table header, key, string, number or boolean),
   with the line of the cursor's option highlighted (from `Loaded::lines`)
   and the lines in `Loaded::invalid` in red. Under it: "edits in the file
-  reload live · invalid lines are shown here in red and ignored".
+  reload live · invalid lines are shown here in red and ignored". A text
+  that is no settings file is shown all the same, and can be megabytes: the
+  pane draws only the lines in view, reaches them by where they start
+  (`SettingsFile::line_starts`, found once when the text is set), and draws
+  no more than the first 400 bytes of a line. Each line in view is told to
+  a screen reader as a label, whole, and an ignored one as "Ignored: " and
+  the line: its colour tells nothing to someone who does not see it.
 - Footer keys: `j/k` move, `h/l` change, `space` toggle, `ctrl+e` open file
   in $EDITOR, `R` reset option, `esc` close.
 
 Keys, taken by the screen while it is open: `j`/`k` and the up and down
 arrows move the cursor; `h`/`l` and left and right step the value through
-its choices (a toggle: off and on); `space` flips a toggle; `R` puts the
+its choices (a toggle: off and on); `space` flips an option of two values
+(value tags, timestamps, numbers) and leaves the page size; `R` puts the
 cursor's option back to its default; `ctrl+e` opens the file; `Escape`
 closes. A click on a row moves the cursor to it, and a click on a value
-sets it.
+sets it. Keys that come in one frame act in their order, each on what the
+ones before it left: `j` then `l` steps the row `j` moved to, and `l`
+twice steps twice.
+
+A button of the screen that has the keyboard (reached with Tab) keeps
+Space, which presses it, and the arrows, which move focus from it, as in
+the workspace. The letters, `R`, `ctrl+e` and `Escape` are the screen's
+wherever the keyboard is.
+
+A screen reader is told which value of an option is set. Each segment and
+each value of the check is a radio button, named by its option and its
+value, that says whether it is the one set. The page size has no button
+that is its value, so its row says the number.
 
 ### Opening
 
@@ -375,18 +421,29 @@ handles it. Either way one press opens the window once.
 
 All three run on the backend, as disk and process work does.
 
-- **Reveal**: `Command::OpenSettingsFile { path, text, how: Reveal }`.
-- **Open in the editor**: the same command with `how: Editor`.
-- **Export…**: `Backend::save_bytes`, the path a binary value is saved by
-  (its dialog title becomes a parameter), with the name
+- **Open in the editor** (step 3): `Command::EditSettingsFile { path, text }`.
+- **Reveal** (step 4): a command of its own, `RevealSettingsFile { path,
+  text }`, sharing the editor's "write it first if it is not there".
+- **Export…** (step 4): `Backend::save_bytes`, the path a binary value is
+  saved by (its dialog title becomes a parameter), with the name
   `tabletist-settings.toml` and the canonical text.
 
-`OpenSettingsFile` carries the canonical text: the backend writes it to
-`path` when no file is there, then starts the program, so the UI thread
-never looks at the disk and the write always comes first. The child is not
-waited for. `Event::SettingsFileOpened { result }` puts a failure in the
-app's notice, as a failed save is; a failed export is already reported that
-way.
+Both commands carry the text the app holds: the backend writes it to `path`
+when no file is there, then starts the program, so the UI thread never looks
+at the disk and the write always comes first. The program is not waited for
+by anything the app needs (a thread reaps it). `Event::SettingsFileOpened {
+result }` puts a failure in the app's notice, as a failed save is; a failed
+export is already reported that way.
+
+That first write of a missing file is recorded as the backend's own write,
+under the lock the writer and the reader share, as a save's is. The reader
+then says the text is the app's own, so it is not taken for a change from
+outside. The lock keeps out the backend's other writes, not an editor's: the
+file is made only where none is, in one step (`util::create_atomic`), so one
+that someone made after the look for it is opened as it is and is no write
+of the backend's. Otherwise a change made in the app while the editor was starting
+could be undone: its save lands first, the older text lands after it, and
+the app would apply that as someone else's edit.
 
 The program follows the operating system the app was built for (`cfg`), not
 the look, so a macOS look drawn in a Linux test still compiles and runs:
@@ -395,7 +452,17 @@ the look, so a macOS look drawn in a Linux test still compiles and runs:
 |---|---|---|
 | macOS | `open -R <path>` | `open -t <path>` |
 | Windows | `explorer /select,<path>` | `explorer <path>` |
-| Linux | `xdg-open <the directory>` | `omarchy-launch-editor <path>` when it is on `PATH`, else `xdg-open <path>` |
+| Linux | `xdg-open <the directory>` | `omarchy-launch-editor <path>` when it is on `PATH` and can be run, else `xdg-open <path>` |
+
+On Linux the Omarchy launcher is used only when it can be run: a file of
+that name on `PATH` that has no executable bit would fail to start, and
+`xdg-open` would never be tried. The launcher opens the editor Omarchy is
+set up with.
+
+A program that ends with a failure is logged as a warning, with its name
+and its status, by the thread that waits for it: an `xdg-open` with nothing
+to open the file with says so nowhere else. The app's notice tells only of
+a file that could not be written and of a program that did not start.
 
 The Reveal link's words follow the same `cfg`: Reveal in Finder, Show in
 Explorer, Show in folder.
@@ -404,13 +471,44 @@ Explorer, Show in folder.
 
 `Command::WatchSettings { path }` starts a `notify` watcher on the config
 directory (the directory, not the file: editors replace a file by renaming
-another over it). An event for `settings.toml` waits 100 ms for the writes
-to settle, then the backend reads the file and sends
+another over it). An event for `settings.toml` waits until the file has
+been quiet for 100 ms (each further event starts the wait again: a save is
+several of them, and a read between two would see half a file), then the
+backend reads the file (a read that another change overtook is thrown
+away, and the wait starts over: what was read may be half a save) and sends
 `Event::SettingsFile { text }`. A file that is not UTF-8 at that moment is
 logged and nothing is sent: the settings in memory stay.
 
-`App` drops an event whose text equals `settings_text`: that is its own
-write, or a change that changed nothing. Otherwise it runs
+The watcher ignores events that only say the file was looked at: Linux
+reports every open, and the backend's own read is one, so a watcher that
+answered them would read the file for ever. The file is matched by its name
+in the directory, since the paths of events come as the system has them;
+on macOS and Windows, which find a file whatever the case of its name, the
+match ignores case, so a file kept as `Settings.toml` is still followed.
+Beyond ASCII those systems' own rules cannot be reproduced here (Windows
+compares by an upper case of its own, under which `Σ.toml` and `ς.toml` are
+one name; macOS takes a letter with its accent for the same however the two
+are encoded), so two names that both go beyond ASCII are taken for one
+there. A name taken for the file's by mistake costs one read, and the same
+text is not sent again.
+The same text is never sent twice in a row.
+
+The file is read once when the watch starts, as if it had just changed:
+the settings were loaded before the window existed, and an edit made in
+between would otherwise go unseen until the next one. The app drops a text
+equal to the one it holds, so an unchanged file costs nothing.
+
+A read that fails for a reason that may pass (an editor still holding the
+file, on Windows) is tried again, waiting 100 ms and then twice as long each
+time up to a second, six reads in all; a change meanwhile starts over, and a
+file that is gone is not retried.
+
+`App` drops an event whose text equals `settings_file.text`: that is its own
+write, or a change that changed nothing. (From step 3 the event also says
+whether the text is the backend's own write, `own`, and the app keeps the
+text it last asked to be written, `SettingsFile::saved`: see "Errors and
+edge cases" for what it does with an own write that is not the text it
+holds.) Otherwise it runs
 `Settings::from_toml`, keeps the text, the invalid lines and the key lines,
 and applies the settings through the same effects a change in the window
 has, without writing the file back.
@@ -420,6 +518,41 @@ and demo mode never watch. The backend answers with
 `Event::SettingsWatch { live: bool }`. If it cannot start (no inotify
 watches left) the failure is logged and the pane's header does not say
 `live`; everything else works.
+
+`settings.toml` may be a symbolic link: GNU stow, dotbot and chezmoi in
+symlink mode keep the file in a repository and a link in the config
+directory. An edit made in the repository raises its events there and none
+beside the link, so the watcher resolves the link (`util::link_chain`,
+the links at the end of the path, one after another) and, when the file is
+in another directory, watches that directory too. Where one link leads to
+another, the directory of each is watched, since any of them can be
+turned. The reader wakes for any of their names: the link's in the config
+directory, the file's where it is, and those of the links between.
+Each time it wakes it resolves the link again before it reads, so a link
+made, turned elsewhere or replaced by a plain file while the app runs is
+followed. Once the watches are in place it resolves once more, and again
+until it finds what it watched: a link turned between the look at it and
+the watch on its directory would otherwise be missed for good. A link that leads where nothing can be watched (the directory is
+not there, or no watch can be had on it) is logged and
+`Event::SettingsWatch { live: false }` is sent. While it is not live the
+watcher looks again every two seconds, since no event comes when the place
+appears (a volume is mounted), and sends `true`, with the file's text, once
+it can watch there. A link turned by hand among the directories on the way
+(a directory that is itself a link), with nothing changing beside
+`settings.toml` or a link it leads through, is not seen until the next
+change that is.
+
+A watch stays with the directory it was put on, not with its path. When a
+watched directory is moved or removed (a dotfiles repository set aside and
+cloned anew, the link as it was), the watcher says so for the directory
+itself. The reader is woken for that too, and before it reads it lets go
+of every watch and takes them again at the paths, so the directory now
+there is watched; while none is, the watch is not live and is looked for
+again as above. Known limits: a directory further up the path that is
+moved (`~/dotfiles` where `~/dotfiles/tabletist` is watched) raises
+nothing on Linux, and this is tested on Linux alone: where a system's
+watcher says nothing of the watched directory itself, edits made in the
+new one are not seen until the app starts again.
 
 When the file is deleted while the app runs, the settings in memory stay,
 and the next change writes the file again.
@@ -431,6 +564,44 @@ footer: "2 lines in the file could not be read and were ignored".
 
 - Two writers: the user saves the file in an editor while changing an
   option in the window. The last write wins; neither is merged.
+- Two quick changes in the app can be read from the disk between their two
+  writes, so the first text comes back after the second was made. From step
+  3 the backend says which texts are its own writes (`Event::SettingsFile {
+  text, own }`, decided under a lock the writer and the reader share), and
+  the app keeps the text it last asked to be written (`SettingsFile::saved`).
+  A text of its own that is not the one it holds is dropped when it is an
+  older write (the newest is still to come) and applied when it is the
+  newest (its save landed over a change from outside that it had applied in
+  between: the disk has it). A key held down on an option therefore never
+  has its newest change undone, and the same older text put back by someone
+  else is still a change. A text handed over with the file to be opened
+  (`SettingsFile::offered`) counts as the newest too, until a save is asked
+  for: the backend writes it when the file is gone by then, and the app may
+  have applied a change from outside since it handed the text over. Every
+  text handed over since the last save is kept, not the last alone: two
+  requests can wait at once, and the first may be the one that writes.
+- A change from outside that restores, within the settle after one of the
+  app's own writes, the very text the backend sent last is not seen: the
+  reader never sends the same text twice in a row. The app then holds the
+  newer settings and the disk the older, until the next change of either.
+- A state file that is a symbolic link (`settings.toml`, and
+  `connections.json` and `known_hosts.json` alike) is saved through the
+  link: `util::write_atomic` resolves it and makes its temporary file beside
+  the file the link leads to, so the rename replaces that file and the link
+  stays. The write is as atomic as before, the temporary file still has a
+  random name and is made exclusively (a link planted under a temporary
+  name is not followed, in either directory), and on Unix the new file is
+  0600 where it lands, in the repository too. What no longer holds is that
+  a link at the path itself is never written through: that is now the
+  point, and whoever can put a link in the config directory (0700, the
+  user's) decides which file a save replaces. A link to a directory that is
+  not there is not followed by making the directory: the save fails, is
+  reported in the notice, and the link stays. So does a save where the
+  repository cannot be written. A file behind a link that cannot be loaded
+  is renamed to `.bad` beside itself, not the link. Where the link cannot
+  be followed (what it leads to cannot be looked at for now, or the links
+  lead back to themselves) nothing is renamed and the link stays: a save
+  through it fails for the same reason, so nothing is replaced.
 - The config directory is read-only: the change applies for the session and
   the failed save is reported in the notice, as today.
 - `page_size = 250` by hand: honoured, and shown in the menu as its own
@@ -465,8 +636,9 @@ Every behaviour gets a focused test; UI behaviour goes through
   each control changes its setting and saves; `Escape` closes; Reset asks,
   then resets only the four options. Omarchy: each key; the pane shows the
   text, highlights the cursor's line and is hidden in a narrow window.
-- File actions: Reveal and the editor key push `OpenSettingsFile` with the
-  path, the text and the right `how`; Export reaches `Backend::save_bytes`
+- File actions: the editor key pushes `EditSettingsFile` and Reveal
+  `RevealSettingsFile`, each with the path and the text; Export reaches
+  `Backend::save_bytes`
   with the name and the text; a failure reaches the notice. A backend test
   in a temporary directory checks that a missing file is written before the
   program starts.
