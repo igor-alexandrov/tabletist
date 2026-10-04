@@ -5,8 +5,7 @@
 //! which draw nothing.
 
 use std::ops::Range;
-use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::path::Path;
 
 use egui::{Color32, CornerRadius, Rangef, Rect, Sense, Ui, pos2, vec2};
 
@@ -189,16 +188,6 @@ pub(super) fn drawn(line: &str) -> &str {
     &line[..end]
 }
 
-/// The home directory, looked up the first time the pane is drawn and kept:
-/// with `HOME` set the lookup reads the environment, but without it Unix
-/// asks the passwd database, and Windows makes several system calls. None
-/// of that belongs in every frame.
-fn home() -> Option<&'static Path> {
-    static HOME: OnceLock<Option<PathBuf>> = OnceLock::new();
-    HOME.get_or_init(|| directories::BaseDirs::new().map(|dirs| dirs.home_dir().to_path_buf()))
-        .as_deref()
-}
-
 /// The settings file beside its options, in `rect`: where it is and whether
 /// it is watched, its text with the line of the cursor's option marked, and
 /// what its colours say.
@@ -221,7 +210,8 @@ pub(super) fn show(ui: &mut Ui, rect: Rect, app: &App, option: Option<OptionId>,
         let live = Text::one(look, role, &skin.say("live"), palette.dim);
         path_right -= widgets::paint_text_right(ui, right, y, live) + 12.0;
     }
-    let path = shown_path(&app.dirs.settings_file(), home());
+    // The home directory was found at the start, with the app's own.
+    let path = shown_path(&app.dirs.settings_file(), app.dirs.home.as_deref());
     // The pane's heading: strong, as a heading over a rule is in this look.
     let path = Text::one(look, TextRole::OGroup, &path, palette.text).layout(ui.ctx());
     let clip = Rect::from_min_max(pos2(left, rect.top()), pos2(path_right.max(left), rule));

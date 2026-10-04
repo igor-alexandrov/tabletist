@@ -360,7 +360,10 @@ The artboard's screen, over the whole window:
   filled, `[x]` and `[ ]`.
 - The file pane, 620 wide or 40% of the window if that is less, hidden when
   the window is narrower than 1100. Its header is the path and `live` while
-  the file is watched. Its body is `App::settings_file.text`, coloured by a small
+  the file is watched. The path is written from `~` under the home
+  directory, which `AppDirs::discover` finds once at the start
+  (`AppDirs::home`): the lookup can ask the system's user database, and no
+  frame waits for it. Its body is `App::settings_file.text`, coloured by a small
   line classifier (comment, table header, key, string, number or boolean),
   with the line of the cursor's option highlighted (from `Loaded::lines`)
   and the lines in `Loaded::invalid` in red. Under it: "edits in the file

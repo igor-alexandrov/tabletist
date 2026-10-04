@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
-use directories::ProjectDirs;
+use directories::{BaseDirs, ProjectDirs};
 
 /// The directories Tabletist writes to.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -11,12 +11,19 @@ pub struct AppDirs {
     pub config: PathBuf,
     /// Logs.
     pub state: PathBuf,
+    /// The user's home directory, where there is one: a path under it is
+    /// shown with `~`. Found with the others, at the start: without `HOME`
+    /// Unix asks the passwd database, which can be a lookup over the
+    /// network, and Windows makes several system calls. None of that
+    /// belongs in a frame.
+    pub home: Option<PathBuf>,
 }
 
 impl AppDirs {
     /// The platform's conventional directories: `~/.config/tabletist` and
     /// `~/.local/state/tabletist` on Linux.
     pub fn discover() -> Self {
+        let home = BaseDirs::new().map(|dirs| dirs.home_dir().to_path_buf());
         match ProjectDirs::from("dev", "tabletist", "Tabletist") {
             Some(project) => Self {
                 config: project.config_dir().to_path_buf(),
@@ -24,6 +31,7 @@ impl AppDirs {
                     .state_dir()
                     .map(Path::to_path_buf)
                     .unwrap_or_else(|| project.data_local_dir().to_path_buf()),
+                home,
             },
             None => Self::at(
                 &std::env::current_dir()
@@ -33,11 +41,13 @@ impl AppDirs {
         }
     }
 
-    /// Directories under one root, for tests and demo mode.
+    /// Directories under one root, for tests and demo mode. No home: a
+    /// path is shown as it is.
     pub fn at(root: &Path) -> Self {
         Self {
             config: root.join("config"),
             state: root.join("state"),
+            home: None,
         }
     }
 
@@ -106,6 +116,13 @@ mod tests {
         assert_eq!(dirs.themes_dir(), PathBuf::from("/root/config/themes"));
         assert_eq!(dirs.log_file(), PathBuf::from("/root/state/tabletist.log"));
         assert_eq!(dirs.panic_log(), PathBuf::from("/root/state/panic.log"));
+    }
+
+    #[test]
+    fn the_home_directory_is_found_with_the_others_and_tests_have_none() {
+        assert_eq!(AppDirs::at(Path::new("/root")).home, None);
+        let home = BaseDirs::new().map(|dirs| dirs.home_dir().to_path_buf());
+        assert_eq!(AppDirs::discover().home, home);
     }
 
     #[test]
