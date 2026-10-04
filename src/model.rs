@@ -327,6 +327,14 @@ pub enum Action {
     ShowHelp,
     /// Show the About dialog.
     ShowAbout,
+    /// Show the Settings window.
+    ShowSettings,
+    /// Move the Settings window's cursor by this many options.
+    MoveSettingsRow(isize),
+    /// Put the Settings window's cursor on this option.
+    SelectSettingsRow(usize),
+    /// Set an option. Applied and saved at once.
+    SetOption(crate::settings::OptionValue),
     /// Open quick open for the active connection tab.
     OpenQuickOpen,
     /// Move quick open's selection by this many results.
@@ -1043,6 +1051,8 @@ pub enum Dialog {
     Help,
     /// The app's name, version and where it lives.
     About,
+    /// The Settings window.
+    Settings(Box<SettingsDialog>),
 }
 
 /// Cmd/Ctrl+P: find a loaded table or view by name.
@@ -1057,6 +1067,16 @@ pub struct QuickOpen {
     pub scrolled_to: Option<usize>,
     /// The list's scroll offset, in points.
     pub scroll_offset: f32,
+}
+
+/// The Settings window while it is open. The settings themselves are the
+/// app's: every change applies at once, so the window holds nothing of
+/// them.
+#[derive(Debug, Default)]
+pub struct SettingsDialog {
+    /// The option the keys act on, as an index into
+    /// [`crate::settings::OptionId::ALL`].
+    pub row: usize,
 }
 
 /// Asks whether to trust an SSH host seen for the first time.

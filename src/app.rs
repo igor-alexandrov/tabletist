@@ -932,6 +932,27 @@ impl App {
                     self.dialog = Some(Dialog::About);
                 }
             }
+            Action::ShowSettings => {
+                // The shortcuts dialog offers it, and gives way to it. Asked
+                // for while it is open, it stays as it is.
+                if matches!(self.dialog, None | Some(Dialog::Help)) {
+                    self.dialog = Some(Dialog::Settings(Box::default()));
+                }
+            }
+            Action::MoveSettingsRow(by) => {
+                if let Some(Dialog::Settings(dialog)) = &mut self.dialog {
+                    let last = crate::settings::OptionId::ALL.len() - 1;
+                    dialog.row = dialog.row.saturating_add_signed(by).min(last);
+                }
+            }
+            Action::SelectSettingsRow(row) => {
+                if let Some(Dialog::Settings(dialog)) = &mut self.dialog
+                    && row < crate::settings::OptionId::ALL.len()
+                {
+                    dialog.row = row;
+                }
+            }
+            Action::SetOption(value) => self.change_settings(|settings| value.set(settings)),
             Action::OpenQuickOpen => {
                 let tab = self.active_tab_id();
                 if self.dialog.is_none() && self.workspace(tab).is_some() {
@@ -4195,6 +4216,75 @@ mod tests {
         assert!(app.settings_file.live);
         app.change_settings(|settings| settings.sql_limit = 100);
         assert!(app.settings_file.live);
+    }
+
+    fn settings_row(app: &App) -> Option<usize> {
+        match &app.dialog {
+            Some(Dialog::Settings(dialog)) => Some(dialog.row),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn settings_open_over_nothing_or_the_shortcuts_and_close() {
+        let (mut app, _dir) = app();
+        app.apply(Action::ShowSettings);
+        assert_eq!(settings_row(&app), Some(0));
+        // A second ask changes nothing: the cursor stays where it is.
+        app.apply(Action::MoveSettingsRow(2));
+        app.apply(Action::ShowSettings);
+        assert_eq!(settings_row(&app), Some(2));
+        app.apply(Action::CloseDialog);
+        assert!(app.dialog.is_none());
+        // The shortcuts dialog offers it, and gives way to it.
+        app.apply(Action::ShowHelp);
+        app.apply(Action::ShowSettings);
+        assert_eq!(settings_row(&app), Some(0));
+        // Another dialog does not.
+        app.apply(Action::CloseDialog);
+        app.apply(Action::ShowAbout);
+        app.apply(Action::ShowSettings);
+        assert!(matches!(app.dialog, Some(Dialog::About)));
+    }
+
+    #[test]
+    fn the_settings_cursor_stays_among_the_options() {
+        use crate::settings::OptionId;
+        let (mut app, _dir) = app();
+        app.apply(Action::ShowSettings);
+        app.apply(Action::MoveSettingsRow(-1));
+        assert_eq!(settings_row(&app), Some(0));
+        app.apply(Action::MoveSettingsRow(1));
+        assert_eq!(settings_row(&app), Some(1));
+        app.apply(Action::MoveSettingsRow(99));
+        assert_eq!(settings_row(&app), Some(OptionId::ALL.len() - 1));
+        app.apply(Action::SelectSettingsRow(2));
+        assert_eq!(settings_row(&app), Some(2));
+        app.apply(Action::SelectSettingsRow(99));
+        assert_eq!(
+            settings_row(&app),
+            Some(2),
+            "no such row: left where it was"
+        );
+        // Without the screen the cursor's actions do nothing.
+        app.apply(Action::CloseDialog);
+        app.apply(Action::MoveSettingsRow(1));
+        assert!(app.dialog.is_none());
+    }
+
+    #[test]
+    fn setting_an_option_changes_it_and_saves() {
+        use crate::settings::{OptionValue, Timestamps};
+        let (mut app, _dir) = app();
+        app.apply(Action::SetOption(OptionValue::Timestamps(Timestamps::Full)));
+        assert_eq!(app.settings.timestamps, Timestamps::Full);
+        assert_eq!(settings_saves(&app).len(), 1);
+        // The value it already has is not written again.
+        app.apply(Action::SetOption(OptionValue::Timestamps(Timestamps::Full)));
+        assert_eq!(settings_saves(&app).len(), 1);
+        // A page size out of range comes into it, as from the file.
+        app.apply(Action::SetOption(OptionValue::PageSize(5)));
+        assert_eq!(app.settings.page_size, Settings::MIN_PAGE_SIZE);
     }
 
     #[test]
