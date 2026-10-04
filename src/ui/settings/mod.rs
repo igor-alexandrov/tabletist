@@ -1,9 +1,11 @@
 //! The Settings window: every option of the General tab, changed where it
 //! is shown and saved at once. The terminal look draws a screen over the
 //! whole window with its keys in the footer (`terminal.rs`); the other
-//! looks get their window in a later step.
+//! looks draw a sheet over the dimmed window, with a control for each
+//! option (`sheet.rs`).
 
 mod file_pane;
+mod sheet;
 mod terminal;
 
 use std::borrow::Cow;
@@ -22,6 +24,30 @@ pub(super) fn label(option: OptionId) -> &'static str {
         OptionId::GroupDigits => "Numbers",
         OptionId::ValueTags => "Value tags",
     }
+}
+
+/// What a row says under its label, where it says something. English.
+pub(super) fn small_print(option: OptionId) -> Option<&'static str> {
+    match option {
+        OptionId::PageSize => Some("Table view; the SQL editor has its own limit"),
+        OptionId::ValueTags => Some("Colors for enum, CHECK (…IN…) and boolean columns"),
+        OptionId::Timestamps | OptionId::GroupDigits => None,
+    }
+}
+
+/// A timestamp as the grid shows one at each precision.
+pub(super) fn sample_timestamp(timestamps: Timestamps) -> &'static str {
+    match timestamps {
+        Timestamps::Second => "2026-01-12 09:14:03",
+        Timestamps::Full => "2026-01-12 09:14:03.482915",
+    }
+}
+
+/// The settings file's path as the window writes it: the home directory
+/// as `~`. The home directory was found at the start, with the app's own:
+/// no frame looks it up.
+pub(super) fn path_shown(app: &App) -> String {
+    file_pane::shown_path(&app.dirs.settings_file(), app.dirs.home.as_deref())
 }
 
 /// What a choice is called.
@@ -186,9 +212,15 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
     let Some(Dialog::Settings(dialog)) = &app.dialog else {
         return;
     };
-    let row = dialog.row;
+    let (row, resetting) = (dialog.row, dialog.resetting);
     let mut actions = Vec::new();
-    keys(app, ctx, row, &mut actions);
-    terminal::show(app, ctx, row, &mut actions);
+    if app.look.terminal {
+        // The screen's keys act on its cursor. The sheet has none: its
+        // controls are reached with Tab.
+        keys(app, ctx, row, &mut actions);
+        terminal::show(app, ctx, row, &mut actions);
+    } else {
+        sheet::show(app, ctx, resetting, &mut actions);
+    }
     app.actions.extend(actions);
 }

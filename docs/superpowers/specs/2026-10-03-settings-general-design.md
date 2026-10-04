@@ -289,11 +289,13 @@ value as the server sent it.
         /// The option the keys act on (Omarchy), as an index into
         /// `OptionId::ALL`.
         pub row: usize,
+        /// Reset to defaults was chosen and waits for its answer.
+        pub resetting: bool,
     }
 
-The window holds nothing of the settings: every change applies at once.
-Step 4 adds what its footer needs (whether Reset was asked for); a tab
-arrives with the second tab.
+The window holds nothing of the settings: every change applies at once. It
+holds what its footer needs (whether Reset was asked for); a tab arrives
+with the second tab.
 
 An option is a value: `OptionId` names the four rows and `OptionValue` is
 one of them set to something (`src/settings.rs`). A key, a click, a reset
@@ -340,6 +342,30 @@ Focus rings come from `src/ui/focus.rs`, as for every control.
 Reset to defaults asks first, in place: the three links give way to "Reset
 every option on this tab?" with Reset and Cancel. Reset puts the four
 options back and saves. It leaves the keys the window does not show alone.
+The keyboard that asked is on Cancel when the question shows, and back on
+Reset to defaults once it is answered, however it was answered, so a held
+Enter never reaches Reset and never goes on to another link.
+
+The sheet takes none of the terminal screen's keys: its controls are reached
+with Tab, and the arrows choose within a segmented control. Escape closes
+it, and so does a click outside it, which is how the pointer leaves: the
+artboard has no close button. Either one answers the reset question as
+Cancel does first, and with the page size menu open closes only the menu.
+A key held down on a link presses it once: its repeats would start a file
+manager, or open a save dialog, each.
+
+The page size menu's button is named for its option, and its entries for
+the option and the size ("Rows per page 500"). A segment is named for its
+option and its value ("Numbers: 1,240.50"), as the terminal screen names
+its choices. A control that Tab reaches in rows that have scrolled is
+brought into view.
+
+The label column is 300, or as wide as the widest small print where a face
+writes it wider. In a sheet narrower than its controls need, the labels give
+way and the small print wraps; a hint that does not fit is left out whole.
+In a window too short for the sheet the rows scroll, and the title and the
+footer stay. A path too long for what the links leave is cut at its start;
+a screen reader is told it whole.
 
 ### Omarchy
 
@@ -407,13 +433,16 @@ that is its value, so its row says the number.
 
 winit builds the app menu as About, separator, Services, Hide, Hide Others,
 Show All, separator, Quit. `tabletist-appkit` gains
-`SettingsItem::insert(title, chosen) -> Option<Self>`, which adds the item
-and a separator after About's separator, the place the platform gives it.
-It shares `about.rs`'s target class (renamed to say what it is: an object
-that calls a closure when a menu item is chosen). Dropping the
-`SettingsItem` removes both items. `src/macos.rs` wraps it as `SettingsMenu`
-the way `AboutMenu` wraps `AboutItem`, and `Window::logic` turns a chosen
-item into `Action::ShowSettings`.
+`SettingsItem::insert(title, chosen) -> Option<Self>`, which puts the item
+and a separator after the first separator of the app menu (in winit's menu,
+the one after About), the place the platform gives it; where the menu has no
+separator, nothing is inserted and the key handler opens the window. It
+shares the class that `about.rs` had, now `MenuTarget` in `target.rs`: an
+object that calls a closure when a menu item is chosen, through the action
+`menuItemChosen:`. Dropping the `SettingsItem` removes both items and takes
+the item's target away. `src/macos.rs` wraps it as `SettingsMenu` the way
+`AboutMenu` wraps `AboutItem`, and `Window::logic` turns a chosen item into
+`Action::ShowSettings`.
 
 AppKit takes `⌘,` for the menu item before egui sees it, so on macOS the key
 arrives through the menu; if the item could not be inserted, `keys.rs` still
@@ -434,8 +463,10 @@ Both commands carry the text the app holds: the backend writes it to `path`
 when no file is there, then starts the program, so the UI thread never looks
 at the disk and the write always comes first. The program is not waited for
 by anything the app needs (a thread reaps it). `Event::SettingsFileOpened {
-result }` puts a failure in the app's notice, as a failed save is; a failed
-export is already reported that way.
+with, result }` puts a failure in the app's notice, as a failed save is, and
+`with` (`Opened::Editor` or `Opened::Folder`) says which program it was; a
+failed export is already reported that way. Export's dialog is titled
+"Export settings".
 
 That first write of a missing file is recorded as the backend's own write,
 under the lock the writer and the reader share, as a save's is. The reader
@@ -453,8 +484,15 @@ the look, so a macOS look drawn in a Linux test still compiles and runs:
 | | Reveal | Editor |
 |---|---|---|
 | macOS | `open -R <path>` | `open -t <path>` |
-| Windows | `explorer /select,<path>` | `explorer <path>` |
+| Windows | `explorer /select,"<path>"` | `explorer <path>` |
 | Linux | `xdg-open <the directory>` | `omarchy-launch-editor <path>` when it is on `PATH` and can be run, else `xdg-open <path>` |
+
+On Windows explorer reads its command line itself: it takes `/select,` for
+its switch only outside quotes, and splits what follows at a comma outside
+them. So the path goes in quotes of its own right after the switch, and the
+whole is given to explorer as it is written (`raw_arg`), not quoted again by
+the usual rules. A path with a space or a comma in it is then selected. A
+Windows path holds no quote to escape.
 
 On Linux the Omarchy launcher is used only when it can be run: a file of
 that name on `PATH` that has no executable bit would fail to start, and
@@ -606,6 +644,10 @@ footer: "2 lines in the file could not be read and were ignored".
   through it fails for the same reason, so nothing is replaced.
 - The config directory is read-only: the change applies for the session and
   the failed save is reported in the notice, as today.
+- A notice raised while the sheet is open (a failed save, a file manager
+  that did not start) shows in the app's notice bar, under the dimmed
+  window, and can be dismissed once the sheet closes. The terminal screen
+  covers the bar and has a band of its own.
 - `page_size = 250` by hand: honoured, and shown in the menu as its own
   entry.
 - `group_digits = "yes"`: ignored, red on Omarchy, counted in the footer
@@ -648,9 +690,12 @@ Every behaviour gets a focused test; UI behaviour goes through
   writes nothing; one with the app's own text is dropped; invalid lines
   reach `App`. A backend test in a temporary directory writes the file and
   receives the event.
-- macOS menu: a test with its own `main`, beside `about_menu.rs`, that the
-  item is inserted after About, carries `⌘,`, calls back, and is removed on
-  drop. It runs in CI's macOS job; from Linux it can only be compile-checked.
+- macOS menu: `settings_menu.rs`, a test with its own `main` beside
+  `about_menu.rs`, that the item is inserted after About, carries the key
+  `,`, calls back, and is removed on drop. It does not check the key's
+  modifier, which is AppKit's default (Command); reading it needs a feature
+  the crate does not turn on. It runs in CI's macOS job; from Linux it can
+  only be compile-checked.
 
 Neither `README.md` nor `AGENTS.md` names the settings file, so neither
 changes; the first design spec's list of files is left as the record it is.
@@ -670,9 +715,10 @@ window to ship can already say `live` and mean it.
 3. **The Omarchy screen.** `Dialog::Settings`, the rows, the keys, the file
    pane with its highlighted and red lines, the editor key, `Mod+,` and the
    shortcuts dialog's button. The key's line in `SHORTCUTS` waits for step
-   4, so no look lists a key that does nothing there. Until step 4, both ways in are offered only
-   in the terminal look: in the other looks the key does nothing and the
-   button is not drawn.
+   4, so no look lists a key that does nothing there.
 4. **The window on macOS and Windows.** The sheet, the toggle, the footer's
-   Reveal, Export, Reset and count of ignored lines, the macOS menu item,
-   the ways in for every look, and the `SHORTCUTS` line.
+   Reveal, Export, Reset and count of ignored lines, the ways in for every
+   look, the `SHORTCUTS` line, and the macOS menu item (see Opening). The
+   menu item was planned and built apart from the rest, since it needs
+   `tabletist-appkit` and runs only on a Mac, and was merged into the
+   window's pull request: the two are delivered together.

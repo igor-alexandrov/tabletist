@@ -211,8 +211,7 @@ pub(super) fn show(ui: &mut Ui, rect: Rect, app: &App, option: Option<OptionId>,
         let live = Text::one(look, role, &skin.say("live"), palette.dim);
         path_right -= widgets::paint_text_right(ui, right, y, live) + 12.0;
     }
-    // The home directory was found at the start, with the app's own.
-    let path = shown_path(&app.dirs.settings_file(), app.dirs.home.as_deref());
+    let path = super::path_shown(app);
     // The pane's heading: strong, as a heading over a rule is in this look.
     let path = Text::one(look, TextRole::OGroup, &path, palette.text).layout(ui.ctx());
     let clip = Rect::from_min_max(pos2(left, rect.top()), pos2(path_right.max(left), rule));

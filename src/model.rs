@@ -337,6 +337,14 @@ pub enum Action {
     SetOption(crate::settings::OptionValue),
     /// Open the settings file in the editor.
     EditSettingsFile,
+    /// Show the settings file in the file manager.
+    RevealSettingsFile,
+    /// Save a copy of the settings where the user says.
+    ExportSettings,
+    /// Ask whether to put the Settings window's options back.
+    ResetSettings,
+    /// The answer: put them back, or leave them.
+    ConfirmResetSettings(bool),
     /// Open quick open for the active connection tab.
     OpenQuickOpen,
     /// Move quick open's selection by this many results.
@@ -1084,6 +1092,9 @@ pub struct SettingsDialog {
     /// The option the keys act on, as an index into
     /// [`crate::settings::OptionId::ALL`].
     pub row: usize,
+    /// Reset to defaults was chosen and waits for its answer: the footer
+    /// asks in place of its links.
+    pub resetting: bool,
 }
 
 /// Asks whether to trust an SSH host seen for the first time.

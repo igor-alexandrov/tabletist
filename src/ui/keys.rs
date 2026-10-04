@@ -53,6 +53,7 @@ pub const SHORTCUTS: &[(&str, &str)] = &[
         "j/k, h/l, Ctrl+H/L, [ ], i, Esc, /, y, s, d, gd, za, t, 1…9",
         "Omarchy: vim keys (shown in the status line)",
     ),
+    ("Mod+,", "Settings"),
     ("?", "Shortcuts"),
 ];
 
@@ -355,10 +356,8 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
             ctx.copy_text(text);
         }
     }
-    // The Settings window, wherever the keyboard is. Until the other looks
-    // have their window, only the terminal look opens one.
-    if app.look.terminal && ctx.input_mut(|input| input.consume_key(Modifiers::COMMAND, Key::Comma))
-    {
+    // The Settings window, wherever the keyboard is.
+    if ctx.input_mut(|input| input.consume_key(Modifiers::COMMAND, Key::Comma)) {
         actions.push(Action::ShowSettings);
     }
     if !editing && app.dialog.is_none() {
@@ -790,6 +789,11 @@ mod tests {
                 .iter()
                 .any(|(keys, what)| keys.contains("Mod+S") && what.contains("connection dialog"))
         );
+    }
+
+    #[test]
+    fn the_shortcut_table_lists_the_settings_key() {
+        assert!(SHORTCUTS.contains(&("Mod+,", "Settings")));
     }
 
     #[test]

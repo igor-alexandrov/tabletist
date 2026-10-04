@@ -8,7 +8,7 @@ use tabletist_db::{
     Driver, Error, FilterOp, HostKeys, ObjectKind, ObjectRef, Secrets, Sort, SortDir, SshStage,
 };
 
-use crate::backend::{CancelReason, Command, Event, RequestId, StateFile};
+use crate::backend::{CancelReason, Command, Event, Opened, RequestId, StateFile};
 use crate::completion::Need;
 use crate::connections::{PasswordMode, SavedConnection};
 use crate::i18n::Locale;
@@ -709,7 +709,7 @@ impl App {
                     Some((name, bytes.to_vec()))
                 });
                 if let Some((name, bytes)) = found {
-                    self.backend.save_bytes(name, bytes);
+                    self.backend.save_bytes("Save value", name, bytes);
                 }
             }
             Action::GridKeys(tab) => {
@@ -959,6 +959,44 @@ impl App {
                     path: self.dirs.settings_file(),
                     text,
                 });
+            }
+            // As for the editor: the backend writes the text when no file is
+            // there, and that write is the app's own, to be known when it
+            // comes back.
+            Action::RevealSettingsFile => {
+                let text = self.offer_settings_text();
+                self.backend.send(Command::RevealSettingsFile {
+                    path: self.dirs.settings_file(),
+                    text,
+                });
+            }
+            // The app's own text, whatever the file holds: a line the app
+            // ignores is not a setting to hand on.
+            Action::ExportSettings => self.backend.save_bytes(
+                "Export settings",
+                "tabletist-settings.toml".to_owned(),
+                self.settings.to_toml().into_bytes(),
+            ),
+            Action::ResetSettings => {
+                if let Some(Dialog::Settings(dialog)) = &mut self.dialog {
+                    dialog.resetting = true;
+                }
+            }
+            Action::ConfirmResetSettings(reset) => {
+                // An answer to a question that was asked.
+                let asked = match &mut self.dialog {
+                    Some(Dialog::Settings(dialog)) => std::mem::take(&mut dialog.resetting),
+                    _ => false,
+                };
+                if asked && reset {
+                    // The options the window shows. A key it has no control
+                    // for is not the window's to change.
+                    self.change_settings(|settings| {
+                        for option in crate::settings::OptionId::ALL {
+                            option.default_value().set(settings);
+                        }
+                    });
+                }
             }
             Action::OpenQuickOpen => {
                 let tab = self.active_tab_id();
@@ -2140,12 +2178,18 @@ impl App {
                 };
                 self.apply_settings(settings);
             }
-            Event::SettingsFileOpened { result } => {
+            Event::SettingsFileOpened { with, result } => {
                 if let Err(error) = result {
-                    self.notice = Some(format!(
-                        "Could not open {} in the editor: {error}.",
-                        self.dirs.settings_file().display()
-                    ));
+                    let path = self.dirs.settings_file();
+                    self.notice = Some(match with {
+                        Opened::Editor => {
+                            format!("Could not open {} in the editor: {error}.", path.display())
+                        }
+                        Opened::Folder => format!(
+                            "Could not show {} in the file manager: {error}.",
+                            path.display()
+                        ),
+                    });
                 }
             }
             Event::Databases {
@@ -4514,15 +4558,106 @@ mod tests {
     }
 
     #[test]
+    fn reveal_sends_the_path_and_the_text_the_app_holds() {
+        let (mut app, _dir) = app();
+        app.apply(Action::RevealSettingsFile);
+        match crate::testing::last_sent(&app) {
+            Command::RevealSettingsFile { path, text } => {
+                assert_eq!(path, &app.dirs.settings_file());
+                assert_eq!(text, &app.settings_file.text);
+            }
+            other => panic!("{other:?}"),
+        }
+        // Written by the backend if the file is gone: the app's own write.
+        assert!(app.settings_file.offered.contains(&app.settings_file.text));
+    }
+
+    #[test]
+    fn export_offers_the_canonical_text_under_the_settings_name() {
+        let (mut app, _dir) = app();
+        // A file as someone wrote it: not the text the app would write.
+        app.apply(from_disk("[data]\npage_size = 500\n", false));
+        assert_eq!(app.settings.page_size, 500);
+        let text = app.settings.to_toml();
+        assert_ne!(app.settings_file.text.len(), text.len());
+        app.apply(Action::ExportSettings);
+        assert_eq!(
+            app.backend.saves.last(),
+            Some(&(
+                "Export settings".to_owned(),
+                "tabletist-settings.toml".to_owned(),
+                text.len()
+            ))
+        );
+    }
+
+    #[test]
+    fn reset_asks_first_and_then_resets_only_the_four_options() {
+        let (mut app, _dir) = app();
+        app.apply(Action::ShowSettings);
+        // An option of the window, and a key it does not show.
+        app.change_settings(|settings| {
+            settings.page_size = 500;
+            settings.group_digits = true;
+            settings.show_system_schemas = true;
+            settings.sql_limit = 50;
+        });
+        let resetting = |app: &App| match &app.dialog {
+            Some(Dialog::Settings(dialog)) => dialog.resetting,
+            _ => panic!("the window is not open"),
+        };
+        app.apply(Action::ResetSettings);
+        assert!(resetting(&app));
+        assert_eq!(app.settings.page_size, 500, "nothing is reset yet");
+        // Cancel leaves everything.
+        app.apply(Action::ConfirmResetSettings(false));
+        assert!(!resetting(&app));
+        assert_eq!(app.settings.page_size, 500);
+        // Reset puts the four back and leaves the others.
+        app.apply(Action::ResetSettings);
+        app.apply(Action::ConfirmResetSettings(true));
+        assert!(!resetting(&app));
+        let defaults = Settings::default();
+        assert_eq!(app.settings.page_size, defaults.page_size);
+        assert_eq!(app.settings.group_digits, defaults.group_digits);
+        assert!(app.settings.show_system_schemas);
+        assert_eq!(app.settings.sql_limit, 50);
+        assert_eq!(app.settings_file.text, app.settings.to_toml());
+    }
+
+    #[test]
+    fn a_reset_nobody_asked_for_resets_nothing() {
+        let (mut app, _dir) = app();
+        app.apply(Action::ShowSettings);
+        app.change_settings(|settings| settings.page_size = 500);
+        app.apply(Action::ConfirmResetSettings(true));
+        assert_eq!(app.settings.page_size, 500);
+    }
+
+    #[test]
+    fn a_reveal_that_fails_is_told_in_the_notice() {
+        let (mut app, _dir) = app();
+        app.apply(Action::Backend(Event::SettingsFileOpened {
+            with: crate::backend::Opened::Folder,
+            result: Err("no file manager".into()),
+        }));
+        let notice = app.notice.expect("a notice");
+        assert!(notice.contains("Could not show"), "{notice}");
+        assert!(notice.contains("no file manager"), "{notice}");
+    }
+
+    #[test]
     fn an_editor_that_did_not_start_shows_a_notice() {
         let (mut app, _dir) = app();
         app.apply(Action::Backend(Event::SettingsFileOpened {
+            with: crate::backend::Opened::Editor,
             result: Err("no editor".into()),
         }));
         let notice = app.notice.clone().expect("a notice");
         assert!(notice.contains("no editor"), "{notice}");
         app.notice = None;
         app.apply(Action::Backend(Event::SettingsFileOpened {
+            with: crate::backend::Opened::Editor,
             result: Ok(()),
         }));
         assert!(app.notice.is_none());
