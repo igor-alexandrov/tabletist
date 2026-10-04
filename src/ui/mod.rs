@@ -1229,6 +1229,136 @@ mod tests {
     }
 
     #[test]
+    fn a_screen_reader_hears_which_value_of_an_option_is_set() {
+        use egui::accesskit::{Role, Toggled};
+        let mut harness = settings_screen();
+        let state = |harness: &mut Harness, name: &str| {
+            let tree = harness.settle();
+            let id = crate::testing::node(&tree, name, Role::RadioButton)
+                .unwrap_or_else(|| panic!("{name} is no radio button"));
+            let (_, node) = tree.nodes.iter().find(|(node, _)| *node == id).unwrap();
+            node.toggled()
+        };
+        let second = "Timestamps: second";
+        let full = "Timestamps: full";
+        assert_eq!(state(&mut harness, second), Some(Toggled::True));
+        assert_eq!(state(&mut harness, full), Some(Toggled::False));
+        harness.press(egui::Key::J, egui::Modifiers::NONE);
+        harness.press(egui::Key::L, egui::Modifiers::NONE);
+        assert_eq!(state(&mut harness, second), Some(Toggled::False));
+        assert_eq!(state(&mut harness, full), Some(Toggled::True));
+        // The check is one mark for two values: each says whether it is set.
+        assert_eq!(state(&mut harness, "Value tags: on"), Some(Toggled::True));
+        assert_eq!(state(&mut harness, "Value tags: off"), Some(Toggled::False));
+        // The page size is a number between two steps: its row says it.
+        let tree = harness.settle();
+        let row = crate::testing::node(&tree, "Rows per page", Role::Button).expect("the row");
+        let (_, row) = tree.nodes.iter().find(|(node, _)| *node == row).unwrap();
+        assert_eq!(row.value(), Some("300"));
+    }
+
+    /// Tabs until the control named `name` has the keyboard.
+    fn tab_to_settings(harness: &mut Harness, name: &str) {
+        for _ in 0..40 {
+            harness.press(egui::Key::Tab, egui::Modifiers::NONE);
+            if focused_name(&harness.settle()) == name {
+                return;
+            }
+        }
+        panic!("{name} is no Tab stop of the Settings screen");
+    }
+
+    #[test]
+    fn a_focused_button_of_the_settings_screen_keeps_space_and_the_arrows() {
+        let mut harness = settings_screen();
+        // The cursor on an option Space flips.
+        for _ in 0..3 {
+            harness.press(egui::Key::J, egui::Modifiers::NONE);
+        }
+        tab_to_settings(&mut harness, "Numbers");
+        // Space presses the button, which is another row's: the cursor
+        // goes there, and the option it was on is as it was.
+        harness.press(egui::Key::Space, egui::Modifiers::NONE);
+        assert_eq!(settings_cursor(&harness), 2);
+        assert!(harness.app.settings.value_tags);
+        // An arrow moves the keyboard from the button, and nothing else.
+        // Where it takes the keyboard is egui's to say: each arrow starts
+        // from a button again.
+        harness.press(egui::Key::ArrowLeft, egui::Modifiers::NONE);
+        assert!(!harness.app.settings.group_digits);
+        assert_eq!(settings_saves(&harness), 0);
+        tab_to_settings(&mut harness, "Numbers");
+        harness.press(egui::Key::ArrowUp, egui::Modifiers::NONE);
+        assert_eq!(settings_cursor(&harness), 2);
+        // The letters are the screen's wherever the keyboard is.
+        tab_to_settings(&mut harness, "Close");
+        harness.press(egui::Key::K, egui::Modifiers::NONE);
+        assert_eq!(settings_cursor(&harness), 1);
+        harness.press(egui::Key::L, egui::Modifiers::NONE);
+        assert_eq!(
+            harness.app.settings.timestamps,
+            crate::settings::Timestamps::Full
+        );
+        // And so is Escape.
+        assert!(harness.ctx.memory(|memory| memory.focused().is_some()));
+        harness.press(egui::Key::Escape, egui::Modifiers::NONE);
+        assert!(harness.app.dialog.is_none());
+    }
+
+    #[test]
+    fn space_on_the_settings_close_button_presses_it_and_flips_nothing() {
+        let mut harness = settings_screen();
+        for _ in 0..3 {
+            harness.press(egui::Key::J, egui::Modifiers::NONE);
+        }
+        tab_to_settings(&mut harness, "Close");
+        harness.press(egui::Key::Space, egui::Modifiers::NONE);
+        assert!(harness.app.settings.value_tags);
+        assert_eq!(settings_saves(&harness), 0);
+        assert!(harness.app.dialog.is_none());
+    }
+
+    #[test]
+    fn escape_closes_the_settings_screen_wherever_its_cursor_is() {
+        let mut harness = settings_screen();
+        // No key or click puts the cursor past the last row. If something
+        // ever does, the screen must not be one that cannot be closed.
+        if let Some(crate::model::Dialog::Settings(dialog)) = &mut harness.app.dialog {
+            dialog.row = crate::settings::OptionId::ALL.len();
+        }
+        harness.press(egui::Key::Escape, egui::Modifiers::NONE);
+        assert!(harness.app.dialog.is_none());
+    }
+
+    #[test]
+    fn tab_stops_at_the_page_size_steps_only_where_they_are_drawn() {
+        let stops = |harness: &mut Harness| {
+            let mut names = std::collections::HashSet::new();
+            for _ in 0..40 {
+                harness.press(egui::Key::Tab, egui::Modifiers::NONE);
+                names.insert(focused_name(&harness.settle()));
+            }
+            names
+        };
+        let steps = ["Rows per page: fewer", "Rows per page: more"];
+        // On the cursor's row each step is its chevron.
+        let mut harness = settings_screen();
+        let reached = stops(&mut harness);
+        for step in steps {
+            assert!(reached.contains(step), "{step}: {reached:?}");
+        }
+        // On another row no chevron is drawn: Tab passes the steps by, and
+        // a screen reader still has them.
+        harness.press(egui::Key::J, egui::Modifiers::NONE);
+        let reached = stops(&mut harness);
+        assert!(reached.contains("Rows per page"), "{reached:?}");
+        for step in steps {
+            assert!(!reached.contains(step), "{step}: {reached:?}");
+            assert!(harness.has(step), "{step}");
+        }
+    }
+
+    #[test]
     fn the_timestamp_hint_gives_way_to_the_filter_chips() {
         use egui::accesskit::Role;
         for look in [crate::theme::Look::standard(), crate::theme::Look::macos()] {

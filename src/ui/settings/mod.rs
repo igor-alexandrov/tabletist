@@ -46,14 +46,17 @@ pub(super) fn choices(option: OptionId, settings: &Settings) -> Vec<(&'static st
     }
 }
 
-/// The screen's keys, taken before it draws so that nothing under it and
-/// no focused button in it reads them first.
+/// The screen's keys. Nothing under the screen has them first: the app
+/// runs none of the workspace's shortcuts while a dialog is open, and egui
+/// takes the keyboard from what is under a modal. A button of the screen
+/// that has the keyboard keeps Space, which presses it, and the arrows,
+/// which move focus from it, as in the workspace. The letters, `R`,
+/// `ctrl+e` and Escape are the screen's wherever the keyboard is.
 fn keys(app: &App, ctx: &egui::Context, row: usize, actions: &mut Vec<Action>) {
     use egui::{Key, Modifiers};
-    let Some(option) = OptionId::ALL.get(row).copied() else {
-        return;
-    };
+    let option = OptionId::ALL.get(row).copied();
     let settings = &app.settings;
+    let free = !super::focus::on_control(ctx);
     ctx.input_mut(|input| {
         // A fresh press only: every repeat of a key held down would start
         // another editor.
@@ -61,29 +64,36 @@ fn keys(app: &App, ctx: &egui::Context, row: usize, actions: &mut Vec<Action>) {
             actions.push(Action::EditSettingsFile);
         }
         let mut pressed = |modifiers, key| input.consume_key(modifiers, key);
+        if pressed(Modifiers::NONE, Key::Escape) {
+            actions.push(Action::CloseDialog);
+        }
+        if pressed(Modifiers::NONE, Key::J) || (free && pressed(Modifiers::NONE, Key::ArrowDown)) {
+            actions.push(Action::MoveSettingsRow(1));
+        }
+        if pressed(Modifiers::NONE, Key::K) || (free && pressed(Modifiers::NONE, Key::ArrowUp)) {
+            actions.push(Action::MoveSettingsRow(-1));
+        }
+        // The keys below change the cursor's option. A cursor on no row
+        // has none, and the keys above still close the screen or move it
+        // back onto one.
+        let Some(option) = option else {
+            return;
+        };
         // Shift first: egui ignores an extra Shift when it matches a key.
         if pressed(Modifiers::SHIFT, Key::R) {
             actions.push(Action::SetOption(option.default_value()));
         }
-        if pressed(Modifiers::NONE, Key::J) || pressed(Modifiers::NONE, Key::ArrowDown) {
-            actions.push(Action::MoveSettingsRow(1));
-        }
-        if pressed(Modifiers::NONE, Key::K) || pressed(Modifiers::NONE, Key::ArrowUp) {
-            actions.push(Action::MoveSettingsRow(-1));
-        }
-        if pressed(Modifiers::NONE, Key::L) || pressed(Modifiers::NONE, Key::ArrowRight) {
+        if pressed(Modifiers::NONE, Key::L) || (free && pressed(Modifiers::NONE, Key::ArrowRight)) {
             actions.push(Action::SetOption(settings.stepped(option, true)));
         }
-        if pressed(Modifiers::NONE, Key::H) || pressed(Modifiers::NONE, Key::ArrowLeft) {
+        if pressed(Modifiers::NONE, Key::H) || (free && pressed(Modifiers::NONE, Key::ArrowLeft)) {
             actions.push(Action::SetOption(settings.stepped(option, false)));
         }
-        if pressed(Modifiers::NONE, Key::Space)
+        if free
+            && pressed(Modifiers::NONE, Key::Space)
             && let Some(value) = settings.flipped(option)
         {
             actions.push(Action::SetOption(value));
-        }
-        if pressed(Modifiers::NONE, Key::Escape) {
-            actions.push(Action::CloseDialog);
         }
     });
 }

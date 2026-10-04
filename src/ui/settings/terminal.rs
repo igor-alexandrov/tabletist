@@ -4,7 +4,7 @@
 //! where the window has the room, and the screen's keys in the footer.
 
 use egui::emath::GuiRounding as _;
-use egui::{CornerRadius, Rect, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
+use egui::{CornerRadius, Rect, Sense, Stroke, StrokeKind, Ui, WidgetInfo, WidgetType, pos2, vec2};
 
 use crate::app::App;
 use crate::i18n::{Locale, gettext};
@@ -360,6 +360,14 @@ fn option_row(
     // value is the value's.
     let name = gettext(locale, label(option));
     let button = ButtonSpec::new(&name).hidden_at(ui, row);
+    // The page size has no button that is its value: its row says it.
+    if option == OptionId::PageSize {
+        button.widget_info(|| {
+            let mut info = WidgetInfo::labeled(WidgetType::Button, true, &name);
+            info.current_text_value = Some(settings.page_size.to_string());
+            info
+        });
+    }
     // A row of a list: a ring outside it would be cut where the list ends.
     focus::hint(ui, &button, row, Ring::Inset { radius: 0 });
     if button.clicked() {
@@ -405,6 +413,17 @@ fn option_row(
     }
 }
 
+/// What a choice's button is to the keyboard and to a screen reader.
+#[derive(Clone, Copy)]
+enum Press {
+    /// One of the option's values, the one it is set to or not: a radio
+    /// button.
+    Value { set: bool },
+    /// A step from the value it has: a plain button. Tab passes one that
+    /// is not drawn.
+    Step { drawn: bool },
+}
+
 /// The button over a choice as it is drawn, named by its option and its
 /// own word: a click there moves the cursor to its row and sets it.
 fn choice(
@@ -412,6 +431,7 @@ fn choice(
     place: Rect,
     index: usize,
     (word, value): (&'static str, OptionValue),
+    press: Press,
     skin: &Skin,
     actions: &mut Vec<Action>,
 ) {
@@ -420,7 +440,15 @@ fn choice(
         gettext(skin.locale, label(value.option())),
         gettext(skin.locale, word)
     );
-    if ButtonSpec::new(&name).hidden_at(ui, place).clicked() {
+    let button = ButtonSpec::new(&name);
+    let button = match press {
+        Press::Step { drawn: false } => button.hidden_off_tab(ui, place),
+        Press::Step { drawn: true } | Press::Value { .. } => button.hidden_at(ui, place),
+    };
+    if let Press::Value { set } = press {
+        button.widget_info(|| WidgetInfo::selected(WidgetType::RadioButton, true, set, &name));
+    }
+    if button.clicked() {
         actions.push(Action::SelectSettingsRow(index));
         actions.push(Action::SetOption(value));
     }
@@ -458,7 +486,8 @@ fn page_size(ui: &mut Ui, cell: Cell, settings: &Settings, skin: &Skin, actions:
     // The chevrons' buttons are on every row. On the cursor's row each is
     // over its chevron, with half the space beside it. On the others, where
     // no chevron is drawn, each keeps a point at the column's corner: a
-    // click on the number there only moves the cursor.
+    // click on the number there only moves the cursor, and Tab does not
+    // stop on a point.
     let places = if cell.on_cursor {
         let width = |text: &str| role.width(ui.ctx(), look.faces, text);
         let lead = width("‹ ");
@@ -476,8 +505,11 @@ fn page_size(ui: &mut Ui, cell: Cell, settings: &Settings, skin: &Skin, actions:
             Rect::from_min_size(pos2(cell.left + along, cell.row.top()), vec2(1.0, 1.0))
         })
     };
+    let press = Press::Step {
+        drawn: cell.on_cursor,
+    };
     for (place, step) in places.into_iter().zip([fewer, more]) {
-        choice(ui, place, cell.index, step, skin, actions);
+        choice(ui, place, cell.index, step, press, skin, actions);
     }
 }
 
@@ -522,7 +554,10 @@ fn segments(
         };
         let text = Text::one(look, role, &text, color);
         widgets::paint_text(ui, place.left() + SEGMENT_PAD, place.center().y, text);
-        choice(ui, place, cell.index, (word, value), skin, actions);
+        let press = Press::Value {
+            set: value == current,
+        };
+        choice(ui, place, cell.index, (word, value), press, skin, actions);
     }
 }
 
@@ -545,8 +580,11 @@ fn check(ui: &mut Ui, cell: Cell, settings: &Settings, skin: &Skin, actions: &mu
     // value it is not set to is the button on top.
     let mut values = choices(OptionId::ValueTags, settings);
     values.sort_by_key(|(_, value)| *value != current);
-    for value in values {
-        choice(ui, place, cell.index, value, skin, actions);
+    for (word, value) in values {
+        let press = Press::Value {
+            set: value == current,
+        };
+        choice(ui, place, cell.index, (word, value), press, skin, actions);
     }
 }
 
