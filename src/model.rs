@@ -1164,8 +1164,9 @@ pub struct WritePrompt {
     /// What the Omarchy box's field holds: `write` confirms.
     pub typed: String,
     pub focus: bool,
+    /// What the statements are of: a save is sent only while the tab's
+    /// pending set still makes this one.
     pub(crate) changeset: tabletist_db::ChangeSet,
-    pub(crate) places: Vec<usize>,
     pub(crate) then: Option<Held>,
 }
 
@@ -1622,7 +1623,6 @@ pub struct CellPos {
 }
 
 /// Where an editor starts.
-#[derive(Debug)]
 pub enum EditStart {
     /// From the cell's value, or its pending one, the cursor at the end.
     Value,
@@ -1654,6 +1654,9 @@ pub enum SaveBlock {
     Disconnected,
     /// The session came back read-only.
     ReadOnly,
+    /// No change set can be built from what is pending: the table's key or
+    /// one of the columns is not what the cells were changed under.
+    Unsendable,
 }
 
 /// One open table or view.
@@ -1873,9 +1876,11 @@ impl Tab {
         }
     }
 
-    /// A preview tab is replaced by the next single click. SQL tabs never are.
+    /// A preview tab is replaced by the next single click. SQL tabs never
+    /// are, nor is a table that holds edits, whatever its pin says: a
+    /// replaced tab asks nothing.
     pub fn is_preview(&self) -> bool {
-        matches!(self, Self::Object(object) if !object.pinned)
+        matches!(self, Self::Object(object) if !object.pinned && !object.edits.holds())
     }
 }
 
@@ -2666,6 +2671,18 @@ impl std::fmt::Debug for ConnectionForm {
             .field("password_mode", &self.password_mode)
             .field("password", &"..")
             .finish_non_exhaustive()
+    }
+}
+
+// Which it is, without the text: what a user typed stays out of logs and
+// panics, and an action is printed with its fields.
+impl std::fmt::Debug for EditStart {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Value => "Value",
+            Self::Replace(_) => "Replace(..)",
+            Self::Typed(_) => "Typed(..)",
+        })
     }
 }
 

@@ -14,15 +14,17 @@ use crate::connections::{PasswordMode, SavedConnection};
 use crate::i18n::Locale;
 use crate::model::{Action, ConnTab, ConnTabContent, ConnTabId, PickerState};
 use crate::model::{
-    Advance, CellPos, Completion, ConnectionForm, Dialog, EditStart, Fetch, FilterBar, FilterRow,
-    Held, HostKeyPrompt, LeavePrompt, ObjectTab, ObjectView, Pane, PasswordPrompt, PickTarget,
-    QuickOpen, ResultPane, SaveBlock, SecretKind, SessionStatus, SqlTab, Tab, TabId, TestState,
-    TextPrint, Tree, TreeKey, TreeNode, Wanted, Workspace, WritePrompt,
+    Advance, CellPos, Completion, ConnectionForm, Dialog, Fetch, FilterBar, FilterRow, Held,
+    HostKeyPrompt, LeavePrompt, ObjectTab, ObjectView, Pane, PasswordPrompt, PickTarget, QuickOpen,
+    ResultPane, SecretKind, SessionStatus, SqlTab, Tab, TabId, TestState, TextPrint, Tree, TreeKey,
+    TreeNode, Wanted, Workspace,
 };
 use crate::paths::AppDirs;
 use crate::secrets::{SecretString, password_account, ssh_account};
 use crate::settings::{Loaded, Settings, SettingsFile, Source};
 use crate::theme::{self, Catalog, Palette};
+
+mod editing;
 
 /// What a keyring read is for; each names the exact request it serves, so
 /// a late answer for an earlier attempt is dropped.
@@ -320,6 +322,15 @@ impl App {
     }
 
     pub fn apply(&mut self, action: Action) {
+        // What a prompt asks about must not change under it. The keys still
+        // run while a dialog is open, and a click can be a frame behind it.
+        if matches!(
+            self.dialog,
+            Some(Dialog::Leave(_) | Dialog::ConfirmWrite(_))
+        ) && editing::dropped_under_a_prompt(&action)
+        {
+            return;
+        }
         // An action that would drop a page with pending changes waits for
         // the user's answer (see `Dialog::Leave`).
         let dropped = self.dropped_by(&action);
@@ -860,25 +871,7 @@ impl App {
                     self.write_edits(*tab, *id, Some(held));
                 }
             }
-            Action::ConfirmWrite => {
-                if !matches!(self.dialog, Some(Dialog::ConfirmWrite(_))) {
-                    return;
-                }
-                let Some(Dialog::ConfirmWrite(prompt)) = self.dialog.take() else {
-                    return;
-                };
-                let prompt = *prompt;
-                // Still to be saved? The prompt was up for a while.
-                if self.save_blocked(prompt.tab, prompt.id).is_none() {
-                    self.send_write(
-                        prompt.tab,
-                        prompt.id,
-                        prompt.changeset,
-                        prompt.places,
-                        prompt.then,
-                    );
-                }
-            }
+            Action::ConfirmWrite => self.confirm_write(),
             Action::CancelWrite => {
                 if matches!(self.dialog, Some(Dialog::ConfirmWrite(_))) {
                     self.dialog = None;
@@ -2348,97 +2341,7 @@ impl App {
                 session,
                 request,
                 result,
-            } => {
-                // An answer for a closed tab, or for a save a reconnect gave
-                // up, finds no tab saving.
-                let Some(tab) = self.tab_for_session(session) else {
-                    return;
-                };
-                let Some(workspace) = self.workspace_mut(tab) else {
-                    return;
-                };
-                let Some(object) = workspace.object_tabs_mut().find(|object| {
-                    object
-                        .edits
-                        .saving
-                        .as_ref()
-                        .is_some_and(|saving| saving.request == request)
-                }) else {
-                    return;
-                };
-                let id = object.id;
-                let Some(mut saving) = object.edits.saving.take() else {
-                    return;
-                };
-                // What was held for this save goes on only when everything
-                // was written: every other outcome drops it.
-                let then = saving.then.take();
-                // The page's row of the set's row `index`.
-                let place = |index: usize| saving.rows.get(index).copied().unwrap_or(0);
-                match result {
-                    Ok(tabletist_db::WriteOutcome::Written { rows, elapsed }) => {
-                        let counts = object.edits.counts();
-                        let cells = object
-                            .edits
-                            .cells
-                            .keys()
-                            .map(|&(row, col)| CellPos { row, col })
-                            .collect();
-                        object.edits = crate::edit::Edits::default();
-                        object.fields = None;
-                        let fits = object.rows.value.as_ref().is_some_and(|page| {
-                            rows.len() == saving.rows.len()
-                                && rows.iter().all(|row| row.len() == page.columns.len())
-                                && saving.rows.iter().all(|&at| at < page.rows.len())
-                        });
-                        if fits {
-                            if let Some(page) = object.rows.value.as_mut() {
-                                for (row, &at) in rows.into_iter().zip(&saving.rows) {
-                                    page.rows[at] = row;
-                                }
-                            }
-                            object.edits.saved = Some(crate::edit::Saved {
-                                at: std::time::Instant::now(),
-                                cells,
-                                changes: counts.changes,
-                                rows: counts.rows,
-                                elapsed,
-                            });
-                            if let Some(held) = then {
-                                self.perform(held);
-                            }
-                        } else {
-                            // The table is not the one the page was read
-                            // from: read it again.
-                            self.fetch_rows(tab, id);
-                        }
-                    }
-                    Ok(tabletist_db::WriteOutcome::Conflicts(conflicts)) => {
-                        object.edits.note =
-                            conflicts.first().map(|first| crate::edit::Note::Conflict {
-                                row: place(first.row),
-                                gone: first.server.is_none(),
-                                others: conflicts.len() - 1,
-                            });
-                    }
-                    Ok(tabletist_db::WriteOutcome::Failed { row, error }) => {
-                        let at = place(row);
-                        for (_, cell) in object.edits.cells.range_mut((at, 0)..=(at, usize::MAX)) {
-                            cell.state = crate::edit::State::Failed(error.clone());
-                        }
-                        object.edits.note = Some(crate::edit::Note::Failed { row: at, error });
-                    }
-                    Err(error) => {
-                        object.edits.note = Some(if error.is_connection_lost() {
-                            crate::edit::Note::Lost
-                        } else if error == Error::Cancelled {
-                            crate::edit::Note::Cancelled
-                        } else {
-                            crate::edit::Note::Refused(error)
-                        });
-                    }
-                }
-            }
+            } => self.written(session, request, result),
             Event::SqlRan {
                 session,
                 request,
@@ -2927,430 +2830,6 @@ impl App {
 
     fn sql_tab_mut(&mut self, tab: ConnTabId, id: TabId) -> Option<&mut SqlTab> {
         self.workspace_mut(tab)?.sql_tab_mut(id)
-    }
-
-    /// What editing may know of a table tab: `None` while it has no page.
-    fn table<T>(
-        &self,
-        tab: ConnTabId,
-        id: TabId,
-        read: impl FnOnce(&crate::edit::Table<'_>, &ObjectTab) -> T,
-    ) -> Option<T> {
-        let workspace = self.workspace(tab)?;
-        let object = workspace.object_tab(id)?;
-        let table = crate::edit::Table {
-            access: workspace.access,
-            kind: object.kind,
-            dialect: workspace.driver.dialect(),
-            structure: object.structure.value.as_ref(),
-            page: object.page()?,
-            refreshing: object.rows.is_loading(),
-            saving: object.edits.saving.is_some(),
-        };
-        Some(read(&table, object))
-    }
-
-    /// The tabs holding edits whose page or whose tab `action` would drop.
-    fn dropped_by(&self, action: &Action) -> Vec<(ConnTabId, TabId)> {
-        let object = |tab: ConnTabId, id: TabId| {
-            self.workspace(tab)
-                .and_then(|workspace| workspace.object_tab(id))
-        };
-        let one = |tab: ConnTabId, id: TabId| {
-            if object(tab, id).is_some_and(|object| object.edits.holds()) {
-                vec![(tab, id)]
-            } else {
-                Vec::new()
-            }
-        };
-        let all = |tab: ConnTabId| {
-            self.workspace(tab)
-                .map(|workspace| {
-                    workspace
-                        .object_tabs()
-                        .filter(|object| object.edits.holds())
-                        .map(|object| (tab, object.id))
-                        .collect()
-                })
-                .unwrap_or_default()
-        };
-        match action {
-            // The arm's own condition: an action that would do nothing is
-            // not worth a question whose Discard throws the set away.
-            Action::NextPage { tab, object_tab }
-                if !object(*tab, *object_tab)
-                    .and_then(|object| object.page())
-                    .is_some_and(|page| page.has_more) =>
-            {
-                Vec::new()
-            }
-            Action::PrevPage { tab, object_tab }
-                if object(*tab, *object_tab).is_none_or(|object| object.query.offset == 0) =>
-            {
-                Vec::new()
-            }
-            Action::ClearSort { tab, object_tab }
-                if object(*tab, *object_tab).is_none_or(|object| object.query.sort.is_empty()) =>
-            {
-                Vec::new()
-            }
-            Action::Connect { conn, .. } if self.connections.get(conn).is_none() => Vec::new(),
-            Action::NextPage { tab, object_tab }
-            | Action::PrevPage { tab, object_tab }
-            | Action::SortBy {
-                tab, object_tab, ..
-            }
-            | Action::ClearSort { tab, object_tab }
-            | Action::ApplyFilters { tab, object_tab }
-            | Action::ClearFilters { tab, object_tab }
-            | Action::DropFilter {
-                tab, object_tab, ..
-            }
-            | Action::RetryRows { tab, object_tab } => one(*tab, *object_tab),
-            Action::CloseTab { tab, id } => one(*tab, *id),
-            // The active tab's page, as the arm fetches it. Nothing while
-            // a SQL editor shows: the arm does nothing there.
-            Action::Refresh(tab) => self
-                .workspace(*tab)
-                .and_then(|workspace| workspace.active_object_tab())
-                .map(|object| one(*tab, object.id))
-                .unwrap_or_default(),
-            Action::CloseConnTab(tab)
-            | Action::Disconnect(tab)
-            | Action::SwitchDatabase { tab, .. }
-            | Action::Connect { tab, .. } => all(*tab),
-            _ => Vec::new(),
-        }
-    }
-
-    /// Keeps `held` and asks. While one of the tabs is saving the action is
-    /// ignored (the actions the guard covers are disabled until a save
-    /// ends), and a dialog the user is in is never replaced.
-    fn hold(&mut self, held: Held, tabs: Vec<(ConnTabId, TabId)>) {
-        let edits = |&(tab, id): &(ConnTabId, TabId)| {
-            self.workspace(tab)
-                .and_then(|workspace| workspace.object_tab(id))
-                .map(|object| &object.edits)
-        };
-        if tabs
-            .iter()
-            .any(|at| edits(at).is_some_and(|edits| edits.saving.is_some()))
-        {
-            return;
-        }
-        if self.dialog.is_some() {
-            self.notice = Some("Save or discard the pending changes first.".into());
-            return;
-        }
-        // An open editor with nothing pending yet still counts as one.
-        let changes = tabs
-            .iter()
-            .filter_map(edits)
-            .map(|edits| edits.counts().changes.max(1))
-            .sum();
-        let can_save = match tabs.as_slice() {
-            [(tab, id)] => self.save_blocked(*tab, *id).is_none(),
-            _ => false,
-        };
-        self.dialog = Some(Dialog::Leave(Box::new(LeavePrompt {
-            held,
-            tabs,
-            can_save,
-            changes,
-        })));
-    }
-
-    /// Does what was held, now that nothing is in its way. It passes the
-    /// guard again like any action.
-    fn perform(&mut self, held: Held) {
-        match held {
-            Held::Action(action) => self.apply(*action),
-        }
-    }
-
-    /// Why the tab's pending changes cannot be saved now, if they cannot.
-    /// The view shows it on the disabled Save.
-    pub fn save_blocked(&self, tab: ConnTabId, id: TabId) -> Option<SaveBlock> {
-        let workspace = self.workspace(tab)?;
-        let object = workspace.object_tab(id)?;
-        if object.edits.saving.is_some() {
-            return Some(SaveBlock::Saving);
-        }
-        if object.edits.counts().to_fix > 0 {
-            return Some(SaveBlock::ToFix);
-        }
-        if !matches!(workspace.status, SessionStatus::Connected) {
-            return Some(SaveBlock::Disconnected);
-        }
-        if workspace.access == tabletist_db::Access::ReadOnly {
-            return Some(SaveBlock::ReadOnly);
-        }
-        None
-    }
-
-    /// Saves the tab's pending changes, and does `then` once everything
-    /// is written. A save that is not sent, or that writes nothing, drops
-    /// `then`.
-    fn write_edits(&mut self, tab: ConnTabId, id: TabId, then: Option<Held>) {
-        // The text being typed is part of what is saved.
-        self.close_editor(tab, id, true);
-        // Only an editor that was opened and left as it was: there is
-        // nothing to save, and what was held goes on. Only then: no change
-        // set is built either while cells are pending on a table whose key
-        // is gone, and going on there would drop them.
-        let nothing = self
-            .workspace(tab)
-            .and_then(|workspace| workspace.object_tab(id))
-            .is_some_and(|object| object.edits.cells.is_empty());
-        if nothing {
-            if let Some(held) = then {
-                self.perform(held);
-            }
-            return;
-        }
-        if self.save_blocked(tab, id).is_some() {
-            return;
-        }
-        let built = self
-            .table(tab, id, |table, object| {
-                crate::edit::change_set(&object.object, table, &object.edits.cells)
-            })
-            .flatten();
-        let Some((changes, rows)) = built else {
-            return;
-        };
-        let confirm = self
-            .workspace(tab)
-            .is_some_and(|workspace| workspace.environment.confirms_writes());
-        if confirm {
-            // A dialog the user is in is not replaced: the save waits.
-            if self.dialog.is_some() {
-                return;
-            }
-            let dialect = self
-                .workspace(tab)
-                .map(|workspace| workspace.driver.dialect());
-            // A row whose statement cannot be built shows an empty line,
-            // and the save fails on it with the builder's reason.
-            let statements = changes
-                .rows
-                .iter()
-                .map(|row| {
-                    dialect
-                        .and_then(|dialect| dialect.update_row(&changes.object, row).ok())
-                        .map_or_else(String::new, |update| update.shown)
-                })
-                .collect();
-            let cells = changes.rows.iter().map(|row| row.set.len()).sum();
-            self.dialog = Some(Dialog::ConfirmWrite(Box::new(WritePrompt {
-                tab,
-                id,
-                statements,
-                changes: cells,
-                rows: rows.len(),
-                typed: String::new(),
-                focus: true,
-                changeset: changes,
-                places: rows,
-                then,
-            })));
-            return;
-        }
-        self.send_write(tab, id, changes, rows, then);
-    }
-
-    fn send_write(
-        &mut self,
-        tab: ConnTabId,
-        id: TabId,
-        changes: tabletist_db::ChangeSet,
-        rows: Vec<usize>,
-        then: Option<Held>,
-    ) {
-        let request = RequestId(self.next_id());
-        let Some(workspace) = self.workspace_mut(tab) else {
-            return;
-        };
-        let session = workspace.session;
-        let Some(object) = workspace.object_tab_mut(id) else {
-            return;
-        };
-        object.edits.note = None;
-        object.edits.saved = None;
-        object.edits.saving = Some(crate::edit::Saving {
-            request,
-            rows,
-            started: std::time::Instant::now(),
-            then,
-        });
-        self.backend.send(Command::Write {
-            session,
-            request,
-            changes,
-        });
-    }
-
-    fn editor_mut(&mut self, tab: ConnTabId, id: TabId) -> Option<&mut crate::edit::Editor> {
-        self.object_tab_mut(tab, id)?.edits.editor.as_mut()
-    }
-
-    /// What the open editor's text fails, if anything.
-    fn editor_problem(&self, tab: ConnTabId, id: TabId) -> Option<crate::edit::Problem> {
-        self.table(tab, id, |table, object| {
-            let editor = object.edits.editor.as_ref()?;
-            let column = table.column(editor.cell.col)?;
-            crate::edit::check(table.dialect, column, &editor.text)
-        })
-        .flatten()
-    }
-
-    fn edit_cell(&mut self, tab: ConnTabId, id: TabId, cell: CellPos, start: EditStart) {
-        // An editor open on another cell keeps its text.
-        self.close_editor(tab, id, true);
-        let (asked, touched) = match &start {
-            EditStart::Value => (true, false),
-            EditStart::Replace(_) => (true, true),
-            EditStart::Typed(_) => (false, true),
-        };
-        let opened = self.table(tab, id, |table, object| {
-            if let Some(lock) = table.lock(cell) {
-                return Err(lock);
-            }
-            let class = table
-                .class(cell.col)
-                .unwrap_or(tabletist_db::ColumnClass::Other);
-            let text = match start {
-                EditStart::Replace(text) | EditStart::Typed(text) => text,
-                EditStart::Value => match object.edits.cells.get(&(cell.row, cell.col)) {
-                    Some(pending) => match &pending.new {
-                        tabletist_db::NewValue::Text(text) => text.clone(),
-                        tabletist_db::NewValue::Null => String::new(),
-                    },
-                    None => crate::edit::start_text(&table.page.rows[cell.row][cell.col], class),
-                },
-            };
-            Ok(crate::edit::Editor {
-                cell,
-                large: crate::edit::opens_large(&text, class),
-                text,
-                focus: true,
-                touched,
-                problem: None,
-            })
-        });
-        let Some(opened) = opened else {
-            return;
-        };
-        let Some(object) = self.object_tab_mut(tab, id) else {
-            return;
-        };
-        match opened {
-            Ok(editor) => {
-                object.selection = Some(cell);
-                object.edits.editor = Some(editor);
-                object.edits.why = None;
-                // A tab being edited is no preview to replace.
-                object.pinned = true;
-            }
-            Err(crate::edit::Lock::NoSuchCell) => return,
-            // Typing on a cell that cannot be edited does nothing.
-            Err(_) if !asked => return,
-            Err(lock) => {
-                object.selection = Some(cell);
-                object.edits.why = Some((cell, lock));
-            }
-        }
-        if let Some(workspace) = self.workspace_mut(tab) {
-            workspace.pane = Pane::Grid;
-        }
-    }
-
-    /// Takes the open editor's text as its cell's new value and closes it.
-    /// A text its column does not take keeps the editor open, unless the
-    /// edit is `left` (the keyboard went elsewhere): then the text is kept
-    /// as a cell to fix, so typing is never lost. Says whether the editor
-    /// closed.
-    fn close_editor(&mut self, tab: ConnTabId, id: TabId, left: bool) -> bool {
-        let verdict = self.table(tab, id, |table, object| {
-            let editor = object.edits.editor.as_ref()?;
-            let cell = editor.cell;
-            let column = table.column(cell.col)?;
-            let class = tabletist_db::column_class(table.dialect, &column.type_name);
-            let loaded = table.page.rows.get(cell.row)?.get(cell.col)?;
-            if !editor.touched {
-                return None;
-            }
-            let new = tabletist_db::NewValue::Text(editor.text.clone());
-            let changed = crate::edit::is_change(loaded, &new, class);
-            let problem = changed
-                .then(|| crate::edit::check(table.dialect, column, &editor.text))
-                .flatten();
-            Some((cell, new, changed, problem))
-        });
-        let Some(object) = self.object_tab_mut(tab, id) else {
-            return false;
-        };
-        let Some(Some((cell, new, changed, problem))) = verdict else {
-            // Nothing was typed, or there is no page or no such cell any
-            // more: the editor closes and the set stays as it was.
-            return object.edits.editor.take().is_some();
-        };
-        if problem.is_some() && !left {
-            if let Some(editor) = object.edits.editor.as_mut() {
-                editor.problem = problem;
-            }
-            return false;
-        }
-        object.edits.editor = None;
-        let key = (cell.row, cell.col);
-        if changed {
-            let state = problem.map_or(crate::edit::State::Ready, crate::edit::State::ToFix);
-            object
-                .edits
-                .cells
-                .insert(key, crate::edit::Pending { new, state });
-        } else {
-            object.edits.cells.remove(&key);
-        }
-        // The row panel shows the pending value.
-        object.fields = None;
-        true
-    }
-
-    fn set_null(&mut self, tab: ConnTabId, id: TabId) {
-        let verdict = self.table(tab, id, |table, object| {
-            let cell = object.selection?;
-            if object.edits.editor.is_some() || table.lock(cell).is_some() {
-                return None;
-            }
-            let column = table.column(cell.col)?;
-            if !column.nullable {
-                return None;
-            }
-            Some((cell, !table.page.rows[cell.row][cell.col].is_null()))
-        });
-        let Some(Some((cell, changed))) = verdict else {
-            return;
-        };
-        let Some(object) = self.object_tab_mut(tab, id) else {
-            return;
-        };
-        let key = (cell.row, cell.col);
-        if changed {
-            object.edits.cells.insert(
-                key,
-                crate::edit::Pending {
-                    new: tabletist_db::NewValue::Null,
-                    state: crate::edit::State::Ready,
-                },
-            );
-            // As opening an editor does: a tab with a pending cell is no
-            // preview for the next single click to replace.
-            object.pinned = true;
-        } else {
-            object.edits.cells.remove(&key);
-        }
-        object.fields = None;
     }
 
     /// The active connection tab and the tab its workspace shows, of
@@ -10688,6 +10167,10 @@ mod tests {
                 ),
                 ("refresh", Box::new(|tab, _| Action::Refresh(tab))),
                 (
+                    "retry structure",
+                    Box::new(|tab, object_tab| Action::RetryStructure { tab, object_tab }),
+                ),
+                (
                     "close tab",
                     Box::new(|tab, id| Action::CloseTab { tab, id }),
                 ),
@@ -11137,6 +10620,840 @@ mod tests {
             // The tab under it is printed without it too.
             let printed = format!("{:?}", object(&harness, tab, id));
             assert!(!printed.contains("secret"), "{printed}");
+        }
+
+        /// How many `Write`s were sent.
+        fn writes(harness: &Harness) -> usize {
+            let sent = harness.app.backend.sent.iter();
+            sent.filter(|command| matches!(command, Command::Write { .. }))
+                .count()
+        }
+
+        /// `Harness::editable` on a connection to production, whose saves
+        /// are confirmed first.
+        fn production(harness: &mut Harness) -> (ConnTabId, TabId) {
+            let (tab, id) = harness.editable();
+            harness.app.workspace_mut(tab).unwrap().environment =
+                crate::env::Environment::Production;
+            (tab, id)
+        }
+
+        /// The set the production confirmation shows.
+        fn confirming(harness: &Harness) -> Option<&tabletist_db::ChangeSet> {
+            match &harness.app.dialog {
+                Some(Dialog::ConfirmWrite(prompt)) => Some(&prompt.changeset),
+                _ => None,
+            }
+        }
+
+        /// Asks for `text` on `cell` as an editor that was opened with it
+        /// and left does. Unlike `type_into` it asks only: under a prompt
+        /// nothing of it may happen.
+        fn change(harness: &mut Harness, tab: ConnTabId, id: TabId, cell: CellPos, text: &str) {
+            harness.app.apply(Action::EditCell {
+                tab,
+                id,
+                cell,
+                start: EditStart::Replace(text.into()),
+            });
+            harness.app.apply(Action::LeaveEdit { tab, id });
+        }
+
+        fn written(email: &str) -> Result<WriteOutcome, tabletist_db::Error> {
+            Ok(WriteOutcome::Written {
+                rows: vec![row(2, email)],
+                elapsed: std::time::Duration::ZERO,
+            })
+        }
+
+        #[test]
+        fn a_change_asked_for_under_the_confirmation_is_not_made() {
+            let mut harness = Harness::new();
+            let (tab, id) = production(&mut harness);
+            type_into(&mut harness, tab, id, at(1, 1), "bob@example.com");
+            // The active cell holds a value and may be NULL.
+            harness.app.apply(Action::SelectCell {
+                tab,
+                id,
+                cell: at(0, 2),
+            });
+            harness.app.apply(Action::WriteEdits { tab, id });
+            let shown = confirming(&harness).expect("the confirmation").clone();
+            // The keys still run under a dialog: a second change, a NULL, a
+            // move of the selection.
+            change(&mut harness, tab, id, at(3, 1), "dan@example.com");
+            harness.app.apply(Action::SetNull { tab, id });
+            harness.app.apply(Action::SelectCell {
+                tab,
+                id,
+                cell: at(2, 1),
+            });
+            harness.app.apply(Action::MoveSelection {
+                tab,
+                id,
+                rows: 1,
+                cols: 0,
+            });
+            let under = object(&harness, tab, id);
+            assert_eq!(under.selection, Some(at(0, 2)));
+            assert_eq!(under.edits.cells.keys().collect::<Vec<_>>(), [&(1, 1)]);
+            assert!(under.edits.editor.is_none());
+            // The save is the one that was shown, and what it wrote is all
+            // that is marked saved.
+            harness.app.apply(Action::ConfirmWrite);
+            assert_eq!(writes(&harness), 1);
+            assert_eq!(write_since(&harness, 0), Some(&shown));
+            harness.answer_written(written("bob@example.com"));
+            let after = object(&harness, tab, id);
+            assert_eq!(after.edits.saved.as_ref().unwrap().cells, [at(1, 1)]);
+            assert!(after.edits.cells.is_empty());
+            assert_eq!(
+                after.page().unwrap().rows[3][1],
+                Value::Text("user4@example.com".into())
+            );
+        }
+
+        #[test]
+        fn a_discard_asked_for_under_the_confirmation_discards_nothing() {
+            let mut harness = Harness::new();
+            let (tab, id) = production(&mut harness);
+            type_into(&mut harness, tab, id, at(1, 1), "bob@example.com");
+            harness.app.apply(Action::WriteEdits { tab, id });
+            let shown = confirming(&harness).expect("the confirmation").clone();
+            // The pending cell is the active one, as a revert needs it.
+            harness.app.apply(Action::RevertCell { tab, id });
+            harness.app.apply(Action::DiscardEdits { tab, id });
+            // Nor does a second save ask a second time.
+            harness.app.apply(Action::WriteEdits { tab, id });
+            assert_eq!(object(&harness, tab, id).edits.cells.len(), 1);
+            assert_eq!(confirming(&harness), Some(&shown));
+            // So what is confirmed is still there to be saved.
+            harness.app.apply(Action::ConfirmWrite);
+            assert_eq!(writes(&harness), 1);
+            assert_eq!(write_since(&harness, 0), Some(&shown));
+        }
+
+        #[test]
+        fn a_save_asked_for_under_the_leave_prompt_is_not_sent() {
+            let mut harness = Harness::new();
+            let (tab, id) = harness.editable();
+            type_into(&mut harness, tab, id, at(1, 1), "bob@example.com");
+            harness.app.apply(Action::CloseTab { tab, id });
+            assert_eq!(leave_prompt(&harness), Some(true));
+            harness.app.apply(Action::WriteEdits { tab, id });
+            assert_eq!(writes(&harness), 0);
+            assert_eq!(leave_prompt(&harness), Some(true));
+            assert!(object(&harness, tab, id).edits.saving.is_none());
+            // So Discard closes a tab that has no save in flight.
+            harness.app.apply(Action::LeaveDiscard);
+            assert!(harness.app.workspace(tab).unwrap().object_tab(id).is_none());
+            assert_eq!(writes(&harness), 0);
+        }
+
+        #[test]
+        fn no_editor_opens_under_the_confirmation() {
+            let mut harness = Harness::new();
+            let (tab, id) = production(&mut harness);
+            type_into(&mut harness, tab, id, at(1, 1), "bob@example.com");
+            harness.app.apply(Action::WriteEdits { tab, id });
+            for start in [
+                EditStart::Value,
+                EditStart::Replace("x".into()),
+                EditStart::Typed("x".into()),
+            ] {
+                harness.app.apply(Action::EditCell {
+                    tab,
+                    id,
+                    cell: at(3, 1),
+                    start,
+                });
+                assert!(object(&harness, tab, id).edits.editor.is_none());
+            }
+            // So none is left to add a cell to a save that is running.
+            harness.app.apply(Action::ConfirmWrite);
+            harness.app.apply(Action::LeaveEdit { tab, id });
+            let saving = object(&harness, tab, id);
+            assert!(saving.edits.saving.is_some());
+            assert_eq!(saving.edits.cells.len(), 1);
+            harness.answer_written(written("bob@example.com"));
+            assert!(!object(&harness, tab, id).edits.holds());
+        }
+
+        #[test]
+        fn an_editor_under_the_leave_prompt_stays_as_it_was() {
+            let mut harness = Harness::new();
+            let (tab, id) = harness.editable();
+            harness.app.apply(Action::EditCell {
+                tab,
+                id,
+                cell: at(1, 1),
+                start: EditStart::Value,
+            });
+            harness.app.apply(Action::CloseTab { tab, id });
+            assert_eq!(leave_prompt(&harness), Some(true));
+            harness.app.apply(Action::EditorTyped { tab, id });
+            harness.app.apply(Action::EditorBreak { tab, id });
+            let editor = object(&harness, tab, id).edits.editor.as_ref().unwrap();
+            assert_eq!(editor.text, "user2@example.com");
+            assert!(!editor.touched && !editor.large);
+            for closes in [
+                Action::CommitEdit {
+                    tab,
+                    id,
+                    then: Advance::Down,
+                },
+                Action::LeaveEdit { tab, id },
+                Action::CancelEdit { tab, id },
+            ] {
+                harness.app.apply(closes);
+                assert!(object(&harness, tab, id).edits.editor.is_some());
+            }
+            assert_eq!(object(&harness, tab, id).selection, Some(at(1, 1)));
+            // Staying finds it open.
+            harness.app.apply(Action::LeaveStay);
+            assert!(object(&harness, tab, id).edits.editor.is_some());
+        }
+
+        #[test]
+        fn a_prompt_about_pending_changes_is_not_replaced_by_another_dialog() {
+            let mut harness = Harness::new();
+            let (tab, id) = harness.editable();
+            type_into(&mut harness, tab, id, at(1, 1), "bob@example.com");
+            let conn = harness.app.workspace(tab).unwrap().conn_id.clone();
+            let replacing = || {
+                [
+                    Action::NewConnection,
+                    Action::EditConnection(conn.clone()),
+                    Action::CancelPassword,
+                    Action::TrustHostKey,
+                ]
+            };
+            harness.app.apply(Action::CloseTab { tab, id });
+            for action in replacing() {
+                harness.app.apply(action);
+                assert_eq!(leave_prompt(&harness), Some(true));
+            }
+            // The held close is still there to be done.
+            harness.app.apply(Action::LeaveDiscard);
+            assert!(harness.app.workspace(tab).unwrap().object_tab(id).is_none());
+            // The confirmation too.
+            let mut harness = Harness::new();
+            let (tab, id) = production(&mut harness);
+            type_into(&mut harness, tab, id, at(1, 1), "bob@example.com");
+            harness.app.apply(Action::WriteEdits { tab, id });
+            let conn = harness.app.workspace(tab).unwrap().conn_id.clone();
+            for action in [
+                Action::NewConnection,
+                Action::EditConnection(conn),
+                Action::CancelPassword,
+                Action::TrustHostKey,
+            ] {
+                harness.app.apply(action);
+                assert!(confirming(&harness).is_some());
+            }
+        }
+
+        #[test]
+        fn a_confirmation_sends_nothing_when_the_tab_is_not_as_it_showed_it() {
+            // Nothing the user can do changes the tab under the prompt, so
+            // each of these is forced: the confirmation checks all the same.
+            type Forced = fn(&mut crate::model::ObjectTab);
+            let forced: [(&str, Forced); 3] = [
+                ("another cell", |object| {
+                    object.edits.cells.insert(
+                        (3, 1),
+                        crate::edit::Pending {
+                            new: NewValue::Text("dan@example.com".into()),
+                            state: State::Ready,
+                        },
+                    );
+                }),
+                ("no cell", |object| object.edits.cells.clear()),
+                ("an editor", |object| {
+                    object.edits.editor = Some(crate::edit::Editor {
+                        cell: at(3, 1),
+                        text: "dan@example.com".into(),
+                        large: false,
+                        focus: false,
+                        touched: true,
+                        problem: None,
+                    });
+                }),
+            ];
+            for (name, force) in forced {
+                let mut harness = Harness::new();
+                let (tab, id) = production(&mut harness);
+                type_into(&mut harness, tab, id, at(1, 1), "bob@example.com");
+                // From the Leave prompt, so a close is held for the save.
+                harness.app.apply(Action::CloseTab { tab, id });
+                harness.app.apply(Action::LeaveSave);
+                assert!(confirming(&harness).is_some(), "{name}");
+                force(
+                    harness
+                        .app
+                        .workspace_mut(tab)
+                        .unwrap()
+                        .object_tab_mut(id)
+                        .unwrap(),
+                );
+                harness.app.apply(Action::ConfirmWrite);
+                assert!(harness.app.dialog.is_none(), "{name}");
+                assert_eq!(writes(&harness), 0, "{name}");
+                let kept = harness.app.workspace(tab).unwrap().object_tab(id);
+                assert!(
+                    kept.is_some_and(|object| object.edits.saving.is_none()),
+                    "{name}: the held close is dropped"
+                );
+            }
+        }
+
+        #[test]
+        fn no_edit_starts_while_the_structure_is_described_again() {
+            let mut harness = Harness::new();
+            let (tab, id) = harness.editable();
+            // A refresh reads the rows and the structure again: the rows
+            // are back, the structure is not.
+            harness.app.apply(Action::Refresh(tab));
+            harness.answer_rows(page(5, false));
+            let described = object(&harness, tab, id);
+            assert!(described.structure.is_loading() && !described.rows.is_loading());
+            harness.app.apply(Action::EditCell {
+                tab,
+                id,
+                cell: at(1, 1),
+                start: EditStart::Value,
+            });
+            let edits = &object(&harness, tab, id).edits;
+            assert!(edits.editor.is_none());
+            assert_eq!(edits.why, Some((at(1, 1), Lock::Refreshing)));
+            // `meta` of the first row holds a value and may be NULL.
+            harness.app.apply(Action::SelectCell {
+                tab,
+                id,
+                cell: at(0, 2),
+            });
+            harness.app.apply(Action::SetNull { tab, id });
+            assert!(!object(&harness, tab, id).edits.holds());
+            // Once it is known what the table is now, both work.
+            harness.answer_structure(crate::testing::fixture_structure());
+            harness.app.apply(Action::SetNull { tab, id });
+            assert_eq!(object(&harness, tab, id).edits.cells.len(), 1);
+            type_into(&mut harness, tab, id, at(1, 1), "bob@example.com");
+            assert_eq!(object(&harness, tab, id).edits.cells.len(), 2);
+        }
+
+        #[test]
+        fn retrying_the_structure_waits_for_an_open_editor_too() {
+            let mut harness = Harness::new();
+            let (tab, id) = harness.editable();
+            harness.app.apply(Action::EditCell {
+                tab,
+                id,
+                cell: at(1, 1),
+                start: EditStart::Replace("bob@example.com".into()),
+            });
+            let before = harness.app.backend.sent.len();
+            harness.app.apply(Action::RetryStructure {
+                tab,
+                object_tab: id,
+            });
+            assert_eq!(leave_prompt(&harness), Some(true));
+            assert_eq!(harness.app.backend.sent.len(), before, "nothing ran");
+            let kept = object(&harness, tab, id);
+            assert!(kept.structure.value.is_some() && !kept.structure.is_loading());
+            // Staying keeps what was typed, and it can still be saved.
+            harness.app.apply(Action::LeaveStay);
+            harness.app.apply(Action::WriteEdits { tab, id });
+            assert_eq!(writes(&harness), 1);
+        }
+
+        #[test]
+        fn a_set_no_change_set_can_be_built_from_is_not_offered_to_be_saved() {
+            let mut harness = Harness::new();
+            let (tab, id) = harness.editable();
+            // Nothing pending is nothing to block.
+            assert_eq!(harness.app.save_blocked(tab, id), None);
+            type_into(&mut harness, tab, id, at(1, 1), "bob@example.com");
+            assert_eq!(harness.app.save_blocked(tab, id), None);
+            // No path leaves a pending cell on a table without a key: it is
+            // forced.
+            harness
+                .app
+                .workspace_mut(tab)
+                .unwrap()
+                .object_tab_mut(id)
+                .unwrap()
+                .structure
+                .value
+                .as_mut()
+                .unwrap()
+                .primary_key
+                .clear();
+            assert_eq!(
+                harness.app.save_blocked(tab, id),
+                Some(crate::model::SaveBlock::Unsendable)
+            );
+            harness.app.apply(Action::WriteEdits { tab, id });
+            assert_eq!(writes(&harness), 0);
+            // Leaving offers no Save that would do nothing.
+            harness.app.apply(Action::CloseTab { tab, id });
+            assert_eq!(leave_prompt(&harness), Some(false));
+            // The structure gone altogether is the same.
+            harness.app.apply(Action::LeaveStay);
+            harness
+                .app
+                .workspace_mut(tab)
+                .unwrap()
+                .object_tab_mut(id)
+                .unwrap()
+                .structure
+                .value = None;
+            assert_eq!(
+                harness.app.save_blocked(tab, id),
+                Some(crate::model::SaveBlock::Unsendable)
+            );
+        }
+
+        /// The request of the save that runs.
+        fn saving(harness: &Harness, tab: ConnTabId, id: TabId) -> Option<RequestId> {
+            let edits = &object(harness, tab, id).edits;
+            edits.saving.as_ref().map(|saving| saving.request)
+        }
+
+        #[test]
+        fn a_second_save_is_not_sent_while_the_first_runs() {
+            let mut harness = Harness::new();
+            let (tab, id) = harness.editable();
+            type_into(&mut harness, tab, id, at(1, 1), "bob@example.com");
+            harness.app.apply(Action::WriteEdits { tab, id });
+            let first = saving(&harness, tab, id).expect("a save");
+            assert_eq!(
+                harness.app.save_blocked(tab, id),
+                Some(crate::model::SaveBlock::Saving)
+            );
+            harness.app.apply(Action::WriteEdits { tab, id });
+            assert_eq!(writes(&harness), 1);
+            // The first answer still finds the save it answers.
+            assert_eq!(saving(&harness, tab, id), Some(first));
+            harness.answer_written(written("bob@example.com"));
+            assert!(!object(&harness, tab, id).edits.holds());
+        }
+
+        #[test]
+        fn a_confirmation_sends_no_second_save_either() {
+            let mut harness = Harness::new();
+            let (tab, id) = production(&mut harness);
+            type_into(&mut harness, tab, id, at(1, 1), "bob@example.com");
+            harness.app.apply(Action::WriteEdits { tab, id });
+            // A save that started behind the confirmation's back: nothing
+            // a user does starts one, so the prompt is set aside for it.
+            let prompt = harness.app.dialog.take();
+            assert!(matches!(prompt, Some(Dialog::ConfirmWrite(_))));
+            harness.app.workspace_mut(tab).unwrap().environment = crate::env::Environment::None;
+            harness.app.apply(Action::WriteEdits { tab, id });
+            let first = saving(&harness, tab, id).expect("a save");
+            harness.app.dialog = prompt;
+            harness.app.apply(Action::ConfirmWrite);
+            assert!(harness.app.dialog.is_none());
+            assert_eq!(writes(&harness), 1);
+            assert_eq!(saving(&harness, tab, id), Some(first));
+        }
+
+        #[test]
+        fn no_edit_starts_while_the_page_is_fetched_again() {
+            let mut harness = Harness::new();
+            let (tab, id) = harness.editable();
+            harness.app.apply(Action::SelectCell {
+                tab,
+                id,
+                cell: at(0, 2),
+            });
+            // The structure is back, the rows are not.
+            harness.app.apply(Action::Refresh(tab));
+            harness.answer_structure(crate::testing::fixture_structure());
+            let fetched = object(&harness, tab, id);
+            assert!(fetched.rows.is_loading() && !fetched.structure.is_loading());
+            harness.app.apply(Action::SetNull { tab, id });
+            assert!(!object(&harness, tab, id).edits.holds());
+            harness.app.apply(Action::EditCell {
+                tab,
+                id,
+                cell: at(1, 1),
+                start: EditStart::Value,
+            });
+            let edits = &object(&harness, tab, id).edits;
+            assert!(edits.editor.is_none() && edits.cells.is_empty());
+            assert_eq!(edits.why, Some((at(1, 1), Lock::Refreshing)));
+        }
+
+        #[test]
+        fn null_is_not_set_under_a_save_or_on_a_read_only_session() {
+            let mut harness = Harness::new();
+            let (tab, id) = harness.editable();
+            type_into(&mut harness, tab, id, at(1, 1), "bob@example.com");
+            // `meta` of the first row holds a value and may be NULL.
+            harness.app.apply(Action::SelectCell {
+                tab,
+                id,
+                cell: at(0, 2),
+            });
+            harness.app.apply(Action::WriteEdits { tab, id });
+            harness.app.apply(Action::SetNull { tab, id });
+            assert_eq!(object(&harness, tab, id).edits.cells.len(), 1);
+            harness.answer_written(written("bob@example.com"));
+            // The session came back read-only.
+            harness.app.workspace_mut(tab).unwrap().access = tabletist_db::Access::ReadOnly;
+            harness.app.apply(Action::SetNull { tab, id });
+            assert!(object(&harness, tab, id).edits.cells.is_empty());
+            harness.app.workspace_mut(tab).unwrap().access = tabletist_db::Access::Writable;
+            harness.app.apply(Action::SetNull { tab, id });
+            assert_eq!(object(&harness, tab, id).edits.cells.len(), 1);
+        }
+
+        #[test]
+        fn a_confirmation_answered_after_the_session_went_sends_nothing() {
+            let mut harness = Harness::new();
+            let (tab, id) = production(&mut harness);
+            type_into(&mut harness, tab, id, at(1, 1), "bob@example.com");
+            harness.app.apply(Action::WriteEdits { tab, id });
+            let session = harness.app.workspace(tab).unwrap().session;
+            harness.app.apply(Action::Backend(Event::Disconnected {
+                session,
+                error: tabletist_db::Error::ConnectionLost("gone".into()),
+            }));
+            assert!(confirming(&harness).is_some());
+            harness.app.apply(Action::ConfirmWrite);
+            assert!(harness.app.dialog.is_none());
+            assert_eq!(writes(&harness), 0);
+            let edits = &object(&harness, tab, id).edits;
+            assert!(edits.saving.is_none());
+            assert_eq!(edits.cells.len(), 1);
+            // And says why, where the prompt was.
+            assert_eq!(edits.note, Some(crate::edit::Note::Lost));
+            // Any other reason shows on the Save itself: nothing is added.
+            let mut harness = Harness::new();
+            let (tab, id) = production(&mut harness);
+            type_into(&mut harness, tab, id, at(1, 1), "bob@example.com");
+            harness.app.apply(Action::WriteEdits { tab, id });
+            harness.app.workspace_mut(tab).unwrap().access = tabletist_db::Access::ReadOnly;
+            harness.app.apply(Action::ConfirmWrite);
+            assert!(harness.app.dialog.is_none());
+            assert_eq!(writes(&harness), 0);
+            assert_eq!(object(&harness, tab, id).edits.note, None);
+        }
+
+        #[test]
+        fn fewer_written_rows_than_the_set_has_fetch_the_page_again() {
+            let mut harness = Harness::new();
+            let (tab, id) = harness.editable();
+            type_into(&mut harness, tab, id, at(1, 1), "bob@example.com");
+            type_into(&mut harness, tab, id, at(3, 1), "dan@example.com");
+            harness.app.apply(Action::WriteEdits { tab, id });
+            let before = harness.app.backend.sent.len();
+            harness.answer_written(written("bob@example.com"));
+            let after = object(&harness, tab, id);
+            assert!(!after.edits.holds() && after.edits.saved.is_none());
+            // The one row that came is not put anywhere.
+            assert_eq!(
+                after.page().unwrap().rows[1][1],
+                Value::Text("user2@example.com".into())
+            );
+            assert!(matches!(
+                harness.app.backend.sent[before..].last(),
+                Some(Command::FetchRows { .. })
+            ));
+        }
+
+        #[test]
+        fn an_answer_to_a_prompt_that_is_not_up_closes_no_other_dialog() {
+            let mut harness = Harness::new();
+            let (tab, id) = harness.editable();
+            type_into(&mut harness, tab, id, at(1, 1), "bob@example.com");
+            harness.app.apply(Action::ShowHelp);
+            for answer in [
+                Action::LeaveDiscard,
+                Action::LeaveSave,
+                Action::LeaveStay,
+                Action::ConfirmWrite,
+                Action::CancelWrite,
+            ] {
+                harness.app.apply(answer);
+                assert!(matches!(harness.app.dialog, Some(Dialog::Help)));
+            }
+            assert_eq!(object(&harness, tab, id).edits.cells.len(), 1);
+            assert_eq!(writes(&harness), 0);
+        }
+
+        #[test]
+        fn a_save_to_production_does_not_replace_another_dialog() {
+            let mut harness = Harness::new();
+            let (tab, id) = production(&mut harness);
+            type_into(&mut harness, tab, id, at(1, 1), "bob@example.com");
+            harness.app.apply(Action::ShowHelp);
+            harness.app.apply(Action::WriteEdits { tab, id });
+            assert!(matches!(harness.app.dialog, Some(Dialog::Help)));
+            assert_eq!(writes(&harness), 0);
+            assert!(object(&harness, tab, id).edits.saving.is_none());
+            // With the dialog closed it asks.
+            harness.app.apply(Action::CloseDialog);
+            harness.app.apply(Action::WriteEdits { tab, id });
+            assert!(confirming(&harness).is_some());
+        }
+
+        #[test]
+        fn save_from_the_leave_prompt_on_production_is_confirmed_and_then_goes_on() {
+            let mut harness = Harness::new();
+            let (tab, id) = production(&mut harness);
+            type_into(&mut harness, tab, id, at(1, 1), "bob@example.com");
+            let open_tab = |harness: &Harness| {
+                let workspace = harness.app.workspace(tab).unwrap();
+                workspace.object_tab(id).is_some()
+            };
+            // Cancelling the confirmation drops the held close: the tab and
+            // its set stay, and nothing asks a second time.
+            harness.app.apply(Action::CloseTab { tab, id });
+            harness.app.apply(Action::LeaveSave);
+            assert!(confirming(&harness).is_some());
+            assert_eq!(writes(&harness), 0, "nothing is sent before the answer");
+            harness.app.apply(Action::CancelWrite);
+            assert!(harness.app.dialog.is_none() && open_tab(&harness));
+            assert_eq!(object(&harness, tab, id).edits.cells.len(), 1);
+            assert_eq!(writes(&harness), 0);
+            // Confirmed, the held close waits for the save.
+            harness.app.apply(Action::CloseTab { tab, id });
+            harness.app.apply(Action::LeaveSave);
+            assert_eq!(writes(&harness), 0);
+            harness.app.apply(Action::ConfirmWrite);
+            assert_eq!(writes(&harness), 1);
+            assert!(open_tab(&harness), "the tab closes once it is written");
+            harness.answer_written(written("bob@example.com"));
+            assert!(!open_tab(&harness));
+        }
+
+        #[test]
+        fn discard_from_the_leave_prompt_drops_every_tabs_changes_and_goes_on() {
+            let two_tabs = |harness: &mut Harness| {
+                let (tab, id) = harness.editable();
+                type_into(harness, tab, id, at(1, 1), "bob@example.com");
+                let orders = open(harness, tab, "orders", true);
+                harness.answer_structure(crate::testing::fixture_structure());
+                harness.answer_rows(page(5, false));
+                type_into(harness, tab, orders, at(0, 1), "x@example.com");
+                type_into(harness, tab, orders, at(2, 1), "y@example.com");
+                tab
+            };
+            // Closing the connection.
+            let mut harness = Harness::new();
+            let tab = two_tabs(&mut harness);
+            let session = harness.app.workspace(tab).unwrap().session;
+            harness.app.apply(Action::CloseConnTab(tab));
+            match &harness.app.dialog {
+                Some(Dialog::Leave(prompt)) => {
+                    assert_eq!((prompt.tabs.len(), prompt.changes), (2, 3));
+                    assert!(!prompt.can_save);
+                }
+                other => panic!("expected the Leave prompt, got {other:?}"),
+            }
+            assert!(harness.app.workspace(tab).is_some());
+            harness.app.apply(Action::LeaveDiscard);
+            assert!(harness.app.dialog.is_none());
+            assert!(harness.app.workspace(tab).is_none());
+            assert!(matches!(
+                harness.app.backend.sent.last(),
+                Some(Command::Close { session: closed }) if *closed == session
+            ));
+            // Disconnecting.
+            let mut harness = Harness::new();
+            let tab = two_tabs(&mut harness);
+            harness.app.apply(Action::Disconnect(tab));
+            assert_eq!(leave_prompt(&harness), Some(false));
+            harness.app.apply(Action::LeaveDiscard);
+            assert!(harness.app.dialog.is_none());
+            assert!(harness.app.workspace(tab).is_none());
+            assert_eq!(writes(&harness), 0);
+        }
+
+        #[test]
+        fn cancelling_stops_the_save_that_runs() {
+            let mut harness = Harness::new();
+            let (tab, id) = harness.editable();
+            type_into(&mut harness, tab, id, at(1, 1), "bob@example.com");
+            harness.app.apply(Action::WriteEdits { tab, id });
+            let request = saving(&harness, tab, id).expect("a save");
+            let session = harness.app.workspace(tab).unwrap().session;
+            let before = harness.app.backend.sent.len();
+            harness.app.apply(Action::CancelQuery(tab));
+            let cancelled: Vec<_> = harness.app.backend.sent[before..]
+                .iter()
+                .filter_map(|command| match command {
+                    Command::Cancel { session, request } => Some((*session, *request)),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(cancelled, [(session, request)]);
+            // The save runs until the backend says how it ended.
+            assert_eq!(saving(&harness, tab, id), Some(request));
+            harness.answer_written(Err(tabletist_db::Error::Cancelled));
+            let edits = &object(&harness, tab, id).edits;
+            assert_eq!(edits.note, Some(crate::edit::Note::Cancelled));
+            assert_eq!(edits.cells.len(), 1);
+        }
+
+        #[test]
+        fn an_answer_naming_a_row_the_save_did_not_send_marks_no_row() {
+            let mut harness = Harness::new();
+            let (tab, id) = harness.editable();
+            // The page's first row is changed too: it is not the one to
+            // name and mark for want of another.
+            type_into(&mut harness, tab, id, at(0, 1), "ada@example.com");
+            type_into(&mut harness, tab, id, at(1, 1), "bob@example.com");
+            let all_ready = |harness: &Harness| {
+                let edits = &object(harness, tab, id).edits;
+                edits.cells.len() == 2
+                    && edits.cells.values().all(|cell| cell.state == State::Ready)
+            };
+            let error = tabletist_db::Error::query("violates check");
+            harness.app.apply(Action::WriteEdits { tab, id });
+            harness.answer_written(Ok(WriteOutcome::Failed {
+                row: 2,
+                error: error.clone(),
+            }));
+            assert!(all_ready(&harness));
+            assert_eq!(
+                object(&harness, tab, id).edits.note,
+                Some(crate::edit::Note::Refused(error))
+            );
+            // A conflict has no error of its own to show: what the save
+            // came to is not known.
+            harness.app.apply(Action::WriteEdits { tab, id });
+            harness.answer_written(Ok(WriteOutcome::Conflicts(vec![Conflict {
+                row: 2,
+                server: None,
+            }])));
+            assert!(all_ready(&harness));
+            assert_eq!(
+                object(&harness, tab, id).edits.note,
+                Some(crate::edit::Note::Lost)
+            );
+        }
+
+        #[test]
+        fn what_was_held_goes_on_after_a_save_whose_rows_do_not_fit_the_page() {
+            let mut harness = Harness::new();
+            let (tab, id) = harness.editable();
+            type_into(&mut harness, tab, id, at(1, 1), "bob@example.com");
+            harness.app.apply(Action::CloseTab { tab, id });
+            harness.app.apply(Action::LeaveSave);
+            // Everything was written, by a table of another width.
+            harness.answer_written(Ok(WriteOutcome::Written {
+                rows: vec![vec![Value::Int(2)]],
+                elapsed: std::time::Duration::ZERO,
+            }));
+            assert!(harness.app.dialog.is_none());
+            assert!(harness.app.workspace(tab).unwrap().object_tab(id).is_none());
+        }
+
+        #[test]
+        fn an_edit_is_printed_without_what_was_typed() {
+            let (tab, id) = (ConnTabId(1), TabId(2));
+            for (start, variant) in [
+                (EditStart::Value, "Value"),
+                (EditStart::Replace("hunter2".into()), "Replace"),
+                (EditStart::Typed("hunter2".into()), "Typed"),
+            ] {
+                let printed = format!(
+                    "{:?}",
+                    Action::EditCell {
+                        tab,
+                        id,
+                        cell: at(0, 1),
+                        start,
+                    }
+                );
+                assert!(printed.contains(variant), "{printed}");
+                assert!(!printed.contains("hunter2"), "{printed}");
+            }
+        }
+
+        #[test]
+        fn a_tab_with_a_pending_cell_is_no_preview_whatever_its_pin_says() {
+            let mut harness = Harness::new();
+            let (tab, id) = harness.editable();
+            type_into(&mut harness, tab, id, at(1, 1), "bob@example.com");
+            // Every path that makes a cell pending pins the tab: one that
+            // forgot to is forced.
+            harness
+                .app
+                .workspace_mut(tab)
+                .unwrap()
+                .object_tab_mut(id)
+                .unwrap()
+                .pinned = false;
+            let orders = open(&mut harness, tab, "orders", false);
+            assert_ne!(orders, id);
+            let workspace = harness.app.workspace(tab).unwrap();
+            assert_eq!(workspace.tabs.len(), 2, "opened beside it, not over it");
+            assert_eq!(object(&harness, tab, id).edits.cells.len(), 1);
+            // Without the cell it is a preview again, and the next one
+            // takes its place.
+            harness.app.apply(Action::DiscardEdits { tab, id });
+            harness.app.apply(Action::CloseTab { tab, id: orders });
+            open(&mut harness, tab, "orders", false);
+            let workspace = harness.app.workspace(tab).unwrap();
+            assert_eq!(workspace.tabs.len(), 1);
+            assert!(workspace.object_tab(id).is_none());
+        }
+
+        #[test]
+        fn a_statement_that_cannot_be_built_fails_its_row_instead_of_a_confirmation() {
+            let mut harness = Harness::new();
+            let (tab, id) = production(&mut harness);
+            type_into(&mut harness, tab, id, at(0, 1), "ada@example.com");
+            type_into(&mut harness, tab, id, at(1, 1), "bob@example.com");
+            harness.app.apply(Action::SelectCell {
+                tab,
+                id,
+                cell: at(1, 2),
+            });
+            // No check lets through what the builder refuses: it is forced,
+            // by a row that held bytes where its change was typed. And an
+            // earlier save's mark, for this one to take away as any save
+            // does.
+            {
+                let object = harness
+                    .app
+                    .workspace_mut(tab)
+                    .unwrap()
+                    .object_tab_mut(id)
+                    .unwrap();
+                object.rows.value.as_mut().unwrap().rows[1][1] = Value::Bytes(vec![1, 2].into());
+                object.edits.saved = Some(crate::edit::Saved {
+                    at: std::time::Instant::now(),
+                    cells: vec![at(4, 1)],
+                    changes: 1,
+                    rows: 1,
+                    elapsed: std::time::Duration::ZERO,
+                });
+            }
+            // From the Leave prompt, so a close is held for the save.
+            harness.app.apply(Action::CloseTab { tab, id });
+            harness.app.apply(Action::LeaveSave);
+            assert!(harness.app.dialog.is_none(), "no statement to show");
+            assert_eq!(writes(&harness), 0);
+            let edits = &object(&harness, tab, id).edits;
+            let Some(crate::edit::Note::Failed { row: 1, error }) = &edits.note else {
+                panic!("expected the second row to fail, got {:?}", edits.note);
+            };
+            assert_eq!(
+                edits.cells.get(&(1, 1)).map(|cell| &cell.state),
+                Some(&State::Failed(error.clone()))
+            );
+            // The row before it is as it was, and the held close is dropped.
+            assert_eq!(
+                edits.cells.get(&(0, 1)).map(|cell| &cell.state),
+                Some(&State::Ready)
+            );
+            assert!(edits.saving.is_none() && edits.saved.is_none());
         }
     }
 }
