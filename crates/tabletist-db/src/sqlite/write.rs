@@ -51,8 +51,16 @@ pub(super) fn write(
 /// Puts back what a script may have left on the session and a write would
 /// feel (a journal mode of its own, exclusive locking, CHECK constraints
 /// ignored, triggers that fire themselves, an UPDATE that gives its count
-/// as a row), lifts `query_only`, and takes the file.
+/// as a row, a transaction still open), lifts `query_only`, and takes the
+/// file.
 fn begin(connection: &rusqlite::Connection, journal_mode: &str) -> Result<()> {
+    // From no transaction, as on the other drivers. Nothing in the app
+    // leaves one open (a script's is ended and checked), and one left open
+    // would refuse the save's own BEGIN. It is undone and never joined:
+    // what it wrote was not this save's to commit.
+    if !connection.is_autocommit() {
+        connection.execute_batch("ROLLBACK").map_err(map_error)?;
+    }
     // Only WAL is a property of the file: every program that opens it finds
     // it so, and it is not ours to undo, nor to bring back. Any other mode
     // is the session's own, and a script can set it (`memory`, `truncate`,
