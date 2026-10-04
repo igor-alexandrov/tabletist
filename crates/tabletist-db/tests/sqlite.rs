@@ -6,8 +6,9 @@
 use std::time::Duration;
 
 use tabletist_db::{
-    Access, ConnectSpec, Connection, Dialect, Driver, Error, Filter, FilterOp, HostKeys, ObjectRef,
-    RowQuery, Secrets, Sort, SortDir, StatementOutcome, StopFlag, Value, ValueKind,
+    Access, CellChange, ChangeSet, ConnectSpec, Connection, Dialect, Driver, Error, Filter,
+    FilterOp, HostKeys, NewValue, ObjectRef, RowChange, RowQuery, Secrets, Sort, SortDir,
+    StatementOutcome, StopFlag, Value, ValueKind,
 };
 
 async fn fixture_as(access: Access) -> (Connection, tempfile::TempDir) {
@@ -1469,4 +1470,52 @@ async fn the_fence_stands_over_names_that_are_not_utf8() {
         ),
         "{outcome:?}"
     );
+}
+
+fn rename(id: i64, loaded: &str, new: &str) -> ChangeSet {
+    ChangeSet {
+        object: ObjectRef::new("main", "users"),
+        rows: vec![RowChange {
+            key: vec![("id".into(), Value::Int(id))],
+            set: vec![CellChange {
+                column: "name".into(),
+                type_name: "TEXT".into(),
+                loaded: Value::Text(loaded.into()),
+                new: NewValue::Text(new.into()),
+            }],
+        }],
+    }
+}
+
+#[tokio::test]
+async fn a_read_only_connection_refuses_a_save_before_it_reads_it() {
+    let (connection, dir) = fixture().await;
+    let before = std::fs::read(dir.path().join("fixture.db")).unwrap();
+    assert_eq!(
+        connection.write(&rename(1, "Ada Lovelace", "Grace")).await,
+        Err(Error::ReadOnly)
+    );
+    // Not even looked at: a set that could never be written gets the same.
+    let empty = ChangeSet {
+        object: ObjectRef::new("main", "users"),
+        rows: Vec::new(),
+    };
+    assert_eq!(connection.write(&empty).await, Err(Error::ReadOnly));
+    assert_eq!(
+        std::fs::read(dir.path().join("fixture.db")).unwrap(),
+        before
+    );
+}
+
+#[tokio::test]
+async fn a_writable_connection_refuses_a_set_it_cannot_write() {
+    let (connection, _dir) = fixture_as(Access::Writable).await;
+    let empty = ChangeSet {
+        object: ObjectRef::new("main", "users"),
+        rows: Vec::new(),
+    };
+    assert!(matches!(
+        connection.write(&empty).await,
+        Err(Error::Query { .. })
+    ));
 }

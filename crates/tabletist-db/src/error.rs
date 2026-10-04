@@ -32,6 +32,10 @@ pub enum Error {
         "line {line}: Tabletist runs every query in a read-only transaction, so {what} is not allowed"
     )]
     Refused { line: usize, what: String },
+    /// A save was asked of a connection that opens read-only. Nothing was
+    /// sent.
+    #[error("this connection opens read-only")]
+    ReadOnly,
     /// A script left the session read-write. The session is closed.
     #[error("the script left the read-only transaction, so the session was closed")]
     LeftReadOnly,
