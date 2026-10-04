@@ -13,12 +13,13 @@ use rusqlite::types::{FromSql, FromSqlError, FromSqlResult, ValueRef};
 use rusqlite::{ErrorCode, OpenFlags};
 
 use crate::{
-    Access, ColumnInfo, ColumnMeta, Dialect, Error, ForeignKeyInfo, IndexInfo, MAX_LISTED,
-    ObjectInfo, ObjectKind, ObjectRef, Result, RowPage, RowQuery, ScriptOutcome, StatementOutcome,
-    StatementResult, StopFlag, Structure, Value, ValueKind,
+    Access, ChangeSet, ColumnInfo, ColumnMeta, Dialect, Error, ForeignKeyInfo, IndexInfo,
+    MAX_LISTED, ObjectInfo, ObjectKind, ObjectRef, Result, RowPage, RowQuery, ScriptOutcome,
+    StatementOutcome, StatementResult, StopFlag, Structure, Value, ValueKind, WriteOutcome,
 };
 
 mod fence;
+mod write;
 
 use fence::{Fence, Fences, authorize};
 
@@ -27,6 +28,9 @@ pub struct Conn {
     inner: Arc<Mutex<rusqlite::Connection>>,
     interrupt: Arc<rusqlite::InterruptHandle>,
     fences: Fences,
+    /// `main`'s journal mode as the session found it, which a save puts
+    /// back.
+    journal_mode: String,
 }
 
 /// Maps rusqlite's errors onto ours.
@@ -505,7 +509,7 @@ impl Conn {
     /// (`PRAGMA query_only`, see `set_session_pragmas`).
     pub async fn open(path: &Path, access: Access) -> Result<Self> {
         let path = path.to_path_buf();
-        let opened = move || -> Result<(rusqlite::Connection, Fences)> {
+        let opened = move || -> Result<(rusqlite::Connection, Fences, String)> {
             if !path.is_file() {
                 return Err(Error::Connect(format!("{} does not exist", path.display())));
             }
@@ -539,6 +543,11 @@ impl Conn {
                     Error::Query { message, .. } => Error::Connect(message),
                     other => other,
                 })?;
+            let journal_mode = connection
+                .query_row("PRAGMA main.journal_mode", [], |row| {
+                    row.get::<_, String>(0)
+                })
+                .map_err(map_error)?;
             // From here on SQLite asks before it prepares anything: what
             // it may do depends on whose text it is (see `Fence`).
             let fences = Fences::default();
@@ -547,9 +556,9 @@ impl Conn {
                 authorize(asked.current(), action)
             })
             .map_err(map_error)?;
-            Ok((connection, fences))
+            Ok((connection, fences, journal_mode))
         };
-        let (connection, fences) = tokio::task::spawn_blocking(opened)
+        let (connection, fences, journal_mode) = tokio::task::spawn_blocking(opened)
             .await
             .map_err(|error| Error::Io(error.to_string()))??;
         let interrupt = Arc::new(connection.get_interrupt_handle());
@@ -557,6 +566,7 @@ impl Conn {
             inner: Arc::new(Mutex::new(connection)),
             interrupt,
             fences,
+            journal_mode,
         })
     }
 
@@ -640,6 +650,20 @@ impl Conn {
             .await;
         guard.disarm();
         outcome
+    }
+
+    /// See [`crate::Connection::write`]. One blocking job, so a cancel can
+    /// never fall between the save's statements.
+    pub async fn write(&self, changes: &ChangeSet) -> Result<WriteOutcome> {
+        if changes.object.schema != "main" {
+            return Err(Error::Unsupported(
+                "saving to an attached database is not built yet",
+            ));
+        }
+        let changes = changes.clone();
+        let journal_mode = self.journal_mode.clone();
+        self.run(move |connection| write::write(connection, &changes, &journal_mode))
+            .await
     }
 
     /// The server's name and version for the footer, like `SQLite 3.46.0`.

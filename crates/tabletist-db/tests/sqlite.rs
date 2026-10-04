@@ -6,9 +6,9 @@
 use std::time::Duration;
 
 use tabletist_db::{
-    Access, CellChange, ChangeSet, ConnectSpec, Connection, Dialect, Driver, Error, Filter,
-    FilterOp, HostKeys, NewValue, ObjectRef, RowChange, RowQuery, Secrets, Sort, SortDir,
-    StatementOutcome, StopFlag, Value, ValueKind,
+    Access, CellChange, ChangeSet, Conflict, ConnectSpec, Connection, Dialect, Driver, Error,
+    Filter, FilterOp, HostKeys, NewValue, ObjectRef, RowChange, RowQuery, Secrets, Sort, SortDir,
+    StatementOutcome, StopFlag, Value, ValueKind, WriteOutcome,
 };
 
 async fn fixture_as(access: Access) -> (Connection, tempfile::TempDir) {
@@ -1518,4 +1518,623 @@ async fn a_writable_connection_refuses_a_set_it_cannot_write() {
         connection.write(&empty).await,
         Err(Error::Query { .. })
     ));
+}
+
+/// A second handle on a fixture's file, standing in for another program.
+fn other_program(dir: &tempfile::TempDir) -> rusqlite::Connection {
+    rusqlite::Connection::open(dir.path().join("fixture.db")).unwrap()
+}
+
+/// The row of `users` with this id, as a page gives it, and the names of
+/// its columns.
+async fn user(connection: &Connection, id: i64) -> (Vec<String>, Vec<Value>) {
+    let mut query = users(10);
+    query.filters.push(Filter {
+        column: "id".into(),
+        op: FilterOp::Eq,
+        value: id.to_string(),
+    });
+    let page = connection.fetch_rows(&query).await.unwrap();
+    (
+        page.columns.into_iter().map(|column| column.name).collect(),
+        page.rows.into_iter().next().unwrap(),
+    )
+}
+
+/// A save of one row of `users`: each (column, declared type, new text),
+/// with what the page holds now as the loaded value.
+async fn save(
+    connection: &Connection,
+    id: i64,
+    cells: &[(&str, &str, NewValue)],
+) -> (ChangeSet, tabletist_db::Result<WriteOutcome>) {
+    let (columns, row) = user(connection, id).await;
+    let set = cells
+        .iter()
+        .map(|(column, type_name, new)| CellChange {
+            column: (*column).into(),
+            type_name: (*type_name).into(),
+            loaded: row[columns.iter().position(|name| name == column).unwrap()].clone(),
+            new: new.clone(),
+        })
+        .collect();
+    let changes = ChangeSet {
+        object: ObjectRef::new("main", "users"),
+        rows: vec![RowChange {
+            key: vec![("id".into(), Value::Int(id))],
+            set,
+        }],
+    };
+    let outcome = connection.write(&changes).await;
+    (changes, outcome)
+}
+
+fn to(text: &str) -> NewValue {
+    NewValue::Text(text.into())
+}
+
+#[tokio::test]
+async fn a_save_writes_every_kind_of_value_and_reads_the_row_back() {
+    let (connection, _dir) = fixture_as(Access::Writable).await;
+    let (columns, before) = user(&connection, 1).await;
+    let (_, outcome) = save(
+        &connection,
+        1,
+        &[
+            ("email", "TEXT", to("new@example.com")),
+            ("name", "TEXT", NewValue::Null),
+            ("created_at", "DATETIME", to("2027-02-03 04:05:06")),
+            ("active", "BOOLEAN", to("false")),
+            ("meta", "JSON", to(r#"{"plan": "pro"}"#)),
+            ("score", "REAL", to("12.5")),
+        ],
+    )
+    .await;
+    let WriteOutcome::Written { rows, .. } = outcome.unwrap() else {
+        panic!("not written");
+    };
+    // What came back is what a page now shows.
+    let (_, after) = user(&connection, 1).await;
+    assert_eq!(rows, std::slice::from_ref(&after));
+    let cell =
+        |name: &str| after[columns.iter().position(|column| column == name).unwrap()].clone();
+    assert_eq!(cell("email"), Value::Text("new@example.com".into()));
+    assert_eq!(cell("name"), Value::Null);
+    assert_eq!(cell("active"), Value::Int(0));
+    assert_eq!(cell("score"), Value::Float(12.5));
+    assert_eq!(cell("id"), before[0]);
+    // And the row never conflicts with itself: each value written back
+    // from what the page holds now.
+    let (_, again) = save(
+        &connection,
+        1,
+        &[
+            ("email", "TEXT", to("back@example.com")),
+            ("created_at", "DATETIME", to("2026-01-01 00:00:00")),
+            ("active", "BOOLEAN", to("1")),
+            ("meta", "JSON", NewValue::Null),
+            ("score", "REAL", to("0.1")),
+        ],
+    )
+    .await;
+    assert!(
+        matches!(again, Ok(WriteOutcome::Written { .. })),
+        "{again:?}"
+    );
+    // Afterwards the session refuses writes as before.
+    assert_eq!(query_only(&connection).await, Value::Int(1));
+    let outcome = run(&connection, "UPDATE users SET name = 'x'")
+        .await
+        .unwrap();
+    assert!(matches!(
+        outcome.results[0].outcome,
+        StatementOutcome::Error { .. }
+    ));
+}
+
+#[tokio::test]
+async fn a_row_changed_by_someone_else_is_a_conflict_and_nothing_is_written() {
+    let (connection, dir) = fixture_as(Access::Writable).await;
+    // Loaded, then changed behind the page's back.
+    let (columns, row) = user(&connection, 1).await;
+    let name = columns.iter().position(|column| column == "name").unwrap();
+    let changes = ChangeSet {
+        object: ObjectRef::new("main", "users"),
+        rows: vec![
+            RowChange {
+                key: vec![("id".into(), Value::Int(2))],
+                set: vec![CellChange {
+                    column: "name".into(),
+                    type_name: "TEXT".into(),
+                    loaded: user(&connection, 2).await.1[name].clone(),
+                    new: to("Second"),
+                }],
+            },
+            RowChange {
+                key: vec![("id".into(), Value::Int(1))],
+                set: vec![CellChange {
+                    column: "name".into(),
+                    type_name: "TEXT".into(),
+                    loaded: row[name].clone(),
+                    new: to("Mine"),
+                }],
+            },
+        ],
+    };
+    other_program(&dir)
+        .execute("UPDATE users SET name = 'Theirs' WHERE id = 1", [])
+        .unwrap();
+    let outcome = connection.write(&changes).await.unwrap();
+    let WriteOutcome::Conflicts(conflicts) = outcome else {
+        panic!("{outcome:?}");
+    };
+    assert_eq!(conflicts.len(), 1);
+    assert_eq!(conflicts[0].row, 1);
+    let server = conflicts[0].server.as_ref().unwrap();
+    assert_eq!(server[name], Value::Text("Theirs".into()));
+    // The other row of the set was not written either.
+    assert_ne!(
+        user(&connection, 2).await.1[name],
+        Value::Text("Second".into())
+    );
+    assert_eq!(
+        user(&connection, 1).await.1[name],
+        Value::Text("Theirs".into())
+    );
+}
+
+#[tokio::test]
+async fn a_change_to_a_column_the_save_leaves_alone_is_no_conflict() {
+    let (connection, dir) = fixture_as(Access::Writable).await;
+    let (columns, row) = user(&connection, 1).await;
+    let name = columns.iter().position(|column| column == "name").unwrap();
+    let changes = ChangeSet {
+        object: ObjectRef::new("main", "users"),
+        rows: vec![RowChange {
+            key: vec![("id".into(), Value::Int(1))],
+            set: vec![CellChange {
+                column: "name".into(),
+                type_name: "TEXT".into(),
+                loaded: row[name].clone(),
+                new: to("Mine"),
+            }],
+        }],
+    };
+    other_program(&dir)
+        .execute("UPDATE users SET score = 99 WHERE id = 1", [])
+        .unwrap();
+    assert!(matches!(
+        connection.write(&changes).await,
+        Ok(WriteOutcome::Written { .. })
+    ));
+}
+
+#[tokio::test]
+async fn a_row_that_is_gone_is_a_conflict_without_a_row() {
+    let (connection, dir) = fixture_as(Access::Writable).await;
+    let (columns, row) = user(&connection, 5).await;
+    let name = columns.iter().position(|column| column == "name").unwrap();
+    let changes = ChangeSet {
+        object: ObjectRef::new("main", "users"),
+        rows: vec![RowChange {
+            key: vec![("id".into(), Value::Int(5))],
+            set: vec![CellChange {
+                column: "name".into(),
+                type_name: "TEXT".into(),
+                loaded: row[name].clone(),
+                new: to("Late"),
+            }],
+        }],
+    };
+    // Its orders go first: the fixture has foreign keys.
+    let other = other_program(&dir);
+    other
+        .execute("DELETE FROM orders WHERE user_id = 5", [])
+        .unwrap();
+    other.execute("DELETE FROM users WHERE id = 5", []).unwrap();
+    assert_eq!(
+        connection.write(&changes).await,
+        Ok(WriteOutcome::Conflicts(vec![Conflict {
+            row: 0,
+            server: None
+        }]))
+    );
+}
+
+#[tokio::test]
+async fn a_statement_that_fails_undoes_the_rows_before_it() {
+    let (connection, _dir) = fixture_as(Access::Writable).await;
+    let (columns, first) = user(&connection, 1).await;
+    let (_, second) = user(&connection, 2).await;
+    let at = |name: &str| columns.iter().position(|column| column == name).unwrap();
+    let changes = ChangeSet {
+        object: ObjectRef::new("main", "users"),
+        rows: vec![
+            RowChange {
+                key: vec![("id".into(), Value::Int(1))],
+                set: vec![CellChange {
+                    column: "name".into(),
+                    type_name: "TEXT".into(),
+                    loaded: first[at("name")].clone(),
+                    new: to("Written first"),
+                }],
+            },
+            RowChange {
+                key: vec![("id".into(), Value::Int(2))],
+                set: vec![CellChange {
+                    column: "email".into(),
+                    type_name: "TEXT".into(),
+                    loaded: second[at("email")].clone(),
+                    // NOT NULL: the database refuses it.
+                    new: NewValue::Null,
+                }],
+            },
+        ],
+    };
+    let outcome = connection.write(&changes).await.unwrap();
+    assert!(
+        matches!(outcome, WriteOutcome::Failed { row: 1, .. }),
+        "{outcome:?}"
+    );
+    assert_eq!(user(&connection, 1).await.1, first);
+    assert_eq!(query_only(&connection).await, Value::Int(1));
+}
+
+#[tokio::test]
+async fn a_value_sqlite_would_store_as_text_is_refused_before_anything_is_sent() {
+    let (connection, dir) = fixture_as(Access::Writable).await;
+    let before = std::fs::read(dir.path().join("fixture.db")).unwrap();
+    let (_, outcome) = save(&connection, 1, &[("active", "BOOLEAN", to("maybe"))]).await;
+    assert!(
+        matches!(outcome, Ok(WriteOutcome::Failed { row: 0, .. })),
+        "{outcome:?}"
+    );
+    let (_, outcome) = save(&connection, 1, &[("score", "REAL", to("high"))]).await;
+    assert!(matches!(outcome, Ok(WriteOutcome::Failed { row: 0, .. })));
+    assert_eq!(
+        std::fs::read(dir.path().join("fixture.db")).unwrap(),
+        before
+    );
+}
+
+#[tokio::test]
+async fn a_save_does_not_inherit_what_a_script_left_on_the_session() {
+    let (connection, dir) = fixture_as(Access::Writable).await;
+    other_program(&dir)
+        .execute_batch(
+            "CREATE TABLE kinds (id INTEGER PRIMARY KEY, kind TEXT CHECK (kind IN ('a', 'b')));
+             INSERT INTO kinds VALUES (1, 'a');",
+        )
+        .unwrap();
+    let mode = setting(&connection, "journal_mode").await;
+    // The fence lets a script set these; they last for the session.
+    run(
+        &connection,
+        "PRAGMA ignore_check_constraints = ON; PRAGMA journal_mode = MEMORY",
+    )
+    .await
+    .unwrap();
+    let changes = ChangeSet {
+        object: ObjectRef::new("main", "kinds"),
+        rows: vec![RowChange {
+            key: vec![("id".into(), Value::Int(1))],
+            set: vec![CellChange {
+                column: "kind".into(),
+                type_name: "TEXT".into(),
+                loaded: Value::Text("a".into()),
+                new: to("z"),
+            }],
+        }],
+    };
+    // The CHECK holds all the same, and the journal is the file's own.
+    let outcome = connection.write(&changes).await.unwrap();
+    assert!(
+        matches!(outcome, WriteOutcome::Failed { row: 0, .. }),
+        "{outcome:?}"
+    );
+    assert_eq!(setting(&connection, "journal_mode").await, mode);
+}
+
+#[tokio::test]
+async fn a_save_writes_a_decimal_as_a_number() {
+    let (connection, _dir) = fixture_as(Access::Writable).await;
+    let orders = ObjectRef::new("main", "orders");
+    for (new, stored) in [("19.90", Value::Float(19.9)), ("20", Value::Int(20))] {
+        let page = connection
+            .fetch_rows(&RowQuery::new(orders.clone(), 1))
+            .await
+            .unwrap();
+        let total = page
+            .columns
+            .iter()
+            .position(|column| column.name == "total")
+            .unwrap();
+        let changes = ChangeSet {
+            object: orders.clone(),
+            rows: vec![RowChange {
+                key: vec![("id".into(), page.rows[0][0].clone())],
+                set: vec![CellChange {
+                    column: "total".into(),
+                    type_name: "NUMERIC(10, 2)".into(),
+                    loaded: page.rows[0][total].clone(),
+                    new: to(new),
+                }],
+            }],
+        };
+        let outcome = connection.write(&changes).await.unwrap();
+        let WriteOutcome::Written { rows, .. } = outcome else {
+            panic!("{new}: {outcome:?}");
+        };
+        assert_eq!(rows[0][total], stored, "{new}");
+    }
+}
+
+#[tokio::test]
+async fn a_table_of_an_attached_database_is_refused() {
+    let (connection, dir) = fixture_as(Access::Writable).await;
+    let before = std::fs::read(dir.path().join("fixture.db")).unwrap();
+    let mut changes = rename(1, "Ada Lovelace", "Grace");
+    changes.object = ObjectRef::new("other", "users");
+    assert!(matches!(
+        connection.write(&changes).await,
+        Err(Error::Unsupported(_))
+    ));
+    assert_eq!(
+        std::fs::read(dir.path().join("fixture.db")).unwrap(),
+        before
+    );
+}
+
+#[tokio::test]
+async fn a_key_that_matches_two_rows_is_an_error_and_nothing_is_written() {
+    let (connection, dir) = fixture_as(Access::Writable).await;
+    let before = std::fs::read(dir.path().join("fixture.db")).unwrap();
+    // `events` has no key: two of its rows are logins.
+    let changes = ChangeSet {
+        object: ObjectRef::new("main", "events"),
+        rows: vec![RowChange {
+            key: vec![("kind".into(), Value::Text("login".into()))],
+            set: vec![CellChange {
+                column: "payload".into(),
+                type_name: "TEXT".into(),
+                loaded: Value::Text("ada".into()),
+                new: to("both"),
+            }],
+        }],
+    };
+    let refused = connection.write(&changes).await;
+    assert!(
+        matches!(&refused, Err(Error::Query { message, .. }) if message.contains("more than one row")),
+        "{refused:?}"
+    );
+    assert_eq!(
+        std::fs::read(dir.path().join("fixture.db")).unwrap(),
+        before
+    );
+    assert_eq!(query_only(&connection).await, Value::Int(1));
+}
+
+#[tokio::test]
+async fn an_update_that_does_not_change_one_row_fails_and_is_undone() {
+    let (connection, dir) = fixture_as(Access::Writable).await;
+    // A view's trigger does the writing, so the update itself changes no
+    // row of its own.
+    other_program(&dir)
+        .execute_batch(
+            "CREATE VIEW named AS SELECT id, name FROM users;
+             CREATE TRIGGER named_update INSTEAD OF UPDATE ON named BEGIN
+                 UPDATE users SET name = NEW.name WHERE id = OLD.id;
+             END;",
+        )
+        .unwrap();
+    let (_, before) = user(&connection, 1).await;
+    let changes = ChangeSet {
+        object: ObjectRef::new("main", "named"),
+        rows: vec![RowChange {
+            key: vec![("id".into(), Value::Int(1))],
+            set: vec![CellChange {
+                column: "name".into(),
+                type_name: "TEXT".into(),
+                loaded: Value::Text("Ada Lovelace".into()),
+                new: to("Through the view"),
+            }],
+        }],
+    };
+    let outcome = connection.write(&changes).await.unwrap();
+    assert!(
+        matches!(
+            &outcome,
+            WriteOutcome::Failed { row: 0, error } if error.to_string().contains("0 rows")
+        ),
+        "{outcome:?}"
+    );
+    // What the trigger wrote went with it.
+    assert_eq!(user(&connection, 1).await.1, before);
+    assert_eq!(query_only(&connection).await, Value::Int(1));
+}
+
+#[tokio::test]
+async fn a_column_with_no_type_keeps_the_kind_of_value_it_held() {
+    let (connection, dir) = fixture_as(Access::Writable).await;
+    other_program(&dir)
+        .execute_batch(
+            "CREATE TABLE loose (id INTEGER PRIMARY KEY, v);
+             INSERT INTO loose VALUES (1, 5), (2, '5');",
+        )
+        .unwrap();
+    // The same text typed into both: a number where the cell held a
+    // number, text where it held text.
+    for (id, loaded, stored) in [
+        (1, Value::Int(5), Value::Int(6)),
+        (2, Value::Text("5".into()), Value::Text("6".into())),
+    ] {
+        let changes = ChangeSet {
+            object: ObjectRef::new("main", "loose"),
+            rows: vec![RowChange {
+                key: vec![("id".into(), Value::Int(id))],
+                set: vec![CellChange {
+                    column: "v".into(),
+                    type_name: String::new(),
+                    loaded,
+                    new: to("6"),
+                }],
+            }],
+        };
+        let outcome = connection.write(&changes).await.unwrap();
+        let WriteOutcome::Written { rows, .. } = outcome else {
+            panic!("{id}: {outcome:?}");
+        };
+        assert_eq!(rows, [vec![Value::Int(id), stored]], "{id}");
+    }
+}
+
+#[tokio::test]
+async fn a_save_reads_a_table_with_names_that_are_not_utf8() {
+    let (_, dir) = latin1_names().await;
+    let path = dir.path().join("latin1.db");
+    let connection = Connection::connect_with(
+        &ConnectSpec::sqlite(&path),
+        &Secrets::default(),
+        &HostKeys::default(),
+        Access::Writable,
+    )
+    .await
+    .unwrap();
+    let one =
+        |table: &str, key: (&str, Value), column: &str, type_name: &str, loaded, new| ChangeSet {
+            object: ObjectRef::new("main", table),
+            rows: vec![RowChange {
+                key: vec![(key.0.into(), key.1)],
+                set: vec![CellChange {
+                    column: column.into(),
+                    type_name: type_name.into(),
+                    loaded,
+                    new,
+                }],
+            }],
+        };
+    // A column SQL can name is saved, beside one it cannot.
+    let price = one(
+        "t",
+        ("id", Value::Int(1)),
+        "price",
+        LOSSY,
+        Value::Float(2.5),
+        to("3.5"),
+    );
+    assert!(matches!(
+        connection.write(&price).await,
+        Ok(WriteOutcome::Written { rows, .. })
+            if rows == [vec![Value::Int(1), Value::Text("x".into()), Value::Float(3.5)]]
+    ));
+    // The column whose name is not UTF-8 cannot be named, nor can a key
+    // that has such a name: neither is written.
+    let before = std::fs::read(&path).unwrap();
+    let unnamed = one(
+        "t",
+        ("id", Value::Int(1)),
+        LOSSY,
+        "TEXT",
+        Value::Text("x".into()),
+        to("y"),
+    );
+    let outcome = connection.write(&unnamed).await;
+    assert!(
+        matches!(outcome, Ok(WriteOutcome::Failed { row: 0, .. })),
+        "{outcome:?}"
+    );
+    let keyed = one(
+        "keyed",
+        (LOSSY, Value::Text("a".into())),
+        "note",
+        "TEXT",
+        Value::Text("first".into()),
+        to("y"),
+    );
+    let outcome = connection.write(&keyed).await;
+    assert!(matches!(outcome, Err(Error::Query { .. })), "{outcome:?}");
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+    assert_eq!(query_only(&connection).await, Value::Int(1));
+}
+
+#[tokio::test]
+async fn a_save_does_not_keep_the_file_to_itself_after_a_script_asked_for_it() {
+    let (connection, dir) = fixture_as(Access::Writable).await;
+    // In exclusive mode a session keeps every lock it takes.
+    run(
+        &connection,
+        "PRAGMA locking_mode = EXCLUSIVE; SELECT count(*) FROM users",
+    )
+    .await
+    .unwrap();
+    let (_, outcome) = save(&connection, 1, &[("name", "TEXT", to("Mine"))]).await;
+    assert!(
+        matches!(outcome, Ok(WriteOutcome::Written { .. })),
+        "{outcome:?}"
+    );
+    // Another program writes at once, without waiting for a lock.
+    let other = other_program(&dir);
+    other.busy_timeout(Duration::ZERO).unwrap();
+    other
+        .execute("UPDATE users SET name = 'Theirs' WHERE id = 2", [])
+        .unwrap();
+}
+
+#[tokio::test]
+async fn a_name_two_columns_read_as_is_refused() {
+    // A name that is not UTF-8 reads with U+FFFD in its place, and another
+    // column can have exactly that name, in these letters or in others:
+    // SQLite matches names without regard to ASCII case.
+    for twin in ["caf\u{FFFD}", "CAF\u{FFFD}"] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("twins.db");
+        rusqlite::Connection::open(&path)
+            .unwrap()
+            .execute_batch(&format!(
+                "CREATE TABLE twins (id INTEGER PRIMARY KEY, \"caf~\" TEXT, \"{twin}\" TEXT);
+                 INSERT INTO twins VALUES (1, 'first', 'twin');"
+            ))
+            .unwrap();
+        let mut bytes = std::fs::read(&path).unwrap();
+        for start in 0..bytes.len() - 3 {
+            if &bytes[start..start + 4] == b"caf~" {
+                bytes[start + 3] = 0xE9;
+            }
+        }
+        std::fs::write(&path, &bytes).unwrap();
+        let connection = Connection::connect_with(
+            &ConnectSpec::sqlite(&path),
+            &Secrets::default(),
+            &HostKeys::default(),
+            Access::Writable,
+        )
+        .await
+        .unwrap();
+        let object = ObjectRef::new("main", "twins");
+        let page = connection
+            .fetch_rows(&RowQuery::new(object.clone(), 5))
+            .await
+            .unwrap();
+        assert_eq!(names(&page), ["id", LOSSY, twin]);
+        // The cell of the column SQL cannot name: its statement would
+        // name the twin, whose value the save never compared.
+        let changes = ChangeSet {
+            object,
+            rows: vec![RowChange {
+                key: vec![("id".into(), Value::Int(1))],
+                set: vec![CellChange {
+                    column: LOSSY.into(),
+                    type_name: "TEXT".into(),
+                    loaded: Value::Text("first".into()),
+                    new: to("mine"),
+                }],
+            }],
+        };
+        let refused = connection.write(&changes).await;
+        assert!(
+            matches!(&refused, Err(Error::Query { message, .. }) if message.contains("more than one column")),
+            "{twin}: {refused:?}"
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), bytes, "{twin}");
+    }
 }

@@ -107,6 +107,38 @@ impl ChangeSet {
     }
 }
 
+/// Whether two values are the same value. Floats by their bits: NaN is NaN,
+/// and a conflict is never made up by a comparison.
+pub(crate) fn same(a: &Value, b: &Value) -> bool {
+    match (a, b) {
+        (Value::Float(a), Value::Float(b)) => a.to_bits() == b.to_bits(),
+        _ => a == b,
+    }
+}
+
+/// Whether the row as the database holds it (`server`, whose values
+/// `columns` name) differs from what the page loaded in a column the save
+/// changes. Other columns are not this save's business.
+pub(crate) fn changed_since_loaded(
+    row: &RowChange,
+    columns: &[String],
+    server: &[Value],
+) -> Result<bool> {
+    for change in &row.set {
+        let found = columns
+            .iter()
+            .position(|column| *column == change.column)
+            .and_then(|index| server.get(index));
+        let Some(now) = found else {
+            return Err(Error::query(format!("no such column: {}", change.column)));
+        };
+        if !same(now, &change.loaded) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -166,5 +198,42 @@ mod tests {
             let refused = changes.check().unwrap_err().to_string();
             assert!(refused.contains(said), "{said}: {refused}");
         }
+    }
+
+    #[test]
+    fn floats_are_the_same_by_their_bits() {
+        assert!(same(&Value::Float(f64::NAN), &Value::Float(f64::NAN)));
+        assert!(!same(&Value::Float(0.1), &Value::Float(0.2)));
+        assert!(same(&Value::Null, &Value::Null));
+        assert!(!same(&Value::Int(1), &Value::Text("1".into())));
+    }
+
+    #[test]
+    fn only_a_changed_column_makes_a_conflict() {
+        let change = row(vec![("id", Value::Int(1))], vec![cell("name")]);
+        let columns = ["id".to_owned(), "name".to_owned(), "email".to_owned()];
+        let server = |name: &str, email: &str| {
+            vec![
+                Value::Int(1),
+                Value::Text(name.into()),
+                Value::Text(email.into()),
+            ]
+        };
+        assert_eq!(
+            changed_since_loaded(&change, &columns, &server("old", "a@x")),
+            Ok(false)
+        );
+        // Another column changing is not this save's business.
+        assert_eq!(
+            changed_since_loaded(&change, &columns, &server("old", "b@x")),
+            Ok(false)
+        );
+        assert_eq!(
+            changed_since_loaded(&change, &columns, &server("theirs", "a@x")),
+            Ok(true)
+        );
+        // A column the table does not have is an error, not a conflict.
+        let gone = row(vec![("id", Value::Int(1))], vec![cell("nick")]);
+        assert!(changed_since_loaded(&gone, &columns, &server("old", "a@x")).is_err());
     }
 }
