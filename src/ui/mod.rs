@@ -2,6 +2,7 @@
 //! state directly.
 
 pub mod about;
+pub mod cell_editor;
 #[cfg(test)]
 mod complete_tests;
 pub mod connect_dialog;
