@@ -10,7 +10,7 @@ use egui::{CornerRadius, Rect, Sense, Stroke, StrokeKind, Ui, WidgetInfo, Widget
 use crate::app::App;
 use crate::i18n::{Locale, gettext};
 use crate::model::Action;
-use crate::settings::{OptionId, OptionValue, Settings, Timestamps};
+use crate::settings::{OptionId, OptionValue, Settings};
 use crate::theme::{Look, Palette};
 use crate::typography::{Text, TextRole};
 use crate::ui::focus::{self, Ring};
@@ -18,7 +18,7 @@ use crate::ui::keys::keys_label;
 use crate::ui::value_tags::terminal_slots;
 use crate::ui::widgets::{self, ButtonSpec};
 
-use super::{Said, choices, file_pane, label};
+use super::{Said, choices, file_pane, label, sample_timestamp};
 
 /// The header's and the footer's heights, each without its rule.
 const HEADER: f32 = 40.0;
@@ -590,10 +590,7 @@ fn hint(option: OptionId, settings: &Settings, skin: &Skin) -> Text {
     let dim = |text: &str| Text::one(look, role, text, palette.dim);
     match option {
         OptionId::PageSize => dim(&skin.say("table view")),
-        OptionId::Timestamps => dim(match settings.timestamps {
-            Timestamps::Second => "2026-01-12 09:14:03",
-            Timestamps::Full => "2026-01-12 09:14:03.482915",
-        }),
+        OptionId::Timestamps => dim(sample_timestamp(settings.timestamps)),
         OptionId::GroupDigits => dim(&skin.say(if settings.group_digits {
             "grouping on"
         } else {

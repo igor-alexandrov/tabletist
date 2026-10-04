@@ -915,31 +915,129 @@ mod tests {
         assert!(harness.app.dialog.is_none());
     }
 
+    /// The two looks that draw the Settings window as a sheet.
+    const SHEET_LOOKS: [fn() -> crate::theme::Look; 2] =
+        [crate::theme::Look::standard, crate::theme::Look::macos];
+
+    /// A harness in `look` with the Settings window open.
+    fn settings_sheet(look: crate::theme::Look) -> Harness {
+        let mut harness = Harness::new();
+        harness.set_look(look);
+        harness.press(egui::Key::Comma, egui::Modifiers::COMMAND);
+        assert!(settings_open(&harness), "{}", look.name);
+        harness
+    }
+
     #[test]
-    fn the_other_looks_have_no_settings_window_yet() {
-        for look in [crate::theme::Look::standard(), crate::theme::Look::macos()] {
+    fn mod_comma_opens_the_settings_window_in_every_look_and_escape_closes_it() {
+        for look in crate::theme::Look::ALL {
             let mut harness = Harness::new();
             harness.set_look(look);
             harness.press(egui::Key::Comma, egui::Modifiers::COMMAND);
+            assert!(settings_open(&harness), "{}", look.name);
+            // A second press leaves it as it is.
+            harness.press(egui::Key::Comma, egui::Modifiers::COMMAND);
+            assert!(settings_open(&harness), "{}", look.name);
+            harness.press(egui::Key::Escape, egui::Modifiers::NONE);
             assert!(harness.app.dialog.is_none(), "{}", look.name);
-            harness.frame(vec![egui::Event::Text("?".into())]);
-            // The shortcuts dialog is open, and does not offer one.
-            assert!(
-                matches!(harness.app.dialog, Some(crate::model::Dialog::Help)),
-                "{}",
-                look.name
-            );
-            assert!(!harness.has("Settings"), "{}", look.name);
         }
     }
 
     #[test]
-    fn the_shortcuts_dialog_opens_the_settings_in_the_terminal_look() {
-        let mut harness = Harness::new();
-        harness.set_look(crate::theme::Look::omarchy());
-        harness.frame(vec![egui::Event::Text("?".into())]);
-        harness.click("Settings");
-        assert!(settings_open(&harness));
+    fn the_shortcuts_dialog_opens_the_settings_in_every_look() {
+        for look in crate::theme::Look::ALL {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            harness.frame(vec![egui::Event::Text("?".into())]);
+            harness.click("Settings");
+            assert!(settings_open(&harness), "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn the_settings_sheet_shows_the_general_tab() {
+        for look in SHEET_LOOKS {
+            let mut harness = settings_sheet(look());
+            for text in [
+                "Settings",
+                "General",
+                "How Tabletist shows data. Changes apply right away.",
+                "Rows per page",
+                "Table view; the SQL editor has its own limit",
+                "Timestamps",
+                "Numbers",
+                "Grouping is display only; copy gives the raw value",
+                "Value tags",
+            ] {
+                assert!(harness.has(text), "{text}");
+            }
+            // The sample is of the precision that is set.
+            assert!(harness.painted_color("2026-01-12 09:14:03").is_some());
+        }
+    }
+
+    #[test]
+    fn each_control_of_the_settings_sheet_changes_its_setting_and_saves() {
+        for look in SHEET_LOOKS {
+            let mut harness = settings_sheet(look());
+            let before = settings_saves(&harness);
+            harness.click("Full precision");
+            assert_eq!(
+                harness.app.settings.timestamps,
+                crate::settings::Timestamps::Full
+            );
+            harness.settle();
+            assert!(
+                harness
+                    .painted_color("2026-01-12 09:14:03.482915")
+                    .is_some()
+            );
+            harness.click("1,240.50");
+            assert!(harness.app.settings.group_digits);
+            harness.click("1240.50");
+            assert!(!harness.app.settings.group_digits);
+            let tags = harness.app.settings.value_tags;
+            harness.click("Value tags");
+            assert_eq!(harness.app.settings.value_tags, !tags);
+            // The menu: opened, and a size picked from it.
+            harness.click("Rows per page");
+            harness.click("Rows per page 500");
+            assert_eq!(harness.app.settings.page_size, 500);
+            assert_eq!(settings_saves(&harness), before + 5);
+            assert!(settings_open(&harness), "the window stays open");
+        }
+    }
+
+    #[test]
+    fn a_page_size_from_the_file_that_is_not_in_the_list_is_in_the_menu() {
+        let mut harness = settings_sheet(crate::theme::Look::standard());
+        harness.app.apply(crate::model::Action::SetOption(
+            crate::settings::OptionValue::PageSize(250),
+        ));
+        harness.click("Rows per page");
+        for size in ["100", "250", "300", "500", "1,000", "5,000"] {
+            let entry = format!("Rows per page {size}");
+            assert!(harness.has(&entry), "{entry}");
+        }
+    }
+
+    #[test]
+    fn the_letters_of_the_terminal_screen_do_nothing_in_the_sheet() {
+        let mut harness = settings_sheet(crate::theme::Look::macos());
+        let before = harness.app.settings.clone();
+        for key in [egui::Key::J, egui::Key::L, egui::Key::H, egui::Key::Space] {
+            harness.press(key, egui::Modifiers::NONE);
+        }
+        harness.press(egui::Key::R, egui::Modifiers::SHIFT);
+        harness.press(egui::Key::E, egui::Modifiers::CTRL);
+        assert_eq!(harness.app.settings, before);
+        // Nothing may have been sent at all: `last_sent` would panic.
+        let sent = &harness.app.backend.sent;
+        assert!(
+            !sent
+                .iter()
+                .any(|command| matches!(command, Command::EditSettingsFile { .. }))
+        );
     }
 
     #[test]
