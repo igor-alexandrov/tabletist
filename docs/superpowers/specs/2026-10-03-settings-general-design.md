@@ -475,6 +475,18 @@ it can watch there. A link turned by hand among the directories on the way
 `settings.toml` or a link it leads through, is not seen until the next
 change that is.
 
+A watch stays with the directory it was put on, not with its path. When a
+watched directory is moved or removed (a dotfiles repository set aside and
+cloned anew, the link as it was), the watcher says so for the directory
+itself. The reader is woken for that too, and before it reads it lets go
+of every watch and takes them again at the paths, so the directory now
+there is watched; while none is, the watch is not live and is looked for
+again as above. Known limits: a directory further up the path that is
+moved (`~/dotfiles` where `~/dotfiles/tabletist` is watched) raises
+nothing on Linux, and this is tested on Linux alone: where a system's
+watcher says nothing of the watched directory itself, edits made in the
+new one are not seen until the app starts again.
+
 When the file is deleted while the app runs, the settings in memory stay,
 and the next change writes the file again.
 

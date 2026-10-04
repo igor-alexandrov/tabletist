@@ -778,6 +778,14 @@ struct SettingsWatcher {
     names: Arc<Mutex<Vec<OsString>>>,
     /// The directories watched for a link's sake, while there are any.
     elsewhere: Vec<PathBuf>,
+    /// Every directory watched, as the watcher names it in an event. The
+    /// callback reads them, to tell when one is moved or removed.
+    watched: Arc<Mutex<Vec<PathBuf>>>,
+    /// Set by the callback when a watched directory was moved or removed:
+    /// a watch stays with the directory it was put on, not with its path,
+    /// so one made anew at that path is not watched until it is asked for
+    /// again ([`Self::renew`]).
+    gone: Arc<AtomicBool>,
 }
 
 /// What lies behind a symbolic link at the settings file: the names of what
@@ -803,6 +811,7 @@ impl SettingsWatcher {
         &mut self,
         mut look: impl FnMut(&Path) -> std::io::Result<Behind>,
     ) -> Result<(), String> {
+        self.renew()?;
         // A link in a directory that is not watched yet can be turned
         // between the look at it and the watch on its directory, and no
         // event would say so. So once the watches are there the links are
@@ -819,6 +828,43 @@ impl SettingsWatcher {
             "the link at {} keeps being turned",
             self.path.display()
         ))
+    }
+
+    /// Watches every directory anew once one of them was moved or removed
+    /// ([`Self::gone`]): the settings file's own here, and the ones behind
+    /// a link when [`Self::watch_behind`] finds none kept. An error when
+    /// the file's own directory is not there to be watched, and then the
+    /// next look tries again.
+    fn renew(&mut self) -> Result<(), String> {
+        use notify::Watcher as _;
+        if !self.gone.swap(false, Ordering::SeqCst) {
+            return Ok(());
+        }
+        // Best effort: the watcher may have let go of a directory that was
+        // removed by itself.
+        for directory in self.elsewhere.drain(..) {
+            let _ = self.watcher.unwatch(&directory);
+        }
+        let beside = crate::util::directory_of(&self.path);
+        let _ = self.watcher.unwatch(beside);
+        let renewed = self
+            .watcher
+            .watch(beside, notify::RecursiveMode::NonRecursive);
+        self.tell_watched();
+        renewed.map_err(|error| {
+            self.gone.store(true, Ordering::SeqCst);
+            format!("could not watch {}: {error}", beside.display())
+        })
+    }
+
+    /// Tells the callback which directories are watched now.
+    fn tell_watched(&self) {
+        let beside = crate::util::directory_of(&self.path);
+        let named = |directory: &Path| {
+            std::path::absolute(directory).unwrap_or_else(|_| directory.to_path_buf())
+        };
+        let elsewhere = self.elsewhere.iter().map(|directory| named(directory));
+        *lock(&self.watched) = std::iter::once(named(beside)).chain(elsewhere).collect();
     }
 
     /// Watches where `behind` says the links lead, and no longer where
@@ -845,15 +891,24 @@ impl SettingsWatcher {
             }
             kept
         });
+        let mut failed = None;
         for directory in directories {
-            if !self.elsewhere.contains(&directory) {
-                watcher
-                    .watch(&directory, notify::RecursiveMode::NonRecursive)
-                    .map_err(|error| format!("could not watch {}: {error}", directory.display()))?;
-                self.elsewhere.push(directory);
+            if self.elsewhere.contains(&directory) {
+                continue;
+            }
+            match watcher.watch(&directory, notify::RecursiveMode::NonRecursive) {
+                Ok(()) => self.elsewhere.push(directory),
+                Err(error) => {
+                    failed = Some(format!("could not watch {}: {error}", directory.display()));
+                    break;
+                }
             }
         }
-        behind
+        self.tell_watched();
+        match failed {
+            Some(why) => Err(why),
+            None => behind,
+        }
     }
 }
 
@@ -906,10 +961,20 @@ fn watch_settings(path: PathBuf, outbox: Outbox) -> notify::Result<(SettingsRead
     let _ = changed.send(());
     let names = Arc::new(Mutex::new(Vec::new()));
     let known = Arc::clone(&names);
+    let watched = Arc::new(Mutex::new(Vec::new()));
+    let directories = Arc::clone(&watched);
+    let gone = Arc::new(AtomicBool::new(false));
+    let left = Arc::clone(&gone);
     let mut watcher =
         notify::recommended_watcher(move |event: notify::Result<notify::Event>| match event {
             Ok(event) => {
-                if concerns(&event, &lock(&known)) {
+                // A directory made anew where this one was is watched once
+                // the reader has looked: it is woken for that too.
+                let moved = leaves(&event, &lock(&directories));
+                if moved {
+                    left.store(true, Ordering::SeqCst);
+                }
+                if moved || concerns(&event, &lock(&known)) {
                     let _ = changed.send(());
                 }
             }
@@ -924,6 +989,8 @@ fn watch_settings(path: PathBuf, outbox: Outbox) -> notify::Result<(SettingsRead
         path: path.clone(),
         names,
         elsewhere: Vec::new(),
+        watched,
+        gone,
     };
     let live = match watch.follow() {
         Ok(()) => true,
@@ -961,6 +1028,19 @@ fn concerns(event: &notify::Event, names: &[OsString]) -> bool {
             .iter()
             .filter_map(|path| path.file_name())
             .any(|changed| names.iter().any(|name| same_file(changed, name)))
+}
+
+/// Whether `event` says that one of the watched `directories` is no longer
+/// where it was: moved, or removed. The watch on it did not stay with its
+/// path, and what is at that path now, or comes to be, is not watched.
+fn leaves(event: &notify::Event, directories: &[PathBuf]) -> bool {
+    use notify::EventKind;
+    use notify::event::ModifyKind;
+    let leaving = matches!(
+        event.kind,
+        EventKind::Remove(_) | EventKind::Modify(ModifyKind::Name(_))
+    );
+    leaving && event.paths.iter().any(|path| directories.contains(path))
 }
 
 /// Whether two file names are one file's. macOS and Windows find a file
@@ -4319,6 +4399,29 @@ mod tests {
     }
 
     #[test]
+    fn a_watched_directory_that_is_moved_or_removed_is_told() {
+        use notify::event::{AccessKind, ModifyKind, RemoveKind, RenameMode};
+        use notify::{Event, EventKind};
+        let watched = [PathBuf::from("/config"), PathBuf::from("/dotfiles")];
+        let at = |kind: EventKind, path: &str| Event::new(kind).add_path(path.into());
+        let moved = EventKind::Modify(ModifyKind::Name(RenameMode::From));
+        let removed = EventKind::Remove(RemoveKind::Folder);
+        assert!(leaves(&at(moved, "/dotfiles"), &watched));
+        assert!(leaves(&at(removed, "/dotfiles"), &watched));
+        assert!(leaves(&at(removed, "/config"), &watched));
+        // What happens in it is not the directory leaving, nor is a look
+        // at it or a change of its own times.
+        assert!(!leaves(&at(removed, "/dotfiles/settings.toml"), &watched));
+        assert!(!leaves(&at(moved, "/dotfiles/settings.toml"), &watched));
+        let looked = EventKind::Access(AccessKind::Any);
+        assert!(!leaves(&at(looked, "/dotfiles"), &watched));
+        let touched = EventKind::Modify(ModifyKind::Any);
+        assert!(!leaves(&at(touched, "/dotfiles"), &watched));
+        // Nor is another directory's.
+        assert!(!leaves(&at(removed, "/elsewhere"), &watched));
+    }
+
+    #[test]
     fn a_settings_file_that_is_not_text_sends_nothing() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("settings.toml");
@@ -4467,6 +4570,8 @@ mod tests {
             path: path.clone(),
             names: Arc::default(),
             elsewhere: Vec::new(),
+            watched: Arc::default(),
+            gone: Arc::default(),
         };
         let names = |watch: &SettingsWatcher| -> Vec<String> {
             let names = lock(&watch.names);
@@ -4556,6 +4661,8 @@ mod tests {
             path,
             names: Arc::default(),
             elsewhere: Vec::new(),
+            watched: Arc::default(),
+            gone: Arc::default(),
         };
         // The second link is turned right after the first look at it, when
         // its directory is not watched yet: no event will ever say so.
@@ -4689,6 +4796,104 @@ mod tests {
         // From then on an edit made there is seen.
         std::fs::write(&target, "[data]\npage_size = 1000\n").unwrap();
         assert!(!texts_until(&mut backend, "[data]\npage_size = 1000\n").is_empty());
+    }
+
+    /// A link at the config directory's `settings.toml` to the dotfiles
+    /// directory's, which reads 100 rows a page, and a backend watching it.
+    #[cfg(target_os = "linux")]
+    fn linked_to_dotfiles(root: &std::path::Path) -> (Backend, PathBuf, PathBuf) {
+        let (config, dotfiles) = config_and_dotfiles(root);
+        let (path, target) = (config.join("settings.toml"), dotfiles.join("settings.toml"));
+        std::fs::write(&target, "[data]\npage_size = 100\n").unwrap();
+        crate::util::symlink_file(&target, &path);
+        let (backend, live) = watching(&path);
+        assert!(live);
+        (backend, dotfiles, target)
+    }
+
+    // The two below are for Linux, whose watches stay with the directory
+    // they were put on and say when it leaves.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_dotfiles_directory_set_aside_and_made_anew_is_watched_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut backend, dotfiles, target) = linked_to_dotfiles(dir.path());
+        // The repository is set aside and another takes its place. The link
+        // is as it was, and nothing changes beside it.
+        std::fs::rename(&dotfiles, dir.path().join("dotfiles.old")).unwrap();
+        std::fs::create_dir(&dotfiles).unwrap();
+        std::fs::write(&target, "[data]\npage_size = 500\n").unwrap();
+        assert!(!texts_until(&mut backend, "[data]\npage_size = 500\n").is_empty());
+        // And an edit made in the new one is seen.
+        std::fs::write(&target, "[data]\npage_size = 1000\n").unwrap();
+        assert!(!texts_until(&mut backend, "[data]\npage_size = 1000\n").is_empty());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_dotfiles_directory_removed_and_made_anew_is_watched_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut backend, dotfiles, target) = linked_to_dotfiles(dir.path());
+        std::fs::remove_dir_all(&dotfiles).unwrap();
+        std::fs::create_dir(&dotfiles).unwrap();
+        std::fs::write(&target, "[data]\npage_size = 500\n").unwrap();
+        assert!(!texts_until(&mut backend, "[data]\npage_size = 500\n").is_empty());
+        // The watch that was on the directory went with it: an edit made
+        // in the new one is seen all the same.
+        std::fs::write(&target, "[data]\npage_size = 1000\n").unwrap();
+        assert!(!texts_until(&mut backend, "[data]\npage_size = 1000\n").is_empty());
+    }
+
+    #[test]
+    fn a_watcher_told_a_directory_left_watches_them_all_anew() {
+        if !crate::util::can_symlink() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let (config, dotfiles) = config_and_dotfiles(dir.path());
+        let path = config.join("settings.toml");
+        link_anew(&dotfiles.join("settings.toml"), &path);
+        let mut watch = SettingsWatcher {
+            watcher: notify::recommended_watcher(|_| {}).unwrap(),
+            path: path.clone(),
+            names: Arc::default(),
+            elsewhere: Vec::new(),
+            watched: Arc::default(),
+            gone: Arc::default(),
+        };
+        let real = |directory: &std::path::Path| std::fs::canonicalize(directory).unwrap();
+        assert_eq!(watch.follow(), Ok(()));
+        // The callback is told both directories, to know them in an event.
+        assert_eq!(
+            *lock(&watch.watched),
+            [std::path::absolute(&config).unwrap(), real(&dotfiles)]
+        );
+        // One left and is there again: all are watched anew, and the
+        // watcher is done with what it was told.
+        watch.gone.store(true, Ordering::SeqCst);
+        assert_eq!(watch.follow(), Ok(()));
+        assert!(!watch.gone.load(Ordering::SeqCst));
+        assert_eq!(watch.elsewhere, [real(&dotfiles)]);
+    }
+
+    #[test]
+    fn a_watcher_whose_own_directory_left_tries_again_until_it_is_there() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("config");
+        let mut watch = SettingsWatcher {
+            watcher: notify::recommended_watcher(|_| {}).unwrap(),
+            path: config.join("settings.toml"),
+            names: Arc::default(),
+            elsewhere: Vec::new(),
+            watched: Arc::default(),
+            gone: Arc::new(AtomicBool::new(true)),
+        };
+        // Not there: said, and what the watcher was told stays told.
+        assert!(watch.follow().is_err());
+        assert!(watch.gone.load(Ordering::SeqCst));
+        std::fs::create_dir(&config).unwrap();
+        assert_eq!(watch.follow(), Ok(()));
+        assert!(!watch.gone.load(Ordering::SeqCst));
     }
 
     #[test]
