@@ -21,6 +21,7 @@ pub mod password_prompt;
 pub mod picker;
 pub mod quick_open;
 pub mod row_panel;
+pub mod settings;
 pub mod sidebar;
 pub mod sql_complete;
 pub mod sql_editor;
@@ -56,6 +57,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     quick_open::show(app, &ui.ctx().clone());
     help::show(app, &ui.ctx().clone());
     about::show(app, &ui.ctx().clone());
+    settings::show(app, &ui.ctx().clone());
 }
 
 /// A problem worth the user's attention that belongs to no one tab (a
@@ -852,6 +854,208 @@ mod tests {
         // The grid's cell and the row panel's field.
         assert!(off.len() >= 2, "{off:?}");
         assert!(off.iter().all(|color| *color == plain), "{off:?}");
+    }
+
+    /// A harness in the terminal look with the Settings screen open.
+    fn settings_screen() -> Harness {
+        let mut harness = Harness::new();
+        harness.set_look(crate::theme::Look::omarchy());
+        harness.press(egui::Key::Comma, egui::Modifiers::COMMAND);
+        assert!(settings_open(&harness));
+        harness
+    }
+
+    fn settings_open(harness: &Harness) -> bool {
+        matches!(harness.app.dialog, Some(crate::model::Dialog::Settings(_)))
+    }
+
+    fn settings_cursor(harness: &Harness) -> usize {
+        match &harness.app.dialog {
+            Some(crate::model::Dialog::Settings(dialog)) => dialog.row,
+            _ => panic!("the Settings screen is not open"),
+        }
+    }
+
+    fn settings_saves(harness: &Harness) -> usize {
+        harness
+            .app
+            .backend
+            .sent
+            .iter()
+            .filter(|command| {
+                matches!(
+                    command,
+                    Command::Save {
+                        file: crate::backend::StateFile::Settings(_),
+                        ..
+                    }
+                )
+            })
+            .count()
+    }
+
+    #[test]
+    fn mod_comma_opens_the_settings_in_the_terminal_look_and_escape_closes_them() {
+        let mut harness = settings_screen();
+        assert!(harness.has("settings"));
+        // The cursor starts on the first option.
+        assert!(harness.painted_color("▌rows per page").is_some());
+        // A second press leaves the screen as it is.
+        harness.press(egui::Key::J, egui::Modifiers::NONE);
+        harness.press(egui::Key::Comma, egui::Modifiers::COMMAND);
+        assert_eq!(settings_cursor(&harness), 1);
+        harness.press(egui::Key::Escape, egui::Modifiers::NONE);
+        assert!(harness.app.dialog.is_none());
+    }
+
+    #[test]
+    fn the_other_looks_have_no_settings_window_yet() {
+        for look in [crate::theme::Look::standard(), crate::theme::Look::macos()] {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            harness.press(egui::Key::Comma, egui::Modifiers::COMMAND);
+            assert!(harness.app.dialog.is_none(), "{}", look.name);
+            harness.frame(vec![egui::Event::Text("?".into())]);
+            assert!(!harness.has("Settings"), "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn the_shortcuts_dialog_opens_the_settings_in_the_terminal_look() {
+        let mut harness = Harness::new();
+        harness.set_look(crate::theme::Look::omarchy());
+        harness.frame(vec![egui::Event::Text("?".into())]);
+        harness.click("Settings");
+        assert!(settings_open(&harness));
+    }
+
+    #[test]
+    fn the_settings_cursor_moves_with_j_and_k_and_the_arrows() {
+        let mut harness = settings_screen();
+        assert_eq!(settings_cursor(&harness), 0);
+        harness.press(egui::Key::J, egui::Modifiers::NONE);
+        harness.press(egui::Key::ArrowDown, egui::Modifiers::NONE);
+        assert_eq!(settings_cursor(&harness), 2);
+        harness.press(egui::Key::K, egui::Modifiers::NONE);
+        harness.press(egui::Key::ArrowUp, egui::Modifiers::NONE);
+        harness.press(egui::Key::K, egui::Modifiers::NONE);
+        assert_eq!(settings_cursor(&harness), 0);
+        // The cursor's row says so.
+        assert!(harness.painted_color("▌rows per page").is_some());
+        assert!(harness.painted_color("timestamps").is_some());
+    }
+
+    #[test]
+    fn h_and_l_change_the_cursors_option_and_save_it() {
+        use crate::settings::Timestamps;
+        let mut harness = settings_screen();
+        // Rows per page.
+        harness.press(egui::Key::L, egui::Modifiers::NONE);
+        assert_eq!(harness.app.settings.page_size, 500);
+        assert_eq!(settings_saves(&harness), 1);
+        harness.press(egui::Key::ArrowLeft, egui::Modifiers::NONE);
+        harness.press(egui::Key::H, egui::Modifiers::NONE);
+        assert_eq!(harness.app.settings.page_size, 100);
+        // At the end of the choices a step changes and writes nothing.
+        let saved = settings_saves(&harness);
+        harness.press(egui::Key::H, egui::Modifiers::NONE);
+        assert_eq!(harness.app.settings.page_size, 100);
+        assert_eq!(settings_saves(&harness), saved);
+        // Timestamps.
+        harness.press(egui::Key::J, egui::Modifiers::NONE);
+        harness.press(egui::Key::ArrowRight, egui::Modifiers::NONE);
+        assert_eq!(harness.app.settings.timestamps, Timestamps::Full);
+        assert!(
+            harness
+                .painted_color("2026-01-12 09:14:03.482915")
+                .is_some()
+        );
+        // Numbers: grouped is the left of the two.
+        harness.press(egui::Key::J, egui::Modifiers::NONE);
+        harness.press(egui::Key::H, egui::Modifiers::NONE);
+        assert!(harness.app.settings.group_digits);
+        assert!(harness.painted_color("grouping on").is_some());
+    }
+
+    #[test]
+    fn space_flips_an_option_of_two_values_and_shift_r_resets_the_cursors() {
+        let mut harness = settings_screen();
+        // Space on the page size does nothing: it has more than two values.
+        harness.press(egui::Key::Space, egui::Modifiers::NONE);
+        assert_eq!(settings_saves(&harness), 0);
+        for _ in 0..3 {
+            harness.press(egui::Key::J, egui::Modifiers::NONE);
+        }
+        harness.press(egui::Key::Space, egui::Modifiers::NONE);
+        assert!(!harness.app.settings.value_tags);
+        assert!(harness.painted_color("[ ]").is_some());
+        harness.press(egui::Key::R, egui::Modifiers::SHIFT);
+        assert!(harness.app.settings.value_tags);
+        assert!(harness.painted_color("[x]").is_some());
+        // A plain r is not the key.
+        harness.press(egui::Key::Space, egui::Modifiers::NONE);
+        harness.press(egui::Key::R, egui::Modifiers::NONE);
+        assert!(!harness.app.settings.value_tags);
+    }
+
+    #[test]
+    fn a_click_moves_the_settings_cursor_and_a_click_on_a_value_sets_it() {
+        use crate::settings::Timestamps;
+        let mut harness = settings_screen();
+        harness.click("Numbers");
+        assert_eq!(settings_cursor(&harness), 2);
+        harness.click("Timestamps: full");
+        assert_eq!(harness.app.settings.timestamps, Timestamps::Full);
+        assert_eq!(settings_cursor(&harness), 1, "the cursor follows the click");
+        harness.click("Value tags: off");
+        assert!(!harness.app.settings.value_tags);
+        harness.click("Rows per page: more");
+        assert_eq!(harness.app.settings.page_size, 500);
+    }
+
+    #[test]
+    fn the_settings_screen_takes_the_keys_from_what_is_under_it() {
+        let mut harness = Harness::new();
+        harness.set_look(crate::theme::Look::omarchy());
+        let tab = harness.connect_fake();
+        let pane = harness.app.workspace(tab).unwrap().pane;
+        harness.press(egui::Key::Comma, egui::Modifiers::COMMAND);
+        // j is the tree's key in the workspace: here it is the screen's.
+        harness.press(egui::Key::J, egui::Modifiers::NONE);
+        assert_eq!(settings_cursor(&harness), 1);
+        assert_eq!(harness.app.workspace(tab).unwrap().pane, pane);
+    }
+
+    #[test]
+    fn a_click_on_another_rows_page_size_only_moves_the_settings_cursor() {
+        let mut harness = settings_screen();
+        harness.press(egui::Key::J, egui::Modifiers::NONE);
+        // No chevron is drawn on that row: the number starts where the
+        // cursor's row has one.
+        let number = harness.painted_rect("300").expect("the page size");
+        click_at(&mut harness, number.left_center() + egui::vec2(1.0, 0.0));
+        assert_eq!(settings_cursor(&harness), 0);
+        assert_eq!(harness.app.settings.page_size, 300);
+        assert_eq!(settings_saves(&harness), 0);
+        // On the cursor's row the chevrons are drawn, and each takes a click.
+        let stepper = harness.painted_rect("‹ 300 ›").expect("the chevrons");
+        click_at(&mut harness, stepper.left_center() + egui::vec2(1.0, 0.0));
+        assert_eq!(harness.app.settings.page_size, 100);
+    }
+
+    #[test]
+    fn the_keys_in_the_settings_footer_are_buttons_too() {
+        let mut harness = settings_screen();
+        // The page size has nothing to flip.
+        harness.click("Toggle");
+        assert_eq!(settings_saves(&harness), 0);
+        harness.click("Value tags");
+        harness.click("Toggle");
+        assert!(!harness.app.settings.value_tags);
+        harness.click("Reset option");
+        assert!(harness.app.settings.value_tags);
+        harness.click("Close");
+        assert!(harness.app.dialog.is_none());
     }
 
     #[test]

@@ -355,6 +355,12 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
             ctx.copy_text(text);
         }
     }
+    // The Settings window, wherever the keyboard is. Until the other looks
+    // have their window, only the terminal look opens one.
+    if app.look.terminal && ctx.input_mut(|input| input.consume_key(Modifiers::COMMAND, Key::Comma))
+    {
+        actions.push(Action::ShowSettings);
+    }
     if !editing && app.dialog.is_none() {
         letters(app, ctx, &mut actions);
     }

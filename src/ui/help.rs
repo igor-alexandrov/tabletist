@@ -77,6 +77,11 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
             if widgets::button(ui, &gettext(locale, "About Tabletist"), &look).clicked() {
                 actions.push(Action::ShowAbout);
             }
+            // Until the other looks have their window, only the terminal
+            // look offers one.
+            if look.terminal && widgets::button(ui, &gettext(locale, "Settings"), &look).clicked() {
+                actions.push(Action::ShowSettings);
+            }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if widgets::button(ui, &gettext(locale, "Close"), &look).clicked() {
                     actions.push(Action::CloseDialog);
