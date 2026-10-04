@@ -766,17 +766,18 @@ const SETTLE: Duration = Duration::from_millis(100);
 /// the file would stay with the one that was replaced. When the file is a
 /// symbolic link, as a dotfiles manager makes it, the directory of the file
 /// it leads to is watched too: an edit made there raises no event beside
-/// the link.
+/// the link. So is the directory of each link on the way, when one link
+/// leads to another: any of them can be turned.
 struct SettingsWatcher {
     watcher: notify::RecommendedWatcher,
     /// The settings file, as the app names it.
     path: PathBuf,
     /// The names a change of the settings comes under: the file's own and,
-    /// behind a link, the name of the file it leads to. The watcher's
-    /// callback reads them.
+    /// behind a link, the name of the file it leads to and of every link
+    /// on the way there. The watcher's callback reads them.
     names: Arc<Mutex<Vec<OsString>>>,
-    /// The directory watched for a link's sake, while there is one.
-    elsewhere: Option<PathBuf>,
+    /// The directories watched for a link's sake, while there are any.
+    elsewhere: Vec<PathBuf>,
 }
 
 impl SettingsWatcher {
@@ -792,45 +793,56 @@ impl SettingsWatcher {
                 self.path.display()
             )
         });
-        let (name, directory) = match &behind {
-            Ok(Some((name, directory))) => (Some(name.clone()), directory.clone()),
-            _ => (None, None),
-        };
+        let (names, directories) = behind.clone().unwrap_or_default();
         let own = self.path.file_name().map(OsStr::to_owned);
-        *lock(&self.names) = own.into_iter().chain(name).collect();
-        if directory != self.elsewhere {
-            if let Some(left) = self.elsewhere.take() {
-                // Best effort: a directory that is gone is not watched any
-                // more as it is.
-                let _ = self.watcher.unwatch(&left);
+        *lock(&self.names) = own.into_iter().chain(names).collect();
+        // Let go of where the links no longer lead. Best effort: a
+        // directory that is gone is not watched any more as it is.
+        let watcher = &mut self.watcher;
+        self.elsewhere.retain(|watched| {
+            let kept = directories.contains(watched);
+            if !kept {
+                let _ = watcher.unwatch(watched);
             }
-            if let Some(directory) = directory {
-                self.watcher
+            kept
+        });
+        for directory in directories {
+            if !self.elsewhere.contains(&directory) {
+                watcher
                     .watch(&directory, notify::RecursiveMode::NonRecursive)
                     .map_err(|error| format!("could not watch {}: {error}", directory.display()))?;
-                self.elsewhere = Some(directory);
+                self.elsewhere.push(directory);
             }
         }
         behind.map(|_| ())
     }
 }
 
-/// Where the settings file is when `path` is a symbolic link: the name of
-/// the file the link leads to, and its directory when that is another than
-/// the link's. `None` for a path that is no link.
-fn behind_link(path: &Path) -> std::io::Result<Option<(OsString, Option<PathBuf>)>> {
-    let file = crate::util::resolve_link(path)?;
-    let Some(name) = file.file_name().filter(|_| file != path) else {
-        return Ok(None);
+/// Where the settings file is when `path` is a symbolic link: the names of
+/// what the links lead through (each further link, and the file at the
+/// end), and the directories those are in, other than the link's own.
+/// Nothing for a path that is no link.
+fn behind_link(path: &Path) -> std::io::Result<(Vec<OsString>, Vec<PathBuf>)> {
+    let chain = crate::util::link_chain(path)?;
+    let (mut names, mut directories) = (Vec::new(), Vec::new());
+    let Some(behind) = chain.get(1..).filter(|behind| !behind.is_empty()) else {
+        return Ok((names, directories));
     };
     // As the system has them: one directory reached by two paths is told
     // for one, and is not watched twice.
-    let directory = std::fs::canonicalize(crate::util::directory_of(&file))?;
     let beside = std::fs::canonicalize(crate::util::directory_of(path))?;
-    Ok(Some((
-        name.to_owned(),
-        (directory != beside).then_some(directory),
-    )))
+    for file in behind {
+        // A link to a directory's `..` names nothing that could be read.
+        let Some(name) = file.file_name() else {
+            continue;
+        };
+        names.push(name.to_owned());
+        let directory = std::fs::canonicalize(crate::util::directory_of(file))?;
+        if directory != beside && !directories.contains(&directory) {
+            directories.push(directory);
+        }
+    }
+    Ok((names, directories))
 }
 
 /// The task that watches and reads the settings file. Dropped, it stops
@@ -872,7 +884,7 @@ fn watch_settings(path: PathBuf, outbox: Outbox) -> notify::Result<(SettingsRead
         watcher,
         path: path.clone(),
         names,
-        elsewhere: None,
+        elsewhere: Vec::new(),
     };
     let live = match watch.follow() {
         Ok(()) => true,
@@ -4361,7 +4373,7 @@ mod tests {
             watcher: notify::recommended_watcher(|_| {}).unwrap(),
             path: path.clone(),
             names: Arc::default(),
-            elsewhere: None,
+            elsewhere: Vec::new(),
         };
         let names = |watch: &SettingsWatcher| -> Vec<String> {
             let names = lock(&watch.names);
@@ -4371,7 +4383,8 @@ mod tests {
                 .collect()
         };
         // As the system has it, which is how the watcher keeps it.
-        let real = |directory: &std::path::Path| Some(std::fs::canonicalize(directory).unwrap());
+        let real = |directory: &std::path::Path| std::fs::canonicalize(directory).unwrap();
+        let nowhere: Vec<PathBuf> = Vec::new();
 
         // No file yet, then a plain one: only the config directory.
         assert_eq!(watch.follow(), Ok(()));
@@ -4379,27 +4392,36 @@ mod tests {
         assert_eq!(watch.follow(), Ok(()));
         assert_eq!(
             (names(&watch), &watch.elsewhere),
-            (vec!["settings.toml".into()], &None)
+            (vec!["settings.toml".into()], &nowhere)
         );
 
         // A link to another directory, under another name there.
         link_anew(&dotfiles.join("tabletist.toml"), &path);
         assert_eq!(watch.follow(), Ok(()));
         assert_eq!(names(&watch), ["settings.toml", "tabletist.toml"]);
-        assert_eq!(watch.elsewhere, real(&dotfiles));
+        assert_eq!(watch.elsewhere, [real(&dotfiles)]);
 
         // Turned to a third directory: that one, and no longer the second.
         link_anew(&other.join("settings.toml"), &path);
         assert_eq!(watch.follow(), Ok(()));
         assert_eq!(names(&watch), ["settings.toml", "settings.toml"]);
-        assert_eq!(watch.elsewhere, real(&other));
+        assert_eq!(watch.elsewhere, [real(&other)]);
+
+        // Through a second link, which can be turned too: the names of
+        // both, and the directories of both.
+        let current = dotfiles.join("current");
+        link_anew(&other.join("settings.toml"), &current);
+        link_anew(&current, &path);
+        assert_eq!(watch.follow(), Ok(()));
+        assert_eq!(names(&watch), ["settings.toml", "current", "settings.toml"]);
+        assert_eq!(watch.elsewhere, [real(&other), real(&dotfiles)]);
 
         // Turned to a directory that is not there: said, and nothing kept.
         link_anew(&dir.path().join("away").join("settings.toml"), &path);
         assert!(watch.follow().is_err());
         assert_eq!(
             (names(&watch), &watch.elsewhere),
-            (vec!["settings.toml".into()], &None)
+            (vec!["settings.toml".into()], &nowhere)
         );
 
         // A link within the config directory: a second name, no second
@@ -4407,10 +4429,10 @@ mod tests {
         link_anew(std::path::Path::new("real.toml"), &path);
         assert_eq!(watch.follow(), Ok(()));
         assert_eq!(names(&watch), ["settings.toml", "real.toml"]);
-        assert_eq!(watch.elsewhere, None);
+        assert_eq!(watch.elsewhere, nowhere);
         link_anew(&dotfiles.join("..").join("config").join("real.toml"), &path);
         assert_eq!(watch.follow(), Ok(()));
-        assert_eq!(watch.elsewhere, None);
+        assert_eq!(watch.elsewhere, nowhere);
 
         // And a plain file again.
         std::fs::remove_file(&path).unwrap();
@@ -4418,8 +4440,35 @@ mod tests {
         assert_eq!(watch.follow(), Ok(()));
         assert_eq!(
             (names(&watch), &watch.elsewhere),
-            (vec!["settings.toml".into()], &None)
+            (vec!["settings.toml".into()], &nowhere)
         );
+    }
+
+    #[test]
+    fn a_link_turned_in_the_middle_of_a_chain_is_followed() {
+        if !crate::util::can_symlink() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let (config, dotfiles) = config_and_dotfiles(dir.path());
+        let (first, second) = (dir.path().join("first"), dir.path().join("second"));
+        std::fs::create_dir(&first).unwrap();
+        std::fs::create_dir(&second).unwrap();
+        std::fs::write(first.join("settings.toml"), "[data]\npage_size = 100\n").unwrap();
+        std::fs::write(second.join("settings.toml"), "[data]\npage_size = 500\n").unwrap();
+        // config/settings.toml -> dotfiles/current -> first/settings.toml
+        let (path, current) = (config.join("settings.toml"), dotfiles.join("current"));
+        crate::util::symlink_file(first.join("settings.toml"), &current);
+        crate::util::symlink_file(&current, &path);
+        let (mut backend, live) = watching(&path);
+        assert!(live);
+        // The second link is turned: nothing changes beside the first, nor
+        // beside the file it led to.
+        link_anew(&second.join("settings.toml"), &current);
+        assert!(!texts_until(&mut backend, "[data]\npage_size = 500\n").is_empty());
+        // And an edit made where it leads now is seen.
+        std::fs::write(second.join("settings.toml"), "[data]\npage_size = 1000\n").unwrap();
+        assert!(!texts_until(&mut backend, "[data]\npage_size = 1000\n").is_empty());
     }
 
     #[test]
