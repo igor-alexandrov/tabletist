@@ -95,14 +95,17 @@ tabletist/
     src/lib.rs               Connection (driver + optional SSH tunnel), CancelHandle
     src/spec.rs              ConnectSpec, Driver, TlsMode, SshSpec, Secrets, URL parsing
     src/value.rs             Value, ColumnMeta, ValueKind
-    src/catalog.rs           ObjectRef, ObjectInfo, ObjectKind, Structure
+    src/catalog.rs           ObjectRef, ObjectInfo, ObjectKind, Structure, the row key
+    src/class.rs             ColumnClass: what a column takes, by its type's name
     src/query.rs             RowQuery, Filter, Sort, RowPage
     src/dialect.rs           per-dialect SQL builder and identifier quoting
+    src/write.rs             ChangeSet, WriteOutcome, the checks a save shares
     src/error.rs             Error, SshStage
     src/tls.rs               rustls config per TlsMode (libpq sslmode meanings)
     src/ssh.rs               russh tunnel, host key check
     src/pg.rs  src/mysql.rs  src/sqlite.rs   adapters
     src/sqlite/fence.rs      what SQLite's authorizer lets a script and a raw WHERE do
+    src/{pg,mysql,sqlite}/write.rs   the save, one transaction per driver
     src/fixtures.rs          fixture scripts; writes the SQLite demo database
     fixtures/                postgres.sql, mysql.sql, sqlite.sql
     tests/                   integration tests per driver and SSH; ssh/ test keys
@@ -215,6 +218,8 @@ impl Connection {
     pub async fn describe(&self, obj: &ObjectRef) -> Result<Structure>;
     pub async fn fetch_rows(&self, q: &RowQuery) -> Result<RowPage>;
     pub async fn count_rows(&self, q: &RowQuery) -> Result<u64>;
+    /// The only writing call: changed rows, in one transaction or not at all.
+    pub async fn write(&self, changes: &ChangeSet) -> Result<WriteOutcome>;
     pub fn cancel_handle(&self) -> CancelHandle;
     pub async fn close(self) -> Result<()>;
 }
@@ -264,8 +269,14 @@ state. Browsing, a raw WHERE and the SQL editor still cannot write there:
 row fetches and counts run in read-only transactions on PostgreSQL and
 MySQL, and on SQLite under `query_only` with an authorizer fencing the raw
 WHERE; a script runs behind the SQL editor's guard, which makes a MySQL
-session read-only for the run. Nothing in the app writes yet. The detail is
-in `2026-10-03-value-editing-core-design.md`, "Sessions".
+session read-only for the run. The crate writes in exactly one place,
+`Connection::write`, which a read-only session refuses; nothing in the UI
+calls it yet. The detail is in `2026-10-03-value-editing-core-design.md`,
+"Sessions" and "Saving".
+
+Every session also fixes how values print, since a save sends back what a
+page showed: PostgreSQL sets `extra_float_digits = 3` and `DateStyle =
+'ISO'` at connect, and MySQL sets `sql_notes = 1`.
 
 ### 4.4 Catalog
 
@@ -275,10 +286,18 @@ in `2026-10-03-value-editing-core-design.md`, "Sessions".
   SQLite.
 - `Structure { columns: Vec<ColumnInfo>, primary_key: Vec<String>,
   indexes: Vec<IndexInfo>, foreign_keys: Vec<ForeignKeyInfo> }` where
-  `ColumnInfo { name, type_name, nullable, default, comment }`,
-  `IndexInfo { name, columns, unique, primary, method }`,
+  `ColumnInfo { name, type_name, nullable, default, comment, generated }`,
+  `IndexInfo { name, columns, key_columns, unique, primary, method,
+  partial }`,
   `ForeignKeyInfo { name: Option<String>, columns, ref_schema, ref_table,
   ref_columns, on_update, on_delete }`.
+- `generated` marks a column the database computes (generated columns,
+  and identity columns that are always generated). `partial` marks an
+  index over only some rows, and `key_columns` names an index's columns
+  when each is one whole column compared as the column compares. From
+  these `Structure::row_key` gives the columns that tell one row from
+  every other, for a save to find a row by, and `column_class` reads from
+  a column's type name what it takes (see the value-editing spec).
 - Sources: `pg_catalog` (PostgreSQL), `information_schema` (MySQL),
   `PRAGMA table_xinfo`, `index_list`, `index_info`, `foreign_key_list`
   (SQLite).
