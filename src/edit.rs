@@ -12,7 +12,7 @@ use tabletist_db::{
 };
 
 use crate::backend::RequestId;
-use crate::model::CellPos;
+use crate::model::{CellPos, ObjectTab, Workspace};
 
 /// The largest value an editor opens, in bytes of its text: a field that
 /// held megabytes would be laid out every frame.
@@ -66,6 +66,24 @@ pub struct Table<'a> {
     pub saving: bool,
 }
 
+impl<'a> Table<'a> {
+    /// What editing may know of `object`, a table's tab of `workspace`:
+    /// `None` while it has no page.
+    pub fn of(workspace: &'a Workspace, object: &'a ObjectTab) -> Option<Self> {
+        Some(Self {
+            access: workspace.access,
+            kind: object.kind,
+            dialect: workspace.driver.dialect(),
+            structure: object.structure.value.as_ref(),
+            page: object.page()?,
+            // The structure too: what a describe in flight brings may have
+            // another key, and no edit starts on the one about to go.
+            refreshing: object.rows.is_loading() || object.structure.is_loading(),
+            saving: object.edits.saving.is_some(),
+        })
+    }
+}
+
 impl Table<'_> {
     /// The page's columns that make the row key, by their place. `None`
     /// when the table has no key, or the page does not hold all of it.
@@ -110,21 +128,12 @@ impl Table<'_> {
     /// hold for the whole table come first, so every cell of such a table
     /// says the same.
     pub fn lock(&self, cell: CellPos) -> Option<Lock> {
-        if self.access == Access::ReadOnly {
-            return Some(Lock::ReadOnly);
-        }
-        if self.kind != ObjectKind::Table {
-            return Some(Lock::NotATable);
-        }
-        if self.structure.is_none() {
-            return Some(Lock::StructureLoading);
+        if let Some(lock) = self.never() {
+            return Some(lock);
         }
         let Some(key) = self.key() else {
             return Some(Lock::NoKey);
         };
-        if key.iter().any(|&col| self.unmatched(col)) {
-            return Some(Lock::KeyType);
-        }
         if self.saving {
             return Some(Lock::Saving);
         }
@@ -165,6 +174,28 @@ impl Table<'_> {
         }
         if matches!(value, Value::Text(text) if text.len() > MAX_EDIT_BYTES) {
             return Some(Lock::TooLarge);
+        }
+        None
+    }
+
+    /// Why no cell of the table is ever edited, or `None` for a table that
+    /// can be: one whose cells are locked only for a while (a save, a
+    /// fetch) or each for a reason of its own.
+    pub fn never(&self) -> Option<Lock> {
+        if self.access == Access::ReadOnly {
+            return Some(Lock::ReadOnly);
+        }
+        if self.kind != ObjectKind::Table {
+            return Some(Lock::NotATable);
+        }
+        if self.structure.is_none() {
+            return Some(Lock::StructureLoading);
+        }
+        let Some(key) = self.key() else {
+            return Some(Lock::NoKey);
+        };
+        if key.iter().any(|&col| self.unmatched(col)) {
+            return Some(Lock::KeyType);
         }
         None
     }

@@ -11091,4 +11091,294 @@ mod tests {
         assert!(harness.app.dialog.is_none());
         assert_eq!(pending(&harness), None, "the tab closed");
     }
+
+    use crate::model::{Action, Advance, CellPos, ConnTabId, EditStart, TabId};
+    use crate::theme::Look;
+    use crate::ui::states::Tone;
+
+    /// A writable table with its structure and five rows, the grid holding
+    /// the keyboard, in `look`.
+    fn editable_in(look: Look) -> (Harness, ConnTabId, TabId) {
+        let mut harness = Harness::new();
+        harness.set_look(look);
+        let (tab, id) = harness.editable();
+        focus_grid(&mut harness, tab);
+        harness.settle();
+        (harness, tab, id)
+    }
+
+    /// The middle of the cell that shows `text`.
+    fn cell_of(harness: &Harness, text: &str) -> egui::Pos2 {
+        harness
+            .painted_rect(text)
+            .unwrap_or_else(|| panic!("no cell shows {text}"))
+            .center()
+    }
+
+    fn edits(harness: &Harness, tab: ConnTabId, id: TabId) -> &crate::edit::Edits {
+        &harness
+            .app
+            .workspace(tab)
+            .unwrap()
+            .object_tab(id)
+            .unwrap()
+            .edits
+    }
+
+    /// Whether the last frame filled a cell's worth of `color` behind the
+    /// cell that shows `text`.
+    fn filled_behind(harness: &Harness, text: &str, color: egui::Color32) -> bool {
+        let at = cell_of(harness, text);
+        harness
+            .fills
+            .iter()
+            .any(|(rect, fill)| *fill == color && rect.contains(at) && rect.width() < 500.0)
+    }
+
+    /// Makes the cell at `row`, `col` of the table pending as `text`.
+    fn make_pending(
+        harness: &mut Harness,
+        tab: ConnTabId,
+        id: TabId,
+        at: (usize, usize),
+        text: &str,
+    ) {
+        let cell = CellPos {
+            row: at.0,
+            col: at.1,
+        };
+        let start = EditStart::Replace(text.into());
+        harness.app.apply(Action::EditCell {
+            tab,
+            id,
+            cell,
+            start,
+        });
+        let then = Advance::Stay;
+        harness.app.apply(Action::CommitEdit { tab, id, then });
+    }
+
+    /// Moves the pointer to `at` and waits past the tooltip's delay. Returns
+    /// every name on screen then.
+    fn hover(harness: &mut Harness, at: egui::Pos2) -> Vec<String> {
+        harness.frame(vec![egui::Event::PointerMoved(at)]);
+        // Each frame is 1/60 s.
+        for _ in 0..60 {
+            harness.frame(Vec::new());
+        }
+        crate::testing::labels(&harness.frame(Vec::new()))
+    }
+
+    #[test]
+    fn a_computed_column_is_drawn_locked_in_a_table_that_can_be_edited() {
+        // A table whose `email` the database computes, on a connection
+        // that is read-only or not, with its structure known or not.
+        let open = |look: Look, read_only: bool, described: bool| {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            let tab = harness.connect_fake_as(read_only);
+            harness.app.apply(Action::OpenObject {
+                tab,
+                object: tabletist_db::ObjectRef::new("main", "users"),
+                kind: tabletist_db::ObjectKind::Table,
+                pin: true,
+            });
+            if described {
+                let mut structure = crate::testing::fixture_structure();
+                structure.columns[1].generated = true;
+                harness.answer_structure(structure);
+            }
+            harness.answer_rows(crate::testing::page(5, false));
+            harness.settle();
+            harness
+        };
+        for look in Look::ALL {
+            let harness = open(look, false, true);
+            let palette = harness.app.palette;
+            // The computed column's cells stand on the surface, their text
+            // a step quieter. The terminal draws them as it did.
+            for email in ["user1@example.com", "user4@example.com"] {
+                assert_eq!(
+                    filled_behind(&harness, email, palette.surface),
+                    !look.terminal,
+                    "{}",
+                    look.name
+                );
+                let color = if look.terminal {
+                    palette.text
+                } else {
+                    palette.secondary
+                };
+                assert!(painted_in(&harness, email, color), "{}", look.name);
+            }
+            // No other column is.
+            assert!(!filled_behind(&harness, "4", palette.surface));
+            // Nothing of it where nothing can be edited: a cell there says
+            // why when it is asked.
+            for (read_only, described) in [(true, true), (false, false)] {
+                let harness = open(look, read_only, described);
+                assert!(
+                    !filled_behind(&harness, "user1@example.com", palette.surface),
+                    "{}: read-only {read_only}, described {described}",
+                    look.name
+                );
+                assert!(painted_in(&harness, "user1@example.com", palette.text));
+            }
+        }
+    }
+
+    #[test]
+    fn a_pending_cell_shows_its_new_value_and_what_it_was() {
+        for look in Look::ALL {
+            let (mut harness, tab, id) = editable_in(look);
+            let palette = harness.app.palette;
+            make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
+            // The row panel has the row's values too: the grid alone is
+            // looked at here.
+            harness.app.workspace_mut(tab).unwrap().row_panel = false;
+            harness.settle();
+            let painted = |harness: &Harness, text: &str| {
+                harness.painted.iter().any(|(piece, _)| piece == text)
+            };
+            assert!(painted(&harness, "bob@example.com"), "{}", look.name);
+            assert!(!painted(&harness, "user2@example.com"), "{}", look.name);
+            let amber = Tone::Warning.fill(&look, &palette);
+            assert!(
+                filled_behind(&harness, "bob@example.com", amber),
+                "{}",
+                look.name
+            );
+            assert!(
+                !filled_behind(&harness, "user3@example.com", amber),
+                "{}",
+                look.name
+            );
+            // Its row is marked: the terminal's gutter, or a bar at its left.
+            let color = Tone::Warning.color(&palette);
+            if look.terminal {
+                assert!(painted_in(&harness, "~", color), "{}", look.name);
+                assert!(painted_in(&harness, "bob@example.com", color));
+            } else {
+                let bar = harness.fills.iter().any(|(rect, fill)| {
+                    *fill == color && rect.width() == 3.0 && rect.height() == look.grid_row
+                });
+                assert!(bar, "{}", look.name);
+                // The row's key takes the colour too.
+                assert!(painted_in(&harness, "2", color), "{}", look.name);
+            }
+            // Under the pointer the cell says what it was.
+            let at = cell_of(&harness, "bob@example.com");
+            let names = hover(&mut harness, at);
+            assert!(
+                names.iter().any(|name| name == "was user2@example.com"),
+                "{}: {names:?}",
+                look.name
+            );
+            // A cell with nothing pending says nothing.
+            let at = cell_of(&harness, "user3@example.com");
+            let names = hover(&mut harness, at);
+            assert!(
+                !names.iter().any(|name| name.starts_with("was ")),
+                "{}",
+                look.name
+            );
+            // NULL is a value too, and what was NULL says so.
+            harness.app.apply(Action::SelectCell {
+                tab,
+                id,
+                cell: CellPos { row: 0, col: 2 },
+            });
+            harness.app.apply(Action::SetNull { tab, id });
+            make_pending(&mut harness, tab, id, (1, 2), "[1]");
+            harness.settle();
+            assert_eq!(edits(&harness, tab, id).cells.len(), 3);
+            let nulls = harness
+                .text_rects
+                .iter()
+                .filter(|(text, _)| text == "NULL")
+                .map(|(_, rect)| rect.center());
+            let tinted = nulls
+                .filter(|at| {
+                    harness
+                        .fills
+                        .iter()
+                        .any(|(rect, fill)| *fill == amber && rect.contains(*at))
+                })
+                .count();
+            assert_eq!(tinted, 1, "{}: the cell set to NULL", look.name);
+        }
+    }
+
+    #[test]
+    fn a_saved_cell_is_green_for_a_moment() {
+        for look in Look::ALL {
+            let (mut harness, tab, id) = editable_in(look);
+            let palette = harness.app.palette;
+            // Short enough to show whole beside the spinner of a save.
+            make_pending(&mut harness, tab, id, (1, 1), "b@x.io");
+            // The row panel has the row's values too: the grid alone is
+            // looked at here.
+            harness.app.workspace_mut(tab).unwrap().row_panel = false;
+            harness.app.apply(Action::WriteEdits { tab, id });
+            harness.settle();
+            // Being saved, it is still amber.
+            assert!(edits(&harness, tab, id).saving.is_some());
+            let amber = Tone::Warning.fill(&look, &palette);
+            assert!(filled_behind(&harness, "b@x.io", amber), "{}", look.name);
+            harness.answer_written(Ok(tabletist_db::WriteOutcome::Written {
+                rows: vec![vec![
+                    tabletist_db::Value::Int(2),
+                    tabletist_db::Value::Text("b@x.io".into()),
+                    tabletist_db::Value::Null,
+                ]],
+                elapsed: std::time::Duration::from_millis(14),
+            }));
+            harness.settle();
+            let green = Tone::Success.fill(&look, &palette);
+            assert!(filled_behind(&harness, "b@x.io", green), "{}", look.name);
+            assert!(!filled_behind(&harness, "b@x.io", amber));
+            // The frame asks to be drawn again when the moment is over.
+            assert!(
+                harness.repaint_after <= crate::edit::SAVED_FOR,
+                "{}: {:?}",
+                look.name,
+                harness.repaint_after
+            );
+            // Two seconds on, the cell is as any other.
+            let workspace = harness.app.workspace_mut(tab).unwrap();
+            let saved = workspace.object_tab_mut(id).unwrap().edits.saved.as_mut();
+            let saved = saved.expect("the save that wrote");
+            saved.at = std::time::Instant::now()
+                .checked_sub(std::time::Duration::from_secs(2))
+                .expect("a clock two seconds old");
+            harness.settle();
+            assert!(!filled_behind(&harness, "b@x.io", green), "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn a_sql_result_is_drawn_as_before() {
+        for look in Look::ALL {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            // A writable connection: a result is never edited all the same.
+            let tab = harness.connect_fake_as(false);
+            with_sql_result(&mut harness, tab, 3);
+            focus_grid(&mut harness, tab);
+            harness.settle();
+            let palette = harness.app.palette;
+            assert!(painted_in(&harness, "user2@example.com", palette.text));
+            for tone in [Tone::Warning, Tone::Danger, Tone::Success] {
+                let fill = tone.fill(&look, &palette);
+                assert!(
+                    !filled_behind(&harness, "user2@example.com", fill),
+                    "{}: {tone:?}",
+                    look.name
+                );
+            }
+            let at = cell_of(&harness, "user2@example.com");
+            let names = hover(&mut harness, at);
+            assert!(!names.iter().any(|name| name.starts_with("was ")));
+        }
+    }
 }
