@@ -1520,6 +1520,51 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn a_save_does_not_commit_what_a_transaction_left_open_wrote() {
+        let (conn, dir) = fixture_as(Access::Writable).await;
+        // Nothing in the app leaves a transaction open; this one is planted,
+        // with a write of its own in it.
+        conn.run(|connection| {
+            connection
+                .execute_batch(
+                    "PRAGMA query_only = OFF; BEGIN; \
+                     UPDATE users SET name = 'Planted' WHERE id = 2",
+                )
+                .map_err(map_error)
+        })
+        .await
+        .unwrap();
+        let changes = ChangeSet {
+            object: ObjectRef::new("main", "users"),
+            rows: vec![crate::RowChange {
+                key: vec![("id".into(), Value::Int(1))],
+                set: vec![crate::CellChange {
+                    column: "name".into(),
+                    type_name: "TEXT".into(),
+                    loaded: Value::Text("Ada Lovelace".into()),
+                    new: crate::NewValue::Text("Mine".into()),
+                }],
+            }],
+        };
+        // The save goes through, and only its own row is written.
+        let outcome = conn.write(&changes).await;
+        assert!(
+            matches!(outcome, Ok(WriteOutcome::Written { .. })),
+            "{outcome:?}"
+        );
+        let other = rusqlite::Connection::open(dir.path().join("fixture.db")).unwrap();
+        let name = |id: i64| -> String {
+            other
+                .query_row("SELECT name FROM users WHERE id = ?1", [id], |row| {
+                    row.get(0)
+                })
+                .unwrap()
+        };
+        assert_eq!((name(1), name(2)), ("Mine".to_owned(), "Bob".to_owned()));
+        assert_eq!(standing(&conn).await, (1, true));
+    }
+
     #[test]
     fn only_a_name_sqlite_would_read_as_a_uri_is_rewritten() {
         let dot = |name: &str| Path::new(".").join(name);
