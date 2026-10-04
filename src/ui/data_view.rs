@@ -1173,13 +1173,23 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
             .collect();
         // What is pending, and what else of editing the cells show: read
         // field by field, beside the editor whose text the field edits.
-        let changes = Changes::of(
+        let mut changes = Changes::of(
             &object.edits.cells,
             object.edits.saving.is_some(),
             object.edits.saved.as_ref(),
             computed,
             &ctx,
         );
+        // Why the cell last asked for cannot be edited, at that cell. The
+        // terminal says it in its mode line.
+        changes.why = object
+            .edits
+            .why
+            .filter(|_| !look.terminal)
+            .map(|(cell, lock)| {
+                let table = format::display_safe(&object.object.name);
+                (cell, cell_editor::lock_text(lock, &table, locale))
+            });
         let mut editor = object.edits.editor.as_mut();
         let editing = editor.as_ref().map(|editor| editor.cell);
         // What the field says of this frame, once the grid has drawn it on
@@ -1316,6 +1326,8 @@ struct Changes<'a> {
     saving: bool,
     /// The cells the last save wrote, while they show it.
     saved: &'a [CellPos],
+    /// The cell that was asked for and cannot be edited, and why.
+    why: Option<(CellPos, String)>,
 }
 
 /// The page's columns that the database computes, in a table that can be
@@ -1392,6 +1404,7 @@ impl<'a> Changes<'a> {
             computed,
             saving,
             saved: saved.unwrap_or_default(),
+            why: None,
         }
     }
 
@@ -1406,8 +1419,15 @@ impl<'a> Changes<'a> {
         look: &Look,
         locale: crate::i18n::Locale,
     ) {
+        let (row, col) = at;
+        // A cell that is not there has no reason to give.
+        if let Some((asked, why)) = &self.why
+            && *asked == (CellPos { row, col })
+            && !why.is_empty()
+        {
+            cell.note = Some(why.clone());
+        }
         let Some(pending) = self.cells.get(&at) else {
-            let (row, col) = at;
             cell.mark = if self.saved.contains(&CellPos { row, col }) {
                 Mark::Saved
             } else if self.computed.get(col).copied().unwrap_or(false) {
