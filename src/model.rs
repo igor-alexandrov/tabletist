@@ -389,6 +389,11 @@ pub struct Workspace {
     /// deleting the saved entry never breaks an open tab.
     pub name: String,
     pub environment: crate::env::Environment,
+    /// What the session was opened as, as the session itself said when
+    /// it connected. While the tab is connecting it is what the connect
+    /// asked for: the saved connection's box as it stood then, over the
+    /// tab's own environment. Fixed until the tab connects again.
+    pub access: tabletist_db::Access,
     pub spec: ConnectSpec,
     pub driver: Driver,
     /// Whether the session runs over TLS, as negotiated. Set when the
@@ -2272,6 +2277,7 @@ impl Workspace {
     ) -> Self {
         Self {
             session,
+            access: saved.access(),
             environment: saved.environment,
             conn_id: saved.id,
             name: saved.name,

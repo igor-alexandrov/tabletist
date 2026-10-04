@@ -57,6 +57,22 @@ impl SavedConnection {
         self.read_only
             .unwrap_or(self.environment.read_only_by_default())
     }
+
+    /// The access its sessions open with.
+    pub fn access(&self) -> tabletist_db::Access {
+        access(self.read_only, self.environment)
+    }
+}
+
+/// The access a session opens with: read-only as the box says, else as
+/// `environment` has it by default. An open tab asks with its own
+/// environment, which a relabelled saved entry does not change.
+pub fn access(read_only: Option<bool>, environment: Environment) -> tabletist_db::Access {
+    if read_only.unwrap_or(environment.read_only_by_default()) {
+        tabletist_db::Access::ReadOnly
+    } else {
+        tabletist_db::Access::Writable
+    }
 }
 
 /// The file's format. 2 dropped the colour a connection used to keep
@@ -632,5 +648,16 @@ mod tests {
         assert!(json.contains("\"read_only\":false"), "{json}");
         let untouched = serde_json::to_string(&saved("Bookshop", "/bookshop.db")).unwrap();
         assert!(!untouched.contains("read_only"), "{untouched}");
+    }
+
+    #[test]
+    fn a_connection_opens_with_the_access_its_box_gives() {
+        let mut connection = saved("Bookshop", "/bookshop.db");
+        connection.environment = Environment::Dev;
+        assert_eq!(connection.access(), tabletist_db::Access::Writable);
+        connection.environment = Environment::Production;
+        assert_eq!(connection.access(), tabletist_db::Access::ReadOnly);
+        connection.read_only = Some(false);
+        assert_eq!(connection.access(), tabletist_db::Access::Writable);
     }
 }

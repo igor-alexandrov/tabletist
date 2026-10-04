@@ -1437,15 +1437,29 @@ impl App {
 
     /// Sends the Connect for the tab's current session and request.
     fn send_connect(&mut self, tab: ConnTabId, secrets: Secrets) {
+        // The saved connection's box as it stands now: a session's access
+        // is fixed when it connects, so a reconnect picks up a change. Only
+        // the box is read again. The tab's name, environment and server
+        // are its own from when it opened, so the default is its own
+        // environment's: a saved entry relabelled since does not make a
+        // tab still drawn as production writable. A connection deleted
+        // since keeps what the tab has.
+        let boxed = self
+            .workspace(tab)
+            .and_then(|workspace| self.connections.get(&workspace.conn_id))
+            .map(|saved| saved.read_only);
         let Some(workspace) = self.workspace_mut(tab) else {
             return;
         };
         let SessionStatus::Connecting { request } = workspace.status else {
             return;
         };
+        if let Some(read_only) = boxed {
+            workspace.access = crate::connections::access(read_only, workspace.environment);
+        }
         workspace.secrets = secrets.clone();
         workspace.connect_started = Some(std::time::Instant::now());
-        let (session, spec) = (workspace.session, workspace.spec.clone());
+        let (session, spec, access) = (workspace.session, workspace.spec.clone(), workspace.access);
         // A blank answer means "no password" to the server.
         let mut secrets = secrets;
         for slot in [
@@ -1463,6 +1477,7 @@ impl App {
             spec,
             secrets,
             host_keys: self.host_keys.clone(),
+            access,
         });
     }
 
@@ -1683,6 +1698,7 @@ impl App {
                 request,
                 driver,
                 encrypted,
+                access,
             } => {
                 let adopted = self.tab_for_session(session).and_then(|tab| {
                     let workspace = self.workspace_mut(tab)?;
@@ -1691,6 +1707,8 @@ impl App {
                             workspace.status = SessionStatus::Connected;
                             workspace.driver = driver;
                             workspace.encrypted = encrypted;
+                            // What the session is, whatever was asked.
+                            workspace.access = access;
                             workspace.connected_at = Some(crate::util::now_secs());
                             Some(tab)
                         }
@@ -3522,6 +3540,75 @@ mod tests {
     }
 
     #[test]
+    fn a_session_opens_with_the_access_its_saved_connection_asks_for() {
+        use tabletist_db::Access;
+        let sent = |app: &App| match app.backend.sent.last() {
+            Some(Command::Connect { access, .. }) => *access,
+            other => panic!("expected a Connect command, got {other:?}"),
+        };
+        let (mut app, _dir) = app();
+        // Dev, its box never set: writable.
+        let (tab, _, _) = connect(&mut app);
+        assert_eq!(sent(&app), Access::Writable);
+        assert_eq!(app.workspace(tab).unwrap().access, Access::Writable);
+        // The box turned on meanwhile changes nothing until the tab
+        // connects again.
+        let id = app.workspace(tab).unwrap().conn_id.clone();
+        let mut saved = app.connections.get(&id).unwrap().clone();
+        saved.read_only = Some(true);
+        app.connections.upsert(saved);
+        assert_eq!(app.workspace(tab).unwrap().access, Access::Writable);
+        app.apply(Action::Reconnect(tab));
+        assert_eq!(sent(&app), Access::ReadOnly);
+        assert_eq!(app.workspace(tab).unwrap().access, Access::ReadOnly);
+    }
+
+    #[test]
+    fn a_reconnect_reads_the_box_again_and_keeps_the_tabs_own_environment() {
+        use tabletist_db::Access;
+        let sent = |app: &App| match app.backend.sent.last() {
+            Some(Command::Connect { access, spec, .. }) => (*access, spec.clone()),
+            other => panic!("expected a Connect command, got {other:?}"),
+        };
+        let (mut app, _dir) = app();
+        // Production, its box never set: read-only by its environment.
+        let conn = with_saved(&mut app);
+        let mut saved = app.connections.get(&conn).unwrap().clone();
+        saved.environment = crate::env::Environment::Production;
+        app.connections.upsert(saved.clone());
+        let tab = app.active_tab_id();
+        app.apply(Action::Connect {
+            tab,
+            conn: conn.clone(),
+        });
+        let opened = saved.spec.clone();
+        assert_eq!(sent(&app), (Access::ReadOnly, opened.clone()));
+        // The saved entry is relabelled and pointed elsewhere. The tab is
+        // still production's, on the server it opened: the default is its
+        // own environment's, not the entry's new one.
+        saved.environment = crate::env::Environment::Dev;
+        saved.spec = ConnectSpec::sqlite("/tmp/elsewhere.db");
+        app.connections.upsert(saved.clone());
+        app.apply(Action::Reconnect(tab));
+        assert_eq!(sent(&app), (Access::ReadOnly, opened.clone()));
+        assert_eq!(app.workspace(tab).unwrap().access, Access::ReadOnly);
+        // The box, once set, is read again.
+        saved.read_only = Some(false);
+        app.connections.upsert(saved.clone());
+        app.apply(Action::Reconnect(tab));
+        assert_eq!(sent(&app), (Access::Writable, opened.clone()));
+        saved.read_only = Some(true);
+        app.connections.upsert(saved);
+        app.apply(Action::Reconnect(tab));
+        assert_eq!(sent(&app), (Access::ReadOnly, opened.clone()));
+        // A connection deleted since keeps what the tab has.
+        app.apply(Action::DeleteConnection(conn));
+        app.apply(Action::Reconnect(tab));
+        assert_eq!(sent(&app), (Access::ReadOnly, opened));
+        assert_eq!(app.workspace(tab).unwrap().access, Access::ReadOnly);
+    }
+
+    #[test]
     fn connecting_turns_the_picker_into_a_connecting_workspace() {
         let (mut app, _dir) = app();
         let (tab, _, request) = connect(&mut app);
@@ -3541,12 +3628,30 @@ mod tests {
             request,
             driver: Driver::Sqlite,
             encrypted: false,
+            access: crate::testing::asked_access(&app),
         }));
         assert!(matches!(
             app.workspace(tab).unwrap().status,
             SessionStatus::Connected
         ));
         assert!(app.workspace(tab).unwrap().connected_at.is_some());
+    }
+
+    #[test]
+    fn a_connected_tab_is_what_its_session_says_it_was_opened_as() {
+        use tabletist_db::Access;
+        let (mut app, _dir) = app();
+        // Dev, its box never set: the connect asks for a writable session.
+        let (tab, session, request) = connect(&mut app);
+        assert_eq!(app.workspace(tab).unwrap().access, Access::Writable);
+        app.apply(Action::Backend(Event::Connected {
+            session,
+            request,
+            driver: Driver::Sqlite,
+            encrypted: false,
+            access: Access::ReadOnly,
+        }));
+        assert_eq!(app.workspace(tab).unwrap().access, Access::ReadOnly);
     }
 
     #[test]
@@ -3577,6 +3682,7 @@ mod tests {
             request,
             driver: Driver::Sqlite,
             encrypted: false,
+            access: crate::testing::asked_access(&app),
         }));
         assert!(app.workspace(tab).is_none());
     }
@@ -3592,6 +3698,7 @@ mod tests {
             request: first_request,
             driver: Driver::Sqlite,
             encrypted: false,
+            access: crate::testing::asked_access(&app),
         }));
         assert!(matches!(
             app.workspace(tab).unwrap().status,
@@ -3612,6 +3719,7 @@ mod tests {
             request,
             driver: Driver::Sqlite,
             encrypted: false,
+            access: crate::testing::asked_access(&app),
         }));
         app.apply(Action::Backend(Event::Disconnected {
             session,
@@ -3632,6 +3740,7 @@ mod tests {
             request,
             driver: Driver::Sqlite,
             encrypted: false,
+            access: crate::testing::asked_access(&app),
         }));
         app.apply(Action::Reconnect(tab));
         let new_session = app.workspace(tab).unwrap().session;
@@ -4380,6 +4489,7 @@ mod tests {
             request,
             driver: Driver::Sqlite,
             encrypted: false,
+            access: crate::testing::asked_access(&harness.app),
         }));
         let new: Vec<_> = harness.app.backend.sent[before..].iter().collect();
         assert!(
@@ -4416,6 +4526,7 @@ mod tests {
             request,
             driver: Driver::Sqlite,
             encrypted: false,
+            access: crate::testing::asked_access(&harness.app),
         }));
         let refetched = harness.app.backend.sent[before..]
             .iter()
@@ -4458,6 +4569,7 @@ mod tests {
             request,
             driver: Driver::Sqlite,
             encrypted: false,
+            access: crate::testing::asked_access(&harness.app),
         }));
         assert!(object(&harness, tab, background).rows.is_loading());
     }
@@ -4588,6 +4700,7 @@ mod tests {
             request,
             driver: Driver::Sqlite,
             encrypted: false,
+            access: crate::testing::asked_access(&harness.app),
         }));
         session
     }
@@ -4897,6 +5010,7 @@ mod tests {
             request,
             driver: Driver::Sqlite,
             encrypted: false,
+            access: crate::testing::asked_access(&app),
         }));
         assert_eq!(asked(&app), 1);
         // On a picker there is no workspace to open an editor in.
@@ -6240,6 +6354,7 @@ mod tests {
             request,
             driver: Driver::Postgres,
             encrypted: false,
+            access: crate::testing::asked_access(&app),
         }));
         assert!(app.backend.sent.iter().any(|c| matches!(
             c,
@@ -6297,6 +6412,7 @@ mod tests {
             request,
             driver: Driver::Postgres,
             encrypted: false,
+            access: crate::testing::asked_access(app),
         }));
         tab
     }
@@ -6349,6 +6465,7 @@ mod tests {
             request,
             driver: Driver::Postgres,
             encrypted: false,
+            access: crate::testing::asked_access(&app),
         }));
         assert!(sent_secrets(&app).is_empty());
         assert!(app.connections.connections.is_empty());
@@ -6496,6 +6613,7 @@ mod tests {
             request,
             driver: Driver::Postgres,
             encrypted: false,
+            access: crate::testing::asked_access(&app),
         }));
         assert!(app.backend.sent.iter().any(|c| matches!(
             c,
@@ -6890,6 +7008,7 @@ mod tests {
             request,
             driver: Driver::Postgres,
             encrypted: false,
+            access: crate::testing::asked_access(app),
         }));
         tab
     }
@@ -7091,6 +7210,7 @@ mod tests {
             request,
             driver: Driver::MySql,
             encrypted: false,
+            access: crate::testing::asked_access(&app),
         }));
         let Some(Command::ListSchemas { request, .. }) = app
             .backend
@@ -7609,6 +7729,7 @@ mod tests {
                 request,
                 driver: Driver::Postgres,
                 encrypted: false,
+                access: crate::testing::asked_access(&app),
             }));
             assert!(app.backend.sent.iter().any(|c| matches!(c,
                 Command::StoreSecret { account, secret: Some(_), .. }
@@ -8433,6 +8554,7 @@ mod tests {
                 request,
                 driver: Driver::Sqlite,
                 encrypted: false,
+                access: crate::testing::asked_access(&harness.app),
             }));
             let object = harness.app.workspace(tab).unwrap().object_tab(id).unwrap();
             assert!(!object.count.is_loading(), "not stuck on Counting");

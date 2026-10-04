@@ -1,6 +1,8 @@
 # Editing values, slice 1: the core and its safety surfaces
 
-Date: 2026-10-03. Status: design, not yet planned.
+Date: 2026-10-03. Status: step 1 (writable connections) is built, see
+`docs/superpowers/plans/2026-10-03-writable-connections.md`; steps 2 to 5
+are not yet planned.
 
 ## Intent
 
@@ -86,23 +88,24 @@ pending changes never outlive their page.
 - A saved connection that never chose and is not production therefore
   becomes writable on its next connect after the upgrade.
 - The access is fixed when the session connects. `Workspace` keeps it
-  (`access: Access`); a changed box applies from the next connect or
-  reconnect.
+  (`access: Access`), as the session reports it once connected. A changed
+  box applies from the next connect or reconnect. Only the box is read
+  again then: where it was never set, the default is the one of the
+  environment the tab opened with, since the tab still points at that
+  server and is still drawn in that environment's colour. Relabelling a
+  saved production connection does not make its open tab writable.
 - Every "read-only" mark the app draws (the header's pill or tag, the
   footer's "· read-only", the Omarchy status line's tag) shows only for a
   read-only connection.
-- A write the SQL editor refuses:
-  - read-only connection: "This connection opens read-only", "<name> ·
-    <environment> blocks writes, so this statement was refused. Nothing
-    changed.", "To write, turn off Open read-only in the connection.", with
-    an **Edit connection** action. The per-tab switch of the artboard is
-    slice 6.
-  - writable connection: "The SQL editor only reads data", "Every query
-    runs in a read-only transaction, so this statement was refused.
-    Nothing changed.", and, from step 3 on, "Edit values in a table's
-    grid."
-  - The card keeps the shipped wording ("this statement was refused"); it
-    never named the server or the statement.
+- A write the SQL editor refuses reads the same on every connection:
+  "The SQL editor only reads data", "Every query runs in a read-only
+  transaction, so this statement was refused. Nothing changed.", and the
+  database's own words. The artboard's card for a read-only connection
+  ("This connection opens read-only", "turn off Open read-only", **Edit
+  connection**, the per-tab switch) belongs to slice 6: until the SQL
+  editor can write, turning the box off would not make the statement run,
+  and the card must not say it would. From step 3 on, the card adds "Edit
+  values in a table's grid." on a writable connection.
 
 ### Sessions (`tabletist-db`)
 
@@ -118,8 +121,10 @@ pending changes never outlive their page.
   script runner already open explicit `READ ONLY` transactions, and the
   script guard's snapshot, savepoint and final check do not read the
   session default.
-- MySQL: `SET SESSION TRANSACTION READ ONLY` is not sent. Row fetches and
-  counts already run in `START TRANSACTION READ ONLY`. The script runner
+- MySQL: `SET SESSION TRANSACTION READ ONLY` is not sent, and `SET SESSION
+  TRANSACTION READ WRITE` is, since a server's own default can be
+  read-only. Row fetches and counts already run in read-only
+  transactions. The script runner
   does lean on the session setting: MySQL commits implicitly before DDL,
   and only the session's read-only setting refuses the DDL that follows;
   its checks read `@@session.transaction_read_only`. So a script run on a

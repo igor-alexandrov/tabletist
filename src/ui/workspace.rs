@@ -434,6 +434,8 @@ fn failure(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
 /// one the bar belongs to.
 struct BarInfo {
     env: crate::env::Environment,
+    /// Whether the bar's own connection opens read-only.
+    read_only: bool,
     database: String,
     databases: Vec<String>,
     tls: Option<(&'static str, Tone)>,
@@ -490,6 +492,7 @@ fn bar_info(app: &App, tab: ConnTabId) -> Option<BarInfo> {
     });
     Some(BarInfo {
         env: workspace.environment,
+        read_only: workspace.access == tabletist_db::Access::ReadOnly,
         database: if sqlite {
             String::new()
         } else {
@@ -913,7 +916,7 @@ fn top_bar(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
 
 /// macOS: the Connections button, a chip for each open connection (the
 /// bar's own is a pop-up of the server's other databases), the read-only
-/// pill, and Disconnect.
+/// pill of a connection that is, and Disconnect.
 #[allow(clippy::too_many_arguments)] // one call site; the pieces are unrelated
 fn mac_bar(
     ui: &mut egui::Ui,
@@ -1030,12 +1033,16 @@ fn mac_bar(
             (30.0 + tail, (name + 6.0 + badge).max(line))
         })
         .collect();
-    // Pills after the chips: read-only, then TLS and SSH when remote.
-    let mut pills = vec![(
-        Some(Icon::Lock),
-        gettext(locale, "Read-only").into_owned(),
-        palette.secondary,
-    )];
+    // Pills after the chips: read-only when it is, then TLS and SSH when
+    // remote.
+    let mut pills = Vec::new();
+    if info.read_only {
+        pills.push((
+            Some(Icon::Lock),
+            gettext(locale, "Read-only").into_owned(),
+            palette.secondary,
+        ));
+    }
     if let Some((text, tone)) = info.tls {
         let color = match tone {
             Tone::Good => palette.success,
@@ -1173,8 +1180,8 @@ fn mac_bar(
 }
 
 /// Omarchy: the Connections button, a chip for each open connection (the
-/// bar's own is a pop-up of the server's other databases), read-only, and
-/// the key that closes the connection.
+/// bar's own is a pop-up of the server's other databases), read-only when
+/// it is, and the key that closes the connection.
 #[allow(clippy::too_many_arguments)] // one call site; the pieces are unrelated
 fn terminal_bar(
     ui: &mut egui::Ui,
@@ -1299,8 +1306,12 @@ fn terminal_bar(
             (5.0 + badge + 8.0 + tail, name.max(line))
         })
         .collect();
-    // Tags after the chips: read-only, then TLS and SSH when remote.
-    let mut tags = vec![(gettext(locale, "read-only").into_owned(), palette.text)];
+    // Tags after the chips: read-only when it is, then TLS and SSH when
+    // remote.
+    let mut tags = Vec::new();
+    if info.read_only {
+        tags.push((gettext(locale, "read-only").into_owned(), palette.text));
+    }
     if let Some((text, tone)) = info.tls {
         let color = match tone {
             Tone::Good => palette.success,
@@ -1533,6 +1544,7 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
     let Some(workspace) = app.workspace(tab) else {
         return;
     };
+    let read_only = workspace.access == tabletist_db::Access::ReadOnly;
     let editor = super::sql_editor::status_summary(app, tab);
     let on_editor = editor.is_some();
     // The completion list's own key, while it is open with a row to put
@@ -1646,9 +1658,15 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                 );
                 return;
             }
-            let tag = gettext(locale, "read-only");
-            let tag_width = measure(&tag) + 12.0 + 2.0;
-            let limit = rect.right() - 12.0 - summary_width - gap - tag_width - gap;
+            // A read-only connection's tag ends the keys. Without one,
+            // neither it nor the gap before it takes room from them.
+            let tag = read_only.then(|| {
+                let tag = gettext(locale, "read-only");
+                let width = measure(&tag) + 12.0 + 2.0;
+                (tag, width)
+            });
+            let tag_room = tag.as_ref().map_or(0.0, |(_, width)| width + gap);
+            let limit = rect.right() - 12.0 - summary_width - gap - tag_room;
             let disabled = ["e edit", "o new row", "dd delete", ":w write"];
             let disabled_width = disabled.iter().map(|text| measure(text)).sum::<f32>()
                 + 14.0 * (disabled.len() - 1) as f32;
@@ -1675,14 +1693,16 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                 }
                 x += gap;
             }
-            let pill = Rect::from_min_size(pos2(x, y - 9.0), vec2(tag_width, 18.0));
-            ui.painter().rect_stroke(
-                pill,
-                CornerRadius::same(3),
-                Stroke::new(1.0, palette.outline),
-                StrokeKind::Inside,
-            );
-            widgets::paint_text(ui, x + 7.0, y, Text::one(&look, role, &tag, palette.dim));
+            if let Some((tag, width)) = &tag {
+                let pill = Rect::from_min_size(pos2(x, y - 9.0), vec2(*width, 18.0));
+                ui.painter().rect_stroke(
+                    pill,
+                    CornerRadius::same(3),
+                    Stroke::new(1.0, palette.outline),
+                    StrokeKind::Inside,
+                );
+                widgets::paint_text(ui, x + 7.0, y, Text::one(&look, role, tag, palette.dim));
+            }
             widgets::paint_text_right(
                 ui,
                 rect.right() - 12.0,

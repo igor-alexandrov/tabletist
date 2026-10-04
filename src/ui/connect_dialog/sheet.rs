@@ -334,7 +334,7 @@ pub(super) fn body(
                     });
                 }
                 ui.add_space(18.0);
-                safety(ui, skin);
+                safety(ui, form, skin);
             }
         });
 }
@@ -625,34 +625,53 @@ fn ssh_fields(ui: &mut Ui, form: &mut ConnectionForm, skin: &Skin, actions: &mut
     }
 }
 
-/// A 14 pt check mark that cannot be cleared: what always holds.
-fn locked_check(ui: &mut Ui, name: &str, skin: &Skin) {
+/// A 14 pt check box in the environment's colour.
+fn env_check(ui: &mut Ui, on: bool, name: &str, skin: &Skin) -> Response {
     // Three below the line's top, as the design sets the box.
-    let (rect, response) = ui.allocate_exact_size(vec2(14.0, 17.0), Sense::hover());
-    response.widget_info(|| WidgetInfo::selected(WidgetType::Checkbox, false, true, name));
+    let (rect, response) = ui.allocate_exact_size(vec2(14.0, 17.0), Sense::click());
+    response.widget_info(|| WidgetInfo::selected(WidgetType::Checkbox, true, on, name));
     let mark = Rect::from_min_size(rect.min + vec2(0.0, 3.0), vec2(14.0, 14.0));
-    let fill = skin.env.base();
-    // The tick is cut out of the box in the dialog's own colour, unless
-    // its text colour reads better there: the environments' colours are
-    // the same on a dark sheet as on a light one.
-    let tick = if theme::contrast(skin.fill, fill) >= theme::contrast(skin.palette.text, fill) {
-        skin.fill
-    } else {
-        skin.palette.text
-    };
+    let radius = skin.look.radius.min(4);
+    // The ring goes round the box, not round the line it sits in.
+    crate::ui::focus::hint(
+        ui,
+        &response,
+        mark,
+        crate::ui::focus::Ring::Outer { radius },
+    );
+    let radius = CornerRadius::same(radius);
     let painter = ui.painter();
-    painter.rect_filled(mark, CornerRadius::same(skin.look.radius.min(4)), fill);
-    paint_check(painter, mark, tick);
+    if on {
+        let fill = skin.env.base();
+        // The tick is cut out of the box in the dialog's own colour, unless
+        // its text colour reads better there: the environments' colours
+        // are the same on a dark sheet as on a light one.
+        let tick = if theme::contrast(skin.fill, fill) >= theme::contrast(skin.palette.text, fill) {
+            skin.fill
+        } else {
+            skin.palette.text
+        };
+        painter.rect_filled(mark, radius, fill);
+        paint_check(painter, mark, tick);
+    } else {
+        painter.rect_stroke(
+            mark,
+            radius,
+            Stroke::new(1.0, skin.palette.secondary),
+            StrokeKind::Inside,
+        );
+    }
+    response
 }
 
 /// What the read-only promise says under its title.
 const READ_ONLY_NOTE: &str =
-    "Blocks every write from this app. Every connection is read-only in 0.1.0.";
+    "Blocks every write from this app. On by default for production; turn off to edit.";
 
-/// macOS: the read-only promise, on the environment's tint. Every session
-/// is read-only in this version, so the box is locked, and what the
-/// connection was saved with is left as it is.
-fn safety(ui: &mut Ui, skin: &Skin) {
+/// macOS: the read-only promise, on the environment's tint. The box shows
+/// the environment's default until it is clicked, and is the user's
+/// choice from then on.
+fn safety(ui: &mut Ui, form: &mut ConnectionForm, skin: &Skin) {
     let Skin { look, palette, .. } = *skin;
     let title = skin.say("Open read-only");
     egui::Frame::new()
@@ -663,9 +682,16 @@ fn safety(ui: &mut Ui, skin: &Skin) {
             ui.set_width(ui.available_width());
             ui.horizontal_top(|ui| {
                 ui.spacing_mut().item_spacing.x = 10.0;
-                locked_check(ui, &title, skin);
+                let on = form.read_only();
+                let mut toggled = env_check(ui, on, &title, skin).clicked();
                 ui.vertical(|ui| {
-                    widgets::label(ui, TextRole::UiBodyStrong, &title, palette.text, look);
+                    // The title toggles the box under the pointer, as a
+                    // check box's own label does. It takes clicks alone:
+                    // the box stays the one check box and the one Tab stop.
+                    let label = Text::one(look, TextRole::UiBodyStrong, &title, palette.text)
+                        .layout(ui.ctx())
+                        .label_sense(ui, Sense::CLICK);
+                    toggled |= label.clicked();
                     ui.add_space(2.0);
                     // The secondary colour, warmed by the environment's
                     // text colour: 0.4 is the share at which production's
@@ -680,6 +706,9 @@ fn safety(ui: &mut Ui, skin: &Skin) {
                         look,
                     );
                 });
+                if toggled {
+                    form.read_only = Some(!on);
+                }
             });
         });
 }
