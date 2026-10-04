@@ -654,6 +654,20 @@ In the test module of `src/edit.rs`:
                 stored: "-10.00".into()
             })
         );
+        assert_eq!(
+            pg("-0.001"),
+            Some(Problem::Decimals {
+                scale: 2,
+                stored: "0.00".into()
+            })
+        );
+        assert_eq!(
+            pg("007.505"),
+            Some(Problem::Decimals {
+                scale: 2,
+                stored: "7.51".into()
+            })
+        );
         assert_eq!(pg("123456789.5"), Some(Problem::Digits { whole: 8 }));
         assert_eq!(pg("1e3"), Some(Problem::Number));
         assert_eq!(pg("twelve"), Some(Problem::Number));
@@ -896,9 +910,14 @@ fn rounded(negative: bool, whole: &str, fraction: &str, scale: usize) -> String 
             }
         }
     }
+    // As a number is written: no zeros ahead of it but the one before the
+    // point, and no sign on zero.
+    while digits.len() > scale + 1 && digits[0] == 0 {
+        digits.remove(0);
+    }
     let point = digits.len() - scale;
     let mut text = String::with_capacity(digits.len() + 2);
-    if negative {
+    if negative && digits.iter().any(|&digit| digit != 0) {
         text.push('-');
     }
     for (place, digit) in digits.iter().enumerate() {
@@ -1381,7 +1400,7 @@ And in `src/edit.rs`'s tests:
 - [ ] **Step 3: Run them, and see them fail**
 
 Run: `~/.cargo/bin/cargo test --locked -p tabletist --lib`
-Expected: does not compile (`Action::EditCell`, `EditStart`, `Step`, `ObjectTab::edits`, `Edits`).
+Expected: does not compile (`Action::EditCell`, `EditStart`, `Advance`, `ObjectTab::edits`, `Edits`).
 
 - [ ] **Step 4: The set, in `src/edit.rs`**
 
@@ -1854,7 +1873,7 @@ In the `SelectCell` and `MoveSelection` arms, for a table tab, first leave the e
 - [ ] **Step 7: Run the tests**
 
 Run: `~/.cargo/bin/cargo test --locked -p tabletist --lib`
-Expected: the eight new tests pass, and every test that was green stays green.
+Expected: the ten new tests pass, and every test that was green stays green.
 
 - [ ] **Step 8: Format, lint, commit**
 
@@ -2398,11 +2417,12 @@ A page that arrives ends what the last save left on the tab. In the `Event::Rows
 ```rust
                 // The marks of the last save and the note of a locked cell
                 // were about the page this one replaces. Nothing is pending
-                // here: a tab that holds edits is never fetched again.
+                // here: a tab that holds edits is never fetched again (the
+                // guard of the next task is what makes that so).
                 object.edits = crate::edit::Edits::default();
 ```
 
-with a test, `a_new_page_forgets_the_last_save`: after a written save, `NextPage` and its answer leave `edits.saved` and `edits.why` empty. And a test that `DiscardEdits` and `RevertCell` do nothing while a save runs: the set and `edits.saving` are as they were, and the `Written` answer still lands in the tab.
+with a test, `a_new_page_forgets_the_last_save`: on a page with `has_more` set, after a written save and an `EditCell` on the key column (which leaves a `why`), `NextPage` and its answer leave `edits.saved` and `edits.why` empty. And a test that `DiscardEdits` and `RevertCell` do nothing while a save runs: the set and `edits.saving` are as they were, and the `Written` answer still lands in the tab.
 
 The session swap: an answer from a replaced session never arrives (`tab_for_session` finds the current one only). In `Workspace::forget_session_requests` (`src/model.rs`), which both `reconnect` and `ensure_connecting` call:
 
@@ -2421,7 +2441,7 @@ and correct its doc comment, which says object tabs are not touched.
 - [ ] **Step 7: Run the tests**
 
 Run: `~/.cargo/bin/cargo test --locked -p tabletist --lib`
-Expected: the six new tests pass; `an_object_tab_waits_for_everything_it_loads` passes with its new line.
+Expected: the eight new tests pass (the six above and the two described under the reducer's step); `an_object_tab_waits_for_everything_it_loads` passes with its new line.
 
 - [ ] **Step 8: Format, lint, commit**
 
@@ -2619,7 +2639,7 @@ In `src/app.rs`'s tests:
     }
 
     #[test]
-    fn a_tab_with_pending_changes_keeps_its_page_through_a_reconnect_and_a_new_page_size() {
+    fn a_tab_with_pending_changes_keeps_its_page_through_a_reconnect() {
         let mut harness = Harness::new();
         let (tab, id) = harness.editable();
         type_into(&mut harness, tab, id, at(1, 1), "bob@example.com");
@@ -2668,7 +2688,7 @@ In `src/app.rs`'s tests:
 
 `answer_connect`, `ObjectView` and `Action::ShowHelp` are what the test module already uses; correct the names where they differ. For the reconnect test, check what `answer_connect` sends besides (schemas, the tree): the assertion is only about this tab's rows and structure.
 
-Three more tests, written against how the neighbouring tests do the same things:
+Four more tests, written against how the neighbouring tests do the same things:
 
 - `a_new_page_size_leaves_a_tab_with_pending_changes_alone`: change the page size the way the existing `resize_pages` tests do; no `FetchRows` goes out for the tab with the pending cell, and one does for a second table tab without edits.
 - `a_reconnect_that_comes_back_read_only_keeps_the_set_and_blocks_save`: turn the saved connection's "Open read-only" box on, reconnect, answer the connect: the set is kept, `save_blocked` answers `SaveBlock::ReadOnly`, `WriteEdits` sends nothing, and a guarded action's prompt has `can_save == false`.
@@ -2924,7 +2944,7 @@ The prompt's arms:
             }
 ```
 
-`write_edits` gains `then: Option<Held>` (`Action::WriteEdits` passes `None`), hands it to `send_write`, which puts it into `Saving::then`. In the `Written` arm, after a save that fitted its page, `if let Some(held) = saving.then { self.perform(held); }` as the arm's last act for that outcome (take `then` out of `saving` before the match, so the other outcomes simply drop it). An open editor is part of the edits: `LeaveSave` reaches `write_edits`, which closes it first. When that leaves nothing to send (the editor was only opened), there is nothing to save and the held action simply goes on: in `write_edits`, where `change_set` answers `None`, `if let Some(held) = then { self.perform(held); }` before returning.
+`write_edits` gains `then: Option<Held>` (`Action::WriteEdits` passes `None`), hands it to `send_write`, which puts it into `Saving::then`. In the `Written` arm, after a save that fitted its page, `if let Some(held) = saving.then { self.perform(held); }` as the arm's last act for that outcome (take `then` out of `saving` before the match, so the other outcomes simply drop it). An open editor is part of the edits: `LeaveSave` reaches `write_edits`, which closes it first. When that leaves the set empty (the editor was only opened), there is nothing to save and the held action simply goes on: in `write_edits`, when the tab's `edits.cells` is empty after the editor closed, `if let Some(held) = then { self.perform(held); }` and return. Only then: `change_set` also answers `None` with cells still pending (the key is gone, a column is unknown), and performing the held action there would drop them; for the window's close (task 11), which does not pass the guard again, it would close over them.
 
 - [ ] **Step 6: What replaces a page without an action**
 
@@ -3095,7 +3115,7 @@ pub enum Mark {
   - The row: `RowMark::Changed` or `Trouble` draws, on macOS and Windows, the 3 pt bar at the row's left edge (in place of the selected row's accent bar, which it wins over) in the warning or danger colour, and the row's first cell, when it is a key column, in that colour; on Omarchy the gutter shows `~` or `!` in that colour beside the cursor mark.
 - The double-click: the row's response is the only one. Beside `response.clicked()`, `response.double_clicked()` with the same column arithmetic gives `output.double_clicked`.
 - The hint: when the pointer is over a cell that has one, show it as a tooltip at the cell (a hover-only `ui.interact` on the cell's rect, or the fork's tooltip-at-pointer call; hover-only widgets let clicks through, see the comment near the header's resize handle).
-- In `data_view::show`: compute each cell's mark and hint from `object.edits` and the page: a pending cell shows its **new** value (drawn through the same `cell`/`plain_cell` path from a `Value` made of the new text, or NULL) with `hint` "was <loaded>", where the loaded text is `format::cell_text` of the loaded value. `cell()` answers a `Cell<'a>` that borrows its value, so a `Value` made inside the grid's closure cannot be returned from it: build the pending cells' values before `grid::show` is called (a small map from cell to `Value`, kept for the call) and borrow from that. In a table that can be edited, a cell whose lock is `Lock::Generated` gets `Mark::Locked`; `State::ToFix` and `Failed` give `Mark::Trouble` with the problem's or the error's words as the hint; cells in `edits.saved.cells` show `Mark::Saved` while `saved.at.elapsed() < edit::SAVED_FOR`, and the view asks for a repaint when that ends (`ui.ctx().request_repaint_after(remaining)`); while `edits.saving` is some, pending cells are `Mark::Saving`. `output.double_clicked` is not used yet: task 7, which draws the field, wires it (an editor nothing draws would hold the tab's page for no visible reason).
+- In `data_view::show`: compute each cell's mark and hint from `object.edits` and the page: a pending cell shows its **new** value (drawn through the same `cell`/`plain_cell` path from a `Value` made of the new text, or NULL) with `hint` "was <loaded>", where the loaded text is `format::cell_text` of the loaded value. `cell()` answers a `Cell<'a>` that borrows its value, so a `Value` made inside the grid's closure cannot be returned from it: build the pending cells' values before `grid::show` is called (a small map from cell to `Value`, kept for the call) and borrow from that. In a table that can be edited, the cells of a computed column get `Mark::Locked`: decide it once per column before the grid is drawn (the table-wide part of `Table::lock` is none or `Saving` or `Refreshing`, and the column's `generated` is set), not by asking `lock` for every visible cell in every frame, which would also drop the tint while a save or a refresh runs; `State::ToFix` and `Failed` give `Mark::Trouble` with the problem's or the error's words as the hint; cells in `edits.saved.cells` show `Mark::Saved` while `saved.at.elapsed() < edit::SAVED_FOR`, and the view asks for a repaint when that ends (`ui.ctx().request_repaint_after(remaining)`); while `edits.saving` is some, pending cells are `Mark::Saving`. `output.double_clicked` is not used yet: task 7, which draws the field, wires it (an editor nothing draws would hold the tab's page for no visible reason).
 - The words for a `Problem` and for a `Lock`, in one place both the grid's hints and the later tasks use: `src/ui/cell_editor.rs` (created here with only these two functions):
 
 ```rust
@@ -3144,7 +3164,7 @@ pub fn lock_text(lock: Lock, table: &str, locale: Locale) -> String
 **Tests**
 
 - `grid.rs`: `a_marked_cell_is_tinted_and_its_row_is_marked`, for every look: with `Mark::Pending` on one cell and `RowMark::Changed`, the frame holds a fill of `Tone::Warning.fill` inside the cell's rect; on Omarchy the painted texts include `~` in `palette.warning`; with `Trouble`, the danger fill and `!`. `a_double_click_reports_its_cell`: two presses at one cell's position report it in `double_clicked`.
-- `ui/mod.rs`: `a_pending_cell_shows_its_new_value_and_what_it_was`: after `type_into`-style actions (apply the actions directly), the frame paints `bob@example.com` and not `user2@example.com`, and hovering the cell (`Event::PointerMoved` at `cell_of`, then frames past the tooltip's delay, as `quick_open_shortens_long_names…` waits for its tooltip) shows "was user2@example.com". `a_saved_cell_is_green_for_a_moment`: after a written save the cell's rect holds the success fill; with `edits.saved.at` back-dated by two seconds it does not. `a_sql_result_is_drawn_as_before`: an existing SQL result test still passes untouched (run the file's tests).
+- `ui/mod.rs`: `a_computed_column_is_drawn_locked_in_a_table_that_can_be_edited` (macOS and Windows: the surface fill in a generated column's cells, and none of it on a read-only connection or while nothing is known of the structure). `a_pending_cell_shows_its_new_value_and_what_it_was`: after `type_into`-style actions (apply the actions directly), the frame paints `bob@example.com` and not `user2@example.com`, and hovering the cell (`Event::PointerMoved` at `cell_of`, then frames past the tooltip's delay, as `quick_open_shortens_long_names…` waits for its tooltip) shows "was user2@example.com". `a_saved_cell_is_green_for_a_moment`: after a written save the cell's rect holds the success fill; with `edits.saved.at` back-dated by two seconds it does not. `a_sql_result_is_drawn_as_before`: an existing SQL result test still passes untouched (run the file's tests).
 - `cell_editor.rs`: `every_problem_and_every_lock_has_words`: each variant gives a non-empty text (but `NoSuchCell`), with the spec's exact sentences for `WholeNumber` (`int8 expects a whole number`), `Decimals`, `NotOneOf`, `TooLong`, `NoKey`, `ReadOnly`, `KeyIsNull`.
 
 Two commits, each green on the four checks: first the words (`cell_editor.rs` with `problem_text`, `lock_text` and their test), "Word what a value fails and why a cell is locked"; then the drawing, "Draw pending, failed and saved cells in the grid".
@@ -3182,9 +3202,9 @@ pub struct Outcome {
 - The frame: `focus::hint(ui, &response, rect, Ring::Field { .. })` for the accent border and halo, clipped to the grid's clip rect. With `editor.problem` the border and halo are in `palette.danger` (if `focus` has no ring of another colour, add a `Ring` variant there rather than painting one in the view) and the message (`problem_text`) is painted under the cell in `palette.danger`, over the row below.
 - A column with a length (`ColumnClass::Text { max_chars: Some(max) }`) shows `{chars} / {max}` at the field's right in `palette.dim`.
 
-The grid's `double_clicked` becomes `Action::EditCell { start: EditStart::Value }` here, in the desktop looks only: until task 13 gives Omarchy its keys and a way to write, nothing there opens an editor, so no pending change can be made that could not be saved.
+Until task 8 draws the large editor, `data_view::show` draws a large one (`editor.large`) with this field too, so an editor is never open without being on screen. The grid's `double_clicked` becomes `Action::EditCell { start: EditStart::Value }` here, in the desktop looks only: until task 13 gives Omarchy its keys and a way to write, nothing there opens an editor, so no pending change can be made that could not be saved.
 
-In `data_view::show`, take the tab's editor mutably up front as `filter_bar.rs` and `where_line` take their text (the page and the structure are then read from the same `ObjectTab`; restructure the borrows as those two do), pass the closure, and turn the `Outcome` into actions: `EditorTyped`, `CommitEdit { then }`, `CancelEdit`, `LeaveEdit`, `EditorBreak`.
+In `data_view::show`, take the tab's editor mutably up front as `filter_bar.rs` and `where_line` take their text (the page and the structure are then read from the same `ObjectTab`; restructure the borrows as those two do), pass the closure, and turn the `Outcome` into actions: `EditorTyped`, `CommitEdit { then }`, `CancelEdit`, `LeaveEdit`, `EditorBreak`. **`EditorTyped` is pushed first** whenever the text changed in the frame: an editor that was not typed into closes without a change, so a first keystroke that shares its frame with Enter or a click away would be lost if the commit went ahead of it. For the same reason, when Mod+S arrives while a field has the keyboard, `keys::handle` pushes `EditorTyped` for the open editor before `WriteEdits` (it cannot know whether this frame's text changed; marking it typed is harmless, since an unchanged text is no change).
 
 **The note of a locked cell.** When `edits.why` names a cell, draw `lock_text` as a small note at that cell (the same dark tooltip the hint uses, shown without hover) until the selection moves.
 
@@ -3226,7 +3246,7 @@ Three commits, each green on the four checks: the field and its wiring ("Edit a 
 When `editor.large`, the grid draws the cell as pending-in-progress (its accent line) and reports its rect (`GridOutput::editing_rect: Option<Rect>`); `data_view::show` then calls `cell_editor::large(ctx, anchor, editor, column, look, palette, locale) -> Outcome`:
 
 - An `egui::Area` in the foreground order at `sql_complete::place(anchor, size, screen)` (already public), about 420 by 180 pt, drawn with the completion list's `panel` (private in `sql_complete.rs` today: make it `pub(crate)`, or move it to `widgets.rs` if that reads better; raised fill, border, radius, shadow; Omarchy: `palette.panel` with a 1 pt accent border) and the accent border of a focused field.
-- A `TextEdit::multiline` in a scroll area, the data role's font. Under it a band: at the left `{chars} chars · {lines} lines` (the count grouped as `format::group_number` groups), at the right `{Mod}↩ apply · esc cancel` with `look.command_key()`. In the terminal look: `ctrl+enter apply · esc keep` (see task 13 for what Esc does there).
+- A `TextEdit::multiline` in a scroll area, the data role's font. Under it a band: at the left `{chars} chars · {lines} lines` (the count grouped as `format::group_number` groups), at the right `{Mod}↩ apply · esc cancel` with `look.command_key()`. The terminal look's band (`ctrl+enter apply · esc keep`) and its Esc are task 13's: this task draws the desktop band in every look.
 - Keys, read before the field is added: Mod+Enter gives `commit: Stay`; Esc gives `cancel`. Enter is the field's own (a line break). Tab is the field's own.
 - A problem shows as in the small field: the border in the danger colour, the message in the band's place at the left.
 - A click outside the area gives `left`. The Esc owners that ask `egui::Popup::is_any_open` do not see an `Area`: nothing else may act on that Esc, which the consumed key ensures.
