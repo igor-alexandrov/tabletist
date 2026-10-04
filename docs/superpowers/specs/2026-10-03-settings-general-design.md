@@ -343,13 +343,22 @@ Reset to defaults asks first, in place: the three links give way to "Reset
 every option on this tab?" with Reset and Cancel. Reset puts the four
 options back and saves. It leaves the keys the window does not show alone.
 The keyboard that asked is on Cancel when the question shows, and back on
-Reset to defaults once it is answered, so a held Enter never reaches Reset.
-Escape answers the question as Cancel does before it closes the window.
+Reset to defaults once it is answered, however it was answered, so a held
+Enter never reaches Reset and never goes on to another link.
 
 The sheet takes none of the terminal screen's keys: its controls are reached
-with Tab, the arrows choose within a segmented control, and Escape closes
-it. The page size menu's button is named for its option, and its entries
-for the option and the size ("Rows per page 500").
+with Tab, and the arrows choose within a segmented control. Escape closes
+it, and so does a click outside it, which is how the pointer leaves: the
+artboard has no close button. Either one answers the reset question as
+Cancel does first, and with the page size menu open closes only the menu.
+A key held down on a link presses it once: its repeats would start a file
+manager, or open a save dialog, each.
+
+The page size menu's button is named for its option, and its entries for
+the option and the size ("Rows per page 500"). A segment is named for its
+option and its value ("Numbers: 1,240.50"), as the terminal screen names
+its choices. A control that Tab reaches in rows that have scrolled is
+brought into view.
 
 The label column is 300, or as wide as the widest small print where a face
 writes it wider. In a sheet narrower than its controls need, the labels give

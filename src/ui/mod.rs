@@ -919,6 +919,17 @@ mod tests {
     const SHEET_LOOKS: [fn() -> crate::theme::Look; 2] =
         [crate::theme::Look::standard, crate::theme::Look::macos];
 
+    /// What the sheet's link to the file manager says on this system.
+    fn reveal_link() -> &'static str {
+        if cfg!(target_os = "macos") {
+            "Reveal in Finder"
+        } else if cfg!(windows) {
+            "Show in Explorer"
+        } else {
+            "Show in folder"
+        }
+    }
+
     /// A harness in `look` with the Settings window open.
     fn settings_sheet(look: crate::theme::Look) -> Harness {
         let mut harness = Harness::new();
@@ -981,7 +992,9 @@ mod tests {
         for look in SHEET_LOOKS {
             let mut harness = settings_sheet(look());
             let before = settings_saves(&harness);
-            harness.click("Full precision");
+            // A segment is named by its option and its own word: the word
+            // alone would not say what it sets.
+            harness.click("Timestamps: Full precision");
             assert_eq!(
                 harness.app.settings.timestamps,
                 crate::settings::Timestamps::Full
@@ -992,9 +1005,11 @@ mod tests {
                     .painted_color("2026-01-12 09:14:03.482915")
                     .is_some()
             );
-            harness.click("1,240.50");
+            // It is written as before: the word alone.
+            assert!(harness.painted_color("Full precision").is_some());
+            harness.click("Numbers: 1,240.50");
             assert!(harness.app.settings.group_digits);
-            harness.click("1240.50");
+            harness.click("Numbers: 1240.50");
             assert!(!harness.app.settings.group_digits);
             let tags = harness.app.settings.value_tags;
             harness.click("Value tags");
@@ -1045,14 +1060,7 @@ mod tests {
         for look in SHEET_LOOKS {
             let mut harness = settings_sheet(look());
             assert!(harness.has("Stored in"));
-            let reveal = if cfg!(target_os = "macos") {
-                "Reveal in Finder"
-            } else if cfg!(windows) {
-                "Show in Explorer"
-            } else {
-                "Show in folder"
-            };
-            harness.click(reveal);
+            harness.click(reveal_link());
             match crate::testing::last_sent(&harness.app) {
                 Command::RevealSettingsFile { path, text } => {
                     assert_eq!(path, &harness.app.dirs.settings_file());
@@ -1078,7 +1086,7 @@ mod tests {
     fn reset_to_defaults_asks_in_place_of_the_footers_links() {
         for look in SHEET_LOOKS {
             let mut harness = settings_sheet(look());
-            harness.click("Full precision");
+            harness.click("Timestamps: Full precision");
             harness.click("Reset to defaults");
             assert!(harness.has("Reset every option on this tab?"));
             assert!(!harness.has("Export…"), "the links give way");
@@ -1128,7 +1136,7 @@ mod tests {
     fn the_keyboard_that_asks_for_a_reset_is_on_cancel_and_then_back_on_the_link() {
         use crate::settings::Timestamps;
         let mut harness = settings_sheet(crate::theme::Look::standard());
-        harness.click("Full precision");
+        harness.click("Timestamps: Full precision");
         tab_to_settings(&mut harness, "Reset to defaults");
         harness.press(egui::Key::Enter, egui::Modifiers::NONE);
         assert!(harness.has("Reset every option on this tab?"));
@@ -1141,8 +1149,39 @@ mod tests {
         harness.press(egui::Key::Enter, egui::Modifiers::NONE);
         harness.press(egui::Key::Tab, egui::Modifiers::SHIFT);
         assert_eq!(focused_name(&harness.settle()), "Reset");
-        harness.press(egui::Key::Space, egui::Modifiers::NONE);
+        // Space is held down on it: its first press resets.
+        let held = |repeat| egui::Event::Key {
+            key: egui::Key::Space,
+            physical_key: None,
+            pressed: true,
+            repeat,
+            modifiers: egui::Modifiers::NONE,
+        };
+        harness.frame(vec![held(false)]);
         assert_eq!(harness.app.settings.timestamps, Timestamps::Second);
+        // Export stands where Reset stood, and is not taken for it: a key
+        // pressed in the very next frame presses nothing.
+        let (enter, none) = (egui::Key::Enter, egui::Modifiers::NONE);
+        harness.frame(vec![crate::testing::key(enter, none)]);
+        harness.frame(vec![crate::testing::release(enter, none)]);
+        assert!(harness.app.backend.saves.is_empty());
+        // The keyboard is back on the link that asked.
+        assert_eq!(focused_name(&harness.settle()), "Reset to defaults");
+        // What the key still held repeats presses nothing either: the
+        // question is not asked again.
+        for _ in 0..4 {
+            harness.frame(vec![held(true)]);
+        }
+        assert!(!harness.has("Reset every option on this tab?"));
+        harness.frame(vec![crate::testing::release(egui::Key::Space, none)]);
+        // Escape answers no, and takes the keyboard from where it was: it
+        // is put back on the link too.
+        harness.press(egui::Key::Enter, egui::Modifiers::NONE);
+        assert_eq!(focused_name(&harness.settle()), "Cancel");
+        harness.press(egui::Key::Escape, egui::Modifiers::NONE);
+        assert!(settings_open(&harness));
+        assert!(!harness.has("Reset every option on this tab?"));
+        assert_eq!(focused_name(&harness.settle()), "Reset to defaults");
     }
 
     #[test]
@@ -1174,6 +1213,145 @@ mod tests {
             assert!(row.bottom() < stored.top(), "{row:?} {stored:?}");
             harness.click("Export…");
             assert_eq!(harness.app.backend.saves.len(), 1);
+        }
+    }
+
+    #[test]
+    fn tab_brings_a_control_the_rows_scrolled_away_into_view() {
+        use egui::accesskit::Role;
+        for look in SHEET_LOOKS {
+            let size = egui::vec2(1280.0, 300.0);
+            let mut harness = Harness::with_size(size);
+            harness.set_look(look());
+            harness.press(egui::Key::Comma, egui::Modifiers::COMMAND);
+            // The last row's switch: the window has room for one row or
+            // two, and it is under them.
+            tab_to_settings(&mut harness, "Value tags");
+            let tree = harness.settle();
+            let switch =
+                crate::testing::bounds(&tree, "Value tags", Role::CheckBox).expect("the switch");
+            // The rows came with the keyboard: the switch is in the
+            // window, between the rows' heading and the footer.
+            let window = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
+            assert!(window.contains_rect(switch), "{switch:?}");
+            let stored = harness.painted_rect("Stored in").expect("the footer");
+            assert!(switch.bottom() < stored.top(), "{switch:?} {stored:?}");
+            let lead = "How Tabletist shows data. Changes apply right away.";
+            let lead = harness.painted_rect(lead).expect("the tab's lead");
+            assert!(switch.top() > lead.bottom(), "{switch:?} {lead:?}");
+            // And back up with it: the first row's menu.
+            for _ in 0..3 {
+                harness.press(egui::Key::Tab, egui::Modifiers::SHIFT);
+            }
+            let tree = harness.settle();
+            assert_eq!(focused_name(&tree), "Rows per page");
+            let menu =
+                crate::testing::bounds(&tree, "Rows per page", Role::ComboBox).expect("the menu");
+            assert!(menu.top() > lead.bottom(), "{menu:?} {lead:?}");
+            assert!(menu.bottom() < stored.top(), "{menu:?} {stored:?}");
+        }
+    }
+
+    #[test]
+    fn a_click_outside_the_settings_sheet_closes_it() {
+        use crate::settings::Timestamps;
+        for look in SHEET_LOOKS {
+            let mut harness = settings_sheet(look());
+            // In the margin the sheet leaves of the window.
+            let outside = egui::pos2(20.0, 20.0);
+            // While the footer asks, the click answers that first: no.
+            harness.click("Timestamps: Full precision");
+            harness.click("Reset to defaults");
+            click_at(&mut harness, outside);
+            assert!(settings_open(&harness), "the question is answered first");
+            assert!(harness.has("Export…"));
+            assert_eq!(harness.app.settings.timestamps, Timestamps::Full);
+            // With the menu open it closes the menu, as Escape does.
+            harness.click("Rows per page");
+            assert!(harness.has("Rows per page 500"));
+            click_at(&mut harness, outside);
+            assert!(settings_open(&harness), "the menu closes first");
+            assert!(!harness.has("Rows per page 500"));
+            // A click on the sheet is not one outside it.
+            let stored = harness.painted_rect("Stored in").expect("the footer");
+            click_at(&mut harness, stored.center());
+            assert!(settings_open(&harness));
+            click_at(&mut harness, outside);
+            assert!(harness.app.dialog.is_none());
+        }
+    }
+
+    #[test]
+    fn escape_closes_the_page_size_menu_before_the_settings_sheet() {
+        for look in SHEET_LOOKS {
+            let mut harness = settings_sheet(look());
+            harness.click("Rows per page");
+            assert!(harness.has("Rows per page 500"));
+            harness.press(egui::Key::Escape, egui::Modifiers::NONE);
+            assert!(settings_open(&harness), "the menu closes first");
+            assert!(!harness.has("Rows per page 500"));
+            assert_eq!(harness.app.settings.page_size, 300);
+            harness.press(egui::Key::Escape, egui::Modifiers::NONE);
+            assert!(harness.app.dialog.is_none());
+        }
+    }
+
+    #[test]
+    fn a_key_held_down_on_a_link_of_the_settings_sheet_presses_it_once() {
+        let mut harness = settings_sheet(crate::theme::Look::standard());
+        let held = |repeat| egui::Event::Key {
+            key: egui::Key::Enter,
+            physical_key: None,
+            pressed: true,
+            repeat,
+            modifiers: egui::Modifiers::NONE,
+        };
+        let revealed = |harness: &Harness| {
+            let sent = harness.app.backend.sent.iter();
+            sent.filter(|command| matches!(command, Command::RevealSettingsFile { .. }))
+                .count()
+        };
+        tab_to_settings(&mut harness, reveal_link());
+        harness.frame(vec![held(false)]);
+        harness.settle();
+        assert_eq!(revealed(&harness), 1);
+        // Every repeat would start another file manager.
+        for _ in 0..3 {
+            harness.frame(vec![held(true)]);
+        }
+        harness.settle();
+        assert_eq!(revealed(&harness), 1);
+        harness.frame(vec![crate::testing::release(
+            egui::Key::Enter,
+            egui::Modifiers::NONE,
+        )]);
+        // And every repeat another dialog to save in.
+        tab_to_settings(&mut harness, "Export…");
+        harness.frame(vec![held(false)]);
+        for _ in 0..3 {
+            harness.frame(vec![held(true)]);
+        }
+        harness.settle();
+        assert_eq!(harness.app.backend.saves.len(), 1);
+    }
+
+    #[test]
+    fn the_settings_sheet_is_whole_at_once_in_a_window_grown_tall() {
+        use egui::accesskit::Role;
+        for look in SHEET_LOOKS {
+            let mut harness = Harness::with_size(egui::vec2(1280.0, 240.0));
+            harness.set_look(look());
+            harness.press(egui::Key::Comma, egui::Modifiers::COMMAND);
+            harness.settle();
+            // The window is made tall: the rows are all there in the frames
+            // it takes any layout to settle, not a little more of them in
+            // each frame after.
+            harness.size = egui::vec2(1280.0, 800.0);
+            let tree = harness.settle();
+            let switch =
+                crate::testing::bounds(&tree, "Value tags", Role::CheckBox).expect("the switch");
+            let stored = harness.painted_rect("Stored in").expect("the footer");
+            assert!(switch.bottom() < stored.top(), "{switch:?} {stored:?}");
         }
     }
 

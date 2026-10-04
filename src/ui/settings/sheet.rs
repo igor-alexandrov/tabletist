@@ -108,9 +108,13 @@ pub(super) fn show(app: &App, ctx: &egui::Context, resetting: bool, actions: &mu
             // that height.
             let fill = ui.painter().add(egui::Shape::Noop);
             nav(ui, room.min, &skin);
+            // No bottom of its own: its rows end where `content` is told to
+            // end them. The sheet's bottom is the one the frame before left
+            // it, and rows held to that would get their height back a
+            // footer's worth in a frame once the window had grown.
             let pane = Rect::from_min_max(
                 pos2(room.left() + NAV + SIDE, room.top() + TOP),
-                pos2(room.right() - SIDE, room.bottom()),
+                pos2(room.right() - SIDE, f32::INFINITY),
             );
             // The footer's height before the content's: a window too short
             // for the sheet takes from the rows, which scroll, and the
@@ -141,11 +145,14 @@ pub(super) fn show(app: &App, ctx: &egui::Context, resetting: bool, actions: &mu
             );
             widgets::vline(ui, side.right() - 0.5, side.y_range(), skin.palette.outline);
         });
-    // Escape closes the sheet, unless it is closing the open menu first.
-    // While the footer asks, it answers that first: no.
+    // Escape closes the sheet, and so does a click outside it, which is all
+    // a pointer has to leave it with: unless they are closing the open menu
+    // first. While the footer asks, they answer that first: no.
+    let escape = egui::Key::Escape;
     if modal.is_top_modal
         && !modal.any_popup_open
-        && ctx.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
+        && (modal.backdrop_response.clicked()
+            || ctx.input_mut(|input| input.consume_key(egui::Modifiers::NONE, escape)))
     {
         actions.push(if resetting {
             Action::ConfirmResetSettings(false)
@@ -296,8 +303,27 @@ fn row(
         .max_rect(place);
     let mut line = ui.new_child(builder.layout(centred));
     control(&mut line, option, settings, skin, actions);
+    // Tab reaches a control of a row that is scrolled out of view, where
+    // its ring is cut with it: the row comes to the keyboard. Jump, not
+    // animate: the next Tab may come at once.
+    if keyboard_came_to(ui, place) {
+        ui.scroll_to_rect_animation(rect, None, egui::style::ScrollAnimation::none());
+    }
     let left = line.min_rect().right() + HINT_GAP;
     hint(ui, pos2(left, middle), rect.right(), option, settings, skin);
+}
+
+/// Whether the keyboard came in this frame to a control in `place`, on the
+/// layer `ui` draws on: the open menu's entries hang over the rows under
+/// it, on a layer of their own.
+fn keyboard_came_to(ui: &Ui, place: Rect) -> bool {
+    ui.memory(|memory| memory.focused())
+        .and_then(|id| ui.ctx().read_response(id))
+        .is_some_and(|control| {
+            control.gained_focus()
+                && control.layer_id == ui.layer_id()
+                && place.contains(control.rect.center())
+        })
 }
 
 /// How tall `option`'s control is: its row is at least as tall.
@@ -360,7 +386,7 @@ fn control(
         OptionId::Timestamps => {
             let words = [skin.say("To the second"), skin.say("Full precision")];
             let selected = usize::from(settings.timestamps == Timestamps::Full);
-            if let Some(picked) = segments(ui, &words, selected, skin) {
+            if let Some(picked) = segments(ui, &name, &words, selected, skin) {
                 let value = [Timestamps::Second, Timestamps::Full][picked];
                 actions.push(Action::SetOption(OptionValue::Timestamps(value)));
             }
@@ -369,7 +395,7 @@ fn control(
             // A number as each value writes it: no language has others.
             let words = ["1,240.50".to_owned(), "1240.50".to_owned()];
             let selected = usize::from(!settings.group_digits);
-            if let Some(picked) = segments(ui, &words, selected, skin) {
+            if let Some(picked) = segments(ui, &name, &words, selected, skin) {
                 actions.push(Action::SetOption(OptionValue::GroupDigits(picked == 0)));
             }
         }
@@ -383,10 +409,16 @@ fn control(
     }
 }
 
-/// A segmented control of `words`, the one at `selected` chosen. Returns
-/// the index of a segment picked this frame. The segments are of one
-/// width: the widest word's, with 10 at each side.
-fn segments(ui: &mut Ui, words: &[String; 2], selected: usize, skin: &Skin) -> Option<usize> {
+/// A segmented control of `words` for the option called `option`, the one
+/// at `selected` chosen. Returns the index of a segment picked this frame.
+/// The segments are of one width: the widest word's, with 10 at each side.
+fn segments(
+    ui: &mut Ui,
+    option: &str,
+    words: &[String; 2],
+    selected: usize,
+    skin: &Skin,
+) -> Option<usize> {
     let Skin { look, palette, .. } = *skin;
     // The role `widgets::segmented` writes its words in.
     let role = TextRole::FieldLabel;
@@ -395,7 +427,14 @@ fn segments(ui: &mut Ui, words: &[String; 2], selected: usize, skin: &Skin) -> O
         .map(|word| role.width(ui.ctx(), look.faces, word))
         .fold(0.0, f32::max);
     let size = vec2((widest + 20.0).ceil(), SEGMENT);
-    let parts = [Segment::Text(&words[0]), Segment::Text(&words[1])];
+    // The row's label is beside the control, not a segment's own: each is
+    // named by the option and its own word, as the terminal look's
+    // choices are.
+    let names = [0, 1].map(|index| format!("{option}: {}", words[index]));
+    let parts = [0, 1].map(|index| Segment::Named {
+        text: &words[index],
+        name: &names[index],
+    });
     widgets::segmented(ui, &parts, selected, size, look, palette)
 }
 
@@ -544,6 +583,17 @@ fn footer(
     }
     let middle = top + role.row_height(ui.ctx(), look.faces) / 2.0;
 
+    // Whether the question stood here in the frame before and is answered
+    // now. Noted in every frame that asks, and read once.
+    let asked = ui.id().with("asked");
+    let now = ui.ctx().cumulative_frame_nr();
+    let answered = if resetting {
+        ui.data_mut(|data| data.insert_temp(asked, now));
+        false
+    } else {
+        ui.data_mut(|data| data.remove_temp::<u64>(asked)) == Some(now.saturating_sub(1))
+    };
+
     // The right side first: what it leaves is the path's.
     let parts = if resetting {
         vec![
@@ -589,10 +639,21 @@ fn footer(
             Some((color, action)) => {
                 // Known by its place from the right, which Reset to
                 // defaults shares with Cancel: the keyboard that asked is
-                // on the answer that changes nothing, and back on the link
-                // once it has answered.
-                let id = ui.id().with(("link", count - 1 - index));
-                if link(ui, id, pos2(x, middle), width, &text, color, skin).clicked() {
+                // on the answer that changes nothing. Reset has an id no
+                // other link has: one it shared with Export would leave
+                // the keyboard there, and the key still held would export.
+                let id = match action {
+                    Action::ConfirmResetSettings(true) => ui.id().with("reset"),
+                    _ => ui.id().with(("link", count - 1 - index)),
+                };
+                let link = link(ui, id, pos2(x, middle), width, &text, color, skin);
+                // Whatever answered, the keyboard is back on the link that
+                // asked: Reset went with the question, and Escape takes
+                // the keyboard from wherever it is.
+                if answered && matches!(action, Action::ResetSettings) {
+                    link.request_focus();
+                }
+                if pressed(ui, &link) {
                     actions.push(action);
                 }
             }
@@ -626,7 +687,8 @@ fn footer(
 }
 
 /// A link of the footer: `text`, `width` wide from `at` on its middle, in
-/// `color`. Tab reaches it, and Space and Enter press it.
+/// `color`. Tab reaches it, and Space and Enter press it: [`pressed`] says
+/// when.
 fn link(
     ui: &Ui,
     id: egui::Id,
@@ -651,6 +713,39 @@ fn link(
     widgets::paint_text(ui, at.x, at.y, Text::one(look, role, text, color));
     focus::hint(ui, &response, rect, Ring::Outer { radius: 3 });
     response
+}
+
+/// Whether `link` was pressed in this frame: by the pointer, by a screen
+/// reader, or by a key that was not down before. egui counts every repeat
+/// of a held Space or Enter as a press, and each would start another file
+/// manager or open another dialog to save in.
+fn pressed(ui: &Ui, link: &egui::Response) -> bool {
+    if !link.clicked() {
+        return false;
+    }
+    if link.clicked_by(egui::PointerButton::Primary) {
+        return true;
+    }
+    let (mut fresh, mut repeated) = (false, false);
+    ui.input(|input| {
+        for event in &input.events {
+            if let egui::Event::Key {
+                key: egui::Key::Space | egui::Key::Enter,
+                pressed: true,
+                repeat,
+                ..
+            } = event
+            {
+                if *repeat {
+                    repeated = true;
+                } else {
+                    fresh = true;
+                }
+            }
+        }
+    });
+    // A screen reader's press comes with no key at all.
+    fresh || !repeated
 }
 
 /// `text` if it `fits`, or the most of its end that does after `…`: a

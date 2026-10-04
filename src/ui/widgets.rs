@@ -1001,6 +1001,12 @@ pub struct FieldStyle {
 pub enum Segment<'a> {
     Icon(Icon, &'a str),
     Text(&'a str),
+    /// Words that do not say what they choose without the label beside
+    /// the control: written as `text`, and named `name` for screen readers.
+    Named {
+        text: &'a str,
+        name: &'a str,
+    },
 }
 
 /// A segmented control; returns the index of a clicked segment. macOS: a
@@ -1021,7 +1027,7 @@ pub fn segmented(
     let widths: Vec<f32> = segments
         .iter()
         .map(|part| match part {
-            Segment::Text(text) if look.terminal => {
+            Segment::Text(text) | Segment::Named { text, .. } if look.terminal => {
                 measure(ui, label(text, Color32::PLACEHOLDER)) + 12.0
             }
             _ => segment.x,
@@ -1059,6 +1065,7 @@ pub fn segmented(
         let (name, icon, text) = match part {
             Segment::Icon(icon, name) => (*name, Some(*icon), None),
             Segment::Text(text) => (*text, None, Some(*text)),
+            Segment::Named { text, name } => (*name, None, Some(*text)),
         };
         // One Tab stop for the control; the arrows choose inside it.
         let (response, arrow) = focus::segment(
@@ -1123,7 +1130,9 @@ pub fn segmented(
             laid.paint_center(&painter, cell.center());
         }
         if response.hovered() {
-            let _ = response.on_hover_text(name);
+            // The words as they are written, where there are words: the
+            // name that says more is for a screen reader.
+            let _ = response.on_hover_text(text.unwrap_or(name));
         }
     }
     clicked
