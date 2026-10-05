@@ -17150,6 +17150,93 @@ mod tests {
     }
 
     #[test]
+    fn the_review_says_when_a_cell_is_still_being_edited() {
+        for look in Look::ALL {
+            let (mut harness, tab, id) = editable_in(look);
+            let palette = harness.app.palette;
+            make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
+            review(&mut harness, tab, id);
+            let (usual, typing) = if look.terminal {
+                ("one transaction", "without the cell being edited")
+            } else {
+                (DRAWER, "Without the cell being edited")
+            };
+            // What is typed goes after the value the editor opened with.
+            let dan = r#"   SET "email" = 'user4@example.com.au'"#;
+            assert!(painted(&harness, usual), "{}", look.name);
+            assert!(!painted(&harness, typing), "{}", look.name);
+            let cell = CellPos { row: 3, col: 1 };
+            // An editor that was only opened is no change: a save sends
+            // nothing of it.
+            let start = EditStart::Value;
+            harness.app.apply(Action::EditCell {
+                tab,
+                id,
+                cell,
+                start,
+            });
+            harness.settle();
+            assert!(edits(&harness, tab, id).editor.is_some(), "{}", look.name);
+            assert!(painted(&harness, usual), "{}", look.name);
+            assert!(!painted(&harness, typing), "{}", look.name);
+            // Typed into, it holds what a save would send too, and the
+            // lines do not: the head says so, where it said what a save
+            // is.
+            let made = edits(&harness, tab, id).review.as_ref().unwrap();
+            let made = made.lines.as_ptr();
+            type_text(&mut harness, ".au");
+            harness.settle();
+            let editor = edits(&harness, tab, id).editor.as_ref();
+            assert!(editor.is_some_and(|editor| editor.touched), "{}", look.name);
+            assert!(
+                painted_in(&harness, typing, palette.warning),
+                "{}: {:?}",
+                look.name,
+                harness.painted
+            );
+            assert!(harness.has(typing), "{}", look.name);
+            assert!(!painted(&harness, usual), "{}", look.name);
+            // In the panel's head, not somewhere over the grid.
+            let placed = drawn(&harness).expect("the panel is drawn");
+            let said = harness.painted_rect(typing).unwrap();
+            assert!(placed.rect.contains_rect(said), "{}", look.name);
+            assert!(said.bottom() <= harness.painted_rect(BOB[0]).unwrap().top());
+            // The lines are the ones that were made: no keystroke builds
+            // a statement.
+            let review = edits(&harness, tab, id).review.as_ref().unwrap();
+            assert_eq!(review.lines.as_ptr(), made, "{}", look.name);
+            assert!(!painted(&harness, dan), "{}", look.name);
+            for line in BOB {
+                assert!(painted(&harness, line), "{}: {line}", look.name);
+            }
+            // Committed, the review holds the cell, and the head says
+            // what a save is again.
+            let then = Advance::Stay;
+            harness.app.apply(Action::CommitEdit { tab, id, then });
+            harness.settle();
+            assert!(edits(&harness, tab, id).editor.is_none(), "{}", look.name);
+            assert!(painted(&harness, usual), "{}", look.name);
+            assert!(!painted(&harness, typing), "{}", look.name);
+            assert!(painted(&harness, dan), "{}", look.name);
+            // Cancelled, nothing of it is sent, and nothing is said.
+            let start = EditStart::Replace("eve@example.com".into());
+            let cell = CellPos { row: 4, col: 1 };
+            harness.app.apply(Action::EditCell {
+                tab,
+                id,
+                cell,
+                start,
+            });
+            harness.settle();
+            assert!(painted(&harness, typing), "{}", look.name);
+            harness.app.apply(Action::CancelEdit { tab, id });
+            harness.settle();
+            assert!(painted(&harness, usual), "{}", look.name);
+            assert!(!painted(&harness, typing), "{}", look.name);
+        }
+    }
+
+    #[test]
     fn the_terminal_panel_stands_between_the_error_line_and_the_status_line() {
         let (mut harness, tab, id) = editable_in(Look::omarchy());
         // The row panel names the fields too: the grid alone is looked at.

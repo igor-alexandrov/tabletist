@@ -229,11 +229,11 @@ pub fn text(review: &Review, locale: Locale) -> String {
 pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, id: TabId) {
     let (locale, palette, look) = (app.locale, app.palette, app.look);
     let workspace = app.workspace(tab);
-    let review = workspace
+    let edits = workspace
         .and_then(|workspace| workspace.object_tab(id))
-        .filter(|object| object.edits.reviewing)
-        .and_then(|object| object.edits.review.as_ref());
-    let Some(review) = review else {
+        .map(|object| &object.edits)
+        .filter(|edits| edits.reviewing);
+    let Some(review) = edits.and_then(|edits| edits.review.as_ref()) else {
         // A panel takes one of its parent's ids. Passed over while there is
         // no drawer, so what is drawn after it (the grid, the filter's bar)
         // is the same widget with the drawer and without: a field that has
@@ -242,6 +242,13 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, id: TabId) {
         return;
     };
     let read_only = workspace.is_some_and(|workspace| workspace.access == Access::ReadOnly);
+    // An editor that was typed into holds what a save would send with the
+    // rest, and the lines are of the pending set alone: the head says so.
+    // Not the lines themselves: they are made when the set changes, never
+    // for a keystroke.
+    let typing = edits
+        .and_then(|edits| edits.editor.as_ref())
+        .is_some_and(|editor| editor.touched);
     // Only under that confirmation: with no dialog up the two keys are the
     // grid's, and under any other they are not this panel's. Read before
     // the lines are drawn, and before the dialog's field sees them.
@@ -292,11 +299,12 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, id: TabId) {
             widgets::hline(ui, head.x_range(), head.top() + 0.5, palette.outline);
             widgets::hline(ui, head.x_range(), head.bottom() - 0.5, palette.outline);
             if look.terminal {
-                terminal_head(ui, head, side, (review.changes, review.rows), skin);
+                let counts = (review.changes, review.rows);
+                terminal_head(ui, head, side, counts, typing, skin);
                 let foot = Rect::from_min_max(pos2(full.left(), full.bottom() - FOOT), full.max);
                 asked = terminal_foot(ui, foot, side, read_only, skin);
             } else {
-                asked.copy = desktop_head(ui, head, side, skin);
+                asked.copy = desktop_head(ui, head, side, typing, skin);
             }
             let place = Rect::from_min_max(
                 pos2(full.left() + side, head.bottom() + PAD),
@@ -375,10 +383,15 @@ struct Asked {
     hide: bool,
 }
 
+/// What the head says while an editor holds typed text: a save would send
+/// it too, and the lines under the head do not show it.
+const TYPING: &str = "Without the cell being edited";
+
 /// The head on macOS and Windows: what a save is, and Copy SQL at its
-/// right. The counts are in the bar under the drawer. Returns whether the
-/// button was pressed.
-fn desktop_head(ui: &mut egui::Ui, head: Rect, side: f32, skin: Skin<'_>) -> bool {
+/// right. The counts are in the bar under the drawer. While a cell is
+/// being edited (`typing`) it says that in the warning colour, where it
+/// said what a save is. Returns whether the button was pressed.
+fn desktop_head(ui: &mut egui::Ui, head: Rect, side: f32, typing: bool, skin: Skin<'_>) -> bool {
     let Skin {
         look,
         palette,
@@ -395,8 +408,15 @@ fn desktop_head(ui: &mut egui::Ui, head: Rect, side: f32, skin: Skin<'_>) -> boo
         vec2(width, BUTTON),
     );
     let copy = button.show_at(ui, at, look, palette).clicked();
-    let said = gettext(locale, "Runs in one transaction");
-    let said = || Text::one(look, widgets::body(look), &said, palette.secondary);
+    let (said, color) = if typing {
+        (gettext(locale, TYPING), Tone::Warning.color(palette))
+    } else {
+        (
+            gettext(locale, "Runs in one transaction"),
+            palette.secondary,
+        )
+    };
+    let said = || Text::one(look, widgets::body(look), &said, color);
     if head.left() + side + widgets::measure(ui, said()) <= at.left() - 8.0 {
         widgets::paint_label(ui, head.left() + side, y, said());
     }
@@ -404,13 +424,15 @@ fn desktop_head(ui: &mut egui::Ui, head: Rect, side: f32, skin: Skin<'_>) -> boo
 }
 
 /// The terminal look's head: how much is pending, since the look has no
-/// bar to say it, and at the right what a save is. Its buttons are in the
-/// foot.
+/// bar to say it, and at the right what a save is, or, while a cell is
+/// being edited (`typing`), that the lines are without it. Its buttons are
+/// in the foot.
 fn terminal_head(
     ui: &egui::Ui,
     head: Rect,
     side: f32,
     (changes, rows): (usize, usize),
+    typing: bool,
     skin: Skin<'_>,
 ) {
     let Skin {
@@ -429,8 +451,12 @@ fn terminal_head(
     let left = head.left() + side;
     let end = left + widgets::paint_label(ui, left, y, counts);
     // Where the head has the room for both.
-    let said = skin.say("one transaction");
-    let said = || Text::one(look, TextRole::OSecondary, &said, palette.dim);
+    let (said, color) = if typing {
+        (skin.say(TYPING), Tone::Warning.color(palette))
+    } else {
+        (skin.say("one transaction"), palette.dim)
+    };
+    let said = || Text::one(look, TextRole::OSecondary, &said, color);
     let start = head.right() - side - widgets::measure(ui, said());
     if end + GAP <= start {
         widgets::paint_label(ui, start, y, said());
