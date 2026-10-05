@@ -5168,3 +5168,22 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 - `Error::Refused { mode, .. }`, `Error::ReadOnly` and `Error::LeftTransaction`, none of which the app words yet beyond their `Display`.
 - `StatementOutcome::Done { warnings, .. }`, which the Messages pane does not show yet.
 - `src/backend.rs` passing `ScriptMode::ReadOnly` in the one place a run is sent: `Command::RunSql` gains the mode there in step 2.
+
+## After the plan ran
+
+The seven tasks were built as written: the tree after each equals the plan's code, and the four checks passed after each. No PostgreSQL or MySQL server could be reached during the run either, so the tests of tasks 5 and 6 are still only compiled. CI is the first to run them.
+
+A review of the finished code found one fault, fixed in a commit of its own after task 7 ("Say that a run is written when a stop comes after its last statement committed"):
+
+- **MySQL, `close` in `mysql/script/write.rs`.** With every statement done and a stop set, the run rolled back and said `RolledBack`. When the last statement had made the server commit, nothing was left to roll back and all of the run was written. `close` now asks `inside` in that branch, as `settle` does between statements: outside a transaction, the end is `Committed`, with `stopped` still set. The test is `a_stop_during_a_last_statement_that_committed_is_not_said_to_be_rolled_back` in `tests/mysql.rs`.
+- In the same commit `roll_back` reads `SHOW WARNINGS` as rows, not as a typed tuple, which would panic on a row that does not convert.
+
+Found and left for step 2, which is the step that lets a tab write (the spec says so now):
+
+- **SQLite pragmas that outlive a run.** A script may set `ignore_check_constraints`, `recursive_triggers`, `legacy_alter_table` or `locking_mode`, in a read-only run too, and `set_session_pragmas` does not put them back. That was so before this plan and harmed nothing while no run could commit.
+
+Noted and not acted on:
+
+- PostgreSQL: a cancel that lands between the `RELEASE` and the `SAVEPOINT` of the guard's swap closes the session of a stopped run that was in fact rolled back. The read-only run has the same narrow window.
+- `sql::unbounded` does not name a `DELETE` inside a `WITH` whose own verb is `SELECT`. The spec's rule is about the statement's own verb.
+- On SQLite `WITH ... REPLACE INTO` is a `Read` to `sql::kind`; `query_only` refuses it and the card of step 2 offers the run that writes.

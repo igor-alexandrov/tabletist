@@ -294,7 +294,11 @@ of statements is `Ok` with no results, as today.
    before it. A `COMMIT` answered with a cancel is followed by the same
    question as step 2: still inside the transaction, nothing was committed
    and the run ends as a stopped one; outside it, the server does not say
-   which way the commit went, and the run is an `Err`.
+   which way the commit went, and the run is an `Err`. A stop that came
+   while the last statement ran is asked the question too, in place of
+   the `COMMIT`: outside a transaction with every statement done, that
+   statement made the server commit, nothing is left to roll back, and
+   the run is `Committed` though it was stopped.
 5. After an error or a stop: `ROLLBACK`. With nothing noted the end is
    `RolledBack`, otherwise `Partly { committed }`. When the `ROLLBACK`
    reports a warning, the driver reads it with `SHOW WARNINGS` before
@@ -560,7 +564,14 @@ cannot.
 - A cancel that arrives after the commit was sent does nothing. The run
   ends committed and says so.
 - Session settings a script changes last only for the run, in both modes.
-  A read-write run on PostgreSQL resets them itself.
+  A read-write run on PostgreSQL resets them itself. SQLite is the
+  exception it has always been: a script's `PRAGMA`s, beyond the few that
+  are put back, and its `ATTACH`es last for the session, as the core spec
+  says. Some of them change what a later run that writes keeps
+  (`ignore_check_constraints`, `recursive_triggers`, `legacy_alter_table`,
+  `locking_mode`), and a script may set them in a read-only run. Step 2
+  settles them, by putting them back after every run or by denying them
+  to a script, before any tab can write.
 - Run on an empty or comment-only editor does nothing, and neither does
   Run while the session is connecting or disconnected.
 - A tab switched to Read-write whose runs are all reads never opens a
@@ -584,6 +595,8 @@ Each step ends compiling, tested and shippable, and gets its own plan run:
    `editor.sql_new_tab`, the decision in `RunSql`, the production
    confirmation in both looks, the three cards, Messages, Results and the
    footer for a read-write run, and Run held back while one is in flight.
+   It also settles the SQLite pragmas that outlive a run (see "Errors and
+   edge cases"), since it is the step that lets a tab write.
    It reuses the production sheet and the PROD box of value editing's step
    3, so it is planned once that has landed. Until step 3 of this spec,
    closing a tab or a connection cancels a read-write run in flight
