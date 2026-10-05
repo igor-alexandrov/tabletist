@@ -167,7 +167,8 @@ same answer. No run is read-write without having passed them.
         pub broken: Option<Error>,
     }
     pub enum ScriptEnd {
-        /// Nothing of the run remains. Every read-only run ends so.
+        /// The transaction was rolled back: nothing the run did to a row
+        /// or a table remains. Every read-only run ends so.
         RolledBack,
         /// Every statement's work is written.
         Committed,
@@ -563,6 +564,13 @@ cannot.
 
 ## Errors and edge cases
 
+- "Rolled back" and "Nothing was written" speak of what a transaction
+  holds: rows, and tables where DDL is transactional. That is the promise
+  the read-only run makes too. What a database keeps outside its
+  transactions stays as the statements left it, whatever the run's end: a
+  sequence `nextval` advanced or an insert drew from, an auto-increment
+  counter. No client undoes those, a run cannot tell which statements
+  touch them (a column's default does), and the app does not warn of them.
 - A statement's error, its line and its position read as today. After it
   nothing more runs and the transaction is rolled back.
 - The timeout cancels a read-write run and rolls it back: "Cancelled after

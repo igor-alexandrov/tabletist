@@ -5183,6 +5183,7 @@ After the pull request was opened (#83), on top of value editing (#76), which ha
 - **The first run against the servers.** Every PostgreSQL and MySQL test passed but one in each suite, and for one reason: value editing's tests make and drop tables named `write_stopped`, `write_session` and `write_myisam` too. The tables of this plan's tests are `script_*` now.
 - **A cancel that lands on a `COMMIT`** is decided in one function, `script::cancelled_commit`, which SQLite and MySQL share and which has unit tests for each answer. On PostgreSQL `a_cancel_that_lands_on_the_commit_rolls_the_run_back` cancels a commit that a deferred trigger keeps busy.
 - **MySQL: a statement no transaction holds.** A statement that can make the server commit, and then fails or is stopped, may be applied in part. The run puts a sentence saying so in `rollback_warning` (`Run::applied_in_part`), so the end no longer reads as "the rest was rolled back". The test is `a_failed_statement_no_transaction_holds_is_not_said_to_be_undone`.
+- `ScriptEnd::RolledBack` says what it covers: the rows and tables a transaction holds, not a sequence or an auto-increment counter, which no rollback undoes.
 - `session_setup` on PostgreSQL returns a `String` and carries the settings #76 added at connect (how floats and time zones print), so a run that writes sets them again after its reset.
 
 Found and left for step 2, which is the step that lets a tab write (the spec says so now):

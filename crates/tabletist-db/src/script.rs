@@ -41,11 +41,14 @@ pub(crate) fn refusal_sentence(mode: &ScriptMode, what: &str) -> String {
     }
 }
 
-/// What remains of a script's work once its run is over.
+/// What remains of a script's work once its run is over: of the rows and
+/// tables its transaction held. What a database keeps outside its
+/// transactions no rollback undoes, here as in any client: a sequence a
+/// statement advanced, an auto-increment counter an insert drew from.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub enum ScriptEnd {
-    /// Nothing: the transaction was rolled back. Every read-only run ends
-    /// so.
+    /// The transaction was rolled back: nothing the run did to a row or a
+    /// table remains. Every read-only run ends so.
     #[default]
     RolledBack,
     /// Every statement's work is written.
