@@ -165,7 +165,7 @@ pub fn of(
                 lines.push(Line::Row(name));
                 let check = row.set.iter().map(|change| {
                     let column = format::display_safe(&change.column).into_owned();
-                    (column, loaded(&change.loaded))
+                    (column, loaded(&change.loaded, values))
                 });
                 lines.push(Line::Check(check.collect()));
                 lines.extend(statement(&update, row.set.len(), values));
@@ -206,14 +206,18 @@ fn row_name(row: &RowChange) -> String {
 }
 
 /// What a changed cell loaded, as the check's comment says it: text in
-/// quotes, everything else as the grid shows it. A long text is cut to 59
-/// characters and `…` inside its quotes. Never a line break: a comment
-/// ends at one, and what followed would be read as SQL by whoever pastes
-/// the text.
-fn loaded(value: &Value) -> String {
+/// quotes, everything else as the grid shows it. Shown, a long text is cut
+/// to 59 characters and `…` inside its quotes; for the clipboard it is
+/// whole, since the copy says each statement runs only while its row is
+/// still as this comment says. Never a line break: a comment ends at one,
+/// and what followed would be read as SQL by whoever pastes the text.
+fn loaded(value: &Value, values: Values) -> String {
     let Value::Text(text) = value else {
         return format::cell_text(value).into_owned();
     };
+    if values == Values::Whole {
+        return format!("'{}'", format::escape_hidden(text));
+    }
     let (kept, whole) = head(text, VALUE_MAX_CHARS);
     if whole {
         return format!("'{}'", format::escape_hidden(kept));
@@ -621,8 +625,12 @@ mod tests {
                 r#"UPDATE "main"."users" SET "email" = '{new}' WHERE "id" = 2;"#
             )]
         );
-        // Its comments are for reading, and stay cut.
-        assert_eq!(whole.lines[1], shown.lines[1]);
+        // And the whole of what its check compares: the copy says each
+        // statement runs only while its row is still as the comment says.
+        assert_eq!(
+            whole.lines[1],
+            Line::Check(vec![("email".into(), format!("'{}'", "o".repeat(200)))])
+        );
     }
 
     #[test]
@@ -677,12 +685,21 @@ mod tests {
         assert_eq!(cut("'a\nb'"), "'a<U+000A>b'");
         assert_eq!(cut("NULL"), "NULL");
         // The check's value: fifty-nine characters and `…` in its quotes.
+        let shown = |value: &Value| loaded(value, Values::Shown);
         let text = Value::Text("o".repeat(200).into());
-        assert_eq!(loaded(&text), format!("'{}…'", "o".repeat(59)));
+        assert_eq!(shown(&text), format!("'{}…'", "o".repeat(59)));
         let fits = Value::Text("o".repeat(60).into());
-        assert_eq!(loaded(&fits), format!("'{}'", "o".repeat(60)));
+        assert_eq!(shown(&fits), format!("'{}'", "o".repeat(60)));
         let breaks = Value::Text("\n".repeat(58).into());
-        assert_eq!(loaded(&breaks), format!("'{}…'", "<U+000A>".repeat(7)));
+        assert_eq!(shown(&breaks), format!("'{}…'", "<U+000A>".repeat(7)));
+        // For the clipboard the check says the whole of what was loaded,
+        // as the statement under it holds the whole of what is set: still
+        // on one line, with no break to end the comment.
+        let whole = |value: &Value| loaded(value, Values::Whole);
+        assert_eq!(whole(&text), format!("'{}'", "o".repeat(200)));
+        assert_eq!(whole(&breaks), format!("'{}'", "<U+000A>".repeat(58)));
+        assert_eq!(whole(&Value::Null), shown(&Value::Null));
+        assert_eq!(whole(&Value::Int(612)), "612");
     }
 
     #[test]

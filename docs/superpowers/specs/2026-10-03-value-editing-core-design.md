@@ -860,8 +860,9 @@ confirmation.
 
 ### What a copied text is
 
-The app's statements with every value whole, under their comments as
-shown, after a first comment line that says so: `-- What Tabletist runs to
+The app's statements with every value whole, under their comments, whose
+loaded values are whole too (on one line, hidden characters written out),
+after a first comment line that says so: `-- What Tabletist runs to
 save these changes, in one transaction. Each statement runs only while its
 row is still as the comment above it says.` It is not a script that checks
 or wraps anything: it has no `BEGIN` and no `COMMIT`, and nothing in it
