@@ -858,9 +858,14 @@ confirmation.
   a NUL (`('aaa…')`, `('aaa'…)`). The value in a check's comment is cut
   the same way. That is display only: what runs, and what is copied, hold
   the whole value.
-- **The lines cannot be selected.** What is shown is cut, and a copy of it
-  would be pasted as it is. **Copy SQL** puts the whole statements on the
-  clipboard instead (see "What a copied text is").
+- **The lines can be selected,** as a label's text is: a drag selects
+  across lines, a double click a word, and `Mod+C` copies the selection.
+  It is copied as it reads: a value that is shown cut is copied cut, with
+  its `…`, and nothing says what the text is. **Copy SQL** puts the whole
+  statements on the clipboard (see "What a copied text is"). A line is
+  named by its place in the review, so a selection stays on its line while
+  the lines scroll; one whose ends scroll out of view is dropped. The lines
+  take no Tab stop.
 - **The review is the tab's, and goes with the set.** Each table tab has
   its own (`Edits::reviewing`, `Edits::review`). It stays open while
   another tab shows, through a save that runs, fails or conflicts, and
@@ -927,8 +932,8 @@ Only when the workspace's environment is production
 (`Environment::confirms_writes()`), every Save first asks, with every
 statement it would send on screen. The statements are the review of the
 set the confirmation was made with (`WritePrompt::review`), and both looks
-draw them as Review SQL does: the same lines, colours and cut, not
-selectable, in a box that scrolls both ways. The box is as tall as its
+draw them as Review SQL does: the same lines, colours and cut, selectable
+as there, in a box that scrolls both ways. The box is as tall as its
 lines, to twelve of them, and lower in a low window, so the question and
 its answers stay on screen with them.
 

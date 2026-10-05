@@ -571,6 +571,21 @@ impl Laid {
         self.width()
     }
 
+    /// [`Self::paint_left`] for text that can be selected, as a label's
+    /// can: `response` is the widget the text is of, and what the pointer
+    /// presses and drags to select. A selection runs on into the next such
+    /// text, and is copied as it reads.
+    pub fn select_left(&self, ui: &Ui, response: &Response, x: f32, y: f32) {
+        egui::text_selection::LabelSelectionState::label_text_selection(
+            ui,
+            response,
+            egui::pos2(x, y - self.middle()),
+            self.galley.clone(),
+            Color32::PLACEHOLDER,
+            egui::Stroke::NONE,
+        );
+    }
+
     /// Paints with the right edge at `right`, centred on `y`. Returns the width.
     pub fn paint_right(&self, painter: &Painter, right: f32, y: f32) -> f32 {
         self.paint(painter, egui::pos2(right - self.width(), y - self.middle()));

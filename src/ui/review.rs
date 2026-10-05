@@ -153,18 +153,31 @@ pub fn rows(
     locale: Locale,
 ) {
     let height = row_height(ui.ctx(), look);
-    for line in lines.get(range).unwrap_or_default() {
+    // What a label that can be selected senses: a press, and a drag where
+    // the pointer is not a finger, which scrolls. Never the keyboard: Tab
+    // passes the lines by.
+    let sense = if ui.input(|input| input.has_touch_screen()) {
+        Sense::CLICK
+    } else {
+        Sense::CLICK | Sense::DRAG
+    };
+    let first = range.start;
+    for (index, line) in lines.get(range).unwrap_or_default().iter().enumerate() {
         let laid = line_text(line, look, palette, locale).layout(ui.ctx());
         // As wide as the line, so a long one scrolls and is never cut by
         // its row; and no narrower than the place.
         let room = Some(ui.available_width()).filter(|room| room.is_finite());
         let width = room.map_or(laid.width(), |room| room.max(laid.width()));
-        // Painted, not a label that can be selected: what is shown is cut,
-        // and a copy of it would be pasted as it is.
-        let (rect, response) = ui.allocate_exact_size(vec2(width, height), Sense::hover());
+        let (_, rect) = ui.allocate_space(vec2(width, height));
+        // Named by its place in the review, not by its place among the
+        // rows in view: a selection stays on its line while the lines
+        // scroll under it.
+        let response = ui.interact(rect, ui.id().with(("line", first + index)), sense);
         response.widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, laid.galley.text()));
         if ui.is_rect_visible(rect) {
-            laid.paint_left(ui.painter(), rect.left(), rect.center().y);
+            // Selected as it is shown: a value that is cut is copied cut,
+            // with its `…`. Copy SQL gives the whole.
+            laid.select_left(ui, &response, rect.left(), rect.center().y);
         }
     }
 }
@@ -800,6 +813,59 @@ mod tests {
                     look.name
                 );
             }
+        }
+    }
+
+    #[test]
+    fn a_selection_stays_on_its_line_while_the_lines_scroll() {
+        let review = of(
+            Dialect::Sqlite,
+            &changes(&[2, 4], "bob@example.com"),
+            &[],
+            Values::Shown,
+        );
+        let lines = &review.lines;
+        let update = r#"UPDATE "main"."users""#;
+        for look in Look::ALL {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            let palette = harness.app.palette;
+            // Four of the ten lines in view, from the line `top`.
+            let draw = |top: f32| {
+                move |ui: &mut egui::Ui| {
+                    let height = row_height(ui.ctx(), &look);
+                    ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
+                    egui::ScrollArea::both()
+                        .max_height(4.0 * height)
+                        .vertical_scroll_offset(top * height)
+                        .show_rows(ui, height, lines.len(), |ui, range| {
+                            rows(ui, lines, range, &look, &palette, Locale::English);
+                        });
+                }
+            };
+            harness.frame_with(draw(0.0));
+            harness.frame_with(draw(0.0));
+            // A double click selects the word under it: the third line's
+            // first.
+            let at = harness.painted_rect(update).expect(update).left_center() + vec2(10.0, 0.0);
+            let button = |pressed| egui::Event::PointerButton {
+                pos: at,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            };
+            harness.frame_with_events(vec![egui::Event::PointerMoved(at)], draw(0.0));
+            for pressed in [true, false, true, false] {
+                harness.frame_with_events(vec![button(pressed)], draw(0.0));
+            }
+            harness.frame_with_events(vec![egui::Event::Copy], draw(0.0));
+            assert_eq!(harness.copied.as_deref(), Some("UPDATE"), "{}", look.name);
+            // Two lines up, the line is the first in view where it was the
+            // third: the selection is still its word, not the third row's.
+            harness.copied = None;
+            harness.frame_with(draw(2.0));
+            harness.frame_with_events(vec![egui::Event::Copy], draw(2.0));
+            assert_eq!(harness.copied.as_deref(), Some("UPDATE"), "{}", look.name);
         }
     }
 

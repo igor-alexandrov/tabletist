@@ -146,6 +146,11 @@ impl Harness {
         });
         output.textures_delta.clear();
         self.collect(&output);
+        for command in &output.platform_output.commands {
+            if let egui::OutputCommand::CopyText(text) = command {
+                self.copied = Some(text.clone());
+            }
+        }
         output
             .platform_output
             .accesskit_update

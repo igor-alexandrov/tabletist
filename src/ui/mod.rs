@@ -16884,6 +16884,43 @@ mod tests {
     }
 
     #[test]
+    fn the_reviews_lines_are_selected_and_copied_as_they_read() {
+        for look in Look::ALL {
+            let (mut harness, tab, id) = editable_in(look);
+            select(&mut harness, tab, id, (0, 1));
+            make_pending(&mut harness, tab, id, (1, 1), &"x".repeat(100));
+            review(&mut harness, tab, id);
+            // The statement's three lines: the one with the cut value is
+            // the second, and in a narrow panel runs past its edge.
+            let mut texts = harness.painted.iter().map(|(text, _)| text);
+            let set = texts
+                .find(|text| text.starts_with("   SET"))
+                .cloned()
+                .expect("the line that sets");
+            assert!(set.ends_with("x…'"), "{}: {set}", look.name);
+            let from = harness.painted_rect(BOB[2]).expect(BOB[2]).left_center();
+            let to = harness.painted_rect(BOB[4]).expect(BOB[4]).right_center();
+            harness.copied = None;
+            drag(&mut harness, from, to + egui::vec2(2.0, 0.0));
+            assert_eq!(
+                harness.copied, None,
+                "{}: selecting copies nothing",
+                look.name
+            );
+            harness.frame(vec![egui::Event::Copy]);
+            // The selection, not the grid's cell, though the grid has the
+            // keyboard; and a cut value as it is shown, with its `…`.
+            assert_eq!(
+                harness.copied.as_deref(),
+                Some(format!("{}\n{set}\n{}", BOB[2], BOB[4]).as_str()),
+                "{}",
+                look.name
+            );
+            assert!(painted(&harness, &set), "{}: the lines stay", look.name);
+        }
+    }
+
+    #[test]
     fn the_lines_wear_the_sql_editors_colours() {
         for look in desktop_looks() {
             let (mut harness, tab, id) = editable_in(look);
