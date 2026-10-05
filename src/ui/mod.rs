@@ -10385,7 +10385,7 @@ mod tests {
     }
 
     /// The name a screen reader would read for the focused node.
-    fn focused_name(tree: &egui::accesskit::TreeUpdate) -> String {
+    pub(super) fn focused_name(tree: &egui::accesskit::TreeUpdate) -> String {
         let Some((_, node)) = tree.nodes.iter().find(|(id, _)| *id == tree.focus) else {
             return String::new();
         };
@@ -11231,7 +11231,7 @@ mod tests {
 
     /// Moves the pointer to `at` and waits past the tooltip's delay. Returns
     /// every name on screen then.
-    fn hover(harness: &mut Harness, at: egui::Pos2) -> Vec<String> {
+    pub(super) fn hover(harness: &mut Harness, at: egui::Pos2) -> Vec<String> {
         harness.frame(vec![egui::Event::PointerMoved(at)]);
         // Each frame is 1/60 s.
         for _ in 0..60 {
@@ -15889,7 +15889,7 @@ mod tests {
 
     /// Gives the keyboard to the open dialog's button `label`, as a screen
     /// reader does.
-    fn focus_dialog(harness: &mut Harness, label: &str) {
+    pub(super) fn focus_dialog(harness: &mut Harness, label: &str) {
         let target = *pressable(harness, label)
             .first()
             .unwrap_or_else(|| panic!("no button {label}"));

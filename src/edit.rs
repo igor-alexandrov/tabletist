@@ -956,8 +956,9 @@ pub struct ShownLine {
 }
 
 /// How many characters stand before the first difference of two values
-/// that are shown from there: enough to find the place by.
-const LEAD: usize = 12;
+/// that are shown from there: enough to find the place by. A cell too
+/// narrow for them gives them up first (see `ui::conflict_prompt`).
+pub const LEAD: usize = 12;
 
 /// What a cell makes of `text`: one line, a cell's worth of it. Two texts
 /// with the same answer read the same in the question.

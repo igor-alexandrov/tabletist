@@ -28,7 +28,7 @@ use crate::ui::terminal_dialog;
 use crate::ui::widgets::{self, ButtonSpec};
 
 /// A row of buttons at a prompt's foot.
-const ROW: f32 = 32.0;
+pub(super) const ROW: f32 = 32.0;
 
 /// The sheet's Copy SQL: lower than the buttons that answer, beside what
 /// the row says.
@@ -66,21 +66,21 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
 
 /// How a prompt draws.
 #[derive(Clone, Copy)]
-struct Skin<'a> {
-    look: &'a Look,
-    palette: &'a Palette,
-    locale: Locale,
+pub(super) struct Skin<'a> {
+    pub(super) look: &'a Look,
+    pub(super) palette: &'a Palette,
+    pub(super) locale: Locale,
 }
 
 impl Skin<'_> {
     /// `text` translated, in the look's case.
-    fn say(&self, text: &'static str) -> String {
+    pub(super) fn say(&self, text: &'static str) -> String {
         self.look.label(&gettext(self.locale, text))
     }
 
     /// The frame of a prompt whose parts fill it edge to edge, and the
     /// corners of what lies along its edge.
-    fn frame(&self) -> (egui::Frame, u8) {
+    pub(super) fn frame(&self) -> (egui::Frame, u8) {
         let frame = widgets::modal_frame(self.look, self.palette).inner_margin(Margin::ZERO);
         let radius = self.look.dialog_radius;
         (frame, radius.saturating_sub(frame.stroke.width as u8))
@@ -114,14 +114,14 @@ fn doing(held: &Held, terminal: bool) -> &'static str {
 }
 
 /// `width`, or what a small window leaves of it: 24 clear at each side.
-fn fitted(ctx: &egui::Context, width: f32) -> f32 {
+pub(super) fn fitted(ctx: &egui::Context, width: f32) -> f32 {
     width.min(ctx.content_rect().width() - 48.0).max(240.0)
 }
 
 /// Buttons at the right end of a row, 8 apart. They are made
 /// from the left, so the keyboard reaches them in the order they are read.
 /// Returns the row and the place in `buttons` of the one pressed.
-fn button_row(
+pub(super) fn button_row(
     ui: &mut egui::Ui,
     buttons: Vec<ButtonSpec<'_>>,
     skin: Skin<'_>,
@@ -138,7 +138,7 @@ fn buttons_width(ui: &egui::Ui, buttons: &[ButtonSpec<'_>], look: &Look) -> f32 
 
 /// [`button_row`] in a row that is there already. Returns the place in
 /// `buttons` of the one pressed.
-fn buttons_in(
+pub(super) fn buttons_in(
     ui: &mut egui::Ui,
     row: Rect,
     buttons: Vec<ButtonSpec<'_>>,
@@ -160,7 +160,7 @@ fn buttons_in(
 
 /// The place in `buttons` of the one that has the keyboard. Asked before
 /// [`button_row`] draws them in `ui`.
-fn keyboard_on(ui: &egui::Ui, buttons: &[ButtonSpec<'_>]) -> Option<usize> {
+pub(super) fn keyboard_on(ui: &egui::Ui, buttons: &[ButtonSpec<'_>]) -> Option<usize> {
     buttons.iter().position(|button| button.has_keyboard(ui))
 }
 
