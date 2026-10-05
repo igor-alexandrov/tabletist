@@ -99,9 +99,11 @@ fn decimal(name: &str) -> ColumnClass {
     // Digits without a scale: none after the point.
     let scale = arguments.get(1).copied().unwrap_or(0);
     // Past the limits it is no name a database gives, and nothing to hold
-    // a value to.
+    // a value to. Asked as a range: the least `i32` has no opposite to
+    // compare, and a name is whatever a server sends.
+    let scales = -MAX_DIGITS..=MAX_DIGITS;
     match u32::try_from(digits) {
-        Ok(precision) if (1..=MAX_DIGITS).contains(&digits) && scale.abs() <= MAX_DIGITS => {
+        Ok(precision) if (1..=MAX_DIGITS).contains(&digits) && scales.contains(&scale) => {
             ColumnClass::Decimal {
                 precision: Some(precision),
                 scale: Some(scale),
@@ -418,6 +420,35 @@ mod tests {
             ("geomcollection", Binary),
         ] {
             assert_eq!(column_class(Dialect::MySql, name), class, "{name}");
+        }
+    }
+
+    /// A type's name comes from a server, and from whatever stands in for
+    /// one: a scale that has no opposite must not take the app down.
+    #[test]
+    fn a_scale_no_number_negates_states_nothing() {
+        let unstated = Decimal {
+            precision: None,
+            scale: None,
+        };
+        for scale in [i32::MIN, i32::MIN + 1, -1001, 1001, i32::MAX] {
+            for (dialect, name) in [
+                (Dialect::Postgres, format!("numeric(5,{scale})")),
+                (Dialect::MySql, format!("decimal(5,{scale})")),
+                (Dialect::Sqlite, format!("NUMERIC(5,{scale})")),
+            ] {
+                assert_eq!(column_class(dialect, &name), unstated, "{name}");
+            }
+        }
+        // The furthest scale either side that is a name still.
+        for scale in [-1000, 1000] {
+            assert_eq!(
+                column_class(Dialect::Postgres, &format!("numeric(5,{scale})")),
+                Decimal {
+                    precision: Some(5),
+                    scale: Some(scale),
+                }
+            );
         }
     }
 

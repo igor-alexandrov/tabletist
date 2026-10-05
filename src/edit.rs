@@ -1348,6 +1348,22 @@ mod tests {
         );
     }
 
+    /// A type's name is the server's to give: one whose scale has no
+    /// opposite states nothing, and a value for it is checked as a number
+    /// and no more.
+    #[test]
+    fn a_scale_no_number_negates_is_checked_as_a_number_only() {
+        for (dialect, name) in [
+            (Dialect::Postgres, "numeric(5,-2147483648)"),
+            (Dialect::MySql, "decimal(5,-2147483648)"),
+        ] {
+            let check = |text: &str| check(dialect, &typed(name), text);
+            assert_eq!(check("12345.678"), None, "{name}");
+            assert_eq!(check("0"), None, "{name}");
+            assert_eq!(check("abc"), Some(Problem::Number), "{name}");
+        }
+    }
+
     #[test]
     fn a_scale_past_the_digits_holds_only_small_numbers() {
         let pg = |text: &str| check(Dialect::Postgres, &typed("numeric(3,5)"), text);
