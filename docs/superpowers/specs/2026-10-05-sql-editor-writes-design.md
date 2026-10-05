@@ -1,6 +1,8 @@
 # Writes from the SQL editor
 
-Date: 2026-10-05. Status: design, not yet planned.
+Date: 2026-10-05. Status: design. Step 1 is planned in
+`docs/superpowers/plans/2026-10-05-sql-editor-writes-run.md`; steps 2 and 3
+are not yet planned.
 
 ## Intent
 
@@ -109,6 +111,8 @@ or its first token is `(`, and no unquoted word of it is `INSERT`,
 `UPDATE`, `DELETE` or `MERGE`. One exception: a statement that starts with
 `EXPLAIN` and has no `ANALYZE` among its words is a `Read` whatever it
 explains, since it executes nothing. Everything else is a `Write`.
+`DESCRIBE` and `DESC` count as `EXPLAIN` (MySQL takes all three), and
+`ANALYSE` as `ANALYZE` (PostgreSQL takes both).
 
 - It errs toward `Write`: `SELECT ... FOR UPDATE`, a data-modifying `WITH`
   and a column named `update` all count as writes. A read taken for a write
@@ -168,8 +172,11 @@ same answer. No run is read-write without having passed them.
         /// stopped: the first `committed` statements are written, the rest
         /// is not.
         Partly { committed: usize },
-        /// The commit itself failed. Nothing is written.
-        CommitFailed(Error),
+        /// The commit itself failed, and what it would have kept is
+        /// rolled back. `committed` counts what the database had committed
+        /// on its own before that, as `Partly` does: 0 everywhere but on
+        /// MySQL, and then nothing is written.
+        CommitFailed { error: Error, committed: usize },
     }
 
 `StatementOutcome::Done` gains `warnings: u16`, which only MySQL fills.
@@ -186,8 +193,9 @@ of statements is `Ok` with no results, as today.
   that name the transaction follow the mode. Read-only: "Tabletist runs
   every query in a read-only transaction, so COMMIT is not allowed". Write:
   "Tabletist runs and commits the script in one transaction of its own, so
-  COMMIT is not allowed". The drivers' own "could not start (or end) the
-  read-only transaction" say "the transaction" in a `Write` run.
+  COMMIT is not allowed". `Error::Refused` carries the mode for it. The
+  drivers' own "could not start (or end) the read-only transaction" say
+  "the transaction" in a `Write` run.
 - One statement at a time: PostgreSQL prepares each, MySQL runs each
   through the prepared protocol, SQLite's authorizer sees each.
 - Statements run in order and stop at the first error or cancel. The
@@ -234,8 +242,11 @@ of statements is `Ok` with no results, as today.
    is `ScriptEnd::CommitFailed` with the database's error, and PostgreSQL
    has rolled the transaction back. A cancel that was on its way lands
    either while the session is idle, where the server drops it, or on the
-   commit's own work, where it fails the commit like any other error. It
-   never leaves a commit that failed and is written.
+   commit's own work, where it fails the commit: the run then ends as a
+   stopped one, rolled back. It never leaves a commit that failed and is
+   written. A transaction found failed with every statement done (nothing
+   a statement of the run can do unseen) is `CommitFailed` too, never a
+   `COMMIT` sent and believed.
 6. After an error or a stop: `ROLLBACK`, and `ScriptEnd::RolledBack`.
 7. Cleanup. A committed transaction keeps what a rolled back one undid, so
    the run undoes it itself: `CLOSE ALL`, `UNLISTEN *`, `RESET SESSION
@@ -264,21 +275,32 @@ of statements is `Ok` with no results, as today.
    `CREATE TABLE` has still committed what came before it. The status the
    driver holds is no answer here: an error packet carries none, and
    mysql_async empties what it held, so only a new query tells. One case
-   reads the other way: a deadlock (1213), and a lock wait timeout (1205)
-   on a server set to roll back on it, make the server roll the whole
-   transaction back, which also leaves the session outside one. After a
-   statement that failed with either code, "outside" notes nothing: the
-   work since the last noted commit is gone, and commits noted earlier
-   stand. The plan checks this against the test server before it relies
-   on it.
+   reads the other way: a deadlock, and a lock wait the server is set to
+   answer by rolling back, make the server roll the whole transaction
+   back, which also leaves the session outside one. The statement tells
+   the two apart, not the error's code: one that reads or changes rows
+   (`SELECT`, `INSERT`, `UPDATE`, `DELETE`, `REPLACE`, `WITH`, `VALUES`,
+   `TABLE`), or sets, shows or explains (`SET`, `DO`, `SHOW`, `EXPLAIN`,
+   `DESCRIBE`, `DESC`), never makes the server commit, so "outside" after
+   such a statement failed notes nothing. The work since the last noted
+   commit is gone, and commits noted earlier stand. A DDL statement that
+   loses a deadlock has still committed what came before it. A stop between two statements is
+   asked the same question, since the check that would have seen a commit
+   by the statement before it does not run.
 4. With every statement done: `COMMIT`, after `stop.finish()`, and
    `ScriptEnd::Committed`. A `COMMIT` that fails is `CommitFailed`, after a
-   `ROLLBACK`.
+   `ROLLBACK`, with the count of what the server had committed by itself
+   before it. A `COMMIT` answered with a cancel is followed by the same
+   question as step 2: still inside the transaction, nothing was committed
+   and the run ends as a stopped one; outside it, the server does not say
+   which way the commit went, and the run is an `Err`.
 5. After an error or a stop: `ROLLBACK`. With nothing noted the end is
    `RolledBack`, otherwise `Partly { committed }`. When the `ROLLBACK`
    reports a warning, the driver reads it with `SHOW WARNINGS` before
    anything else and puts its text in `rollback_warning` (1196: changes to
-   non-transactional tables could not be rolled back).
+   non-transactional tables could not be rolled back). It asks once: after
+   a `SHOW WARNINGS` that failed a second would show that failure, so a
+   sentence saying the text could not be read stands in.
 6. A statement's `Done` carries the warning count the server reports.
 7. Cleanup is today's: the reset, then the connect-time statements, ending
    with `SET SESSION TRANSACTION READ WRITE` only after a run that ended
@@ -304,6 +326,10 @@ statement outside a transaction.
 3. Before every statement the driver asks whether its transaction is still
    open. One that is gone ends the run with `Error::LeftTransaction`.
 4. `COMMIT` after the last statement, `ROLLBACK` after an error or a stop.
+   Before the `COMMIT` the driver asks once more whether its transaction
+   is open: a last statement that ended it is `Error::LeftTransaction`
+   too. A rollback that fails with the transaction still open is the
+   run's `Err`.
    SQLite keeps the transaction open when a `COMMIT` fails (a deferred
    foreign key, a reader holding the file in rollback-journal mode), so a
    failed `COMMIT` is followed by `ROLLBACK` and is then
@@ -317,8 +343,9 @@ statement outside a transaction.
 - The backend stops a read-write run as it stops any run: the stop flag and
   the session's cancel, repeated until the driver says it is finishing. The
   timeout applies to read-write runs too. A stopped run is rolled back.
-- A driver calls `stop.finish()` before it sends `COMMIT`. From then on no
-  cancel is sent, and the run ends as the commit ends.
+- A driver calls `stop.finish()` and then reads the stop flag, before it
+  sends `COMMIT`. A stop set before that wins over the commit. From then
+  on no cancel is sent, and the run ends as the commit ends.
 - A connection lost during a read-write run is the run's `Err`, as today.
   The app cannot know what of it was written, and says so.
 
@@ -426,7 +453,8 @@ A read-only run reads as today. For a read-write run:
   - `Partly`: "Lines 1 to 4 are written: MySQL commits CREATE, ALTER, DROP
     and similar statements as they run. The rest was rolled back."
   - `CommitFailed`: "The commit failed. Nothing was written.", then the
-    database's error as a statement's error is shown.
+    database's error as a statement's error is shown. With a count above
+    0 (MySQL), `Partly`'s line stands in place of "Nothing was written."
   - With a `rollback_warning`, in place of the `RolledBack` line and of
     `Partly`'s last sentence: "MySQL could not roll back every change.",
     then its text. Nothing then says "Nothing was written".
@@ -590,8 +618,7 @@ No step ships a read-write run on production without its confirmation.
   - `Write` on a `ReadOnly` connection sends nothing;
   - rows of `INSERT ... RETURNING` (PostgreSQL, SQLite) are cut at the
     limit while every row is written;
-  - a stop set before the commit rolls back, and one set after `finish`
-    does not stop the commit;
+  - a stop set before the commit rolls back;
   - after a run, and after one that failed or was cancelled, the session
     is as it connected: PostgreSQL `search_path`, role, a `WITH HOLD`
     cursor and an advisory lock; MySQL `time_zone` and the read-write
@@ -601,14 +628,17 @@ No step ships a read-write run on production without its confirmation.
   past the refusal (forced in the test) ends `LeftTransaction`, with the
   statement after it never run; a `SELECT` that calls a writing function
   over more rows than the limit writes for every row; a data-modifying
-  `WITH` that returns rows runs and is committed; a cleanup step that
-  fails after the commit (forced) returns `Committed` with `broken`.
+  `WITH` that returns rows runs and is committed; a transaction that
+  failed behind the run is `CommitFailed`, not committed. That an outcome
+  keeps its end when the session could not be put back is a unit test of
+  the one function all three drivers end a `Write` run with.
 - MySQL: `CREATE TABLE` between two inserts with a failing statement at
   the end is `Partly` with the right count; a failing `CREATE TABLE` still
   counts what came before it; a failing statement with no DDL before it
   is `RolledBack`, not `Partly`; two sessions that deadlock end the
   losing run `RolledBack`, with the probe table untouched, and after a
   `CREATE TABLE` earlier in it `Partly` with only what preceded the commit;
+  a stop right after a statement that committed is `Partly` too;
   an `INSERT ... SELECT` and a `CREATE
   TABLE ... SELECT` copy more rows than the limit; a rolled back change to
   a MyISAM table sets `rollback_warning`; a truncating insert in a session
