@@ -1,5 +1,7 @@
-//! Running a SQL editor script on MySQL: one read-only transaction, the
-//! checks around every statement, and the session reset that ends it.
+//! Running a SQL editor script on MySQL: one transaction, the checks
+//! around every statement, and the session reset that ends it. This file
+//! is the run that only reads, in a read-only transaction that is rolled
+//! back; `write` is the run that commits.
 
 use std::time::{Duration, Instant};
 
@@ -17,6 +19,8 @@ use crate::{
     Access, Dialect, Error, Result, ScriptMode, ScriptOutcome, StatementOutcome, StatementResult,
     StopFlag,
 };
+
+mod write;
 
 impl Conn {
     /// See [`crate::Connection::run_script`]. Statements run through the
@@ -36,9 +40,6 @@ impl Conn {
         mode: ScriptMode,
         stop: &StopFlag,
     ) -> Result<ScriptOutcome> {
-        if mode == ScriptMode::Write {
-            return Err(Error::Unsupported("read-write runs on MySQL"));
-        }
         let mut conn = self.conn.lock().await;
         // Said before anything runs, not found out by the cleanup, which
         // would close the session after every run.
@@ -46,6 +47,9 @@ impl Conn {
             return Err(Error::Unsupported(
                 "the SQL editor needs MySQL 5.7.3 or MariaDB 10.2.4 or later",
             ));
+        }
+        if mode == ScriptMode::Write {
+            return write::run(&mut conn, texts, limit as usize, stop).await;
         }
         let mut outcome = ScriptOutcome::default();
         let ended = match open(&mut conn, limit, self.access).await {
@@ -452,12 +456,13 @@ async fn run_statement(
     let columns = column_metas(result.columns_ref());
     if columns.is_empty() {
         let affected = result.affected_rows();
+        let warnings = result.warnings();
         if let Err(error) = result.drop_result().await {
             return failed(error);
         }
         return Ok(StatementOutcome::Done {
             affected: counts_rows(text).then_some(affected),
-            warnings: 0,
+            warnings,
         });
     }
     // sql_select_limit does not bound every statement (SHOW, a SELECT with
@@ -664,17 +669,19 @@ mod tests {
 
     /// One test at a time uses the `probe` table: creating it twice at once
     /// can fail, and one test's TRUNCATE would hide another's stray row.
-    static PROBE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    pub(super) static PROBE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
     /// A writable connection, outside the adapter.
-    async fn admin(url: &str) -> mysql_async::Conn {
+    pub(super) async fn admin(url: &str) -> mysql_async::Conn {
         let opts = Opts::from_url(&format!("{url}?prefer_socket=false")).unwrap();
         mysql_async::Conn::new(opts).await.unwrap()
     }
 
     /// A writable connection with an empty `probe` table, and the table's
     /// lock, held until the test ends.
-    async fn probe(url: &str) -> (mysql_async::Conn, tokio::sync::MutexGuard<'static, ()>) {
+    pub(super) async fn probe(
+        url: &str,
+    ) -> (mysql_async::Conn, tokio::sync::MutexGuard<'static, ()>) {
         let turn = PROBE.lock().await;
         let mut admin = admin(url).await;
         admin
@@ -686,7 +693,7 @@ mod tests {
     }
 
     /// The rows in the `probe` table.
-    async fn probe_rows(admin: &mut mysql_async::Conn) -> i64 {
+    pub(super) async fn probe_rows(admin: &mut mysql_async::Conn) -> i64 {
         admin
             .query_first("SELECT count(*) FROM probe")
             .await
