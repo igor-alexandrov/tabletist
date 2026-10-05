@@ -808,6 +808,7 @@ impl App {
                             at: 0,
                             lines,
                             shown: std::time::Instant::now(),
+                            fresh: true,
                             overwrite: false,
                             kept: false,
                         })));
@@ -922,6 +923,7 @@ impl App {
                 .and_then(|object| Some(shown_lines(object.page()?, &object.edits.cells, next)))
                 .unwrap_or_default();
             prompt.shown = std::time::Instant::now();
+            prompt.fresh = true;
             self.dialog = Some(Dialog::Conflict(prompt));
             return;
         }

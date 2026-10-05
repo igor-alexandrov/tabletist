@@ -1248,6 +1248,10 @@ pub struct ConflictPrompt {
     /// When that one came on screen: its question takes no answer in its
     /// first moment (`edit::ANSWER_AFTER`).
     pub shown: std::time::Instant,
+    /// That one's question has not been drawn yet. Its lines start with
+    /// the first the server changed in view; from then on they are where
+    /// the user moves them. The view that placed them takes this down.
+    pub fresh: bool,
     /// A row was answered Overwrite: the save may run again.
     pub(crate) overwrite: bool,
     /// A row was answered Keep mine: no save runs again by itself.

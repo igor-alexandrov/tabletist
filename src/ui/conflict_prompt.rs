@@ -189,10 +189,15 @@ struct Asked<'a> {
     /// The row is gone from the server: there is nothing it holds now.
     gone: bool,
     /// Which of the save's rows this is. Each has its own place in its
-    /// lines: the next row's question starts at its first.
+    /// lines.
     at: usize,
     /// The columns the user changed, as the reducer made them ready.
     lines: &'a [ShownLine],
+    /// While the row's question is still to be drawn for the first time:
+    /// the line to bring into view, which is the first the server changed.
+    /// A changed column can stand below what is shown at once, and the
+    /// question would then come up with nothing marked on it.
+    start: Option<usize>,
 }
 
 pub fn show(app: &mut App, ctx: &egui::Context) {
@@ -217,12 +222,16 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
         return;
     };
     let gone = conflict.server.is_none();
+    // A row that is gone has no line the server changed: it starts at its
+    // first.
+    let changed = prompt.lines.iter().position(|line| line.moved);
     let asked = Asked {
         title: title(object, conflict.row, gone, &look, locale),
         place: place(workspace, object, (at, prompt.rows.len()), &look, locale),
         gone,
         at,
         lines: &prompt.lines,
+        start: prompt.fresh.then_some(changed.unwrap_or(0)),
     };
     // No answer in the question's first moment: what was on its way to
     // the grid when it came up is not one. It is dropped without a sign.
@@ -253,6 +262,11 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
     } else {
         sheet(ctx, &asked, skin, pressed, &mut answers)
     };
+    // Placed once for each row: after that the lines are the user's to
+    // move.
+    if let Some(Dialog::Conflict(prompt)) = &mut app.dialog {
+        prompt.fresh = false;
+    }
     // Esc is Keep mine for the row shown: nothing of the user's is dropped
     // and nothing is written. Pressed, not held: what it repeats would
     // keep row after row.
@@ -497,7 +511,8 @@ fn values(ui: &mut egui::Ui, asked: &Asked<'_>, height: f32, pages: f32, skin: S
 /// `draw` in its row, with its place among them. More of them than
 /// [`MOST`] holds scroll, and `pages` moves them by as many pages of the
 /// whole lines in view: Page Down and Page Up, for a hand that is on the
-/// keyboard.
+/// keyboard. A question that is drawn for the first time has the line
+/// `asked.start` in view.
 fn lines(
     ui: &mut egui::Ui,
     asked: &Asked<'_>,
@@ -506,25 +521,34 @@ fn lines(
     draw: impl Fn(&mut egui::Ui, Rect, usize, &ShownLine),
 ) {
     let size = vec2(ui.available_width(), height);
-    egui::ScrollArea::vertical()
+    let mut area = egui::ScrollArea::vertical()
         .id_salt(("conflict-lines", asked.at))
         .max_height(MOST)
-        .auto_shrink([false, true])
-        .show(ui, |ui| {
-            // A page is the whole lines in view, so none is passed over
-            // unseen. The lines move up for Page Down.
-            if pages != 0.0 {
-                let shown = MOST.min(asked.lines.len() as f32 * height);
-                let page = (shown / height).floor().max(1.0) * height;
-                ui.scroll_with_delta(vec2(0.0, -pages * page));
+        .auto_shrink([false, true]);
+    if let Some(start) = asked.start {
+        // By whole lines, and as few as bring the line in: none where it
+        // shows from the top. Said for the top too, since the lines of an
+        // earlier save's question may have been left further down.
+        let shown = MOST.min(asked.lines.len() as f32 * height);
+        let below = (start + 1) as f32 * height - shown;
+        let lines = (below / height).ceil().max(0.0);
+        area = area.vertical_scroll_offset(lines * height);
+    }
+    area.show(ui, |ui| {
+        // A page is the whole lines in view, so none is passed over
+        // unseen. The lines move up for Page Down.
+        if pages != 0.0 {
+            let shown = MOST.min(asked.lines.len() as f32 * height);
+            let page = (shown / height).floor().max(1.0) * height;
+            ui.scroll_with_delta(vec2(0.0, -pages * page));
+        }
+        for (index, shown) in asked.lines.iter().enumerate() {
+            let (row, _) = ui.allocate_exact_size(size, Sense::hover());
+            if ui.is_rect_visible(row) {
+                draw(ui, row, index, shown);
             }
-            for (index, shown) in asked.lines.iter().enumerate() {
-                let (row, _) = ui.allocate_exact_size(size, Sense::hover());
-                if ui.is_rect_visible(row) {
-                    draw(ui, row, index, shown);
-                }
-            }
-        });
+        }
+    });
 }
 
 /// One line across `ui`: `shown` painted, and `whole` for a screen reader
@@ -2181,12 +2205,17 @@ mod tests {
         }
     }
 
-    /// A table of twelve columns of text beside its key, all of them
-    /// changed in the row `id 2` and found changed by the save, in `look`
-    /// and in a window of `size`: more lines than the question shows at
-    /// once. The column `c1` was `was c1`, is `now c1` on the server and
-    /// `my c1` pending, and so on to `c12`.
-    fn twelve_columns(look: Look, size: egui::Vec2) -> (Harness, ConnTabId, TabId) {
+    /// A table of twelve columns of text beside its key, in `look` and in
+    /// a window of `size`, with all twelve pending in each of the page's
+    /// `rows`: more lines than a question shows at once. The column `c1`
+    /// was `was c1` and is `my c1` pending, and so on to `c12`. With it,
+    /// the conflicts a save of them finds when the server changed, in each
+    /// row, the columns of those numbers: such a one is `now c1` there.
+    fn twelve_pending(
+        look: Look,
+        size: egui::Vec2,
+        rows: &[(usize, &[usize])],
+    ) -> (Harness, (ConnTabId, TabId), Vec<Conflict>) {
         let names: Vec<String> = (1..=12).map(|at| format!("c{at}")).collect();
         let mut structure = crate::testing::fixture_structure();
         structure.columns.truncate(1);
@@ -2210,13 +2239,134 @@ mod tests {
             row.extend(names.iter().map(|name| text(&format!("was {name}"))));
         }
         let (mut harness, tab, id) = table_of(look, size, structure, page);
-        for (at, name) in names.iter().enumerate() {
-            pend(&mut harness, (tab, id), (1, at + 1), &format!("my {name}"));
+        let mut conflicts = Vec::new();
+        for (at, &(row, moved)) in rows.iter().enumerate() {
+            for (column, name) in names.iter().enumerate() {
+                let mine = format!("my {name}");
+                pend(&mut harness, (tab, id), (row, column + 1), &mine);
+            }
+            let mut now = vec![Value::Int(row as i64 + 1)];
+            now.extend(names.iter().enumerate().map(|(column, name)| {
+                let word = if moved.contains(&(column + 1)) {
+                    "now"
+                } else {
+                    "was"
+                };
+                text(&format!("{word} {name}"))
+            }));
+            conflicts.push(changed(at, now));
         }
-        let mut now = vec![Value::Int(2)];
-        now.extend(names.iter().map(|name| text(&format!("now {name}"))));
-        saved(&mut harness, (tab, id), vec![changed(0, now)]);
+        (harness, (tab, id), conflicts)
+    }
+
+    /// [`twelve_pending`] in the row `id 2`, saved and found changed in
+    /// every column: the question is up.
+    fn twelve_columns(look: Look, size: egui::Vec2) -> (Harness, ConnTabId, TabId) {
+        let all: Vec<usize> = (1..=12).collect();
+        let (mut harness, (tab, id), conflicts) = twelve_pending(look, size, &[(1, &all)]);
+        saved(&mut harness, (tab, id), conflicts);
         (harness, tab, id)
+    }
+
+    /// Draws frames until one paints the question, and no more: what a
+    /// row's question shows when it comes up.
+    fn first_painted(harness: &mut Harness) {
+        for _ in 0..4 {
+            harness.frame(Vec::new());
+            let titles = pieces(harness, |piece| piece.ends_with("changed on the server"));
+            if !titles.is_empty() {
+                return;
+            }
+        }
+        panic!("the question is not painted: {:?}", harness.painted);
+    }
+
+    #[test]
+    fn the_first_line_the_server_changed_is_in_view_when_the_question_comes_up() {
+        let size = egui::vec2(720.0, 480.0);
+        for look in looks() {
+            let said = look.name;
+            // Only the last of twelve columns changed on the server: lines
+            // are in the page's order, so it stands below what is shown at
+            // once.
+            let (mut harness, at, conflicts) = twelve_pending(look, size, &[(1, &[12])]);
+            let (tab, id) = at;
+            harness.app.apply(Action::WriteEdits { tab, id });
+            harness.answer_written(Ok(WriteOutcome::Conflicts(conflicts)));
+            first_painted(&mut harness);
+            piece(&harness, "now c12");
+            // The lines are where the user moves them from then on.
+            harness.finish_animations();
+            piece(&harness, "now c12");
+            harness.press(Key::PageUp, Modifiers::NONE);
+            harness.finish_animations();
+            piece(&harness, "my c1");
+            assert!(unsaid(&harness, "now c12"), "{said}");
+            // One in the middle is brought in by as few lines as it takes.
+            let (mut harness, at, conflicts) = twelve_pending(look, size, &[(1, &[9, 12])]);
+            saved(&mut harness, at, conflicts);
+            piece(&harness, "now c9");
+            if !look.terminal {
+                assert!(unsaid(&harness, "my c1"), "{said}");
+                assert!(unsaid(&harness, "now c12"), "{said}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_question_whose_first_changed_line_shows_starts_at_its_top() {
+        let size = egui::vec2(720.0, 480.0);
+        for look in looks() {
+            let said = look.name;
+            // The first line is the changed one, and then one further down
+            // that shows without moving anything.
+            for moved in [1, 3] {
+                let (mut harness, at, conflicts) = twelve_pending(look, size, &[(1, &[moved])]);
+                let (tab, id) = at;
+                harness.app.apply(Action::WriteEdits { tab, id });
+                harness.answer_written(Ok(WriteOutcome::Conflicts(conflicts)));
+                first_painted(&mut harness);
+                piece(&harness, "my c1");
+                piece(&harness, &format!("now c{moved}"));
+                assert!(unsaid(&harness, "my c12"), "{said}, c{moved}");
+            }
+            // So does the question of a later save, wherever the lines of
+            // the one before it were left: here about a row that is gone
+            // by then, which has no line the server changed.
+            let (mut harness, at, conflicts) = twelve_pending(look, size, &[(1, &[1])]);
+            saved(&mut harness, at, conflicts);
+            harness.press(Key::PageDown, Modifiers::NONE);
+            harness.finish_animations();
+            piece(&harness, "my c12");
+            harness.press(Key::Escape, Modifiers::NONE);
+            assert!(!asking(&harness), "{said}");
+            let gone = Conflict {
+                row: 0,
+                server: None,
+            };
+            saved(&mut harness, at, vec![gone]);
+            piece(&harness, "my c1");
+            assert!(unsaid(&harness, "my c12"), "{said}");
+        }
+    }
+
+    #[test]
+    fn the_next_rows_question_starts_at_its_own_first_changed_line() {
+        let size = egui::vec2(720.0, 480.0);
+        for look in looks() {
+            let said = look.name;
+            // The first row changed in its first column, the second in its
+            // last.
+            let rows: [(usize, &[usize]); 2] = [(1, &[1]), (3, &[12])];
+            let (mut harness, at, conflicts) = twelve_pending(look, size, &rows);
+            saved(&mut harness, at, conflicts);
+            piece(&harness, "now c1");
+            assert!(unsaid(&harness, "now c12"), "{said}");
+            harness.press(Key::Escape, Modifiers::NONE);
+            assert_eq!(asked_about(&harness), Some(1), "{said}");
+            piece(&harness, "now c12");
+            assert!(unsaid(&harness, "now c1"), "{said}");
+        }
     }
 
     #[test]
