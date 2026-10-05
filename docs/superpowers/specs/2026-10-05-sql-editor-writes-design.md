@@ -1,8 +1,9 @@
 # Writes from the SQL editor
 
-Date: 2026-10-05. Status: design. Step 1 is planned in
+Date: 2026-10-05. Status: step 1 (the run) is built, see
 `docs/superpowers/plans/2026-10-05-sql-editor-writes-run.md`; steps 2 and 3
-are not yet planned.
+are not yet planned. The PostgreSQL and MySQL runs were built with no
+server at hand: their tests have been compiled, and are first run by CI.
 
 ## Intent
 

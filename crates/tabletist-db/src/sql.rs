@@ -1,7 +1,8 @@
 //! SQL text as tokens, for highlighting, for splitting a script into
-//! statements, and for the read-only guard. Tokenizing never fails; it only
-//! has to agree with the database on where strings, comments and statements
-//! end.
+//! statements, for the guard that keeps a script inside its transaction,
+//! and for telling a statement that writes from one that reads. Tokenizing
+//! never fails; it only has to agree with the database on where strings,
+//! comments and statements end.
 
 use std::ops::Range;
 
@@ -586,9 +587,10 @@ fn word_of(text: &str, token: &Token) -> Option<String> {
     }
 }
 
-/// Why `statement` must not run in Tabletist's read-only transaction: the
-/// statement kind it is, for the message. `None` when it may run. Matched
-/// on tokens, so `SELECT 'COMMIT'` and a column named `end_date` pass.
+/// Why `statement` must not run in a script's transaction, which
+/// Tabletist begins and ends itself, read-only or not: the statement kind
+/// it is, for the message. `None` when it may run. Matched on tokens, so
+/// `SELECT 'COMMIT'` and a column named `end_date` pass.
 pub fn refusal(dialect: Dialect, statement: &str) -> Option<String> {
     let tokens = tokenize(dialect, statement);
     if dialect == Dialect::MySql
