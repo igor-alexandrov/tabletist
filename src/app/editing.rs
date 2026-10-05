@@ -462,6 +462,7 @@ impl App {
         // terminal's line says next, not why the last save was not made.
         if let Some(workspace) = self.workspace_mut(tab) {
             workspace.save_refused = false;
+            workspace.review_refused = false;
         }
         let (asked, touched) = match &start {
             EditStart::Value => (true, false),
@@ -603,10 +604,10 @@ impl App {
     }
 
     /// Runs what the terminal's `:` prompt holds, and closes it: `w` saves
-    /// the pending changes of the table on screen and `e!` drops them, as
-    /// their keys do in the other looks. Any other text is not a command,
-    /// and is kept for the status line to say so (`diff` too, until Review
-    /// SQL is there to show).
+    /// the pending changes of the table on screen, `e!` drops them and
+    /// `diff` shows what a save would run, as their keys and the bar's
+    /// buttons do in the other looks. Any other text is not a command, and
+    /// is kept for the status line to say so.
     pub(super) fn run_command(&mut self, tab: ConnTabId) {
         let Some(workspace) = self.workspace_mut(tab) else {
             return;
@@ -614,23 +615,38 @@ impl App {
         workspace.focus_command = false;
         workspace.command_error = None;
         workspace.save_refused = false;
+        workspace.review_refused = false;
         let Some(text) = workspace.command.take() else {
             return;
         };
-        let table = workspace.active_object_tab().map(|object| object.id);
-        let action = match text.trim() {
-            "" => return,
-            "w" => table.map(|id| Action::WriteEdits { tab, id }),
-            "e!" => table.map(|id| Action::DiscardEdits { tab, id }),
-            other => {
+        // The table on screen, and whether anything is pending in it.
+        let table = workspace
+            .active_object_tab()
+            .map(|object| (object.id, !object.edits.cells.is_empty()));
+        let action = match (text.trim(), table) {
+            ("", _) => return,
+            ("w", Some((id, _))) => Action::WriteEdits { tab, id },
+            ("e!", Some((id, _))) => Action::DiscardEdits { tab, id },
+            ("diff", Some((id, true))) => Action::ReviewEdits {
+                tab,
+                id,
+                show: true,
+            },
+            // Nothing to show: the line says so, where a panel that opened
+            // empty would say it less plainly.
+            ("diff", Some((_, false))) => {
+                workspace.review_refused = true;
+                return;
+            }
+            // A SQL editor is in front: there is no table to act on.
+            ("w" | "e!" | "diff", None) => return,
+            (other, _) => {
                 workspace.command_error = Some(other.to_owned());
                 return;
             }
         };
         // As from a key: under a question about the changes it is dropped.
-        if let Some(action) = action {
-            self.apply(action);
-        }
+        self.apply(action);
     }
 
     /// Shows or hides the Review SQL of the tab. Shown, it takes the text

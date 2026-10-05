@@ -564,6 +564,7 @@ impl App {
                     workspace.focus_command = true;
                     workspace.command_error = None;
                     workspace.save_refused = false;
+                    workspace.review_refused = false;
                 }
             }
             Action::CloseCommand(tab) => {
@@ -572,6 +573,7 @@ impl App {
                     workspace.focus_command = false;
                     workspace.command_error = None;
                     workspace.save_refused = false;
+                    workspace.review_refused = false;
                 }
             }
             Action::RunCommand(tab) => self.run_command(tab),
@@ -10940,8 +10942,8 @@ mod tests {
             };
             type_into(&mut harness, tab, id, at(1, 1), "bob@example.com");
             // Anything else is not a command: it is kept to say so, and
-            // nothing is sent or dropped. `diff` comes with Review SQL.
-            for text in ["diff", "wq", "W", "e", "w!", "e !"] {
+            // nothing is sent or dropped.
+            for text in ["wq", "W", "e", "w!", "e !", "diff!", "Diff"] {
                 run(&mut harness, tab, text);
                 assert_eq!(
                     prompt(&harness, tab),
@@ -11290,6 +11292,54 @@ mod tests {
             let edits = &object(&harness, tab, id).edits;
             assert!(!edits.reviewing && edits.review.is_none());
             assert_eq!(reviewed(&mut harness, tab, id), None);
+        }
+
+        #[test]
+        fn the_prompt_shows_the_review_with_diff_and_says_when_nothing_is_pending() {
+            let mut harness = Harness::new();
+            let (tab, id) = harness.editable();
+            let refused = |harness: &Harness| harness.app.workspace(tab).unwrap().review_refused;
+            // Nothing pending: nothing opens, and the line says so. It is
+            // no mistake of the typing.
+            run(&mut harness, tab, "diff");
+            assert!(refused(&harness));
+            assert_eq!(prompt(&harness, tab), (None, None));
+            assert!(!object(&harness, tab, id).edits.reviewing);
+            // The prompt takes the message away, opened or closed.
+            harness.app.apply(Action::OpenCommand(tab));
+            assert!(!refused(&harness));
+            run(&mut harness, tab, "diff");
+            harness.app.apply(Action::CloseCommand(tab));
+            assert!(!refused(&harness));
+            // And so does an edit begun without a key: a double-click.
+            run(&mut harness, tab, "diff");
+            harness.app.apply(Action::EditCell {
+                tab,
+                id,
+                cell: at(2, 1),
+                start: EditStart::Value,
+            });
+            assert!(!refused(&harness));
+            harness.app.apply(Action::CancelEdit { tab, id });
+            // With something pending it opens, the spaces round it
+            // overlooked, and sends nothing.
+            type_into(&mut harness, tab, id, at(1, 1), "bob@example.com");
+            run(&mut harness, tab, " diff ");
+            assert!(!refused(&harness));
+            assert_eq!(prompt(&harness, tab), (None, None));
+            assert!(object(&harness, tab, id).edits.reviewing);
+            assert_eq!(reviewed(&mut harness, tab, id).unwrap().len(), 3);
+            assert_eq!(writes(&harness), 0);
+            // Again, it stays open: only Esc closes it.
+            run(&mut harness, tab, "diff");
+            assert!(object(&harness, tab, id).edits.reviewing);
+            // With a SQL editor in front there is no table to review.
+            show_review(&mut harness, tab, id, false);
+            harness.app.apply(Action::NewSqlTab(tab));
+            run(&mut harness, tab, "diff");
+            assert!(!object(&harness, tab, id).edits.reviewing);
+            assert!(!refused(&harness));
+            assert_eq!(prompt(&harness, tab), (None, None));
         }
 
         #[test]

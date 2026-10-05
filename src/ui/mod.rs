@@ -14194,7 +14194,7 @@ mod tests {
         let (mut harness, tab, id) = normal_mode((1, 1));
         let palette = harness.app.palette;
         make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
-        for text in ["diff", "wq"] {
+        for text in ["diffs", "wq"] {
             type_key(&mut harness, Key::Colon, ":");
             type_text(&mut harness, text);
             harness.press(Key::Enter, Modifiers::NONE);
