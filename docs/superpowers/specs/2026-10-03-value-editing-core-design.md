@@ -465,7 +465,7 @@ again.
 | Edit the cell | Enter, F2, double-click, typing | `i`, Enter, double-click (cursor at the end), `cc` (from nothing) |
 | Commit and move down | Enter | Enter |
 | Commit and move right, left | Tab, Shift+Tab | Tab, Shift+Tab |
-| Leave the editor | Esc drops the edit | Esc keeps it, Ctrl+C drops it |
+| Leave the editor | Esc drops the edit | Esc keeps it as a pending change, Ctrl+C drops it |
 | Move the text into the popover | Alt+Enter | Alt+Enter |
 | Apply in the popover | `Mod+Enter` | Ctrl+Enter |
 | Set NULL | `Mod+Backspace` | `x` |
@@ -553,6 +553,16 @@ again.
   production confirmation drops the held action. When several tabs with
   pending changes are affected (a connection, the window): **Discard** and
   **Cancel** only.
+- **The prompt's count includes the cell being edited.** A tab counts its
+  pending cells, and one more for an open editor that was typed into, on a
+  cell that is not pending already, whose text is a change of what the
+  cell loaded: Save closes the editor first, and that text is one of the
+  changes it writes. A text its column refuses counts as well, since
+  leaving the editor keeps it as a cell to fix. An editor on a cell that
+  is pending already adds nothing, nor does one whose text is what the
+  cell loaded or one that was only opened. A tab that holds edits never
+  counts as none: an editor that was only opened, with nothing pending, is
+  one. Several tabs are summed.
 - **Enter never discards.** It follows the button that has the keyboard:
   on Cancel it cancels, on Save it saves, and on Discard it does nothing.
   With the keyboard on no button it saves where Save is offered (macOS and
@@ -560,6 +570,15 @@ again.
   Enter drops nothing. On Omarchy the letters answer, and not while a field
   has the keyboard or a key is held: a letter typed in the frame the box
   opens is text, not an answer.
+- **No Enter with a modifier presses anything,** in this prompt, in the
+  production confirmation and in the conflict question. With Ctrl, Cmd,
+  Shift or Alt held, Enter is no key of a prompt's: it presses no button,
+  whichever has the keyboard, and it is not the plain Enter either, so it
+  does not save here, answers no conflict as Keep mine and does not
+  confirm the word in Omarchy's production box. Every Enter is taken out
+  of the frame before a prompt's buttons are drawn (`keys::take_enter`),
+  and only one pressed with nothing held answers. Space presses the button
+  that has the keyboard, with a modifier as without.
 - **What a prompt asks about cannot change while it is up.** Mod chords
   still reach the reducer under a dialog, and a click can be a frame behind
   it. So while the Leave prompt, the production confirmation or the
@@ -963,7 +982,11 @@ its answers stay on screen with them.
   question. In that moment no click on **Save to production** or
   **Cancel** is taken, no Enter and no Esc, and **Copy SQL** copies
   nothing: a click meant for the dialog before does not replace what is on
-  the clipboard. What is typed into Omarchy's field then stays typed, and
+  the clipboard. The moment holds for a click's press too: a click pressed
+  in it and let go after it is no answer, on **Save to production**,
+  **Cancel**, **Copy SQL** or a key hint of Omarchy's box
+  (`write_prompts::pressed_early`, which the conflict question asks as
+  well). What is typed into Omarchy's field then stays typed, and
   Page Up and Page Down still move the statements, since reading them
   answers nothing. Nothing is kept for later, and nothing on screen shows
   that the moment runs. Opened by Save itself (the bar, `Mod+S`, Ctrl+S,
@@ -972,6 +995,10 @@ its answers stay on screen with them.
   dialog before may still be down: what a held Enter repeats is no press,
   and what a held Space repeats presses no button, whichever has the
   keyboard.
+- **No Enter with a modifier presses anything:** not **Save to
+  production**, **Cancel** or **Copy SQL** with the keyboard on it, and in
+  Omarchy's box it does not confirm the word. See "Leaving with pending
+  changes".
 
 ## Conflicts
 
@@ -1104,7 +1131,9 @@ each narrower in a narrow window.
 - **Return never presses Overwrite,** as it never presses "Save to
   production". Enter answers only as Keep mine, with the keyboard on that
   button or, in the box, on that hint's button; on every other button and
-  with the keyboard on none it does nothing. Space presses the button that
+  with the keyboard on none it does nothing. No Enter with a modifier
+  presses anything: with Ctrl, Cmd, Shift or Alt held it answers nothing,
+  on Keep mine as on every other button. Space presses the button that
   has the keyboard, as everywhere. The Tab key comes to Keep mine first in
   the sheet, then to Use server values and Overwrite. In the box it takes
   the hints as they stand, `[o]` first.
@@ -1291,13 +1320,6 @@ Left as found in the conflict question:
 - On a keyboard layout without Latin letters `o`, `s`, `k` and `d` do
   nothing, as Omarchy's other letters: the hints are buttons, and Esc
   keeps.
-- Enter with Ctrl or Cmd held presses the button that has the keyboard,
-  Overwrite among them, as it does in the Leave prompt (Discard) and in
-  the production sheet (Save to production). Only a plain Enter is held
-  back.
-- A click pressed in a production confirmation's first moment and let go
-  after it is taken: the question's own check of the press is not made
-  there.
 - The notice of a refused guarded action, "Save or discard the pending
   changes first.", is also what a close request under the question says.
 

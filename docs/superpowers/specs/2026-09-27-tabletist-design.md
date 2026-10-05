@@ -624,7 +624,8 @@ read-only table (structure data is small; the data grid is not needed).
 | Arrows, Page Up/Down, Home/End | Move in the grid |
 | Enter, F2 (Omarchy: `i`, Enter, `cc` from nothing) | Edit the cell of a table's grid |
 | Tab, Shift+Tab | Commit the edit and move right or left |
-| Esc (Omarchy: Esc keeps the edit, Ctrl+C drops it) | Leave the editor, dropping the edit |
+| Esc (Omarchy: Ctrl+C) | Leave the editor, dropping the edit |
+| Omarchy: Esc | Leave insert mode, keeping the edit as a pending change |
 | Cmd/Ctrl+Backspace (Omarchy: `x`) | Set the cell NULL |
 | Cmd/Ctrl+Z (Omarchy: `u`) | Revert the cell |
 | Cmd/Ctrl+Shift+D (Omarchy: also `:diff`) | Show or hide the SQL of the pending changes |
