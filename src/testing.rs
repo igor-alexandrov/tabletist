@@ -91,16 +91,7 @@ impl Harness {
             }
         }
         output.textures_delta.clear();
-        self.painted.clear();
-        self.text_rects.clear();
-        self.fills.clear();
-        self.strokes.clear();
-        self.outlines.clear();
-        for clipped in &output.shapes {
-            collect_text(&clipped.shape, &mut self.painted, &mut self.text_rects);
-            collect_paint(&clipped.shape, &mut self.fills, &mut self.strokes);
-            collect_outlines(&clipped.shape, &mut self.outlines);
-        }
+        self.collect(&output);
         let viewport = output.viewport_output.get(&egui::ViewportId::ROOT);
         self.viewport_commands = viewport
             .map(|viewport| viewport.commands.clone())
@@ -154,10 +145,25 @@ impl Harness {
             });
         });
         output.textures_delta.clear();
+        self.collect(&output);
         output
             .platform_output
             .accesskit_update
             .expect("AccessKit is enabled")
+    }
+
+    /// Keeps what a frame painted: its texts, its fills and its lines.
+    fn collect(&mut self, output: &egui::FullOutput) {
+        self.painted.clear();
+        self.text_rects.clear();
+        self.fills.clear();
+        self.strokes.clear();
+        self.outlines.clear();
+        for clipped in &output.shapes {
+            collect_text(&clipped.shape, &mut self.painted, &mut self.text_rects);
+            collect_paint(&clipped.shape, &mut self.fills, &mut self.strokes);
+            collect_outlines(&clipped.shape, &mut self.outlines);
+        }
     }
 
     pub fn copy(&mut self, shift: bool) {

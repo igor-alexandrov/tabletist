@@ -1,0 +1,387 @@
+//! Review SQL as it is read: the words of its comment lines, the colours of
+//! its statements, its lines one to a row, and the text the clipboard gets.
+//! Every place that shows a review draws it with what is here.
+
+use egui::{Color32, Sense, WidgetInfo, WidgetType, vec2};
+use tabletist_db::sql::TokenKind;
+
+use crate::i18n::{Locale, gettext};
+use crate::review::{Ink, Line, Review};
+use crate::theme::{Look, Palette};
+use crate::typography::Text;
+use crate::ui::sql_text;
+use crate::ui::states::Tone;
+use crate::ui::widgets;
+
+/// The most lines a place shows before it scrolls.
+pub const MAX_ROWS: usize = 12;
+
+/// The room between two lines, over what the code face gives a line.
+const LEADING: f32 = 4.0;
+
+/// What a copied review opens with, after the comment's dashes: pasted
+/// elsewhere, nothing checks a row and nothing wraps a transaction.
+const COPIED: &str = "What Tabletist runs to save these changes, in one transaction. \
+                      Each statement runs only while its row is still as the comment \
+                      above it says.";
+
+/// A comment line as it reads, its `--` included. `None` for a line of a
+/// statement, which is drawn from its pieces. The app's own words are lower
+/// case in every look, as a comment's are; a name, a value and the
+/// builder's reason stand as the line holds them.
+pub fn comment(line: &Line, locale: Locale) -> Option<String> {
+    let say = |text: &'static str| gettext(locale, text);
+    Some(match line {
+        Line::Row(row) => format!("-- {} {row}", say("row")),
+        Line::Check(loaded) => {
+            let still: Vec<String> = loaded
+                .iter()
+                .map(|(column, value)| format!("{column} {} {value}", say("is still")))
+                .collect();
+            let and = format!(" {} ", say("and"));
+            format!("-- {} {}", say("only if"), still.join(&and))
+        }
+        Line::Blocked { row, columns } => format!(
+            "-- {} {row} · {} {} {}",
+            say("row"),
+            say("blocked: fix"),
+            columns.join(", "),
+            say("first")
+        ),
+        Line::Refused { row, reason } => {
+            format!(
+                "-- {} {row} · {} {reason}",
+                say("row"),
+                say("cannot be sent:")
+            )
+        }
+        // The disabled Save's sentence, as a comment begins.
+        Line::Unsendable => format!(
+            "-- {}",
+            say("these changes cannot be sent: the table's key is not known")
+        ),
+        Line::Sql(_) => return None,
+    })
+}
+
+/// The colour a piece of a statement is drawn in: the SQL editor's for
+/// the same kind of token.
+pub fn ink_color(ink: Ink, palette: &Palette) -> Color32 {
+    match ink {
+        Ink::Plain => palette.text,
+        Ink::Keyword => sql_text::color_of(TokenKind::Keyword, palette),
+        Ink::Text => sql_text::color_of(TokenKind::String, palette),
+        Ink::Number => sql_text::color_of(TokenKind::Number, palette),
+    }
+}
+
+/// The colour of a comment line: a comment's in the SQL editor, and the
+/// danger colour for a row that has no statement.
+fn comment_color(line: &Line, palette: &Palette) -> Color32 {
+    match line {
+        Line::Blocked { .. } | Line::Refused { .. } | Line::Unsendable => {
+            Tone::Danger.color(palette)
+        }
+        Line::Row(_) | Line::Check(_) | Line::Sql(_) => {
+            sql_text::color_of(TokenKind::Comment, palette)
+        }
+    }
+}
+
+/// One line in the code face, in its colours, never wrapped.
+pub fn line_text(line: &Line, look: &Look, palette: &Palette, locale: Locale) -> Text {
+    let role = widgets::code(look);
+    // A comment is laid as a statement's line is, as one run: the two sit
+    // in their rows alike.
+    let words = comment(line, locale).unwrap_or_default();
+    let mut text = match line {
+        Line::Sql(pieces) => Text::new(look).add_runs(
+            role,
+            pieces
+                .iter()
+                .map(|piece| (piece.text.as_str(), ink_color(piece.ink, palette))),
+        ),
+        _ => Text::new(look).add_runs(role, [(words.as_str(), comment_color(line, palette))]),
+    };
+    // One row whatever it holds: a line break would lay a second row over
+    // the line under it, where it could pass for a line of its own.
+    text.job_mut().break_on_newline = false;
+    text
+}
+
+/// The height of one line.
+pub fn row_height(ctx: &egui::Context, look: &Look) -> f32 {
+    widgets::code(look).row_height(ctx, look.faces) + LEADING
+}
+
+/// The lines `range` of `lines`, one to a row: what a scroll area's
+/// `show_rows` draws. The caller sets the item spacing to zero on the `ui`
+/// that calls `show_rows`, before the call: `show_rows` adds that spacing
+/// to the row height it is given, and the lines would drift from their
+/// rows.
+pub fn rows(
+    ui: &mut egui::Ui,
+    lines: &[Line],
+    range: std::ops::Range<usize>,
+    look: &Look,
+    palette: &Palette,
+    locale: Locale,
+) {
+    let height = row_height(ui.ctx(), look);
+    for line in lines.get(range).unwrap_or_default() {
+        let laid = line_text(line, look, palette, locale).layout(ui.ctx());
+        // As wide as the line, so a long one scrolls and is never cut by
+        // its row; and no narrower than the place.
+        let room = Some(ui.available_width()).filter(|room| room.is_finite());
+        let width = room.map_or(laid.width(), |room| room.max(laid.width()));
+        // Painted, not a label that can be selected: what is shown is cut,
+        // and a copy of it would be pasted as it is.
+        let (rect, response) = ui.allocate_exact_size(vec2(width, height), Sense::hover());
+        response.widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, laid.galley.text()));
+        if ui.is_rect_visible(rect) {
+            laid.paint_left(ui.painter(), rect.left(), rect.center().y);
+        }
+    }
+}
+
+/// A review as the clipboard gets it: the line that says what it is, then
+/// one line of text for each of its lines, a line break after each.
+pub fn text(review: &Review, locale: Locale) -> String {
+    let mut text = format!("-- {}\n", gettext(locale, COPIED));
+    for line in &review.lines {
+        if let Some(words) = comment(line, locale).or_else(|| line.sql()) {
+            text.push_str(&words);
+            text.push('\n');
+        }
+    }
+    text
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::review::{Values, of};
+    use crate::testing::Harness;
+    use tabletist_db::{CellChange, ChangeSet, Dialect, NewValue, ObjectRef, RowChange, Value};
+
+    /// The fixture's `users` with `email` set in each of the rows `ids`.
+    fn changes(ids: &[i64], email: &str) -> ChangeSet {
+        let row = |id: &i64| RowChange {
+            key: vec![("id".into(), Value::Int(*id))],
+            set: vec![CellChange {
+                column: "email".into(),
+                type_name: "TEXT".into(),
+                loaded: Value::Text(format!("user{id}@example.com").into()),
+                new: NewValue::Text(email.into()),
+            }],
+        };
+        ChangeSet {
+            object: ObjectRef::new("main", "users"),
+            rows: ids.iter().map(row).collect(),
+        }
+    }
+
+    #[test]
+    fn every_comment_reads_as_the_spec_writes_it() {
+        let locale = Locale::English;
+        let read = |line: Line| comment(&line, locale);
+        assert_eq!(
+            read(Line::Row("id 2".into())).as_deref(),
+            Some("-- row id 2")
+        );
+        let check = Line::Check(vec![
+            ("kind".into(), "'print'".into()),
+            ("alt_text".into(), "NULL".into()),
+        ]);
+        assert_eq!(
+            read(check).as_deref(),
+            Some("-- only if kind is still 'print' and alt_text is still NULL")
+        );
+        let blocked = |columns: &[&str]| Line::Blocked {
+            row: "id 4".into(),
+            columns: columns.iter().map(|column| (*column).to_owned()).collect(),
+        };
+        assert_eq!(
+            read(blocked(&["publisher_id"])).as_deref(),
+            Some("-- row id 4 · blocked: fix publisher_id first")
+        );
+        assert_eq!(
+            read(blocked(&["publisher_id", "pages"])).as_deref(),
+            Some("-- row id 4 · blocked: fix publisher_id, pages first")
+        );
+        let refused = Line::Refused {
+            row: "id 4".into(),
+            reason: "pages: INTEGER expects a whole number".into(),
+        };
+        assert_eq!(
+            read(refused).as_deref(),
+            Some("-- row id 4 · cannot be sent: pages: INTEGER expects a whole number")
+        );
+        assert_eq!(
+            read(Line::Unsendable).as_deref(),
+            Some("-- these changes cannot be sent: the table's key is not known")
+        );
+        // A statement's line is drawn from its pieces.
+        assert_eq!(read(Line::Sql(Vec::new())), None);
+    }
+
+    #[test]
+    fn a_piece_is_drawn_in_the_sql_editors_colour() {
+        for palette in [Palette::light(), Palette::dark()] {
+            for (ink, kind) in [
+                (Ink::Keyword, TokenKind::Keyword),
+                (Ink::Text, TokenKind::String),
+                (Ink::Number, TokenKind::Number),
+            ] {
+                assert_eq!(
+                    ink_color(ink, &palette),
+                    sql_text::color_of(kind, &palette),
+                    "{ink:?}"
+                );
+            }
+            assert_eq!(ink_color(Ink::Plain, &palette), palette.text);
+        }
+    }
+
+    #[test]
+    fn a_line_is_one_row_and_keeps_its_leading_spaces() {
+        let review = of(
+            Dialect::Sqlite,
+            &changes(&[2], "bob@example.com"),
+            &[],
+            Values::Shown,
+        );
+        for look in Look::ALL {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            // The faces come with the first frame.
+            harness.settle();
+            let palette = harness.app.palette;
+            for line in &review.lines {
+                let laid = line_text(line, &look, &palette, Locale::English).layout(&harness.ctx);
+                assert_eq!(laid.galley.rows.len(), 1, "{}", look.name);
+                assert!(
+                    laid.height() <= row_height(&harness.ctx, &look),
+                    "{}",
+                    look.name
+                );
+            }
+            let set =
+                line_text(&review.lines[3], &look, &palette, Locale::English).layout(&harness.ctx);
+            assert_eq!(
+                set.galley.text(),
+                r#"   SET "email" = 'bob@example.com'"#,
+                "{}",
+                look.name
+            );
+            // A comment is laid as it is worded.
+            let row =
+                line_text(&review.lines[0], &look, &palette, Locale::English).layout(&harness.ctx);
+            assert_eq!(row.galley.text(), "-- row id 2", "{}", look.name);
+            // The room between two lines is the row's, over the face's own.
+            let face = widgets::code(&look).row_height(&harness.ctx, look.faces);
+            assert_eq!(row_height(&harness.ctx, &look), face + 4.0, "{}", look.name);
+            // Whatever a line holds, it is one row: a line break in it
+            // would lay a second over the row under it.
+            let broken = Line::Row("id 2\nDROP TABLE users".into());
+            let laid = line_text(&broken, &look, &palette, Locale::English).layout(&harness.ctx);
+            assert_eq!(laid.galley.rows.len(), 1, "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn rows_stand_one_row_height_apart() {
+        let review = of(
+            Dialect::Sqlite,
+            &changes(&[2, 4], "bob@example.com"),
+            &[],
+            Values::Shown,
+        );
+        // Comments and a statement's lines, the second row's first too.
+        let lines = &review.lines[..6];
+        let texts = [
+            "-- row id 2",
+            "-- only if email is still 'user2@example.com'",
+            r#"UPDATE "main"."users""#,
+            r#"   SET "email" = 'bob@example.com'"#,
+            r#" WHERE "id" = 2;"#,
+            "-- row id 4",
+        ];
+        for look in Look::ALL {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            let palette = harness.app.palette;
+            let mut height = 0.0;
+            let tree = harness.frame_with(|ui| {
+                height = row_height(ui.ctx(), &look);
+                ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
+                egui::ScrollArea::both().show_rows(ui, height, lines.len(), |ui, range| {
+                    rows(ui, lines, range, &look, &palette, Locale::English);
+                });
+            });
+            let tops: Vec<f32> = texts
+                .iter()
+                .map(|text| {
+                    harness
+                        .painted_rect(text)
+                        .unwrap_or_else(|| panic!("{}: {text} is not painted", look.name))
+                        .top()
+                })
+                .collect();
+            // egui places a widget on a grid of a thirty-second of a
+            // point: that much, and no more, may a row be off.
+            for (index, pair) in tops.windows(2).enumerate() {
+                assert!(
+                    (pair[1] - pair[0] - height).abs() <= 1.0 / 16.0,
+                    "{}: line {index} to the next is {}, a row is {height}",
+                    look.name,
+                    pair[1] - pair[0]
+                );
+            }
+            assert!(
+                (tops[5] - tops[0] - 5.0 * height).abs() <= 1.0 / 16.0,
+                "{}: the first to the last",
+                look.name
+            );
+            // Every line has the same left edge: a statement's leading
+            // spaces are drawn, not taken as its indent.
+            let lefts: Vec<f32> = texts
+                .iter()
+                .filter_map(|text| harness.painted_rect(text))
+                .map(|rect| rect.left())
+                .collect();
+            assert!(lefts.iter().all(|left| *left == lefts[0]), "{lefts:?}");
+            // Each row is read to a screen reader as it is written.
+            let labels = crate::testing::labels(&tree);
+            for text in texts {
+                assert!(
+                    labels.iter().any(|label| label == text),
+                    "{}: {text} is not read: {labels:?}",
+                    look.name
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_clipboards_text_says_what_it_is_and_holds_the_whole_statements() {
+        let long = "x".repeat(100);
+        let review = of(Dialect::Sqlite, &changes(&[2], &long), &[], Values::Whole);
+        let copied = text(&review, Locale::English);
+        let expected = format!(
+            "-- What Tabletist runs to save these changes, in one transaction. \
+             Each statement runs only while its row is still as the comment above it says.\n\
+             -- row id 2\n\
+             -- only if email is still 'user2@example.com'\n\
+             UPDATE \"main\".\"users\"\n   \
+             SET \"email\" = '{long}'\n \
+             WHERE \"id\" = 2;\n"
+        );
+        assert_eq!(copied, expected);
+        // What says what the text is is one comment: nothing of it is on a
+        // line of its own, where it would be read as SQL.
+        let first = copied.lines().next().unwrap();
+        assert!(first.starts_with("-- What Tabletist runs") && first.ends_with("says."));
+        assert_eq!(copied.lines().count(), 6);
+    }
+}

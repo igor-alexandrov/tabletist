@@ -22,6 +22,7 @@ pub mod password_prompt;
 pub mod pending_bar;
 pub mod picker;
 pub mod quick_open;
+pub mod review;
 pub mod row_panel;
 pub mod settings;
 pub mod sidebar;
