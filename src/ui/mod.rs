@@ -14756,6 +14756,60 @@ mod tests {
         editor.is_some_and(|editor| editor.large)
     }
 
+    /// An open editor takes what the clipboard holds, whatever its size.
+    /// The field keeps no more characters than the largest value an editor
+    /// opens has bytes, so what it lays out each frame is bounded; and what
+    /// it keeps is checked in bytes, so the rest is a cell to fix that says
+    /// why. On the cell and in the large editor alike.
+    #[test]
+    fn a_paste_larger_than_an_editor_opens_is_cut_and_says_why() {
+        use crate::edit::{MAX_EDIT_BYTES, Problem, State};
+        for (at, large) in [((1, 1), false), ((0, 2), true)] {
+            let (mut harness, tab, id) = editable_in(Look::standard());
+            open_editor(&mut harness, tab, id, at);
+            assert_eq!(is_large(&harness, tab, id), large);
+            assert!(harness.ctx.text_edit_focused(), "large: {large}");
+            // More characters than the limit, and more bytes than
+            // characters: what fits in characters is still over the limit
+            // in bytes. A face between the letters, drawn from another
+            // font, keeps each run of one font short: the shaper takes a
+            // time that grows with the square of a run's length, and one
+            // run of this size takes seconds to lay out.
+            let paste = format!("{}☺", "x".repeat(63)).repeat(MAX_EDIT_BYTES / 64 + 2);
+            assert!(paste.chars().count() > MAX_EDIT_BYTES);
+            harness.frame(vec![egui::Event::Paste(paste)]);
+            let editor = edits(&harness, tab, id).editor.as_ref().unwrap();
+            assert_eq!(
+                editor.text.chars().count(),
+                MAX_EDIT_BYTES,
+                "large: {large}"
+            );
+            assert!(editor.text.len() > MAX_EDIT_BYTES, "large: {large}");
+            assert_eq!(editor.problem, Some(Problem::TooLarge), "large: {large}");
+            let tree = harness.frame(Vec::new());
+            let said = "Over 256 KiB: values this large cannot be edited yet";
+            assert!(
+                crate::testing::labels(&tree)
+                    .iter()
+                    .any(|label| label == said),
+                "large: {large}"
+            );
+            // It cannot be committed, and left it is a cell to fix: no
+            // save takes it.
+            let then = Advance::Stay;
+            harness.app.apply(Action::CommitEdit { tab, id, then });
+            assert!(edits(&harness, tab, id).editor.is_some(), "large: {large}");
+            assert!(edits(&harness, tab, id).cells.is_empty(), "large: {large}");
+            harness.app.apply(Action::LeaveEdit { tab, id });
+            let pending = edits(&harness, tab, id).cells.get(&at).unwrap();
+            assert_eq!(
+                pending.state,
+                State::ToFix(Problem::TooLarge),
+                "large: {large}"
+            );
+        }
+    }
+
     #[test]
     fn a_json_cell_opens_the_large_editor() {
         for look in desktop_looks() {

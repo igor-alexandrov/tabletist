@@ -5,7 +5,7 @@
 use egui::text::{CCursor, CCursorRange};
 use egui::{CornerRadius, Id, Key, Margin, Modifiers, Rect, Stroke, StrokeKind, Ui, pos2, vec2};
 
-use crate::edit::{Editor, Lock, Problem};
+use crate::edit::{Editor, Lock, MAX_EDIT_BYTES, Problem};
 use crate::i18n::{Locale, gettext, ngettext};
 use crate::model::{Advance, ConnTabId, TabId};
 use crate::theme::{Look, Palette};
@@ -255,6 +255,10 @@ pub fn field(
         .desired_width(place.width())
         // Tab ends the edit; it is not egui's to move the keyboard with.
         .lock_focus(true)
+        // A paste of any size is cut here, so what is laid out each frame
+        // is bounded. In characters, which is how egui counts: the check
+        // holds the text to that many bytes.
+        .char_limit(MAX_EDIT_BYTES)
         .layouter(&mut layouter)
         .show(&mut child);
     if look.terminal
@@ -440,6 +444,9 @@ pub fn large(
                             .desired_rows(rows)
                             // Tab is the text's own.
                             .lock_focus(true)
+                            // As the field on the cell: what is laid
+                            // out is bounded, in characters.
+                            .char_limit(MAX_EDIT_BYTES)
                             .layouter(&mut layouter),
                     )
                 })
@@ -651,6 +658,9 @@ pub fn problem_text(
             say("At most"),
             counted(*max, "character", "characters")
         ),
+        Problem::TooLarge => {
+            say("Over 256 KiB: values this large cannot be edited yet").into_owned()
+        }
     }
 }
 
@@ -764,6 +774,10 @@ mod tests {
         assert_eq!(
             say(&Problem::TooLong { max: 1 }, None),
             "At most 1 character"
+        );
+        assert_eq!(
+            say(&Problem::TooLarge, None),
+            "Over 256 KiB: values this large cannot be edited yet"
         );
 
         let why = |lock| lock_text(lock, "book_covers", locale);

@@ -14,8 +14,8 @@ use tabletist_db::{
 use crate::backend::RequestId;
 use crate::model::{CellPos, ObjectTab, Workspace};
 
-/// The largest value an editor opens, in bytes of its text: a field that
-/// held megabytes would be laid out every frame.
+/// The largest value an editor opens, and the largest it keeps, in bytes
+/// of its text: a field that held megabytes would be laid out every frame.
 pub const MAX_EDIT_BYTES: usize = 256 * 1024;
 
 /// Why a cell cannot be edited. The view words it.
@@ -250,11 +250,21 @@ pub enum Problem {
     },
     /// More than `max` characters.
     TooLong { max: u32 },
+    /// Over `MAX_EDIT_BYTES`: more than an editor opens.
+    TooLarge,
 }
 
 /// Whether `text` is a value `column` takes, as far as the app can tell
-/// from its type's name. A type it does not know has no check.
+/// from its type's name. A type it does not know has no check but its
+/// size.
 pub fn check(dialect: Dialect, column: &ColumnInfo, text: &str) -> Option<Problem> {
+    // Before every other rule, and whatever the column: a text an editor
+    // would not open is not one to keep, and the grid and the editor would
+    // lay it out and copy it every frame. An open editor takes a paste of
+    // any size where the column sets no length.
+    if text.len() > MAX_EDIT_BYTES {
+        return Some(Problem::TooLarge);
+    }
     if let Some(allowed) = &column.allowed_values {
         return (!allowed.iter().any(|value| value == text))
             .then(|| Problem::NotOneOf(allowed.clone()));
@@ -1091,6 +1101,64 @@ mod tests {
 
     fn typed(type_name: &str) -> ColumnInfo {
         column("c", type_name)
+    }
+
+    /// An editor opens no value over `MAX_EDIT_BYTES`, and one that is open
+    /// takes a paste of any size where its column sets no length: what it
+    /// then holds is no value to keep either.
+    #[test]
+    fn a_text_larger_than_an_editor_opens_is_refused_before_any_other_rule() {
+        let over = "x".repeat(MAX_EDIT_BYTES + 1);
+        let at = "x".repeat(MAX_EDIT_BYTES);
+        // A column of any length, a document, and a type the app does not
+        // know: none has a rule of its own that would have stopped it.
+        for (dialect, type_name) in [
+            (Dialect::Postgres, "text"),
+            (Dialect::MySql, "longtext"),
+            (Dialect::Sqlite, "TEXT"),
+            (Dialect::Sqlite, ""),
+            (Dialect::Postgres, "tsvector"),
+        ] {
+            let column = typed(type_name);
+            assert_eq!(
+                check(dialect, &column, &over),
+                Some(Problem::TooLarge),
+                "{type_name}"
+            );
+            // The limit itself is a value an editor opens.
+            assert_eq!(check(dialect, &column, &at), None, "{type_name}");
+        }
+        // Bytes, as the lock counts them: fewer characters than the limit
+        // can be more bytes than it.
+        let wide = "é".repeat(MAX_EDIT_BYTES / 2 + 1);
+        assert!(wide.chars().count() < MAX_EDIT_BYTES && wide.len() > MAX_EDIT_BYTES);
+        assert_eq!(
+            check(Dialect::Postgres, &typed("text"), &wide),
+            Some(Problem::TooLarge)
+        );
+        assert_eq!(
+            check(
+                Dialect::Postgres,
+                &typed("text"),
+                &"é".repeat(MAX_EDIT_BYTES / 2)
+            ),
+            None
+        );
+        // Before the column's own rule, whose words would be about a text
+        // nobody can read through: a number, a document, a length, a list.
+        for type_name in ["bigint", "jsonb", "varchar(5)", "numeric(6,2)", "boolean"] {
+            assert_eq!(
+                check(Dialect::Postgres, &typed(type_name), &over),
+                Some(Problem::TooLarge),
+                "{type_name}"
+            );
+        }
+        let mut listed = typed("text");
+        listed.allowed_values = Some(vec!["print".into(), "ebook".into()]);
+        assert_eq!(
+            check(Dialect::Postgres, &listed, &over),
+            Some(Problem::TooLarge)
+        );
     }
 
     #[test]
