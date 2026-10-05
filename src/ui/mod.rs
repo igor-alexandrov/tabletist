@@ -11297,6 +11297,44 @@ mod tests {
     }
 
     #[test]
+    fn a_frame_makes_values_of_the_pending_cells_in_view_and_no_others() {
+        use crate::ui::data_view::DRAWN;
+        let drawn = || DRAWN.with(std::cell::Cell::get);
+        // A page of 500 rows with `email` changed in every one. A pending
+        // text can be a quarter of a megabyte: a frame that copied each to
+        // draw the few in view would stall on a set like this.
+        let mut harness = Harness::new();
+        let tab = harness.connect_fake_as(false);
+        harness.app.apply(Action::OpenObject {
+            tab,
+            object: tabletist_db::ObjectRef::new("main", "users"),
+            kind: tabletist_db::ObjectKind::Table,
+            pin: true,
+        });
+        harness.answer_structure(crate::testing::fixture_structure());
+        harness.answer_rows(crate::testing::page(500, false));
+        let id = harness.app.workspace(tab).unwrap().active_tab.unwrap();
+        for row in 0..500 {
+            let email = format!("new{row}@example.com");
+            make_pending(&mut harness, tab, id, (row, 1), &email);
+        }
+        harness.finish_animations();
+        assert_eq!(edits(&harness, tab, id).cells.len(), 500);
+        let before = drawn();
+        harness.frame(Vec::new());
+        let made = drawn() - before;
+        // The rows in view show what is pending, and they are not the
+        // whole page.
+        let shown = harness
+            .painted
+            .iter()
+            .filter(|(piece, _)| piece.starts_with("new") && piece.ends_with("@example.com"));
+        let shown = shown.count();
+        assert!((1..100).contains(&shown), "{shown} pending cells drawn");
+        assert!((1..100).contains(&made), "{made} values made in a frame");
+    }
+
+    #[test]
     fn a_pending_cell_shows_its_new_value_and_what_it_was() {
         for look in Look::ALL {
             let (mut harness, tab, id) = editable_in(look);

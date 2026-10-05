@@ -1307,8 +1307,16 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
                 let loaded = &page.rows[row][col];
                 let column = &page.columns[col];
                 // A pending cell shows its new value, drawn as any value.
-                let value = changes.values.get(&(row, col)).unwrap_or(loaded);
-                let mut cell = cell(&ctx, value, column, &tags[col], &look, shown[col]);
+                // The value is made here, for a cell the grid asks for:
+                // a set can hold thousands of texts of a quarter of a
+                // megabyte each, and a frame draws the rows in view.
+                let mut cell = match changes.cells.get(&(row, col)) {
+                    Some(pending) => {
+                        let value = drawn(&pending.new);
+                        kept(cell(&ctx, &value, column, &tags[col], &look, shown[col]))
+                    }
+                    None => cell(&ctx, loaded, column, &tags[col], &look, shown[col]),
+                };
                 changes.mark(&mut cell, (row, col), loaded, column, &look, locale);
                 cell
             },
@@ -1410,8 +1418,6 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
 /// just wrote, and the columns no edit reaches.
 struct Changes<'a> {
     cells: &'a BTreeMap<(usize, usize), Pending>,
-    /// Each pending cell's new value, as a value a cell draws.
-    values: BTreeMap<(usize, usize), Value>,
     /// The columns the database computes, in a table that can be edited.
     computed: Vec<bool>,
     /// A save is running.
@@ -1466,6 +1472,35 @@ fn editor_target(
     })
 }
 
+#[cfg(test)]
+thread_local! {
+    /// How many pending values this thread made into values to draw.
+    pub static DRAWN: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// A pending cell's new value, as a value a cell draws.
+fn drawn(new: &NewValue) -> Value {
+    #[cfg(test)]
+    DRAWN.with(|count| count.set(count.get() + 1));
+    match new {
+        NewValue::Text(text) => Value::Text(text.as_str().into()),
+        NewValue::Null => Value::Null,
+    }
+}
+
+/// `cell` with its text its own: what is drawn of a value that does not
+/// outlive the call that asked for the cell.
+fn kept<'a>(cell: Cell<'_>) -> Cell<'a> {
+    Cell {
+        text: cell.text.into_owned().into(),
+        null: cell.null,
+        style: cell.style,
+        mark: cell.mark,
+        hint: cell.hint,
+        note: cell.note,
+    }
+}
+
 impl<'a> Changes<'a> {
     fn of(
         cells: &'a BTreeMap<(usize, usize), Pending>,
@@ -1474,16 +1509,6 @@ impl<'a> Changes<'a> {
         computed: Vec<bool>,
         ctx: &egui::Context,
     ) -> Self {
-        let values = cells
-            .iter()
-            .map(|(at, pending)| {
-                let value = match &pending.new {
-                    NewValue::Text(text) => Value::Text(text.as_str().into()),
-                    NewValue::Null => Value::Null,
-                };
-                (*at, value)
-            })
-            .collect();
         let saved = saved.and_then(|saved| {
             let left = crate::edit::SAVED_FOR.checked_sub(saved.at.elapsed())?;
             // Come back when the moment is over, to draw them as they are.
@@ -1492,7 +1517,6 @@ impl<'a> Changes<'a> {
         });
         Self {
             cells,
-            values,
             computed,
             saving,
             saved: saved.unwrap_or_default(),
