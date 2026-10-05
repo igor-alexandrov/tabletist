@@ -348,6 +348,7 @@ impl App {
                 focus: true,
                 changeset: changes,
                 then,
+                after_answer: None,
             })));
             return;
         }
@@ -949,7 +950,19 @@ impl App {
         // As any save: checked, and on production confirmed again with the
         // statements it would send now. What the first save was to be
         // followed by went with its conflict.
-        self.write_edits(tab, id, None);
+        self.write_as_answer(tab, id, None);
+    }
+
+    /// Saves as the answer to another dialog asks for it: Save in the Leave
+    /// prompt, Overwrite in the conflict question. The caller has taken that
+    /// dialog away. Where the save is confirmed first, the confirmation
+    /// comes up in the place of the dialog that was answered, under the
+    /// hand that answered it, so it takes no answer in its first moment.
+    pub(super) fn write_as_answer(&mut self, tab: ConnTabId, id: TabId, then: Option<Held>) {
+        self.write_edits(tab, id, then);
+        if let Some(Dialog::ConfirmWrite(prompt)) = &mut self.dialog {
+            prompt.after_answer = Some(std::time::Instant::now());
+        }
     }
 
     /// The conflict question was closed without an answer for the row it

@@ -454,6 +454,12 @@ fn confirm_write(app: &mut App, ctx: &egui::Context) {
         app.actions.push(Action::CancelWrite);
         return;
     };
+    // Brought up by the answer to another dialog, it takes no answer in
+    // its first moment: the click or the key that gave that answer, given
+    // twice, is none to this question. What is typed into the terminal's
+    // field in that moment stays typed, and Page Up and Page Down still
+    // move the statements: reading them answers nothing.
+    let ripe = prompt.after_answer.is_none_or(crate::edit::answers_taken);
     let table = format::display_safe(&prompt.changeset.object.name).into_owned();
     let mut columns: Vec<String> = Vec::new();
     for change in prompt.changeset.rows.iter().flat_map(|row| &row.set) {
@@ -521,7 +527,9 @@ fn confirm_write(app: &mut App, ctx: &egui::Context) {
     if top && ctx.input_mut(|input| input.consume_key(Modifiers::NONE, Key::Escape)) {
         actions.push(Action::CancelWrite);
     }
-    if copy {
+    // Not in that first moment either: a click that was meant for the
+    // dialog before this one does not replace what is on the clipboard.
+    if copy && ripe {
         // The whole statements, never the lines as the sheet shows them:
         // those are cut. Of the set the sheet was made with, which is what
         // it shows and all it would send: the tab's own need not be the
@@ -529,7 +537,9 @@ fn confirm_write(app: &mut App, ctx: &egui::Context) {
         let whole = crate::review::of(dialect, &prompt.changeset, &[], Values::Whole);
         ctx.copy_text(review::text(&whole, locale));
     }
-    app.actions.extend(actions);
+    if ripe {
+        app.actions.extend(actions);
+    }
 }
 
 /// The statements a save would send, as Review SQL draws them: its lines
@@ -1094,5 +1104,104 @@ mod tests {
         harness.press(egui::Key::Enter, egui::Modifiers::NONE);
         assert!(matches!(harness.app.dialog, Some(Dialog::Leave(_))));
         assert_eq!(pending(&harness, (tab, id)), 1);
+    }
+
+    /// Makes the confirmation look as if the answer that opened it was
+    /// given a while ago (`long`), or only just, however long the test has
+    /// taken.
+    fn opened(harness: &mut Harness, long: bool) {
+        let now = std::time::Instant::now();
+        let Some(Dialog::ConfirmWrite(prompt)) = &mut harness.app.dialog else {
+            panic!("expected the confirmation, got {:?}", harness.app.dialog);
+        };
+        assert!(prompt.after_answer.is_some(), "an answer opened it");
+        prompt.after_answer = Some(if long {
+            now.checked_sub(crate::edit::ANSWER_AFTER)
+                .expect("an earlier instant")
+        } else {
+            now + std::time::Duration::from_secs(3600)
+        });
+    }
+
+    #[test]
+    fn a_confirmation_an_answer_opened_takes_no_answer_in_its_first_moment() {
+        for look in crate::theme::Look::ALL {
+            let said = look.name;
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            let (tab, id) = harness.editable();
+            harness.app.workspace_mut(tab).unwrap().environment =
+                crate::env::Environment::Production;
+            change(&mut harness, (tab, id), 1, 1, "bob@example.com");
+            // Save in the Leave prompt brings the confirmation up in that
+            // prompt's place.
+            harness.app.apply(Action::CloseTab { tab, id });
+            harness.app.apply(Action::LeaveSave);
+            harness.finish_animations();
+            opened(&mut harness, false);
+            let up =
+                |harness: &Harness| matches!(harness.app.dialog, Some(Dialog::ConfirmWrite(_)));
+            if look.terminal {
+                // The field has the keyboard, and what is typed into it in
+                // that moment stays typed. Enter and Esc are no answers.
+                harness.frame(vec![egui::Event::Text("write".into())]);
+                harness.press(egui::Key::Enter, egui::Modifiers::NONE);
+                harness.press(egui::Key::Escape, egui::Modifiers::NONE);
+            } else {
+                click_dialog(&mut harness, "Save to production");
+                click_dialog(&mut harness, "Cancel");
+                harness.press(egui::Key::Escape, egui::Modifiers::NONE);
+            }
+            assert!(up(&harness), "{said}");
+            assert_eq!(
+                (writes(&harness), pending(&harness, (tab, id))),
+                (0, 1),
+                "{said}"
+            );
+            // After it, the same answer is taken.
+            opened(&mut harness, true);
+            if look.terminal {
+                harness.press(egui::Key::Enter, egui::Modifiers::NONE);
+            } else {
+                click_dialog(&mut harness, "Save to production");
+            }
+            assert!(harness.app.dialog.is_none(), "{said}");
+            assert_eq!(writes(&harness), 1, "{said}");
+        }
+    }
+
+    #[test]
+    fn a_click_on_copy_sql_in_that_first_moment_copies_nothing() {
+        for look in crate::theme::Look::ALL {
+            // The sheet's own button: the terminal's box has none.
+            if look.terminal {
+                continue;
+            }
+            let said = look.name;
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            let (tab, id) = harness.editable();
+            harness.app.workspace_mut(tab).unwrap().environment =
+                crate::env::Environment::Production;
+            change(&mut harness, (tab, id), 1, 1, "bob@example.com");
+            harness.app.apply(Action::CloseTab { tab, id });
+            harness.app.apply(Action::LeaveSave);
+            harness.finish_animations();
+            // A click that was on its way to the dialog before this one
+            // does not take the clipboard from what the user had on it.
+            opened(&mut harness, false);
+            click_dialog(&mut harness, "Copy SQL");
+            assert_eq!(harness.copied, None, "{said}");
+            opened(&mut harness, true);
+            click_dialog(&mut harness, "Copy SQL");
+            let copied = harness.copied.as_deref().unwrap_or_default();
+            assert!(copied.contains("'bob@example.com'"), "{said}: {copied}");
+            // Copying answers nothing.
+            assert!(
+                matches!(harness.app.dialog, Some(Dialog::ConfirmWrite(_))),
+                "{said}"
+            );
+            assert_eq!(writes(&harness), 0, "{said}");
+        }
     }
 }

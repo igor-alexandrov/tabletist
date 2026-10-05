@@ -18068,10 +18068,26 @@ mod tests {
         }
     }
 
+    /// Makes the confirmation that the answer to another dialog opened
+    /// look as if that answer was given a while ago, however little time
+    /// the test has taken: it takes no answer in its first moment.
+    fn confirmation_waited(harness: &mut Harness) {
+        let Some(crate::model::Dialog::ConfirmWrite(prompt)) = &mut harness.app.dialog else {
+            panic!("expected the confirmation, got {:?}", harness.app.dialog);
+        };
+        assert!(prompt.after_answer.is_some(), "an answer opened it");
+        let now = std::time::Instant::now();
+        prompt.after_answer = Some(
+            now.checked_sub(crate::edit::ANSWER_AFTER)
+                .expect("an earlier instant"),
+        );
+    }
+
     /// A change in `users` on a production connection, `orders` opened
     /// beside it and in front, the connection's tab asked to close, and
     /// the Leave prompt answered with its save: the confirmation is up for
-    /// a tab that is not the one on screen.
+    /// a tab that is not the one on screen, and has been for long enough
+    /// to take an answer.
     fn confirming_behind_another_tab(look: Look) -> (Harness, ConnTabId, TabId) {
         let (mut harness, tab, id) = editable_in(look);
         harness.app.workspace_mut(tab).unwrap().environment = crate::env::Environment::Production;
@@ -18098,6 +18114,7 @@ mod tests {
             other => panic!("{}: expected the confirmation, got {other:?}", look.name),
         }
         assert_ne!(harness.app.workspace(tab).unwrap().active_tab, Some(id));
+        confirmation_waited(&mut harness);
         (harness, tab, id)
     }
 
@@ -18407,6 +18424,9 @@ mod tests {
         assert!(edits(&harness, tab, id).reviewing);
         assert_eq!(drawn(&harness), None);
         assert_lists_itself(&harness, &BOB);
+        // The answer to the question brought it up: its first moment is
+        // waited out before it is answered.
+        confirmation_waited(&mut harness);
         type_text(&mut harness, "write");
         harness.press(Key::Enter, Modifiers::NONE);
         assert_eq!(writes(&harness), 1);
@@ -18926,6 +18946,37 @@ mod tests {
             harness.finish_animations();
         }
         assert_eq!(rows_painted(&harness, listing), listed);
+    }
+
+    #[test]
+    fn page_down_scrolls_a_confirmation_that_takes_no_answer_yet() {
+        // The box lists the statements itself, as above, and stands in for
+        // one that the answer to another dialog brought up a moment ago.
+        let (mut harness, _, _) = confirming_five_rows(egui::vec2(1280.0, 440.0));
+        let placed = drawn(&harness).expect("the panel is drawn");
+        let (_, listing) = line_edges(&harness, &placed);
+        assert_eq!(rows_painted(&harness, listing).first(), Some(&0));
+        match &mut harness.app.dialog {
+            Some(crate::model::Dialog::ConfirmWrite(prompt)) => {
+                let hour = std::time::Duration::from_secs(3600);
+                prompt.after_answer = Some(std::time::Instant::now() + hour);
+            }
+            other => panic!("expected the confirmation, got {other:?}"),
+        }
+        // Reading is no answer: the word is typed and stays typed, and the
+        // keys move the statements.
+        harness.frame(vec![egui::Event::Text("write".into())]);
+        harness.press(Key::PageDown, Modifiers::NONE);
+        harness.finish_animations();
+        let after = rows_painted(&harness, listing);
+        assert!(!after.contains(&0), "{after:?}");
+        // Enter on the word is one, and is not taken yet.
+        harness.press(Key::Enter, Modifiers::NONE);
+        match &harness.app.dialog {
+            Some(crate::model::Dialog::ConfirmWrite(prompt)) => assert_eq!(prompt.typed, "write"),
+            other => panic!("expected the confirmation, got {other:?}"),
+        }
+        assert_eq!(writes(&harness), 0);
     }
 
     #[test]

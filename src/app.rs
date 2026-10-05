@@ -920,7 +920,7 @@ impl App {
                 // is not disabled. Anything else keeps the changes and
                 // drops what was held.
                 if let ([(tab, id)], true) = (tabs.as_slice(), can_save) {
-                    self.write_edits(*tab, *id, Some(held));
+                    self.write_as_answer(*tab, *id, Some(held));
                 }
             }
             Action::ConfirmWrite => self.confirm_write(),
@@ -13498,6 +13498,57 @@ mod tests {
                 object(&harness, tab, id).edits.note,
                 Some(crate::edit::Note::NotSent)
             );
+        }
+
+        /// Whether the confirmation that is up was opened by the answer to
+        /// another dialog. `None` when no confirmation is up.
+        fn after_an_answer(harness: &Harness) -> Option<bool> {
+            match &harness.app.dialog {
+                Some(Dialog::ConfirmWrite(prompt)) => Some(prompt.after_answer.is_some()),
+                _ => None,
+            }
+        }
+
+        #[test]
+        fn a_confirmation_knows_whether_the_answer_to_another_dialog_opened_it() {
+            // Asked for by Save itself, from a key, the bar or the prompt's
+            // `:w`: it answers at once, as before.
+            let mut harness = Harness::new();
+            let (tab, id) = production(&mut harness);
+            type_into(&mut harness, tab, id, at(1, 1), "bob@example.com");
+            harness.app.apply(Action::WriteEdits { tab, id });
+            assert_eq!(after_an_answer(&harness), Some(false));
+            harness.app.apply(Action::CancelWrite);
+            harness.app.workspace_mut(tab).unwrap().command = Some("w".into());
+            harness.app.apply(Action::RunCommand(tab));
+            assert_eq!(after_an_answer(&harness), Some(false));
+            harness.app.apply(Action::CancelWrite);
+            // Save in the Leave prompt: the confirmation takes that
+            // prompt's place.
+            harness.app.apply(Action::CloseTab { tab, id });
+            harness.app.apply(Action::LeaveSave);
+            assert_eq!(after_an_answer(&harness), Some(true));
+            // Overwrite in the conflict question: the same.
+            harness.app.apply(Action::ConfirmWrite);
+            harness.answer_written(Ok(WriteOutcome::Conflicts(vec![changed(
+                0,
+                2,
+                "eve@example.com",
+            )])));
+            answer(&mut harness, Answer::Overwrite);
+            assert_eq!(after_an_answer(&harness), Some(true));
+            // Asked for again by Save, it is an ordinary one again.
+            harness.app.apply(Action::CancelWrite);
+            harness.app.apply(Action::WriteEdits { tab, id });
+            assert_eq!(after_an_answer(&harness), Some(false));
+            // Where no confirmation is needed, the answer opens none.
+            let mut harness = Harness::new();
+            let (tab, id) = harness.editable();
+            type_into(&mut harness, tab, id, at(1, 1), "bob@example.com");
+            harness.app.apply(Action::CloseTab { tab, id });
+            harness.app.apply(Action::LeaveSave);
+            assert_eq!(after_an_answer(&harness), None);
+            assert_eq!(writes(&harness), 1);
         }
     }
 }

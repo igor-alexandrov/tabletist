@@ -1225,6 +1225,11 @@ pub struct WritePrompt {
     /// pending set still makes this one.
     pub(crate) changeset: tabletist_db::ChangeSet,
     pub(crate) then: Option<Held>,
+    /// When the answer to another dialog brought the confirmation up (Save
+    /// in the Leave prompt, Overwrite in the conflict question): it came up
+    /// under the hand that gave that answer, and takes none in its first
+    /// moment (`edit::ANSWER_AFTER`). `None` when Save itself asked for it.
+    pub after_answer: Option<std::time::Instant>,
 }
 
 /// Asks what to do with each row a save found changed on the server, one
