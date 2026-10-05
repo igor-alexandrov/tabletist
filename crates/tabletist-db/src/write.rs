@@ -6,10 +6,24 @@ use crate::{Error, ObjectRef, Result, StopFlag, Value};
 
 /// Every change of one save, to one table. Written in one transaction, or
 /// not at all.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub struct ChangeSet {
     pub object: ObjectRef,
     pub rows: Vec<RowChange>,
+}
+
+/// Its table and its counts, without the values: a set is what a command
+/// to save carries, and what a user typed and what a page loaded stay out
+/// of logs and panics. A row and a cell are still printed whole.
+impl std::fmt::Debug for ChangeSet {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let cells: usize = self.rows.iter().map(|row| row.set.len()).sum();
+        f.debug_struct("ChangeSet")
+            .field("object", &self.object)
+            .field("rows", &self.rows.len())
+            .field("cells", &cells)
+            .finish_non_exhaustive()
+    }
 }
 
 /// The changes to one row.
@@ -328,6 +342,59 @@ mod tests {
         }
     }
 
+    /// A set is what a command to save carries at its top, and a command
+    /// is printed in a diagnostic or a panic: by its table and its counts,
+    /// never by a value the page loaded or the user typed.
+    #[test]
+    fn a_set_is_printed_by_its_counts_without_the_values_it_carries() {
+        let cell = |column: &str, loaded: &str, new: NewValue| CellChange {
+            column: column.into(),
+            type_name: "text".into(),
+            loaded: Value::Text(loaded.into()),
+            new,
+        };
+        let changes = set(vec![
+            row(
+                vec![("id", Value::Int(4711))],
+                vec![
+                    cell("name", "loaded name", NewValue::Text("typed name".into())),
+                    cell("email", "loaded@example.com", NewValue::Null),
+                ],
+            ),
+            row(
+                vec![("id", Value::Text("key as text".into()))],
+                vec![cell("name", "another", NewValue::Text("secret".into()))],
+            ),
+        ]);
+        let printed = format!("{changes:?}");
+        assert_eq!(
+            printed,
+            r#"ChangeSet { object: ObjectRef { schema: "main", name: "users" }, rows: 2, cells: 3, .. }"#
+        );
+        // On several lines too, as a panic prints a value.
+        let pretty = format!("{changes:#?}");
+        assert!(
+            pretty.contains("rows: 2") && pretty.contains("cells: 3"),
+            "{pretty}"
+        );
+        for hidden in [
+            "loaded name",
+            "typed name",
+            "loaded@example.com",
+            "another",
+            "secret",
+            "4711",
+            "key as text",
+            "email",
+        ] {
+            assert!(!printed.contains(hidden), "{hidden}: {printed}");
+            assert!(!pretty.contains(hidden), "{hidden}: {pretty}");
+        }
+        // A row and a cell are printed whole: a test names them in what
+        // it says of a failure, and no command carries one at its top.
+        assert!(format!("{:?}", changes.rows[0]).contains("typed name"));
+    }
+
     #[test]
     fn a_set_that_can_be_written_passes() {
         let changes = set(vec![row(vec![("id", Value::Int(1))], vec![cell("name")])]);
@@ -425,7 +492,8 @@ mod tests {
                 row(first, vec![cell("name")]),
                 row(second, vec![cell("name")]),
             ]);
-            assert_eq!(changes.check(), Ok(()), "{changes:?}");
+            // By its rows: a set is printed by its counts alone.
+            assert_eq!(changes.check(), Ok(()), "{:?}", changes.rows);
         }
     }
 

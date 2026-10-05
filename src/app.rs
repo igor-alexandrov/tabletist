@@ -11084,6 +11084,15 @@ mod tests {
             (tab, id)
         }
 
+        /// A set's table and rows, to compare two sets by: a set is printed
+        /// by its counts alone, and a comparison that fails here should
+        /// say which rows it found.
+        fn held(
+            changes: Option<&tabletist_db::ChangeSet>,
+        ) -> Option<(&ObjectRef, &[tabletist_db::RowChange])> {
+            changes.map(|changes| (&changes.object, changes.rows.as_slice()))
+        }
+
         /// The set the production confirmation shows.
         fn confirming(harness: &Harness) -> Option<&tabletist_db::ChangeSet> {
             match &harness.app.dialog {
@@ -11148,7 +11157,7 @@ mod tests {
             // that is marked saved.
             harness.app.apply(Action::ConfirmWrite);
             assert_eq!(writes(&harness), 1);
-            assert_eq!(write_since(&harness, 0), Some(&shown));
+            assert_eq!(held(write_since(&harness, 0)), held(Some(&shown)));
             harness.answer_written(written("bob@example.com"));
             let after = object(&harness, tab, id);
             assert_eq!(after.edits.saved.as_ref().unwrap().cells, [at(1, 1)]);
@@ -11172,11 +11181,11 @@ mod tests {
             // Nor does a second save ask a second time.
             harness.app.apply(Action::WriteEdits { tab, id });
             assert_eq!(object(&harness, tab, id).edits.cells.len(), 1);
-            assert_eq!(confirming(&harness), Some(&shown));
+            assert_eq!(held(confirming(&harness)), held(Some(&shown)));
             // So what is confirmed is still there to be saved.
             harness.app.apply(Action::ConfirmWrite);
             assert_eq!(writes(&harness), 1);
-            assert_eq!(write_since(&harness, 0), Some(&shown));
+            assert_eq!(held(write_since(&harness, 0)), held(Some(&shown)));
         }
 
         #[test]

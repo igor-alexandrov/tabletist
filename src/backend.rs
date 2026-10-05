@@ -4723,6 +4723,29 @@ mod tests {
         );
     }
 
+    /// A command is printed in a diagnostic and in a panic's message. One
+    /// that saves carries what the user typed and what the page loaded:
+    /// none of it is printed, only which save it is and how much it holds.
+    #[test]
+    fn a_save_is_printed_without_the_values_it_carries() {
+        let command = Command::Write {
+            session: SessionId(7),
+            request: RequestId(11),
+            changes: rename("Grace Hopper"),
+        };
+        let printed = format!("{command:?}");
+        assert_eq!(
+            printed,
+            "Write { session: SessionId(7), request: RequestId(11), changes: ChangeSet { \
+             object: ObjectRef { schema: \"main\", name: \"users\" }, rows: 1, cells: 1, .. } }"
+        );
+        let pretty = format!("{command:#?}");
+        for hidden in ["Grace Hopper", "Ada Lovelace", "TEXT"] {
+            assert!(!printed.contains(hidden), "{hidden}: {printed}");
+            assert!(!pretty.contains(hidden), "{hidden}: {pretty}");
+        }
+    }
+
     /// A save of the first `rows` rows of the fixture's `big`: long enough
     /// to be cancelled while it runs.
     fn long_save(rows: i64) -> tabletist_db::ChangeSet {

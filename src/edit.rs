@@ -844,9 +844,10 @@ mod tests {
             set(vec![one(), one()]),
             set(Vec::new()),
         ];
+        // Said by its rows: a set is printed by its counts alone.
         for other in &others {
-            assert!(!same_changes(&base, other), "{other:?}");
-            assert!(!same_changes(other, &base), "{other:?}");
+            assert!(!same_changes(&base, other), "{:?}", other.rows);
+            assert!(!same_changes(other, &base), "{:?}", other.rows);
         }
         // Another type name, a NULL for a text, another key column, and
         // another table.
@@ -859,7 +860,12 @@ mod tests {
         let mut table = base.clone();
         table.object = ObjectRef::new("main", "levels");
         for other in [typed, null, keyed, table] {
-            assert!(!same_changes(&base, &other), "{other:?}");
+            assert!(
+                !same_changes(&base, &other),
+                "{:?} {:?}",
+                other.object,
+                other.rows
+            );
         }
         assert!(same_changes(&base, &base.clone()));
     }
