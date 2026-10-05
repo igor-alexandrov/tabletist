@@ -1615,17 +1615,17 @@ async fn a_run_that_writes_is_committed_and_counts_its_rows() {
         return;
     };
     let admin = admin().await;
-    scratch(&admin, "write_counts").await;
+    scratch(&admin, "script_counts").await;
     admin
-        .batch_execute("DROP TABLE IF EXISTS write_counts_made")
+        .batch_execute("DROP TABLE IF EXISTS script_counts_made")
         .await
         .unwrap();
     let outcome = write(
         &connection,
-        "INSERT INTO write_counts SELECT generate_series(1, 5);
-         UPDATE write_counts SET n = n + 10 WHERE n > 2;
-         DELETE FROM write_counts WHERE n = 1;
-         CREATE TABLE write_counts_made (id int)",
+        "INSERT INTO script_counts SELECT generate_series(1, 5);
+         UPDATE script_counts SET n = n + 10 WHERE n > 2;
+         DELETE FROM script_counts WHERE n = 1;
+         CREATE TABLE script_counts_made (id int)",
         10,
     )
     .await
@@ -1635,16 +1635,16 @@ async fn a_run_that_writes_is_committed_and_counts_its_rows() {
     assert_eq!(outcome.broken, None);
     assert_eq!(affected(&outcome), [Some(5), Some(3), Some(1), None]);
     assert_eq!(
-        counted(&admin, "SELECT count(*) FROM write_counts").await,
+        counted(&admin, "SELECT count(*) FROM script_counts").await,
         4
     );
     assert_eq!(
-        counted(&admin, "SELECT count(*) FROM write_counts_made").await,
+        counted(&admin, "SELECT count(*) FROM script_counts_made").await,
         0
     );
-    assert!(is_fenced(&connection, "write_counts").await);
+    assert!(is_fenced(&connection, "script_counts").await);
     admin
-        .batch_execute("DROP TABLE write_counts, write_counts_made")
+        .batch_execute("DROP TABLE script_counts, script_counts_made")
         .await
         .unwrap();
 }
@@ -1655,13 +1655,13 @@ async fn a_statement_that_fails_rolls_the_whole_run_back() {
         return;
     };
     let admin = admin().await;
-    scratch(&admin, "write_fails").await;
+    scratch(&admin, "script_fails").await;
     let outcome = write(
         &connection,
-        "INSERT INTO write_fails VALUES (1);
-         CREATE TABLE write_fails_made (id int);
-         INSERT INTO write_fails_missing VALUES (1);
-         INSERT INTO write_fails VALUES (2)",
+        "INSERT INTO script_fails VALUES (1);
+         CREATE TABLE script_fails_made (id int);
+         INSERT INTO script_fails_missing VALUES (1);
+         INSERT INTO script_fails VALUES (2)",
         10,
     )
     .await
@@ -1673,11 +1673,17 @@ async fn a_statement_that_fails_rolls_the_whole_run_back() {
         outcome.results[2].outcome,
         StatementOutcome::Error { .. }
     ));
-    assert_eq!(counted(&admin, "SELECT count(*) FROM write_fails").await, 0);
-    let made = "SELECT count(*) FROM pg_class WHERE relname = 'write_fails_made'";
+    assert_eq!(
+        counted(&admin, "SELECT count(*) FROM script_fails").await,
+        0
+    );
+    let made = "SELECT count(*) FROM pg_class WHERE relname = 'script_fails_made'";
     assert_eq!(counted(&admin, made).await, 0);
-    assert!(is_fenced(&connection, "write_fails").await);
-    admin.batch_execute("DROP TABLE write_fails").await.unwrap();
+    assert!(is_fenced(&connection, "script_fails").await);
+    admin
+        .batch_execute("DROP TABLE script_fails")
+        .await
+        .unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1687,21 +1693,21 @@ async fn a_run_that_writes_and_is_cancelled_is_rolled_back() {
     };
     let connection = std::sync::Arc::new(connection);
     let admin = admin().await;
-    scratch(&admin, "write_cancelled").await;
+    scratch(&admin, "script_cancelled").await;
     let cancel = connection.cancel_handle();
     let stop = StopFlag::new();
     let running = {
         let connection = std::sync::Arc::clone(&connection);
         let stop = stop.clone();
         tokio::spawn(async move {
-            let text = "INSERT INTO write_cancelled VALUES (1); \
-                        SELECT pg_sleep(30) /* tabletist write cancelled */";
+            let text = "INSERT INTO script_cancelled VALUES (1); \
+                        SELECT pg_sleep(30) /* tabletist script cancelled */";
             connection
                 .run_script(&script(text), 10, ScriptMode::Write, &stop)
                 .await
         })
     };
-    runs_on_the_server(&admin, "/* tabletist write cancelled */").await;
+    runs_on_the_server(&admin, "/* tabletist script cancelled */").await;
     stop.stop();
     let deadline = std::time::Instant::now() + Duration::from_secs(15);
     // As the backend does: repeat the cancel until the cleanup begins.
@@ -1718,13 +1724,13 @@ async fn a_run_that_writes_and_is_cancelled_is_rolled_back() {
     assert_eq!(outcome.end, ScriptEnd::RolledBack);
     assert_eq!(affected(&outcome), [Some(1), None]);
     assert_eq!(
-        counted(&admin, "SELECT count(*) FROM write_cancelled").await,
+        counted(&admin, "SELECT count(*) FROM script_cancelled").await,
         0
     );
     // The session survives, and is fenced.
-    assert!(is_fenced(&connection, "write_cancelled").await);
+    assert!(is_fenced(&connection, "script_cancelled").await);
     admin
-        .batch_execute("DROP TABLE write_cancelled")
+        .batch_execute("DROP TABLE script_cancelled")
         .await
         .unwrap();
 }
@@ -1736,15 +1742,15 @@ async fn a_stop_between_the_statements_of_a_run_that_writes_rolls_it_back() {
     };
     let connection = std::sync::Arc::new(connection);
     let admin = admin().await;
-    scratch(&admin, "write_stopped").await;
+    scratch(&admin, "script_stopped").await;
     let stop = StopFlag::new();
     let running = {
         let connection = std::sync::Arc::clone(&connection);
         let stop = stop.clone();
         tokio::spawn(async move {
-            let text = "INSERT INTO write_stopped VALUES (1); \
-                        DO $$ BEGIN /* tabletist write stopped */ PERFORM pg_sleep(1); END $$; \
-                        INSERT INTO write_stopped VALUES (2)";
+            let text = "INSERT INTO script_stopped VALUES (1); \
+                        DO $$ BEGIN /* tabletist script stopped */ PERFORM pg_sleep(1); END $$; \
+                        INSERT INTO script_stopped VALUES (2)";
             connection
                 .run_script(&script(text), 10, ScriptMode::Write, &stop)
                 .await
@@ -1752,18 +1758,18 @@ async fn a_stop_between_the_statements_of_a_run_that_writes_rolls_it_back() {
     };
     // A stop without a cancel: the statement that runs ends by itself, the
     // one after it never starts, and nothing is committed.
-    runs_on_the_server(&admin, "/* tabletist write stopped */").await;
+    runs_on_the_server(&admin, "/* tabletist script stopped */").await;
     stop.stop();
     let outcome = within(running).await.unwrap().unwrap();
     assert_eq!(outcome.results.len(), 3);
     assert_eq!(outcome.results[2].outcome, StatementOutcome::Cancelled);
     assert_eq!(outcome.end, ScriptEnd::RolledBack);
     assert_eq!(
-        counted(&admin, "SELECT count(*) FROM write_stopped").await,
+        counted(&admin, "SELECT count(*) FROM script_stopped").await,
         0
     );
     admin
-        .batch_execute("DROP TABLE write_stopped")
+        .batch_execute("DROP TABLE script_stopped")
         .await
         .unwrap();
 }
@@ -1774,9 +1780,9 @@ async fn every_row_is_written_whatever_the_limit_keeps() {
         return;
     };
     let admin = admin().await;
-    scratch(&admin, "write_limit").await;
+    scratch(&admin, "script_limit").await;
     admin
-        .batch_execute("DROP SEQUENCE IF EXISTS write_limit_seq; CREATE SEQUENCE write_limit_seq")
+        .batch_execute("DROP SEQUENCE IF EXISTS script_limit_seq; CREATE SEQUENCE script_limit_seq")
         .await
         .unwrap();
     let cut = |outcome: &ScriptOutcome, index: usize| {
@@ -1787,8 +1793,8 @@ async fn every_row_is_written_whatever_the_limit_keeps() {
     };
     let outcome = write(
         &connection,
-        "INSERT INTO write_limit SELECT generate_series(1, 50) RETURNING n;
-         SELECT nextval('write_limit_seq') FROM generate_series(1, 50)",
+        "INSERT INTO script_limit SELECT generate_series(1, 50) RETURNING n;
+         SELECT nextval('script_limit_seq') FROM generate_series(1, 50)",
         10,
     )
     .await
@@ -1796,19 +1802,19 @@ async fn every_row_is_written_whatever_the_limit_keeps() {
     assert_eq!(outcome.end, ScriptEnd::Committed);
     assert!(cut(&outcome, 0), "{:?}", outcome.results[0].outcome);
     assert_eq!(
-        counted(&admin, "SELECT count(*) FROM write_limit").await,
+        counted(&admin, "SELECT count(*) FROM script_limit").await,
         50
     );
     // A row query runs to its end too: no cursor stops it at the limit.
     assert!(cut(&outcome, 1), "{:?}", outcome.results[1].outcome);
     assert_eq!(
-        counted(&admin, "SELECT last_value FROM write_limit_seq").await,
+        counted(&admin, "SELECT last_value FROM script_limit_seq").await,
         50
     );
     // A data-modifying WITH returns rows, and DECLARE would refuse it.
     let outcome = write(
         &connection,
-        "WITH gone AS (DELETE FROM write_limit WHERE n <= 20 RETURNING n) \
+        "WITH gone AS (DELETE FROM script_limit WHERE n <= 20 RETURNING n) \
          SELECT count(*) FROM gone",
         10,
     )
@@ -1820,11 +1826,11 @@ async fn every_row_is_written_whatever_the_limit_keeps() {
         StatementOutcome::Rows { rows, .. } if rows == &[vec![Value::Int(20)]]
     ));
     assert_eq!(
-        counted(&admin, "SELECT count(*) FROM write_limit").await,
+        counted(&admin, "SELECT count(*) FROM script_limit").await,
         30
     );
     admin
-        .batch_execute("DROP TABLE write_limit; DROP SEQUENCE write_limit_seq")
+        .batch_execute("DROP TABLE script_limit; DROP SEQUENCE script_limit_seq")
         .await
         .unwrap();
 }
@@ -1840,15 +1846,15 @@ async fn a_cancel_that_lands_on_the_commit_rolls_the_run_back() {
     };
     let connection = std::sync::Arc::new(connection);
     let admin = admin().await;
-    scratch(&admin, "write_commit_cancelled").await;
+    scratch(&admin, "script_commit_cancelled").await;
     admin
         .batch_execute(
-            "CREATE OR REPLACE FUNCTION write_commit_cancelled_waits() RETURNS trigger
+            "CREATE OR REPLACE FUNCTION script_commit_cancelled_waits() RETURNS trigger
                  LANGUAGE plpgsql AS $$ BEGIN PERFORM pg_sleep(30); RETURN NULL; END $$;
-             CREATE CONSTRAINT TRIGGER write_commit_cancelled_slow
-                 AFTER INSERT ON write_commit_cancelled
+             CREATE CONSTRAINT TRIGGER script_commit_cancelled_slow
+                 AFTER INSERT ON script_commit_cancelled
                  DEFERRABLE INITIALLY DEFERRED
-                 FOR EACH ROW EXECUTE FUNCTION write_commit_cancelled_waits()",
+                 FOR EACH ROW EXECUTE FUNCTION script_commit_cancelled_waits()",
         )
         .await
         .unwrap();
@@ -1856,7 +1862,7 @@ async fn a_cancel_that_lands_on_the_commit_rolls_the_run_back() {
     let running = {
         let connection = std::sync::Arc::clone(&connection);
         tokio::spawn(async move {
-            let text = "INSERT INTO write_commit_cancelled VALUES (1)";
+            let text = "INSERT INTO script_commit_cancelled VALUES (1)";
             connection
                 .run_script(&script(text), 10, ScriptMode::Write, &StopFlag::new())
                 .await
@@ -1887,14 +1893,14 @@ async fn a_cancel_that_lands_on_the_commit_rolls_the_run_back() {
     assert_eq!(outcome.broken, None);
     assert_eq!(affected(&outcome), [Some(1)]);
     assert_eq!(
-        counted(&admin, "SELECT count(*) FROM write_commit_cancelled").await,
+        counted(&admin, "SELECT count(*) FROM script_commit_cancelled").await,
         0
     );
     // The session survives, and is fenced.
-    assert!(is_fenced(&connection, "write_commit_cancelled").await);
+    assert!(is_fenced(&connection, "script_commit_cancelled").await);
     admin
         .batch_execute(
-            "DROP TABLE write_commit_cancelled; DROP FUNCTION write_commit_cancelled_waits()",
+            "DROP TABLE script_commit_cancelled; DROP FUNCTION script_commit_cancelled_waits()",
         )
         .await
         .unwrap();
@@ -1908,17 +1914,17 @@ async fn a_commit_that_fails_writes_nothing_and_the_next_run_can_begin() {
     let admin = admin().await;
     admin
         .batch_execute(
-            "DROP TABLE IF EXISTS write_slots, write_shelves;
-             CREATE TABLE write_shelves (id int PRIMARY KEY);
-             CREATE TABLE write_slots (
+            "DROP TABLE IF EXISTS script_slots, script_shelves;
+             CREATE TABLE script_shelves (id int PRIMARY KEY);
+             CREATE TABLE script_slots (
                  id int PRIMARY KEY,
-                 shelf_id int REFERENCES write_shelves (id) DEFERRABLE INITIALLY DEFERRED
+                 shelf_id int REFERENCES script_shelves (id) DEFERRABLE INITIALLY DEFERRED
              )",
         )
         .await
         .unwrap();
     // The statement succeeds; the commit finds the shelf missing.
-    let outcome = write(&connection, "INSERT INTO write_slots VALUES (1, 99)", 10)
+    let outcome = write(&connection, "INSERT INTO script_slots VALUES (1, 99)", 10)
         .await
         .unwrap();
     assert_eq!(affected(&outcome), [Some(1)]);
@@ -1934,18 +1940,24 @@ async fn a_commit_that_fails_writes_nothing_and_the_next_run_can_begin() {
         outcome.end
     );
     assert_eq!(outcome.broken, None);
-    assert_eq!(counted(&admin, "SELECT count(*) FROM write_slots").await, 0);
+    assert_eq!(
+        counted(&admin, "SELECT count(*) FROM script_slots").await,
+        0
+    );
     let outcome = write(
         &connection,
-        "INSERT INTO write_shelves VALUES (99); INSERT INTO write_slots VALUES (1, 99)",
+        "INSERT INTO script_shelves VALUES (99); INSERT INTO script_slots VALUES (1, 99)",
         10,
     )
     .await
     .unwrap();
     assert_eq!(outcome.end, ScriptEnd::Committed);
-    assert_eq!(counted(&admin, "SELECT count(*) FROM write_slots").await, 1);
+    assert_eq!(
+        counted(&admin, "SELECT count(*) FROM script_slots").await,
+        1
+    );
     admin
-        .batch_execute("DROP TABLE write_slots, write_shelves")
+        .batch_execute("DROP TABLE script_slots, script_shelves")
         .await
         .unwrap();
 }
@@ -1973,7 +1985,7 @@ async fn a_run_that_writes_leaves_the_session_as_it_connected() {
         return;
     };
     let admin = admin().await;
-    scratch(&admin, "write_session").await;
+    scratch(&admin, "script_session").await;
     let connected = session_state(&connection).await;
     let Value::Text(user) = shown(&connection, "SELECT current_user").await else {
         panic!("the user's name is text");
@@ -1985,26 +1997,26 @@ async fn a_run_that_writes_leaves_the_session_as_it_connected() {
          DECLARE held CURSOR WITH HOLD FOR SELECT 1;
          SELECT pg_advisory_lock(4242);
          LISTEN tabletist_write_session;
-         INSERT INTO public.write_session VALUES (1)"
+         INSERT INTO public.script_session VALUES (1)"
     );
     let outcome = write(&connection, &leaves, 10).await.unwrap();
     assert_eq!(outcome.end, ScriptEnd::Committed);
     assert_eq!(outcome.broken, None);
     assert_eq!(session_state(&connection).await, connected, "committed");
-    assert!(is_fenced(&connection, "write_session").await);
+    assert!(is_fenced(&connection, "script_session").await);
     // After a run that failed, and so was rolled back.
     let outcome = write(&connection, &format!("{leaves}; SELECT 1 / 0"), 10)
         .await
         .unwrap();
     assert_eq!(outcome.end, ScriptEnd::RolledBack);
     assert_eq!(session_state(&connection).await, connected, "rolled back");
-    assert!(is_fenced(&connection, "write_session").await);
+    assert!(is_fenced(&connection, "script_session").await);
     assert_eq!(
-        counted(&admin, "SELECT count(*) FROM write_session").await,
+        counted(&admin, "SELECT count(*) FROM script_session").await,
         1
     );
     admin
-        .batch_execute("DROP TABLE write_session")
+        .batch_execute("DROP TABLE script_session")
         .await
         .unwrap();
 }
