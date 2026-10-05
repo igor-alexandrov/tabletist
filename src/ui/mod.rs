@@ -5,6 +5,7 @@ pub mod about;
 pub mod cell_editor;
 #[cfg(test)]
 mod complete_tests;
+pub mod conflict_prompt;
 pub mod connect_dialog;
 pub mod data_view;
 #[cfg(test)]
@@ -64,6 +65,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     about::show(app, &ui.ctx().clone());
     settings::show(app, &ui.ctx().clone());
     write_prompts::show(app, &ui.ctx().clone());
+    conflict_prompt::show(app, &ui.ctx().clone());
 }
 
 /// A problem worth the user's attention that belongs to no one tab (a
@@ -15340,9 +15342,19 @@ mod tests {
         }
     }
 
+    /// Answers the newest save with `conflicts` while another dialog is
+    /// up, and closes that dialog. No question is asked under a dialog the
+    /// user is in: the conflict is the line it was before there was one.
+    fn conflicts_under_a_dialog(harness: &mut Harness, conflicts: Vec<tabletist_db::Conflict>) {
+        harness.app.apply(Action::ShowHelp);
+        harness.answer_written(Ok(tabletist_db::WriteOutcome::Conflicts(conflicts)));
+        harness.app.apply(Action::CloseDialog);
+        harness.settle();
+    }
+
     #[test]
-    fn a_conflict_is_a_line_in_the_bar_and_the_set_stays() {
-        use tabletist_db::{Conflict, WriteOutcome};
+    fn a_conflict_under_another_dialog_is_a_line_in_the_bar_and_the_set_stays() {
+        use tabletist_db::Conflict;
         for look in desktop_looks() {
             let (mut harness, tab, id) = editable_in(look);
             make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
@@ -15356,7 +15368,7 @@ mod tests {
                     tabletist_db::Value::Null,
                 ]),
             };
-            harness.answer_written(Ok(WriteOutcome::Conflicts(vec![changed])));
+            conflicts_under_a_dialog(&mut harness, vec![changed]);
             assert!(
                 harness.has("Row id 2 changed on the server. Nothing was written."),
                 "{}",
@@ -15376,7 +15388,7 @@ mod tests {
                     server: None,
                 },
             ];
-            harness.answer_written(Ok(WriteOutcome::Conflicts(conflicts)));
+            conflicts_under_a_dialog(&mut harness, conflicts);
             assert!(
                 harness.has(
                     "Row id 4 no longer exists on the server. Nothing was written. \

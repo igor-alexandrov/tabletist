@@ -49,7 +49,7 @@ fn sentence(text: &str) -> String {
 /// The page's row `row` by its key, as the row panel's title names a row:
 /// `id 2`, several columns joined by a comma. By its number where the key
 /// is not known.
-fn row_name(object: &ObjectTab, row: usize) -> String {
+pub(crate) fn row_name(object: &ObjectTab, row: usize) -> String {
     let named = object.page().and_then(|page| {
         let key = object.structure.value.as_ref()?.row_key()?;
         let parts = super::row_panel::key_parts(&page.columns, page.rows.get(row)?, &key)?;

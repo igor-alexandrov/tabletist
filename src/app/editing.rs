@@ -7,12 +7,12 @@ use tabletist_db::{Access, ChangeSet, ColumnClass, Error, NewValue, WriteOutcome
 use super::App;
 use crate::backend::{Command, RequestId, SessionId};
 use crate::edit::{
-    Editor, Lock, Note, Pending, Problem, Saved, Saving, State, Table, change_set, check,
-    is_change, opens_large, same_changes, start_text,
+    Answer, Editor, Lock, Note, Pending, Problem, Saved, Saving, State, Table, change_set, check,
+    conflicting, is_change, opens_large, same_changes, settled, shown_lines, start_text,
 };
 use crate::model::{
-    Action, CellPos, ConnTabId, Dialog, EditStart, Held, LeavePrompt, ObjectTab, Pane, SaveBlock,
-    SessionStatus, TabId, WritePrompt,
+    Action, CellPos, ConflictPrompt, ConnTabId, Dialog, EditStart, Held, LeavePrompt, ObjectTab,
+    Pane, SaveBlock, SessionStatus, TabId, WritePrompt,
 };
 use crate::review::Values;
 
@@ -708,6 +708,10 @@ impl App {
         request: RequestId,
         result: Result<WriteOutcome, Error>,
     ) {
+        // A dialog the user is in is never replaced: a conflict that arrives
+        // under one is a line, as a failure is. So it is in the terminal
+        // look, until its box is drawn there.
+        let free = self.dialog.is_none() && !self.look.terminal;
         // An answer for a closed tab, or for a save a reconnect gave up,
         // finds no tab saving.
         let Some(tab) = self.tab_for_session(session) else {
@@ -777,7 +781,8 @@ impl App {
                 }
             }
             Ok(WriteOutcome::Conflicts(conflicts)) => {
-                object.edits.note = conflicts.first().map(|first| match place(first.row) {
+                // What the tab says where the rows cannot be asked about.
+                let line = conflicts.first().map(|first| match place(first.row) {
                     Some(row) => Note::Conflict {
                         row,
                         gone: first.server.is_none(),
@@ -787,6 +792,26 @@ impl App {
                     // to tell the save's end by.
                     None => Note::Lost,
                 });
+                let asked = object.rows.value.as_ref().and_then(|page| {
+                    let rows = conflicting(&saving.rows, conflicts, page).filter(|_| free)?;
+                    // None when the save named no row: nothing to ask.
+                    let lines = shown_lines(page, &object.edits.cells, rows.first()?);
+                    Some((rows, lines))
+                });
+                match asked {
+                    // The question says what the line would.
+                    Some((rows, lines)) => {
+                        self.dialog = Some(Dialog::Conflict(Box::new(ConflictPrompt {
+                            tab,
+                            id,
+                            rows,
+                            at: 0,
+                            lines,
+                            shown: std::time::Instant::now(),
+                        })));
+                    }
+                    None => object.edits.note = line,
+                }
             }
             Ok(WriteOutcome::Failed { row, error }) => {
                 object.edits.fail(place(row), error);
@@ -800,6 +825,116 @@ impl App {
                     Note::Refused(error)
                 });
             }
+        }
+    }
+
+    /// Answers the question about the row a save found changed, and asks
+    /// about the next. `at` is the row the answer was given for: one for
+    /// another row than the one asked about is dropped, a click or a key a
+    /// frame behind. The answer is applied at once, to the page and to the
+    /// set, so each row is whole whatever comes of the rows after it.
+    pub(super) fn answer_conflict(&mut self, at: usize, answer: Answer) {
+        // The kind is checked before the dialog is taken: another dialog
+        // is not closed by it.
+        if !matches!(&self.dialog, Some(Dialog::Conflict(prompt)) if prompt.at == at) {
+            return;
+        }
+        let Some(Dialog::Conflict(mut prompt)) = self.dialog.take() else {
+            return;
+        };
+        let (tab, id) = (prompt.tab, prompt.id);
+        let Some(conflict) = prompt.rows.get_mut(at) else {
+            // Nothing is left to ask about.
+            return;
+        };
+        let (row, gone) = (conflict.row, conflict.server.is_none());
+        if !answer.offered(gone) {
+            // Not an answer the question about this row has.
+            self.dialog = Some(Dialog::Conflict(prompt));
+            return;
+        }
+        // The row is answered once: what the server holds goes into the
+        // page, or nowhere.
+        let server = conflict.server.take();
+        // The cells the answer takes out of the set: every one of the row,
+        // or those whose new value is what the server holds now.
+        let all = matches!(answer, Answer::UseServer | Answer::Discard);
+        let same = match &server {
+            Some(server) if !all => self
+                .table(tab, id, |table, object| {
+                    settled(table, &object.edits.cells, row, server)
+                })
+                .unwrap_or_default(),
+            _ => Vec::new(),
+        };
+        let Some(object) = self.object_tab_mut(tab, id) else {
+            // The tab went: there is no row to ask about.
+            return;
+        };
+        if let Some(server) = server
+            && let Some(loaded) = object
+                .rows
+                .value
+                .as_mut()
+                .and_then(|page| page.rows.get_mut(row))
+        {
+            *loaded = server;
+        }
+        object
+            .edits
+            .cells
+            .retain(|&(of, col), _| of != row || !(all || same.contains(&col)));
+        match answer {
+            Answer::Discard => {
+                object.edits.gone.insert(row);
+            }
+            // The row's changes stay pending on a row that is not there.
+            // The tab says so, with the line a conflict is where it is not
+            // asked about: the row is not left looking like any other.
+            Answer::KeepMine if gone => {
+                object.edits.note = Some(Note::Conflict {
+                    row,
+                    gone: true,
+                    others: 0,
+                });
+            }
+            Answer::KeepMine | Answer::UseServer | Answer::Overwrite => {}
+        }
+        // The row panel shows the row as it is now. So does the review,
+        // once it is made again: it was made of the cells that were
+        // pending and of what the page had loaded under them.
+        object.fields = None;
+        object.edits.review = None;
+        // The next row, or none: every row is answered.
+        prompt.at += 1;
+        if let Some(next) = prompt.rows.get(prompt.at) {
+            // The next row's question is a new one on screen.
+            let object = self
+                .workspace(tab)
+                .and_then(|workspace| workspace.object_tab(id));
+            prompt.lines = object
+                .and_then(|object| Some(shown_lines(object.page()?, &object.edits.cells, next)))
+                .unwrap_or_default();
+            prompt.shown = std::time::Instant::now();
+            self.dialog = Some(Dialog::Conflict(prompt));
+        }
+    }
+
+    /// The conflict question was closed without an answer for the row it
+    /// showed. That row and the rows after it are as they were loaded, with
+    /// their changes pending, and the tab says so as it does where the
+    /// question is not asked at all: the next save asks again.
+    pub(super) fn conflict_unanswered(&mut self, prompt: &ConflictPrompt) {
+        let Some(shown) = prompt.rows.get(prompt.at) else {
+            return;
+        };
+        let note = Note::Conflict {
+            row: shown.row,
+            gone: shown.server.is_none(),
+            others: prompt.rows.len() - prompt.at - 1,
+        };
+        if let Some(object) = self.object_tab_mut(prompt.tab, prompt.id) {
+            object.edits.note = Some(note);
         }
     }
 }

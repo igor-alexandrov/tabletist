@@ -313,6 +313,13 @@ pub enum Action {
     ConfirmWrite,
     /// Close the production confirmation and send nothing.
     CancelWrite,
+    /// Answer the question about a row a save found changed. `at` is the
+    /// row's place among the save's conflicts as the question showed it: an
+    /// answer for another row than the one asked about is dropped.
+    AnswerConflict {
+        at: usize,
+        answer: crate::edit::Answer,
+    },
     /// Arrow keys (±1), Page Up/Down (±page), Home/End (isize::MIN/MAX).
     MoveSelection {
         tab: ConnTabId,
@@ -1176,6 +1183,8 @@ pub enum Dialog {
     Leave(Box<LeavePrompt>),
     /// A save to production, with its statements, before anything is sent.
     ConfirmWrite(Box<WritePrompt>),
+    /// A save found rows changed on the server: what to do with each.
+    Conflict(Box<ConflictPrompt>),
 }
 
 /// What waits for the user's answer about pending changes.
@@ -1216,6 +1225,38 @@ pub struct WritePrompt {
     /// pending set still makes this one.
     pub(crate) changeset: tabletist_db::ChangeSet,
     pub(crate) then: Option<Held>,
+}
+
+/// Asks what to do with each row a save found changed on the server, one
+/// after another. Every answer is applied when it is given.
+pub struct ConflictPrompt {
+    pub tab: ConnTabId,
+    pub id: TabId,
+    /// The rows the save found changed, in its order. One that is answered
+    /// keeps its place and gives up its row.
+    pub rows: Vec<crate::edit::Conflicting>,
+    /// The one being asked about.
+    pub at: usize,
+    /// The columns the user changed in that row, with their values ready
+    /// to draw (`edit::shown_lines`).
+    pub lines: Vec<crate::edit::ShownLine>,
+    /// When that one came on screen: its question takes no answer in its
+    /// first moment (`edit::ANSWER_AFTER`).
+    pub shown: std::time::Instant,
+}
+
+/// Without the rows: they are the database's, and can be megabytes.
+impl std::fmt::Debug for ConflictPrompt {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "ConflictPrompt {{ tab: {:?}, id: {:?}, rows: {}, at: {} }}",
+            self.tab,
+            self.id,
+            self.rows.len(),
+            self.at
+        )
+    }
 }
 
 /// Cmd/Ctrl+P: find a loaded table or view by name.
