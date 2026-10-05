@@ -808,6 +808,8 @@ impl App {
                             at: 0,
                             lines,
                             shown: std::time::Instant::now(),
+                            overwrite: false,
+                            kept: false,
                         })));
                     }
                     None => object.edits.note = line,
@@ -905,7 +907,11 @@ impl App {
         // pending and of what the page had loaded under them.
         object.fields = None;
         object.edits.review = None;
-        // The next row, or none: every row is answered.
+        match answer {
+            Answer::KeepMine => prompt.kept = true,
+            Answer::Overwrite => prompt.overwrite = true,
+            Answer::UseServer | Answer::Discard => {}
+        }
         prompt.at += 1;
         if let Some(next) = prompt.rows.get(prompt.at) {
             // The next row's question is a new one on screen.
@@ -917,7 +923,33 @@ impl App {
                 .unwrap_or_default();
             prompt.shown = std::time::Instant::now();
             self.dialog = Some(Dialog::Conflict(prompt));
+            return;
         }
+        // Every row is answered. A save writes the whole set, so it runs
+        // again only when a row was to be overwritten and none was kept to
+        // look at again: that one would be written with it.
+        if !prompt.overwrite || prompt.kept {
+            return;
+        }
+        let pending = self
+            .workspace(tab)
+            .and_then(|workspace| workspace.object_tab(id))
+            .is_some_and(|object| !object.edits.cells.is_empty());
+        if !pending {
+            return;
+        }
+        // The session went while the question was up: the tab says that
+        // nothing went out, as it does after a confirmation.
+        if self.save_blocked(tab, id) == Some(SaveBlock::Disconnected) {
+            if let Some(object) = self.object_tab_mut(tab, id) {
+                object.edits.note = Some(Note::NotSent);
+            }
+            return;
+        }
+        // As any save: checked, and on production confirmed again with the
+        // statements it would send now. What the first save was to be
+        // followed by went with its conflict.
+        self.write_edits(tab, id, None);
     }
 
     /// The conflict question was closed without an answer for the row it

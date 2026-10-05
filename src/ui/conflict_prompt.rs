@@ -242,6 +242,7 @@ mod tests {
             click_dialog(&mut harness, "Overwrite");
             assert!(!asking(&harness), "{said}");
             assert_eq!(state(&harness, tab, id), (1, eve()), "{said}");
+            assert_eq!(writes(&harness), 2, "{said}: the save runs again");
             // Esc is Keep mine.
             let (mut harness, tab, id) = conflict_in(look, Some("eve@example.com"));
             harness.press(egui::Key::Escape, egui::Modifiers::NONE);

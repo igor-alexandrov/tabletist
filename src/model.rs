@@ -1243,6 +1243,10 @@ pub struct ConflictPrompt {
     /// When that one came on screen: its question takes no answer in its
     /// first moment (`edit::ANSWER_AFTER`).
     pub shown: std::time::Instant,
+    /// A row was answered Overwrite: the save may run again.
+    pub(crate) overwrite: bool,
+    /// A row was answered Keep mine: no save runs again by itself.
+    pub(crate) kept: bool,
 }
 
 /// Without the rows: they are the database's, and can be megabytes.
