@@ -6,7 +6,7 @@ use egui::{
     CornerRadius, Frame, Id, Margin, Rect, Sense, Stroke, StrokeKind, WidgetInfo, WidgetType, pos2,
     vec2,
 };
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use tabletist_db::{NewValue, SortDir, Value, ValueKind};
 
@@ -1258,6 +1258,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
             &object.edits.cells,
             object.edits.saving.is_some(),
             object.edits.saved.as_ref(),
+            &object.edits.gone,
             computed,
             &ctx,
         );
@@ -1424,6 +1425,8 @@ struct Changes<'a> {
     saving: bool,
     /// The cells the last save wrote, while they show it.
     saved: &'a [CellPos],
+    /// The page's rows a save found gone from the server.
+    gone: &'a BTreeSet<usize>,
     /// The cell that was asked for and cannot be edited, and why.
     why: Option<(CellPos, String)>,
 }
@@ -1506,6 +1509,7 @@ impl<'a> Changes<'a> {
         cells: &'a BTreeMap<(usize, usize), Pending>,
         saving: bool,
         saved: Option<&'a crate::edit::Saved>,
+        gone: &'a BTreeSet<usize>,
         computed: Vec<bool>,
         ctx: &egui::Context,
     ) -> Self {
@@ -1520,6 +1524,7 @@ impl<'a> Changes<'a> {
             computed,
             saving,
             saved: saved.unwrap_or_default(),
+            gone,
             why: None,
         }
     }
@@ -1542,6 +1547,14 @@ impl<'a> Changes<'a> {
             && !why.is_empty()
         {
             cell.note = Some(why.clone());
+        }
+        // A row a save found gone is that and nothing else, whatever its
+        // column is. It has no hint: why a cell is locked is said only
+        // when it is asked for. Asked of the set for the one cell drawn:
+        // nothing here walks it.
+        if self.gone.contains(&row) {
+            cell.mark = Mark::Gone;
+            return;
         }
         let Some(pending) = self.cells.get(&at) else {
             cell.mark = if self.saved.contains(&CellPos { row, col }) {

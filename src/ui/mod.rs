@@ -11849,6 +11849,56 @@ mod tests {
     }
 
     #[test]
+    fn a_row_that_is_gone_is_written_dim_and_says_why_when_asked() {
+        // The colour of the grid's cell that shows `text`: the leftmost
+        // piece of it, since the row panel writes a selected row's values
+        // too.
+        let written = |harness: &Harness, text: &str| {
+            let pieces = harness.painted.iter().zip(&harness.text_rects);
+            pieces
+                .filter(|((piece, _), _)| piece == text)
+                .min_by(|a, b| a.1.1.left().total_cmp(&b.1.1.left()))
+                .map(|((_, color), _)| *color)
+        };
+        for look in Look::ALL {
+            let said = look.name;
+            let (mut harness, tab, id) = editable_in(look);
+            let palette = harness.app.palette;
+            let (gone, other) = ("user2@example.com", "user3@example.com");
+            let plain = written(&harness, other);
+            assert_eq!(written(&harness, gone), plain, "{said}");
+            assert_ne!(plain, Some(palette.dim), "{said}");
+            // As a save that found the row gone leaves it, once its changes
+            // were discarded.
+            let workspace = harness.app.workspace_mut(tab).unwrap();
+            let object = workspace.object_tab_mut(id).unwrap();
+            object.edits.gone.insert(1);
+            harness.settle();
+            assert_eq!(written(&harness, gone), Some(palette.dim), "{said}");
+            assert_eq!(written(&harness, other), plain, "{said}");
+            for tone in [Tone::Warning, Tone::Danger, Tone::Success] {
+                let tint = tone.fill(&look, &palette);
+                assert!(!filled_behind(&harness, gone, tint), "{said}: {tone:?}");
+            }
+            // Asked for, it does not open: it says why, as every cell that
+            // cannot be edited does.
+            select(&mut harness, tab, id, (1, 1));
+            let why = "This row no longer exists on the server";
+            let why = if look.terminal {
+                type_key(&mut harness, Key::I, "i");
+                why.to_lowercase()
+            } else {
+                harness.press(Key::Enter, Modifiers::NONE);
+                why.to_owned()
+            };
+            assert!(edits(&harness, tab, id).editor.is_none(), "{said}");
+            assert!(!harness.ctx.text_edit_focused(), "{said}");
+            assert!(painted(&harness, &why), "{said}: {:?}", harness.painted);
+            assert!(harness.has(&why), "{said}");
+        }
+    }
+
+    #[test]
     fn mod_backspace_sets_null_and_mod_z_reverts() {
         for look in desktop_looks() {
             let (mut harness, tab, id) = editable_in(look);

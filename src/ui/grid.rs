@@ -98,6 +98,8 @@ pub enum Mark {
     Saved,
     /// A cell of a computed column, in a table that can be edited.
     Locked,
+    /// A cell of a row a save found gone from the server.
+    Gone,
 }
 
 #[derive(Default)]
@@ -748,12 +750,13 @@ pub fn show<'a>(
                         }
                     }
                     // What the cell's pending state tints it with. The
-                    // terminal draws a computed column as any other.
+                    // terminal draws a computed column as any other. A row
+                    // that is gone has no tint: nothing of it is pending.
                     let tone = match content.mark {
                         Mark::Pending | Mark::Saving => Some(Tone::Warning),
                         Mark::Trouble => Some(Tone::Danger),
                         Mark::Saved => Some(Tone::Success),
-                        Mark::None | Mark::Locked => None,
+                        Mark::None | Mark::Locked | Mark::Gone => None,
                     };
                     let locked = content.mark == Mark::Locked && !look.terminal;
                     if here && lit && look.terminal && tone.is_none() && !edited {
@@ -823,10 +826,11 @@ pub fn show<'a>(
                             painter.rect_filled(bar, CornerRadius::ZERO, color);
                         }
                     }
-                    // The text's colours: a pending cell's tone in the
-                    // terminal, a changed row's on its key, and a computed
-                    // column a step quieter.
+                    // The text's colours: dim in a row that is gone, a
+                    // pending cell's tone in the terminal, a changed row's
+                    // on its key, and a computed column a step quieter.
                     let written = match (tone, row_tone) {
+                        _ if content.mark == Mark::Gone => written_in(palette, palette.dim),
                         (Some(tone), _) if look.terminal && tone != Tone::Success => {
                             written_in(palette, tone.color(palette))
                         }
@@ -2012,6 +2016,21 @@ mod tests {
                     palette.secondary
                 };
                 assert_eq!(color_at(&texts, cell), Some(quiet), "{said}: locked");
+                // A row a save found gone: its text dim in every look, and
+                // nothing else of a mark.
+                let (rects, texts) = marked(&ctx, &look, &palette, Mark::Gone, RowMark::None);
+                assert_eq!(color_at(&texts, cell), Some(palette.dim), "{said}: gone");
+                for tone in [Tone::Warning, Tone::Danger, Tone::Success] {
+                    assert!(
+                        !behind(&rects, tone.fill(&look, &palette)),
+                        "{said}: gone, {tone:?}"
+                    );
+                }
+                assert!(!behind(&rects, palette.surface), "{said}: gone");
+                assert!(
+                    !texts.iter().any(|(text, ..)| text == "~" || text == "!"),
+                    "{said}: gone"
+                );
                 // Nothing pending: none of it.
                 let (rects, texts) = marked(&ctx, &look, &palette, Mark::None, RowMark::None);
                 for tone in [Tone::Warning, Tone::Danger, Tone::Success] {
@@ -2076,6 +2095,32 @@ mod tests {
                 assert_eq!(color, Some(Tone::Warning.color(&palette)));
             }
         }
+    }
+
+    #[test]
+    fn the_terminals_cursor_on_a_gone_cell_is_reverse_video() {
+        let look = Look::omarchy();
+        let palette = Palette::light();
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx, false, &look);
+        crate::theme::apply(&ctx, &palette, &look);
+        let here = Some(CellPos { row: 1, col: 1 });
+        let gone = (Mark::Gone, RowMark::None);
+        // A key, and the arrows are the grid's: its cell is lit.
+        let key = crate::testing::key(egui::Key::ArrowDown, egui::Modifiers::NONE);
+        marked_with(&ctx, &look, &palette, gone, here, vec![key]);
+        let (rects, texts) = marked_with(&ctx, &look, &palette, gone, here, Vec::new());
+        let (_, color, cell) = texts
+            .iter()
+            .find(|(text, ..)| text == "r1c1")
+            .expect("the cell's text");
+        // As on any cell without a mark: the accent behind, the text in the
+        // window's tone. Its dim text would not be read on the accent.
+        let block = rects.iter().any(|rect| {
+            rect.fill == palette.accent && rect.rect.contains(*cell) && rect.rect.width() < 400.0
+        });
+        assert!(block);
+        assert_eq!(*color, palette.window);
     }
 
     #[test]
