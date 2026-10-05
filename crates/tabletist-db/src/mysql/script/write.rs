@@ -236,6 +236,15 @@ async fn close(
     let mut commit_error = None;
     if succeeded && stopped {
         outcome.stopped = true;
+        // Every statement is done. The last one may have made the server
+        // commit, which no check has seen: then nothing is left to roll
+        // back, and all of the run is written.
+        match retry_cancelled!(inside(conn)) {
+            Ok(true) => {}
+            Ok(false) => outcome.end = ScriptEnd::Committed,
+            Err(error) if error.is_connection_lost() => return Err(error),
+            Err(error) => run.broken = Some(cleanup_failed(ScriptMode::Write, &error)),
+        }
     } else if succeeded {
         match execute(conn, "COMMIT").await {
             Ok(()) => outcome.end = ScriptEnd::Committed,
@@ -313,13 +322,14 @@ async fn roll_back(conn: &mut mysql_async::Conn) -> Result<Option<String>> {
     if conn.get_warnings() == 0 {
         return Ok(None);
     }
-    let warnings: mysql_async::Result<Vec<(String, u16, String)>> =
-        conn.query("SHOW WARNINGS").await;
+    // Rows, not a typed tuple: a row that does not convert would panic.
+    let warnings: mysql_async::Result<Vec<mysql_async::Row>> = conn.query("SHOW WARNINGS").await;
     match warnings.map_err(query_error) {
         Ok(warnings) => {
+            // Level, code, message.
             let text = warnings
-                .into_iter()
-                .map(|(_, _, message)| message)
+                .iter()
+                .filter_map(|row| row.get_opt::<String, _>(2)?.ok())
                 .collect::<Vec<_>>()
                 .join(" ");
             Ok(Some(if text.is_empty() {

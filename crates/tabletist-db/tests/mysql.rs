@@ -2475,6 +2475,54 @@ async fn a_stop_after_a_statement_that_committed_still_says_what_is_written() {
         .unwrap();
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_stop_during_a_last_statement_that_committed_is_not_said_to_be_rolled_back() {
+    let Some(connection) = connect_as(Access::Writable).await else {
+        return;
+    };
+    let connection = std::sync::Arc::new(connection);
+    let mut admin = admin().await;
+    scratch(&mut admin, "write_stopped_last").await;
+    admin
+        .query_drop("DROP TABLE IF EXISTS write_stopped_last_made")
+        .await
+        .unwrap();
+    let stop = StopFlag::new();
+    let running = {
+        let connection = std::sync::Arc::clone(&connection);
+        let stop = stop.clone();
+        tokio::spawn(async move {
+            let text = "INSERT INTO write_stopped_last (id) VALUES (1); \
+                        CREATE TABLE write_stopped_last_made AS SELECT SLEEP(1) AS slept";
+            connection
+                .run_script(&script(text), 10, ScriptMode::Write, &stop)
+                .await
+        })
+    };
+    // A stop without a cancel, while the last statement runs: it ends by
+    // itself, having committed the insert before it. Nothing is left to
+    // roll back, so the run must not say that it was.
+    runs_on_the_server(&mut admin, "write_stopped_last_made").await;
+    stop.stop();
+    let outcome = within(running).await.unwrap().unwrap();
+    assert_eq!(outcome.results.len(), 2);
+    assert!(outcome.stopped);
+    assert_eq!(outcome.end, ScriptEnd::Committed);
+    assert_eq!(
+        counted(&mut admin, "SELECT count(*) FROM write_stopped_last").await,
+        1
+    );
+    assert_eq!(
+        counted(&mut admin, "SELECT count(*) FROM write_stopped_last_made").await,
+        1
+    );
+    assert!(writes_between_scripts(&connection).await);
+    admin
+        .query_drop("DROP TABLE write_stopped_last, write_stopped_last_made")
+        .await
+        .unwrap();
+}
+
 #[tokio::test]
 async fn a_run_that_writes_leaves_the_session_as_it_connected() {
     let Some(connection) = connect_as(Access::Writable).await else {
