@@ -348,7 +348,8 @@ fn shortened(literal: &str) -> String {
     // A quote in a value is written twice, and so is a backslash where it
     // escapes: half of such a pair before the `…` would read as the
     // value's end, or as an escape of what follows. The other half goes
-    // too.
+    // too. So does the backslash of MySQL's `\0` for a NUL, cut from its
+    // zero: it is the odd one of its run.
     let inside = kept.get(open.len()..).unwrap_or("");
     for mark in ['\'', '\\'] {
         let run = inside
@@ -587,6 +588,16 @@ mod tests {
         // So with a backslash where it is written twice.
         let slashed = format!("E'{}\\\\{long}'", "x".repeat(55));
         assert_eq!(cut(&slashed), format!("E'{}…'", "x".repeat(55)));
+        // MySQL writes a NUL as a backslash and a zero: the cut never
+        // falls between the two, where the backslash would be left to
+        // escape what follows it.
+        let nul = format!("'{}\\0{long}'", "x".repeat(56));
+        assert_eq!(cut(&nul), format!("'{}…'", "x".repeat(56)));
+        let nul = format!("'{}\\0{long}'", "x".repeat(55));
+        assert_eq!(cut(&nul), format!("'{}\\0…'", "x".repeat(55)));
+        // After a backslash of the value's own, which is written twice.
+        let nul = format!("'{}\\\\\\0{long}'", "x".repeat(54));
+        assert_eq!(cut(&nul), format!("'{}\\\\…'", "x".repeat(54)));
         // SQLite's text around a NUL keeps its brackets.
         let nul = format!("('{long}' || char(0) || 'b')");
         assert_eq!(cut(&nul), format!("('{}…')", "x".repeat(55)));

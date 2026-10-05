@@ -375,12 +375,21 @@ impl Dialect {
     /// the text holds a backslash, which only the escape form keeps whatever
     /// `standard_conforming_strings` is. MySQL reads a backslash as an
     /// escape in every string (the session keeps `NO_BACKSLASH_ESCAPES`
-    /// off), so it is doubled there.
+    /// off), so it is doubled there, and a NUL is written as the escape
+    /// MySQL has for it: the literal is for a person to read and to copy,
+    /// and a clipboard, or what the text is pasted into, may end text at a
+    /// raw NUL and leave a statement without its `WHERE`. After the
+    /// doubling, so the escape's own backslash stays single.
     pub(crate) fn literal(self, text: &str) -> String {
         match self {
             Self::Postgres if text.contains('\\') => quote_literal(text),
             Self::Postgres | Self::Sqlite => format!("'{}'", text.replace('\'', "''")),
-            Self::MySql => format!("'{}'", text.replace('\\', "\\\\").replace('\'', "''")),
+            Self::MySql => format!(
+                "'{}'",
+                text.replace('\\', "\\\\")
+                    .replace('\0', "\\0")
+                    .replace('\'', "''")
+            ),
         }
     }
 
@@ -1508,11 +1517,12 @@ mod tests {
             );
             assert_eq!(update.sql.params[1], Value::Float(number));
         }
-        // The others keep their own forms.
+        // The others keep their own forms. MySQL's is the escape its
+        // strings have for a NUL.
         assert!(
             update(Dialect::MySql, text("a\0'"), "x\0y")
                 .shown
-                .ends_with("SET `t` = 'x\0y' WHERE `k` = 'a\0'''")
+                .ends_with(r"SET `t` = 'x\0y' WHERE `k` = 'a\0'''")
         );
         assert!(
             update(Dialect::Postgres, Value::Int(1), "x\0y")
@@ -1529,6 +1539,37 @@ mod tests {
                 .shown
                 .ends_with(r#"WHERE "k" = 'inf'"#)
         );
+    }
+
+    #[test]
+    fn mysql_writes_a_nul_as_its_escape() {
+        let literal = |text: &str| Dialect::MySql.literal(text);
+        // No raw NUL in what is shown and copied: a clipboard, or what the
+        // text is pasted into, may end text at one, and the statement
+        // would lose its `WHERE`.
+        assert_eq!(literal("a\0b'\\"), r"'a\0b''\\'");
+        assert_eq!(literal("\0"), r"'\0'");
+        // Backslashes are doubled first, so the one the escape is written
+        // with is no half of a pair: a backslash and a NUL are three.
+        assert_eq!(literal("\\\0"), r"'\\\0'");
+        // And a backslash and a zero that were typed are no NUL.
+        assert_eq!(literal(r"\0"), r"'\\0'");
+        for text in ["a\0b'\\", "\0", "\\\0\0'", "s:1:\"\0\";"] {
+            assert!(!literal(text).contains('\0'), "{text:?}");
+        }
+        // Only what is shown: the save binds the text as it is.
+        let update = Dialect::MySql
+            .update_row(
+                &books(),
+                &one(vec![("k", text("a\0'"))], vec![typed("t", "text", "x\0y")]),
+            )
+            .unwrap();
+        assert_eq!(
+            update.shown,
+            r"UPDATE `public`.`books` SET `t` = 'x\0y' WHERE `k` = 'a\0'''"
+        );
+        assert_eq!(update.sql.params, [text("x\0y"), text("a\0'")]);
+        assert_eq!(inlined(Dialect::MySql, &update.sql), update.shown);
     }
 
     #[test]

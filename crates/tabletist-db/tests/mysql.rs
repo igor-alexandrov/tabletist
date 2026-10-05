@@ -3470,3 +3470,72 @@ async fn text_is_stored_exactly() {
     )
     .await;
 }
+
+/// What Review SQL shows and copies, run by hand as another client would
+/// send it, stores the bytes the save's bound statement stores: a NUL is
+/// written as its escape, so no raw NUL stands in the text, and beside a
+/// backslash and a quote it is still the value.
+#[tokio::test]
+async fn the_shown_statement_stores_what_the_bound_one_does() {
+    let Some(connection) = connect_as(Access::Writable).await else {
+        return;
+    };
+    const AWKWARD: [&str; 5] = [
+        "nul\0 a back\\slash and it's",
+        "\0",
+        "\\\0'\0\\",
+        // As PHP serializes a private property.
+        "a:1:{s:6:\"\0A\0key\";s:3:\"it's\";}",
+        r"\0 typed out is no NUL",
+    ];
+    on_its_own_tables(
+        "write_shown",
+        &["CREATE TABLE write_shown (
+               id VARCHAR(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin,
+               how VARCHAR(10) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin,
+               body TEXT CHARACTER SET utf8mb4,
+               PRIMARY KEY (id, how)
+           )"],
+        async move {
+            let mut admin = admin().await;
+            let object = ObjectRef::new("tabletist", "write_shown");
+            for awkward in AWKWARD {
+                for how in ["hand", "bound"] {
+                    admin
+                        .exec_drop(
+                            "INSERT INTO write_shown VALUES (?, ?, 'before')",
+                            (awkward, how),
+                        )
+                        .await
+                        .unwrap();
+                }
+                // The key holds the value too: the shown `WHERE` finds its
+                // row by it.
+                let change = |how: &str| RowChange {
+                    key: vec![("id".into(), text(awkward)), ("how".into(), text(how))],
+                    set: one("body", "text", text("before"), to(awkward)),
+                };
+                let update = Dialect::MySql.update_row(&object, &change("hand")).unwrap();
+                assert!(!update.shown.contains('\0'), "{:?}", update.shown);
+                admin.query_drop(&update.shown).await.unwrap();
+                assert_eq!(admin.affected_rows(), 1, "{:?}", update.shown);
+                let changes = changes_to("write_shown", vec![change("bound")]);
+                let outcome = within(connection.write(&changes, &StopFlag::new())).await;
+                assert!(
+                    matches!(outcome, Ok(WriteOutcome::Written { .. })),
+                    "{awkward:?}: {outcome:?}"
+                );
+            }
+            let stored: Vec<(Vec<u8>, String, Vec<u8>)> = admin
+                .query("SELECT id, how, body FROM write_shown ORDER BY id, how")
+                .await
+                .unwrap();
+            assert_eq!(stored.len(), 2 * AWKWARD.len());
+            for (id, how, body) in stored {
+                assert_eq!(body, id, "{how}: {:?}", String::from_utf8_lossy(&id));
+                assert!(AWKWARD.iter().any(|awkward| awkward.as_bytes() == id));
+            }
+        },
+    )
+    .await;
+}
