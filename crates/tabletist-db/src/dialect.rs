@@ -30,6 +30,33 @@ pub struct RowUpdate {
     /// What the driver sends: for PostgreSQL the shown text, for MySQL and
     /// SQLite the same statement with the values bound.
     pub sql: Sql,
+    /// Where the parts of `shown` stand.
+    pub parts: UpdateParts,
+}
+
+/// Where the parts of a shown `UPDATE` stand, as byte offsets into its
+/// text. The builder notes them as it writes the statement, so what lays
+/// the statement out in lines, or shortens a long value where it is shown,
+/// reads no SQL to find them: a name or a value that holds ` SET ` or a
+/// quote cannot move them.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct UpdateParts {
+    /// Where `SET` begins: the table's name ends a space before it.
+    pub set: usize,
+    /// Where each value's column begins: one for each of `values`.
+    pub columns: Vec<usize>,
+    /// Each value's place: the new ones in the order they are set, then
+    /// the key's.
+    pub values: Vec<std::ops::Range<usize>>,
+}
+
+/// A row's key as a `WHERE`, shown and sent, and where its parts stand in
+/// the shown clause.
+struct KeyClause {
+    shown: String,
+    sent: String,
+    columns: Vec<usize>,
+    values: Vec<std::ops::Range<usize>>,
 }
 
 /// A value as a statement holds it. Decided once, here, so the literal a
@@ -512,42 +539,71 @@ impl Dialect {
         }
     }
 
-    /// ` WHERE "a" = .. AND "b" = ..` for a row's key, shown and sent.
-    fn key_clause(self, key: &[(String, Value)], params: &mut Vec<Value>) -> (String, String) {
-        let mut shown = Vec::with_capacity(key.len());
-        let mut sent = Vec::with_capacity(key.len());
-        for (column, value) in key {
+    /// ` WHERE "a" = .. AND "b" = ..` for a row's key.
+    fn key_clause(self, key: &[(String, Value)], params: &mut Vec<Value>) -> KeyClause {
+        let mut clause = KeyClause {
+            shown: String::from(" WHERE "),
+            sent: String::from(" WHERE "),
+            columns: Vec::with_capacity(key.len()),
+            values: Vec::with_capacity(key.len()),
+        };
+        for (index, (column, value)) in key.iter().enumerate() {
             let operand = self.key_operand(value);
             let column = self.quote_ident(column);
-            shown.push(format!("{column} = {}", self.shown(&operand)));
-            sent.push(format!("{column} = {}", self.sent(&operand, params)));
+            let lead = if index == 0 { "" } else { " AND " };
+            clause.shown.push_str(lead);
+            clause.columns.push(clause.shown.len());
+            let _ = write!(clause.shown, "{column} = ");
+            let literal = self.shown(&operand);
+            let at = clause.shown.len();
+            clause.values.push(at..at + literal.len());
+            clause.shown.push_str(&literal);
+            let sent = self.sent(&operand, params);
+            let _ = write!(clause.sent, "{lead}{column} = {sent}");
         }
-        (
-            format!(" WHERE {}", shown.join(" AND ")),
-            format!(" WHERE {}", sent.join(" AND ")),
-        )
+        clause
     }
 
     /// The `UPDATE` of one row of a save. `Err` names the value that cannot
     /// be sent in its column's form.
     pub fn update_row(self, object: &ObjectRef, row: &RowChange) -> Result<RowUpdate> {
         let mut params = Vec::new();
-        let mut shown = Vec::with_capacity(row.set.len());
-        let mut sent = Vec::with_capacity(row.set.len());
-        for change in &row.set {
+        let mut shown = format!("UPDATE {} SET ", self.qualified(object));
+        let mut sent = shown.clone();
+        let mut parts = UpdateParts {
+            set: shown.len() - "SET ".len(),
+            ..UpdateParts::default()
+        };
+        for (index, change) in row.set.iter().enumerate() {
             let operand = self.new_operand(change)?;
             let column = self.quote_ident(&change.column);
-            shown.push(format!("{column} = {}", self.shown(&operand)));
-            sent.push(format!("{column} = {}", self.sent(&operand, &mut params)));
+            let lead = if index == 0 { "" } else { ", " };
+            shown.push_str(lead);
+            parts.columns.push(shown.len());
+            let _ = write!(shown, "{column} = ");
+            let literal = self.shown(&operand);
+            parts.values.push(shown.len()..shown.len() + literal.len());
+            shown.push_str(&literal);
+            let value = self.sent(&operand, &mut params);
+            let _ = write!(sent, "{lead}{column} = {value}");
         }
-        let (shown_key, sent_key) = self.key_clause(&row.key, &mut params);
-        let head = format!("UPDATE {} SET ", self.qualified(object));
+        let clause = self.key_clause(&row.key, &mut params);
+        let base = shown.len();
+        parts
+            .columns
+            .extend(clause.columns.iter().map(|column| base + column));
+        parts.values.extend(
+            clause
+                .values
+                .iter()
+                .map(|value| base + value.start..base + value.end),
+        );
+        shown.push_str(&clause.shown);
+        sent.push_str(&clause.sent);
         Ok(RowUpdate {
-            shown: format!("{head}{}{shown_key}", shown.join(", ")),
-            sql: Sql {
-                text: format!("{head}{}{sent_key}", sent.join(", ")),
-                params,
-            },
+            shown,
+            sql: Sql { text: sent, params },
+            parts,
         })
     }
 
@@ -558,7 +614,7 @@ impl Dialect {
     /// compares otherwise than its column) could match a whole table.
     pub fn select_row(self, object: &ObjectRef, key: &[(String, Value)], lock: bool) -> Sql {
         let mut params = Vec::new();
-        let (_, clause) = self.key_clause(key, &mut params);
+        let clause = self.key_clause(key, &mut params).sent;
         let lock = if lock && self != Self::Sqlite {
             " FOR UPDATE"
         } else {
@@ -1197,6 +1253,80 @@ mod tests {
             "UPDATE `public`.`books` SET `kind` = ?, `alt_text` = NULL WHERE `id` = ?"
         );
         assert_eq!(update.sql.params, [text("ebook"), Value::Int(2)]);
+    }
+
+    #[test]
+    fn an_update_says_where_its_parts_stand() {
+        // Names and values that hold what the statement is made of: no
+        // reading of the text would find its parts.
+        let row = one(
+            vec![("id", Value::Int(2)), ("code", text("a WHERE b"))],
+            vec![
+                typed("kind", "text", "it's, SET = 'x' WHERE 1"),
+                change("alt_text", "text", NewValue::Null),
+                typed("note", "text", "caf\u{e9} \\ \u{1F600}"),
+            ],
+        );
+        let object = ObjectRef::new("public", "a SET b");
+        for dialect in [Dialect::Postgres, Dialect::MySql, Dialect::Sqlite] {
+            let update = dialect.update_row(&object, &row).unwrap();
+            let (shown, parts) = (&update.shown, &update.parts);
+            assert!(shown[parts.set..].starts_with("SET "), "{dialect:?}");
+            // The table's name ends where ` SET` begins.
+            assert_eq!(
+                &shown[..parts.set - 1],
+                format!("UPDATE {}", dialect.qualified(&object)),
+                "{dialect:?}"
+            );
+            let values: Vec<&str> = parts
+                .values
+                .iter()
+                .map(|range| &shown[range.clone()])
+                .collect();
+            assert_eq!(
+                values,
+                [
+                    dialect.literal("it's, SET = 'x' WHERE 1").as_str(),
+                    "NULL",
+                    dialect.literal("caf\u{e9} \\ \u{1F600}").as_str(),
+                    "2",
+                    dialect.literal("a WHERE b").as_str(),
+                ],
+                "{dialect:?}"
+            );
+            // In the statement's order, the new values before `WHERE` and
+            // the key's after it.
+            assert!(parts.values.is_sorted_by(|a, b| a.end <= b.start));
+            let key = &shown[parts.values[2].end..parts.columns[3]];
+            assert_eq!(key, " WHERE ", "{dialect:?}");
+            // From where its column begins to the value: the name and `=`,
+            // whatever stands between two of them.
+            let leads: Vec<&str> = parts
+                .columns
+                .iter()
+                .zip(&parts.values)
+                .map(|(column, value)| &shown[*column..value.start])
+                .collect();
+            let names = ["kind", "alt_text", "note", "id", "code"];
+            let expected: Vec<String> = names
+                .iter()
+                .map(|name| format!("{} = ", dialect.quote_ident(name)))
+                .collect();
+            assert_eq!(leads, expected, "{dialect:?}");
+        }
+        // SQLite's text around a NUL is one value, its brackets with it.
+        let row = one(
+            vec![("id", Value::Int(2))],
+            vec![typed("note", "text", "a\0b"), typed("kind", "text", "c")],
+        );
+        let update = Dialect::Sqlite.update_row(&object, &row).unwrap();
+        let values: Vec<&str> = update
+            .parts
+            .values
+            .iter()
+            .map(|range| &update.shown[range.clone()])
+            .collect();
+        assert_eq!(values, ["('a' || char(0) || 'b')", "'c'", "2"]);
     }
 
     #[test]

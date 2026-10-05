@@ -35,7 +35,7 @@ pub use catalog::{
     ColumnInfo, ForeignKeyInfo, IndexInfo, MAX_LISTED, ObjectInfo, ObjectKind, ObjectRef, Structure,
 };
 pub use class::{ColumnClass, column_class};
-pub use dialect::{Dialect, RowUpdate, Sql, escape_like, quote_literal};
+pub use dialect::{Dialect, RowUpdate, Sql, UpdateParts, escape_like, quote_literal};
 pub use error::{Error, Result, SshStage};
 pub use query::{Filter, FilterOp, RowPage, RowQuery, Sort, SortDir};
 pub use script::{ScriptOutcome, StatementOutcome, StatementResult, StopFlag};
