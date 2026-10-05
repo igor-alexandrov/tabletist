@@ -18,7 +18,7 @@ use crate::theme::Look;
 use crate::typography::{Text, TextRole};
 use crate::ui::format::{self, Marks};
 use crate::ui::grid;
-use crate::ui::keys::{consume_press, drop_repeats};
+use crate::ui::keys::{consume_press, drop_repeats, take_enter};
 use crate::ui::states::Tone;
 use crate::ui::terminal_dialog;
 use crate::ui::widgets::{self, ButtonSpec};
@@ -173,8 +173,9 @@ pub fn answers(gone: bool) -> &'static [(&'static str, Answer)] {
 /// The keys a question was given in a frame, taken before it is drawn.
 #[derive(Clone, Copy)]
 struct Pressed {
-    /// Enter was pressed. It answers only as Keep mine, with the keyboard
-    /// on that button.
+    /// Enter was pressed, with no modifier. It answers only as Keep mine,
+    /// with the keyboard on that button. An Enter that has a modifier is
+    /// taken with it, and answers nothing.
     enter: bool,
     /// Page Down less Page Up, as often as each was pressed: how far the
     /// lines move, in pages of what is shown of them.
@@ -246,10 +247,11 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
     let early = ctx.input(|input| input.pointer.any_released())
         && ctx.data(|data| data.get_temp::<bool>(went_down)) != Some(true);
     // Taken before anything is drawn: a button that has the keyboard would
-    // read Enter as a press of itself, and Overwrite is one of them. Space
-    // presses a button. What the key answers is for the buttons to say,
-    // where they are made.
-    let enter = ctx.input_mut(|input| consume_press(input, Modifiers::NONE, Key::Enter));
+    // read Enter as a press of itself, and Overwrite is one of them. With a
+    // modifier too, which is no Enter to the question and answers nothing.
+    // Space presses a button. What the key answers is for the buttons to
+    // say, where they are made.
+    let enter = ctx.input_mut(take_enter);
     // A key that is held answers nothing, however long the question has
     // been up. The next row's question has its buttons where the last
     // one's were, with the keyboard still on the one that was pressed, and
@@ -990,7 +992,8 @@ mod tests {
     use crate::typography::TextRole;
     use crate::ui::states::Tone;
     use crate::ui::tests::{
-        click_at, click_dialog, focus_dialog, focused_name, hover, pressable, type_key,
+        click_at, click_dialog, focus_dialog, focused_name, held_with_enter, hover, pressable,
+        type_key,
     };
 
     /// The looks that ask the question: every one of them.
@@ -2164,6 +2167,43 @@ mod tests {
             harness.press(Key::Space, Modifiers::NONE);
             assert!(!asking(&harness), "{said}");
             assert_eq!(writes(&harness), 2, "{said}");
+        }
+    }
+
+    #[test]
+    fn no_enter_with_a_modifier_answers_the_question() {
+        let loaded = || text("user2@example.com");
+        for look in looks() {
+            let said = look.name;
+            let (mut harness, tab, id) = conflict_in(look, Some("eve@example.com"));
+            let untouched = |harness: &Harness| {
+                asking(harness) && writes(harness) == 1 && state(harness, tab, id) == (1, loaded())
+            };
+            // With the keyboard on no button, and then on each of the
+            // three: on Keep mine last, where a plain Enter answers.
+            let names = ["Use server values", "Overwrite", "Keep mine, reload row"];
+            for name in [None].into_iter().chain(names.map(Some)) {
+                if let Some(name) = name {
+                    focus_dialog(&mut harness, name);
+                }
+                for (held, modifiers) in held_with_enter() {
+                    harness.press(Key::Enter, modifiers);
+                    assert!(untouched(&harness), "{said}: {held}+Enter on {name:?}");
+                }
+            }
+            harness.press(Key::Enter, Modifiers::NONE);
+            assert!(!asking(&harness), "{said}");
+            let kept = (1, text("eve@example.com"));
+            assert_eq!(state(&harness, tab, id), kept, "{said}");
+            assert_eq!(writes(&harness), 1, "{said}");
+            // Nor does one discard the changes to a row that is gone.
+            let (mut harness, tab, id) = conflict_in(look, None);
+            focus_dialog(&mut harness, "Discard my changes");
+            for (held, modifiers) in held_with_enter() {
+                harness.press(Key::Enter, modifiers);
+                assert!(asking(&harness), "{said}: {held}+Enter");
+                assert_eq!(state(&harness, tab, id), (1, loaded()), "{said}: {held}");
+            }
         }
     }
 

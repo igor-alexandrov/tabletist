@@ -20,7 +20,7 @@ use crate::theme::{Look, Palette};
 use crate::typography::{Text, TextRole};
 use crate::ui::focus::{self, Ring};
 use crate::ui::format;
-use crate::ui::keys::{consume_press, drop_repeats};
+use crate::ui::keys::{drop_repeats, take_enter};
 use crate::ui::pending_bar::counted;
 use crate::ui::review;
 use crate::ui::states::Tone;
@@ -167,7 +167,8 @@ pub(super) fn keyboard_on(ui: &egui::Ui, buttons: &[ButtonSpec<'_>]) -> Option<u
 /// Asks before pending changes are dropped. Enter never discards: it
 /// answers as the button that has the keyboard where that is Cancel or
 /// Save, saves where Save is offered and the keyboard is on no button, and
-/// answers nothing anywhere else.
+/// answers nothing anywhere else. An Enter with a modifier answers nothing
+/// and presses nothing.
 fn leave(app: &mut App, ctx: &egui::Context) {
     let (look, palette) = (app.look, app.palette);
     let skin = Skin {
@@ -179,10 +180,11 @@ fn leave(app: &mut App, ctx: &egui::Context) {
         return;
     };
     // Taken before anything is drawn: a button that has the keyboard would
-    // read Enter as a press of itself, and Discard is one of them. Space
-    // presses a button. What the key answers is for the buttons to say,
-    // where they are made.
-    let enter = ctx.input_mut(|input| consume_press(input, Modifiers::NONE, Key::Enter));
+    // read Enter as a press of itself, and Discard is one of them. With a
+    // modifier too, which is no Enter to the prompt and answers nothing.
+    // Space presses a button. What the key answers is for the buttons to
+    // say, where they are made.
+    let enter = ctx.input_mut(take_enter);
     let mut actions = Vec::new();
     let top = if look.terminal {
         leave_box(ctx, prompt, skin, enter, &mut actions)
@@ -416,7 +418,8 @@ fn leave_box(
 /// The keys a confirmation was given in a frame, taken before it is drawn.
 #[derive(Clone, Copy)]
 struct Asked {
-    /// Enter was pressed.
+    /// Enter was pressed, with no modifier: an Enter that has one is taken
+    /// with it, and is no key of the confirmation's.
     enter: bool,
     /// Page Down less Page Up, as often as each was pressed: how far the
     /// list of statements moves, in pages of what it shows.
@@ -494,8 +497,9 @@ fn confirm_write(app: &mut App, ctx: &egui::Context) {
         .then(|| pointed_at(ctx, prompt, shown, skin))
         .flatten();
     // Taken before anything is drawn, as the other prompt takes it: the
-    // button that sends is pressed, never reached by a stray Enter.
-    let enter = ctx.input_mut(|input| consume_press(input, Modifiers::NONE, Key::Enter));
+    // button that sends is pressed, never reached by a stray Enter, with a
+    // modifier or without.
+    let enter = ctx.input_mut(take_enter);
     // Nor by what a held Space repeats, which a button that has the
     // keyboard reads as a press of itself: the key that answered the
     // dialog before this one may still be down.
@@ -968,7 +972,9 @@ mod tests {
     use crate::backend::Command;
     use crate::model::{Action, CellPos, ConnTabId, Dialog, EditStart, TabId};
     use crate::testing::Harness;
-    use crate::ui::tests::{click_dialog, focus_dialog, pressable as buttons};
+    use crate::theme::Look;
+    use crate::ui::tests::{click_dialog, focus_dialog, held_with_enter, pressable as buttons};
+    use egui::{Key, Modifiers};
 
     /// Makes `text` the pending value of column `col` in row `row`, as an
     /// editor that was typed into and left does.
@@ -1108,6 +1114,141 @@ mod tests {
         harness.press(egui::Key::Enter, egui::Modifiers::NONE);
         assert!(matches!(harness.app.dialog, Some(Dialog::Leave(_))));
         assert_eq!(pending(&harness, (tab, id)), 1);
+    }
+
+    /// The fixture's table in `look` with one change that can be saved and
+    /// its tab asked to close: the Leave prompt is up, the keyboard on none
+    /// of its buttons.
+    fn leaving(look: Look) -> (Harness, (ConnTabId, TabId)) {
+        let mut harness = Harness::new();
+        harness.set_look(look);
+        let (tab, id) = harness.editable();
+        change(&mut harness, (tab, id), 1, 1, "bob@example.com");
+        harness.app.apply(Action::CloseTab { tab, id });
+        harness.finish_animations();
+        assert!(
+            matches!(harness.app.dialog, Some(Dialog::Leave(_))),
+            "{}",
+            look.name
+        );
+        (harness, (tab, id))
+    }
+
+    /// The fixture's table in `look` on a production connection, with one
+    /// change and its save asked for: the confirmation is up, opened by
+    /// Save itself.
+    fn confirming(look: Look) -> (Harness, (ConnTabId, TabId)) {
+        let mut harness = Harness::new();
+        harness.set_look(look);
+        let (tab, id) = harness.editable();
+        harness.app.workspace_mut(tab).unwrap().environment = crate::env::Environment::Production;
+        change(&mut harness, (tab, id), 1, 1, "bob@example.com");
+        harness.app.apply(Action::WriteEdits { tab, id });
+        harness.finish_animations();
+        assert!(
+            matches!(harness.app.dialog, Some(Dialog::ConfirmWrite(_))),
+            "{}",
+            look.name
+        );
+        (harness, (tab, id))
+    }
+
+    /// Whether the table's tab is open with its one change pending and no
+    /// save sent or running.
+    fn kept(harness: &Harness, (tab, id): (ConnTabId, TabId)) -> bool {
+        let workspace = harness.app.workspace(tab);
+        let object = workspace.and_then(|workspace| workspace.object_tab(id));
+        writes(harness) == 0
+            && object.is_some_and(|object| {
+                object.edits.cells.len() == 1 && object.edits.saving.is_none()
+            })
+    }
+
+    /// Presses Enter with each of what makes it no plain Enter, the
+    /// keyboard where it is (`on`): `untouched` holds after every one.
+    fn modified_enters(harness: &mut Harness, untouched: impl Fn(&Harness) -> bool, on: &str) {
+        for (held, modifiers) in held_with_enter() {
+            harness.press(Key::Enter, modifiers);
+            assert!(untouched(harness), "{held}+Enter on {on}");
+        }
+    }
+
+    #[test]
+    fn no_enter_with_a_modifier_answers_the_leave_prompt() {
+        for look in Look::ALL {
+            let (mut harness, at) = leaving(look);
+            let untouched = |harness: &Harness| {
+                matches!(harness.app.dialog, Some(Dialog::Leave(_))) && kept(harness, at)
+            };
+            // With the keyboard on no button, where a plain Enter saves in
+            // the sheet, and then on each of the three.
+            modified_enters(
+                &mut harness,
+                untouched,
+                &format!("{}: no button", look.name),
+            );
+            let names = if look.terminal {
+                ["Write", "Discard", "Stay"]
+            } else {
+                ["Save", "Discard", "Cancel"]
+            };
+            for name in names {
+                focus_dialog(&mut harness, name);
+                modified_enters(&mut harness, untouched, &format!("{}: {name}", look.name));
+            }
+            // The plain Enter is what it was: nothing on Discard, and the
+            // button's own answer on the one that stays.
+            focus_dialog(&mut harness, "Discard");
+            harness.press(Key::Enter, Modifiers::NONE);
+            assert!(untouched(&harness), "{}", look.name);
+            focus_dialog(&mut harness, names[2]);
+            harness.press(Key::Enter, Modifiers::NONE);
+            assert!(harness.app.dialog.is_none(), "{}", look.name);
+            assert!(kept(&harness, at), "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn no_enter_with_a_modifier_answers_the_confirmation() {
+        for look in Look::ALL {
+            let (mut harness, at) = confirming(look);
+            let untouched = |harness: &Harness| {
+                matches!(harness.app.dialog, Some(Dialog::ConfirmWrite(_)))
+                    && kept(harness, at)
+                    && harness.copied.is_none()
+            };
+            let names: &[&str] = if look.terminal {
+                // The field holds the word: a plain Enter would confirm,
+                // from the field and from the button that sends.
+                harness.frame(vec![egui::Event::Text("write".into())]);
+                &["Cancel", "Save to production"]
+            } else {
+                &["Copy SQL", "Save to production", "Cancel"]
+            };
+            // With the keyboard where the confirmation puts it (the box's
+            // field, no button of the sheet), and then on each button.
+            modified_enters(
+                &mut harness,
+                untouched,
+                &format!("{}: no button", look.name),
+            );
+            for name in names {
+                focus_dialog(&mut harness, name);
+                modified_enters(&mut harness, untouched, &format!("{}: {name}", look.name));
+            }
+            // The plain Enter is what it was, with the keyboard where the
+            // last of them left it: it confirms in the box, whose field
+            // holds the word, and cancels on the sheet's Cancel.
+            harness.press(Key::Enter, Modifiers::NONE);
+            assert!(harness.app.dialog.is_none(), "{}", look.name);
+            assert_eq!(
+                writes(&harness),
+                usize::from(look.terminal),
+                "{}",
+                look.name
+            );
+            assert_eq!(pending(&harness, at), 1, "{}", look.name);
+        }
     }
 
     /// Makes the confirmation look as if the answer that opened it was

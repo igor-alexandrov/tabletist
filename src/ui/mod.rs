@@ -16048,6 +16048,21 @@ mod tests {
         harness.settle();
     }
 
+    /// What is held with an Enter that is no plain Enter, as the platforms
+    /// report it: Ctrl alone and as the command key, the command key by
+    /// itself, Cmd with and without it, Shift and Alt.
+    pub(super) fn held_with_enter() -> [(&'static str, Modifiers); 7] {
+        [
+            ("Ctrl", Modifiers::CTRL),
+            ("Ctrl as Mod", Modifiers::CTRL | Modifiers::COMMAND),
+            ("Mod", Modifiers::COMMAND),
+            ("Cmd", Modifiers::MAC_CMD | Modifiers::COMMAND),
+            ("Cmd alone", Modifiers::MAC_CMD),
+            ("Shift", Modifiers::SHIFT),
+            ("Alt", Modifiers::ALT),
+        ]
+    }
+
     /// The fixture's table with one change that can be saved, and its tab
     /// asked to close: the Leave prompt is up, with nothing focused in it.
     fn leaving_one_change(look: Look) -> (Harness, ConnTabId, TabId) {

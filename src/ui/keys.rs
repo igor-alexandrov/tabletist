@@ -597,6 +597,30 @@ pub(crate) fn consume_press(input: &mut egui::InputState, modifiers: Modifiers, 
     fresh
 }
 
+/// Takes every Enter that went down this frame out of it, whatever is held
+/// with it, and says whether one of them was a plain Enter: pressed, not
+/// repeated, with nothing held. For a prompt whose buttons Enter must not
+/// press: a button that has the keyboard reads any Enter left in the frame
+/// as a press of itself, with Ctrl, Cmd, Shift or Alt held as without. An
+/// Enter with one of them held is no plain Enter either: it answers nothing.
+pub(crate) fn take_enter(input: &mut egui::InputState) -> bool {
+    let mut plain = false;
+    input.events.retain(|event| match event {
+        egui::Event::Key {
+            key: Key::Enter,
+            modifiers: held,
+            pressed: true,
+            repeat,
+            ..
+        } => {
+            plain |= !repeat && held.is_none();
+            false
+        }
+        _ => true,
+    });
+    plain
+}
+
 /// Takes what a held `key` repeats out of the frame, whatever is held with
 /// it. For a question whose buttons must not be pressed by a key that was
 /// down before they came up: a button that has the keyboard reads every
@@ -1552,6 +1576,51 @@ mod tests {
         assert!(!is_press(&press(Modifiers::NONE), Modifiers::NONE, Key::O));
         let up = crate::testing::release(Key::I, Modifiers::NONE);
         assert!(!is_press(&up, Modifiers::NONE, Key::I));
+    }
+
+    #[test]
+    fn every_enter_is_taken_and_only_a_plain_one_counts() {
+        let enter = |held| crate::testing::key(Key::Enter, held);
+        let taken = |events: Vec<egui::Event>| {
+            let mut input = egui::InputState::default();
+            input.events = events;
+            (take_enter(&mut input), input.events)
+        };
+        assert_eq!(taken(vec![enter(Modifiers::NONE)]), (true, Vec::new()));
+        // With anything held it is taken all the same, and is no Enter.
+        let cmd = Modifiers::MAC_CMD | Modifiers::COMMAND;
+        for held in [
+            Modifiers::CTRL,
+            Modifiers::CTRL | Modifiers::COMMAND,
+            Modifiers::COMMAND,
+            cmd,
+            Modifiers::MAC_CMD,
+            Modifiers::SHIFT,
+            Modifiers::ALT,
+            cmd | Modifiers::SHIFT,
+        ] {
+            assert_eq!(taken(vec![enter(held)]), (false, Vec::new()), "{held:?}");
+        }
+        // So is what a held Enter repeats.
+        let repeated = egui::Event::Key {
+            key: Key::Enter,
+            physical_key: None,
+            pressed: true,
+            repeat: true,
+            modifiers: Modifiers::NONE,
+        };
+        assert_eq!(taken(vec![repeated]), (false, Vec::new()));
+        // A plain one counts beside the others. Another key stays, and so
+        // does Enter coming up.
+        let space = crate::testing::key(Key::Space, Modifiers::CTRL);
+        let up = crate::testing::release(Key::Enter, Modifiers::NONE);
+        let events = vec![
+            enter(Modifiers::CTRL),
+            space.clone(),
+            enter(Modifiers::NONE),
+            up.clone(),
+        ];
+        assert_eq!(taken(events), (true, vec![space, up]));
     }
 
     #[test]
