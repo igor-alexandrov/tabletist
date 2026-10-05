@@ -13,6 +13,7 @@ pub mod known_hosts;
 pub mod macos;
 pub mod model;
 pub mod paths;
+pub mod review;
 pub mod secrets;
 pub mod settings;
 #[cfg(all(test, feature = "shots"))]
