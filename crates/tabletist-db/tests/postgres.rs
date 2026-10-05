@@ -1771,6 +1771,115 @@ async fn a_save_writes_every_kind_of_value_and_reads_the_row_back() {
     .await;
 }
 
+/// What the app's check of a typed value says of a numeric before it is
+/// sent (`decimal` in the app's `src/edit.rs`, whose tests name the same
+/// values), held to the server: a value it lets pass is stored as typed,
+/// one it refuses for its rounding is stored as the check says it would be,
+/// and one it refuses for its size the server refuses too.
+#[tokio::test]
+async fn a_numeric_is_rounded_and_held_as_the_check_before_a_save_says() {
+    /// What the server does with a typed value.
+    enum Does {
+        Stores(&'static str),
+        Refuses,
+    }
+    use Does::{Refuses, Stores};
+    let Some(connection) = connect_as(Access::Writable).await else {
+        return;
+    };
+    let version: String = admin()
+        .await
+        .query_one("SHOW server_version_num", &[])
+        .await
+        .unwrap()
+        .get(0);
+    // A scale below zero, and one past the digits, came with PostgreSQL 15.
+    let wide = version.parse::<u32>().unwrap() >= 150_000;
+    if !wide {
+        eprintln!("skipped: numeric(5,-2) and numeric(3,5) need PostgreSQL 15 (this is {version})");
+    }
+    let (hundreds, small) = if wide {
+        ("numeric(5,-2)", "numeric(3,5)")
+    } else {
+        ("numeric", "numeric")
+    };
+    let create = format!(
+        "CREATE TABLE write_numeric (
+             id integer PRIMARY KEY,
+             plain numeric(10,2),
+             hundreds {hundreds},
+             small {small}
+         );
+         INSERT INTO write_numeric VALUES (1, 0, 0, 0)"
+    );
+    let mut cases = vec![
+        ("plain", "numeric(10,2)", "12.5", Stores("12.50")),
+        ("plain", "numeric(10,2)", "12.505", Stores("12.51")),
+        ("plain", "numeric(10,2)", "-9.999", Stores("-10.00")),
+        (
+            "plain",
+            "numeric(10,2)",
+            "99999999.99",
+            Stores("99999999.99"),
+        ),
+        ("plain", "numeric(10,2)", "100000000", Refuses),
+    ];
+    if wide {
+        cases.extend([
+            ("hundreds", "numeric(5,-2)", "12300", Stores("12300")),
+            ("hundreds", "numeric(5,-2)", "12345", Stores("12300")),
+            ("hundreds", "numeric(5,-2)", "12350", Stores("12400")),
+            ("hundreds", "numeric(5,-2)", "-12345", Stores("-12300")),
+            ("hundreds", "numeric(5,-2)", "49", Stores("0")),
+            ("hundreds", "numeric(5,-2)", "50", Stores("100")),
+            ("hundreds", "numeric(5,-2)", "9999900", Stores("9999900")),
+            // The check refuses these two for their rounding, with what
+            // they round to: the server rounds them to it as well, and
+            // then has no room for it.
+            ("hundreds", "numeric(5,-2)", "9999999", Refuses),
+            ("hundreds", "numeric(5,-2)", "99999950", Refuses),
+            ("hundreds", "numeric(5,-2)", "10000000", Refuses),
+            ("small", "numeric(3,5)", "0.00999", Stores("0.00999")),
+            ("small", "numeric(3,5)", "-0.00999", Stores("-0.00999")),
+            ("small", "numeric(3,5)", "0.001234", Stores("0.00123")),
+            ("small", "numeric(3,5)", "0.01234", Refuses),
+            ("small", "numeric(3,5)", "0.01000", Refuses),
+            // Rounded to 0.01000 first, as the check says, and refused.
+            ("small", "numeric(3,5)", "0.009995", Refuses),
+        ]);
+    }
+    on_its_own_tables(&drop_table("write_numeric"), &create, async move {
+        for (column, type_name, typed, does) in cases {
+            let (columns, before) = row_of(&connection, "write_numeric", 1).await;
+            let place = columns.iter().position(|name| name == column).unwrap();
+            let outcome = save(&connection, "write_numeric", 1, &[(column, type_name, to(typed))]).await;
+            let (_, after) = row_of(&connection, "write_numeric", 1).await;
+            match does {
+                Stores(stored) => {
+                    assert!(
+                        matches!(outcome, Ok(WriteOutcome::Written { .. })),
+                        "{type_name} {typed}: {outcome:?}"
+                    );
+                    assert_eq!(after[place], text(stored), "{type_name} {typed}");
+                }
+                Refuses => {
+                    // Numeric value out of range: the row's own failure,
+                    // and nothing is written.
+                    let Ok(WriteOutcome::Failed { row: 0, error }) = &outcome else {
+                        panic!("{type_name} {typed}: {outcome:?}");
+                    };
+                    assert!(
+                        matches!(error, Error::Query { code, .. } if code.as_deref() == Some("22003")),
+                        "{type_name} {typed}: {error:?}"
+                    );
+                    assert_eq!(after, before, "{type_name} {typed}");
+                }
+            }
+        }
+    })
+    .await;
+}
+
 #[tokio::test]
 async fn a_row_changed_by_someone_else_is_a_conflict_and_nothing_is_written() {
     let Some(connection) = connect_as(Access::Writable).await else {

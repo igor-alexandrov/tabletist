@@ -229,11 +229,16 @@ pub enum Problem {
     OutOfRange { min: i128, max: i128 },
     /// Not a number.
     Number,
-    /// More decimals than the type keeps: `stored` is what the database
+    /// More decimals than the type keeps, or, for a scale below zero,
+    /// digits where the type keeps zeros: `stored` is what the database
     /// would have rounded it to.
-    Decimals { scale: u32, stored: String },
+    Decimals { scale: i32, stored: String },
     /// More digits before the point than the type holds: at most `whole`.
     Digits { whole: u32 },
+    /// A type with no fewer decimals than digits holds no whole digit, and
+    /// only zeros in its first decimals: numbers nearer to zero than
+    /// `limit`, written out (`0.01`).
+    Under { limit: String },
     /// More digits than the database keeps of a number: `stored` is the
     /// number it would have kept instead.
     Inexact { stored: String },
@@ -388,44 +393,70 @@ fn inexact(typed: &str) -> Option<Problem> {
     (stored != written).then_some(Problem::Inexact { stored })
 }
 
-/// A plain decimal number within the digits and the scale its type states.
-/// No exponent: the databases take one, but what it would be stored as is
-/// not what the user sees typed.
-fn decimal(typed: &str, precision: Option<u32>, scale: Option<u32>) -> Option<Problem> {
+/// A plain decimal number its type keeps as it is typed, by the rule the
+/// databases have for the digits and the scale a type states: the number
+/// is rounded to the scale, and what is left is under ten to the power of
+/// the digits less the scale. No exponent: the databases take one, but
+/// what it would be stored as is not what the user sees typed.
+fn decimal(typed: &str, precision: Option<u32>, scale: Option<i32>) -> Option<Problem> {
     let (negative, whole, fraction) = parts(typed);
     let all_digits = |part: &str| part.bytes().all(|byte| byte.is_ascii_digit());
     if (whole.is_empty() && fraction.is_empty()) || !all_digits(whole) || !all_digits(fraction) {
         return Some(Problem::Number);
     }
     let scale = scale?;
-    let kept = fraction.trim_end_matches('0');
-    if kept.len() > scale as usize {
+    // The places after the point that are kept, and the places before it
+    // that a scale below zero gives up for zeros.
+    let decimals = scale.max(0).unsigned_abs() as usize;
+    let zeros = scale.min(0).unsigned_abs() as usize;
+    let whole = whole.trim_start_matches('0');
+    let given_up = &whole[whole.len().saturating_sub(zeros)..];
+    let rounds = if zeros > 0 {
+        !fraction.trim_end_matches('0').is_empty() || !given_up.trim_end_matches('0').is_empty()
+    } else {
+        fraction.trim_end_matches('0').len() > decimals
+    };
+    if rounds {
         return Some(Problem::Decimals {
             scale,
-            stored: rounded(negative, whole, fraction, scale as usize),
+            stored: rounded(negative, whole, fraction, scale),
         });
     }
-    let whole_digits = whole.trim_start_matches('0').len() as u32;
-    match precision {
-        Some(precision) if whole_digits > precision.saturating_sub(scale) => {
-            Some(Problem::Digits {
-                whole: precision.saturating_sub(scale),
-            })
-        }
-        _ => None,
+    // Nothing is rounded: the number as typed is what has to fit.
+    let room = i64::from(precision?) - i64::from(scale);
+    if room > 0 {
+        let held = u32::try_from(room).unwrap_or(u32::MAX);
+        return (whole.len() as u64 > u64::from(held)).then_some(Problem::Digits { whole: held });
     }
+    // More decimals than digits: nothing before the point, and zeros in
+    // the decimals the digits do not reach.
+    let leading = usize::try_from(-room).unwrap_or(usize::MAX);
+    let reached = fraction.bytes().take(leading).all(|byte| byte == b'0');
+    (!whole.is_empty() || !reached).then(|| Problem::Under {
+        limit: match leading {
+            0 => "1".to_owned(),
+            leading => format!("0.{}1", "0".repeat(leading - 1)),
+        },
+    })
 }
 
 /// `whole.fraction` rounded half away from zero to `scale` decimals, as the
-/// databases round a decimal. `fraction` is longer than `scale`.
-fn rounded(negative: bool, whole: &str, fraction: &str, scale: usize) -> String {
-    let whole = if whole.is_empty() { "0" } else { whole };
-    let mut digits: Vec<u8> = whole
+/// databases round a decimal; below zero, to that many zeros before the
+/// point. Something is rounded away: `fraction` is longer than a `scale`
+/// from zero up.
+fn rounded(negative: bool, whole: &str, fraction: &str, scale: i32) -> String {
+    let decimals = scale.max(0).unsigned_abs() as usize;
+    let zeros = scale.min(0).unsigned_abs() as usize;
+    // Zeros ahead, so that a digit stands before the ones given up.
+    let whole = format!("{whole:0>width$}", width = zeros + 1);
+    let kept = whole.len() - zeros + decimals;
+    let mut places = whole
         .bytes()
-        .chain(fraction.bytes().take(scale))
-        .map(|byte| byte - b'0')
-        .collect();
-    if fraction.as_bytes()[scale] >= b'5' {
+        .chain(fraction.bytes())
+        .map(|byte| byte - b'0');
+    let mut digits: Vec<u8> = places.by_ref().take(kept).collect();
+    // The first digit left out decides: half and over goes away from zero.
+    if places.next().is_some_and(|digit| digit >= 5) {
         let mut place = digits.len();
         loop {
             if place == 0 {
@@ -443,19 +474,23 @@ fn rounded(negative: bool, whole: &str, fraction: &str, scale: usize) -> String 
     }
     // As a number is written: no zeros ahead of it but the one before the
     // point, and no sign on zero.
-    while digits.len() > scale + 1 && digits[0] == 0 {
+    while digits.len() > decimals + 1 && digits[0] == 0 {
         digits.remove(0);
     }
-    let point = digits.len() - scale;
-    let mut text = String::with_capacity(digits.len() + 2);
-    if negative && digits.iter().any(|&digit| digit != 0) {
+    let nothing = digits.iter().all(|&digit| digit == 0);
+    let point = digits.len().saturating_sub(decimals);
+    let mut text = String::with_capacity(digits.len() + zeros + 2);
+    if negative && !nothing {
         text.push('-');
     }
     for (place, digit) in digits.iter().enumerate() {
-        if place == point && scale > 0 {
+        if place == point && decimals > 0 {
             text.push('.');
         }
         text.push(char::from(b'0' + digit));
+    }
+    if !nothing {
+        text.extend(std::iter::repeat_n('0', zeros));
     }
     text
 }
@@ -1253,10 +1288,142 @@ mod tests {
             })
         );
         assert_eq!(pg("123456789.5"), Some(Problem::Digits { whole: 8 }));
+        assert_eq!(pg("12345678.5"), None);
+        assert_eq!(pg("-99999999.99"), None);
+        assert_eq!(pg("100000000"), Some(Problem::Digits { whole: 8 }));
         assert_eq!(pg("1e3"), Some(Problem::Number));
         assert_eq!(pg("twelve"), Some(Problem::Number));
         // Without stated digits, any number.
         assert_eq!(check(Dialect::Postgres, &typed("numeric"), "12.505"), None);
+    }
+
+    /// PostgreSQL rounds a numeric to its scale, to tens or hundreds for a
+    /// scale below zero, and then holds what is left under ten to the
+    /// power of the digits less the scale.
+    #[test]
+    fn a_scale_below_zero_rounds_whole_digits_and_holds_more_of_them() {
+        let pg = |text: &str| check(Dialect::Postgres, &typed("numeric(5,-2)"), text);
+        let stored = |stored: &str| {
+            Some(Problem::Decimals {
+                scale: -2,
+                stored: stored.into(),
+            })
+        };
+        for kept in ["12300", "-12300", "0", "100", "12300.00", "0012300", "+500"] {
+            assert_eq!(pg(kept), None, "{kept}");
+        }
+        // Never rounded silently: what would be stored is said.
+        assert_eq!(pg("12345"), stored("12300"));
+        assert_eq!(pg("12350"), stored("12400"));
+        assert_eq!(pg("-12345"), stored("-12300"));
+        assert_eq!(pg("-12350"), stored("-12400"));
+        assert_eq!(pg("12300.5"), stored("12300"));
+        assert_eq!(pg("12349.99"), stored("12300"));
+        // Under one hundred there is a hundred or nothing, and no sign on
+        // nothing.
+        assert_eq!(pg("49"), stored("0"));
+        assert_eq!(pg("-49"), stored("0"));
+        assert_eq!(pg("50"), stored("100"));
+        assert_eq!(pg("0.5"), stored("0"));
+        assert_eq!(pg("99950"), stored("100000"));
+        // Five digits and two places for zeros: seven before the point.
+        assert_eq!(pg("9999900"), None);
+        assert_eq!(pg("-9999900"), None);
+        assert_eq!(pg("10000000"), Some(Problem::Digits { whole: 7 }));
+        assert_eq!(pg("-10000000"), Some(Problem::Digits { whole: 7 }));
+        // Refused for its rounding first, which already says a number of
+        // eight digits: typed as that, it is refused for them.
+        assert_eq!(pg("9999999"), stored("10000000"));
+        assert_eq!(pg("99999950"), stored("100000000"));
+        assert_eq!(pg("1e3"), Some(Problem::Number));
+        // The scale is PostgreSQL's alone: no such name comes from MySQL,
+        // and SQLite holds a number to nothing its type states.
+        assert_eq!(
+            check(Dialect::MySql, &typed("decimal(5,-2)"), "12345"),
+            None
+        );
+        assert_eq!(
+            check(Dialect::Sqlite, &typed("NUMERIC(5,-2)"), "12345"),
+            None
+        );
+    }
+
+    #[test]
+    fn a_scale_past_the_digits_holds_only_small_numbers() {
+        let pg = |text: &str| check(Dialect::Postgres, &typed("numeric(3,5)"), text);
+        let under = || {
+            Some(Problem::Under {
+                limit: "0.01".into(),
+            })
+        };
+        for kept in [
+            "0.00999",
+            "-0.00999",
+            "0",
+            "0.0",
+            ".00123",
+            "0.001",
+            "000.00500",
+            "0.0012300",
+        ] {
+            assert_eq!(pg(kept), None, "{kept}");
+        }
+        // No whole digit, and the first two decimals are zeros.
+        assert_eq!(pg("0.01234"), under());
+        assert_eq!(pg("0.01"), under());
+        assert_eq!(pg("-0.01"), under());
+        assert_eq!(pg("0.1"), under());
+        assert_eq!(pg("1"), under());
+        assert_eq!(pg("12.5"), under());
+        // Rounded first, and what it would round to is no number the type
+        // holds either.
+        assert_eq!(
+            pg("0.009995"),
+            Some(Problem::Decimals {
+                scale: 5,
+                stored: "0.01000".into()
+            })
+        );
+        assert_eq!(pg("0.01000"), under());
+        assert_eq!(
+            pg("0.001234"),
+            Some(Problem::Decimals {
+                scale: 5,
+                stored: "0.00123".into()
+            })
+        );
+        // As many decimals as digits: anything under one.
+        let unit = |text: &str| check(Dialect::Postgres, &typed("numeric(2,2)"), text);
+        assert_eq!(unit("0.99"), None);
+        assert_eq!(unit("-.99"), None);
+        assert_eq!(unit("1"), Some(Problem::Under { limit: "1".into() }));
+        assert_eq!(unit("1.5"), Some(Problem::Under { limit: "1".into() }));
+        // MySQL's scale is never past its digits, and can equal them.
+        let my = |text: &str| check(Dialect::MySql, &typed("decimal(2,2)"), text);
+        assert_eq!(my("0.99"), None);
+        assert_eq!(my("1.00"), Some(Problem::Under { limit: "1".into() }));
+    }
+
+    #[test]
+    fn a_scale_of_zero_rounds_to_a_whole_number() {
+        let pg = |text: &str| check(Dialect::Postgres, &typed("numeric(5)"), text);
+        assert_eq!(pg("12345"), None);
+        assert_eq!(pg("12.0"), None);
+        assert_eq!(
+            pg("12.5"),
+            Some(Problem::Decimals {
+                scale: 0,
+                stored: "13".into()
+            })
+        );
+        assert_eq!(
+            pg("-0.4"),
+            Some(Problem::Decimals {
+                scale: 0,
+                stored: "0".into()
+            })
+        );
+        assert_eq!(pg("123456"), Some(Problem::Digits { whole: 5 }));
     }
 
     #[test]

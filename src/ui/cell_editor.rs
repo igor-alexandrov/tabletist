@@ -638,11 +638,25 @@ pub fn problem_text(
         }
         Problem::Number => format!("{type_name} {}", say("expects a number")),
         Problem::Decimals { scale, stored } => {
-            let limit = format!(
-                "{} {}.",
-                say("Up to"),
-                counted(*scale, "decimal", "decimals")
-            );
+            // What the type keeps: so many decimals, none, or, for a scale
+            // below zero, zeros in the last places before the point.
+            let limit = match (u32::try_from(*scale), scale) {
+                (Ok(0), _) => format!("{}.", say("No decimals")),
+                (Ok(decimals), _) => format!(
+                    "{} {}.",
+                    say("Up to"),
+                    counted(decimals, "decimal", "decimals")
+                ),
+                (Err(_), -1) => format!("{}.", say("Whole tens only")),
+                (Err(_), -2) => format!("{}.", say("Whole hundreds only")),
+                (Err(_), -3) => format!("{}.", say("Whole thousands only")),
+                (Err(_), _) => format!(
+                    "{} 1{} {}.",
+                    say("Whole multiples of"),
+                    "0".repeat(scale.unsigned_abs() as usize),
+                    say("only")
+                ),
+            };
             match typed {
                 Some(_) => format!("{limit} {}.", stored_as(stored)),
                 None => limit,
@@ -654,6 +668,9 @@ pub fn problem_text(
             counted(*whole, "digit", "digits"),
             say("before the point")
         ),
+        Problem::Under { limit } => {
+            format!("{type_name} {} {limit}", say("holds values under"))
+        }
         Problem::Inexact { stored } => stored_as(stored),
         Problem::Boolean => format!("{type_name} {}", say("expects true or false")),
         Problem::NotOneOf(allowed) => {
@@ -795,6 +812,54 @@ mod tests {
             stored: "0.3".into(),
         };
         assert_eq!(say(&one, None), "Up to 1 decimal.");
+        // A scale of zero keeps none, and one below zero keeps zeros in
+        // the places before the point.
+        let none = Problem::Decimals {
+            scale: 0,
+            stored: "13".into(),
+        };
+        assert_eq!(
+            say(&none, Some("12.5")),
+            "No decimals. 12.5 would be stored as 13."
+        );
+        assert_eq!(say(&none, None), "No decimals.");
+        let rounds = |scale: i32, typed: &str, stored: &str| {
+            let problem = Problem::Decimals {
+                scale,
+                stored: stored.into(),
+            };
+            say(&problem, Some(typed))
+        };
+        assert_eq!(
+            rounds(-1, "12345", "12350"),
+            "Whole tens only. 12345 would be stored as 12350."
+        );
+        assert_eq!(
+            rounds(-2, "12345", "12300"),
+            "Whole hundreds only. 12345 would be stored as 12300."
+        );
+        assert_eq!(
+            rounds(-3, "12345", "12000"),
+            "Whole thousands only. 12345 would be stored as 12000."
+        );
+        assert_eq!(
+            rounds(-4, "12345", "10000"),
+            "Whole multiples of 10000 only. 12345 would be stored as 10000."
+        );
+        let hundreds = Problem::Decimals {
+            scale: -2,
+            stored: "12300".into(),
+        };
+        assert_eq!(say(&hundreds, None), "Whole hundreds only.");
+        assert_eq!(
+            say(
+                &Problem::Under {
+                    limit: "0.01".into()
+                },
+                Some("0.01234")
+            ),
+            "int8 holds values under 0.01"
+        );
         assert_eq!(
             say(&Problem::Digits { whole: 8 }, None),
             "At most 8 digits before the point"

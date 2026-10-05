@@ -12,10 +12,13 @@ pub enum ColumnClass {
         min: i128,
         max: i128,
     },
-    /// Exact numbers, with the digits and the scale the type states.
+    /// Exact numbers, with the digits and the scale the type states. A
+    /// number is rounded to `scale` places after the point, and to tens or
+    /// hundreds by a scale below zero, which PostgreSQL alone takes; what
+    /// is left is under ten to the power of `precision - scale`.
     Decimal {
         precision: Option<u32>,
-        scale: Option<u32>,
+        scale: Option<i32>,
     },
     Float,
     Boolean,
@@ -41,10 +44,10 @@ pub fn column_class(dialect: Dialect, type_name: &str) -> ColumnClass {
     }
 }
 
-/// The numbers in a type's parentheses: `numeric(14,2)` gives `[14, 2]`.
-/// None of them when one is not a whole number from zero up, as the scale
-/// of PostgreSQL's `numeric(5,-2)` is not: the others would mislead alone.
-fn arguments(name: &str) -> Vec<u32> {
+/// The numbers in a type's parentheses: `numeric(14,2)` gives `[14, 2]`,
+/// and PostgreSQL's `numeric(5,-2)` gives `[5, -2]`. None of them when one
+/// is not a whole number: the others would mislead alone.
+fn arguments(name: &str) -> Vec<i32> {
     let Some((_, rest)) = name.split_once('(') else {
         return Vec::new();
     };
@@ -55,6 +58,12 @@ fn arguments(name: &str) -> Vec<u32> {
         .map(|argument| argument.trim().parse().ok())
         .collect::<Option<_>>()
         .unwrap_or_default()
+}
+
+/// The length in a type's parentheses: `varchar(255)` gives 255.
+fn length(name: &str) -> Option<u32> {
+    let first = arguments(name).first().copied()?;
+    u32::try_from(first).ok()
 }
 
 /// The type's name without its parentheses and what follows them.
@@ -74,12 +83,31 @@ fn unsigned(bytes: u32) -> ColumnClass {
     }
 }
 
+/// The most digits PostgreSQL takes for a numeric, and the furthest scale
+/// either side of zero. MySQL's own limits are well inside them.
+const MAX_DIGITS: i32 = 1000;
+
 fn decimal(name: &str) -> ColumnClass {
+    let unstated = ColumnClass::Decimal {
+        precision: None,
+        scale: None,
+    };
     let arguments = arguments(name);
-    ColumnClass::Decimal {
-        precision: arguments.first().copied(),
-        // Digits without a scale: none after the point.
-        scale: arguments.get(1).copied().or(arguments.first().map(|_| 0)),
+    let Some(&digits) = arguments.first() else {
+        return unstated;
+    };
+    // Digits without a scale: none after the point.
+    let scale = arguments.get(1).copied().unwrap_or(0);
+    // Past the limits it is no name a database gives, and nothing to hold
+    // a value to.
+    match u32::try_from(digits) {
+        Ok(precision) if (1..=MAX_DIGITS).contains(&digits) && scale.abs() <= MAX_DIGITS => {
+            ColumnClass::Decimal {
+                precision: Some(precision),
+                scale: Some(scale),
+            }
+        }
+        _ => unstated,
     }
 }
 
@@ -98,7 +126,7 @@ fn postgres(name: &str) -> ColumnClass {
         "json" | "jsonb" => ColumnClass::Json,
         "text" | "bpchar" => ColumnClass::Text { max_chars: None },
         "character varying" | "character" => ColumnClass::Text {
-            max_chars: arguments(name).first().copied(),
+            max_chars: length(name),
         },
         "bytea" => ColumnClass::Binary,
         _ => ColumnClass::Other,
@@ -128,11 +156,21 @@ fn mysql(name: &str) -> ColumnClass {
         };
     }
     match word {
-        "decimal" => decimal(name),
+        "decimal" => match decimal(name) {
+            // No scale below zero in MySQL (the scale is 0 to 30): such a
+            // name is none of its own, and states nothing to check by.
+            ColumnClass::Decimal {
+                scale: Some(scale), ..
+            } if scale < 0 => ColumnClass::Decimal {
+                precision: None,
+                scale: None,
+            },
+            class => class,
+        },
         "float" | "double" => ColumnClass::Float,
         "json" => ColumnClass::Json,
         "varchar" | "char" => ColumnClass::Text {
-            max_chars: arguments(name).first().copied(),
+            max_chars: length(name),
         },
         "tinytext" | "text" | "mediumtext" | "longtext" => ColumnClass::Text { max_chars: None },
         // `bit` too: given the text `1`, MySQL stores the character's code.
@@ -224,10 +262,39 @@ mod tests {
                     scale: None,
                 },
             ),
-            // A scale below zero rounds to tens or hundreds: digits the
-            // class cannot state, so it states none.
+            // A scale below zero rounds to tens or hundreds, and leaves
+            // more whole digits than the precision: 1234500.
             (
                 "numeric(5,-2)",
+                Decimal {
+                    precision: Some(5),
+                    scale: Some(-2),
+                },
+            ),
+            (
+                "numeric(5, -2)",
+                Decimal {
+                    precision: Some(5),
+                    scale: Some(-2),
+                },
+            ),
+            // Past what PostgreSQL takes for either: no name it gives.
+            (
+                "numeric(5,-1001)",
+                Decimal {
+                    precision: None,
+                    scale: None,
+                },
+            ),
+            (
+                "numeric(0,2)",
+                Decimal {
+                    precision: None,
+                    scale: None,
+                },
+            ),
+            (
+                "numeric(-5,2)",
                 Decimal {
                     precision: None,
                     scale: None,
@@ -301,6 +368,15 @@ mod tests {
                 Decimal {
                     precision: Some(10),
                     scale: Some(2),
+                },
+            ),
+            // MySQL takes no scale below zero: a name with one is none of
+            // its own, and states nothing the app can hold a value to.
+            (
+                "decimal(5,-2)",
+                Decimal {
+                    precision: None,
+                    scale: None,
                 },
             ),
             ("int(10) unsigned zerofill", int(0, i128::from(u32::MAX))),
@@ -385,6 +461,13 @@ mod tests {
             ),
             (
                 "DECIMAL",
+                Decimal {
+                    precision: None,
+                    scale: None,
+                },
+            ),
+            (
+                "NUMERIC(5,-2)",
                 Decimal {
                     precision: None,
                     scale: None,
