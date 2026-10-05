@@ -104,6 +104,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                         // changes stands on the footer.
                         super::pending_bar::show(app, ui, tab, object_tab);
                     }
+                    // And what a save would run stands on the bar: in the
+                    // terminal look, on the status line.
+                    super::review::show(app, ui, tab, object_tab);
                     egui::CentralPanel::default()
                         .frame(Frame::new().fill(app.palette.window))
                         .show(ui, |ui| match view {

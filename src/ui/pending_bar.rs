@@ -1,7 +1,7 @@
 //! The bar above a table's footer while its tab holds pending changes: how
-//! many, how many are to fix, what the last save came to, and Discard all
-//! and Save. The words of a save's end are here too, for the terminal's
-//! lines.
+//! many, how many are to fix, what the last save came to, and Review SQL,
+//! Discard all and Save. The words of a save's end are here too, for the
+//! terminal's lines.
 
 use egui::{Frame, Id, Rect, Sense, WidgetInfo, WidgetType, pos2, vec2};
 use tabletist_db::Error;
@@ -183,6 +183,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, id: TabId) {
     let edits = &object.edits;
     let saving = edits.saving.is_some();
     let pending = !edits.cells.is_empty();
+    let reviewing = edits.reviewing;
     let counts = edits.counts();
     let note = edits
         .note
@@ -224,6 +225,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, id: TabId) {
                 gettext(locale, "Cancel"),
                 gettext(locale, "Saving…"),
             );
+            let (review, hide) = (gettext(locale, "Review SQL"), gettext(locale, "Hide SQL"));
             // Told apart from a dialog's Cancel by a screen reader.
             let cancel_save = gettext(locale, "Cancel save");
             if pending || saving {
@@ -247,6 +249,18 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, id: TabId) {
                 };
                 if button.show_at(ui, at, &look, &palette).clicked() {
                     actions.push(Action::DiscardEdits { tab, id });
+                }
+                // What a save would run, to read before it. Under a save
+                // too: the drawer then shows what was sent. One button
+                // under two names, so the keyboard stays on it.
+                if pending {
+                    let name = if reviewing { &hide } else { &review };
+                    let button = ButtonSpec::new(name).quiet().keyed("review-sql");
+                    let at = place(ui, &button);
+                    if button.show_at(ui, at, &look, &palette).clicked() {
+                        let show = !reviewing;
+                        actions.push(Action::ReviewEdits { tab, id, show });
+                    }
                 }
             } else {
                 // Only what the last save came to is left: the button takes

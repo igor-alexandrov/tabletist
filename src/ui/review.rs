@@ -2,22 +2,34 @@
 //! its statements, its lines one to a row, and the text the clipboard gets.
 //! Every place that shows a review draws it with what is here.
 
-use egui::{Color32, Sense, WidgetInfo, WidgetType, vec2};
+use egui::{Color32, Frame, Id, Rect, Sense, WidgetInfo, WidgetType, pos2, vec2};
 use tabletist_db::sql::TokenKind;
 
+use crate::app::App;
 use crate::i18n::{Locale, gettext};
+use crate::model::{ConnTabId, TabId};
 use crate::review::{Ink, Line, Review};
 use crate::theme::{Look, Palette};
 use crate::typography::Text;
 use crate::ui::sql_text;
 use crate::ui::states::Tone;
-use crate::ui::widgets;
+use crate::ui::widgets::{self, ButtonSpec};
 
 /// The most lines a place shows before it scrolls.
 pub const MAX_ROWS: usize = 12;
 
 /// The room between two lines, over what the code face gives a line.
 const LEADING: f32 = 4.0;
+
+/// The panel's head.
+const HEAD: f32 = 32.0;
+
+/// The head's button: lower than the head, so its fill under the pointer
+/// stands clear of the head's lines.
+const BUTTON: f32 = 24.0;
+
+/// The room above the lines and under them.
+const PAD: f32 = 8.0;
 
 /// What a copied review opens with, after the comment's dashes: pasted
 /// elsewhere, nothing checks a row and nothing wraps a transaction.
@@ -155,6 +167,126 @@ pub fn text(review: &Review, locale: Locale) -> String {
         }
     }
     text
+}
+
+/// The Review SQL of the table tab `id`, while it is open: a bottom panel.
+/// Called after the pending bar it stands on it; in the terminal look it
+/// stands on the status line.
+pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, id: TabId) {
+    let (locale, palette, look) = (app.locale, app.palette, app.look);
+    let review = app
+        .workspace(tab)
+        .and_then(|workspace| workspace.object_tab(id))
+        .filter(|object| object.edits.reviewing)
+        .and_then(|object| object.edits.review.as_ref());
+    let Some(review) = review else {
+        // A panel takes one of its parent's ids. Passed over while there is
+        // no drawer, so what is drawn after it (the grid, the filter's bar)
+        // is the same widget with the drawer and without: a field that has
+        // the keyboard keeps it as the drawer opens and closes.
+        ui.skip_ahead_auto_ids(1);
+        return;
+    };
+    let lines = &review.lines;
+    let row = row_height(ui.ctx(), &look);
+    let body = lines.len().min(MAX_ROWS) as f32 * row + 2.0 * PAD;
+    // As tall as its lines, to at most `MAX_ROWS` of them, and never more
+    // than half of what the tab has for its grid and for this.
+    let height = (HEAD + body).min(ui.available_height() / 2.0).max(0.0);
+    // The neighbour under it sets the lines' left edge: the bar's, or the
+    // status line's.
+    let side = if look.terminal { 12.0 } else { 20.0 };
+    let mut copy = false;
+    let panel = egui::Panel::bottom(Id::new(("review-sql", tab.0, id.0)))
+        .exact_size(height)
+        .resizable(false)
+        .show_separator_line(false)
+        .frame(Frame::new().fill(palette.window))
+        .show(ui, |ui| {
+            let full = ui.max_rect();
+            let head = Rect::from_min_max(full.min, pos2(full.right(), full.top() + HEAD));
+            ui.painter().rect_filled(head, 0, palette.panel);
+            widgets::hline(ui, head.x_range(), head.top() + 0.5, palette.outline);
+            widgets::hline(ui, head.x_range(), head.bottom() - 0.5, palette.outline);
+            let y = head.center().y;
+            // The button first, from the right: what the head says gives
+            // way to it.
+            let name = gettext(locale, "Copy SQL");
+            let button = ButtonSpec::new(&name).quiet();
+            let width = button.width(ui, &look);
+            let at = Rect::from_min_size(
+                pos2(head.right() - side - width, y - BUTTON / 2.0),
+                vec2(width, BUTTON),
+            );
+            copy = button.show_at(ui, at, &look, &palette).clicked();
+            let said = gettext(locale, "Runs in one transaction");
+            let said = || Text::one(&look, widgets::body(&look), &said, palette.secondary);
+            if head.left() + side + widgets::measure(ui, said()) <= at.left() - 8.0 {
+                widgets::paint_label(ui, head.left() + side, y, said());
+            }
+            let place = Rect::from_min_max(
+                pos2(full.left() + side, head.bottom() + PAD),
+                pos2(full.right() - side, full.bottom() - PAD),
+            );
+            if !place.is_positive() {
+                return;
+            }
+            let mut body = ui.new_child(egui::UiBuilder::new().max_rect(place));
+            // Before `show_rows`, which reads it from the `ui` it is given.
+            body.spacing_mut().item_spacing = egui::Vec2::ZERO;
+            // Both ways: a line is never wrapped into what could read as
+            // two. As low as its place is: egui would keep 64 points of a
+            // scroll area, over the bar under a drawer that has less.
+            egui::ScrollArea::both()
+                .id_salt(("review-sql-lines", tab.0, id.0))
+                .auto_shrink([false, false])
+                .min_scrolled_width(0.0)
+                .min_scrolled_height(0.0)
+                .show_rows(&mut body, row, lines.len(), |ui, range| {
+                    rows(ui, lines, range, &look, &palette, locale);
+                });
+        });
+    // The whole statements, never the lines as they are shown: those are
+    // cut.
+    if copy && let Some(text) = copy_text(app, tab, id) {
+        ui.ctx().copy_text(text);
+    }
+    let placed = Placed {
+        tab,
+        id,
+        rect: panel.response.rect,
+    };
+    let now = ui.ctx().cumulative_frame_nr();
+    ui.ctx()
+        .data_mut(|data| data.insert_temp(placed_id(), (placed, now)));
+}
+
+/// What Copy SQL puts on the clipboard: the tab's review with every value
+/// whole. `None` when nothing is pending.
+pub fn copy_text(app: &App, tab: ConnTabId, id: TabId) -> Option<String> {
+    app.review_whole(tab, id)
+        .map(|review| text(&review, app.locale))
+}
+
+/// A panel that was drawn: whose it is, and where it stood.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Placed {
+    pub tab: ConnTabId,
+    pub id: TabId,
+    pub rect: Rect,
+}
+
+/// Where the last panel drawn is kept, with the number of its frame.
+fn placed_id() -> Id {
+    Id::new("review-sql-placed")
+}
+
+/// The panel drawn in the frame being drawn, or in the one that just
+/// ended: what stands clear of it asks, and so does a test. egui counts a
+/// frame at its end, so read after a frame "this frame" is the last one.
+pub fn placed(ctx: &egui::Context) -> Option<Placed> {
+    let (placed, when): (Placed, u64) = ctx.data(|data| data.get_temp(placed_id()))?;
+    (ctx.cumulative_frame_nr() <= when + 1).then_some(placed)
 }
 
 #[cfg(test)]

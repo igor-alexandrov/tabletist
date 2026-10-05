@@ -18,8 +18,10 @@ use crate::review::Values;
 
 /// Whether `action` is dropped while a prompt about pending changes is up:
 /// what edits, saves or discards, what moves the selection (it closes an
-/// editor; of any tab, nothing is told apart), and what takes the dialog's
-/// place whatever dialog it is, and with it what the prompt holds. The
+/// editor; of any tab, nothing is told apart), what shows or hides Review
+/// SQL (shown, it closes an editor as a left edit, and the set is another
+/// than the one asked about), and what takes the dialog's place whatever
+/// dialog it is, and with it what the prompt holds. The
 /// prompts' own answers, `CloseDialog` and what the backend says are not
 /// among them. Nor is `EditorTyped`: it changes no text, and a keystroke
 /// that shares its frame with the key that raised the prompt must be noted,
@@ -36,6 +38,7 @@ pub(super) fn dropped_under_a_prompt(action: &Action) -> bool {
             | Action::RevertCell { .. }
             | Action::DiscardEdits { .. }
             | Action::WriteEdits { .. }
+            | Action::ReviewEdits { .. }
             | Action::SelectCell { .. }
             | Action::MoveSelection { .. }
             | Action::NewConnection

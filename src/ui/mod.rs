@@ -16517,4 +16517,504 @@ mod tests {
             assert_eq!(footer(&mut harness), before, "{}", look.name);
         }
     }
+
+    /// Shows the tab's Review SQL, as its button, its chord or `:diff` does.
+    fn review(harness: &mut Harness, tab: ConnTabId, id: TabId) {
+        let show = true;
+        harness.app.apply(Action::ReviewEdits { tab, id, show });
+        harness.settle();
+    }
+
+    /// What the drawer of macOS and Windows always paints: its head.
+    const DRAWER: &str = "Runs in one transaction";
+
+    /// The lines of the fixture's row `id 2` with `email` set to
+    /// `bob@example.com`, as a review shows them.
+    const BOB: [&str; 5] = [
+        "-- row id 2",
+        "-- only if email is still 'user2@example.com'",
+        r#"UPDATE "main"."users""#,
+        r#"   SET "email" = 'bob@example.com'"#,
+        r#" WHERE "id" = 2;"#,
+    ];
+
+    /// The panel the last frame drew, if it drew one.
+    fn drawn(harness: &Harness) -> Option<crate::ui::review::Placed> {
+        crate::ui::review::placed(&harness.ctx)
+    }
+
+    #[test]
+    fn review_sql_opens_a_drawer_above_the_bar_and_hide_sql_closes_it() {
+        for look in desktop_looks() {
+            let (mut harness, tab, id) = editable_in(look);
+            make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
+            make_pending(&mut harness, tab, id, (3, 1), "dan@example.com");
+            assert!(pressable(&mut harness, "Hide SQL").is_empty());
+            assert!(!painted(&harness, DRAWER), "{}", look.name);
+            assert_eq!(drawn(&harness), None, "{}", look.name);
+            harness.click("Review SQL");
+            assert!(edits(&harness, tab, id).reviewing, "{}", look.name);
+            assert!(painted(&harness, DRAWER), "{}", look.name);
+            for line in BOB {
+                assert!(painted(&harness, line), "{}: {line}", look.name);
+            }
+            // It stands on the bar, and the grid is still above it.
+            let last = harness.painted_rect(r#" WHERE "id" = 4;"#).unwrap();
+            let bar = harness.painted_rect("2 changes in 2 rows").unwrap();
+            assert!(last.bottom() <= bar.top(), "{}", look.name);
+            let grid = harness.painted_rect("user1@example.com").unwrap();
+            let placed = drawn(&harness).expect("the drawer was drawn");
+            assert_eq!((placed.tab, placed.id), (tab, id), "{}", look.name);
+            assert!(grid.bottom() <= placed.rect.top(), "{}", look.name);
+            assert!(placed.rect.bottom() <= bar.top(), "{}", look.name);
+            let lines: Vec<_> = harness
+                .text_rects
+                .iter()
+                .filter(|(text, _)| {
+                    text == DRAWER || text.starts_with("-- ") || text.contains(r#""id" = "#)
+                })
+                .collect();
+            assert_eq!(lines.len(), 1 + 2 * 3, "{}: {lines:?}", look.name);
+            for (text, rect) in lines {
+                assert!(
+                    placed.rect.contains_rect(*rect),
+                    "{}: {text} at {rect:?} is outside {:?}",
+                    look.name,
+                    placed.rect
+                );
+            }
+            harness.click("Hide SQL");
+            assert!(!edits(&harness, tab, id).reviewing, "{}", look.name);
+            assert!(!painted(&harness, DRAWER), "{}", look.name);
+            assert_eq!(drawn(&harness), None, "{}", look.name);
+            assert_eq!(pressable(&mut harness, "Review SQL").len(), 1);
+            assert!(pressable(&mut harness, "Hide SQL").is_empty());
+        }
+    }
+
+    #[test]
+    fn the_lines_wear_the_sql_editors_colours() {
+        for look in desktop_looks() {
+            let (mut harness, tab, id) = editable_in(look);
+            let palette = harness.app.palette;
+            make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
+            review(&mut harness, tab, id);
+            // A line is painted as one text, in its first piece's colour.
+            assert!(
+                painted_in(&harness, BOB[2], palette.magenta),
+                "{}",
+                look.name
+            );
+            assert!(painted_in(&harness, BOB[0], palette.dim), "{}", look.name);
+            assert!(painted_in(&harness, BOB[1], palette.dim), "{}", look.name);
+            // A row with a cell to fix is a comment only, in the danger
+            // colour: it has no statement.
+            leave_pending(&mut harness, tab, id, (3, 1), "dan@example.com");
+            leave_pending(&mut harness, tab, id, (3, 2), "{oops");
+            harness.settle();
+            let blocked = "-- row id 4 · blocked: fix meta first";
+            assert!(
+                painted_in(&harness, blocked, palette.danger),
+                "{}: {:?}",
+                look.name,
+                harness.painted
+            );
+            assert!(!painted(&harness, r#" WHERE "id" = 4;"#), "{}", look.name);
+            assert!(
+                !harness.painted.iter().any(|(text, _)| text.contains("dan@")
+                    && (text.contains("SET") || text.starts_with("      "))),
+                "{}",
+                look.name
+            );
+            // The other row keeps its statement.
+            assert!(painted(&harness, BOB[4]), "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn a_screen_reader_reads_every_line_in_view() {
+        for look in desktop_looks() {
+            let (mut harness, tab, id) = editable_in(look);
+            make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
+            assert!(!harness.has(BOB[0]), "{}", look.name);
+            review(&mut harness, tab, id);
+            for line in BOB {
+                assert!(harness.has(line), "{}: {line}", look.name);
+            }
+            // The lines are read, not edited or picked: none is a field or
+            // a button.
+            let tree = harness.settle();
+            for line in BOB {
+                assert!(
+                    crate::testing::node(&tree, line, egui::accesskit::Role::Label).is_some(),
+                    "{}: {line}",
+                    look.name
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_long_value_is_cut_in_the_drawer_and_copy_sql_takes_it_whole() {
+        for look in desktop_looks() {
+            let (mut harness, tab, id) = editable_in(look);
+            let long = "x".repeat(100);
+            make_pending(&mut harness, tab, id, (1, 1), &long);
+            review(&mut harness, tab, id);
+            let cut = format!(r#"   SET "email" = '{}…'"#, "x".repeat(57));
+            assert!(painted(&harness, &cut), "{}", look.name);
+            assert!(
+                !harness
+                    .painted
+                    .iter()
+                    .any(|(text, _)| text.contains("SET") && text.contains(&long)),
+                "{}",
+                look.name
+            );
+            harness.copied = None;
+            harness.click("Copy SQL");
+            let expected = format!(
+                "-- What Tabletist runs to save these changes, in one transaction. \
+                 Each statement runs only while its row is still as the comment above it says.\n\
+                 -- row id 2\n\
+                 -- only if email is still 'user2@example.com'\n\
+                 UPDATE \"main\".\"users\"\n   \
+                 SET \"email\" = '{long}'\n \
+                 WHERE \"id\" = 2;\n"
+            );
+            assert_eq!(
+                harness.copied.as_deref(),
+                Some(expected.as_str()),
+                "{}",
+                look.name
+            );
+            // Copying shows nothing else and changes nothing.
+            assert!(edits(&harness, tab, id).reviewing, "{}", look.name);
+            assert!(painted(&harness, &cut), "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn the_drawer_scrolls_what_does_not_fit_and_leaves_the_grid_half_its_room() {
+        // The room a table's tab has for its grid and its drawer: from its
+        // toolbar down to the bar of pending changes.
+        let room = |harness: &Harness, tab: ConnTabId, id: TabId| {
+            let panel = |name: &str| {
+                egui::containers::panel::PanelState::load(
+                    &harness.ctx,
+                    egui::Id::new((name, tab.0, id.0)),
+                )
+                .unwrap_or_else(|| panic!("no panel {name}"))
+                .outer_rect
+            };
+            panel("pending-bar").top() - panel("object-toolbar").bottom()
+        };
+        // Every row of the fixture changed, in a window `tall` points
+        // high, and the drawer open: 25 lines, more than it shows at once.
+        let all_rows = |look: Look, tall: f32| {
+            let mut harness = Harness::with_size(egui::vec2(1280.0, tall));
+            harness.set_look(look);
+            let (tab, id) = harness.editable();
+            focus_grid(&mut harness, tab);
+            for row in 0..5 {
+                let email = format!("new{row}@example.com");
+                make_pending(&mut harness, tab, id, (row, 1), &email);
+            }
+            review(&mut harness, tab, id);
+            let lines = edits(&harness, tab, id)
+                .review
+                .as_ref()
+                .unwrap()
+                .lines
+                .len();
+            assert_eq!(lines, 25);
+            let placed = drawn(&harness).expect("the drawer was drawn");
+            let shared = room(&harness, tab, id);
+            (harness, placed.rect, shared)
+        };
+        for look in desktop_looks() {
+            // Where there is the room: twelve lines under the head.
+            let (harness, drawer, shared) = all_rows(look, 1200.0);
+            let row = crate::ui::review::row_height(&harness.ctx, &look);
+            let most = 32.0 + 12.0 * row + 16.0;
+            assert!(
+                (drawer.height() - most).abs() < 0.5,
+                "{}: {} for {most}",
+                look.name,
+                drawer.height()
+            );
+            assert!(drawer.height() <= shared / 2.0, "{}", look.name);
+            // In the window the other tests draw in it has less than
+            // that, and in a low one little: half of what the grid and it
+            // share, never more.
+            for tall in [800.0, 400.0] {
+                let (mut harness, drawer, shared) = all_rows(look, tall);
+                assert!(shared > 64.0, "{}: {shared}", look.name);
+                assert!(
+                    (drawer.height() - shared / 2.0).abs() < 0.5,
+                    "{} at {tall}: {} of {shared}",
+                    look.name,
+                    drawer.height()
+                );
+                assert!(drawer.height() < most, "{} at {tall}", look.name);
+                assert!(drawer.height() <= tall / 2.0, "{} at {tall}", look.name);
+                // The first lines show, the last do not, and the grid has
+                // its first row above them.
+                assert!(painted(&harness, "-- row id 1"), "{} at {tall}", look.name);
+                assert!(
+                    !painted(&harness, r#" WHERE "id" = 5;"#),
+                    "{} at {tall}",
+                    look.name
+                );
+                // Where the grid has the room for one at all.
+                if tall > 400.0 {
+                    let grid = harness.painted_rect("new0@example.com").unwrap();
+                    assert!(grid.bottom() <= drawer.top(), "{} at {tall}", look.name);
+                }
+                // What is painted of the lines is in the drawer, however
+                // low it is: none lies over the bar under it.
+                let lines = |harness: &Harness| {
+                    let all = harness.text_rects.clone().into_iter();
+                    all.filter(|(text, _)| text.starts_with("-- ") || text.contains(r#""id" = "#))
+                };
+                for (text, rect) in lines(&harness) {
+                    assert!(
+                        drawer.intersects(rect) && rect.top() < drawer.bottom() - 8.0,
+                        "{} at {tall}: {text} at {rect:?}",
+                        look.name
+                    );
+                }
+                // The wheel over its lines brings the rest.
+                let over = egui::pos2(drawer.center().x, drawer.bottom() - 12.0);
+                harness.frame(vec![egui::Event::PointerMoved(over)]);
+                for _ in 0..40 {
+                    harness.frame(vec![egui::Event::MouseWheel {
+                        unit: egui::MouseWheelUnit::Point,
+                        delta: egui::vec2(0.0, -200.0),
+                        phase: egui::TouchPhase::Move,
+                        modifiers: Modifiers::NONE,
+                    }]);
+                }
+                harness.finish_animations();
+                assert!(
+                    painted(&harness, r#" WHERE "id" = 5;"#),
+                    "{} at {tall}",
+                    look.name
+                );
+                assert!(!painted(&harness, "-- row id 1"), "{} at {tall}", look.name);
+                for (text, rect) in lines(&harness) {
+                    assert!(
+                        rect.top() < drawer.bottom() - 8.0,
+                        "{} at {tall}: {text} at {rect:?}",
+                        look.name
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_drawer_is_its_tabs_and_goes_with_the_set() {
+        for look in desktop_looks() {
+            let (mut harness, tab, id) = editable_in(look);
+            make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
+            review(&mut harness, tab, id);
+            assert!(painted(&harness, DRAWER), "{}", look.name);
+            // Another table beside it has no drawer of its own.
+            harness.app.apply(Action::OpenObject {
+                tab,
+                object: tabletist_db::ObjectRef::new("main", "orders"),
+                kind: tabletist_db::ObjectKind::Table,
+                pin: true,
+            });
+            harness.answer_structure(crate::testing::fixture_structure());
+            harness.answer_rows(crate::testing::page(3, false));
+            harness.settle();
+            let orders = harness.app.workspace(tab).unwrap().active_tab.unwrap();
+            assert_ne!(orders, id);
+            assert!(!painted(&harness, DRAWER), "{}", look.name);
+            assert!(!painted(&harness, BOB[2]), "{}", look.name);
+            assert_eq!(drawn(&harness), None, "{}", look.name);
+            // Back on its tab it is open still.
+            harness.app.apply(Action::ActivateTab { tab, id });
+            harness.settle();
+            assert!(painted(&harness, DRAWER), "{}", look.name);
+            for line in BOB {
+                assert!(painted(&harness, line), "{}: {line}", look.name);
+            }
+            // In the Structure view as well, as the bar is.
+            harness.app.apply(Action::SetView {
+                tab,
+                object_tab: id,
+                view: crate::model::ObjectView::Structure,
+            });
+            harness.settle();
+            assert!(painted(&harness, DRAWER), "{}", look.name);
+            assert!(painted(&harness, BOB[4]), "{}", look.name);
+            // It follows the set: a cell reverted takes its statement.
+            make_pending(&mut harness, tab, id, (3, 1), "dan@example.com");
+            harness.settle();
+            assert!(painted(&harness, r#" WHERE "id" = 4;"#), "{}", look.name);
+            make_pending(&mut harness, tab, id, (3, 1), "user4@example.com");
+            harness.settle();
+            assert!(!painted(&harness, r#" WHERE "id" = 4;"#), "{}", look.name);
+            // With nothing pending it goes, and the next change does not
+            // bring it back: a drawer that opens unasked takes rows from
+            // the grid.
+            harness.app.apply(Action::DiscardEdits { tab, id });
+            harness.settle();
+            assert!(!painted(&harness, DRAWER), "{}", look.name);
+            assert_eq!(drawn(&harness), None, "{}", look.name);
+            make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
+            harness.settle();
+            assert!(!painted(&harness, DRAWER), "{}", look.name);
+            assert!(!painted(&harness, BOB[2]), "{}", look.name);
+            assert_eq!(pressable(&mut harness, "Review SQL").len(), 1);
+        }
+    }
+
+    #[test]
+    fn the_drawer_stays_through_a_save_and_goes_when_it_wrote() {
+        for look in desktop_looks() {
+            let (mut harness, tab, id) = editable_in(look);
+            make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
+            review(&mut harness, tab, id);
+            harness.app.apply(Action::WriteEdits { tab, id });
+            harness.settle();
+            assert!(edits(&harness, tab, id).saving.is_some());
+            // What was sent is still to read, and the button still works.
+            for line in BOB {
+                assert!(painted(&harness, line), "{}: {line}", look.name);
+            }
+            harness.click("Hide SQL");
+            assert!(!painted(&harness, DRAWER), "{}", look.name);
+            harness.click("Review SQL");
+            assert!(painted(&harness, BOB[3]), "{}", look.name);
+            harness.answer_written(Ok(written_row("bob@example.com")));
+            harness.settle();
+            assert!(!painted(&harness, DRAWER), "{}", look.name);
+            assert!(pressable(&mut harness, "Review SQL").is_empty());
+        }
+    }
+
+    #[test]
+    fn a_field_keeps_the_keyboard_when_the_drawer_opens_and_closes() {
+        for look in desktop_looks() {
+            let (mut harness, tab, id) = editable_in(look);
+            make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
+            harness.press(Key::F, Modifiers::COMMAND);
+            assert!(crate::ui::filter_bar::is_open(&harness.app, tab, id));
+            assert!(harness.ctx.text_edit_focused(), "{}", look.name);
+            let typed = |harness: &Harness| {
+                let object = harness.app.workspace(tab).unwrap().object_tab(id).unwrap();
+                object.filter.rows.last().map(|row| row.value.clone())
+            };
+            type_text(&mut harness, "a");
+            assert_eq!(typed(&harness).as_deref(), Some("a"), "{}", look.name);
+            // The drawer is a panel drawn before the filter's bar: were it
+            // to take one of their parent's ids only while it shows, the
+            // field would be another widget, without the keyboard.
+            review(&mut harness, tab, id);
+            assert!(painted(&harness, DRAWER), "{}", look.name);
+            assert!(harness.ctx.text_edit_focused(), "{}", look.name);
+            type_text(&mut harness, "b");
+            assert_eq!(typed(&harness).as_deref(), Some("ab"), "{}", look.name);
+            let show = false;
+            harness.app.apply(Action::ReviewEdits { tab, id, show });
+            harness.settle();
+            assert!(!painted(&harness, DRAWER), "{}", look.name);
+            assert!(harness.ctx.text_edit_focused(), "{}", look.name);
+            type_text(&mut harness, "c");
+            assert_eq!(typed(&harness).as_deref(), Some("abc"), "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn the_bars_button_keeps_the_keyboard_as_it_shows_and_hides() {
+        for look in desktop_looks() {
+            let (mut harness, tab, id) = editable_in(look);
+            make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
+            focus(&mut harness, "Review SQL", egui::accesskit::Role::Button);
+            assert_eq!(focused_name(&harness.settle()), "Review SQL");
+            // Pressed from the keyboard, it is the same button under its
+            // other name.
+            harness.press(Key::Enter, Modifiers::NONE);
+            assert!(edits(&harness, tab, id).reviewing, "{}", look.name);
+            assert_eq!(focused_name(&harness.settle()), "Hide SQL", "{}", look.name);
+            harness.press(Key::Enter, Modifiers::NONE);
+            assert!(!edits(&harness, tab, id).reviewing, "{}", look.name);
+            assert_eq!(
+                focused_name(&harness.settle()),
+                "Review SQL",
+                "{}",
+                look.name
+            );
+        }
+    }
+
+    #[test]
+    fn a_sql_result_and_a_table_without_changes_show_no_drawer() {
+        for look in Look::ALL {
+            let (mut harness, tab, id) = editable_in(look);
+            assert!(!harness.has("Review SQL"), "{}", look.name);
+            // Asked for with nothing pending, nothing opens.
+            review(&mut harness, tab, id);
+            assert!(!edits(&harness, tab, id).reviewing, "{}", look.name);
+            assert_eq!(drawn(&harness), None, "{}", look.name);
+            assert!(!harness.has("Hide SQL"), "{}", look.name);
+            // A SQL editor's result has no pending changes to review.
+            with_sql_result(&mut harness, tab, 3);
+            harness.settle();
+            assert!(!harness.has("Review SQL"), "{}", look.name);
+            assert!(!harness.has("Copy SQL"), "{}", look.name);
+            assert_eq!(drawn(&harness), None, "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn the_bars_button_does_nothing_under_a_prompt() {
+        for look in desktop_looks() {
+            // The confirmation of a save to production.
+            let (mut harness, tab, id, _) = confirming(look);
+            assert!(!edits(&harness, tab, id).reviewing, "{}", look.name);
+            // A click that reaches the bar under the dialog is dropped.
+            let show = true;
+            harness
+                .app
+                .actions
+                .push(Action::ReviewEdits { tab, id, show });
+            harness.settle();
+            assert!(!edits(&harness, tab, id).reviewing, "{}", look.name);
+            assert!(!painted(&harness, DRAWER), "{}", look.name);
+            assert!(matches!(
+                harness.app.dialog,
+                Some(crate::model::Dialog::ConfirmWrite(_))
+            ));
+            // The question before the changes are dropped.
+            let (mut harness, tab, id) = leaving_one_change(look);
+            assert!(leaving(&harness), "{}", look.name);
+            harness
+                .app
+                .actions
+                .push(Action::ReviewEdits { tab, id, show });
+            harness.settle();
+            assert!(!edits(&harness, tab, id).reviewing, "{}", look.name);
+            assert!(leaving(&harness), "{}", look.name);
+            // Open before the question, it stands under it as it was.
+            let (mut harness, tab, id) = editable_in(look);
+            make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
+            review(&mut harness, tab, id);
+            harness.app.apply(Action::CloseTab { tab, id });
+            harness.finish_animations();
+            assert!(leaving(&harness), "{}", look.name);
+            let show = false;
+            harness
+                .app
+                .actions
+                .push(Action::ReviewEdits { tab, id, show });
+            harness.settle();
+            assert!(edits(&harness, tab, id).reviewing, "{}", look.name);
+            assert!(painted(&harness, BOB[3]), "{}", look.name);
+        }
+    }
 }

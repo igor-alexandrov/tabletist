@@ -11579,6 +11579,61 @@ mod tests {
         }
 
         #[test]
+        fn the_review_is_neither_shown_nor_hidden_under_a_prompt() {
+            // Under the confirmation it does not open.
+            let mut harness = Harness::new();
+            let (tab, id) = production(&mut harness);
+            type_into(&mut harness, tab, id, at(1, 1), "bob@example.com");
+            harness.app.apply(Action::WriteEdits { tab, id });
+            let shown = confirming(&harness).expect("the confirmation").clone();
+            show_review(&mut harness, tab, id, true);
+            assert_eq!(reviewed(&mut harness, tab, id), None);
+            assert!(!object(&harness, tab, id).edits.reviewing);
+            harness.app.apply(Action::CancelWrite);
+            // Open, it does not close under it.
+            show_review(&mut harness, tab, id, true);
+            let lines = reviewed(&mut harness, tab, id).expect("the review");
+            harness.app.apply(Action::WriteEdits { tab, id });
+            show_review(&mut harness, tab, id, false);
+            assert!(object(&harness, tab, id).edits.reviewing);
+            assert_eq!(reviewed(&mut harness, tab, id), Some(lines.clone()));
+            assert_eq!(held(confirming(&harness)), held(Some(&shown)));
+            harness.app.apply(Action::CancelWrite);
+            // Nor under the question before the changes are dropped.
+            harness.app.apply(Action::CloseTab { tab, id });
+            assert!(leave_prompt(&harness).is_some());
+            show_review(&mut harness, tab, id, false);
+            assert_eq!(reviewed(&mut harness, tab, id), Some(lines));
+            harness.app.apply(Action::LeaveStay);
+            show_review(&mut harness, tab, id, false);
+            assert_eq!(reviewed(&mut harness, tab, id), None);
+            // Shown, the review would close an open editor as a left edit,
+            // and the set the question counted would be another.
+            let mut harness = Harness::new();
+            let (tab, id) = harness.editable();
+            type_into(&mut harness, tab, id, at(1, 1), "bob@example.com");
+            harness.app.apply(Action::EditCell {
+                tab,
+                id,
+                cell: at(3, 1),
+                start: EditStart::Replace("dan@example.com".into()),
+            });
+            harness.app.apply(Action::CloseTab { tab, id });
+            assert!(leave_prompt(&harness).is_some());
+            show_review(&mut harness, tab, id, true);
+            let edits = &object(&harness, tab, id).edits;
+            assert!(edits.editor.is_some() && !edits.reviewing);
+            assert_eq!(edits.cells.len(), 1);
+            assert_eq!(reviewed(&mut harness, tab, id), None);
+            // Staying, it opens as it does anywhere, the editor's text in
+            // it.
+            harness.app.apply(Action::LeaveStay);
+            show_review(&mut harness, tab, id, true);
+            assert_eq!(object(&harness, tab, id).edits.cells.len(), 2);
+            assert_eq!(reviewed(&mut harness, tab, id).unwrap().len(), 6);
+        }
+
+        #[test]
         fn a_first_keystroke_under_a_prompt_that_just_opened_is_saved() {
             let mut harness = Harness::new();
             let (tab, id) = harness.editable();
