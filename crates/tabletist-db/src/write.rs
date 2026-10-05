@@ -2,7 +2,7 @@
 
 use std::time::{Duration, Instant};
 
-use crate::{Error, ObjectRef, Result, Value};
+use crate::{Error, ObjectRef, Result, StopFlag, Value};
 
 /// Every change of one save, to one table. Written in one transaction, or
 /// not at all.
@@ -148,6 +148,19 @@ impl Applied {
             Self::Conflicts(conflicts) => WriteOutcome::Conflicts(conflicts),
             Self::Failed { row, error } => WriteOutcome::Failed { row, error },
         }
+    }
+}
+
+/// Ends a save that was told to stop, as a cancelled statement ends it. A
+/// cancel reaches only a statement that is running, and one that arrives
+/// between two of a save's statements is lost: so each driver asks here
+/// before every statement it sends, and once more before `COMMIT`. After
+/// that nothing is asked, and the save is written.
+pub(crate) fn not_stopped(stop: &StopFlag) -> Result<()> {
+    if stop.is_stopped() {
+        Err(Error::Cancelled)
+    } else {
+        Ok(())
     }
 }
 
@@ -414,6 +427,14 @@ mod tests {
             ]);
             assert_eq!(changes.check(), Ok(()), "{changes:?}");
         }
+    }
+
+    #[test]
+    fn a_save_told_to_stop_ends_as_a_cancelled_one() {
+        let stop = StopFlag::new();
+        assert_eq!(not_stopped(&stop), Ok(()));
+        stop.clone().stop();
+        assert_eq!(not_stopped(&stop), Err(Error::Cancelled));
     }
 
     #[test]

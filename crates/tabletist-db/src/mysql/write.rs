@@ -12,11 +12,12 @@ use super::{
 };
 use crate::script::retry_cancelled;
 use crate::write::{
-    Applied, changed_since_loaded, conflicts_of, more_than_one, not_read_back, same_row_twice,
-    spelled_otherwise,
+    Applied, changed_since_loaded, conflicts_of, more_than_one, not_read_back, not_stopped,
+    same_row_twice, spelled_otherwise,
 };
 use crate::{
-    ChangeSet, ColumnMeta, Dialect, Error, ObjectRef, Result, RowChange, Sql, Value, WriteOutcome,
+    ChangeSet, ColumnMeta, Dialect, Error, ObjectRef, Result, RowChange, Sql, StopFlag, Value,
+    WriteOutcome,
 };
 
 /// One row's statements, built before anything is sent.
@@ -39,8 +40,9 @@ impl Conn {
     /// ended as text, not through the driver's transaction options: the
     /// driver opens a read-only transaction as `SET TRANSACTION READ ONLY`
     /// then `START TRANSACTION`, and a cancel between the two leaves "the
-    /// next transaction is read-only" pending.
-    pub async fn write(&self, changes: &ChangeSet) -> Result<WriteOutcome> {
+    /// next transaction is read-only" pending. `stop` is asked before each
+    /// statement: `KILL QUERY` does nothing when it arrives between two.
+    pub async fn write(&self, changes: &ChangeSet, stop: &StopFlag) -> Result<WriteOutcome> {
         // Every statement is built first: a set that cannot be written as
         // MySQL reads it, or a value that cannot be sent, fails the save
         // before the server hears of it.
@@ -55,15 +57,24 @@ impl Conn {
             }
         }
         let mut conn = self.conn.lock().await;
+        // Stopped before it began: nothing is sent.
+        not_stopped(stop)?;
         let started = Instant::now();
         // Asked before the transaction, so that the usual refusal costs no
         // lock; asked again inside it, where the answer holds (see `apply`).
         transactional(&mut conn, &changes.object).await?;
+        not_stopped(stop)?;
         // From here every path ends the transaction, whatever of it began:
         // a `begin` whose status check failed has one open too.
         let applied = match begin(&mut conn).await {
-            Ok(()) => apply(&mut conn, changes, &statements).await,
+            Ok(()) => apply(&mut conn, changes, &statements, stop).await,
             Err(error) => Err(error),
+        };
+        // The last moment a stop is heard. Once COMMIT is sent the save is
+        // written, whatever arrives after it.
+        let applied = match applied {
+            Ok(Applied::Rows(rows)) => not_stopped(stop).map(|()| Applied::Rows(rows)),
+            other => other,
         };
         // `Some` is a COMMIT the server refused, undone by the rollback
         // after it. A cancel meant for a statement can land on a rollback:
@@ -224,8 +235,15 @@ fn started(status: StatusFlags) -> Result<()> {
 
 /// Prepares one of the save's statements. Each runs prepared, with its
 /// values bound: a value is never part of the text, so nothing in it is
-/// read as SQL, by the server or by the driver.
-async fn prepare(conn: &mut mysql_async::Conn, sql: &Sql) -> Result<mysql_async::Statement> {
+/// read as SQL, by the server or by the driver. Preparing is a message of
+/// its own, so `stop` is asked before it, and again by whoever runs what
+/// it prepared.
+async fn prepare(
+    conn: &mut mysql_async::Conn,
+    sql: &Sql,
+    stop: &StopFlag,
+) -> Result<mysql_async::Statement> {
+    not_stopped(stop)?;
     let statement = conn.prep(sql.text.as_str()).await.map_err(query_error)?;
     // The driver closes the connection when a statement runs without a
     // value for each of its parameters.
@@ -241,8 +259,10 @@ async fn prepare(conn: &mut mysql_async::Conn, sql: &Sql) -> Result<mysql_async:
 async fn rows(
     conn: &mut mysql_async::Conn,
     sql: &Sql,
+    stop: &StopFlag,
 ) -> Result<(Vec<ColumnMeta>, Vec<Vec<Value>>)> {
-    let statement = prepare(conn, sql).await?;
+    let statement = prepare(conn, sql, stop).await?;
+    not_stopped(stop)?;
     let mut result = conn
         .exec_iter(&statement, params(&sql.params))
         .await
@@ -293,12 +313,13 @@ fn own(error: Error) -> Result<Option<Error>> {
 
 /// Runs one row's `UPDATE`. `Ok(Some(..))` is the statement's own failure:
 /// the server's error, more than the one row changed, or a warning. `Err`
-/// is a cancel or a lost session.
-async fn update(conn: &mut mysql_async::Conn, sql: &Sql) -> Result<Option<Error>> {
-    let statement = match prepare(conn, sql).await {
+/// is a cancel, a stop or a lost session.
+async fn update(conn: &mut mysql_async::Conn, sql: &Sql, stop: &StopFlag) -> Result<Option<Error>> {
+    let statement = match prepare(conn, sql, stop).await {
         Ok(statement) => statement,
         Err(error) => return own(error),
     };
+    not_stopped(stop)?;
     if let Err(error) = conn.exec_drop(&statement, params(&sql.params)).await {
         return own(query_error(error));
     }
@@ -344,11 +365,13 @@ async fn warning(conn: &mut mysql_async::Conn) -> Result<Error> {
 
 /// The steps of a save inside its transaction: lock and compare every row,
 /// update every row, read every row back. `Err` leaves the transaction to
-/// be rolled back like every other end but `Rows`.
+/// be rolled back like every other end but `Rows`, and a `stop` found
+/// before any of its statements is such an end.
 async fn apply(
     conn: &mut mysql_async::Conn,
     changes: &ChangeSet,
     statements: &[Statements],
+    stop: &StopFlag,
 ) -> Result<Applied> {
     // Every row is locked and compared before any is changed. The lock is
     // what makes the comparison hold: a change someone has not committed
@@ -359,7 +382,7 @@ async fn apply(
     let mut read = Vec::with_capacity(changes.rows.len());
     let mut conflicts = Vec::new();
     for (row, (change, statement)) in changes.rows.iter().zip(statements).enumerate() {
-        let (columns, mut found) = rows(conn, &statement.lock).await?;
+        let (columns, mut found) = rows(conn, &statement.lock, stop).await?;
         names = columns.iter().map(|column| column.name.clone()).collect();
         if let Some(name) = spelled_otherwise(change, &names) {
             return Err(Error::query(format!(
@@ -404,18 +427,19 @@ async fn apply(
     // read before the locking reads would take the snapshot while someone
     // could still change the engine, and `information_schema` would show
     // this read the engine as it was then. So no plain read goes before it.
+    not_stopped(stop)?;
     transactional(conn, &changes.object).await?;
     if !conflicts.is_empty() {
         return Ok(Applied::Conflicts(conflicts_of(conflicts, read)));
     }
     for (row, statement) in statements.iter().enumerate() {
-        if let Some(error) = update(conn, &statement.update).await? {
+        if let Some(error) = update(conn, &statement.update, stop).await? {
             return Ok(Applied::Failed { row, error });
         }
     }
     let mut saved = Vec::with_capacity(statements.len());
     for statement in statements {
-        let (_, mut found) = rows(conn, &statement.read_back).await?;
+        let (_, mut found) = rows(conn, &statement.read_back, stop).await?;
         // A change can give a second row the key (a trigger, a column the
         // database works out from another), or take it from the first.
         // Either way the row to hand back is no longer known, and the
@@ -439,14 +463,15 @@ mod tests {
     use super::super::prepare_session;
     use super::super::tests::{session, test_url};
     use super::*;
-    use crate::{Access, CellChange, NewValue, RowQuery, StopFlag};
+    use crate::{Access, CellChange, NewValue, RowQuery};
 
     /// The backend awaits a save on a task it spawned: its future must be
     /// `Send`. This fails to compile, not to run.
     #[test]
     fn a_save_can_be_awaited_on_a_spawned_task() {
         fn send<T: Send>(_: &T) {}
-        let _check = |conn: &Conn, changes: &ChangeSet| send(&conn.write(changes));
+        let _check =
+            |conn: &Conn, changes: &ChangeSet| send(&conn.write(changes, &StopFlag::new()));
     }
 
     /// A server (or a proxy in front of one) that does not say the
@@ -739,7 +764,7 @@ mod tests {
                 ),
             ];
             for (exit, changes, ended_so) in exits {
-                let ended = conn.write(&changes).await;
+                let ended = conn.write(&changes, &StopFlag::new()).await;
                 assert!(ended_so(&ended), "{exit}: {ended:?}");
                 assert_eq!(standing(&conn).await, (false, 1), "{exit}");
             }
@@ -764,13 +789,17 @@ mod tests {
                 .query_drop("SET SESSION completion_type = 'CHAIN'")
                 .await
                 .unwrap();
-            let conflict = conn.write(&body("write_unit_chain", "xyz", "new")).await;
+            let conflict = conn
+                .write(&body("write_unit_chain", "xyz", "new"), &StopFlag::new())
+                .await;
             assert!(
                 matches!(conflict, Ok(WriteOutcome::Conflicts(_))),
                 "{conflict:?}"
             );
             assert_eq!(standing(&conn).await, (false, 1));
-            let written = conn.write(&body("write_unit_chain", "abc", "new")).await;
+            let written = conn
+                .write(&body("write_unit_chain", "abc", "new"), &StopFlag::new())
+                .await;
             assert!(
                 matches!(written, Ok(WriteOutcome::Written { .. })),
                 "{written:?}"
@@ -798,7 +827,9 @@ mod tests {
                 .query_drop("SET SESSION sql_mode = ''")
                 .await
                 .unwrap();
-            let outcome = conn.write(&body(table, "abc", "abcdef")).await;
+            let outcome = conn
+                .write(&body(table, "abc", "abcdef"), &StopFlag::new())
+                .await;
             assert!(
                 matches!(
                     &outcome,
@@ -814,13 +845,10 @@ mod tests {
             let conn = session(&url).await;
             let amount = Value::Text("1.00".into());
             let outcome = conn
-                .write(&set(
-                    table,
-                    "amount",
-                    "decimal(6,2)",
-                    amount.clone(),
-                    "99.955",
-                ))
+                .write(
+                    &set(table, "amount", "decimal(6,2)", amount.clone(), "99.955"),
+                    &StopFlag::new(),
+                )
                 .await;
             assert!(
                 matches!(
@@ -833,7 +861,10 @@ mod tests {
             assert_eq!(stored(&url, table).await.1, "1.00");
             // What fits is written.
             let outcome = conn
-                .write(&set(table, "amount", "decimal(6,2)", amount, "99.95"))
+                .write(
+                    &set(table, "amount", "decimal(6,2)", amount, "99.95"),
+                    &StopFlag::new(),
+                )
                 .await;
             assert!(
                 matches!(outcome, Ok(WriteOutcome::Written { .. })),
@@ -874,7 +905,10 @@ mod tests {
             assert_eq!(notes(&conn).await, Some(1));
             let amount = Value::Text("1.00".into());
             let outcome = conn
-                .write(&set(table, "amount", "decimal(6,2)", amount, "99.955"))
+                .write(
+                    &set(table, "amount", "decimal(6,2)", amount, "99.955"),
+                    &StopFlag::new(),
+                )
                 .await;
             assert!(
                 matches!(
@@ -916,7 +950,9 @@ mod tests {
                     .await
                     .unwrap();
             }
-            let outcome = conn.write(&body(table, "abc", "new")).await;
+            let outcome = conn
+                .write(&body(table, "abc", "new"), &StopFlag::new())
+                .await;
             assert!(
                 matches!(outcome, Ok(WriteOutcome::Written { .. })),
                 "{outcome:?}"
@@ -948,7 +984,9 @@ mod tests {
                 .query_drop("SET SESSION sql_select_limit = 0")
                 .await
                 .unwrap();
-            let outcome = conn.write(&body("write_unit_limit", "abc", "new")).await;
+            let outcome = conn
+                .write(&body("write_unit_limit", "abc", "new"), &StopFlag::new())
+                .await;
             assert!(
                 matches!(outcome, Ok(WriteOutcome::Written { .. })),
                 "{outcome:?}"
@@ -1000,7 +1038,7 @@ mod tests {
                     }],
                 }],
             };
-            let outcome = conn.write(&changes).await;
+            let outcome = conn.write(&changes, &StopFlag::new()).await;
             assert!(
                 matches!(
                     &outcome,

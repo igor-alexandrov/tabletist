@@ -3513,7 +3513,7 @@ Commit: "Describe editing in the grid as built".
 
 - **Step 4, Review SQL:** the bar's Review SQL button and drawer, Omarchy's `:diff` panel, the statements kept up to date in the reducer as the set changes, and the PROD box pointing at the panel instead of listing the statements.
 - **Step 5, the conflict dialog:** loaded, now on server, yours; Keep mine, Use server values, Overwrite. Until then a conflict is a line and the user refreshes.
-- **A cancel between two of a save's statements is lost** on PostgreSQL and MySQL (step 2 found it): the save commits and says so. The bar's cancel is honest only while a statement runs. Whether the Saving state should say more is open.
+- **A cancel between two of a save's statements** was lost on PostgreSQL and MySQL when this plan ended (step 2 found it). It is honoured since, through the save's stop flag, which every driver asks before each statement it sends and once more before `COMMIT`; one that reaches `COMMIT` before it takes hold undoes the save. After that it is too late: the save is written and says so. Whether the Saving state should say more is open.
 - **MySQL stores some values adjusted without a word** (`'1.6'` into a `TINYINT` is 2). The checks here catch a non-integer in an integer column; a `FLOAT`'s precision is not checked.
 - **A MySQL `TIMESTAMP` as a changed column** can miss a conflict in a repeated daylight-saving hour; the key case is locked, the cell case is not.
 - **A table whose engine has no transactions** (MyISAM) is known only when the save refuses it: `Structure` has no field for the engine. The same holds for a table of a database attached to a SQLite session: the grid lets it be edited and the save refuses it.

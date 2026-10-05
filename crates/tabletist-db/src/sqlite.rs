@@ -655,9 +655,10 @@ impl Conn {
         outcome
     }
 
-    /// See [`crate::Connection::write`]. One blocking job, so a cancel can
-    /// never fall between the save's statements.
-    pub async fn write(&self, changes: &ChangeSet) -> Result<WriteOutcome> {
+    /// See [`crate::Connection::write`]. One blocking job. An interrupt
+    /// reaches only the statement that is running and is not kept for the
+    /// next, so `stop` is what ends the save between two of them.
+    pub async fn write(&self, changes: &ChangeSet, stop: &StopFlag) -> Result<WriteOutcome> {
         if changes.object.schema != "main" {
             return Err(Error::Unsupported(
                 "saving to an attached database is not built yet",
@@ -665,7 +666,8 @@ impl Conn {
         }
         let changes = changes.clone();
         let journal_mode = self.journal_mode.clone();
-        self.run(move |connection| write::write(connection, &changes, &journal_mode))
+        let stop = stop.clone();
+        self.run(move |connection| write::write(connection, &changes, &journal_mode, &stop))
             .await
     }
 
@@ -1487,7 +1489,7 @@ mod tests {
         // The save's own error, at its BEGIN, which asks for the file. A
         // transaction that asked only at its first write would have read
         // the row and failed at the UPDATE, as that row's failure.
-        let refused = conn.write(&changes).await;
+        let refused = conn.write(&changes, &StopFlag::new()).await;
         assert!(
             matches!(
                 &refused,
@@ -1513,7 +1515,7 @@ mod tests {
         );
         // Once the other program lets go, the same save is written.
         other.execute_batch("ROLLBACK").unwrap();
-        let outcome = conn.write(&changes).await;
+        let outcome = conn.write(&changes, &StopFlag::new()).await;
         assert!(
             matches!(outcome, Ok(WriteOutcome::Written { .. })),
             "{outcome:?}"
@@ -1548,7 +1550,7 @@ mod tests {
             }],
         };
         // The save goes through, and only its own row is written.
-        let outcome = conn.write(&changes).await;
+        let outcome = conn.write(&changes, &StopFlag::new()).await;
         assert!(
             matches!(outcome, Ok(WriteOutcome::Written { .. })),
             "{outcome:?}"

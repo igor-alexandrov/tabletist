@@ -1632,7 +1632,7 @@ async fn save(
         .iter()
         .map(|(column, type_name, new)| cell(&columns, &row, column, type_name, new.clone()))
         .collect();
-    within(connection.write(&changes_to(table, vec![by_id(id, set)]))).await
+    within(connection.write(&changes_to(table, vec![by_id(id, set)]), &StopFlag::new())).await
 }
 
 fn to(text: &str) -> NewValue {
@@ -1798,7 +1798,9 @@ async fn a_row_changed_by_someone_else_is_a_conflict_and_nothing_is_written() {
                 .batch_execute("UPDATE write_conflict SET name = 'Theirs' WHERE id = 1")
                 .await
                 .unwrap();
-            let outcome = within(connection.write(&changes)).await.unwrap();
+            let outcome = within(connection.write(&changes, &StopFlag::new()))
+                .await
+                .unwrap();
             let theirs = row_of(&connection, "write_conflict", 1).await.1;
             assert_eq!(theirs[2], text("Theirs"));
             // The row's place in the set, and the row as the server holds it.
@@ -1838,7 +1840,7 @@ async fn a_change_to_a_column_the_save_leaves_alone_is_no_conflict() {
                 .batch_execute("UPDATE write_elsewhere SET score = 99 WHERE id = 1")
                 .await
                 .unwrap();
-            let outcome = within(connection.write(&changes)).await;
+            let outcome = within(connection.write(&changes, &StopFlag::new())).await;
             assert!(
                 matches!(outcome, Ok(WriteOutcome::Written { .. })),
                 "{outcome:?}"
@@ -1876,7 +1878,7 @@ async fn a_row_that_is_gone_is_a_conflict_without_a_row() {
                 .await
                 .unwrap();
             assert_eq!(
-                within(connection.write(&changes)).await,
+                within(connection.write(&changes, &StopFlag::new())).await,
                 Ok(WriteOutcome::Conflicts(vec![Conflict {
                     row: 0,
                     server: None
@@ -1912,7 +1914,9 @@ async fn a_statement_that_fails_undoes_the_rows_before_it() {
                     ),
                 ],
             );
-            let outcome = within(connection.write(&changes)).await.unwrap();
+            let outcome = within(connection.write(&changes, &StopFlag::new()))
+                .await
+                .unwrap();
             assert!(
                 matches!(
                     &outcome,
@@ -2111,7 +2115,7 @@ async fn a_save_leaves_no_transaction_open_however_it_ends() {
                 ),
             ];
             for (exit, changes, ended_so) in exits {
-                let ended = within(connection.write(&changes)).await;
+                let ended = within(connection.write(&changes, &StopFlag::new())).await;
                 assert!(ended_so(&ended), "{exit}: {ended:?}");
                 assert_eq!(state_of(&admin, pid).await, "idle", "{exit}");
                 // No row is still held: someone else changes them at once.
@@ -2184,7 +2188,7 @@ async fn a_composite_and_a_binary_key_find_their_row() {
                     }],
                 }],
             );
-            let outcome = within(connection.write(&changes)).await.unwrap();
+            let outcome = within(connection.write(&changes, &StopFlag::new())).await.unwrap();
             let changed = vec![Value::Int(1), bytes, text("changed")];
             assert!(
                 matches!(&outcome, WriteOutcome::Written { rows, .. } if *rows == [changed.clone()]),
@@ -2222,7 +2226,7 @@ async fn a_key_that_matches_two_rows_is_an_error_and_nothing_is_written() {
                     }],
                 )],
             );
-            let outcome = within(connection.write(&changes)).await;
+            let outcome = within(connection.write(&changes, &StopFlag::new())).await;
             assert!(
                 matches!(&outcome, Err(Error::Query { message, .. }) if message.contains("more than one row")),
                 "{outcome:?}"
@@ -2285,7 +2289,7 @@ async fn changes_that_read_the_same_row_are_refused_and_nothing_is_written() {
                     ],
                 );
                 assert_eq!(changes.check(), Ok(()));
-                let outcome = within(connection.write(&changes)).await;
+                let outcome = within(connection.write(&changes, &StopFlag::new())).await;
                 assert!(
                     names_the_same_row(&outcome),
                     "{column} {key:?}: {outcome:?}"
@@ -2309,7 +2313,7 @@ async fn changes_that_read_the_same_row_are_refused_and_nothing_is_written() {
                 ],
             );
             assert_eq!(changes.check(), Ok(()));
-            let outcome = within(connection.write(&changes)).await;
+            let outcome = within(connection.write(&changes, &StopFlag::new())).await;
             assert!(names_the_same_row(&outcome), "{outcome:?}");
             assert_eq!(page_of(&connection, "write_same_zero").await.1, zeros);
 
@@ -2322,7 +2326,7 @@ async fn changes_that_read_the_same_row_are_refused_and_nothing_is_written() {
                     keyed("email", text("c@x"), change(2, "name", "Third")),
                 ],
             );
-            let outcome = within(connection.write(&changes)).await;
+            let outcome = within(connection.write(&changes, &StopFlag::new())).await;
             assert!(
                 matches!(outcome, Ok(WriteOutcome::Written { .. })),
                 "{outcome:?}"
@@ -2372,7 +2376,9 @@ async fn an_update_that_does_not_change_one_row_fails_and_is_undone() {
                     by_id(2, vec![cell(&columns, &second, "name", "text", to("Skip"))]),
                 ],
             );
-            let outcome = within(connection.write(&changes)).await.unwrap();
+            let outcome = within(connection.write(&changes, &StopFlag::new()))
+                .await
+                .unwrap();
             assert!(
                 matches!(
                     &outcome,
@@ -2458,7 +2464,8 @@ async fn text_is_stored_exactly_also_after_a_script_set_how_strings_are_read() {
                     }],
                 })
                 .collect();
-            let outcome = within(connection.write(&changes_to("write_text", rows))).await;
+            let outcome =
+                within(connection.write(&changes_to("write_text", rows), &StopFlag::new())).await;
             assert!(
                 matches!(outcome, Ok(WriteOutcome::Written { .. })),
                 "{outcome:?}"
@@ -2502,7 +2509,7 @@ async fn text_holding_a_nul_is_refused_before_anything_is_sent() {
                 by_id(2, vec![cell(&columns, &second, "name", "text", to("a\0b"))]),
             ],
         );
-        let outcome = within(connection.write(&changes)).await;
+        let outcome = within(connection.write(&changes, &StopFlag::new())).await;
         assert!(
             matches!(
                 &outcome,
@@ -2545,7 +2552,7 @@ async fn a_save_waits_for_a_change_in_flight_and_then_sees_it() {
             let connection = std::sync::Arc::new(connection);
             let saving = {
                 let connection = std::sync::Arc::clone(&connection);
-                tokio::spawn(async move { connection.write(&changes).await })
+                tokio::spawn(async move { connection.write(&changes, &StopFlag::new()).await })
             };
             // Until the save waits for their lock.
             let admin = admin().await;
@@ -2660,7 +2667,7 @@ async fn a_cancel_during_a_save_undoes_it() {
             let connection = std::sync::Arc::new(connection);
             let saving = {
                 let connection = std::sync::Arc::clone(&connection);
-                tokio::spawn(async move { connection.write(&changes).await })
+                tokio::spawn(async move { connection.write(&changes, &StopFlag::new()).await })
             };
             runs_on_the_server(&admin, "SET \"name\" = 'Slow'").await;
             let deadline = std::time::Instant::now() + Duration::from_secs(15);
@@ -2690,6 +2697,138 @@ async fn a_cancel_during_a_save_undoes_it() {
                 matches!(outcome, Ok(WriteOutcome::Written { .. })),
                 "{outcome:?}"
             );
+        },
+    )
+    .await;
+}
+
+/// Waits until a statement of another session holding `marker` waits for a
+/// lock on the server.
+async fn waits_for_a_lock(admin: &tokio_postgres::Client, marker: &str) {
+    within(async {
+        loop {
+            let waiting: i64 = admin
+                .query_one(
+                    "SELECT count(*) FROM pg_stat_activity \
+                     WHERE wait_event_type = 'Lock' AND pid <> pg_backend_pid() \
+                       AND position($1 in query) > 0",
+                    &[&marker],
+                )
+                .await
+                .unwrap()
+                .get(0);
+            if waiting > 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+}
+
+/// The names of `table`'s people, in key order, read by another session.
+async fn names_of(table: &str) -> Vec<String> {
+    admin()
+        .await
+        .query(&format!("SELECT name FROM {table} ORDER BY id"), &[])
+        .await
+        .unwrap()
+        .iter()
+        .map(|row| row.get(0))
+        .collect()
+}
+
+/// A save told to stop before it began sends nothing, and ends as a
+/// cancelled one does.
+#[tokio::test]
+async fn a_save_stopped_before_it_starts_writes_nothing() {
+    let Some(connection) = connect_as(Access::Writable).await else {
+        return;
+    };
+    on_its_own_tables(
+        &drop_table("write_stopped_early"),
+        &people("write_stopped_early"),
+        async move {
+            let admin = admin().await;
+            let pid = backend_pid(&connection).await;
+            let (columns, first) = row_of(&connection, "write_stopped_early", 1).await;
+            let changes = changes_to(
+                "write_stopped_early",
+                vec![by_id(
+                    1,
+                    vec![cell(&columns, &first, "name", "text", to("Mine"))],
+                )],
+            );
+            let stop = StopFlag::new();
+            stop.stop();
+            let outcome = within(connection.write(&changes, &stop)).await;
+            assert_eq!(outcome, Err(Error::Cancelled));
+            assert_eq!(names_of("write_stopped_early").await, ["Ada", "Bea", "Cy"]);
+            assert_eq!(state_of(&admin, pid).await, "idle");
+            // And the session saves as before.
+            let outcome = within(connection.write(&changes, &StopFlag::new())).await;
+            assert!(
+                matches!(outcome, Ok(WriteOutcome::Written { .. })),
+                "{outcome:?}"
+            );
+            assert_eq!(names_of("write_stopped_early").await, ["Mine", "Bea", "Cy"]);
+        },
+    )
+    .await;
+}
+
+/// A cancel request stops a statement that is running, and does nothing
+/// between two. Here the save is told to stop while its second read waits
+/// for a row someone else holds, and nothing is cancelled: they let go, the
+/// read comes back with the row as the page loaded it, and the save ends
+/// there, before its first `UPDATE`, as a cancelled one does.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_stop_between_two_statements_of_a_save_undoes_it() {
+    let Some(connection) = connect_as(Access::Writable).await else {
+        return;
+    };
+    on_its_own_tables(
+        &drop_table("write_stopped"),
+        &people("write_stopped"),
+        async move {
+            let admin = admin().await;
+            let pid = backend_pid(&connection).await;
+            let (columns, rows) = page_of(&connection, "write_stopped").await;
+            let name =
+                |row: usize, new: &str| vec![cell(&columns, &rows[row], "name", "text", to(new))];
+            // The second row first: its read is over when the first row's
+            // waits.
+            let changes = changes_to(
+                "write_stopped",
+                vec![by_id(2, name(1, "Second")), by_id(1, name(0, "First"))],
+            );
+            let theirs = self::admin().await;
+            theirs
+                .batch_execute("BEGIN; SELECT 1 FROM write_stopped WHERE id = 1 FOR UPDATE")
+                .await
+                .unwrap();
+            let stop = StopFlag::new();
+            let connection = std::sync::Arc::new(connection);
+            let saving = {
+                let connection = std::sync::Arc::clone(&connection);
+                let changes = changes.clone();
+                let stop = stop.clone();
+                tokio::spawn(async move { connection.write(&changes, &stop).await })
+            };
+            waits_for_a_lock(&admin, "write_stopped").await;
+            stop.stop();
+            theirs.batch_execute("ROLLBACK").await.unwrap();
+            // The save's own end, though no statement of it was cancelled.
+            assert_eq!(within(saving).await.unwrap(), Err(Error::Cancelled));
+            assert_eq!(names_of("write_stopped").await, ["Ada", "Bea", "Cy"]);
+            assert_eq!(state_of(&admin, pid).await, "idle");
+            // And the session saves as before.
+            let outcome = within(connection.write(&changes, &StopFlag::new())).await;
+            assert!(
+                matches!(outcome, Ok(WriteOutcome::Written { .. })),
+                "{outcome:?}"
+            );
+            assert_eq!(names_of("write_stopped").await, ["First", "Second", "Cy"]);
         },
     )
     .await;
@@ -2733,7 +2872,7 @@ async fn a_cancel_that_lands_on_the_commit_undoes_the_save() {
             let connection = std::sync::Arc::new(connection);
             let saving = {
                 let connection = std::sync::Arc::clone(&connection);
-                tokio::spawn(async move { connection.write(&changes).await })
+                tokio::spawn(async move { connection.write(&changes, &StopFlag::new()).await })
             };
             // Until the save's session, and no other test's, runs its COMMIT.
             within(async {
@@ -2834,7 +2973,7 @@ async fn a_row_that_cannot_be_read_back_alone_is_an_error_and_is_undone() {
                         }],
                     )],
                 );
-                let outcome = within(connection.write(&changes)).await;
+                let outcome = within(connection.write(&changes, &StopFlag::new())).await;
                 assert!(
                     matches!(&outcome, Err(Error::Query { message, .. }) if message.contains(said)),
                     "{table}: {outcome:?}"

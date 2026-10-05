@@ -271,17 +271,23 @@ impl Connection {
     /// On a read-only connection it is refused before the set is even
     /// looked at. The future must be awaited to its end and never dropped:
     /// a save dropped mid-way would leave its transaction open on the
-    /// session. The backend awaits every command to its end, and stops a
-    /// save through the session's cancel.
-    pub async fn write(&self, changes: &ChangeSet) -> Result<WriteOutcome> {
+    /// session. The backend awaits every command to its end.
+    ///
+    /// `stop` ends the save between two of its statements, where a cancel
+    /// finds nothing to stop: it is asked before every statement and once
+    /// more before `COMMIT`, and a save it ends answers
+    /// [`Error::Cancelled`] with nothing written. After that nothing is
+    /// asked, and the save is written. The caller also fires
+    /// [`CancelHandle::cancel`] for a statement already running.
+    pub async fn write(&self, changes: &ChangeSet, stop: &StopFlag) -> Result<WriteOutcome> {
         if self.access == Access::ReadOnly {
             return Err(Error::ReadOnly);
         }
         changes.check()?;
         match &self.inner {
-            Inner::Sqlite(conn) => conn.write(changes).await,
-            Inner::Postgres(conn) => conn.write(changes).await,
-            Inner::MySql(conn) => conn.write(changes).await,
+            Inner::Sqlite(conn) => conn.write(changes, stop).await,
+            Inner::Postgres(conn) => conn.write(changes, stop).await,
+            Inner::MySql(conn) => conn.write(changes, stop).await,
         }
     }
 

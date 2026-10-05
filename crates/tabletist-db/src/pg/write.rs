@@ -9,17 +9,20 @@ use super::{Conn, column_metas, query_error, row_values};
 use crate::dialect::RowUpdate;
 use crate::script::retry_cancelled;
 use crate::write::{
-    Applied, changed_since_loaded, conflicts_of, more_than_one, not_read_back, same_row_twice,
+    Applied, changed_since_loaded, conflicts_of, more_than_one, not_read_back, not_stopped,
+    same_row_twice,
 };
-use crate::{ChangeSet, ColumnMeta, Dialect, Error, Result, Value, WriteOutcome};
+use crate::{ChangeSet, ColumnMeta, Dialect, Error, Result, StopFlag, Value, WriteOutcome};
 
 impl Conn {
     /// See [`crate::Connection::write`]. Rows are read through the
     /// simple-query protocol, as a page reads them, so a loaded value and
     /// the same value read here are the same `Value`. The transaction is
     /// managed by hand, as a script's is: every way out of it is taken
-    /// here, and none is left to a value being dropped.
-    pub async fn write(&self, changes: &ChangeSet) -> Result<WriteOutcome> {
+    /// here, and none is left to a value being dropped. `stop` is asked
+    /// before each statement: a cancel request does nothing when it arrives
+    /// between two.
+    pub async fn write(&self, changes: &ChangeSet, stop: &StopFlag) -> Result<WriteOutcome> {
         // Every statement is built first: a value that cannot be sent
         // fails the save before the server hears of it.
         let mut updates = Vec::with_capacity(changes.rows.len());
@@ -33,11 +36,19 @@ impl Conn {
             }
         }
         let client = self.client.lock().await;
+        // Stopped before it began: nothing is sent.
+        not_stopped(stop)?;
         let started = Instant::now();
         // From here every path ends the transaction, whatever of it began.
         let applied = match begin(&client).await {
-            Ok(()) => apply(&client, changes, &updates).await,
+            Ok(()) => apply(&client, changes, &updates, stop).await,
             Err(error) => Err(error),
+        };
+        // The last moment a stop is heard. Once COMMIT is sent the save is
+        // written, whatever arrives after it.
+        let applied = match applied {
+            Ok(Applied::Rows(rows)) => not_stopped(stop).map(|()| Applied::Rows(rows)),
+            other => other,
         };
         // `Some` is a COMMIT the server refused, undone by the rollback
         // after it: a cancel that lands on a COMMIT before it takes hold
@@ -126,13 +137,16 @@ async fn rows(
 
 /// The steps of a save inside its transaction: lock and compare every row,
 /// update every row, read every row back. `Err` leaves the transaction to
-/// be rolled back like every other end but `Rows`.
+/// be rolled back like every other end but `Rows`, and a `stop` found
+/// before any of its statements is such an end.
 async fn apply(
     client: &tokio_postgres::Client,
     changes: &ChangeSet,
     updates: &[RowUpdate],
+    stop: &StopFlag,
 ) -> Result<Applied> {
     let dialect = Dialect::Postgres;
+    not_stopped(stop)?;
     // The table's columns and their types, to read rows as a page does.
     // Preparing it also holds the table as it is until the transaction
     // ends: nobody adds or drops a column between the reads below.
@@ -155,6 +169,7 @@ async fn apply(
     let mut conflicts = Vec::new();
     for (row, change) in changes.rows.iter().enumerate() {
         let select = dialect.select_row(&changes.object, &change.key, true);
+        not_stopped(stop)?;
         let mut found = rows(client, &select.text, &columns).await?;
         if found.len() > 1 {
             return Err(more_than_one());
@@ -176,6 +191,7 @@ async fn apply(
         return Ok(Applied::Conflicts(conflicts_of(conflicts, read)));
     }
     for (row, update) in updates.iter().enumerate() {
+        not_stopped(stop)?;
         let messages = match client
             .simple_query(&update.sql.text)
             .await
@@ -206,6 +222,7 @@ async fn apply(
     let mut saved = Vec::with_capacity(changes.rows.len());
     for change in &changes.rows {
         let select = dialect.select_row(&changes.object, &change.key, false);
+        not_stopped(stop)?;
         let mut found = rows(client, &select.text, &columns).await?;
         // A trigger the update fired can give a second row the key, or
         // take it from the first. Either way the row to hand back is no
@@ -228,7 +245,7 @@ mod tests {
     use super::super::first_text;
     use super::super::tests::{session, session_with, test_url};
     use super::*;
-    use crate::{Access, CellChange, NewValue, ObjectRef, RowChange, RowQuery, StopFlag};
+    use crate::{Access, CellChange, NewValue, ObjectRef, RowChange, RowQuery};
 
     /// The backend spawns nothing for a save, but awaits it on a task that
     /// was spawned: its future must be `Send`. This fails to compile, not
@@ -236,7 +253,8 @@ mod tests {
     #[test]
     fn a_save_can_be_awaited_on_a_spawned_task() {
         fn send<T: Send>(_: &T) {}
-        let _check = |conn: &Conn, changes: &ChangeSet| send(&conn.write(changes));
+        let _check =
+            |conn: &Conn, changes: &ChangeSet| send(&conn.write(changes, &StopFlag::new()));
     }
 
     #[test]
@@ -345,7 +363,9 @@ mod tests {
                 .unwrap();
             let conn = session(&url).await;
             assert_eq!(setting(&conn, "default_transaction_read_only").await, "on");
-            let outcome = conn.write(&body("write_unit_default", "a", "after")).await;
+            let outcome = conn
+                .write(&body("write_unit_default", "a", "after"), &StopFlag::new())
+                .await;
             assert!(
                 matches!(outcome, Ok(WriteOutcome::Written { .. })),
                 "{outcome:?}"
@@ -434,7 +454,7 @@ mod tests {
                         }],
                     }],
                 };
-                let outcome = conn.write(&changes).await;
+                let outcome = conn.write(&changes, &StopFlag::new()).await;
                 assert!(
                     matches!(outcome, Ok(WriteOutcome::Written { .. })),
                     "{key}: {outcome:?}"
@@ -493,7 +513,7 @@ mod tests {
                 let mut changes = body(table, "a", new);
                 changes.rows[0].set[0].loaded = Value::Text(held.into());
                 held = new;
-                let outcome = conn.write(&changes).await;
+                let outcome = conn.write(&changes, &StopFlag::new()).await;
                 assert!(
                     matches!(outcome, Ok(WriteOutcome::Written { .. })),
                     "{new}: {outcome:?}"
@@ -560,7 +580,7 @@ mod tests {
                         .rows
                         .extend(body("write_unit_text", text, text).rows);
                 }
-                let outcome = conn.write(&changes).await;
+                let outcome = conn.write(&changes, &StopFlag::new()).await;
                 // What came back reads as what was sent.
                 let WriteOutcome::Written { rows, .. } = outcome.unwrap() else {
                     panic!("{left}: not written");

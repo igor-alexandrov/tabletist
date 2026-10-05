@@ -101,8 +101,9 @@ pub enum Command {
         query: RowQuery,
     },
     /// Write a save's changes (see `Connection::write`). Awaited to its
-    /// end like every command: a cancel reaches it through the session's
-    /// cancel handle, and the save rolls back.
+    /// end like every command: a cancel reaches it through its stop flag,
+    /// which ends it between two statements, and through the session's
+    /// cancel handle, which stops the one that runs. The save rolls back.
     Write {
         session: SessionId,
         request: RequestId,
@@ -590,6 +591,14 @@ impl Backend {
         Some((running.request?, running.stop.is_some()))
     }
 
+    /// The save `session` runs now, and its stop flag.
+    #[cfg(test)]
+    fn saving(&self, session: SessionId) -> Option<(RequestId, StopFlag)> {
+        let watched = lock(&self.watched);
+        let running = lock(watched.get(&session)?);
+        Some((running.request?, running.save.clone()?))
+    }
+
     /// Whether cancels are being sent for the script `session` runs.
     #[cfg(test)]
     fn cancelling(&self, session: SessionId) -> bool {
@@ -624,6 +633,11 @@ struct Running {
     /// The running SQL editor script's stop flag: a Cancel and a Close set
     /// it too, so the script also stops between statements.
     stop: Option<StopFlag>,
+    /// The running save's stop flag: a Cancel and a Close set it too, so
+    /// the save also stops between two of its statements, where a cancel
+    /// finds nothing to stop. Apart from a script's: a save takes one
+    /// cancel, as any command but a script does, and none again and again.
+    save: Option<StopFlag>,
     /// Cancels are being sent for the running script, again and again
     /// (see `keep_cancelling`). Whoever stops the script first sends them:
     /// a second Cancel, a timeout or a Close after it has nothing to add.
@@ -641,19 +655,20 @@ struct Running {
 }
 
 impl Running {
-    /// Tells the running script, if there is one, to stop: it runs no
-    /// further statement, whether or not a cancel reaches the one running.
-    fn stop_script(&self) {
-        if let Some(stop) = &self.stop {
+    /// Tells the running script or save, if there is one, to stop: it
+    /// runs no further statement, whether or not a cancel reaches the one
+    /// running.
+    fn stop_run(&self) {
+        if let Some(stop) = self.stop.as_ref().or(self.save.as_ref()) {
             stop.stop();
         }
     }
 
-    /// Closes the session: the running script stops, and no command starts
-    /// after this.
+    /// Closes the session: the running script or save stops, and no
+    /// command starts after this.
     fn close(&mut self) {
         self.closed = true;
-        self.stop_script();
+        self.stop_run();
     }
 
     /// Whether a script is running and a cancel can still reach one of its
@@ -716,6 +731,7 @@ impl Drop for SessionEnd {
             let mut running = lock(&self.running);
             running.request = None;
             running.stop = None;
+            running.save = None;
             running.cancelling = false;
             running.closed = true;
         }
@@ -2019,8 +2035,9 @@ async fn run_session(
             let _ = cancel.await;
         }
         let request = request_of(command);
-        // A script's stop flag; any other command leaves it unused.
-        let script_stop = StopFlag::new();
+        // The stop flag of a script or a save; any other command leaves it
+        // unused.
+        let run_stop = StopFlag::new();
         let skipped = {
             let mut running = lock(&running);
             // Closed while this command waited above: checked together
@@ -2039,8 +2056,8 @@ async fn run_session(
                 running.request = request;
                 // In the same critical section, so a Cancel that arrives
                 // right after the run starts always finds the flag.
-                running.stop =
-                    matches!(command, Command::RunSql { .. }).then(|| script_stop.clone());
+                running.stop = matches!(command, Command::RunSql { .. }).then(|| run_stop.clone());
+                running.save = matches!(command, Command::Write { .. }).then(|| run_stop.clone());
             }
             skipped
         };
@@ -2131,7 +2148,7 @@ async fn run_session(
                 // own transaction. One it could not end comes back as a
                 // lost connection, and the session is dropped below: it may
                 // still be able to write.
-                let result = connection.write(changes).await;
+                let result = connection.write(changes, &run_stop).await;
                 #[cfg(test)]
                 let result = if lock(&running).loses == Some(*request) {
                     Err(Error::ConnectionLost(
@@ -2169,21 +2186,19 @@ async fn run_session(
                     Timer::start(
                         *request,
                         after,
-                        script_stop.clone(),
+                        run_stop.clone(),
                         connection.cancel_handle(),
                         Arc::clone(&running),
                     )
                 });
                 // Awaited to its end whatever stops it: the script rolls
                 // back and leaves the session as it found it.
-                let result = connection
-                    .run_script(statements, *limit, &script_stop)
-                    .await;
+                let result = connection.run_script(statements, *limit, &run_stop).await;
                 let timed_out = match timer {
                     Some(timer) => timer.end().await,
                     None => None,
                 };
-                let cancel = cancel_reason(&script_stop, timed_out, &result);
+                let cancel = cancel_reason(&run_stop, timed_out, &result);
                 let lost = lost_error(&result);
                 outbox.emit(Event::SqlRan {
                     session: *session,
@@ -2220,6 +2235,7 @@ async fn run_session(
             let mut running = lock(&running);
             running.request = None;
             running.stop = None;
+            running.save = None;
             running.cancelling = false;
         }
         if let Some(error) = lost {
@@ -2255,8 +2271,9 @@ fn send_cancel(cancel: &CancelHandle) -> impl Future<Output = ()> + Send + 'stat
 /// The user's cancel of `request`. For what the session runs now: a script
 /// is stopped and cancelled until it is finishing (see `keep_sending`); one
 /// that is being cancelled already takes one more cancel at once. Any other
-/// command takes one cancel. A request that is not running is skipped when
-/// its turn comes.
+/// command takes one cancel, and a save is stopped before it: the cancel
+/// may find it between two statements. A request that is not running is
+/// skipped when its turn comes.
 fn cancel_request<C>(
     running: &Arc<Mutex<Running>>,
     request: RequestId,
@@ -2272,8 +2289,8 @@ fn cancel_request<C>(
         return;
     }
     // Before a cancel is sent: a script it ends at once must already see
-    // who stopped it.
-    state.stop_script();
+    // who stopped it, and a save must not start its next statement.
+    state.stop_run();
     if state.start_cancelling() {
         // More than one: a cancel that reaches the server in the gap
         // between two of the script's queries is lost, and without a
@@ -3873,14 +3890,14 @@ mod tests {
     fn a_cancel_is_not_sent_to_a_script_that_is_cleaning_up() {
         // Not a script: there is none to keep cancelling.
         let other = Running::default();
-        other.stop_script();
+        other.stop_run();
         assert!(!other.script_takes_a_cancel());
 
         let stop = StopFlag::new();
         let script = running_script(&stop);
         assert!(script.script_takes_a_cancel());
         assert!(!stop.is_stopped());
-        script.stop_script();
+        script.stop_run();
         assert!(stop.is_stopped());
         assert!(script.script_takes_a_cancel());
 
@@ -3889,7 +3906,7 @@ mod tests {
         let stop = StopFlag::new();
         let finishing = running_script(&stop);
         stop.finish();
-        finishing.stop_script();
+        finishing.stop_run();
         assert!(stop.is_stopped());
         assert!(!finishing.script_takes_a_cancel());
     }
@@ -4704,6 +4721,163 @@ mod tests {
             ),
             "{answered:?}"
         );
+    }
+
+    /// A save of the first `rows` rows of the fixture's `big`: long enough
+    /// to be cancelled while it runs.
+    fn long_save(rows: i64) -> tabletist_db::ChangeSet {
+        tabletist_db::ChangeSet {
+            object: ObjectRef::new("main", "big"),
+            rows: (1..=rows)
+                .map(|id| tabletist_db::RowChange {
+                    key: vec![("id".into(), Value::Int(id))],
+                    set: vec![tabletist_db::CellChange {
+                        column: "label".into(),
+                        type_name: "TEXT".into(),
+                        loaded: Value::Text(format!("row {id}").into()),
+                        new: tabletist_db::NewValue::Text("saved".into()),
+                    }],
+                })
+                .collect(),
+        }
+    }
+
+    /// The label of the first row of the fixture's `big`, asked as
+    /// `request`.
+    fn first_label(backend: &mut Backend, session: SessionId, request: RequestId) -> Value {
+        backend.send(Command::FetchRows {
+            session,
+            request,
+            query: RowQuery::new(ObjectRef::new("main", "big"), 1),
+        });
+        match backend.wait(WAIT) {
+            Some(Event::Rows {
+                result: Ok(page), ..
+            }) => page.rows[0][1].clone(),
+            other => panic!("expected rows, got {other:?}"),
+        }
+    }
+
+    /// The state of a session running request 2, a save with this flag.
+    fn running_save(stop: &StopFlag) -> Running {
+        Running {
+            request: Some(RequestId(2)),
+            save: Some(stop.clone()),
+            ..Running::default()
+        }
+    }
+
+    /// A save is many statements, and a cancel stops only one that is
+    /// running: between two of them it is lost. So the session gives each
+    /// save a stop flag, and a Cancel sets it before it cancels.
+    #[test]
+    fn a_cancel_stops_a_running_save_and_nothing_is_written() {
+        let (_dir, mut backend, session) = connected_as(Access::Writable);
+        backend.send(Command::Write {
+            session,
+            request: RequestId(2),
+            changes: long_save(3000),
+        });
+        let deadline = std::time::Instant::now() + WAIT;
+        let stop = loop {
+            if let Some((RequestId(2), stop)) = backend.saving(session) {
+                break stop;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the session must run the save with a stop flag"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        };
+        assert!(!stop.is_stopped());
+        backend.send(Command::Cancel {
+            session,
+            request: RequestId(2),
+        });
+        match backend.wait(WAIT) {
+            Some(Event::Written {
+                session: SessionId(1),
+                request: RequestId(2),
+                result,
+            }) => assert_eq!(result, Err(Error::Cancelled)),
+            other => panic!("expected a cancelled save, got {other:?}"),
+        }
+        assert!(stop.is_stopped());
+        assert_eq!(
+            first_label(&mut backend, session, RequestId(3)),
+            Value::Text("row 1".into())
+        );
+        // The flag was that save's: the session has none when no save runs,
+        // and the next save has its own.
+        assert!(backend.saving(session).is_none());
+        backend.send(Command::Write {
+            session,
+            request: RequestId(4),
+            changes: long_save(2),
+        });
+        assert!(matches!(
+            backend.wait(WAIT),
+            Some(Event::Written {
+                request: RequestId(4),
+                result: Ok(WriteOutcome::Written { .. }),
+                ..
+            })
+        ));
+        assert_eq!(
+            first_label(&mut backend, session, RequestId(5)),
+            Value::Text("saved".into())
+        );
+    }
+
+    #[test]
+    fn a_cancel_stops_a_running_save_and_is_sent_once() {
+        let (outbox, _received) = quiet_outbox();
+        one_thread().block_on(async {
+            let (_dir, connection) = sqlite_connection().await;
+            let session = SessionId(1);
+            let stop = StopFlag::new();
+            let (handle, _commands, _stopped) = session_handle(&connection, running_save(&stop));
+            let running = Arc::clone(&handle.running);
+            let (mut worker, _ready) = Worker::new(outbox, Keyring::memory());
+            worker.sessions.insert(session, handle);
+            // A save still queued has no flag yet: it is skipped when its
+            // turn comes, as any queued request is.
+            worker.handle(Command::Cancel {
+                session,
+                request: RequestId(3),
+            });
+            assert!(!stop.is_stopped());
+            assert!(lock(&running).skip.contains(&RequestId(3)));
+            assert!(lock(&running).cancels.is_empty());
+            worker.handle(Command::Cancel {
+                session,
+                request: RequestId(2),
+            });
+            // Between two statements nothing hears a cancel: the flag does.
+            assert!(stop.is_stopped());
+            // And one cancel for the statement that runs, as for any
+            // command but a script: none are sent again and again.
+            assert_eq!(lock(&running).cancels.len(), 1);
+            assert!(!lock(&running).cancelling);
+        });
+    }
+
+    #[test]
+    fn closing_a_session_stops_its_save() {
+        let (outbox, _received) = quiet_outbox();
+        one_thread().block_on(async {
+            let (_dir, connection) = sqlite_connection().await;
+            let session = SessionId(1);
+            let stop = StopFlag::new();
+            let (handle, _commands, _stopped) = session_handle(&connection, running_save(&stop));
+            let running = Arc::clone(&handle.running);
+            let (mut worker, _ready) = Worker::new(outbox, Keyring::memory());
+            worker.sessions.insert(session, handle);
+            worker.handle(Command::Close { session });
+            assert!(stop.is_stopped());
+            assert!(lock(&running).closed);
+            assert!(!lock(&running).cancelling);
+        });
     }
 
     /// A save whose transaction could not be ended says the connection is

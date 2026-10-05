@@ -8,15 +8,16 @@ use rusqlite::types::ValueRef;
 use super::{end_transaction, from_sqlite, map_error};
 use crate::dialect::RowUpdate;
 use crate::write::{
-    Applied, changed_since_loaded, conflicts_of, more_than_one, not_read_back, same_row_twice,
-    spelled_otherwise,
+    Applied, changed_since_loaded, conflicts_of, more_than_one, not_read_back, not_stopped,
+    same_row_twice, spelled_otherwise,
 };
-use crate::{ChangeSet, Dialect, Error, Result, RowChange, Sql, Value, WriteOutcome};
+use crate::{ChangeSet, Dialect, Error, Result, RowChange, Sql, StopFlag, Value, WriteOutcome};
 
 pub(super) fn write(
     connection: &rusqlite::Connection,
     changes: &ChangeSet,
     journal_mode: &str,
+    stop: &StopFlag,
 ) -> Result<WriteOutcome> {
     // Every statement is built first: a key that may not be the row's, or
     // a value that cannot be sent, fails the save before the file is even
@@ -30,17 +31,23 @@ pub(super) fn write(
             Err(error) => return Ok(WriteOutcome::Failed { row, error }),
         }
     }
+    // Stopped before it began: the session is not touched.
+    not_stopped(stop)?;
     let started = Instant::now();
-    let applied =
-        begin(connection, journal_mode).and_then(|()| apply(connection, changes, &updates));
+    let applied = begin(connection, journal_mode, stop)
+        .and_then(|()| apply(connection, changes, &updates, stop));
+    // Before the COMMIT is the last moment a stop is heard. Once it runs
+    // the save is written, whatever arrives after it.
     let committed = match &applied {
-        Ok(Applied::Rows(_)) => connection.execute_batch("COMMIT").map_err(map_error),
+        Ok(Applied::Rows(_)) => {
+            not_stopped(stop).and_then(|()| connection.execute_batch("COMMIT").map_err(map_error))
+        }
         _ => Ok(()),
     };
-    // Whatever is still open is undone (a conflict, a failure, a COMMIT
-    // that did not go through), and the session refuses writes again. A
-    // session that cannot be put back is closed: it may still be able to
-    // write.
+    // Whatever is still open is undone (a conflict, a failure, a stop, a
+    // COMMIT that did not go through), and the session refuses writes
+    // again. A session that cannot be put back is closed: it may still be
+    // able to write.
     let closed = end_transaction(connection).map_err(|error| {
         Error::ConnectionLost(format!("could not end the save's transaction: {error}"))
     });
@@ -53,8 +60,9 @@ pub(super) fn write(
 /// feel (a journal mode of its own, exclusive locking, CHECK constraints
 /// ignored, triggers that fire themselves, an UPDATE that gives its count
 /// as a row, a transaction still open), lifts `query_only`, and takes the
-/// file.
-fn begin(connection: &rusqlite::Connection, journal_mode: &str) -> Result<()> {
+/// file, unless `stop` says not to: taking it can wait for another program
+/// to let go.
+fn begin(connection: &rusqlite::Connection, journal_mode: &str, stop: &StopFlag) -> Result<()> {
     // From no transaction, as on the other drivers. Nothing in the app
     // leaves one open (a script's is ended and checked), and one left open
     // would refuse the save's own BEGIN. It is undone and never joined:
@@ -89,7 +97,10 @@ fn begin(connection: &rusqlite::Connection, journal_mode: &str) -> Result<()> {
         // statement without rows fails.
         .and_then(|()| connection.pragma_update(None, "count_changes", false))
         .and_then(|()| connection.pragma_update(None, "query_only", false))
-        .and_then(|()| connection.execute_batch("BEGIN IMMEDIATE"))
+        .map_err(map_error)?;
+    not_stopped(stop)?;
+    connection
+        .execute_batch("BEGIN IMMEDIATE")
         .map_err(map_error)
 }
 
@@ -199,10 +210,15 @@ fn ambiguous<'a>(change: &'a RowChange, columns: &[String]) -> Option<&'a str> {
         })
 }
 
+/// The steps of a save inside its transaction: read and compare every row,
+/// update every row, read every row back. `stop` is asked before each
+/// statement, and a save it ends is undone like every other end but
+/// `Rows`.
 fn apply(
     connection: &rusqlite::Connection,
     changes: &ChangeSet,
     updates: &[RowUpdate],
+    stop: &StopFlag,
 ) -> Result<Applied> {
     let dialect = Dialect::Sqlite;
     // The transaction holds the file, so a row read here is the row the
@@ -214,6 +230,7 @@ fn apply(
     let mut conflicts = Vec::new();
     for (row, change) in changes.rows.iter().enumerate() {
         let select = dialect.select_row(&changes.object, &change.key, true);
+        not_stopped(stop)?;
         let (columns, mut found) = read(connection, &select)?;
         if let Some(name) = ambiguous(change, &columns) {
             return Err(Error::query(format!(
@@ -262,6 +279,7 @@ fn apply(
         return Ok(Applied::Conflicts(conflicts_of(conflicts, rows_read)));
     }
     for (row, update) in updates.iter().enumerate() {
+        not_stopped(stop)?;
         let params = rusqlite::params_from_iter(update.sql.params.iter().map(exact));
         let touched = match connection
             .execute(&update.sql.text, params)
@@ -285,6 +303,7 @@ fn apply(
     let mut rows = Vec::with_capacity(changes.rows.len());
     for change in &changes.rows {
         let select = dialect.select_row(&changes.object, &change.key, false);
+        not_stopped(stop)?;
         let (_, mut found) = read(connection, &select)?;
         // One row still: a trigger the update fired can have made another
         // that the key also finds, and then which one was saved is not

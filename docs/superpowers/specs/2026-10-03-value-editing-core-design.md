@@ -717,13 +717,16 @@ The backend has `Command::Write { session, request, changes }` and
 `Event::Written { session, request, result }`, queued and answered like
 every request; the reducer finds the tab by the request. A save's request
 is one of its tab's pending requests, so `Mod+.` (and the bar's Cancel)
-cancels a running save like any query, through the session's cancel
-handle; the `write` future is awaited to its end, never dropped, and rolls
-back. A cancel only reaches a statement that is running: one that arrives
-between two of a save's statements is lost on PostgreSQL and MySQL, and
-the save goes on and commits. One that reaches the `COMMIT` before it
-takes hold undoes the save, which answers `Cancelled`, and the tab says
-"Save cancelled. Nothing was written."
+cancels a running save like any query: the backend sets the save's stop
+flag (`StopFlag`, as for a script) and fires the session's cancel handle;
+the `write` future is awaited to its end, never dropped, and rolls back.
+A cancel only reaches a statement that is running, so the flag is what
+honours one that arrives between two of a save's statements: every driver
+asks it before each statement it sends and once more before `COMMIT`, and
+a save it ends answers `Cancelled` with nothing written. A cancel that
+reaches the `COMMIT` before it takes hold undoes the save, which answers
+`Cancelled` too. After that it is too late: the save is written and says
+so. A cancelled save's tab says "Save cancelled. Nothing was written."
 
 What a save came to when it wrote nothing is kept with the set, which
 stays as it was (`edit::Note`), and is said in the bar or in the Omarchy
@@ -888,9 +891,10 @@ For step 5, the conflict dialog:
 
 Open in the save as the grid shows it:
 
-- A cancel between two of a save's statements is lost on PostgreSQL and
-  MySQL: the save commits and says so. The bar's Cancel is honest only
-  while a statement runs. Whether the Saving state should say more is
+- A cancel is honoured until `COMMIT` is sent: between two of a save's
+  statements through the save's stop flag, and on the `COMMIT` itself when
+  it reaches it before it takes hold. After that it is too late: the save
+  is written and says so. Whether the Saving state should say more is
   open.
 - The Leave prompt's Save, when the session went while the prompt was up,
   closes the prompt, saves nothing, drops the held action and leaves no

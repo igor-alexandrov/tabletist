@@ -60,9 +60,9 @@ pub enum StatementOutcome {
     Cancelled,
 }
 
-/// Tells a running script to stop: checked between statements, and by
-/// SQLite while a statement runs. The backend sets it together with the
-/// session's cancel.
+/// Tells a running script or save to stop: checked between statements,
+/// and by SQLite while a script's statement runs. The backend sets it
+/// together with the session's cancel.
 ///
 /// One flag per run: a stop cannot be undone, and dropping the run sets it.
 #[derive(Debug, Clone, Default)]
