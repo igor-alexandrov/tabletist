@@ -366,10 +366,14 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, id: TabId) {
                 .map(|column| crate::ui::value_tags::Tags::of(column, structure).when(value_tags))
                 .collect();
             let tag_of = |col: usize, value: &Value| tags[col].style(value);
-            // The row's name: its key, else its number.
+            // The row's name: its key, else its number. The key a save
+            // finds the row by (`row_key`), so the bar and a save's line
+            // name the row as the title does: a primary key, or else a
+            // unique index. Of one column only: more do not fit the title.
             let (key_column, key_value) = structure
-                .filter(|structure| structure.primary_key.len() == 1)
-                .and_then(|structure| key_parts(source.columns, row, &structure.primary_key))
+                .and_then(tabletist_db::Structure::row_key)
+                .filter(|key| key.len() == 1)
+                .and_then(|key| key_parts(source.columns, row, &key))
                 .and_then(|mut parts| parts.pop())
                 .unzip();
             let number = source.offset + cell.row as u64 + 1;

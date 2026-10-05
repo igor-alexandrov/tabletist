@@ -15148,6 +15148,103 @@ mod tests {
         }
     }
 
+    /// A table can have its rows told apart by a unique index and no
+    /// primary key. The row panel names such a row by that key, as the bar
+    /// and a save's line do: one row, one name.
+    #[test]
+    fn the_row_panel_names_a_row_by_its_row_key_as_the_bar_does() {
+        for look in Look::ALL {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            let tab = harness.connect_fake();
+            harness.app.apply(Action::OpenObject {
+                tab,
+                object: tabletist_db::ObjectRef::new("main", "users"),
+                kind: tabletist_db::ObjectKind::Table,
+                pin: true,
+            });
+            let mut structure = crate::testing::fixture_structure();
+            structure.primary_key.clear();
+            structure.indexes = vec![tabletist_db::IndexInfo {
+                name: "users_email_key".into(),
+                columns: vec!["email".into()],
+                key_columns: Some(vec!["email".into()]),
+                unique: true,
+                primary: false,
+                method: None,
+                partial: false,
+            }];
+            assert_eq!(structure.row_key(), Some(vec!["email".to_owned()]));
+            harness.answer_structure(structure);
+            harness.answer_rows(crate::testing::page(5, false));
+            let id = harness.app.workspace(tab).unwrap().active_tab.unwrap();
+            select(&mut harness, tab, id, (2, 0));
+            assert!(panel_shows(&mut harness), "{}", look.name);
+            // What the bar and a save's line call the third row.
+            let name = "email user3@example.com";
+            let conflict = crate::edit::Note::Conflict {
+                row: 2,
+                gone: false,
+                others: 0,
+            };
+            let object = harness.app.workspace(tab).unwrap().object_tab(id).unwrap();
+            assert_eq!(
+                crate::ui::pending_bar::note_text(&conflict, object, harness.app.locale),
+                format!("Row {name} changed on the server. Nothing was written."),
+                "{}",
+                look.name
+            );
+            // And the panel's title: the same name, in each look's form.
+            if look.terminal {
+                let painted: Vec<&str> = harness
+                    .painted
+                    .iter()
+                    .map(|(text, _)| text.as_str())
+                    .collect();
+                assert!(painted.contains(&name), "{}: {painted:?}", look.name);
+            } else {
+                let tree = harness.settle();
+                assert!(
+                    harness.has(&format!("Row \u{b7} {name}")),
+                    "{}: {:?}",
+                    look.name,
+                    crate::testing::labels(&tree)
+                );
+            }
+        }
+    }
+
+    /// The title has room for one column and its value: a row whose key is
+    /// several columns keeps its number there, as it did.
+    #[test]
+    fn a_row_keyed_by_several_columns_is_titled_by_its_number() {
+        for look in desktop_looks() {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            let tab = harness.connect_fake();
+            harness.app.apply(Action::OpenObject {
+                tab,
+                object: tabletist_db::ObjectRef::new("main", "users"),
+                kind: tabletist_db::ObjectKind::Table,
+                pin: true,
+            });
+            let mut structure = crate::testing::fixture_structure();
+            structure.primary_key = vec!["id".into(), "email".into()];
+            harness.answer_structure(structure);
+            harness.answer_rows(crate::testing::page(5, false));
+            let id = harness.app.workspace(tab).unwrap().active_tab.unwrap();
+            select(&mut harness, tab, id, (2, 0));
+            assert!(panel_shows(&mut harness), "{}", look.name);
+            let tree = harness.settle();
+            assert!(
+                crate::testing::node(&tree, "Row 3", egui::accesskit::Role::Label).is_some(),
+                "{}: {:?}",
+                look.name,
+                crate::testing::labels(&tree)
+            );
+        }
+    }
+
     #[test]
     fn a_conflict_is_a_line_in_the_bar_and_the_set_stays() {
         use tabletist_db::{Conflict, WriteOutcome};
