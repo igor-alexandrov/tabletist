@@ -17,9 +17,11 @@ fn sources() -> Vec<(String, String)> {
     }
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut paths = Vec::new();
-    walk(&root.join("src"), &mut paths);
-    walk(&root.join("crates/tabletist-db/src"), &mut paths);
-    assert!(paths.len() > 40, "found the sources");
+    for dir in ["src", "crates/tabletist-db/src"] {
+        let before = paths.len();
+        walk(&root.join(dir), &mut paths);
+        assert!(paths.len() > before, "no sources under {dir}");
+    }
     paths.sort();
     paths
         .into_iter()
@@ -35,13 +37,36 @@ fn sources() -> Vec<(String, String)> {
         .collect()
 }
 
+/// Where a file's `tests` module starts: `#[cfg(test)]` at the margin, then
+/// `mod tests {`, with nothing between them but other attributes. Only that
+/// module by that name: a `#[cfg(test)] mod helpers;` half way down a file
+/// must not hide the code after it.
+fn tests_start(text: &str) -> Option<usize> {
+    let mut at = 0;
+    let mut marked = None;
+    for line in text.split_inclusive('\n') {
+        let code = line.trim_end();
+        if code == "#[cfg(test)]" {
+            marked = Some(at);
+        } else if let Some(start) = marked {
+            let module = code.strip_suffix("mod tests {");
+            if module.is_some_and(|before| before.is_empty() || before.starts_with("pub")) {
+                return Some(start);
+            }
+            if !code.starts_with("#[") {
+                marked = None;
+            }
+        }
+        at += line.len();
+    }
+    None
+}
+
 /// The code of a file on one line: no comment lines, and nothing from its
 /// `tests` module on. A comparison split over lines reads as one, and a
 /// test may compare what it likes.
 fn code(text: &str) -> String {
-    let text = text
-        .find("#[cfg(test)]\nmod tests {")
-        .map_or(text, |at| &text[..at]);
+    let text = tests_start(text).map_or(text, |at| &text[..at]);
     text.lines()
         .map(str::trim)
         .filter(|line| !line.starts_with("//"))
@@ -57,6 +82,10 @@ fn comparisons(code: &str) -> Vec<String> {
     let mut found = Vec::new();
     for name in ["Driver::", "Dialect::"] {
         for (at, _) in code.match_indices(name) {
+            // The end of a longer name is another type's.
+            if code[..at].ends_with(|c: char| c.is_alphanumeric() || c == '_') {
+                continue;
+            }
             let before = code[..at]
                 .trim_end_matches("tabletist_db::")
                 .trim_end_matches("crate::")
@@ -65,7 +94,7 @@ fn comparisons(code: &str) -> Vec<String> {
                 .trim_end();
             let variant = code[at + name.len()..]
                 .chars()
-                .take_while(char::is_ascii_alphanumeric)
+                .take_while(|c| c.is_alphanumeric() || *c == '_')
                 .count();
             let end = at + name.len() + variant;
             let after = code[end..].trim_start();
@@ -110,6 +139,8 @@ fn the_scan_finds_each_way_to_compare() {
         "b'#' if dialect\n    == Dialect::MySql => comment(),",
         "if matches!(self.dialect, Dialect::Postgres | Dialect::Sqlite) {",
         "if matches!(driver.dialect(), Dialect::MySql) {",
+        "if Dialect::Ms_Sql == dialect {",
+        "#[cfg(test)]\nmod helpers;\n\nfn file(driver: Driver) -> bool {\n    driver == Driver::Sqlite\n}",
         "let file = saved.map(|saved| saved.driver) == Some(Driver::Sqlite);",
         "if drivers.iter().any(|driver| driver == &Driver::Sqlite) {",
     ] {
@@ -121,8 +152,11 @@ fn the_scan_finds_each_way_to_compare() {
         "// if driver == Driver::Sqlite",
         "let tokens = tokenize(Dialect::Postgres, text);",
         "#[cfg(test)]\nmod tests {\n    assert!(driver == Driver::Sqlite);\n}",
+        "#[cfg(test)]\n#[allow(clippy::too_many_lines)]\npub(crate) mod tests {\n    assert!(driver == Driver::Sqlite);\n}",
         "Dialect::Postgres if first == \"PREPARE\" => refuse(),",
         "if matches!(kind, TokenKind::Word) && is_keyword(Dialect::Postgres, word) {",
+        "if error == DriverError::Closed || kind != SqlDialect::Ansi {",
+        "if kind == MyDriver::Sqlite {",
     ] {
         assert_eq!(comparisons(&code(text)), [""; 0], "{text}");
     }
