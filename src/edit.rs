@@ -730,6 +730,8 @@ pub struct Saving {
 pub struct Saved {
     /// When, for the cells that show it for a moment.
     pub at: Instant,
+    /// In the order of the set: by row, then by column. The grid finds a
+    /// cell in it by that order.
     pub cells: Vec<CellPos>,
     pub changes: usize,
     pub rows: usize,

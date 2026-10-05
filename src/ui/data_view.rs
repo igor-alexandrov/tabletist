@@ -1529,6 +1529,17 @@ impl<'a> Changes<'a> {
         }
     }
 
+    /// Whether the last save wrote the cell `at` (row, column) and it still
+    /// shows it. Asked for every cell a frame draws, of a list that can
+    /// hold a whole page's cells: found by halving, never by reading it
+    /// through. The list is in the order of the set it came from, by row
+    /// and then by column (`Saved::cells`).
+    fn wrote(&self, at: (usize, usize)) -> bool {
+        self.saved
+            .binary_search_by_key(&at, |cell| (cell.row, cell.col))
+            .is_ok()
+    }
+
     /// Marks `cell`, the page's cell `at` (row, column) that loaded as
     /// `loaded`, and says what it tells the pointer.
     fn mark(
@@ -1557,7 +1568,7 @@ impl<'a> Changes<'a> {
             return;
         }
         let Some(pending) = self.cells.get(&at) else {
-            cell.mark = if self.saved.contains(&CellPos { row, col }) {
+            cell.mark = if self.wrote(at) {
                 Mark::Saved
             } else if self.computed.get(col).copied().unwrap_or(false) {
                 Mark::Locked

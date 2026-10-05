@@ -11466,6 +11466,47 @@ mod tests {
     }
 
     #[test]
+    fn every_cell_a_save_wrote_is_green_wherever_it_is_in_the_set() {
+        for look in Look::ALL {
+            let (mut harness, tab, id) = editable_in(look);
+            let palette = harness.app.palette;
+            // The first, a middle and the last row of the page: the grid
+            // finds each in the save's list by its place.
+            let written = [(0, "a@x.io"), (2, "c@x.io"), (4, "e@x.io")];
+            for (row, email) in written {
+                make_pending(&mut harness, tab, id, (row, 1), email);
+            }
+            harness.app.workspace_mut(tab).unwrap().row_panel = false;
+            harness.app.apply(Action::WriteEdits { tab, id });
+            harness.settle();
+            let rows = written.map(|(row, email)| {
+                vec![
+                    tabletist_db::Value::Int(row as i64 + 1),
+                    tabletist_db::Value::Text(email.into()),
+                    tabletist_db::Value::Null,
+                ]
+            });
+            harness.answer_written(Ok(tabletist_db::WriteOutcome::Written {
+                rows: rows.to_vec(),
+                elapsed: std::time::Duration::from_millis(14),
+            }));
+            harness.settle();
+            let green = Tone::Success.fill(&look, &palette);
+            for (_, email) in written {
+                assert!(
+                    filled_behind(&harness, email, green),
+                    "{email} {}",
+                    look.name
+                );
+            }
+            // And no cell between them.
+            for other in ["user2@example.com", "user4@example.com"] {
+                assert!(!filled_behind(&harness, other, green), "{}", look.name);
+            }
+        }
+    }
+
+    #[test]
     fn a_sql_result_is_drawn_as_before() {
         for look in Look::ALL {
             let mut harness = Harness::new();
