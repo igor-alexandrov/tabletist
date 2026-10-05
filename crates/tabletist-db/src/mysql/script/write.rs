@@ -434,7 +434,7 @@ mod tests {
         .collect();
         let outcome = tokio::time::timeout(
             Duration::from_secs(10),
-            conn.run_script(&texts, 10, ScriptMode::Write, &StopFlag::new()),
+            conn.script(&texts, 10, ScriptMode::Write, &StopFlag::new()),
         )
         .await
         .expect("the run hung")

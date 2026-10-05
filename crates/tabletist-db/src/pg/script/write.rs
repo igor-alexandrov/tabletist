@@ -200,7 +200,7 @@ mod tests {
         let texts: Vec<String> = script.iter().map(|&text| text.to_owned()).collect();
         tokio::time::timeout(
             Duration::from_secs(10),
-            conn.run_script(&texts, 10, ScriptMode::Write, &StopFlag::new()),
+            conn.script(&texts, 10, ScriptMode::Write, &StopFlag::new()),
         )
         .await
         .expect("the run hung")

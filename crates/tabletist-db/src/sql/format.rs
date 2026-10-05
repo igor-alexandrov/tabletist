@@ -658,7 +658,10 @@ impl<'a> Layout<'a> {
     /// though it can be a name: not on MySQL, where it may be an alias and
     /// an alias's case can matter.
     fn structure(&self, index: usize) -> bool {
-        self.dialect != Dialect::MySql && self.word(index, STRUCTURE)
+        match self.dialect {
+            Dialect::MySql => false,
+            Dialect::Postgres | Dialect::Sqlite => self.word(index, STRUCTURE),
+        }
     }
 
     /// A comment inside a query.
@@ -735,12 +738,16 @@ impl<'a> Layout<'a> {
             let item = self.items[index];
             item.kind == TokenKind::Operator && item.text == "-"
         };
-        self.dialect == Dialect::MySql
-            && index >= 2
-            && self.items[index].space.is_empty()
-            && minus(index - 1)
-            && self.items[index - 1].space.is_empty()
-            && minus(index - 2)
+        match self.dialect {
+            Dialect::MySql => {
+                index >= 2
+                    && self.items[index].space.is_empty()
+                    && minus(index - 1)
+                    && self.items[index - 1].space.is_empty()
+                    && minus(index - 2)
+            }
+            Dialect::Postgres | Dialect::Sqlite => false,
+        }
     }
 
     /// Whether the item at `index` is a name, whatever it spells: it

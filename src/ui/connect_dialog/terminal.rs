@@ -283,14 +283,17 @@ pub(super) fn terminal_body(
             terminal_row_of(ui, &heading, Group::Buttons.height(), skin, |ui, _| {
                 environment_choice(ui, form, &heading, skin);
             });
-            if form.driver == Driver::Sqlite {
-                terminal_section(ui, &skin.say("Database"), skin);
-                file_field(ui, form, skin, actions);
-            } else {
-                terminal_section(ui, &skin.say("Server"), skin);
-                terminal_server(ui, form, skin);
-                terminal_section(ui, &skin.say("Security"), skin);
-                terminal_security(ui, form, skin, actions);
+            match form.driver {
+                Driver::Sqlite => {
+                    terminal_section(ui, &skin.say("Database"), skin);
+                    file_field(ui, form, skin, actions);
+                }
+                Driver::Postgres | Driver::MySql => {
+                    terminal_section(ui, &skin.say("Server"), skin);
+                    terminal_server(ui, form, skin);
+                    terminal_section(ui, &skin.say("Security"), skin);
+                    terminal_security(ui, form, skin, actions);
+                }
             }
             terminal_section(ui, &skin.say("Safety"), skin);
             // A line of text, as tall as the text.

@@ -281,18 +281,21 @@ pub(super) fn body(
             } else {
                 identity(ui, form, skin, focus_name, actions);
                 ui.add_space(18.0);
-                if form.driver == Driver::Sqlite {
-                    fieldset(ui, &skin.say("Database"), skin, |ui| {
-                        file_field(ui, form, skin, actions);
-                    });
-                } else {
-                    fieldset(ui, &skin.say("Server"), skin, |ui| {
-                        server(ui, form, skin);
-                    });
-                    ui.add_space(18.0);
-                    fieldset(ui, &skin.say("Security"), skin, |ui| {
-                        security(ui, form, skin, actions);
-                    });
+                match form.driver {
+                    Driver::Sqlite => {
+                        fieldset(ui, &skin.say("Database"), skin, |ui| {
+                            file_field(ui, form, skin, actions);
+                        });
+                    }
+                    Driver::Postgres | Driver::MySql => {
+                        fieldset(ui, &skin.say("Server"), skin, |ui| {
+                            server(ui, form, skin);
+                        });
+                        ui.add_space(18.0);
+                        fieldset(ui, &skin.say("Security"), skin, |ui| {
+                            security(ui, form, skin, actions);
+                        });
+                    }
                 }
                 ui.add_space(18.0);
                 safety(ui, form, skin);

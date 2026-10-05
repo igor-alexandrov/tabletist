@@ -22,7 +22,7 @@ impl Conn {
     /// here, and none is left to a value being dropped. `stop` is asked
     /// before each statement: a cancel request does nothing when it arrives
     /// between two.
-    pub async fn write(&self, changes: &ChangeSet, stop: &StopFlag) -> Result<WriteOutcome> {
+    pub(super) async fn save(&self, changes: &ChangeSet, stop: &StopFlag) -> Result<WriteOutcome> {
         // Every statement is built first: a value that cannot be sent
         // fails the save before the server hears of it. Text that holds a
         // NUL is such a value, which the builder refuses: the driver could
@@ -234,6 +234,7 @@ mod tests {
     use super::super::first_text;
     use super::super::tests::{session, session_with, test_url};
     use super::*;
+    use crate::adapter::Adapter;
     use crate::{Access, CellChange, NewValue, ObjectRef, RowChange, RowQuery};
 
     /// The backend spawns nothing for a save, but awaits it on a task that
@@ -639,7 +640,7 @@ mod tests {
         script.push("SELECT set_config('standard_conforming_strings', 'off', false)".into());
         script.push("SHOW standard_conforming_strings".into());
         let outcome = conn
-            .run_script(&script, 10, crate::ScriptMode::ReadOnly, &StopFlag::new())
+            .script(&script, 10, crate::ScriptMode::ReadOnly, &StopFlag::new())
             .await
             .unwrap();
         // Every one of them took, inside the script.

@@ -1345,12 +1345,15 @@ impl App {
                     // A port left at the old driver's default follows the driver.
                     let old_default = form.driver.default_port().to_string();
                     form.driver = driver;
-                    if driver != Driver::Sqlite {
-                        if form.port.trim().is_empty() || form.port.trim() == old_default {
-                            form.port = driver.default_port().to_string();
-                        }
-                        if form.password_mode == PasswordMode::None {
-                            form.password_mode = PasswordMode::Keyring;
+                    match driver {
+                        Driver::Sqlite => {}
+                        Driver::Postgres | Driver::MySql => {
+                            if form.port.trim().is_empty() || form.port.trim() == old_default {
+                                form.port = driver.default_port().to_string();
+                            }
+                            if form.password_mode == PasswordMode::None {
+                                form.password_mode = PasswordMode::Keyring;
+                            }
                         }
                     }
                 }
@@ -2778,16 +2781,20 @@ impl App {
     /// After a (re)connect: load the tree, restart everything that waited on
     /// the old session, and open anything queued for this connection.
     pub fn after_connect(&mut self, tab: ConnTabId) {
-        if let Some(workspace) = self.workspace(tab)
-            && workspace.driver == Driver::Postgres
-        {
-            let session = workspace.session;
-            let request = RequestId(self.next_id());
-            if let Some(workspace) = self.workspace_mut(tab) {
-                workspace.databases.start(request);
+        if let Some(workspace) = self.workspace(tab) {
+            match workspace.driver {
+                // The one driver with other databases to switch to.
+                Driver::Postgres => {
+                    let session = workspace.session;
+                    let request = RequestId(self.next_id());
+                    if let Some(workspace) = self.workspace_mut(tab) {
+                        workspace.databases.start(request);
+                    }
+                    self.backend
+                        .send(Command::ListDatabases { session, request });
+                }
+                Driver::MySql | Driver::Sqlite => {}
             }
-            self.backend
-                .send(Command::ListDatabases { session, request });
         }
         // The footer of a SQL editor names the server; ask again when the
         // session is new (see `Workspace::forget_session_requests`).

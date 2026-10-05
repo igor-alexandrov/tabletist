@@ -100,8 +100,14 @@ pub fn groups<'a>(connections: &[&'a SavedConnection]) -> Vec<Group<'a>> {
 /// Whether a connection stays on this machine: a file, or a local host
 /// without a tunnel.
 fn is_local(connection: &SavedConnection) -> bool {
-    connection.spec.driver == tabletist_db::Driver::Sqlite
-        || (connection.spec.ssh.is_none() && crate::model::is_local_host(&connection.spec.host))
+    use tabletist_db::Driver;
+    let spec = &connection.spec;
+    match spec.driver {
+        Driver::Sqlite => true,
+        Driver::Postgres | Driver::MySql => {
+            spec.ssh.is_none() && crate::model::is_local_host(&spec.host)
+        }
+    }
 }
 
 /// The connections the picker lists, in its order: grouped and filtered by
@@ -612,14 +618,15 @@ impl Opening {
 /// Where a connection points, as the rows say it: host and port, then the
 /// database (a file's name for SQLite).
 fn target(connection: &SavedConnection) -> (String, String) {
+    use tabletist_db::Driver;
     let spec = &connection.spec;
-    if spec.driver == tabletist_db::Driver::Sqlite {
-        return (spec.summary(), String::new());
+    match spec.driver {
+        Driver::Sqlite => (spec.summary(), String::new()),
+        Driver::Postgres | Driver::MySql => (
+            format!("{}:{}", spec.host, spec.port),
+            format!("/{}", spec.database),
+        ),
     }
-    (
-        format!("{}:{}", spec.host, spec.port),
-        format!("/{}", spec.database),
-    )
 }
 
 /// The row's own response, answering a click by selecting and a double

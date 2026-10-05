@@ -19,11 +19,13 @@ use mysql_async::prelude::Queryable;
 use mysql_async::{DriverError, IoError, Opts, OptsBuilder, Params, SslOpts, TxOpts};
 use mysql_common::named_params::ParsedNamedParams;
 
+use crate::adapter::Adapter;
 use crate::script::retry_cancelled;
 use crate::{
-    Access, ColumnInfo, ColumnMeta, ConnectSpec, Dialect, Error, ForeignKeyInfo, IndexInfo,
-    MAX_LISTED, ObjectInfo, ObjectKind, ObjectRef, Result, RowPage, RowQuery, Secrets, Structure,
-    TlsMode, Value, ValueKind,
+    Access, CancelHandle, CancelInner, ChangeSet, ColumnInfo, ColumnMeta, ConnectSpec, Dialect,
+    Error, ForeignKeyInfo, IndexInfo, MAX_LISTED, ObjectInfo, ObjectKind, ObjectRef, Result,
+    RowPage, RowQuery, ScriptMode, ScriptOutcome, Secrets, StopFlag, Structure, TlsMode, Value,
+    ValueKind, WriteOutcome,
 };
 
 /// MySQL's `binary` character set: bytes, not text.
@@ -37,7 +39,7 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 mod script;
 mod write;
 
-pub struct Conn {
+pub(crate) struct Conn {
     pub(crate) conn: tokio::sync::Mutex<mysql_async::Conn>,
     /// For KILL QUERY from a second connection.
     pub(crate) opts: Opts,
@@ -56,11 +58,6 @@ pub struct Conn {
 }
 
 impl Conn {
-    /// See [`crate::Connection::server_version`]. Asked at connect.
-    pub async fn server_version(&self) -> Result<String> {
-        Ok(version_name(&self.version))
-    }
-
     /// Connects to the spec's server, or through a tunnel's local port `via`.
     pub async fn connect(
         spec: &ConnectSpec,
@@ -146,7 +143,57 @@ impl Conn {
         rows.into_iter().map(from_row).collect()
     }
 
-    pub async fn list_schemas(&self) -> Result<Vec<String>> {
+    pub async fn primary_key(&self, object: &ObjectRef) -> Result<Vec<String>> {
+        self.catalog(
+            "SELECT column_name FROM information_schema.key_column_usage \
+             WHERE table_schema = ? AND table_name = ? AND constraint_name = 'PRIMARY' \
+             ORDER BY ordinal_position",
+            (&object.schema, &object.name),
+        )
+        .await
+    }
+
+    /// The byte string columns a filter of `query` compares as bytes when
+    /// its value reads as bytes; empty, without asking, when no filter has
+    /// such a value.
+    async fn binary_columns(&self, query: &RowQuery) -> Result<Vec<String>> {
+        if !crate::dialect::reads_bytes(query) {
+            return Ok(Vec::new());
+        }
+        self.catalog(
+            "SELECT column_name FROM information_schema.columns \
+             WHERE table_schema = ? AND table_name = ? AND data_type IN \
+                   ('binary', 'varbinary', 'tinyblob', 'blob', 'mediumblob', 'longblob')",
+            (&query.object.schema, &query.object.name),
+        )
+        .await
+    }
+}
+
+impl Adapter for Conn {
+    fn is_encrypted(&self) -> bool {
+        self.encrypted
+    }
+
+    fn cancel_handle(&self) -> CancelHandle {
+        CancelHandle(CancelInner::MySql {
+            opts: self.opts.clone(),
+            id: self.id,
+            server: self.server.clone(),
+        })
+    }
+
+    /// See [`crate::Connection::server_version`]. Asked at connect.
+    async fn server_version(&self) -> Result<String> {
+        Ok(version_name(&self.version))
+    }
+
+    /// None: MySQL's databases are listed as its schemas.
+    async fn list_databases(&self) -> Result<Vec<String>> {
+        Ok(Vec::new())
+    }
+
+    async fn list_schemas(&self) -> Result<Vec<String>> {
         self.catalog(
             &format!(
                 "SELECT schema_name FROM information_schema.schemata \
@@ -157,7 +204,7 @@ impl Conn {
         .await
     }
 
-    pub async fn list_objects(&self, schema: &str) -> Result<Vec<ObjectInfo>> {
+    async fn list_objects(&self, schema: &str) -> Result<Vec<ObjectInfo>> {
         let rows: Vec<(String, String, Option<u64>)> = self
             .catalog(
                 &format!(
@@ -184,33 +231,7 @@ impl Conn {
             .collect())
     }
 
-    pub async fn primary_key(&self, object: &ObjectRef) -> Result<Vec<String>> {
-        self.catalog(
-            "SELECT column_name FROM information_schema.key_column_usage \
-             WHERE table_schema = ? AND table_name = ? AND constraint_name = 'PRIMARY' \
-             ORDER BY ordinal_position",
-            (&object.schema, &object.name),
-        )
-        .await
-    }
-
-    /// The byte string columns a filter of `query` compares as bytes when
-    /// its value reads as bytes; empty, without asking, when no filter has
-    /// such a value.
-    async fn binary_columns(&self, query: &RowQuery) -> Result<Vec<String>> {
-        if !crate::dialect::reads_bytes(query) {
-            return Ok(Vec::new());
-        }
-        self.catalog(
-            "SELECT column_name FROM information_schema.columns \
-             WHERE table_schema = ? AND table_name = ? AND data_type IN \
-                   ('binary', 'varbinary', 'tinyblob', 'blob', 'mediumblob', 'longblob')",
-            (&query.object.schema, &query.object.name),
-        )
-        .await
-    }
-
-    pub async fn describe(&self, object: &ObjectRef) -> Result<Structure> {
+    async fn describe(&self, object: &ObjectRef) -> Result<Structure> {
         let at = (&object.schema, &object.name);
         let columns: Vec<(String, String, String, Option<String>, String, String)> = self
             .catalog(
@@ -325,7 +346,7 @@ impl Conn {
 
     /// One page, through a prepared statement inside a read-only
     /// transaction. Reading stops after `limit + 1` rows.
-    pub async fn fetch_rows(&self, query: &RowQuery) -> Result<RowPage> {
+    async fn fetch_rows(&self, query: &RowQuery) -> Result<RowPage> {
         let key = self.primary_key(&query.object).await?;
         let binary = self.binary_columns(query).await?;
         let sql = Dialect::MySql.select_rows(query, &key, &binary);
@@ -349,7 +370,7 @@ impl Conn {
         })
     }
 
-    pub async fn count_rows(&self, query: &RowQuery) -> Result<u64> {
+    async fn count_rows(&self, query: &RowQuery) -> Result<u64> {
         let binary = self.binary_columns(query).await?;
         let sql = Dialect::MySql.count_rows(query, &binary);
         let mut conn = self.conn.lock().await;
@@ -362,6 +383,20 @@ impl Conn {
         row.map(from_row::<u64>)
             .transpose()?
             .ok_or_else(|| Error::query("the count returned no number"))
+    }
+
+    async fn run_script(
+        &self,
+        texts: Vec<String>,
+        limit: u32,
+        mode: ScriptMode,
+        stop: &StopFlag,
+    ) -> Result<ScriptOutcome> {
+        self.script(&texts, limit, mode, stop).await
+    }
+
+    async fn write(&self, changes: &ChangeSet, stop: &StopFlag) -> Result<WriteOutcome> {
+        self.save(changes, stop).await
     }
 }
 

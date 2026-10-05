@@ -12,12 +12,13 @@ use rusqlite::config::DbConfig;
 use rusqlite::types::{FromSql, FromSqlError, FromSqlResult, ValueRef};
 use rusqlite::{ErrorCode, OpenFlags};
 
+use crate::adapter::Adapter;
 use crate::script::{cancelled_commit, cleanup_failed};
 use crate::{
-    Access, ChangeSet, ColumnInfo, ColumnMeta, Dialect, Error, ForeignKeyInfo, IndexInfo,
-    MAX_LISTED, ObjectInfo, ObjectKind, ObjectRef, Result, RowPage, RowQuery, ScriptEnd,
-    ScriptMode, ScriptOutcome, StatementOutcome, StatementResult, StopFlag, Structure, Value,
-    ValueKind, WriteOutcome,
+    Access, CancelHandle, CancelInner, ChangeSet, ColumnInfo, ColumnMeta, Dialect, Error,
+    ForeignKeyInfo, IndexInfo, MAX_LISTED, ObjectInfo, ObjectKind, ObjectRef, Result, RowPage,
+    RowQuery, ScriptEnd, ScriptMode, ScriptOutcome, StatementOutcome, StatementResult, StopFlag,
+    Structure, Value, ValueKind, WriteOutcome,
 };
 
 mod fence;
@@ -26,7 +27,7 @@ mod write;
 use fence::{Fence, Fences, authorize};
 
 /// An open SQLite database.
-pub struct Conn {
+pub(crate) struct Conn {
     inner: Arc<Mutex<rusqlite::Connection>>,
     interrupt: Arc<rusqlite::InterruptHandle>,
     fences: Fences,
@@ -739,33 +740,29 @@ impl Conn {
         .await
     }
 
-    /// See [`crate::Connection::run_script`]. The whole script is one
-    /// blocking job; a progress handler checks `stop` while a statement
-    /// runs.
-    pub async fn run_script(
-        &self,
-        texts: Vec<String>,
-        limit: u32,
-        mode: ScriptMode,
-        stop: &StopFlag,
-    ) -> Result<ScriptOutcome> {
-        let stop = stop.clone();
-        let limit = limit as usize;
-        // If the caller drops this future, `run` interrupts the statement
-        // that is running; this stops the ones that have not begun.
-        let guard = StopOnDrop(Some(stop.clone()));
-        let fences = self.fences.clone();
-        let outcome = self
-            .run(move |connection| script(connection, &fences, &texts, limit, mode, &stop))
-            .await;
-        guard.disarm();
-        outcome
+    /// The primary key columns in key order; empty for views and keyless tables.
+    #[cfg(test)]
+    pub async fn primary_key(&self, object: &ObjectRef) -> Result<Vec<String>> {
+        let object = object.clone();
+        self.run(move |connection| primary_key(connection, &object))
+            .await
+    }
+}
+
+impl Adapter for Conn {
+    /// Never: a file is read here, not over a network.
+    fn is_encrypted(&self) -> bool {
+        false
+    }
+
+    fn cancel_handle(&self) -> CancelHandle {
+        CancelHandle(CancelInner::Sqlite(Arc::clone(&self.interrupt)))
     }
 
     /// See [`crate::Connection::write`]. One blocking job. An interrupt
     /// reaches only the statement that is running and is not kept for the
     /// next, so `stop` is what ends the save between two of them.
-    pub async fn write(&self, changes: &ChangeSet, stop: &StopFlag) -> Result<WriteOutcome> {
+    async fn write(&self, changes: &ChangeSet, stop: &StopFlag) -> Result<WriteOutcome> {
         if changes.object.schema != "main" {
             return Err(Error::Unsupported(
                 "saving to an attached database is not built yet",
@@ -779,7 +776,7 @@ impl Conn {
     }
 
     /// The server's name and version for the footer, like `SQLite 3.46.0`.
-    pub async fn server_version(&self) -> Result<String> {
+    async fn server_version(&self) -> Result<String> {
         self.run(|connection| {
             let version: String = connection
                 .query_row("SELECT sqlite_version()", [], |row| row.get(0))
@@ -789,12 +786,13 @@ impl Conn {
         .await
     }
 
-    pub(crate) fn interrupt_handle(&self) -> Arc<rusqlite::InterruptHandle> {
-        Arc::clone(&self.interrupt)
+    /// None: a file is one database.
+    async fn list_databases(&self) -> Result<Vec<String>> {
+        Ok(Vec::new())
     }
 
     /// `main` plus attached databases (`temp` is hidden).
-    pub async fn list_schemas(&self) -> Result<Vec<String>> {
+    async fn list_schemas(&self) -> Result<Vec<String>> {
         self.run(|connection| {
             let mut statement = connection
                 .prepare(&format!(
@@ -812,7 +810,7 @@ impl Conn {
         .await
     }
 
-    pub async fn list_objects(&self, schema: &str) -> Result<Vec<ObjectInfo>> {
+    async fn list_objects(&self, schema: &str) -> Result<Vec<ObjectInfo>> {
         let sql = format!(
             "SELECT name, type FROM {}.sqlite_master \
              WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\' \
@@ -842,15 +840,7 @@ impl Conn {
         .await
     }
 
-    /// The primary key columns in key order; empty for views and keyless tables.
-    #[cfg(test)]
-    pub async fn primary_key(&self, object: &ObjectRef) -> Result<Vec<String>> {
-        let object = object.clone();
-        self.run(move |connection| primary_key(connection, &object))
-            .await
-    }
-
-    pub async fn describe(&self, object: &ObjectRef) -> Result<Structure> {
+    async fn describe(&self, object: &ObjectRef) -> Result<Structure> {
         let object = object.clone();
         self.run(move |connection| {
             let columns = columns(connection, &object)?;
@@ -870,7 +860,7 @@ impl Conn {
         .await
     }
 
-    pub async fn fetch_rows(&self, query: &RowQuery) -> Result<RowPage> {
+    async fn fetch_rows(&self, query: &RowQuery) -> Result<RowPage> {
         check_raw_where(query)?;
         let query = query.clone();
         let limit = query.limit as usize;
@@ -919,7 +909,7 @@ impl Conn {
         .await
     }
 
-    pub async fn count_rows(&self, query: &RowQuery) -> Result<u64> {
+    async fn count_rows(&self, query: &RowQuery) -> Result<u64> {
         check_raw_where(query)?;
         let query = query.clone();
         let fences = self.fences.clone();
@@ -938,6 +928,29 @@ impl Conn {
             Ok(u64::try_from(count).unwrap_or(0))
         })
         .await
+    }
+
+    /// See [`crate::Connection::run_script`]. The whole script is one
+    /// blocking job; a progress handler checks `stop` while a statement
+    /// runs.
+    async fn run_script(
+        &self,
+        texts: Vec<String>,
+        limit: u32,
+        mode: ScriptMode,
+        stop: &StopFlag,
+    ) -> Result<ScriptOutcome> {
+        let stop = stop.clone();
+        let limit = limit as usize;
+        // If the caller drops this future, `run` interrupts the statement
+        // that is running; this stops the ones that have not begun.
+        let guard = StopOnDrop(Some(stop.clone()));
+        let fences = self.fences.clone();
+        let outcome = self
+            .run(move |connection| script(connection, &fences, &texts, limit, mode, &stop))
+            .await;
+        guard.disarm();
+        outcome
     }
 }
 

@@ -147,6 +147,90 @@ pub fn is_keyword(dialect: Dialect, word: &str) -> bool {
     keywords(dialect).any(|keyword| keyword.eq_ignore_ascii_case(word))
 }
 
+/// How a dialect reads text. A guard in the tokenizer asks one of these
+/// rather than naming a dialect, so every rule answers for every dialect.
+impl Dialect {
+    /// A byte-order mark where a token starts reads as a space.
+    fn bom_is_space(self) -> bool {
+        match self {
+            Self::Sqlite => true,
+            Self::Postgres | Self::MySql => false,
+        }
+    }
+
+    /// `#` starts a line comment.
+    fn hash_comments(self) -> bool {
+        match self {
+            Self::MySql => true,
+            Self::Postgres | Self::Sqlite => false,
+        }
+    }
+
+    /// `/*! ... */` and MariaDB's `/*M! ... */` are run, not skipped.
+    fn runs_comments(self) -> bool {
+        match self {
+            Self::MySql => true,
+            Self::Postgres | Self::Sqlite => false,
+        }
+    }
+
+    /// A block comment inside a block comment has an end of its own.
+    fn nests_comments(self) -> bool {
+        match self {
+            Self::Postgres => true,
+            Self::MySql | Self::Sqlite => false,
+        }
+    }
+
+    /// A backslash in a `'...'` string escapes the next character.
+    fn backslash_escapes(self) -> bool {
+        match self {
+            Self::MySql => true,
+            Self::Postgres | Self::Sqlite => false,
+        }
+    }
+
+    /// `E'...'` is a string with backslash escapes.
+    fn escape_strings(self) -> bool {
+        match self {
+            Self::Postgres => true,
+            Self::MySql | Self::Sqlite => false,
+        }
+    }
+
+    /// `` `name` `` is a quoted name.
+    fn backtick_names(self) -> bool {
+        match self {
+            Self::MySql | Self::Sqlite => true,
+            Self::Postgres => false,
+        }
+    }
+
+    /// `[name]` is a quoted name.
+    fn bracket_names(self) -> bool {
+        match self {
+            Self::Sqlite => true,
+            Self::Postgres | Self::MySql => false,
+        }
+    }
+
+    /// `$tag$ ... $tag$` is a string and `$1` a parameter.
+    fn dollar_quotes(self) -> bool {
+        match self {
+            Self::Postgres => true,
+            Self::MySql | Self::Sqlite => false,
+        }
+    }
+
+    /// `$` can stand inside a word.
+    fn dollar_in_words(self) -> bool {
+        match self {
+            Self::Postgres | Self::MySql => true,
+            Self::Sqlite => false,
+        }
+    }
+}
+
 /// Splits `text` into tokens that cover it end to end.
 pub fn tokenize(dialect: Dialect, text: &str) -> Vec<Token> {
     let bytes = text.as_bytes();
@@ -174,53 +258,53 @@ fn next(dialect: Dialect, text: &str, start: usize) -> (TokenKind, usize) {
         b if is_space(b) => (TokenKind::Whitespace, scan(bytes, start, is_space)),
         // SQLite reads a byte-order mark where a token starts as a space,
         // so the word after it is a word of its own.
-        0xEF if dialect == Dialect::Sqlite && peek(1) == Some(0xBB) && peek(2) == Some(0xBF) => {
+        0xEF if dialect.bom_is_space() && peek(1) == Some(0xBB) && peek(2) == Some(0xBF) => {
             (TokenKind::Whitespace, start + 3)
         }
         b'-' if peek(1) == Some(b'-') && dash_comment(dialect, peek(2)) => {
             (TokenKind::Comment, line_end(dialect, bytes, start))
         }
-        b'#' if dialect == Dialect::MySql => (TokenKind::Comment, line_end(dialect, bytes, start)),
+        b'#' if dialect.hash_comments() => (TokenKind::Comment, line_end(dialect, bytes, start)),
         b'/' if peek(1) == Some(b'*') => {
             // `/*!` and MariaDB's `/*M!`: MySQL runs what is inside.
             let executable =
                 peek(2) == Some(b'!') || (peek(2) == Some(b'M') && peek(3) == Some(b'!'));
-            let kind = if dialect == Dialect::MySql && executable {
+            let kind = if dialect.runs_comments() && executable {
                 TokenKind::ExecutableComment
             } else {
                 TokenKind::Comment
             };
             (
                 kind,
-                block_comment_end(bytes, start, dialect == Dialect::Postgres),
+                block_comment_end(bytes, start, dialect.nests_comments()),
             )
         }
         b'\'' => (
             TokenKind::String,
-            quoted_end(bytes, start, b'\'', dialect == Dialect::MySql),
+            quoted_end(bytes, start, b'\'', dialect.backslash_escapes()),
         ),
-        b'E' | b'e' if dialect == Dialect::Postgres && peek(1) == Some(b'\'') => {
+        b'E' | b'e' if dialect.escape_strings() && peek(1) == Some(b'\'') => {
             (TokenKind::String, escape_string_end(bytes, start))
         }
-        b'"' if dialect == Dialect::MySql => {
-            (TokenKind::String, quoted_end(bytes, start, b'"', true))
-        }
-        b'"' => (
-            TokenKind::QuotedIdentifier,
-            quoted_end(bytes, start, b'"', false),
-        ),
-        b'`' if dialect != Dialect::Postgres => (
+        b'"' => match dialect {
+            Dialect::MySql => (TokenKind::String, quoted_end(bytes, start, b'"', true)),
+            Dialect::Postgres | Dialect::Sqlite => (
+                TokenKind::QuotedIdentifier,
+                quoted_end(bytes, start, b'"', false),
+            ),
+        },
+        b'`' if dialect.backtick_names() => (
             TokenKind::QuotedIdentifier,
             quoted_end(bytes, start, b'`', false),
         ),
-        b'[' if dialect == Dialect::Sqlite => {
+        b'[' if dialect.bracket_names() => {
             let end = bytes[start..]
                 .iter()
                 .position(|&b| b == b']')
                 .map_or(bytes.len(), |offset| start + offset + 1);
             (TokenKind::QuotedIdentifier, end)
         }
-        b'$' if dialect == Dialect::Postgres => match dollar_tag(bytes, start) {
+        b'$' if dialect.dollar_quotes() => match dollar_tag(bytes, start) {
             Some(tag_end) => {
                 let tag = &bytes[start..tag_end];
                 let body = find(bytes, tag_end, tag).map_or(bytes.len(), |at| at + tag.len());
@@ -259,7 +343,10 @@ fn next(dialect: Dialect, text: &str, start: usize) -> (TokenKind, usize) {
 /// `--` starts a comment everywhere but MySQL, where whitespace or a
 /// control character (or the end) must follow: `1--1` is arithmetic.
 fn dash_comment(dialect: Dialect, after: Option<u8>) -> bool {
-    dialect != Dialect::MySql || after.is_none_or(|b| is_space(b) || b.is_ascii_control())
+    match dialect {
+        Dialect::MySql => after.is_none_or(|b| is_space(b) || b.is_ascii_control()),
+        Dialect::Postgres | Dialect::Sqlite => true,
+    }
 }
 
 fn is_word_start(byte: u8) -> bool {
@@ -270,7 +357,7 @@ fn is_word_part(dialect: Dialect, byte: u8) -> bool {
     byte.is_ascii_alphanumeric()
         || byte == b'_'
         || byte >= 0x80
-        || (byte == b'$' && dialect != Dialect::Sqlite)
+        || (byte == b'$' && dialect.dollar_in_words())
 }
 
 fn scan(bytes: &[u8], from: usize, keep: impl Fn(u8) -> bool) -> usize {
@@ -290,7 +377,10 @@ fn is_space(byte: u8) -> bool {
 /// The end of a line comment: the newline stays outside it. PostgreSQL ends
 /// it at a carriage return too; MySQL and SQLite only at a line feed.
 fn line_end(dialect: Dialect, bytes: &[u8], from: usize) -> usize {
-    let cr_ends = dialect == Dialect::Postgres;
+    let cr_ends = match dialect {
+        Dialect::Postgres => true,
+        Dialect::MySql | Dialect::Sqlite => false,
+    };
     scan(bytes, from, |b| b != b'\n' && !(cr_ends && b == b'\r'))
 }
 
@@ -593,76 +683,86 @@ fn word_of(text: &str, token: &Token) -> Option<String> {
 /// `SELECT 'COMMIT'` and a column named `end_date` pass.
 pub fn refusal(dialect: Dialect, statement: &str) -> Option<String> {
     let tokens = tokenize(dialect, statement);
-    if dialect == Dialect::MySql
-        && tokens
+    // What the dialect's own tokens can hide from the words below.
+    let hidden = match dialect {
+        Dialect::MySql => tokens
             .iter()
             .any(|token| token.kind == TokenKind::ExecutableComment)
-    {
-        return Some("a /*! */ comment".into());
-    }
-    // A U&"..." name can spell any name in escapes, set_config included.
-    if dialect == Dialect::Postgres && unicode_name(statement, &tokens) {
-        return Some("a U& name".into());
+            .then(|| "a /*! */ comment".to_owned()),
+        // A U&"..." name can spell any name in escapes, set_config included.
+        Dialect::Postgres => unicode_name(statement, &tokens).then(|| "a U& name".to_owned()),
+        Dialect::Sqlite => refused_pragma(statement, &tokens).map(|name| format!("PRAGMA {name}")),
+    };
+    if hidden.is_some() {
+        return hidden;
     }
     let mut words: Vec<String> = tokens
         .iter()
         .filter_map(|token| word_of(statement, token))
         .collect();
-    // MariaDB's CREATE OR REPLACE USER / ROLE: match them as CREATE USER.
-    if dialect == Dialect::MySql
-        && words.len() > 2
-        && words[0] == "CREATE"
-        && words[1] == "OR"
-        && words[2] == "REPLACE"
-    {
-        words.drain(1..3);
+    match dialect {
+        // MariaDB's CREATE OR REPLACE USER / ROLE: match them as CREATE USER.
+        Dialect::MySql => {
+            if words.len() > 2 && words[0] == "CREATE" && words[1] == "OR" && words[2] == "REPLACE"
+            {
+                words.drain(1..3);
+            }
+        }
+        Dialect::Postgres | Dialect::Sqlite => {}
     }
     let word = |index: usize| words.get(index).map(String::as_str).unwrap_or_default();
     let guarded_name = || words.iter().skip(1).find(|name| is_guarded_setting(name));
-    let postgres_or_mysql = dialect != Dialect::Sqlite;
-    if dialect == Dialect::Sqlite
-        && let Some(name) = refused_pragma(statement, &tokens)
-    {
-        return Some(format!("PRAGMA {name}"));
-    }
     match word(0) {
         first @ ("BEGIN" | "START" | "COMMIT" | "END" | "ROLLBACK" | "ABORT" | "SAVEPOINT"
         | "RELEASE") => return Some(first.to_owned()),
         // The SQL they run is a string the guard cannot read, and prepared
         // statements outlive the rollback.
-        "PREPARE" if dialect == Dialect::Postgres && word(1) == "TRANSACTION" => {
-            return Some("PREPARE TRANSACTION".into());
-        }
-        first @ ("PREPARE" | "EXECUTE" | "DEALLOCATE") if postgres_or_mysql => {
-            return Some(first.to_owned());
-        }
+        first @ ("PREPARE" | "EXECUTE" | "DEALLOCATE") => match dialect {
+            Dialect::Postgres if first == "PREPARE" && word(1) == "TRANSACTION" => {
+                return Some("PREPARE TRANSACTION".into());
+            }
+            Dialect::Postgres | Dialect::MySql => return Some(first.to_owned()),
+            Dialect::Sqlite => {}
+        },
         "SET" => {
             if let Some(refused) = set_refusal(dialect, statement, &tokens, &words) {
                 return Some(refused);
             }
         }
-        "RESET" if dialect == Dialect::MySql => {
-            return Some(match word(1) {
-                "" => "RESET".to_owned(),
-                second => format!("RESET {second}"),
-            });
-        }
-        "RESET" if word(1) == "ALL" => return Some("RESET ALL".into()),
-        "RESET" => {
-            if let Some(name) = guarded_name() {
-                return Some(format!("RESET {name}"));
+        "RESET" => match dialect {
+            Dialect::MySql => {
+                return Some(match word(1) {
+                    "" => "RESET".to_owned(),
+                    second => format!("RESET {second}"),
+                });
             }
-        }
+            Dialect::Postgres | Dialect::Sqlite => {
+                if word(1) == "ALL" {
+                    return Some("RESET ALL".into());
+                }
+                if let Some(name) = guarded_name() {
+                    return Some(format!("RESET {name}"));
+                }
+            }
+        },
         "DISCARD" if word(1) == "ALL" => return Some("DISCARD ALL".into()),
-        "COPY" if dialect == Dialect::Postgres => return Some("COPY".into()),
+        "COPY" => match dialect {
+            Dialect::Postgres => return Some("COPY".into()),
+            Dialect::MySql | Dialect::Sqlite => {}
+        },
         _ => {}
     }
-    // set_config() changes the same settings as SET, from any statement.
-    if dialect == Dialect::Postgres && words.iter().any(|word| word == "SET_CONFIG") {
-        return Some("set_config".into());
-    }
-    if dialect != Dialect::MySql {
-        return None;
+    match dialect {
+        // set_config() changes the same settings as SET, from any statement.
+        Dialect::Postgres => {
+            return words
+                .iter()
+                .any(|word| word == "SET_CONFIG")
+                .then(|| "set_config".to_owned());
+        }
+        Dialect::Sqlite => return None,
+        // The rest is MySQL's.
+        Dialect::MySql => {}
     }
     // The session's default database is not reset by the cleanup; a server
     // that prepares USE would carry it into browsing and the next run.
@@ -811,12 +911,16 @@ fn set_refusal(
     let mut code = tokens
         .iter()
         .filter(|token| !matches!(token.kind, TokenKind::Whitespace | TokenKind::Comment));
-    if dialect == Dialect::MySql
-        && let Some(second) = code.nth(1)
-        && matches!(second.kind, TokenKind::Keyword | TokenKind::Identifier)
-        && statement[second.range.clone()].eq_ignore_ascii_case("STATEMENT")
-    {
-        return Some("SET STATEMENT".into());
+    match dialect {
+        Dialect::MySql => {
+            if let Some(second) = code.nth(1)
+                && matches!(second.kind, TokenKind::Keyword | TokenKind::Identifier)
+                && statement[second.range.clone()].eq_ignore_ascii_case("STATEMENT")
+            {
+                return Some("SET STATEMENT".into());
+            }
+        }
+        Dialect::Postgres | Dialect::Sqlite => {}
     }
     let has = |wanted: &str| words.iter().skip(1).any(|word| word == wanted);
     if has("CHARACTERISTICS") {
@@ -847,16 +951,15 @@ fn set_refusal(
     if let Some(name) = words.iter().skip(1).find(|name| is_guarded_setting(name)) {
         return Some(format!("SET {name}"));
     }
-    // Server state that is neither rolled back nor reset by the cleanup.
-    if dialect == Dialect::MySql
-        && let Some(scope) = words
+    match dialect {
+        // Server state that is neither rolled back nor reset by the cleanup.
+        Dialect::MySql => words
             .iter()
             .skip(1)
             .find(|word| matches!(word.as_str(), "GLOBAL" | "PERSIST" | "PERSIST_ONLY"))
-    {
-        return Some(format!("SET {scope}"));
+            .map(|scope| format!("SET {scope}")),
+        Dialect::Postgres | Dialect::Sqlite => None,
     }
-    None
 }
 
 /// The words of each top-level assignment of a `SET` (split on commas
@@ -992,7 +1095,13 @@ pub fn kind(dialect: Dialect, statement: &str) -> StatementKind {
         return StatementKind::Read;
     }
     let reads = match first_word {
-        Some(word) => READS.contains(&word) || (dialect == Dialect::Sqlite && word == "PRAGMA"),
+        Some(word) => {
+            READS.contains(&word)
+                || match dialect {
+                    Dialect::Sqlite => word == "PRAGMA",
+                    Dialect::Postgres | Dialect::MySql => false,
+                }
+        }
         None => &statement[first.range.clone()] == "(",
     };
     if reads && !CHANGES.iter().any(|word| has(word)) {

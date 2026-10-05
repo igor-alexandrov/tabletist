@@ -42,7 +42,7 @@ impl Conn {
     /// then `START TRANSACTION`, and a cancel between the two leaves "the
     /// next transaction is read-only" pending. `stop` is asked before each
     /// statement: `KILL QUERY` does nothing when it arrives between two.
-    pub async fn write(&self, changes: &ChangeSet, stop: &StopFlag) -> Result<WriteOutcome> {
+    pub(super) async fn save(&self, changes: &ChangeSet, stop: &StopFlag) -> Result<WriteOutcome> {
         // Every statement is built first: a set that cannot be written as
         // MySQL reads it, or a value that cannot be sent, fails the save
         // before the server hears of it.
@@ -463,6 +463,7 @@ mod tests {
     use super::super::prepare_session;
     use super::super::tests::{session, test_url};
     use super::*;
+    use crate::adapter::Adapter;
     use crate::{Access, CellChange, NewValue, RowQuery};
 
     /// The backend awaits a save on a task it spawned: its future must be
@@ -921,7 +922,7 @@ mod tests {
             assert_eq!(stored(&url, table).await.1, "1.00");
             // And after a script, whose reset undoes what the connect set.
             let script = ["SET sql_notes = 0".to_owned()];
-            conn.run_script(&script, 10, crate::ScriptMode::ReadOnly, &StopFlag::new())
+            conn.script(&script, 10, crate::ScriptMode::ReadOnly, &StopFlag::new())
                 .await
                 .unwrap();
             assert_eq!(notes(&conn).await, Some(1));
@@ -1127,7 +1128,7 @@ mod tests {
         let connected = settings(&conn).await;
         let script: Vec<String> = SETS.iter().map(|&set| set.to_owned()).collect();
         let outcome = conn
-            .run_script(&script, 10, crate::ScriptMode::ReadOnly, &StopFlag::new())
+            .script(&script, 10, crate::ScriptMode::ReadOnly, &StopFlag::new())
             .await
             .unwrap();
         // Every one of them took, inside the script.
