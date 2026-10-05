@@ -1237,6 +1237,8 @@ pub struct ButtonSpec<'a> {
     hint: bool,
     /// No border, and the text in the secondary colour.
     quiet: bool,
+    /// No border, and the text in the accent colour.
+    link: bool,
 }
 
 impl<'a> ButtonSpec<'a> {
@@ -1259,6 +1261,7 @@ impl<'a> ButtonSpec<'a> {
             justified: false,
             hint: false,
             quiet: false,
+            link: false,
         }
     }
 
@@ -1281,6 +1284,13 @@ impl<'a> ButtonSpec<'a> {
     /// colour.
     pub fn quiet(mut self) -> Self {
         self.quiet = true;
+        self
+    }
+
+    /// A secondary button that reads as a link: no border, a fill only
+    /// under the pointer, the text in the accent colour.
+    pub fn link(mut self) -> Self {
+        self.link = true;
         self
     }
 
@@ -1559,13 +1569,20 @@ impl<'a> ButtonSpec<'a> {
         } else {
             (text, shortcut)
         };
-        let (fill, border, text) = if self.quiet && self.kind == ButtonKind::Secondary {
-            // Under the pointer, the fill its look gives a secondary button.
-            let fill = if hovered { fill } else { Color32::TRANSPARENT };
-            (fill, None, palette.secondary)
-        } else {
-            (fill, border, text)
-        };
+        let (fill, border, text) =
+            if (self.quiet || self.link) && self.kind == ButtonKind::Secondary {
+                // Under the pointer, the fill its look gives a secondary button.
+                let fill = if hovered { fill } else { Color32::TRANSPARENT };
+                // A link is told from a quiet button by its colour alone.
+                let text = if self.link {
+                    palette.accent
+                } else {
+                    palette.secondary
+                };
+                (fill, None, text)
+            } else {
+                (fill, border, text)
+            };
         // With the keyboard on it the terminal's button is reversed, as a
         // terminal marks its cursor; the other looks ring it.
         let reversed = look.terminal && focus::shown(&response);
@@ -2105,6 +2122,63 @@ mod tests {
         // By its name alone it is another button, and the keyboard is on
         // none.
         assert_eq!(renamed(None), (false, false));
+    }
+
+    #[test]
+    fn a_link_button_is_written_in_the_accent_colour_and_has_no_border() {
+        use crate::testing::Harness;
+        for look in crate::theme::Look::ALL {
+            let said = look.name;
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            let palette = harness.app.palette;
+            let (link, plain) = (
+                Rect::from_min_size(pos2(40.0, 40.0), vec2(160.0, 32.0)),
+                Rect::from_min_size(pos2(40.0, 100.0), vec2(160.0, 32.0)),
+            );
+            let draw = |harness: &mut Harness, events: Vec<egui::Event>| {
+                let mut clicked = false;
+                harness.frame_with_events(events, |ui| {
+                    let button = ButtonSpec::new("Keep mine").link();
+                    clicked = button.show_at(ui, link, &look, &palette).clicked();
+                    ButtonSpec::new("Use theirs").show_at(ui, plain, &look, &palette);
+                });
+                clicked
+            };
+            draw(&mut harness, Vec::new());
+            let color = |harness: &Harness, text: &str| harness.painted_color(text);
+            assert_eq!(color(&harness, "Keep mine"), Some(palette.accent), "{said}");
+            assert_eq!(color(&harness, "Use theirs"), Some(palette.text), "{said}");
+            // The bordered one beside it has its line; the link has none,
+            // and nothing behind its words.
+            let outlined = |harness: &Harness, place: Rect| {
+                let mut outlines = harness.outlines.iter();
+                outlines.any(|(rect, _)| *rect == place)
+            };
+            let filled = |harness: &Harness, place: Rect| {
+                let mut fills = harness.fills.iter();
+                fills.any(|(rect, _)| *rect == place)
+            };
+            assert!(outlined(&harness, plain), "{said}");
+            assert!(!outlined(&harness, link), "{said}");
+            assert!(!filled(&harness, link), "{said}");
+            // Under the pointer it is filled as its look fills a button
+            // there, still without a line, and a click presses it.
+            let over = egui::Event::PointerMoved(link.center());
+            draw(&mut harness, vec![over]);
+            draw(&mut harness, Vec::new());
+            assert!(filled(&harness, link), "{said}");
+            assert!(!outlined(&harness, link), "{said}");
+            assert_eq!(color(&harness, "Keep mine"), Some(palette.accent), "{said}");
+            let button = |pressed| egui::Event::PointerButton {
+                pos: link.center(),
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            };
+            draw(&mut harness, vec![button(true)]);
+            assert!(draw(&mut harness, vec![button(false)]), "{said}");
+        }
     }
 
     #[test]
