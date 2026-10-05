@@ -1914,6 +1914,34 @@ async fn a_script_cannot_make_a_saves_triggers_fire_themselves() {
 }
 
 #[tokio::test]
+async fn a_script_cannot_turn_foreign_keys_off_for_the_saves_after_it() {
+    let (connection, dir) = fixture_as(Access::Writable).await;
+    // The pragma does nothing inside a transaction, and a script runs in
+    // one: asked for, it is still on afterwards, and a save of a child
+    // with no parent fails as it would have before the script.
+    script_leaves(&connection, "PRAGMA foreign_keys = OFF").await;
+    let changes = one_cell(
+        "orders",
+        ("id", Value::Int(1)),
+        "user_id",
+        "INTEGER",
+        Value::Int(1),
+        to("999"),
+    );
+    let outcome = connection.write(&changes, &StopFlag::new()).await;
+    assert!(
+        matches!(outcome, Ok(WriteOutcome::Failed { row: 0, .. })),
+        "{outcome:?}"
+    );
+    let held: i64 = other_program(&dir)
+        .query_row("SELECT user_id FROM orders WHERE id = 1", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(held, 1);
+}
+
+#[tokio::test]
 async fn a_save_is_written_after_a_script_asked_for_change_counts() {
     let (connection, _dir) = fixture_as(Access::Writable).await;
     // With it an UPDATE gives a row, the count, which a save does not

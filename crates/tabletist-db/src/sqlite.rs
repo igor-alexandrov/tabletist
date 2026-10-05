@@ -386,12 +386,17 @@ fn declared_columns(
 /// result columns named by the column alone (a page shows the names, and a
 /// save finds its columns by them; the other way a table's are
 /// `users.id`). `open` sets them, and a script run sets them again
-/// afterwards, since a script may have changed any of them.
+/// afterwards, since a script may have changed any of them. Foreign keys
+/// are enforced: the bundled SQLite has them on, and a script cannot turn
+/// them off (the pragma does nothing inside a transaction, which is where
+/// a script runs), but a save's refusal of a child with no parent should
+/// not rest on how the library was built.
 fn set_session_pragmas(connection: &rusqlite::Connection) -> rusqlite::Result<()> {
     connection.busy_timeout(std::time::Duration::from_secs(5))?;
     connection.execute_batch(
         "PRAGMA query_only = ON; PRAGMA trusted_schema = OFF; PRAGMA case_sensitive_like = OFF; \
-         PRAGMA full_column_names = OFF; PRAGMA short_column_names = ON;",
+         PRAGMA full_column_names = OFF; PRAGMA short_column_names = ON; \
+         PRAGMA foreign_keys = ON;",
     )
 }
 
