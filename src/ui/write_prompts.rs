@@ -20,7 +20,7 @@ use crate::theme::{Look, Palette};
 use crate::typography::{Text, TextRole};
 use crate::ui::focus::{self, Ring};
 use crate::ui::format;
-use crate::ui::keys::consume_press;
+use crate::ui::keys::{consume_press, drop_repeats};
 use crate::ui::pending_bar::counted;
 use crate::ui::review;
 use crate::ui::states::Tone;
@@ -496,6 +496,10 @@ fn confirm_write(app: &mut App, ctx: &egui::Context) {
     // Taken before anything is drawn, as the other prompt takes it: the
     // button that sends is pressed, never reached by a stray Enter.
     let enter = ctx.input_mut(|input| consume_press(input, Modifiers::NONE, Key::Enter));
+    // Nor by what a held Space repeats, which a button that has the
+    // keyboard reads as a press of itself: the key that answered the
+    // dialog before this one may still be down.
+    ctx.input_mut(|input| drop_repeats(input, Key::Space));
     // Page Up and Page Down move the statements that are asked about,
     // wherever they stand: the panel's where the box points at it, and
     // the prompt's own list everywhere else. Never a list behind the
@@ -964,7 +968,7 @@ mod tests {
     use crate::backend::Command;
     use crate::model::{Action, CellPos, ConnTabId, Dialog, EditStart, TabId};
     use crate::testing::Harness;
-    use crate::ui::tests::{click_dialog, pressable as buttons};
+    use crate::ui::tests::{click_dialog, focus_dialog, pressable as buttons};
 
     /// Makes `text` the pending value of column `col` in row `row`, as an
     /// editor that was typed into and left does.
@@ -1167,6 +1171,64 @@ mod tests {
             }
             assert!(harness.app.dialog.is_none(), "{said}");
             assert_eq!(writes(&harness), 1, "{said}");
+        }
+    }
+
+    #[test]
+    fn a_key_held_since_the_answer_that_opened_the_confirmation_confirms_nothing() {
+        use egui::{Key, Modifiers};
+        let up = |harness: &Harness| matches!(harness.app.dialog, Some(Dialog::ConfirmWrite(_)));
+        // One more frame with `key` down, long after the confirmation came
+        // up: a key that is down already is a repeat to egui.
+        let held = |harness: &mut Harness, key: Key| {
+            opened(harness, true);
+            harness.frame(vec![crate::testing::key(key, Modifiers::NONE)]);
+        };
+        for (look, key) in crate::theme::Look::ALL
+            .into_iter()
+            .flat_map(|look| [(look, Key::Space), (look, Key::Enter)])
+        {
+            let said = format!("{}, {key:?}", look.name);
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            let (tab, id) = harness.editable();
+            harness.app.workspace_mut(tab).unwrap().environment =
+                crate::env::Environment::Production;
+            change(&mut harness, (tab, id), 1, 1, "bob@example.com");
+            // Save in the Leave prompt, by a key that then stays down.
+            harness.app.apply(Action::CloseTab { tab, id });
+            harness.finish_animations();
+            let save = if look.terminal { "Write" } else { "Save" };
+            focus_dialog(&mut harness, save);
+            harness.frame(vec![crate::testing::key(key, Modifiers::NONE)]);
+            assert!(up(&harness), "{said}");
+            // What it repeats confirms nothing: not with the keyboard where
+            // the confirmation puts it, nor on the button that sends, nor,
+            // in the terminal's box, once the field holds the word.
+            for _ in 0..40 {
+                held(&mut harness, key);
+                assert!(up(&harness), "{said}");
+            }
+            if look.terminal {
+                opened(&mut harness, true);
+                harness.frame(vec![egui::Event::Text("write".into())]);
+            }
+            focus_dialog(&mut harness, "Save to production");
+            for _ in 0..40 {
+                held(&mut harness, key);
+                assert!(up(&harness), "{said}");
+            }
+            assert_eq!(
+                (writes(&harness), pending(&harness, (tab, id))),
+                (0, 1),
+                "{said}"
+            );
+            // Let go and pressed again, it does what it does there: Space
+            // presses the button, and Enter confirms in the terminal's box.
+            harness.frame(vec![crate::testing::release(key, Modifiers::NONE)]);
+            held(&mut harness, key);
+            let sent = usize::from(look.terminal || key == Key::Space);
+            assert_eq!(writes(&harness), sent, "{said}");
         }
     }
 

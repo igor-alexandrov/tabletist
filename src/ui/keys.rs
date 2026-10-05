@@ -597,6 +597,24 @@ pub(crate) fn consume_press(input: &mut egui::InputState, modifiers: Modifiers, 
     fresh
 }
 
+/// Takes what a held `key` repeats out of the frame, whatever is held with
+/// it. For a question whose buttons must not be pressed by a key that was
+/// down before they came up: a button that has the keyboard reads every
+/// repeat of Space as a press of itself.
+pub(crate) fn drop_repeats(input: &mut egui::InputState, key: Key) {
+    input.events.retain(|event| {
+        !matches!(
+            event,
+            egui::Event::Key {
+                key: held,
+                pressed: true,
+                repeat: true,
+                ..
+            } if *held == key
+        )
+    });
+}
+
 /// The open completion list of the editor that has the keyboard, as its
 /// keys read it.
 struct Completing {

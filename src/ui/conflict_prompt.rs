@@ -18,7 +18,7 @@ use crate::theme::Look;
 use crate::typography::{Text, TextRole};
 use crate::ui::format::{self, Marks};
 use crate::ui::grid;
-use crate::ui::keys::consume_press;
+use crate::ui::keys::{consume_press, drop_repeats};
 use crate::ui::states::Tone;
 use crate::ui::terminal_dialog;
 use crate::ui::widgets::{self, ButtonSpec};
@@ -232,6 +232,13 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
     // presses a button. What the key answers is for the buttons to say,
     // where they are made.
     let enter = ctx.input_mut(|input| consume_press(input, Modifiers::NONE, Key::Enter));
+    // A key that is held answers nothing, however long the question has
+    // been up. The next row's question has its buttons where the last
+    // one's were, with the keyboard still on the one that was pressed, and
+    // a button reads what a held Space repeats as a press of itself: held
+    // on Overwrite it would overwrite every row of the save, one each half
+    // second. (What a held Enter repeats went with the Enter above.)
+    ctx.input_mut(|input| drop_repeats(input, Key::Space));
     // Page Up and Page Down move the lines where there are more than are
     // shown at once: a question answered from the keyboard is read from
     // it. Never a list behind the question.
@@ -247,8 +254,9 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
         sheet(ctx, &asked, skin, pressed, &mut answers)
     };
     // Esc is Keep mine for the row shown: nothing of the user's is dropped
-    // and nothing is written.
-    let escape = |input: &mut egui::InputState| input.consume_key(Modifiers::NONE, Key::Escape);
+    // and nothing is written. Pressed, not held: what it repeats would
+    // keep row after row.
+    let escape = |input: &mut egui::InputState| consume_press(input, Modifiers::NONE, Key::Escape);
     if top && ctx.input_mut(escape) {
         answers.push(Answer::KeepMine);
     }
@@ -1387,6 +1395,135 @@ mod tests {
         let conflicts = vec![changed(0, server("eve@example.com")), changed(1, fourth)];
         saved(&mut harness, (tab, id), conflicts);
         (harness, tab, id)
+    }
+
+    /// The fixture's rows `id 2`, `id 4` and `id 5` with their emails
+    /// pending and saved, and all three found changed.
+    fn three_rows(look: Look) -> (Harness, ConnTabId, TabId) {
+        let (mut harness, tab, id) = fixture_in(look);
+        let mut conflicts = Vec::new();
+        for (at, row) in [1, 3, 4].into_iter().enumerate() {
+            pend(
+                &mut harness,
+                (tab, id),
+                (row, 1),
+                &format!("mine{row}@x.io"),
+            );
+            let now = Value::Int(row as i64 + 1);
+            let email = text(&format!("theirs{row}@x.io"));
+            conflicts.push(changed(at, vec![now, email, Value::Null]));
+        }
+        saved(&mut harness, (tab, id), conflicts);
+        (harness, tab, id)
+    }
+
+    /// Which of the save's rows the question is about. `None` once every
+    /// one is answered.
+    fn asked_about(harness: &Harness) -> Option<usize> {
+        match &harness.app.dialog {
+            Some(Dialog::Conflict(prompt)) => Some(prompt.at),
+            _ => None,
+        }
+    }
+
+    /// One frame that brings `key` going down, with what it types. The
+    /// question has been up for long enough to take an answer, whichever
+    /// row it has come to. A key that is down already is a repeat to egui.
+    fn down(harness: &mut Harness, key: Key, typed: Option<&str>) {
+        shown(harness, true);
+        let mut events = vec![crate::testing::key(key, Modifiers::NONE)];
+        events.extend(typed.map(|typed| egui::Event::Text(typed.into())));
+        harness.frame(events);
+    }
+
+    /// Lets `key` go.
+    fn up(harness: &mut Harness, key: Key) {
+        harness.frame(vec![crate::testing::release(key, Modifiers::NONE)]);
+    }
+
+    /// Answers the first row of three with a fresh press of `key` and
+    /// keeps it down: its repeats answer no row, however long each row's
+    /// question has been up. Let go and pressed again, it answers the row
+    /// that is shown, and its repeats nothing once more.
+    fn held_through_the_queue(harness: &mut Harness, key: Key, typed: Option<&str>, said: &str) {
+        assert_eq!(asked_about(harness), Some(0), "{said}");
+        for answered in 1..=2 {
+            down(harness, key, typed);
+            assert_eq!(asked_about(harness), Some(answered), "{said}: a press");
+            // Well over the half second of each row's first moment.
+            for _ in 0..40 {
+                down(harness, key, typed);
+                assert_eq!(asked_about(harness), Some(answered), "{said}: held");
+            }
+            up(harness, key);
+            assert_eq!(asked_about(harness), Some(answered), "{said}: let go");
+        }
+    }
+
+    #[test]
+    fn a_key_held_since_one_rows_answer_answers_no_row_after_it() {
+        for look in looks() {
+            // Space on each button, which the next row's question has in
+            // the same place with the keyboard still on it.
+            for name in ["Overwrite", "Use server values", "Keep mine, reload row"] {
+                let said = format!("{}, Space on {name}", look.name);
+                let (mut harness, tab, id) = three_rows(look);
+                focus_dialog(&mut harness, name);
+                held_through_the_queue(&mut harness, Key::Space, None, &said);
+                assert_eq!(focused_name(&harness.settle()), name, "{said}");
+                // Two rows were answered, by the two presses.
+                let left = pending_cells(&harness, tab, id).len();
+                let dropped = name == "Use server values";
+                assert_eq!(left, if dropped { 1 } else { 3 }, "{said}");
+                assert_eq!(writes(&harness), 1, "{said}");
+            }
+            // Enter on the one button it presses.
+            let said = format!("{}, Enter", look.name);
+            let (mut harness, ..) = three_rows(look);
+            focus_dialog(&mut harness, "Keep mine, reload row");
+            held_through_the_queue(&mut harness, Key::Enter, None, &said);
+            // Esc, wherever the keyboard is.
+            let said = format!("{}, Esc", look.name);
+            let (mut harness, tab, id) = three_rows(look);
+            held_through_the_queue(&mut harness, Key::Escape, None, &said);
+            assert_eq!(pending_cells(&harness, tab, id).len(), 3, "{said}");
+            // The last row is answered by a press of its own.
+            down(&mut harness, Key::Escape, None);
+            assert_eq!(asked_about(&harness), None, "{said}");
+            assert_eq!(writes(&harness), 1, "{said}");
+        }
+    }
+
+    #[test]
+    fn a_letter_held_since_one_rows_answer_answers_no_row_after_it() {
+        let look = Look::omarchy();
+        for (key, letter) in [(Key::O, "o"), (Key::S, "s"), (Key::K, "k")] {
+            let (mut harness, tab, id) = three_rows(look);
+            held_through_the_queue(&mut harness, key, Some(letter), letter);
+            let left = pending_cells(&harness, tab, id).len();
+            assert_eq!(left, if letter == "s" { 1 } else { 3 }, "{letter}");
+            assert_eq!(writes(&harness), 1, "{letter}");
+        }
+        // Two rows, the second of them gone: `k` held from the first keeps
+        // nothing of the second.
+        let (mut harness, tab, id) = fixture_in(look);
+        pend(&mut harness, (tab, id), (1, 1), "bob@example.com");
+        pend(&mut harness, (tab, id), (3, 1), "dan@example.com");
+        let gone = Conflict {
+            row: 1,
+            server: None,
+        };
+        let conflicts = vec![changed(0, server("eve@example.com")), gone];
+        saved(&mut harness, (tab, id), conflicts);
+        down(&mut harness, Key::K, Some("k"));
+        for _ in 0..40 {
+            down(&mut harness, Key::K, Some("k"));
+            assert_eq!(asked_about(&harness), Some(1));
+        }
+        up(&mut harness, Key::K);
+        down(&mut harness, Key::D, Some("d"));
+        assert_eq!(asked_about(&harness), None);
+        assert_eq!(pending_cells(&harness, tab, id), [(1, 1)]);
     }
 
     #[test]
