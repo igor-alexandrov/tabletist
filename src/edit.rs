@@ -3,7 +3,7 @@
 //! is decided from the page and the structure alone; the reducer
 //! (`app.rs`, `app/editing.rs`) owns every transition.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
 
 use tabletist_db::{
@@ -38,6 +38,8 @@ pub enum Lock {
     /// be replaced.
     Refreshing,
     NoSuchCell,
+    /// A save found the row gone from the server.
+    Gone,
     /// The row's key holds a NULL.
     KeyIsNull,
     /// The row's key holds text that may not have been read exactly.
@@ -64,6 +66,8 @@ pub struct Table<'a> {
     /// The page is being fetched again.
     pub refreshing: bool,
     pub saving: bool,
+    /// The page's rows a save found gone from the server.
+    pub gone: &'a BTreeSet<usize>,
 }
 
 impl<'a> Table<'a> {
@@ -80,6 +84,7 @@ impl<'a> Table<'a> {
             // another key, and no edit starts on the one about to go.
             refreshing: object.rows.is_loading() || object.structure.is_loading(),
             saving: object.edits.saving.is_some(),
+            gone: &object.edits.gone,
         })
     }
 }
@@ -146,6 +151,11 @@ impl Table<'_> {
         let Some(value) = row.get(cell.col) else {
             return Some(Lock::NoSuchCell);
         };
+        // Before anything its values say: they are of a row that is no
+        // longer there.
+        if self.gone.contains(&cell.row) {
+            return Some(Lock::Gone);
+        }
         // A row narrower than the page has no key to read.
         let held = |col: &usize| row.get(*col);
         if key.iter().any(|col| held(col).is_none_or(Value::is_null)) {
@@ -574,6 +584,10 @@ pub struct Edits {
     pub saved: Option<Saved>,
     /// What the last save came to when it wrote nothing.
     pub note: Option<Note>,
+    /// The page's rows a save found gone from the server. They are no
+    /// rows to edit until the page is loaded again, and nothing of the
+    /// user's: they do not hold the page.
+    pub gone: BTreeSet<usize>,
     /// Review SQL is open: the drawer on macOS and Windows, the terminal
     /// look's `:diff` panel.
     pub reviewing: bool,
@@ -606,6 +620,15 @@ impl Edits {
     /// is open, or a save is running.
     pub fn holds(&self) -> bool {
         !self.cells.is_empty() || self.editor.is_some() || self.saving.is_some()
+    }
+
+    /// Drops what is pending, the open editor and what the last save left.
+    /// What is known of the page itself stays: the rows that are gone.
+    pub fn discard(&mut self) {
+        *self = Self {
+            gone: std::mem::take(&mut self.gone),
+            ..Self::default()
+        };
     }
 
     pub fn counts(&self) -> Counts {
@@ -680,11 +703,12 @@ impl std::fmt::Debug for Edits {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "Edits {{ cells: {}, editor: {:?}, why: {:?}, saving: {} }}",
+            "Edits {{ cells: {}, editor: {:?}, why: {:?}, saving: {}, gone: {:?} }}",
             self.cells.len(),
             self.editor.as_ref().map(|editor| editor.cell),
             self.why,
-            self.saving.is_some()
+            self.saving.is_some(),
+            self.gone
         )
     }
 }
@@ -981,6 +1005,9 @@ mod tests {
         ]
     }
 
+    /// No row is gone.
+    static NONE_GONE: BTreeSet<usize> = BTreeSet::new();
+
     fn table<'a>(structure: Option<&'a Structure>, page: &'a RowPage) -> Table<'a> {
         Table {
             access: Access::Writable,
@@ -990,6 +1017,7 @@ mod tests {
             page,
             refreshing: false,
             saving: false,
+            gone: &NONE_GONE,
         }
     }
 
@@ -1769,5 +1797,51 @@ mod tests {
         assert_eq!(changes.check(), Ok(()));
         // Nothing pending is nothing to send.
         assert!(change_set(&ObjectRef::new("main", "users"), &table, &BTreeMap::new()).is_none());
+    }
+
+    #[test]
+    fn a_row_a_save_found_gone_is_locked_and_stays_gone_through_a_discard() {
+        let (structure, page) = (structure(), page(rows()));
+        let gone = BTreeSet::from([1]);
+        let table = Table {
+            gone: &gone,
+            ..table(Some(&structure), &page)
+        };
+        // Every cell of it, the key's too: the row is not there to edit.
+        assert_eq!(table.lock(at(1, 1)), Some(Lock::Gone));
+        assert_eq!(table.lock(at(1, 0)), Some(Lock::Gone));
+        assert_eq!(table.lock(at(0, 1)), None);
+        // What holds for the whole table, or for a while, comes first.
+        let read_only = Table {
+            access: Access::ReadOnly,
+            ..table
+        };
+        assert_eq!(read_only.lock(at(1, 1)), Some(Lock::ReadOnly));
+        let saving = Table {
+            saving: true,
+            ..table
+        };
+        assert_eq!(saving.lock(at(1, 1)), Some(Lock::Saving));
+        // A gone row is nothing of the user's: it does not hold the page.
+        let mut edits = Edits {
+            gone: gone.clone(),
+            ..Edits::default()
+        };
+        assert!(!edits.holds());
+        // Dropping what is pending does not bring the row back.
+        edits.cells.insert(
+            (0, 1),
+            Pending {
+                new: NewValue::Null,
+                state: State::Ready,
+            },
+        );
+        edits.note = Some(Note::Cancelled);
+        edits.why = Some((at(1, 1), Lock::Gone));
+        edits.discard();
+        assert!(edits.cells.is_empty() && edits.note.is_none() && edits.why.is_none());
+        assert_eq!(edits.gone, gone);
+        assert!(!edits.holds());
+        assert!(format!("{edits:?}").contains("gone: {1}"));
     }
 }

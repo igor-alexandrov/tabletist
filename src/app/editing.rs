@@ -7,7 +7,7 @@ use tabletist_db::{Access, ChangeSet, ColumnClass, Error, NewValue, WriteOutcome
 use super::App;
 use crate::backend::{Command, RequestId, SessionId};
 use crate::edit::{
-    Editor, Edits, Lock, Note, Pending, Problem, Saved, Saving, State, Table, change_set, check,
+    Editor, Lock, Note, Pending, Problem, Saved, Saving, State, Table, change_set, check,
     is_change, opens_large, same_changes, start_text,
 };
 use crate::model::{
@@ -744,7 +744,8 @@ impl App {
                     .keys()
                     .map(|&(row, col)| CellPos { row, col })
                     .collect();
-                object.edits = Edits::default();
+                // The rows an earlier save found gone are still gone.
+                object.edits.discard();
                 object.fields = None;
                 let fits = object.rows.value.as_ref().is_some_and(|page| {
                     rows.len() == saving.rows.len()

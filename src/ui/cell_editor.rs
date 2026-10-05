@@ -724,6 +724,7 @@ pub fn lock_text(lock: Lock, table: &str, locale: Locale) -> String {
         ),
         Lock::Saving => say("A save is running"),
         Lock::Refreshing => say("The page is loading"),
+        Lock::Gone => say("This row no longer exists on the server"),
         Lock::KeyIsNull => say("This row's key is NULL"),
         Lock::KeyInexact => say("This row's key holds text that was not read exactly"),
         Lock::UnknownColumn => say("This column cannot be told apart in the table"),
@@ -925,6 +926,7 @@ mod tests {
             "book_covers's key cannot be matched exactly, so a row can't be targeted safely"
         );
         assert_eq!(why(Lock::KeyIsNull), "This row's key is NULL");
+        assert_eq!(why(Lock::Gone), "This row no longer exists on the server");
         assert_eq!(why(Lock::Generated), "Computed by the database");
         assert_eq!(why(Lock::KeyColumn), "Part of the row's key");
         // A cell that is not there has nothing to say; every other has.
@@ -937,6 +939,7 @@ mod tests {
             Lock::KeyType,
             Lock::Saving,
             Lock::Refreshing,
+            Lock::Gone,
             Lock::KeyIsNull,
             Lock::KeyInexact,
             Lock::UnknownColumn,

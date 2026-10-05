@@ -430,11 +430,15 @@ mod tests {
     use super::*;
     use crate::edit::Problem;
     use crate::testing::{fixture_structure, page};
+    use std::collections::BTreeSet;
     use tabletist_db::{Access, CellChange, NewValue, ObjectKind, RowPage, Structure};
 
     fn users() -> ObjectRef {
         ObjectRef::new("main", "users")
     }
+
+    /// No row is gone.
+    static NONE_GONE: BTreeSet<usize> = BTreeSet::new();
 
     fn table<'a>(structure: &'a Structure, page: &'a RowPage) -> Table<'a> {
         Table {
@@ -445,6 +449,7 @@ mod tests {
             page,
             refreshing: false,
             saving: false,
+            gone: &NONE_GONE,
         }
     }
 

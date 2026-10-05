@@ -866,7 +866,7 @@ impl App {
                 if let Some(object) = self.object_tab_mut(tab, id)
                     && object.edits.saving.is_none()
                 {
-                    object.edits = crate::edit::Edits::default();
+                    object.edits.discard();
                     object.fields = None;
                 }
             }
@@ -897,7 +897,7 @@ impl App {
                 // finds no tab saving, and tells none.
                 for (tab, id) in tabs {
                     if let Some(object) = self.object_tab_mut(tab, id) {
-                        object.edits = crate::edit::Edits::default();
+                        object.edits.discard();
                         object.fields = None;
                     }
                 }
@@ -2209,12 +2209,19 @@ impl App {
                 else {
                     return;
                 };
+                let failed = result.is_err();
                 object.rows.finish(request, result);
                 // The marks of the last save and the note of a locked cell
                 // were about the page this one replaces. Nothing is pending
                 // here: a tab that holds edits is never fetched again (the
                 // guard at the top of `apply` is what makes that so).
-                object.edits = crate::edit::Edits::default();
+                if failed {
+                    // The page on screen is still the one a save found
+                    // rows gone from.
+                    object.edits.discard();
+                } else {
+                    object.edits = crate::edit::Edits::default();
+                }
                 let (height, width) = object
                     .page()
                     .map(|page| (page.rows.len(), page.columns.len()))
@@ -12579,6 +12586,84 @@ mod tests {
                 harness.app.copy_text(false).as_deref(),
                 Some("user2@example.com")
             );
+        }
+
+        #[test]
+        fn a_gone_row_is_locked_until_the_page_is_loaded_again() {
+            let mut harness = Harness::new();
+            let (tab, id) = harness.editable();
+            let gone = |harness: &Harness| -> Vec<usize> {
+                let edits = &object(harness, tab, id).edits;
+                edits.gone.iter().copied().collect()
+            };
+            // What a save that found the row `id 2` gone leaves on the tab.
+            let mark = |harness: &mut Harness| {
+                let workspace = harness.app.workspace_mut(tab).unwrap();
+                workspace.object_tab_mut(id).unwrap().edits.gone.insert(1);
+            };
+            mark(&mut harness);
+            // Its cells are not edited, and say why when asked.
+            harness.app.apply(Action::EditCell {
+                tab,
+                id,
+                cell: at(1, 1),
+                start: EditStart::Value,
+            });
+            let edits = &object(&harness, tab, id).edits;
+            assert!(edits.editor.is_none());
+            assert_eq!(edits.why, Some((at(1, 1), Lock::Gone)));
+            harness.app.apply(Action::SelectCell {
+                tab,
+                id,
+                cell: at(1, 2),
+            });
+            harness.app.apply(Action::SetNull { tab, id });
+            assert!(object(&harness, tab, id).edits.cells.is_empty());
+            // It is still gone after a save of another row that wrote,
+            type_into(&mut harness, tab, id, at(3, 1), "dan@example.com");
+            harness.app.apply(Action::WriteEdits { tab, id });
+            harness.answer_written(Ok(WriteOutcome::Written {
+                rows: vec![row(4, "dan@example.com")],
+                elapsed: std::time::Duration::ZERO,
+            }));
+            assert_eq!(gone(&harness), [1]);
+            // after a discard of what is pending,
+            type_into(&mut harness, tab, id, at(0, 1), "ada@example.com");
+            harness.app.apply(Action::DiscardEdits { tab, id });
+            assert_eq!(gone(&harness), [1]);
+            // and after a discard from the question before leaving, while
+            // the page it leaves is still on screen.
+            type_into(&mut harness, tab, id, at(0, 1), "ada@example.com");
+            harness.app.apply(Action::Refresh(tab));
+            harness.app.apply(Action::LeaveDiscard);
+            assert_eq!(gone(&harness), [1]);
+            // A fetch that fails leaves that page on screen, and the row
+            // gone.
+            let fetch = |harness: &Harness| {
+                let sent = harness.app.backend.sent.iter().rev();
+                let mut fetches = sent.filter_map(|command| match command {
+                    Command::FetchRows {
+                        session, request, ..
+                    } => Some((*session, *request)),
+                    _ => None,
+                });
+                fetches.next().expect("a FetchRows")
+            };
+            let (session, request) = fetch(&harness);
+            harness.app.apply(Action::Backend(Event::Rows {
+                session,
+                request,
+                result: Err(tabletist_db::Error::query("no such table")),
+            }));
+            assert_eq!(gone(&harness), [1]);
+            // A gone row is nothing of the user's: it holds no page, and
+            // nothing is asked before the page goes.
+            assert!(!object(&harness, tab, id).edits.holds());
+            harness.app.apply(Action::Refresh(tab));
+            assert!(harness.app.dialog.is_none());
+            // The page that arrives is of rows that are there.
+            harness.answer_rows(page(5, false));
+            assert!(gone(&harness).is_empty());
         }
     }
 }
