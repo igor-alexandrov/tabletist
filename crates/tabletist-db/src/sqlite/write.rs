@@ -21,11 +21,10 @@ pub(super) fn write(
 ) -> Result<WriteOutcome> {
     // Every statement is built first: a key that may not be the row's, or
     // a value that cannot be sent, fails the save before the file is even
-    // asked for.
+    // asked for. The builder refuses both.
     let mut updates = Vec::with_capacity(changes.rows.len());
     for (row, change) in changes.rows.iter().enumerate() {
-        let built = key_read_exactly(change)
-            .and_then(|()| Dialect::Sqlite.update_row(&changes.object, change));
+        let built = Dialect::Sqlite.update_row(&changes.object, change);
         match built {
             Ok(update) => updates.push(update),
             Err(error) => return Ok(WriteOutcome::Failed { row, error }),
@@ -102,23 +101,6 @@ fn begin(connection: &rusqlite::Connection, journal_mode: &str, stop: &StopFlag)
     connection
         .execute_batch("BEGIN IMMEDIATE")
         .map_err(map_error)
-}
-
-/// Refuses a key that may not be the row's. Text that is not UTF-8 is read
-/// with U+FFFD for its bad bytes (`from_sqlite`), so a key that holds one
-/// may stand for other bytes, and bound as it reads it finds another row,
-/// whose key really is that text. A key that really holds U+FFFD is refused
-/// with it, since the page's value cannot tell the two apart. That is
-/// accepted.
-fn key_read_exactly(change: &RowChange) -> Result<()> {
-    let lossy = |value: &Value| matches!(value, Value::Text(text) if text.contains('\u{FFFD}'));
-    if change.key.iter().any(|(_, value)| lossy(value)) {
-        return Err(Error::query(
-            "the row's key holds text that may not have been read exactly, so the save cannot \
-             be sure which row it names",
-        ));
-    }
-    Ok(())
 }
 
 /// A value bound exactly as it is. The filter path turns text that reads

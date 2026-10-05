@@ -741,6 +741,12 @@ mod tests {
             }],
         };
         for dialect in [Dialect::Postgres, Dialect::MySql, Dialect::Sqlite] {
+            // All of it but the NUL where the database's text holds none:
+            // such a row has no statement at all.
+            let mut changes = changes.clone();
+            if dialect == Dialect::Postgres {
+                changes.rows[0].set.remove(2);
+            }
             let built = dialect
                 .update_row(&changes.object, &changes.rows[0])
                 .unwrap();
@@ -785,6 +791,66 @@ mod tests {
         // The row between them has its statement.
         assert_eq!(unlaid(&review).len(), 1);
         assert!(matches!(review.lines.last(), Some(Line::Refused { row, .. }) if row == "id 4"));
+    }
+
+    #[test]
+    fn a_row_a_save_would_refuse_is_a_comment_and_no_statement() {
+        let row = |key: Value, new: &str| RowChange {
+            key: vec![("code".into(), key)],
+            set: vec![CellChange {
+                column: "note".into(),
+                type_name: "text".into(),
+                loaded: Value::Null,
+                new: NewValue::Text(new.into()),
+            }],
+        };
+        let text = |text: &str| Value::Text(text.into());
+        // PostgreSQL text holds no NUL, and SQLite's key may be another
+        // row's where it holds what stands for bytes it could not read: a
+        // save refuses both rows, and so nothing shows a statement that
+        // would not run.
+        for (dialect, refused, reason) in [
+            (
+                Dialect::Postgres,
+                row(text("b"), "nul\0"),
+                "PostgreSQL text cannot hold a NUL character",
+            ),
+            (
+                Dialect::Postgres,
+                row(text("b\0"), "fine"),
+                "PostgreSQL text cannot hold a NUL character",
+            ),
+            (
+                Dialect::Sqlite,
+                row(text("caf\u{FFFD}"), "fine"),
+                "the row's key holds text that may not have been read exactly, so the save \
+                 cannot be sure which row it names",
+            ),
+        ] {
+            let changes = ChangeSet {
+                object: users(),
+                rows: vec![row(text("a"), "fine"), refused],
+            };
+            for values in [Values::Shown, Values::Whole] {
+                let review = of(dialect, &changes, &[], values);
+                // The row before it has its statement, and this one a
+                // comment in the builder's words.
+                assert_eq!(unlaid(&review).len(), 1, "{dialect:?}");
+                assert!(
+                    matches!(
+                        review.lines.last(),
+                        Some(Line::Refused { reason: said, .. }) if said == reason
+                    ),
+                    "{dialect:?}: {:?}",
+                    review.lines.last()
+                );
+                assert_eq!(review.lines.len(), 6, "{dialect:?}");
+                // Noted, by its place in the set: a save to production
+                // asks nothing and fails the row.
+                let (index, error) = review.refused.clone().unwrap();
+                assert_eq!((index, error.to_string().as_str()), (1, reason));
+            }
+        }
     }
 
     #[test]

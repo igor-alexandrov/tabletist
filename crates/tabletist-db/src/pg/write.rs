@@ -24,12 +24,12 @@ impl Conn {
     /// between two.
     pub async fn write(&self, changes: &ChangeSet, stop: &StopFlag) -> Result<WriteOutcome> {
         // Every statement is built first: a value that cannot be sent
-        // fails the save before the server hears of it.
+        // fails the save before the server hears of it. Text that holds a
+        // NUL is such a value, which the builder refuses: the driver could
+        // not put it in a message.
         let mut updates = Vec::with_capacity(changes.rows.len());
         for (row, change) in changes.rows.iter().enumerate() {
-            let built = Dialect::Postgres
-                .update_row(&changes.object, change)
-                .and_then(sendable);
+            let built = Dialect::Postgres.update_row(&changes.object, change);
             match built {
                 Ok(update) => updates.push(update),
                 Err(error) => return Ok(WriteOutcome::Failed { row, error }),
@@ -74,17 +74,6 @@ impl Conn {
         }
         Ok(applied?.outcome(started))
     }
-}
-
-/// Refuses a statement that holds a NUL. PostgreSQL text cannot hold one,
-/// and the driver cannot put one in a message: it fails in a way that reads
-/// as a lost session. The key's values and the new ones are all in the
-/// `UPDATE`, so the reads by key need no check of their own.
-fn sendable(update: RowUpdate) -> Result<RowUpdate> {
-    if update.sql.text.contains('\0') {
-        return Err(Error::query("PostgreSQL text cannot hold a NUL character"));
-    }
-    Ok(update)
 }
 
 /// Runs one of the save's own statements, which gives no rows.
@@ -270,12 +259,13 @@ mod tests {
                     new: NewValue::Text(new.into()),
                 }],
             };
-            Dialect::Postgres.update_row(&object, &change).unwrap()
+            Dialect::Postgres.update_row(&object, &change)
         };
-        assert!(sendable(update("a", "b")).is_ok());
-        // In a new value and in the key alike.
-        assert!(sendable(update("a", "b\0c")).is_err());
-        assert!(sendable(update("a\0", "b")).is_err());
+        assert!(update("a", "b").is_ok());
+        // In a new value and in the key alike: the builder makes no
+        // statement of either, and a save sends what it makes.
+        assert!(update("a", "b\0c").is_err());
+        assert!(update("a\0", "b").is_err());
     }
 
     /// A writable connection outside the adapter, for arranging and probing.

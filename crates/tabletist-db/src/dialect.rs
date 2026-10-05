@@ -573,9 +573,34 @@ impl Dialect {
         clause
     }
 
+    /// Refuses a SQLite key that may not be the row's. Text that is not
+    /// UTF-8 is read with U+FFFD for its bad bytes, so a key that holds one
+    /// may stand for other bytes, and bound as it reads it finds another
+    /// row, whose key really is that text. A key that really holds U+FFFD
+    /// is refused with it, since the page's value cannot tell the two
+    /// apart. That is accepted.
+    fn key_read_exactly(self, key: &[(String, Value)]) -> Result<()> {
+        let lossy = |value: &Value| matches!(value, Value::Text(text) if text.contains('\u{FFFD}'));
+        if self == Self::Sqlite && key.iter().any(|(_, value)| lossy(value)) {
+            return Err(Error::query(
+                "the row's key holds text that may not have been read exactly, so the save \
+                 cannot be sure which row it names",
+            ));
+        }
+        Ok(())
+    }
+
     /// The `UPDATE` of one row of a save. `Err` names the value that cannot
-    /// be sent in its column's form.
+    /// be sent in its column's form, or says why no save sends the row at
+    /// all: a SQLite key that may not be the row's, PostgreSQL text that
+    /// holds a NUL. Refused here and nowhere after it, so what a review
+    /// shows of a row is what a save does with it: each driver builds its
+    /// statements with this before it sends any, and fails the row whose
+    /// statement is refused.
     pub fn update_row(self, object: &ObjectRef, row: &RowChange) -> Result<RowUpdate> {
+        // Before any value of the row is looked at: without a key that is
+        // the row's there is no row to say anything of.
+        self.key_read_exactly(&row.key)?;
         let mut params = Vec::new();
         let mut shown = format!("UPDATE {} SET ", self.qualified(object));
         let mut sent = shown.clone();
@@ -609,6 +634,14 @@ impl Dialect {
         );
         shown.push_str(&clause.shown);
         sent.push_str(&clause.sent);
+        // PostgreSQL text cannot hold a NUL, and the driver cannot put one
+        // in a message: it fails in a way that reads as a lost session.
+        // The key's values and the new ones are all in the statement, and
+        // its names with them, so the reads by key need no check of their
+        // own.
+        if self == Self::Postgres && sent.contains('\0') {
+            return Err(Error::query("PostgreSQL text cannot hold a NUL character"));
+        }
         Ok(RowUpdate {
             shown,
             sql: Sql { text: sent, params },
@@ -1525,11 +1558,6 @@ mod tests {
                 .ends_with(r"SET `t` = 'x\0y' WHERE `k` = 'a\0'''")
         );
         assert!(
-            update(Dialect::Postgres, Value::Int(1), "x\0y")
-                .shown
-                .contains("\"t\" = 'x\0y'")
-        );
-        assert!(
             update(Dialect::MySql, Value::Float(f64::INFINITY), "x")
                 .shown
                 .ends_with("WHERE `k` = inf")
@@ -1539,6 +1567,53 @@ mod tests {
                 .shown
                 .ends_with(r#"WHERE "k" = 'inf'"#)
         );
+    }
+
+    #[test]
+    fn a_row_no_save_would_send_has_no_statement() {
+        let update = |dialect: Dialect, key: Value, new: &str| {
+            dialect.update_row(
+                &books(),
+                &one(vec![("k", key)], vec![typed("t", "text", new)]),
+            )
+        };
+        // PostgreSQL text cannot hold a NUL: in a new value and in the key
+        // alike. What is shown is what a save runs, so a row a save
+        // refuses is refused here, where the review reads it.
+        for (key, new) in [(text("a"), "b\0c"), (text("a\0"), "b")] {
+            let refused = update(Dialect::Postgres, key, new).unwrap_err();
+            assert_eq!(
+                refused.to_string(),
+                "PostgreSQL text cannot hold a NUL character"
+            );
+        }
+        assert!(update(Dialect::Postgres, text("a"), "b").is_ok());
+        // The others hold one, each in its own writing.
+        for dialect in [Dialect::MySql, Dialect::Sqlite] {
+            assert!(update(dialect, text("a\0"), "b\0c").is_ok(), "{dialect:?}");
+        }
+        // SQLite reads text that is not UTF-8 with U+FFFD for its bad
+        // bytes: a key that holds one may be another row's.
+        let inexact = "the row's key holds text that may not have been read exactly, so the \
+                       save cannot be sure which row it names";
+        let refused = update(Dialect::Sqlite, text("caf\u{FFFD}"), "b").unwrap_err();
+        assert_eq!(refused.to_string(), inexact);
+        // Said before any value of the row is looked at.
+        let row = one(
+            vec![("id", Value::Int(1)), ("k", text("caf\u{FFFD}"))],
+            vec![typed("n", "INTEGER", "abc")],
+        );
+        let refused = Dialect::Sqlite.update_row(&books(), &row).unwrap_err();
+        assert_eq!(refused.to_string(), inexact);
+        // Only in the key, and only there: a new value may hold the
+        // character, and the other two read their text exactly.
+        assert!(update(Dialect::Sqlite, text("a"), "caf\u{FFFD}").is_ok());
+        for dialect in [Dialect::Postgres, Dialect::MySql] {
+            assert!(
+                update(dialect, text("caf\u{FFFD}"), "b").is_ok(),
+                "{dialect:?}"
+            );
+        }
     }
 
     #[test]

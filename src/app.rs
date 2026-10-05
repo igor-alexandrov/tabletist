@@ -12422,6 +12422,73 @@ mod tests {
         }
 
         #[test]
+        fn a_row_the_save_would_refuse_opens_no_confirmation_and_fails_its_cells() {
+            // Two rows no save of their database sends: PostgreSQL text
+            // that holds a NUL, and a SQLite row whose key may not have
+            // been read exactly (no editor opens on such a row: it is
+            // forced, by a key that changed under a pending cell).
+            for driver in [tabletist_db::Driver::Postgres, tabletist_db::Driver::Sqlite] {
+                let mut harness = Harness::new();
+                let (tab, id) = production(&mut harness);
+                harness.app.workspace_mut(tab).unwrap().driver = driver;
+                type_into(&mut harness, tab, id, at(0, 1), "ada@example.com");
+                let reason = if driver == tabletist_db::Driver::Postgres {
+                    type_into(&mut harness, tab, id, at(1, 1), "bob\0@example.com");
+                    "PostgreSQL text cannot hold a NUL character"
+                } else {
+                    type_into(&mut harness, tab, id, at(1, 1), "bob@example.com");
+                    let object = harness.app.object_tab_mut(tab, id).unwrap();
+                    object.rows.value.as_mut().unwrap().rows[1][0] =
+                        Value::Text("caf\u{FFFD}".into());
+                    "the row's key holds text that may not have been read exactly, so the \
+                     save cannot be sure which row it names"
+                };
+                assert_eq!(object(&harness, tab, id).edits.counts().to_fix, 0);
+                // The review says so before a save is asked for: a
+                // comment, and no statement.
+                show_review(&mut harness, tab, id, true);
+                assert_eq!(
+                    reviewed(&mut harness, tab, id).unwrap().len(),
+                    3,
+                    "{driver:?}"
+                );
+                let review = object(&harness, tab, id).edits.review.as_ref().unwrap();
+                assert!(
+                    matches!(
+                        review.lines.last(),
+                        Some(crate::review::Line::Refused { reason: said, .. }) if said == reason
+                    ),
+                    "{driver:?}: {:?}",
+                    review.lines.last()
+                );
+                // And the save asks nothing: no statement of the row is
+                // one to confirm.
+                harness.app.apply(Action::WriteEdits { tab, id });
+                assert!(harness.app.dialog.is_none(), "{driver:?}");
+                assert_eq!(writes(&harness), 0, "{driver:?}");
+                let edits = &object(&harness, tab, id).edits;
+                let Some(crate::edit::Note::Failed { row: 1, error }) = &edits.note else {
+                    panic!(
+                        "{driver:?}: expected the second row to fail, got {:?}",
+                        edits.note
+                    );
+                };
+                assert_eq!(error.to_string(), reason, "{driver:?}");
+                assert_eq!(
+                    edits.cells.get(&(1, 1)).map(|cell| &cell.state),
+                    Some(&State::Failed(error.clone())),
+                    "{driver:?}"
+                );
+                assert_eq!(
+                    edits.cells.get(&(0, 1)).map(|cell| &cell.state),
+                    Some(&State::Ready),
+                    "{driver:?}"
+                );
+                assert!(edits.saving.is_none(), "{driver:?}");
+            }
+        }
+
+        #[test]
         fn copying_takes_the_pending_value_the_cell_shows() {
             let mut harness = Harness::new();
             let (tab, id) = harness.editable();
