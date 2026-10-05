@@ -4,13 +4,13 @@
 //! itself is here too: the drawer above the pending bar on macOS and
 //! Windows, and the terminal look's panel above its status line.
 
-use egui::{Color32, Frame, Id, Rect, Sense, WidgetInfo, WidgetType, pos2, vec2};
+use egui::{Color32, Frame, Id, Key, Modifiers, Rect, Sense, WidgetInfo, WidgetType, pos2, vec2};
 use tabletist_db::Access;
 use tabletist_db::sql::TokenKind;
 
 use crate::app::App;
 use crate::i18n::{Locale, gettext};
-use crate::model::{Action, ConnTabId, TabId};
+use crate::model::{Action, ConnTabId, Dialog, TabId};
 use crate::review::{Ink, Line, Review};
 use crate::theme::{Look, Palette};
 use crate::typography::{Text, TextRole};
@@ -182,7 +182,10 @@ pub fn text(review: &Review, locale: Locale) -> String {
 
 /// The Review SQL of the table tab `id`, while it is open: a bottom panel.
 /// Called after the pending bar it stands on it; in the terminal look it
-/// stands on the status line, under the grid's error line.
+/// stands on the status line, under the grid's error line. Under the
+/// confirmation of this tab's save to production, which points at it there,
+/// Page Up and Page Down scroll it: the pointer cannot reach it under a
+/// dialog.
 pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, id: TabId) {
     let (locale, palette, look) = (app.locale, app.palette, app.look);
     let workspace = app.workspace(tab);
@@ -199,6 +202,21 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, id: TabId) {
         return;
     };
     let read_only = workspace.is_some_and(|workspace| workspace.access == Access::ReadOnly);
+    // Only under that confirmation: with no dialog up the two keys are the
+    // grid's, and under any other they are not this panel's. Read before
+    // the lines are drawn, and before the dialog's field sees them.
+    let confirming = matches!(
+        &app.dialog,
+        Some(Dialog::ConfirmWrite(prompt)) if (prompt.tab, prompt.id) == (tab, id)
+    );
+    let pages = if confirming {
+        ui.ctx().input_mut(|input| {
+            let mut pressed = |key: Key| input.count_and_consume_key(Modifiers::NONE, key) as f32;
+            pressed(Key::PageDown) - pressed(Key::PageUp)
+        })
+    } else {
+        0.0
+    };
     let skin = Skin {
         look: &look,
         palette: &palette,
@@ -219,6 +237,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, id: TabId) {
     // status line's.
     let side = if look.terminal { 12.0 } else { 20.0 };
     let mut asked = Asked::default();
+    // How tall the lines stand: nothing in a panel too low for them.
+    let mut shown = 0.0;
     let panel = egui::Panel::bottom(Id::new(("review-sql", tab.0, id.0)))
         .exact_size(height)
         .resizable(false)
@@ -244,6 +264,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, id: TabId) {
             if !place.is_positive() {
                 return;
             }
+            shown = place.height();
             let mut body = ui.new_child(egui::UiBuilder::new().max_rect(place));
             // Before `show_rows`, which reads it from the `ui` it is given.
             body.spacing_mut().item_spacing = egui::Vec2::ZERO;
@@ -256,6 +277,12 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, id: TabId) {
                 .min_scrolled_width(0.0)
                 .min_scrolled_height(0.0)
                 .show_rows(&mut body, row, lines.len(), |ui, range| {
+                    // A page is the whole rows in view, so no line is
+                    // passed over unseen. The lines move up for Page Down.
+                    if pages != 0.0 {
+                        let page = (place.height() / row).floor().max(1.0) * row;
+                        ui.scroll_with_delta(vec2(0.0, -pages * page));
+                    }
                     rows(ui, lines, range, &look, &palette, locale);
                 });
         });
@@ -270,6 +297,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, id: TabId) {
         tab,
         id,
         rect: panel.response.rect,
+        lines: shown,
     };
     let now = ui.ctx().cumulative_frame_nr();
     ui.ctx()
@@ -425,6 +453,8 @@ pub struct Placed {
     pub tab: ConnTabId,
     pub id: TabId,
     pub rect: Rect,
+    /// How tall its lines stand in it, between its head and its foot.
+    pub lines: f32,
 }
 
 /// Where the last panel drawn is kept, with the number of its frame.
@@ -432,12 +462,26 @@ fn placed_id() -> Id {
     Id::new("review-sql-placed")
 }
 
+/// The last panel drawn, and the number of the frame it was drawn in.
+fn last_placed(ctx: &egui::Context) -> Option<(Placed, u64)> {
+    ctx.data(|data| data.get_temp(placed_id()))
+}
+
 /// The panel drawn in the frame being drawn, or in the one that just
-/// ended: what stands clear of it asks, and so does a test. egui counts a
-/// frame at its end, so read after a frame "this frame" is the last one.
+/// ended: what a test asks once a frame is over. egui counts a frame at its
+/// end, so read after a frame "this frame" is the last one.
 pub fn placed(ctx: &egui::Context) -> Option<Placed> {
-    let (placed, when): (Placed, u64) = ctx.data(|data| data.get_temp(placed_id()))?;
+    let (placed, when) = last_placed(ctx)?;
     (ctx.cumulative_frame_nr() <= when + 1).then_some(placed)
+}
+
+/// The panel drawn earlier in the frame that is being drawn, and in no
+/// other: what is drawn after it in a frame asks, to stand clear of it or
+/// to count on it being on screen. A panel of the frame before is not on
+/// screen.
+pub fn placed_now(ctx: &egui::Context) -> Option<Placed> {
+    let (placed, when) = last_placed(ctx)?;
+    (ctx.cumulative_frame_nr() == when).then_some(placed)
 }
 
 #[cfg(test)]

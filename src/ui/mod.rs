@@ -17991,4 +17991,592 @@ mod tests {
             );
         }
     }
+
+    /// What the terminal's production box says where its panel shows the
+    /// statements for it.
+    const POINTS: &str = "sql shown with :diff";
+
+    /// The key the box's foot offers while it points.
+    const PAGES: &str = "pgup/pgdn scroll sql";
+
+    /// The terminal's production box as the last frame drew it: the one
+    /// rectangle edged with 2 pt of the danger colour.
+    fn prod_box(harness: &Harness) -> egui::Rect {
+        let danger = Tone::Danger.color(&harness.app.palette);
+        let mut edged = harness.outlines.iter().filter(|(rect, stroke)| {
+            stroke.color == danger && stroke.width == 2.0 && rect.width() > 200.0
+        });
+        let (rect, _) = edged.next().expect("the box is drawn");
+        *rect
+    }
+
+    /// How often the last frame painted `text`, and where.
+    fn painted_at(harness: &Harness, text: &str) -> Vec<egui::Rect> {
+        let painted = harness.text_rects.iter();
+        painted
+            .filter(|(piece, _)| piece == text)
+            .map(|(_, rect)| *rect)
+            .collect()
+    }
+
+    /// Whether the last frame laid a fill that is not opaque over the whole
+    /// window: a dialog's backdrop.
+    fn dimmed(harness: &Harness) -> bool {
+        harness.fills.iter().any(|(rect, fill)| {
+            !fill.is_opaque() && rect.width() >= harness.size.x && rect.height() >= harness.size.y
+        })
+    }
+
+    /// The fixture's table on a production connection in the terminal
+    /// look, in a window of `size`, with `email` changed in all five rows
+    /// (25 lines of review) and the save asked for: the box is up.
+    fn confirming_five_rows(size: egui::Vec2) -> (Harness, ConnTabId, TabId) {
+        let mut harness = Harness::with_size(size);
+        harness.set_look(Look::omarchy());
+        let (tab, id) = harness.editable();
+        focus_grid(&mut harness, tab);
+        harness.app.workspace_mut(tab).unwrap().environment = crate::env::Environment::Production;
+        for row in 0..5 {
+            let email = format!("new{row}@example.com");
+            make_pending(&mut harness, tab, id, (row, 1), &email);
+        }
+        harness.app.apply(Action::WriteEdits { tab, id });
+        harness.finish_animations();
+        assert_eq!(confirmed_lines(&harness).len(), 25);
+        (harness, tab, id)
+    }
+
+    /// That the box lists the statements itself, as it must wherever its
+    /// panel is not on screen for it with room: it does not point, every
+    /// line of `lines` is painted inside it, it stands over the backdrop
+    /// every dialog has, and its foot offers no key for a panel.
+    fn assert_lists_itself(harness: &Harness, lines: &[&str]) {
+        assert!(!painted(harness, POINTS), "{:?}", harness.painted);
+        assert!(!painted(harness, PAGES));
+        let outer = prod_box(harness);
+        for line in lines {
+            let places = painted_at(harness, line);
+            assert!(
+                places.iter().any(|rect| outer.contains_rect(*rect)),
+                "{line} is not in the box at {outer:?}: {places:?}"
+            );
+        }
+        assert!(dimmed(harness), "the box has its backdrop");
+        assert!(painted(harness, "type write to confirm"));
+    }
+
+    #[test]
+    fn the_prod_box_points_at_the_panel_and_stands_clear_of_it() {
+        let (mut harness, tab, id, lines) = confirming(Look::omarchy());
+        let palette = harness.app.palette;
+        assert!(painted(&harness, POINTS), "{:?}", harness.painted);
+        // The words dimmed: a line is painted in its first piece's colour.
+        assert!(painted_in(&harness, POINTS, palette.dim));
+        assert!(harness.has(POINTS));
+        // The panel is the one of the prompt's own tab.
+        let placed = drawn(&harness).expect("the panel is drawn");
+        assert_eq!((placed.tab, placed.id), (tab, id));
+        // Every line is painted once (as often as the review holds it):
+        // in the panel, and not in the box.
+        let outer = prod_box(&harness);
+        assert_eq!(lines.len(), 10);
+        for line in &lines {
+            let held = lines.iter().filter(|other| *other == line).count();
+            let places = painted_at(&harness, line);
+            assert_eq!(places.len(), held, "{line}: {places:?}");
+            for place in places {
+                assert!(placed.rect.contains_rect(place), "{line}");
+                assert!(!outer.intersects(place), "{line}");
+            }
+        }
+        // The box stands clear of the panel, in the middle of what the
+        // panel leaves above it, and is no taller than the room it asks
+        // for less 24 above and below.
+        assert!(
+            !outer.intersects(placed.rect),
+            "{outer:?} {:?}",
+            placed.rect
+        );
+        assert!(outer.bottom() + 24.0 <= placed.rect.top());
+        assert!(outer.top() >= 24.0);
+        assert!(
+            (outer.center().y - placed.rect.top() / 2.0).abs() <= 1.0,
+            "{outer:?} over {:?}",
+            placed.rect
+        );
+        let room = crate::ui::write_prompts::POINTING_ROOM;
+        assert!(outer.height() <= room - 48.0, "{}", outer.height());
+        assert!(placed.rect.top() >= room);
+        // It asks as before, and the field has the keyboard.
+        assert!(painted(&harness, "type write to confirm"));
+        assert!(harness.ctx.text_edit_focused());
+        assert!(harness.has("2 rows in users · email"));
+        // The foot says how the statements under it are scrolled, after
+        // the two keys that answer.
+        assert!(painted(&harness, PAGES), "{:?}", harness.painted);
+        let foot = ["enter confirm", "esc cancel", PAGES].map(|hint| {
+            let places = painted_at(&harness, hint);
+            *places
+                .iter()
+                .find(|rect| outer.contains_rect(**rect))
+                .unwrap_or_else(|| panic!("{hint} is not in the box"))
+        });
+        assert!(foot[0].right() < foot[1].left() && foot[1].right() < foot[2].left());
+        // Its keys answer as they did: the word, then Enter.
+        type_text(&mut harness, "wri");
+        harness.press(Key::Enter, Modifiers::NONE);
+        assert_eq!(writes(&harness), 0);
+        type_text(&mut harness, "te");
+        harness.press(Key::Enter, Modifiers::NONE);
+        assert!(harness.app.dialog.is_none());
+        assert_eq!(writes(&harness), 1);
+    }
+
+    #[test]
+    fn the_prod_box_lists_its_statements_when_its_tab_is_not_in_front() {
+        let (mut harness, tab, id) = confirming_behind_another_tab(Look::omarchy());
+        // The reducer opened the panel of the prompt's tab, which is not
+        // the tab on screen: nothing draws it.
+        assert!(edits(&harness, tab, id).reviewing);
+        assert_eq!(drawn(&harness), None);
+        assert!(!painted_from(&harness, PANEL));
+        assert_eq!(confirmed_lines(&harness), BOB);
+        assert_lists_itself(&harness, &BOB);
+        for line in BOB {
+            assert_eq!(painted_at(&harness, line).len(), 1, "{line}");
+        }
+        // And the save it shows is the one it sends.
+        type_text(&mut harness, "write");
+        harness.press(Key::Enter, Modifiers::NONE);
+        assert_eq!(writes(&harness), 1);
+        assert_eq!(
+            sent_rows(&harness)[0].key,
+            [("id".to_owned(), tabletist_db::Value::Int(2))]
+        );
+    }
+
+    #[test]
+    fn the_prod_box_lists_its_statements_under_another_tabs_panel() {
+        // `users` has a change, and so has `orders` beside it, whose own
+        // panel is open and on screen.
+        let (mut harness, tab, id) = editable_in(Look::omarchy());
+        harness.app.workspace_mut(tab).unwrap().environment = crate::env::Environment::Production;
+        make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
+        harness.app.apply(Action::OpenObject {
+            tab,
+            object: tabletist_db::ObjectRef::new("main", "orders"),
+            kind: tabletist_db::ObjectKind::Table,
+            pin: true,
+        });
+        harness.answer_structure(crate::testing::fixture_structure());
+        harness.answer_rows(crate::testing::page(3, false));
+        harness.settle();
+        let orders = harness.app.workspace(tab).unwrap().active_tab.unwrap();
+        assert_ne!(orders, id);
+        make_pending(&mut harness, tab, orders, (0, 1), "ann@example.com");
+        review(&mut harness, tab, orders);
+        let placed = drawn(&harness).expect("the panel of orders");
+        assert_eq!((placed.tab, placed.id), (tab, orders));
+        assert!(placed.rect.top() >= crate::ui::write_prompts::POINTING_ROOM);
+        // A save of `users` asked for now (a press that arrived late):
+        // the panel on screen is another tab's, and shows other
+        // statements than the ones the box asks about.
+        harness.app.apply(Action::WriteEdits { tab, id });
+        harness.finish_animations();
+        match &harness.app.dialog {
+            Some(crate::model::Dialog::ConfirmWrite(prompt)) => {
+                assert_eq!((prompt.tab, prompt.id), (tab, id));
+            }
+            other => panic!("expected the confirmation, got {other:?}"),
+        }
+        let placed = drawn(&harness).expect("the panel of orders is still drawn");
+        assert_eq!((placed.tab, placed.id), (tab, orders));
+        assert_lists_itself(&harness, &BOB);
+    }
+
+    #[test]
+    fn the_prod_box_lists_its_statements_in_the_frame_its_panel_goes() {
+        // The box is up and points at the panel of `users`; `orders` is
+        // open beside it.
+        let (mut harness, tab, id) = editable_in(Look::omarchy());
+        harness.app.workspace_mut(tab).unwrap().environment = crate::env::Environment::Production;
+        make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
+        harness.app.apply(Action::OpenObject {
+            tab,
+            object: tabletist_db::ObjectRef::new("main", "orders"),
+            kind: tabletist_db::ObjectKind::Table,
+            pin: true,
+        });
+        harness.answer_structure(crate::testing::fixture_structure());
+        harness.answer_rows(crate::testing::page(3, false));
+        let orders = harness.app.workspace(tab).unwrap().active_tab.unwrap();
+        assert_ne!(orders, id);
+        harness.app.apply(Action::ActivateTab { tab, id });
+        harness.app.apply(Action::WriteEdits { tab, id });
+        harness.finish_animations();
+        assert!(painted(&harness, POINTS));
+        let placed = drawn(&harness).expect("the panel of users");
+        assert_eq!((placed.tab, placed.id), (tab, id));
+        // The panel goes from the screen under the box (here, another tab
+        // comes to the front). In the very next frame the box lists the
+        // statements itself: a panel that stood there a frame ago is not
+        // on screen.
+        harness.app.apply(Action::ActivateTab { tab, id: orders });
+        harness.frame(Vec::new());
+        assert!(matches!(
+            harness.app.dialog,
+            Some(crate::model::Dialog::ConfirmWrite(_))
+        ));
+        assert!(!painted(&harness, POINTS), "{:?}", harness.painted);
+        for line in BOB {
+            assert!(painted(&harness, line), "{line}");
+        }
+        harness.finish_animations();
+        assert_eq!(drawn(&harness), None);
+        assert_lists_itself(&harness, &BOB);
+        // Back in front, it is pointed at again.
+        harness.app.apply(Action::ActivateTab { tab, id });
+        harness.finish_animations();
+        assert!(painted(&harness, POINTS));
+        for line in BOB {
+            assert_eq!(painted_at(&harness, line).len(), 1, "{line}");
+        }
+    }
+
+    #[test]
+    fn the_prod_box_lists_its_statements_when_another_connection_is_in_front() {
+        let (mut harness, tab, id) = editable_in(Look::omarchy());
+        harness.app.workspace_mut(tab).unwrap().environment = crate::env::Environment::Production;
+        make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
+        // The saved connections in front: the workspace is not drawn.
+        harness.app.apply(Action::ShowConnections);
+        harness.settle();
+        assert_ne!(harness.app.active_tab_id(), tab);
+        // The window is asked to close, and the question is answered with
+        // its save.
+        harness.close_requested = true;
+        harness.frame(Vec::new());
+        harness.finish_animations();
+        assert!(leaving(&harness));
+        harness.app.apply(Action::LeaveSave);
+        harness.finish_animations();
+        match &harness.app.dialog {
+            Some(crate::model::Dialog::ConfirmWrite(prompt)) => {
+                assert_eq!((prompt.tab, prompt.id), (tab, id));
+            }
+            other => panic!("expected the confirmation, got {other:?}"),
+        }
+        assert_ne!(harness.app.active_tab_id(), tab);
+        assert!(edits(&harness, tab, id).reviewing);
+        assert_eq!(drawn(&harness), None);
+        assert_lists_itself(&harness, &BOB);
+        type_text(&mut harness, "write");
+        harness.press(Key::Enter, Modifiers::NONE);
+        assert_eq!(writes(&harness), 1);
+    }
+
+    #[test]
+    fn the_prod_box_lists_its_statements_in_a_low_window() {
+        let size = egui::vec2(1280.0, 440.0);
+        let (mut harness, tab, id) = confirming_five_rows(size);
+        // The case itself: the panel of the prompt's tab is on screen,
+        // and leaves less above it than the box that points needs. A
+        // change of sizes that undoes the case fails here.
+        let placed = drawn(&harness).expect("the panel is drawn");
+        assert_eq!((placed.tab, placed.id), (tab, id));
+        let room = crate::ui::write_prompts::POINTING_ROOM;
+        assert!(placed.rect.top() < room, "{:?}", placed.rect);
+        assert_lists_itself(&harness, &["-- row id 1"]);
+        // The box is whole in the window, its head and its foot too: its
+        // statements stand lower for it, and scroll.
+        let window = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
+        let outer = prod_box(&harness);
+        assert!(window.contains_rect(outer), "{outer:?}");
+        for text in ["write 5 changes?", "enter confirm", "esc cancel"] {
+            let places = painted_at(&harness, text);
+            assert!(
+                places.iter().any(|rect| outer.contains_rect(*rect)),
+                "{text}: {places:?}"
+            );
+        }
+        assert!(harness.ctx.text_edit_focused());
+        type_text(&mut harness, "write");
+        harness.press(Key::Enter, Modifiers::NONE);
+        assert_eq!(writes(&harness), 1);
+        // In a window that has the room, the same set is pointed at.
+        let (harness, ..) = confirming_five_rows(egui::vec2(1280.0, 800.0));
+        assert!(painted(&harness, POINTS));
+        assert!(drawn(&harness).unwrap().rect.top() >= room);
+        // The room is asked for whatever the panel shows. The Structure
+        // view has no line of its own over the grid, so its panel stands
+        // taller in the same window: three lines and more of it show, and
+        // still too little is left above it for the box.
+        let (mut harness, tab, id) = confirming_five_rows(egui::vec2(1280.0, 460.0));
+        harness.app.apply(Action::SetView {
+            tab,
+            object_tab: id,
+            view: crate::model::ObjectView::Structure,
+        });
+        harness.finish_animations();
+        let placed = drawn(&harness).expect("the panel is drawn");
+        let row = crate::ui::review::row_height(&harness.ctx, &Look::omarchy());
+        assert!(placed.lines >= 3.0 * row, "{}", placed.lines);
+        assert!(placed.rect.top() < room, "{:?}", placed.rect);
+        assert_lists_itself(&harness, &["-- row id 1"]);
+    }
+
+    #[test]
+    fn the_prod_box_lists_its_statements_over_a_panel_too_low_to_show_them() {
+        // The lowest window the box points in: the panel shows three lines
+        // at once, and Page Down brings the rest.
+        let (mut harness, tab, id) = confirming_five_rows(egui::vec2(1280.0, 480.0));
+        let look = Look::omarchy();
+        let row = crate::ui::review::row_height(&harness.ctx, &look);
+        let room = crate::ui::write_prompts::POINTING_ROOM;
+        assert!(painted(&harness, POINTS));
+        assert!(drawn(&harness).unwrap().lines >= 3.0 * row);
+        // The connection goes under the box, and its banner takes a line
+        // of the window. The panel is still on screen for the prompt's
+        // tab, with the room above it, and has less than three lines of
+        // its own left: the statements are not on screen in it.
+        harness.app.workspace_mut(tab).unwrap().status =
+            crate::model::SessionStatus::Disconnected(tabletist_db::Error::query("gone"));
+        harness.finish_animations();
+        let placed = drawn(&harness).expect("the panel is drawn");
+        assert_eq!((placed.tab, placed.id), (tab, id));
+        assert!(placed.rect.top() >= room, "{:?}", placed.rect);
+        assert!(placed.lines < 3.0 * row, "{}", placed.lines);
+        assert_lists_itself(&harness, &["-- row id 1"]);
+    }
+
+    #[test]
+    fn the_sheet_is_whole_in_a_low_window() {
+        for look in desktop_looks() {
+            // Lower than twelve lines and the rest of the sheet.
+            let size = egui::vec2(1280.0, 300.0);
+            let mut harness = Harness::with_size(size);
+            harness.set_look(look);
+            let (tab, id) = harness.editable();
+            focus_grid(&mut harness, tab);
+            harness.app.workspace_mut(tab).unwrap().environment =
+                crate::env::Environment::Production;
+            for row in 0..5 {
+                let email = format!("new{row}@example.com");
+                make_pending(&mut harness, tab, id, (row, 1), &email);
+            }
+            harness.app.apply(Action::WriteEdits { tab, id });
+            let tree = harness.finish_animations();
+            // Its title and its buttons are in the window, with the first
+            // of the statements between them.
+            let title = harness
+                .painted_rect("Save 5 changes to production?")
+                .expect("the title");
+            let first = harness.painted_rect("-- row id 1").expect("the first line");
+            let send =
+                crate::testing::bounds(&tree, "Save to production", egui::accesskit::Role::Button)
+                    .expect("the button that sends");
+            assert!(title.top() >= 0.0, "{}: {title:?}", look.name);
+            assert!(title.bottom() <= first.top(), "{}", look.name);
+            assert!(first.bottom() <= send.top(), "{}", look.name);
+            assert!(send.bottom() <= size.y, "{}: {send:?}", look.name);
+        }
+    }
+
+    #[test]
+    fn the_prod_box_draws_no_backdrop_where_it_points_and_the_leave_prompt_still_does() {
+        // Pointing: the statements under the box are read at full
+        // strength.
+        let (mut harness, tab, id, _) = confirming(Look::omarchy());
+        assert!(painted(&harness, POINTS));
+        assert!(!dimmed(&harness), "{:?}", harness.fills);
+        // The question before the changes are dropped keeps its backdrop.
+        harness.press(Key::Escape, Modifiers::NONE);
+        assert!(harness.app.dialog.is_none());
+        harness.app.apply(Action::CloseTab { tab, id });
+        harness.finish_animations();
+        assert!(leaving(&harness));
+        assert!(dimmed(&harness));
+        // And so does the box that lists its statements itself.
+        let (harness, ..) = confirming_behind_another_tab(Look::omarchy());
+        assert!(!painted(&harness, POINTS));
+        assert!(dimmed(&harness));
+        // The sheet of the other looks always has: it never points.
+        for look in desktop_looks() {
+            let (harness, ..) = confirming(look);
+            assert!(dimmed(&harness), "{}", look.name);
+            assert!(!painted(&harness, POINTS), "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn page_down_scrolls_the_statements_under_the_box() {
+        let (mut harness, tab, id) = confirming_five_rows(egui::vec2(1280.0, 800.0));
+        let first = "-- row id 1";
+        let last = r#" WHERE "id" = 5;"#;
+        // The lines that are painted, by the row each is of: its first
+        // line and its last are told apart from every other row's.
+        let rows_in_view = |harness: &Harness| -> Vec<usize> {
+            (1..=5)
+                .flat_map(|row| {
+                    [
+                        (2 * row - 2, format!("-- row id {row}")),
+                        (2 * row - 1, format!(" WHERE \"id\" = {row};")),
+                    ]
+                })
+                .filter(|(_, line)| painted(harness, line))
+                .map(|(place, _)| place)
+                .collect()
+        };
+        assert!(painted(&harness, POINTS));
+        assert!(painted(&harness, first));
+        assert!(!painted(&harness, last));
+        let before = rows_in_view(&harness);
+        harness.press(Key::PageDown, Modifiers::NONE);
+        harness.finish_animations();
+        assert!(!painted(&harness, first), "{:?}", harness.painted);
+        // A page is what was in view: nothing between the two is passed
+        // over unseen.
+        let after = rows_in_view(&harness);
+        assert!(
+            after.first().unwrap() <= &(before.last().unwrap() + 1),
+            "{before:?} then {after:?}"
+        );
+        harness.press(Key::PageDown, Modifiers::NONE);
+        harness.finish_animations();
+        assert!(painted(&harness, last), "{:?}", harness.painted);
+        // The keys are the panel's alone: nothing was typed into the
+        // field, nothing answered and nothing sent.
+        match &harness.app.dialog {
+            Some(crate::model::Dialog::ConfirmWrite(prompt)) => assert_eq!(prompt.typed, ""),
+            other => panic!("expected the confirmation, got {other:?}"),
+        }
+        assert_eq!(writes(&harness), 0);
+        assert!(harness.ctx.text_edit_focused());
+        for _ in 0..2 {
+            harness.press(Key::PageUp, Modifiers::NONE);
+            harness.finish_animations();
+        }
+        assert!(painted(&harness, first));
+        assert!(!painted(&harness, last));
+        // With no dialog up the two keys are the grid's: the selection
+        // moves, and the panel stays where it is.
+        harness.press(Key::Escape, Modifiers::NONE);
+        assert!(harness.app.dialog.is_none());
+        assert!(edits(&harness, tab, id).reviewing);
+        select(&mut harness, tab, id, (0, 1));
+        harness.press(Key::PageDown, Modifiers::NONE);
+        harness.finish_animations();
+        assert_eq!(selected(&harness, tab, id), Some((4, 1)));
+        assert!(painted(&harness, first));
+        assert!(!painted(&harness, last));
+        // Nor are they the panel's where the grid does not take them: with
+        // the arrows on the tree.
+        harness.app.workspace_mut(tab).unwrap().pane = crate::model::Pane::Tree;
+        harness.press(Key::PageDown, Modifiers::NONE);
+        harness.finish_animations();
+        assert!(painted(&harness, first));
+        assert!(!painted(&harness, last));
+        // A panel that shows a few lines at once pages by those few: in
+        // the lowest window the box still points in, every line comes
+        // into view on the way down.
+        let (mut harness, ..) = confirming_five_rows(egui::vec2(1280.0, 480.0));
+        assert!(painted(&harness, POINTS), "{:?}", harness.painted);
+        let mut seen = rows_in_view(&harness);
+        assert!(seen.len() < 4, "{seen:?} are in view at once");
+        for _ in 0..25 {
+            harness.press(Key::PageDown, Modifiers::NONE);
+            harness.finish_animations();
+            let now = rows_in_view(&harness);
+            if let (Some(next), Some(last)) = (now.first(), seen.last()) {
+                assert!(next <= &(last + 1), "{seen:?} then {now:?}");
+            }
+            seen.extend(now);
+        }
+        seen.sort_unstable();
+        seen.dedup();
+        assert_eq!(seen, (0..10).collect::<Vec<_>>());
+        assert!(painted(&harness, last));
+    }
+
+    #[test]
+    fn the_panel_the_box_opened_stays_after_cancel_and_closes_with_esc() {
+        let (mut harness, tab, id, lines) = confirming(Look::omarchy());
+        let row_panel = |harness: &Harness| harness.app.workspace(tab).unwrap().row_panel;
+        // The row panel is closed here: an Esc that finds nothing of its
+        // own to close must not open it.
+        harness.press(Key::Escape, Modifiers::NONE);
+        harness.app.workspace_mut(tab).unwrap().row_panel = false;
+        harness.app.apply(Action::WriteEdits { tab, id });
+        harness.finish_animations();
+        assert!(painted(&harness, POINTS));
+        // Esc cancels the box: the statements just declined are still
+        // what is pending, and stay to be read.
+        harness.press(Key::Escape, Modifiers::NONE);
+        assert!(harness.app.dialog.is_none());
+        assert!(edits(&harness, tab, id).reviewing);
+        assert!(painted_from(&harness, PANEL));
+        for line in &lines {
+            assert!(painted(&harness, line), "{line}");
+        }
+        assert!(!painted(&harness, POINTS));
+        assert_eq!(edits(&harness, tab, id).cells.len(), 2);
+        // A second Esc closes the panel.
+        harness.press(Key::Escape, Modifiers::NONE);
+        assert!(!edits(&harness, tab, id).reviewing);
+        assert!(!painted_from(&harness, PANEL));
+        // A third does not close a row panel that was never open.
+        harness.press(Key::Escape, Modifiers::NONE);
+        assert!(!row_panel(&harness));
+        assert_eq!(writes(&harness), 0);
+        // Held, the Esc that cancels the box does only that.
+        harness.app.apply(Action::WriteEdits { tab, id });
+        harness.finish_animations();
+        hold(&mut harness, Key::Escape);
+        assert!(harness.app.dialog.is_none());
+        assert!(edits(&harness, tab, id).reviewing);
+    }
+
+    #[test]
+    fn a_confirmed_write_closes_the_panel_with_the_set() {
+        let (mut harness, tab, id) = editable_in(Look::omarchy());
+        harness.app.workspace_mut(tab).unwrap().environment = crate::env::Environment::Production;
+        make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
+        harness.app.apply(Action::WriteEdits { tab, id });
+        harness.finish_animations();
+        assert!(painted(&harness, POINTS));
+        assert!(painted_from(&harness, PANEL));
+        type_text(&mut harness, "write");
+        harness.press(Key::Enter, Modifiers::NONE);
+        assert!(harness.app.dialog.is_none());
+        assert_eq!(writes(&harness), 1);
+        // While the save runs the panel shows what was sent.
+        assert!(painted_from(&harness, PANEL));
+        harness.answer_written(Ok(written_row("bob@example.com")));
+        harness.settle();
+        assert!(edits(&harness, tab, id).cells.is_empty());
+        assert!(!edits(&harness, tab, id).reviewing);
+        assert!(!painted_from(&harness, PANEL));
+        assert_eq!(drawn(&harness), None);
+    }
+
+    #[test]
+    fn the_desktop_confirmation_opens_no_drawer() {
+        for look in desktop_looks() {
+            let (mut harness, tab, id, lines) = confirming(look);
+            assert!(!edits(&harness, tab, id).reviewing, "{}", look.name);
+            assert_eq!(drawn(&harness), None, "{}", look.name);
+            assert!(!painted(&harness, DRAWER), "{}", look.name);
+            // The sheet lists them itself, each as often as it holds it.
+            for line in &lines {
+                let held = lines.iter().filter(|other| *other == line).count();
+                let places = painted_at(&harness, line);
+                assert_eq!(places.len(), held, "{}: {line}", look.name);
+            }
+            // The bar's button reads as it did, behind the sheet.
+            assert!(harness.has("Review SQL"), "{}", look.name);
+            assert!(!harness.has("Hide SQL"), "{}", look.name);
+            click_dialog(&mut harness, "Cancel");
+            assert!(!edits(&harness, tab, id).reviewing, "{}", look.name);
+        }
+    }
 }

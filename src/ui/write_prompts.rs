@@ -3,9 +3,13 @@
 //! with buttons on macOS and Windows, a box with its keys in the terminal
 //! look. The confirmation lists every statement it would send, in every
 //! look, as Review SQL draws them: no save to production is offered
-//! without them on screen.
+//! without them on screen. The terminal's box leaves them to its panel
+//! only where that panel is on screen for it, and stands clear of it.
 
-use egui::{CornerRadius, Frame, Id, Key, Margin, Modifiers, Rect, Sense, Stroke, pos2, vec2};
+use egui::{
+    Align2, Color32, CornerRadius, Frame, Id, Key, Margin, Modifiers, Rect, Sense, Stroke, pos2,
+    vec2,
+};
 
 use crate::app::App;
 use crate::i18n::{Locale, gettext, ngettext};
@@ -31,6 +35,20 @@ const COPY: f32 = 24.0;
 
 /// The band along the top of the macOS and Windows confirmation.
 const BAND: f32 = 4.0;
+
+/// What the terminal's box needs above its panel to point at it and
+/// stand clear: the box as it is then, and 24 clear above and below it.
+/// The box that points is the same height whatever it is asked about: each
+/// of its lines is one row.
+pub(crate) const POINTING_ROOM: f32 = 300.0;
+
+/// What the sheet of macOS and Windows takes of the window besides its
+/// statements, with 24 clear above and below it: what its statements may
+/// not have of a low window.
+const SHEET_REST: f32 = 220.0;
+
+/// The fewest lines a confirmation shows at once, however low the window.
+const FEWEST_ROWS: f32 = 3.0;
 
 /// The word the terminal's confirmation takes.
 const WORD: &str = "write";
@@ -484,8 +502,10 @@ fn confirm_write(app: &mut App, ctx: &egui::Context) {
 /// at most [`review::MAX_ROWS`] of them. It scrolls both ways: a line
 /// longer than the box is cut by it, never wrapped into what could read as
 /// another. The lines are painted and cannot be selected: a value is shown
-/// cut, and a copy of it would be pasted as it is.
-fn statements(ui: &mut egui::Ui, lines: &[Line], skin: Skin<'_>) {
+/// cut, and a copy of it would be pasted as it is. `rest` is what the
+/// prompt takes of the window besides them: in a low window they stand
+/// lower, so the question and its answers stay on screen with them.
+fn statements(ui: &mut egui::Ui, lines: &[Line], rest: f32, skin: Skin<'_>) {
     let Skin {
         look,
         palette,
@@ -506,8 +526,11 @@ fn statements(ui: &mut egui::Ui, lines: &[Line], skin: Skin<'_>) {
             // Before `show_rows`, which reads it from the `ui` it is given.
             ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
             let row = review::row_height(ui.ctx(), look);
+            let most = (ui.ctx().content_rect().height() - rest)
+                .min(review::MAX_ROWS as f32 * row)
+                .max(FEWEST_ROWS * row);
             egui::ScrollArea::both()
-                .max_height(review::MAX_ROWS as f32 * row)
+                .max_height(most)
                 .auto_shrink([false, true])
                 .min_scrolled_height(0.0)
                 .show_rows(ui, row, lines.len(), |ui, range| {
@@ -580,7 +603,7 @@ fn confirm_sheet(
                         .layout(ui.ctx())
                         .label(ui);
                     ui.add_space(12.0);
-                    statements(ui, lines, skin);
+                    statements(ui, lines, SHEET_REST, skin);
                     ui.add_space(14.0);
                     let (cancel, save, copy_sql) = (
                         gettext(locale, "Cancel"),
@@ -633,11 +656,53 @@ fn confirm_sheet(
     }
 }
 
+/// Where the Review SQL panel of the prompt's own tab stands, when the
+/// box may leave the statements to it: the panel was drawn in this very
+/// frame (it is drawn before the dialogs), it is that tab's and no
+/// other's, it shows its lines (all of them, or as many at once as the box
+/// itself would at the least), and above it the window has the room the
+/// box needs to stand clear of it. `None` everywhere else, and the box
+/// then lists the statements itself: its tab is not the one in front (a
+/// save asked for by the question about leaving a tab, a connection or the
+/// window), another tab's panel is on screen, or the window is too low.
+fn pointed_at(
+    ctx: &egui::Context,
+    prompt: &crate::model::WritePrompt,
+    look: &Look,
+) -> Option<Rect> {
+    let placed = review::placed_now(ctx)?;
+    let own = (placed.tab, placed.id) == (prompt.tab, prompt.id);
+    let room = placed.rect.top() - ctx.content_rect().top();
+    let lines = prompt.review.lines.len() as f32;
+    let fewest = lines.min(FEWEST_ROWS) * review::row_height(ctx, look);
+    (own && room >= POINTING_ROOM && placed.lines >= fewest).then_some(placed.rect)
+}
+
+/// One row of `text` across the width `ui` has left, cut with `…` where it
+/// is longer; a screen reader gets the whole of it.
+fn one_row(ui: &mut egui::Ui, role: TextRole, text: &str, color: Color32, look: &Look) {
+    let height = role.row_height(ui.ctx(), look.faces);
+    let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::hover());
+    let measure = |text: &str| widgets::measure(ui, Text::one(look, role, text, color));
+    let shown = crate::ui::grid::ellipsize(text, row.width(), false, measure);
+    widgets::paint_text(
+        ui,
+        row.left(),
+        row.center().y,
+        Text::one(look, role, &shown, color),
+    );
+    widgets::announce(ui, row, text);
+}
+
 /// The terminal look: the box in the danger colour, its head with the
 /// environment's tag and the question, what is saved and where, the
-/// statements, and the field that takes the word. `enter` says Enter was
-/// pressed: it confirms once the field holds the word, and cancels with
-/// the keyboard on Cancel. Returns whether the prompt is the dialog on top.
+/// statements, and the field that takes the word. Where the panel of its
+/// own tab is on screen with room above it (see [`pointed_at`]), the box
+/// stands in that room, says the panel shows the statements, and draws no
+/// backdrop over them; everywhere else it lists them itself. `enter` says
+/// Enter was pressed: it confirms once the field holds the word, and
+/// cancels with the keyboard on Cancel. Returns whether the prompt is the
+/// dialog on top.
 fn confirm_box(
     ctx: &egui::Context,
     prompt: &mut crate::model::WritePrompt,
@@ -659,114 +724,160 @@ fn confirm_box(
     // What the field asks for, and why the button that sends cannot be
     // pressed before it has it.
     let ask = format!("{} {WORD} {}", skin.say("type"), skin.say("to confirm"));
-    let modal = widgets::modal(Id::new("write-prompt"), look, palette)
-        .frame(frame)
-        .show(ctx, |ui| {
-            ui.set_width(fitted(ui.ctx(), 600.0));
-            ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
-            let head = terminal_dialog::head(ui, radius, Tone::Danger.fill(look, palette), palette);
-            let y = terminal_dialog::head_line(head);
-            // The tag, filled with the danger colour.
-            let ink = widgets::ink_on(danger, palette);
-            let tag = Text::one(look, TextRole::OGroup, facts.tag, ink).layout(ui.ctx());
-            let chip = Rect::from_min_size(
-                pos2(head.left() + 14.0, y - tag.height() / 2.0 - 1.0),
-                vec2(tag.width() + 12.0, tag.height() + 2.0),
-            );
-            ui.painter()
-                .rect_filled(chip, CornerRadius::same(2), danger);
-            tag.paint_left(ui.painter(), chip.left() + 6.0, y);
-            let title = format!("{} {}?", skin.say("write"), look.label(&facts.changes));
-            widgets::paint_label(
-                ui,
-                chip.right() + 10.0,
-                y,
-                Text::one(look, TextRole::OScreenTitle, &title, palette.text),
-            );
-            Frame::new()
-                .inner_margin(Margin::symmetric(18, 14))
-                .show(ui, |ui| {
-                    ui.set_width(ui.available_width());
-                    let role = TextRole::OBody;
+    let panel = pointed_at(ctx, prompt, look);
+    let id = Id::new("write-prompt");
+    let modal = widgets::modal(id, look, palette).frame(frame);
+    let modal = match panel {
+        // In the middle of what the panel leaves above it. No backdrop: it
+        // would dim the statements the user is asked to read. The box's
+        // edge marks it, and it takes every click all the same.
+        Some(panel) => {
+            let lift = (ctx.content_rect().bottom() - panel.top()) / 2.0;
+            let area =
+                egui::Modal::default_area(id).anchor(Align2::CENTER_CENTER, vec2(0.0, -lift));
+            modal.area(area).backdrop_color(Color32::TRANSPARENT)
+        }
+        None => modal,
+    };
+    let modal = modal.show(ctx, |ui| {
+        ui.set_width(fitted(ui.ctx(), 600.0));
+        ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
+        let head = terminal_dialog::head(ui, radius, Tone::Danger.fill(look, palette), palette);
+        let y = terminal_dialog::head_line(head);
+        // The tag, filled with the danger colour.
+        let ink = widgets::ink_on(danger, palette);
+        let tag = Text::one(look, TextRole::OGroup, facts.tag, ink).layout(ui.ctx());
+        let chip = Rect::from_min_size(
+            pos2(head.left() + 14.0, y - tag.height() / 2.0 - 1.0),
+            vec2(tag.width() + 12.0, tag.height() + 2.0),
+        );
+        ui.painter()
+            .rect_filled(chip, CornerRadius::same(2), danger);
+        tag.paint_left(ui.painter(), chip.left() + 6.0, y);
+        let title = format!("{} {}?", skin.say("write"), look.label(&facts.changes));
+        widgets::paint_label(
+            ui,
+            chip.right() + 10.0,
+            y,
+            Text::one(look, TextRole::OScreenTitle, &title, palette.text),
+        );
+        Frame::new()
+            .inner_margin(Margin::symmetric(18, 14))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                let role = TextRole::OBody;
+                let about = format!("{} · {}", look.label(&facts.rows), facts.columns.join(", "));
+                if panel.is_some() {
+                    // Each on one row, so the box is as tall as the room
+                    // it was given allows, whatever it is asked about.
+                    one_row(ui, role, &facts.connection, palette.text, look);
+                    ui.add_space(2.0);
+                    one_row(ui, role, &about, palette.dim, look);
+                    ui.add_space(10.0);
+                    // In place of the statements: where they are.
+                    Text::new(look)
+                        .add(role, &skin.say("sql shown with"), palette.dim)
+                        .space(role, " ")
+                        .add(role, ":diff", palette.accent)
+                        .layout(ui.ctx())
+                        .label(ui);
+                } else {
                     widgets::label(ui, role, &facts.connection, palette.text, look);
                     ui.add_space(2.0);
-                    let about =
-                        format!("{} · {}", look.label(&facts.rows), facts.columns.join(", "));
                     let width = ui.available_width();
                     Text::one(look, role, &about, palette.dim)
                         .wrap(width)
                         .layout(ui.ctx())
                         .label(ui);
                     ui.add_space(10.0);
-                    statements(ui, &prompt.review.lines, skin);
-                    ui.add_space(12.0);
-                    let ask = widgets::label(ui, role, &ask, palette.dim, look);
-                    ui.add_space(6.0);
-                    // The field's border in the danger colour, with the
-                    // keyboard and without.
-                    let visuals = ui.visuals_mut();
-                    let edge = Stroke::new(1.0, danger);
-                    visuals.selection.stroke = edge;
-                    for state in [
-                        &mut visuals.widgets.inactive,
-                        &mut visuals.widgets.hovered,
-                        &mut visuals.widgets.active,
-                    ] {
-                        state.bg_stroke = edge;
-                    }
-                    let field = ui
-                        .add(
-                            widgets::single_in(ui, &mut prompt.typed, look, role)
-                                .desired_width(f32::INFINITY),
-                        )
-                        .labelled_by(ask.id);
-                    focus::hint(ui, &field, field.rect, Ring::Failing { radius: 3 });
-                    // Once: a frame that only sizes the box keeps no focus.
-                    if prompt.focus {
-                        field.request_focus();
-                        prompt.focus = ui.is_sizing_pass();
-                    }
-                });
-            let foot = terminal_dialog::foot(ui, radius, palette);
-            let (confirm, cancel) = (skin.say("confirm"), skin.say("cancel"));
-            let names = [
-                gettext(locale, "Save to production"),
-                gettext(locale, "Cancel"),
-            ];
-            let keys = [
-                terminal_dialog::Key {
-                    key: "enter",
-                    label: &confirm,
-                    button: Some(&names[0]),
-                    // Its key answers once the word is typed, and so does
-                    // its button.
-                    lead: armed,
-                    disabled: (!armed).then_some(ask.as_str()),
-                },
-                terminal_dialog::Key {
-                    key: "esc",
-                    label: &cancel,
-                    button: Some(&names[1]),
-                    lead: false,
-                    disabled: None,
-                },
-            ];
-            // The terminal's Enter confirms, once the field holds the
-            // word: from the field and from the button that sends, not
-            // from Cancel.
-            let entered = match terminal_dialog::keyboard_on(ui, &keys) {
-                _ if !enter => None,
-                Some(1) => Some(1),
-                _ => Some(0),
-            };
-            let pressed = terminal_dialog::keys(ui, foot, 0.0, &keys, look, palette);
-            match pressed.or(entered) {
-                // The button confirms what its key does, and no more.
-                Some(0) if armed => actions.push(Action::ConfirmWrite),
-                Some(1) => actions.push(Action::CancelWrite),
-                _ => {}
-            }
-        });
+                    // The box that lists is the box that points with
+                    // the statements in place of one line: what that one
+                    // needs of the window is what these may not have.
+                    statements(ui, &prompt.review.lines, POINTING_ROOM, skin);
+                }
+                ui.add_space(12.0);
+                let ask = widgets::label(ui, role, &ask, palette.dim, look);
+                ui.add_space(6.0);
+                // The field's border in the danger colour, with the
+                // keyboard and without.
+                let visuals = ui.visuals_mut();
+                let edge = Stroke::new(1.0, danger);
+                visuals.selection.stroke = edge;
+                for state in [
+                    &mut visuals.widgets.inactive,
+                    &mut visuals.widgets.hovered,
+                    &mut visuals.widgets.active,
+                ] {
+                    state.bg_stroke = edge;
+                }
+                let field = ui
+                    .add(
+                        widgets::single_in(ui, &mut prompt.typed, look, role)
+                            .desired_width(f32::INFINITY),
+                    )
+                    .labelled_by(ask.id);
+                focus::hint(ui, &field, field.rect, Ring::Failing { radius: 3 });
+                // Once: a frame that only sizes the box keeps no focus.
+                if prompt.focus {
+                    field.request_focus();
+                    prompt.focus = ui.is_sizing_pass();
+                }
+            });
+        let foot = terminal_dialog::foot(ui, radius, palette);
+        let (confirm, cancel, scroll) = (
+            skin.say("confirm"),
+            skin.say("cancel"),
+            skin.say("scroll sql"),
+        );
+        let names = [
+            gettext(locale, "Save to production"),
+            gettext(locale, "Cancel"),
+        ];
+        let mut keys = vec![
+            terminal_dialog::Key {
+                key: "enter",
+                label: &confirm,
+                button: Some(&names[0]),
+                // Its key answers once the word is typed, and so does
+                // its button.
+                lead: armed,
+                disabled: (!armed).then_some(ask.as_str()),
+            },
+            terminal_dialog::Key {
+                key: "esc",
+                label: &cancel,
+                button: Some(&names[1]),
+                lead: false,
+                disabled: None,
+            },
+        ];
+        // The pointer cannot reach the panel under the box: its keys do.
+        // Last, and no button: the two before it are told by their place.
+        if panel.is_some() {
+            keys.push(terminal_dialog::Key {
+                key: "pgup/pgdn",
+                label: &scroll,
+                button: None,
+                lead: false,
+                disabled: None,
+            });
+        }
+        // The terminal's Enter confirms, once the field holds the
+        // word: from the field and from the button that sends, not
+        // from Cancel.
+        let entered = match terminal_dialog::keyboard_on(ui, &keys) {
+            _ if !enter => None,
+            Some(1) => Some(1),
+            _ => Some(0),
+        };
+        let pressed = terminal_dialog::keys(ui, foot, 0.0, &keys, look, palette);
+        match pressed.or(entered) {
+            // The button confirms what its key does, and no more.
+            Some(0) if armed => actions.push(Action::ConfirmWrite),
+            Some(1) => actions.push(Action::CancelWrite),
+            _ => {}
+        }
+    });
     modal.is_top_modal
 }
 
@@ -844,6 +955,50 @@ mod tests {
         harness.click("Save to production");
         assert!(harness.app.dialog.is_none());
         assert_eq!(writes(&harness), 1);
+    }
+
+    #[test]
+    fn a_line_of_the_box_that_points_is_one_row_however_long() {
+        let look = crate::theme::Look::omarchy();
+        let mut harness = Harness::new();
+        harness.set_look(look);
+        let palette = harness.app.palette;
+        let role = crate::typography::TextRole::OBody;
+        let long = format!("1 row in users · {}", ["a_column"; 60].join(", "));
+        let mut heights = Vec::new();
+        let tree = harness.frame_with(|ui| {
+            let place = egui::Rect::from_min_size(ui.cursor().min, egui::vec2(400.0, 200.0));
+            let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(place));
+            ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
+            for text in ["1 row in users · email", long.as_str()] {
+                let top = ui.cursor().top();
+                super::one_row(&mut ui, role, text, palette.dim, &look);
+                heights.push(ui.cursor().top() - top);
+            }
+        });
+        // A long one takes the row a short one takes, and no more.
+        assert_eq!(heights[0], heights[1]);
+        assert!(heights[0] > 0.0);
+        // The short one is whole; the long one is cut with its mark, and
+        // fits the width.
+        let painted = |start: &str| {
+            let mut texts = harness.text_rects.iter();
+            texts
+                .find(|(text, _)| text.starts_with(start))
+                .cloned()
+                .unwrap_or_else(|| panic!("nothing begins {start:?}"))
+        };
+        assert_eq!(
+            painted("1 row in users · email").0,
+            "1 row in users · email"
+        );
+        let (cut, place) = painted("1 row in users · a_column");
+        assert!(cut.ends_with('…') && cut.len() < long.len(), "{cut}");
+        assert!(place.width() <= 400.0, "{place:?}");
+        // A screen reader gets the whole of both.
+        let labels = crate::testing::labels(&tree);
+        assert!(labels.contains(&long));
+        assert!(labels.iter().any(|label| label == "1 row in users · email"));
     }
 
     #[test]
