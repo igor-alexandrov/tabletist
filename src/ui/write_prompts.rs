@@ -883,7 +883,10 @@ fn confirm_box(
                     .labelled_by(ask.id);
                 focus::hint(ui, &field, field.rect, Ring::Failing { radius: 3 });
                 // Once: a frame that only sizes the box keeps no focus.
-                if prompt.focus {
+                // And again whenever nothing has the keyboard: a click
+                // outside the box takes it, and what is typed next must
+                // still be the word.
+                if prompt.focus || ui.memory(|memory| memory.focused().is_none()) {
                     field.request_focus();
                     prompt.focus = ui.is_sizing_pass();
                 }

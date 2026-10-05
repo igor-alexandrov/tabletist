@@ -19059,6 +19059,13 @@ mod tests {
         click_at(&mut harness, cell);
         assert_eq!(state(&harness), before);
         assert!(edits(&harness, tab, id).editor.is_none());
+        // A click outside takes the keyboard from the field, and the box
+        // gives it back: what is typed next is still the word.
+        type_text(&mut harness, "wri");
+        let Some(crate::model::Dialog::ConfirmWrite(prompt)) = &harness.app.dialog else {
+            panic!("the box is gone");
+        };
+        assert_eq!(prompt.typed, "wri");
         // And Esc still cancels it, with nothing sent.
         harness.press(Key::Escape, Modifiers::NONE);
         assert!(harness.app.dialog.is_none());
