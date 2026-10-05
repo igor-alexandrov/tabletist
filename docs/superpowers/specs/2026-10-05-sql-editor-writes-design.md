@@ -63,9 +63,16 @@ switch, as the Omarchy artboard has it (it closes the tab).
 - Statements that cannot run inside a transaction (PostgreSQL `VACUUM`,
   `CREATE DATABASE`, `CREATE INDEX CONCURRENTLY`, SQLite `VACUUM`). They
   keep failing with the database's own error.
-- PostgreSQL `COPY`, MySQL account and server statements, `USE`, `LOCK
-  TABLES`, `PREPARE` and the other refused statements. Only MySQL `CALL`
-  leaves the list, and only for a read-write run.
+- Everything on the refusal list: PostgreSQL `COPY`, MySQL account and
+  server statements, `USE`, `LOCK TABLES`, `PREPARE` and the rest. The list
+  does not change.
+- MySQL `CALL`. A procedure can commit the run's transaction and open one
+  of its own, and the run cannot tell that one from its own; it would
+  report "nothing was written" over work that is. It stays refused until a
+  run can check whose transaction it is in.
+- A PostgreSQL `CALL` whose procedure commits: PostgreSQL refuses that
+  inside a transaction block, with its own error. MySQL statements the
+  prepared protocol does not take fail the same way, as today.
 - A record of what was written. Query history is its own slice.
 - The affected count of a statement that also returns rows (`RETURNING`):
   it reports its rows, as today.
@@ -96,29 +103,34 @@ badge do nothing.
     pub enum StatementKind { Read, Write }
     sql::kind(dialect, statement) -> StatementKind
 
-A statement is a `Read` when its first word is `EXPLAIN`, or when its first
-word is one of `SELECT`, `VALUES`, `TABLE`, `WITH`, `SHOW`, `DESCRIBE`,
-`DESC`, on SQLite `PRAGMA`, or its first token is `(`, and no unquoted word
-of it is `INSERT`, `UPDATE`, `DELETE` or `MERGE`. Everything else is a
-`Write`.
+A statement is a `Read` when its first word is one of `SELECT`, `VALUES`,
+`TABLE`, `WITH`, `SHOW`, `EXPLAIN`, `DESCRIBE`, `DESC`, on SQLite `PRAGMA`,
+or its first token is `(`, and no unquoted word of it is `INSERT`,
+`UPDATE`, `DELETE` or `MERGE`. One exception: a statement that starts with
+`EXPLAIN` and has no `ANALYZE` among its words is a `Read` whatever it
+explains, since it executes nothing. Everything else is a `Write`.
 
 - It errs toward `Write`: `SELECT ... FOR UPDATE`, a data-modifying `WITH`
   and a column named `update` all count as writes. A read taken for a write
   costs a commit of nothing and, on production, a confirmation.
-- `EXPLAIN` is always a read, whatever follows. `EXPLAIN ANALYZE UPDATE`
-  executes its statement, so it is refused in the read-only transaction and
-  has to be asked for (see below), never committed by the way.
+- `EXPLAIN ANALYZE UPDATE` executes its `UPDATE`, so it is a write like the
+  statement it explains: in a read-write run its changes are committed, and
+  on production it is shown and confirmed like any other.
 - A write taken for a read (`SELECT setval(...)`, a function that writes,
   PostgreSQL `SELECT ... INTO`, SQLite `PRAGMA user_version = 5`) is not a
   hole: it runs in the read-only transaction and the database refuses it.
 
 ### The rule
 
-A run is read-write when the tab's effective mode is `ReadWrite` and at
-least one of the statements it would run is a `Write`, or when the user
-asked for it from the card ("Run in a read-write transaction"). Every other
-run goes through `ScriptMode::ReadOnly`, which is the run the core editor
-spec describes, guard layers, cleanup and wording included.
+A run is read-write when both hold:
+
+1. the tab's effective mode is `ReadWrite`, and
+2. at least one of the statements it would run is a `Write`, or the user
+   asked for it from the card ("Run in a read-write transaction").
+
+Every other run goes through `ScriptMode::ReadOnly`, which is the run the
+core editor spec describes, guard layers, cleanup and wording included.
+Nothing makes a run read-write in a tab whose effective mode is `ReadOnly`.
 
 So the confirmations below and the transaction's mode are decided by the
 same answer. No run is read-write without having passed them.
@@ -140,8 +152,12 @@ same answer. No run is read-write without having passed them.
         pub stopped: bool,
         pub end: ScriptEnd,
         /// What the database said when it could not undo everything
-        /// (MySQL's non-transactional tables).
+        /// (MySQL's non-transactional tables). With it, `RolledBack` and
+        /// `Partly` no longer say that the rest is gone.
         pub rollback_warning: Option<String>,
+        /// A `Write` run only: the session could not be put back after
+        /// the run and must be closed. `end` still holds.
+        pub broken: Option<Error>,
     }
     pub enum ScriptEnd {
         /// Nothing of the run remains. Every read-only run ends so.
@@ -166,11 +182,12 @@ of statements is `Ok` with no results, as today.
 ### What holds in both modes
 
 - The refusal check runs first and a refused statement fails the whole run
-  with nothing sent. The list is the core spec's, with one change: in a
-  `Write` run MySQL `CALL` may run. The refusal's sentence follows the mode.
-  Read-only: "Tabletist runs every query in a read-only transaction, so
-  COMMIT is not allowed". Write: "Tabletist commits the run itself, in one
-  transaction, so COMMIT is not allowed".
+  with nothing sent. The list is the core spec's, unchanged. The sentences
+  that name the transaction follow the mode. Read-only: "Tabletist runs
+  every query in a read-only transaction, so COMMIT is not allowed". Write:
+  "Tabletist runs and commits the script in one transaction of its own, so
+  COMMIT is not allowed". The drivers' own "could not start (or end) the
+  read-only transaction" say "the transaction" in a `Write` run.
 - One statement at a time: PostgreSQL prepares each, MySQL runs each
   through the prepared protocol, SQLite's authorizer sees each.
 - Statements run in order and stop at the first error or cancel. The
@@ -178,7 +195,11 @@ of statements is `Ok` with no results, as today.
 - At most `limit` rows are kept for a statement that returns rows. Nothing
   is cancelled to stop reading.
 - The session is put back after every run, on every path. A cleanup step
-  that fails closes the session, as today.
+  that fails closes the session, as today. In a `ReadOnly` run that is the
+  run's `Err`. In a `Write` run whose end is known the outcome is returned
+  with the failure in `broken`, and the backend closes the session after
+  it has delivered the result: a run known to be committed is never shown
+  as one that may be.
 
 ### PostgreSQL
 
@@ -192,15 +213,27 @@ of statements is `Ok` with no results, as today.
    `Error::LeftTransaction` before the statement runs, and the backend
    closes the session. `LeftTransaction` counts as a lost connection, as
    `LeftReadOnly` does.
-3. Statements run as in a read-only run: a row query through a cursor, any
-   other statement with columns (`INSERT ... RETURNING`) streamed and cut
-   at `limit + 1`, the rest through `simple_query` with its count.
+3. Every statement is prepared first, as today. No statement of a `Write`
+   run goes through a cursor: a cursor runs its query only as far as it is
+   fetched, so `SELECT refill(id) FROM shelves` would do its work for
+   `limit + 1` rows and the run would commit that much. A statement with
+   columns, a row query as much as `INSERT ... RETURNING`, runs to its end
+   through `simple_query_raw`, keeping `limit + 1` rows and dropping the
+   rest as they stream; the timeout bounds it. That also runs a
+   data-modifying `WITH` that returns rows, which `DECLARE` refuses. A
+   statement without columns runs through `simple_query` with its count.
 4. After the last statement, with none failed and no stop: the savepoint is
    swapped once more, the driver calls `stop.finish()`, and `COMMIT` is
-   sent. A stop that was set before `finish` rolls back instead.
+   sent. A stop that was set before `finish` rolls back instead. The swap
+   is what makes an answered `COMMIT` mean committed: in a failed
+   transaction PostgreSQL answers `COMMIT` with a rollback and no error,
+   and the driver does not see which.
 5. A `COMMIT` that fails (a deferred constraint, a serialization failure)
-   is `ScriptEnd::CommitFailed` with the database's error. A cancel that
-   reached the server just before the `COMMIT` shows the same way.
+   is `ScriptEnd::CommitFailed` with the database's error, and PostgreSQL
+   has rolled the transaction back. A cancel that was on its way lands
+   either while the session is idle, where the server drops it, or on the
+   commit's own work, where it fails the commit like any other error. It
+   never leaves a commit that failed and is written.
 6. After an error or a stop: `ROLLBACK`, and `ScriptEnd::RolledBack`.
 7. Cleanup. A committed transaction keeps what a rolled back one undid, so
    the run undoes it itself: `CLOSE ALL`, `UNLISTEN *`, `RESET SESSION
@@ -214,31 +247,38 @@ of statements is `Ok` with no results, as today.
 
 1. The run needs a server that can reset its session, as today. It starts
    with `START TRANSACTION` on the writable session. It does not send `SET
-   SESSION TRANSACTION READ ONLY` and does not set `sql_select_limit`: that
-   limit must never reach an `INSERT ... SELECT` or a `CREATE TABLE ...
+   SESSION TRANSACTION READ ONLY` and does not set `sql_select_limit`: a
+   `SELECT` that calls a function that writes must run for every row, and
+   no server version is trusted to keep the limit off an `INSERT ...
    SELECT`. Rows past `limit + 1` are read and dropped, as for `SHOW`.
 2. MySQL commits on its own before DDL and some other statements, also
    when the statement then fails. So before every statement the driver
-   reads the session's transaction status. Outside a transaction means the
-   statements so far are written: the driver notes how many, starts a new
-   transaction and goes on.
-3. After a statement fails or the run is stopped, the driver asks once more
-   where the session stands before `ROLLBACK`, and notes the same. A
-   failed `CREATE TABLE` has still committed what came before it.
+   asks where the session stands, with a query of its own whose answer
+   carries the server's transaction status, as the read-only run's check
+   does. Outside a transaction means the statements so far are written:
+   the driver notes how many, starts a new transaction and goes on.
+3. After a statement fails or the run is stopped, the driver asks the same
+   question once more before `ROLLBACK`, and notes the same. A failed
+   `CREATE TABLE` has still committed what came before it. The status the
+   driver holds is no answer here: an error packet carries none, and
+   mysql_async empties what it held, so only a new query tells.
 4. With every statement done: `COMMIT`, after `stop.finish()`, and
-   `ScriptEnd::Committed`. A `COMMIT` that fails is `CommitFailed`.
+   `ScriptEnd::Committed`. A `COMMIT` that fails is `CommitFailed`, after a
+   `ROLLBACK`.
 5. After an error or a stop: `ROLLBACK`. With nothing noted the end is
-   `RolledBack`, otherwise `Partly { committed }`. A `ROLLBACK` that raises
-   a warning (1196: changes to non-transactional tables could not be rolled
-   back) puts the warning's text in `rollback_warning`.
-6. A `CALL` may return several result sets. Each is read to its end; the
-   first that has columns is the statement's rows.
-7. A statement's `Done` carries the warning count the server reports.
-8. Cleanup is today's: the reset, then the connect-time statements, ending
+   `RolledBack`, otherwise `Partly { committed }`. When the `ROLLBACK`
+   reports a warning, the driver reads it with `SHOW WARNINGS` before
+   anything else and puts its text in `rollback_warning` (1196: changes to
+   non-transactional tables could not be rolled back).
+6. A statement's `Done` carries the warning count the server reports.
+7. Cleanup is today's: the reset, then the connect-time statements, ending
    with `SET SESSION TRANSACTION READ WRITE` only after a run that ended
    cleanly.
 
-A script that ends the transaction past the refusal list is handled by
+The status tells a transaction from none, not one transaction from
+another. Without stored procedures no single statement can end the run's
+transaction and leave another open, which is why `CALL` stays refused. A
+statement that ends the transaction past the refusal list is handled by
 step 2 like any commit the server makes: reported, and never followed by a
 statement outside a transaction.
 
@@ -255,6 +295,10 @@ statement outside a transaction.
 3. Before every statement the driver asks whether its transaction is still
    open. One that is gone ends the run with `Error::LeftTransaction`.
 4. `COMMIT` after the last statement, `ROLLBACK` after an error or a stop.
+   SQLite keeps the transaction open when a `COMMIT` fails (a deferred
+   foreign key, a reader holding the file in rollback-journal mode), so a
+   failed `COMMIT` is followed by `ROLLBACK` and is then
+   `ScriptEnd::CommitFailed`.
 5. On every path the session's settings are put back (`query_only = ON`
    first, then the rest of the connect-time pragmas), so browsing and the
    next run are fenced again.
@@ -267,7 +311,7 @@ statement outside a transaction.
 - A driver calls `stop.finish()` before it sends `COMMIT`. From then on no
   cancel is sent, and the run ends as the commit ends.
 - A connection lost during a read-write run is the run's `Err`, as today.
-  The app cannot know whether a commit went through, and says so.
+  The app cannot know what of it was written, and says so.
 
 ## The app
 
@@ -292,6 +336,12 @@ statement outside a transaction.
 - `RunSqlAgain` runs the statements of the tab's last run again as a
   read-write run, through the same confirmations. It is offered only while
   the editor's text is still the text that ran, as the error mark is.
+- `RunSqlAgain` and `ConfirmSqlRun` look at the tab's effective mode again
+  when they are applied, and do nothing unless it is `ReadWrite`: a card
+  left on screen or a question still open cannot write for a tab that was
+  switched back or whose session came back read-only. A confirmation is
+  modal. While it is up the tab takes no Run and its mode cannot be
+  switched.
 - While a read-write run of a tab is in flight, Run and Run all do nothing
   in that tab, and their buttons are disabled. A read-only run is still
   replaced by a new run, as today.
@@ -308,9 +358,9 @@ Both are asked before anything is sent, and only for a read-write run.
   the statements as typed in a pane that scrolls, "One transaction.
   Committed when every statement succeeds.", **Cancel** and **Run on
   production**. On MySQL, when a statement starts with `CREATE`, `ALTER`,
-  `DROP`, `RENAME` or `TRUNCATE`, the line reads "MySQL commits CREATE,
-  ALTER, DROP, RENAME and TRUNCATE as they run. A later error does not
-  undo them."
+  `DROP`, `RENAME` or `TRUNCATE`, the line reads "MySQL commits
+  everything so far when it runs CREATE, ALTER, DROP, RENAME or TRUNCATE.
+  A later error undoes neither them nor what came before."
 - Omarchy: the red PROD box with the same facts and the statements, and a
   field that takes the word `write`; Enter confirms only when it holds
   exactly that, Esc cancels.
@@ -322,6 +372,8 @@ Both are asked before anything is sent, and only for a read-write run.
 `UPDATE` or `DELETE` when the statement's first word is that verb, or
 `WITH` followed by that verb outside parentheses, and no `WHERE` stands
 outside parentheses after it. A `WHERE` inside a subquery does not count.
+An `EXPLAIN` with `ANALYZE` in front, options included, is looked through:
+the statement behind it is the one that runs.
 `INSERT ... ON CONFLICT DO UPDATE`, `MERGE` and `TRUNCATE` are not asked
 about: the first two are bounded by their rows, and the last says what it
 does.
@@ -366,28 +418,40 @@ A read-only run reads as today. For a read-write run:
     and similar statements as they run. The rest was rolled back."
   - `CommitFailed`: "The commit failed. Nothing was written.", then the
     database's error as a statement's error is shown.
-  - With a `rollback_warning`: "MySQL could not roll back every change.",
-    then its text.
+  - With a `rollback_warning`, in place of the `RolledBack` line and of
+    `Partly`'s last sentence: "MySQL could not roll back every change.",
+    then its text. Nothing then says "Nothing was written".
+  - With `broken`: the end's own line, then "The session could not be put
+    back and was closed.", and the reconnect banner.
 - In a run that did not end `Committed`, a statement whose work was undone
   ends its line with "· rolled back", so no count reads as a change that
-  stayed.
+  stayed. With a `rollback_warning` no line gets it.
 - Results shows the last statement that returned rows, as today. A
   statement without a result set shows "Statement ran · 12 rows affected"
-  when it counted rows, else today's "Statement ran · no rows returned".
+  when it counted rows, else today's "Statement ran · no rows returned". A
+  statement counts rows where it does today (`WITH ... UPDATE` and `CREATE
+  TABLE ... AS` do not).
 - Messages opens by itself as today, and also when a read-write run ends
-  `Partly`, `CommitFailed` or with a `rollback_warning`.
-- Footer, macOS and Windows: `12 rows affected · 14 ms`, then `Read-write
-  transaction · committed`, `· rolled back` or `· partly committed`.
-  Omarchy: `ln 3:1 · 12 rows affected · 14 ms · committed`.
+  `Partly`, `CommitFailed`, with a `rollback_warning` or `broken`.
+- Footer, macOS and Windows: the shown statement's `12 rows affected ·
+  14 ms`, as it shows a result's rows today, then `Read-write transaction ·
+  committed`, `· rolled back`, `· partly committed`, `· commit failed`,
+  or, with a `rollback_warning`, `· not fully rolled back`. Omarchy:
+  `ln 3:1 · 12 rows affected · 14 ms · committed`.
 - A connection lost during a read-write run shows the reconnect banner and
-  "The connection was lost during a read-write run. If its commit was
-  sent, the changes may be written."
+  "The connection was lost during a read-write run. Some or all of it may
+  be written."
 
 ### The refused write
 
 A write the database refused in a read-only run is still a card, not a
-statement error, with the database's own words under it. What it says
-depends on why the run was read-only:
+statement error, with the database's own words under it. It moves to
+where the user is looking: the head of the Messages pane, above the
+statements' lines. A statement's error opens Messages by itself, and today
+the card is drawn in Results, and only when no statement of the run
+returned rows, so a run whose first statement returned rows never showed
+it. Results no longer draws it. What it says depends on why the run was
+read-only:
 
 | Situation | Title and text | Action |
 |---|---|---|
@@ -409,15 +473,16 @@ This replaces "The SQL editor only reads data".
 
 ### After a commit
 
-- When a run ends `Committed` or `Partly`, or its connection was lost,
-  every table tab of the workspace is marked stale. A stale tab with no
+- When a read-write run ends `Committed` or `Partly`, with a
+  `rollback_warning`, or with its connection lost, every table tab of the
+  workspace is marked stale. A stale tab with no
   pending changes loads its page and structure again when it is next
   shown, as Refresh does. A tab with pending changes is left alone: a
   save's check against the loaded values covers it. Any fetch of the page
   clears the mark.
 - When a statement that starts with `CREATE`, `ALTER`, `DROP` or `RENAME`
-  completed in such a run, the tree is refreshed (`Action::RefreshTree`)
-  and with it what the completions know.
+  completed in such a run, the tree is refreshed (`Action::RefreshTree`,
+  which also drops the columns the completions hold).
 
 ### Leaving while a read-write run is in flight
 
@@ -482,7 +547,11 @@ Each step ends compiling, tested and shippable, and gets its own plan run:
    confirmation in both looks, the three cards, Messages, Results and the
    footer for a read-write run, and Run held back while one is in flight.
    It reuses the production sheet and the PROD box of value editing's step
-   3, so it is planned once that has landed.
+   3, so it is planned once that has landed. Until step 3 of this spec,
+   closing a tab or a connection cancels a read-write run in flight
+   without asking, as it cancels any run (rolled back unless its commit
+   was already sent), and table tabs show what they loaded until they are
+   refreshed by hand.
 3. **Around it.** The question about a missing `WHERE` and
    `editor.confirm_unsafe_writes`, stale table tabs, the tree's refresh
    after DDL, and the leaving guard for a run in flight.
@@ -493,14 +562,15 @@ No step ships a read-write run on production without its confirmation.
 
 - `tabletist-db` unit tests:
   - `sql::kind` in the three dialects: every read form; a data-modifying
-    `WITH`; `SELECT ... FOR UPDATE`; `EXPLAIN ANALYZE DELETE` as a read;
-    `REPLACE INTO` as a write and `SELECT replace(...)` as a read; DML words
-    inside strings, comments and quoted names not counting.
+    `WITH`; `SELECT ... FOR UPDATE`; `EXPLAIN DELETE` as a read and
+    `EXPLAIN ANALYZE DELETE`, also as `EXPLAIN (ANALYZE) DELETE`, as a
+    write; `REPLACE INTO` as a write and `SELECT replace(...)` as a read;
+    DML words inside strings, comments and quoted names not counting.
   - `sql::unbounded`: no `WHERE`; a `WHERE` only inside a subquery; a
-    `WHERE` at the top; `WITH ... DELETE`; `WHERE CURRENT OF`; `INSERT ...
-    ON CONFLICT DO UPDATE` not asked about.
-  - The refusal's sentence in each mode, and MySQL `CALL` refused in a
-    read-only run only.
+    `WHERE` at the top; `WITH ... DELETE`; `WHERE CURRENT OF`; `EXPLAIN
+    ANALYZE DELETE FROM t`; `INSERT ... ON CONFLICT DO UPDATE` not asked
+    about.
+  - The refusal's sentence in each mode, and MySQL `CALL` refused in both.
 - `run_script` in `Write` mode on SQLite (always) and on PostgreSQL and
   MySQL when their test URLs are set, each asserting a probe table
   afterwards:
@@ -520,17 +590,22 @@ No step ships a read-write run on production without its confirmation.
 - PostgreSQL: a deferred constraint that fails at `COMMIT` is
   `CommitFailed` with nothing written; a script that ends the transaction
   past the refusal (forced in the test) ends `LeftTransaction`, with the
-  statement after it never run.
+  statement after it never run; a `SELECT` that calls a writing function
+  over more rows than the limit writes for every row; a data-modifying
+  `WITH` that returns rows runs and is committed; a cleanup step that
+  fails after the commit (forced) returns `Committed` with `broken`.
 - MySQL: `CREATE TABLE` between two inserts with a failing statement at
   the end is `Partly` with the right count; a failing `CREATE TABLE` still
-  counts what came before it; an `INSERT ... SELECT` and a `CREATE TABLE
-  ... SELECT` copy more rows than the limit; a `CALL` that returns two
-  result sets; a rolled back change to a MyISAM table sets
-  `rollback_warning`; a truncating insert in a session without strict mode
-  reports its warning.
+  counts what came before it; a failing statement with no DDL before it
+  is `RolledBack`, not `Partly`; an `INSERT ... SELECT` and a `CREATE
+  TABLE ... SELECT` copy more rows than the limit; a rolled back change to
+  a MyISAM table sets `rollback_warning`; a truncating insert in a session
+  without strict mode reports its warning.
 - SQLite: the authorizer still denies `COMMIT`, a savepoint and `PRAGMA
   query_only` in a `Write` run; a database locked by another handle fails
-  at `BEGIN` and leaves the session open and fenced.
+  at `BEGIN` and leaves the session open and fenced; a deferred foreign
+  key that fails at `COMMIT` is `CommitFailed`, with nothing written, no
+  transaction left open and the next run able to begin.
 - The existing guard and bypass tests run unchanged in `ReadOnly` mode on
   both accesses.
 - Reducer tests: the mode of a new tab under each setting and access; the
@@ -538,10 +613,13 @@ No step ships a read-write run on production without its confirmation.
   are read-write; a held run sends nothing until it is confirmed and sends
   what was shown; a declined one sends nothing; Run during a read-write
   run in flight; `RunSqlAgain` only while the text is the one that ran;
+  `RunSqlAgain` and `ConfirmSqlRun` doing nothing once the effective mode
+  is read-only;
   stale marks and their refetch, with and without pending changes; the
   tree's refresh after DDL; the leaving guard.
 - Headless UI tests, in every look: the badge's menu and the key; the
-  three cards and their actions; the production confirmation, with
+  three cards and their actions, in Messages, after a statement that
+  returned rows too; the production confirmation, with
   `write` typed on Omarchy; the question about a missing `WHERE`, alone
   and inside the production sheet; Messages, Results and the footer for
   each `ScriptEnd`; the badge on a read-only connection.
@@ -555,7 +633,8 @@ No step ships a read-write run on production without its confirmation.
 
 The SQL editor spec's intent, its "Run all" decision, its guard (which now
 describes the read-only mode of two), its toolbar, footer and "Errors and
-edge cases"; the value editing spec's slice list, its "Writable
+edge cases", "Closing one never asks" and "A new run in the same tab
+cancels the one still running"; the value editing spec's slice list, its "Writable
 connections" card text and its restated promise; the main spec's section
 4.3 and its keyboard table; the settings spec's key table; the crate
 documentation of `tabletist-db` and of `Connection::run_script`; the
