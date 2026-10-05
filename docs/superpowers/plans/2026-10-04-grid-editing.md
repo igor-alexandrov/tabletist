@@ -26,7 +26,7 @@
       Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 
   If the commit's signing agent is locked ("agent refused operation"), do not bypass it: `git add -A`, `git write-tree`, and report the tree id with the subject.
-- **Tasks 6 to 12 are built** (macOS and Windows edit, save, leave, confirm and close), with what their review changed: see "As built (tasks 6 to 12)" before task 13. Omarchy (tasks 13 to 15) and the documents (task 16) remain.
+- **Tasks 6 to 15 are built** (all three looks edit, save, leave, confirm and close), with what their reviews changed: see "As built (tasks 6 to 12)" before task 13 and "As built (tasks 13 to 15)" before task 16. The scenes and the documents (task 16) remain.
 - **Tasks 1 to 5 are built,** with what their review changed (decisions 21 to 23, and "As built" under task 5). The editing reducer is in `src/app/editing.rs` (a second `impl App`: `table`, `edit_cell`, `close_editor`, `set_null`, `save_blocked`, `write_edits`, `send_write`, `confirm_write`, `written`, `dropped_by`, `dropped_under_a_prompt`, `hold`, `perform`); the arms in `App::apply` call into it. Its tests are the nested `mod editing` at the end of `src/app.rs`'s test module.
 - **How the code stands.** Read each function before you edit it; where this plan's code and the code disagree, the code wins and you say so in your report.
   - `src/model.rs`: `ObjectTab` (around line 1519) holds `rows: Fetch<RowPage>`, `structure: Fetch<Structure>`, `selection: Option<CellPos>`, `pinned`. `Action` (line 47) is neither `Clone` nor `PartialEq`. `Dialog` (around 1052) has seven variants and none is a confirmation. `Workspace` has `access`, `environment`, `driver`, `status`, `session`.
@@ -3473,6 +3473,16 @@ Commit: "Write and discard from Omarchy's command prompt".
 **All three looks edit and save here.**
 
 ---
+
+> **As built (tasks 13 to 15).**
+> - **Normal mode** (`keys::editing_letters`): `i`, Enter, `cc`, `x`, `u` and `:` are read as typed text. A letter acts only in a frame that brings no other key, text or mouse button: within one frame the order of a letter and a move or a click is lost, and the letter would act on the cell the selection leaves. The same holds in the desktop looks for a typed character and the chords on the active cell. A first key that waits for its second (`c`, `g`, `z`) is forgotten on a click and wherever the keys are not the grid's.
+> - **A field that asked for the keyboard** (the WHERE line after `/`, the filter bar after Mod+F, in every look) already counts as editing in the frame before it has it.
+> - **Insert mode** (`cell_editor::leaving_keys`): Esc keeps, Ctrl+C exactly (not Ctrl+Shift+C, not a bare copy) drops and copies nothing; any other copy is the field's. Held Esc and held Ctrl+C do nothing more than their first press.
+> - **Mode line** (`workspace::editing_status`): `-- INSERT --`, the column and type, the counts (which never give way), the errors; in normal mode a lock's reason, what the last save came to (marks fall back to `√` and `✕`, since the bundled font has no `✓` or `✗`), or why a save cannot be made (`Workspace::save_refused` puts that first in the frame a write was refused). Esc dismisses a note once nothing is pending.
+> - **The `:` prompt** opens on any active table tab (also from the tree and the Structure view); `run_command` is in `src/app/editing.rs`.
+> - **Shortcuts:** `SHORTCUTS` rows carry `Holds::{All, Desktop, Terminal}` and `keys::shortcuts(look)` lists a look's own.
+> - **The confirmation** compares its set with floats by their bits (`edit::same_changes`): NaN is the same value as itself there.
+> - **Left as found:** on a keyboard layout without Latin letters `i`, `x`, `u`, `cc` and `:` do nothing (they are matched by the character typed), and insert mode is reached by Enter or a double-click; a letter typed while a mouse button is held down between frames still acts on the old cell; Ctrl+Insert on Windows arrives as a copy with Ctrl held and drops the edit; the letter typed in the frame a field asked for the keyboard is dropped rather than delivered; outside editing, Ctrl+T then `t` in the next frame still toggles the tree.
 
 ### Task 16: Scenes, documents and every check
 
