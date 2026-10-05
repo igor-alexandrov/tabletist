@@ -1,10 +1,11 @@
 # Editing values, slice 1: the core and its safety surfaces
 
-Date: 2026-10-03. Status: steps 1 (writable connections) and 2 (the save
-in `tabletist-db` and the backend) are built, see
-`docs/superpowers/plans/2026-10-03-writable-connections.md` and
-`docs/superpowers/plans/2026-10-03-connection-write.md`; steps 3 to 5 are
-not yet planned.
+Date: 2026-10-03. Status: steps 1 (writable connections), 2 (the save in
+`tabletist-db` and the backend) and 3 (editing in the grid) are built, see
+`docs/superpowers/plans/2026-10-03-writable-connections.md`,
+`docs/superpowers/plans/2026-10-03-connection-write.md` and
+`docs/superpowers/plans/2026-10-04-grid-editing.md`; steps 4 and 5 are not
+yet planned.
 
 ## Intent
 
@@ -223,6 +224,13 @@ and the SQL editor still cannot.
 
 ## What can be edited
 
+The rule lives in one function, `edit::Table::lock` (`src/edit.rs`): from
+the page, the structure, the connection's access and whether a fetch or a
+save runs, it answers why a cell cannot be edited (`edit::Lock`), or that
+it can. The reasons that hold for a whole table come first, so every cell
+of such a table says the same. The view words the reason
+(`cell_editor::lock_text`).
+
 - **Tables with a row key,** which `Structure::row_key` gives. The key is
   the primary key, else the first unique index (by name) that is not
   partial, is over whole columns compared as the column compares, and
@@ -238,16 +246,32 @@ and the SQL editor still cannot.
   more than one) is what stops it. A table without a key is view-only, and
   its cells say "<table> has no primary key or unique index, so a row
   can't be targeted safely". Until the tab's structure has loaded, nothing
-  is editable.
+  is editable ("The table's structure is still loading").
 - A row whose key holds a NULL (a SQLite primary key that is not an
-  integer can) is locked: "this row's key is NULL".
-- **Never editable:** views, materialized views, SQL results, and anything
-  on a read-only connection ("This connection opens read-only"). Also, and
-  known today only when a save is tried (see "Saving"): a MySQL table whose
-  engine has no transactions, a MySQL table whose key has a `timestamp`,
-  `bit` or `float` column, a table of a database attached to a SQLite
-  session, and on SQLite a row whose key text holds U+FFFD or a column
-  whose name another column reads as.
+  integer can) is locked: "This row's key is NULL".
+- **Never editable:** views and materialized views ("Views cannot be
+  edited"), SQL results, and anything on a read-only connection ("This
+  connection opens read-only").
+- **What the save would refuse, the grid locks up front** where it can
+  tell from the page and the structure (see "Saving" for why the save
+  refuses each):
+  - a MySQL table whose key has a `timestamp`, `bit` or `float` column:
+    "<table>'s key cannot be matched exactly, so a row can't be targeted
+    safely";
+  - on SQLite a row whose key text holds U+FFFD: "This row's key holds text
+    that was not read exactly";
+  - a column whose name the page holds twice, or that the structure does
+    not list: "This column cannot be told apart in the table".
+
+  Two cases are still known only when a save is tried: a MySQL table whose
+  engine has no transactions (`Structure` does not say the engine), and a
+  table of a database attached to a SQLite session. The grid lets them be
+  edited and the save refuses them.
+- **Locked for a while:** every cell of a tab while its page or its
+  structure is being loaded again ("The page is loading": a refresh keeps
+  the old page on screen, and what a describe brings may have another key)
+  and while a save runs ("A save is running"). Nothing is edited on a page
+  about to be replaced.
 - **Locked cells** in an editable table:
   - identity-always and generated columns. The catalog gains
     `ColumnInfo.generated: bool` (PostgreSQL `attgenerated` and
@@ -258,29 +282,48 @@ and the SQL editor still cannot.
   - binary values (a column of the class `Binary`, MySQL's `bit` and
     spatial types among them, and any cell that holds bytes, which a
     SQLite column of any type can), and values over 256 KiB.
-- A locked or uneditable cell is drawn as the design's "locked" (macOS and
-  Windows) and looks as today on Omarchy. Enter (and `i` on Omarchy) on it
-  says why, in a note at the cell or in the Omarchy mode line. Typing on it
-  does nothing.
+- **Only a computed column's cells are drawn locked.** In a table that can
+  be edited, macOS and Windows draw the cells of a generated or
+  identity-always column (`ColumnInfo.generated`) with the surface tint and
+  the secondary text colour, also while a save or a fetch runs. Every other
+  cell that cannot be edited is drawn as today: a whole table that cannot
+  be edited (a view, a read-only connection, no key) would otherwise turn
+  grey, and key columns already have their own colour. Omarchy draws every
+  such cell as today.
+- A cell that cannot be edited says why when it is asked for: Enter, F2 or
+  a double-click (on Omarchy `i`, Enter, `cc` or a double-click) puts the
+  reason in a note at the cell, or in the Omarchy status line, until the
+  selection moves. Typing on it does nothing.
 
 ## Editing in the grid
 
 ### The cell lifecycle
 
 1. **Active.** The selected cell. Enter, F2 or a double-click opens the
-   editor on the value, the cursor at its end. On macOS and Windows typing
-   a character opens it with that character as the new text. Editing pins
-   a preview tab.
-2. **Editing.** The editor sits on the cell, at the cell's size.
-3. **Pending.** The cell shows the new value in amber with the left bar;
-   hovering it shows "was <loaded value>". Nothing has been sent.
-4. **Saving.** Pending cells are locked and the grid stays usable for
-   looking. The actions the leaving guard covers are disabled until the
-   save ends.
-5. **Saved.** Green for 1.2 seconds, then the value as re-read from the
-   database.
-6. **Failed.** The cells of the row whose statement failed turn red with
-   the database's code and message; the other pending cells stay amber.
+   editor on the value, or on its pending value, the cursor at its end. On
+   macOS and Windows typing a character opens it with that character as the
+   new text. Editing pins a preview tab, and so does setting a cell NULL: a
+   tab that holds edits is never a preview for the next click to replace.
+2. **Editing.** The editor sits on the cell, at the cell's size. An editor
+   that was opened and closed without typing changes nothing
+   (`Editor::touched`): on a NULL cell it starts empty, and the empty
+   string is not NULL.
+3. **Pending.** The cell shows the new value on an amber tint: with a bar
+   at its left on macOS and Windows, with its text in the warning colour on
+   Omarchy. Hovering it shows "was <loaded value>". Its row is marked: on
+   macOS and Windows, which have no gutter, by a bar at the row's left edge
+   and the colour of its key value; on Omarchy by `~` in the gutter.
+   Nothing has been sent.
+4. **Saving.** Every cell of the tab is locked, the pending ones keep their
+   tint and show a spinner, and the grid stays usable for looking. The
+   actions the leaving guard covers are ignored until the save ends;
+   `Mod+.` or the bar's Cancel stops the save.
+5. **Saved.** Green for 1.2 seconds, then the value as the database
+   returned it.
+6. **Failed.** The cells of the row whose statement failed turn red and
+   carry the database's code and message (under the pointer; on Omarchy in
+   a line under the grid, `! 2:book_id  23503 ...`); the row's mark turns
+   red, `!` in the Omarchy gutter. The other pending cells stay amber.
    Nothing was applied.
 
 ### Editors
@@ -291,33 +334,44 @@ Every editable type is edited as text.
   256 characters (the grid's cut) in a column that is not JSON.
 - **In a popover anchored to the cell:** every other value, and every JSON
   column. It shows the character and line count. `Mod+Enter` applies and
-  Esc cancels. `Alt+Enter` in the one-line editor adds a line break and
-  moves the text into the popover.
-- The editor starts from the value's full text as the database gave it,
-  never from the shortened text a cell or the row panel shows.
+  Esc cancels; Enter and Tab are the text's own there. `Alt+Enter` in the
+  one-line editor adds a line break at the end of the text and moves the
+  text into the popover.
+- The editor starts from the value's full text as the database gave it
+  (`edit::start_text`), never from the shortened text a cell or the row
+  panel shows. On a cell that is already pending it starts from the pending
+  value.
 - **NULL:** `Mod+Backspace` on the active cell of a nullable column, while
   no editor is open, makes the cell NULL. Inside an open editor the key
   stays the text field's own. Opening the editor on a NULL cell starts
   empty. Clearing the text gives the empty string, never NULL.
-- A cell is pending when its new value differs from the loaded one: typing
-  the loaded text back, or NULL on a cell that was NULL, takes it out of
-  the pending set.
+- A cell is pending when its new value was typed and differs from the
+  loaded one: typing the loaded text back, or NULL on a cell that was NULL,
+  takes it out of the pending set.
 
 ### Checks before sending
 
-Checked as the user types. The column's class comes from one function in
-`tabletist-db`, from the dialect and the structure's `type_name`
-(`numeric(10,2)`, `varchar(200)`, `bigint unsigned`); a type it does not
-know has no check. SQLite enforces neither ranges nor lengths, so there
-only the integer (as `i64`), float, boolean, CHECK-list and JSON rules
-apply, by the column's affinity.
+Checked as the user types (`edit::check`). The column's class comes from
+one function in `tabletist-db`, from the dialect and the structure's
+`type_name` (`numeric(10,2)`, `varchar(200)`, `bigint unsigned`); a type it
+does not know has no check. SQLite enforces neither ranges nor lengths, so
+there only the integer (as `i64`), decimal, float, boolean, CHECK-list and
+JSON rules apply, by the column's affinity. A verdict is data
+(`edit::Problem`), which the view words (`cell_editor::problem_text`); the
+type a message names is the one the grid's header shows (`int8`, where the
+structure says `bigint`).
 
 | Column | Rule | Message |
 |---|---|---|
-| Integer | A whole number within the type's range | "int8 expects a whole number" |
-| Decimal | A number, within the digits and scale the type states | "Up to 2 decimals. 12.505 would be stored as 12.51." |
-| Float | A number (`NaN` and `Infinity` on PostgreSQL) | "float8 expects a number" |
-| Boolean | `true` or `false`; also `1` or `0` | "boolean expects true or false" |
+| Integer | A whole number | "int8 expects a whole number" |
+| | within the type's range | "int2 holds -32768 to 32767" |
+| Decimal | A plain number, without an exponent | "numeric expects a number" |
+| | within the scale the type states | "Up to 2 decimals. 12.505 would be stored as 12.51." |
+| | within the digits it holds before the point | "At most 8 digits before the point" |
+| Decimal on SQLite | A number SQLite keeps digit for digit | "9223372036854775808 would be stored as 9223372036854776000" |
+| Float | A finite number; on PostgreSQL also `nan`, `inf` and `infinity`, in any case | "float8 expects a number" |
+| Boolean | `true` or `false`; also `1` or `0` | "bool expects true or false" |
+| Boolean on MySQL (`tinyint(1)`) | `true`, `false`, or any whole number from -128 to 127 | "... holds -128 to 127" |
 | Enum, CHECK list | One of `allowed_values` | "Not one of: print, ebook, audio" |
 | JSON | It parses | "Expected , or } at 3:23" |
 | Text with a length | Within the length, shown as `27 / 200` | "At most 200 characters" |
@@ -325,6 +379,14 @@ apply, by the column's affinity.
 
 A boolean column's editor starts from `true` or `false` whatever the
 driver loaded (SQLite and MySQL hold 1 and 0).
+
+The checks agree with what the databases store. Only ASCII whitespace
+around a value is overlooked, since the text is sent as it was typed.
+SQLite keeps a number as an INTEGER or a REAL whatever digits the declared
+type states, so a decimal there passes only when it is a whole number an
+INTEGER holds or a REAL that is written with the same digits. A column
+with a list of allowed values is checked against the list alone, before
+its class.
 
 Every rule blocks: a decimal with more digits than the scale is refused
 with what the database would have stored, never rounded silently. Every
@@ -340,73 +402,171 @@ again.
 
 ### Pending changes
 
-- `ObjectTab` holds the pending set of its loaded page: per cell (row
-  index, column) the new value (`Text` or `Null`) and its state (pending,
-  to fix, failed with a message), and the editor that is open, if any. Only
-  the text being typed lives in the field itself.
-- **The bar** above the footer, shown while the set is not empty: "3
-  changes in 2 rows", "1 to fix", **Review SQL**, **Discard all**, **Save**
-  (`Mod+S`). Omarchy shows the same counts in its mode line.
-- The tab carries the unsaved dot (`[+]` on Omarchy). A changed row carries
-  the gutter mark: `~`, or `!` when one of its cells is to fix or failed.
+- The set lives in `ObjectTab::edits` (`edit::Edits`), keyed by the row
+  and column index of the loaded page: per cell the new value (`Text` or
+  `Null`) and its state (ready, to fix with its problem, failed with the
+  database's error); the editor that is open, if any; the save that is
+  running; and what the last save came to. The reducer owns every
+  transition (`src/app/editing.rs`); the only state a view changes is the
+  text an editor is typing. `Edits` prints without what the user typed, so
+  that stays out of logs and panics.
+- **A tab that holds edits keeps its page and its structure.** It holds
+  edits while a cell is pending, an editor is open or a save is in flight.
+  Everything under "Leaving with pending changes" serves that.
+- **The bar** above the footer on macOS and Windows, shown while the set is
+  not empty, a save runs, or the last save left a line: "3 changes in 2
+  rows", "1 to fix", **Discard all**, **Save** (`Mod+S`). Review SQL is
+  step 4 and is not drawn yet. Save is disabled, with the reason as its
+  tooltip: "Fix 1 value to save" while a cell is to fix, "Not connected",
+  "This connection opens read-only" on a session that came back read-only,
+  and "These changes cannot be sent: the table's key is not known" when no
+  change set can be built from the set. While a save runs the bar reads
+  "Saving…" with a Cancel, and Discard all is disabled. A line with nothing
+  pending has **Dismiss** in place of the two buttons.
+- Omarchy has no bar. Its status line shows the same counts ("3 pending · 2
+  rows", "1 error") whenever the set is not empty, and why a save cannot be
+  made, in the same words.
+- The tab carries the unsaved mark: on macOS and Windows a dot in the close
+  button's place while the tab is not hovered, and the tab reads "<name>
+  tab, unsaved" to a screen reader; `[+]` after the name on Omarchy. A
+  changed row carries its mark (see "The cell lifecycle"): amber, or red
+  when one of its cells is to fix or failed, which is `~` and `!` in the
+  Omarchy gutter.
 - **Revert one cell:** `Mod+Z` on a pending cell that is active puts back
   the loaded value. The undo and redo stack is slice 4.
 - The row panel shows a pending cell's new value with the pending mark and
   "was <loaded value>", so it never disagrees with the grid. It stays
-  read-only.
+  read-only: its Edit, Duplicate and Delete, and the header's Add row, stay
+  disabled.
+- Copying takes the pending value a cell shows, for the cell and for the
+  row, in every look.
 
 ### Keys
 
 | | macOS, Windows | Omarchy |
 |---|---|---|
-| Edit the cell | Enter, F2, double-click, typing | `i` and Enter (cursor at the end), `cc` (replace) |
+| Edit the cell | Enter, F2, double-click, typing | `i`, Enter, double-click (cursor at the end), `cc` (from nothing) |
 | Commit and move down | Enter | Enter |
 | Commit and move right, left | Tab, Shift+Tab | Tab, Shift+Tab |
 | Leave the editor | Esc drops the edit | Esc keeps it, Ctrl+C drops it |
+| Move the text into the popover | Alt+Enter | Alt+Enter |
+| Apply in the popover | `Mod+Enter` | Ctrl+Enter |
 | Set NULL | `Mod+Backspace` | `x` |
 | Revert the cell | `Mod+Z` | `u` |
-| Review SQL | the bar's button | `:diff` |
+| Review SQL | step 4 | `:diff`, step 4 |
 | Save all | `Mod+S` | `:w`, Ctrl+S |
 | Discard all | `Mod+Alt+Backspace` | `:e!` |
 
 - Typing opens the editor on macOS and Windows except for Space (the row
-  panel) and `?` (the shortcuts), which keep their meaning.
-- On Omarchy `i` and Enter no longer open the row panel; Space and
-  `Mod+Shift+R` do. `s` stays Structure. In insert mode the mode line reads
-  `-- INSERT --`, the column and its type, the pending counts, and "esc
-  normal · tab next cell"; Esc there leaves insert mode and does not close
-  the row panel.
-- Omarchy gains a `:` prompt in the mode line. It takes `w`, `diff` and
-  `e!`, and nothing else in this slice; any other text is "not a command".
-- All of it is handled in `ui/keys.rs` and listed in the shortcuts table.
+  panel) and `?` (the shortcuts), which keep their meaning. A chord types
+  nothing.
+- `Mod+S` saves wherever the bar offers Save: with something pending or an
+  editor open, whatever has the keyboard (the grid, the tree, a button, a
+  filter's field) and in the Structure view too. From an open editor it
+  takes what is being typed. On Omarchy Ctrl+S is the same chord.
+- **A key acts only on the cell it was meant for.** Within one frame the
+  order of a key and a click is lost, and a click selects its cell only
+  once the frame is drawn. So on macOS and Windows a typed character,
+  Enter, F2, `Mod+Backspace` and `Mod+Z` act only in a frame that brings no
+  click, and on Omarchy a letter acts only in a frame that brings no other
+  key, text or mouse button. `Mod+Alt+Backspace` is about the whole set and
+  does not wait.
+- A letter typed in the frame a field asked for the keyboard (the WHERE
+  line after `/`, the filter bar after `Mod+F`) is not the grid's: an `x`
+  meant for the clause sets no cell NULL, and a character opens no editor.
+- A first key that waits for its second (`c` of `cc`, `g`, `z`) is
+  forgotten on a click and wherever the keys are not the grid's: under a
+  field that has the keyboard, the `:` prompt or a dialog.
+- On Omarchy `i` and Enter no longer open the row panel on a table; Space
+  and `Mod+Shift+R` do, and the status line's hints read `space inspect`
+  and, on a cell that can be edited, `i edit`. A SQL result keeps its keys.
+  `s` stays Structure. In insert mode the mode line reads `-- INSERT --`,
+  the column and its type, the pending counts, the errors, and "esc normal
+  · tab next cell"; Esc there leaves insert mode with the text kept and
+  does not close the row panel. Only Ctrl+C itself drops the edit, and it
+  copies nothing: Ctrl+Shift+C and any other copy are the field's.
+- Omarchy gains a `:` prompt in the status line, on any active table tab.
+  It takes `w` and `e!`. `diff` arrives with Review SQL in step 4; until
+  then it is "not a command", like any other text, which the line says
+  until the next key.
+- All of it is handled in `ui/keys.rs`. The shortcuts screen lists each
+  look's own editing keys (`keys::shortcuts(look)`): chords on macOS and
+  Windows, letters and the prompt on Omarchy.
 
 ### Leaving with pending changes
 
-- **Guarded actions**, the ones that drop the page or the tab: previous and
-  next page, sorting, applying or clearing filters, refresh, closing the
-  tab, closing or disconnecting the connection, switching database, and
-  closing the window.
-- The action is held and a prompt asks. When one tab is affected: **Save**,
-  **Discard**, **Cancel** (Omarchy: `[w]` write, `[d]` discard, `[esc]`
-  stay). Save runs the save and performs the held action only if everything
-  was written; a failure, a conflict or a cancelled production confirmation
-  drops the held action. When several tabs with pending changes are
-  affected (a connection, the window): **Discard** and **Cancel** only.
+- **One guard, at the top of `App::apply`.** It asks which tabs holding
+  edits the action would drop (`dropped_by`). None: the action runs. Some:
+  the action is held and a prompt asks. What the backend says is never
+  guarded.
+- **Guarded actions**, the ones that drop the page, the structure or the
+  tab: previous and next page, sorting and Clear sort, applying or clearing
+  filters and dropping one, refresh, Retry of the rows and Retry of the
+  structure, closing the tab, closing or disconnecting the connection,
+  connecting again over a workspace, switching database, and closing the
+  window. Following a foreign key into a table that is already open and
+  holds edits is held the same way, since it filters that tab.
+- An action that would do nothing is not asked about, since the prompt's
+  Discard would throw the set away for nothing: the next page on the last
+  one, the previous page on the first, Clear sort without a sort, a refresh
+  while a SQL editor shows, a connect for a connection that is no longer
+  saved.
+- When one tab is affected the prompt has **Save**, **Discard** and
+  **Cancel**, and names what was asked for: "Save 3 changes before closing
+  the tab?" (Omarchy: "closing with pending edits", `[w]` write, `[d]`
+  discard, `[esc]` stay). Save runs the save and performs the held action
+  only if everything was written; a failure, a conflict or a cancelled
+  production confirmation drops the held action. When several tabs with
+  pending changes are affected (a connection, the window): **Discard** and
+  **Cancel** only.
+- **Enter never discards.** It follows the button that has the keyboard:
+  on Cancel it cancels, on Save it saves, and on Discard it does nothing.
+  With the keyboard on no button it saves where Save is offered (macOS and
+  Windows) and does nothing otherwise, so in a prompt without Save a stray
+  Enter drops nothing. On Omarchy the letters answer, and not while a field
+  has the keyboard or a key is held: a letter typed in the frame the box
+  opens is text, not an answer.
+- **What a prompt asks about cannot change while it is up.** Mod chords
+  still reach the reducer under a dialog, and a click can be a frame behind
+  it. So while the Leave prompt or the production confirmation is up the
+  reducer drops the editing actions, the moves of the selection, and the
+  actions that would put another dialog in its place
+  (`dropped_under_a_prompt`), and the confirmation sends only the set it
+  showed.
+- A guarded action that arrives while another dialog is open is refused
+  with the notice "Save or discard the pending changes first.": a dialog
+  the user is in is never replaced. While a tab's save runs, guarded
+  actions on it are ignored.
+- **Closing the window** is held too (`App::hold_close`): while a tab
+  holds edits the close request is answered with
+  `ViewportCommand::CancelClose` and the prompt. It runs in both of a
+  frame's passes, the drawing and the app's logic, which is all that runs
+  while the window is hidden. Under a running save it asks as well, without
+  Save: "A save is still running. It writes everything or nothing, and
+  closing now means not seeing which."; Discard gives the save up and
+  closes. On macOS, Quit (Cmd+Q, the app menu, the Dock) reaches the app as
+  a close request through winit's `macos-quit-as-close` feature. That path
+  is compiled and not yet run on a Mac: until someone quits there with a
+  pending cell, it is unverified.
 - Not guarded: switching tabs or connections, and the Data and Structure
-  switch. Pending changes wait in their tab.
+  switch. Pending changes wait in their tab. Nor does anything that
+  replaces a page without an action touch such a tab: a changed page size
+  leaves it its page until its next fetch.
 - **A dropped connection never costs the pending set.** While the session
   is disconnected the set is kept and Save is disabled with the reason.
-  Reconnecting is not guarded: a tab with pending changes keeps its loaded
-  page through the reconnect (it is not fetched again, as other tabs are),
-  and Save works afterwards. The page may be stale by then; the save's
-  check against the loaded values covers that. The same holds after a
-  script closed the session and after a connection lost while saving. If
-  the reconnect comes back read-only (the box was turned on meanwhile),
-  the set is still kept and Save is disabled with "This connection opens
-  read-only".
+  Editing does not need a live session; saving does. Reconnecting is not
+  guarded: a tab with pending changes keeps its loaded page and its
+  structure through the reconnect (they are not fetched again, as other
+  tabs' are), and Save works afterwards. The page may be stale by then;
+  the save's check against the loaded values covers that. The same holds
+  after a script closed the session and after a connection lost while
+  saving. If the reconnect comes back read-only (the box was turned on
+  meanwhile), the set is still kept and Save is disabled with "This
+  connection opens read-only".
 - A guarded action's prompt has no Save, only **Discard** and **Cancel**,
   whenever Save itself is disabled: while disconnected, on a session that
-  came back read-only, and while a cell is to fix.
+  came back read-only, while a cell is to fix, and when the set cannot be
+  sent. Its question then reads "Discard 1 change before closing the tab?".
 
 ## Saving (`tabletist-db` and the backend)
 
@@ -555,20 +715,40 @@ holding a NUL as `('a' || char(0) || 'b')`, and an infinite float as
 
 The backend has `Command::Write { session, request, changes }` and
 `Event::Written { session, request, result }`, queued and answered like
-every request; the reducer finds the tab by the request. `Mod+.` cancels a
-running save through the session's cancel handle; the `write` future is
-awaited to its end, never dropped, and rolls back. A cancel only reaches a
-statement that is running: one that arrives between two of a save's
-statements is lost on PostgreSQL and MySQL, and the save goes on and
-commits. One that reaches the `COMMIT` before it takes hold undoes the
-save, which answers `Cancelled`. A connection lost during the save leaves
-the pending set as it was and says "The connection was lost while saving.
-Reload to see what was written."
+every request; the reducer finds the tab by the request. A save's request
+is one of its tab's pending requests, so `Mod+.` (and the bar's Cancel)
+cancels a running save like any query, through the session's cancel
+handle; the `write` future is awaited to its end, never dropped, and rolls
+back. A cancel only reaches a statement that is running: one that arrives
+between two of a save's statements is lost on PostgreSQL and MySQL, and
+the save goes on and commits. One that reaches the `COMMIT` before it
+takes hold undoes the save, which answers `Cancelled`, and the tab says
+"Save cancelled. Nothing was written."
 
-After `Written` the reducer replaces those rows in the page, in place even
-when the sort or the filters would now move or hide them, clears their
-pending cells, and formats the row panel's fields again. The status reads
-"written 2 changes · 1 row · 14 ms".
+What a save came to when it wrote nothing is kept with the set, which
+stays as it was (`edit::Note`), and is said in the bar or in the Omarchy
+status line:
+
+- A connection lost during the save: "The connection was lost while
+  saving. Reload to see what was written." A session swapped under a save
+  (a reconnect) abandons the save and says the same: its answer, if one
+  comes, finds no tab saving.
+- A production confirmation answered after the session went: "Not
+  connected. Nothing was sent."
+- A statement that failed: its row's cells turn red, and the line is the
+  database's code and message, then "Nothing was written."
+- Any other error on a session that lives (a lock timeout, a refused
+  `COMMIT`): the error's text, then "Nothing was written."
+
+After `Written` the reducer replaces those rows in the page by what the
+database returned, in place even when the sort or the filters would now
+move or hide them, clears the pending set, and drops the row panel's text
+so it is formatted again. The cells show green for 1.2 seconds. When a
+returned row is not as wide as the page (the table changed since the page
+was read), the page is fetched again instead. Either way what was held for
+the save goes on. The footer's end reads "written 2 changes · 1 row · 14
+ms" in place of the query's time, until the next edit or page; on Omarchy
+the status line says it.
 
 ## Review SQL
 
@@ -591,21 +771,43 @@ pending cells, and formats the row panel's fields again. The status reads
 
 ## Saving to production
 
-Only when the workspace's environment is production, every Save first asks:
+Only when the workspace's environment is production
+(`Environment::confirms_writes()`), every Save first asks, in a dialog
+that lists every statement it would send (`Dialect::update_row(..).shown`
+for each row, built once when the dialog opens). Both looks list the
+statements in this step, since `:diff` does not exist yet.
 
-- macOS and Windows: "Save 2 changes to production?", the connection's name
-  and database, "1 row in book_covers", the statements, "One transaction",
-  **Cancel** and **Save to production**.
-- Omarchy: the red PROD box with the same facts and "sql shown with
-  :diff", and a field that takes the word `write`; Enter confirms only when
-  it holds exactly that, Esc cancels. A production save opens the `:diff`
-  panel if it is closed and the box sits beside it, so the statements are
-  on screen while `write` is typed. Until `:diff` exists (step 3), the box
-  lists the statements itself in place of that line.
+- macOS and Windows: a band of the production red along the top, "Save 2
+  changes to production?", the connection's name and database and "1 row
+  in book_covers", the statements in a box that scrolls, "One transaction",
+  **Cancel** and **Save to production**. Enter does not confirm: the button
+  is pressed. Enter cancels with the keyboard on Cancel, and Esc cancels.
+- Omarchy: the box with the danger border, its head with the `PROD` tag
+  and "write 2 changes?", the connection's name and database, "1 row in
+  book_covers" and the columns the save sets, the statements, "type write
+  to confirm" and a field that takes the word; Enter confirms only when
+  the field holds exactly `write`, Esc cancels. From step 4 on the box
+  points at the `:diff` panel ("sql shown with :diff") in place of listing
+  the statements: a production save then opens the panel if it is closed
+  and the box sits beside it.
+- A row whose statement cannot be built opens no confirmation: its cells
+  fail with the builder's reason, as they would in the save.
+- The confirmation holds the change set it showed. When it is confirmed,
+  the save is sent only if the tab's pending set still makes exactly that
+  set (floats compared by their bits, so a NaN is the same value as
+  itself), no editor is open and Save is not disabled.
 
 ## Conflicts
 
-`Conflicts` opens a dialog for the first conflicting row:
+In step 3 a conflict is a plain line. The pending bar reads "Row id 2
+changed on the server. Nothing was written." (or "Row id 2 no longer exists
+on the server. Nothing was written."), with "1 more row too." after it
+when other rows conflict as well; the Omarchy status line says the same
+after `≠ conflict`. The row is named by its key. The set stays as it was,
+with no rebase: the user refreshes, which discards it, and edits again.
+
+The dialog is step 5. `Conflicts` then opens it for the first conflicting
+row:
 
 - "Row id 2 changed on the server", "Someone saved it after you loaded it.
   Nothing was written.", and a table of the columns the user changed:
@@ -655,6 +857,59 @@ Each step ends compiling, tested and shippable, and gets its own plan run:
 No step ships a production save without its confirmation and its
 statements.
 
+Steps 1 to 3 are built.
+
+## What step 3 leaves for steps 4 and 5
+
+For step 4, Review SQL:
+
+- The bar's **Review SQL** button and its drawer, and Omarchy's `:diff`
+  panel. `run_command` (`src/app/editing.rs`) takes `w` and `e!` today and
+  answers "not a command" to `diff`.
+- The statements are built once, when the production confirmation opens
+  (`WritePrompt::statements`). Review SQL needs them kept up to date in the
+  reducer as the pending set changes.
+- The Omarchy PROD box lists the statements itself. It should point at the
+  panel instead.
+- Omarchy's letters and its `:` are matched by the character typed, so on
+  a keyboard layout without Latin letters `i`, `x`, `u`, `cc` and `:` do
+  nothing. Insert mode is still reached there by Enter or a double-click;
+  `:diff` would have no other way in.
+
+For step 5, the conflict dialog:
+
+- The reducer keeps of a `Conflicts` answer only the first row, whether it
+  is gone, and how many others there are (`Note::Conflict`). The rows the
+  server now holds are dropped; the dialog needs them.
+- A conflict writes nothing and changes nothing in the set: no row is
+  rebased yet.
+- A MySQL `TIMESTAMP` as a changed column can miss a conflict in a repeated
+  daylight-saving hour. The key case is locked; the cell case is not.
+
+Open in the save as the grid shows it:
+
+- A cancel between two of a save's statements is lost on PostgreSQL and
+  MySQL: the save commits and says so. The bar's Cancel is honest only
+  while a statement runs. Whether the Saving state should say more is
+  open.
+- The Leave prompt's Save, when the session went while the prompt was up,
+  closes the prompt, saves nothing, drops the held action and leaves no
+  line. The "A save is still running" prompt keeps its sentence if the
+  save ends while it is up.
+- A column with a list of allowed values is checked against the list
+  before its class, so a SQLite `INTEGER` column whose list holds
+  non-numbers passes the check and fails in the save.
+- MySQL stores some values adjusted without a word (`'1.6'` into a
+  `TINYINT` is 2). The checks catch a non-integer in an integer column; a
+  `FLOAT`'s precision is not checked.
+- A table whose engine has no transactions, and a table of a database
+  attached to a SQLite session, are refused only by the save.
+- Quit on macOS is unverified (see "Leaving with pending changes"). If it
+  does not pass through a close request, holding it back needs the
+  application delegate, in `crates/tabletist-appkit`.
+- An input method cannot start an edit by typing (Enter or F2 does). The
+  row's key value takes the row's colour, not a heavier weight.
+
 ## Testing
 
 - `tabletist-db`, each driver, over the shared fixtures:
@@ -687,9 +942,11 @@ statements.
 - Headless UI tests, in every look: the lifecycle, the keys, the popover,
   the bar, the three dialogs, locked cells saying why, the shipped screens'
   new texts.
-- `src/shots.rs` gains scenes for review, on the Bookshop demo data, whose
-  SQLite file is a throwaway and writable. No test compares a screen with
-  the design.
+- `src/shots.rs` has a scene for review of each editing state, on its
+  Bookshop data and in every look: `edit-pending`, `edit-field`,
+  `edit-large`, `edit-saved`, `edit-failed`, `edit-leave` and
+  `edit-production`. They need a GPU and are run by hand. No test compares
+  a screen with the design.
 
 ## Documents this changes
 

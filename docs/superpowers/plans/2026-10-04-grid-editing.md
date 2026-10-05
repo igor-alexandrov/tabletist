@@ -26,7 +26,7 @@
       Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 
   If the commit's signing agent is locked ("agent refused operation"), do not bypass it: `git add -A`, `git write-tree`, and report the tree id with the subject.
-- **Tasks 6 to 15 are built** (all three looks edit, save, leave, confirm and close), with what their reviews changed: see "As built (tasks 6 to 12)" before task 13 and "As built (tasks 13 to 15)" before task 16. The scenes and the documents (task 16) remain.
+- **All sixteen tasks are built.** Tasks 6 to 15 (all three looks edit, save, leave, confirm and close) with what their reviews changed: see "As built (tasks 6 to 12)" before task 13 and "As built (tasks 13 to 15)" before task 16. Task 16 (the scenes and the documents): see "As built" under it.
 - **Tasks 1 to 5 are built,** with what their review changed (decisions 21 to 23, and "As built" under task 5). The editing reducer is in `src/app/editing.rs` (a second `impl App`: `table`, `edit_cell`, `close_editor`, `set_null`, `save_blocked`, `write_edits`, `send_write`, `confirm_write`, `written`, `dropped_by`, `dropped_under_a_prompt`, `hold`, `perform`); the arms in `App::apply` call into it. Its tests are the nested `mod editing` at the end of `src/app.rs`'s test module.
 - **How the code stands.** Read each function before you edit it; where this plan's code and the code disagree, the code wins and you say so in your report.
   - `src/model.rs`: `ObjectTab` (around line 1519) holds `rows: Fetch<RowPage>`, `structure: Fetch<Structure>`, `selection: Option<CellPos>`, `pinned`. `Action` (line 47) is neither `Clone` nor `PartialEq`. `Dialog` (around 1052) has seven variants and none is a confirmation. `Workspace` has `access`, `environment`, `driver`, `status`, `session`.
@@ -3504,6 +3504,8 @@ RUSTDOCFLAGS='-D warnings' ~/.cargo/bin/cargo doc --locked --workspace --no-deps
 - **By hand, by the user,** on the demo (`--demo` opens a writable SQLite file): edit two cells in two rows and save; edit a cell to a value its column refuses; edit, then close the tab and take each of the three answers; on a production-labelled connection, save and cancel, save and confirm; in the Omarchy look, the same with `i`, Esc, `:w`, `:e!`.
 
 Commit: "Describe editing in the grid as built".
+
+> **As built (task 16).** `src/shots.rs` has seven scenes on `book_images` (`EDITING`: `edit-pending`, `edit-field`, `edit-large`, `edit-saved`, `edit-failed`, `edit-leave`, `edit-production`), each reached through the model's actions so it is the same state in every look, the last on `production_beside`'s connection opened writable; `edit-failed` closes the row panel, beside which a window that wide cuts the bar's line down to its "…". The value-editing spec (status, "What can be edited", "Editing in the grid", "Saving", "Saving to production", "Conflicts", "Steps", and a new "What step 3 leaves for steps 4 and 5"), the main spec (criterion 6, 3.2, 4.3, 5.1, 5.6, 5.7, 5.10) and the README say what was built. Two commits: "Draw the editing states for review", then the documents.
 
 ---
 

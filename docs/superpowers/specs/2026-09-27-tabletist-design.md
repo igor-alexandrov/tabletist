@@ -29,8 +29,12 @@ PostgreSQL, MySQL, SQLite. No others in v1.
 4. Selecting a row shows every field of that row, in full, in the row panel.
 5. The Structure view lists columns, indexes, and foreign keys.
 6. On a read-only connection no action in the app can modify data in the
-   connected database. On a writable one browsing, a raw WHERE and the SQL
-   editor still cannot (see `2026-10-03-value-editing-core-design.md`).
+   connected database. On a writable one the app edits the values of
+   existing rows in a table's grid, and only Save writes: every pending
+   change of the tab in one transaction, which never overwrites a row
+   someone else changed, and on production only after its statements were
+   shown and confirmed. Browsing, a raw WHERE and the SQL editor still
+   cannot write (see `2026-10-03-value-editing-core-design.md`).
 7. The UI thread never blocks on the database, network, or disk; any running
    query can be cancelled.
 8. The app follows the Omarchy theme live, and the OS light/dark setting
@@ -114,6 +118,8 @@ tabletist/
     lib.rs                   module list
     entrypoint.rs            CLI (clap), demo flags, logging, native window
     app.rs                   App state, apply(Action) reducer
+    app/editing.rs           the reducer's part in editing: the guard, the editor, the save
+    edit.rs                  editing a table's values: locks, checks, the pending set
     model.rs                 Action, ConnTab, Workspace, Tree, ObjectTab, Fetch, Dialog
     backend.rs               runtime thread, Command/Event, sessions
     connections.rs           saved connections store (JSON)
@@ -138,6 +144,10 @@ tabletist/
     ui/object_tabs.rs        object tab bar (preview tabs in italics)
     ui/data_view.rs          footer and grid, or the error or empty state
     ui/grid.rs               virtualized data grid
+    ui/cell_editor.rs        the editor on a cell, its popover, the words for checks and locks
+    ui/pending_bar.rs        pending changes above the footer, with Save and Discard all
+    ui/write_prompts.rs      asks before pending changes are dropped or saved to production
+    ui/terminal_dialog.rs    the head, foot and key hints of an Omarchy dialog
     ui/structure.rs          columns, indexes, foreign keys
     ui/row_panel.rs          every field of the selected row
     ui/filter_bar.rs         filter rows and raw WHERE
@@ -270,9 +280,11 @@ row fetches and counts run in read-only transactions on PostgreSQL and
 MySQL, and on SQLite under `query_only` with an authorizer fencing the raw
 WHERE; a script runs behind the SQL editor's guard, which makes a MySQL
 session read-only for the run. The crate writes in exactly one place,
-`Connection::write`, which a read-only session refuses; nothing in the UI
-calls it yet. The detail is in `2026-10-03-value-editing-core-design.md`,
-"Sessions" and "Saving".
+`Connection::write`, which a read-only session refuses. The app calls it
+from one place as well: the Save of a table tab's pending changes
+(`Command::Write`, sent by the reducer in `src/app/editing.rs`). The detail
+is in `2026-10-03-value-editing-core-design.md`, "Sessions", "Editing in
+the grid" and "Saving".
 
 Every session also fixes how values print, since a save sends back what a
 page showed: PostgreSQL sets `extra_float_digits = 3` and `DateStyle =
@@ -419,13 +431,17 @@ Workspace { session: SessionId, conn_id: ConnectionId, name, color, spec: Connec
 ObjectTab { id: ObjectTabId, object: ObjectRef, kind: ObjectKind, pinned: bool,
             view: ObjectView /* Data | Structure */, query: RowQuery,
             rows: Fetch<RowPage>, structure: Fetch<Structure>, selection: Option<CellPos>,
-            estimated_rows: Option<u64>, count: Fetch<u64>, filter: FilterBar }
+            estimated_rows: Option<u64>, count: Fetch<u64>, filter: FilterBar,
+            edits: Edits /* pending cells, the open editor, the running save */ }
 
 enum SessionStatus { Connecting { request }, Connected, Disconnected(Error), Cancelled }
-enum Dialog { Connection(..), Password(..), HostKey(..), QuickOpen(..), Help }
+enum Dialog { Connection(..), Password(..), HostKey(..), QuickOpen(..), Help,
+              Leave(..), ConfirmWrite(..), .. }
 
 // Loadable state is `Fetch<T> { value, pending: Option<RequestId>, error }`:
 // only the pending request's result is accepted, which drops stale results.
+// A tab that holds edits keeps its page and its structure: an action that
+// would drop them is held in `Dialog::Leave` until the user answers.
 ```
 
 ### 5.2 Layout
@@ -509,6 +525,17 @@ enum Dialog { Connection(..), Password(..), HostKey(..), QuickOpen(..), Help }
 - Selection: one cell, which also selects its row. Arrows, Page Up/Down,
   Home/End move it. Cmd/Ctrl+C copies the cell, Shift+Cmd/Ctrl+C copies the
   row as TSV.
+- On a writable connection a table's cells are edited in the grid, as text:
+  on the cell, or in a popover for long, multi-line and JSON values. A
+  changed cell is pending, drawn in amber with what it was under the
+  pointer, until Save writes every pending change of the tab in one
+  transaction; a value its column does not take is caught before anything
+  is sent. The pending bar above the footer (the status line on Omarchy)
+  counts the changes and holds Save and Discard all. An action that would
+  drop a page with pending changes asks first, and a save to production
+  shows its statements and is confirmed. Copying takes the pending value a
+  cell shows. A SQL result's grid is not edited. The whole of it is in
+  `2026-10-03-value-editing-core-design.md`.
 - Footer: Data/Structure switch, row range, estimated (`~`) or exact total,
   previous/next page, Count, elapsed time, and a stop button while a query
   runs. Each page fetches one extra row; "Next" is enabled when that row
@@ -540,9 +567,15 @@ enum Dialog { Connection(..), Password(..), HostKey(..), QuickOpen(..), Help }
   one is selected (see the SQL editor spec).
 - What is folded or expanded belongs to a row of one page or one result:
   another page, a refresh or a new result starts fresh.
-- On Omarchy an Esc that leaves a text field does only that (the next one
-  closes the panel), Enter opens the panel only when no widget has the
-  keyboard, and `za` folds only while the panel shows.
+- A pending cell's field shows its new value with the pending mark and
+  "was <loaded value>" under it, so the panel never disagrees with the
+  grid. The panel itself stays read-only: its Edit, Duplicate and Delete
+  are disabled.
+- On Omarchy `i` and Enter edit the cell on a table's grid, and Space and
+  Cmd/Ctrl+Shift+R open the panel there. On a SQL result `i` and Enter
+  still open it, Enter only when no widget has the keyboard. An Esc that
+  leaves a text field does only that (the next one closes the panel), and
+  `za` folds only while the panel shows.
 
 ### 5.8 Structure view
 
@@ -577,12 +610,23 @@ read-only table (structure data is small; the data grid is not needed).
 | Cmd/Ctrl+C, Cmd/Ctrl+Shift+C | Copy cell / copy row |
 | Arrows, Home/End, Enter | Move in the tree |
 | Arrows, Page Up/Down, Home/End | Move in the grid |
+| Enter, F2 (Omarchy: `i`, Enter, `cc` from nothing) | Edit the cell of a table's grid |
+| Tab, Shift+Tab | Commit the edit and move right or left |
+| Esc (Omarchy: Esc keeps the edit, Ctrl+C drops it) | Leave the editor, dropping the edit |
+| Cmd/Ctrl+Backspace (Omarchy: `x`) | Set the cell NULL |
+| Cmd/Ctrl+Z (Omarchy: `u`) | Revert the cell |
+| Cmd/Ctrl+S (Omarchy: Ctrl+S, `:w`) | Save all pending changes |
+| Cmd/Ctrl+Alt+Backspace (Omarchy: `:e!`) | Discard all pending changes |
 | ? | Shortcuts dialog |
 
 All handled in `ui/keys.rs`, apart from the connection dialog's own keys,
 which the dialog takes while it is open (no other shortcut acts behind it).
 Plain keys (arrows, Space, `?`) and copy are
 suppressed while a text field has focus; Cmd/Ctrl shortcuts are not.
+The keys that edit are each look's own, chords on macOS and Windows,
+letters and the `:` prompt on Omarchy, and the shortcuts dialog lists only
+the look's. On macOS and Windows typing a character on a cell also starts
+an edit with it.
 
 ### 5.11 Platform integration
 
