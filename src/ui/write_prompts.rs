@@ -2,26 +2,32 @@
 //! before they are saved to production. Each as its look asks it: a sheet
 //! with buttons on macOS and Windows, a box with its keys in the terminal
 //! look. The confirmation lists every statement it would send, in every
-//! look: no save to production is offered without them on screen.
+//! look, as Review SQL draws them: no save to production is offered
+//! without them on screen.
 
 use egui::{CornerRadius, Frame, Id, Key, Margin, Modifiers, Rect, Sense, Stroke, pos2, vec2};
 
 use crate::app::App;
 use crate::i18n::{Locale, gettext, ngettext};
 use crate::model::{Action, Dialog, Held, LeavePrompt};
+use crate::review::{Line, Values};
 use crate::theme::{Look, Palette};
 use crate::typography::{Text, TextRole};
 use crate::ui::focus::{self, Ring};
 use crate::ui::format;
 use crate::ui::keys::consume_press;
 use crate::ui::pending_bar::counted;
+use crate::ui::review;
 use crate::ui::states::Tone;
 use crate::ui::terminal_dialog;
 use crate::ui::widgets::{self, ButtonSpec};
 
-/// The tallest the confirmation's statements stand before they scroll, so
-/// what is under them stays on screen.
-const STATEMENTS_HEIGHT: f32 = 220.0;
+/// A row of buttons at a prompt's foot.
+const ROW: f32 = 32.0;
+
+/// The sheet's Copy SQL: lower than the buttons that answer, beside what
+/// the row says.
+const COPY: f32 = 24.0;
 
 /// The band along the top of the macOS and Windows confirmation.
 const BAND: f32 = 4.0;
@@ -101,24 +107,36 @@ fn button_row(
     buttons: Vec<ButtonSpec<'_>>,
     skin: Skin<'_>,
 ) -> (Rect, Option<usize>) {
+    let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), ROW), Sense::hover());
+    (row, buttons_in(ui, row, buttons, skin))
+}
+
+/// What `buttons` take of a row, the 8 between them included.
+fn buttons_width(ui: &egui::Ui, buttons: &[ButtonSpec<'_>], look: &Look) -> f32 {
+    let widths = buttons.iter().map(|button| button.width(ui, look));
+    widths.sum::<f32>() + 8.0 * buttons.len().saturating_sub(1) as f32
+}
+
+/// [`button_row`] in a row that is there already. Returns the place in
+/// `buttons` of the one pressed.
+fn buttons_in(
+    ui: &mut egui::Ui,
+    row: Rect,
+    buttons: Vec<ButtonSpec<'_>>,
+    skin: Skin<'_>,
+) -> Option<usize> {
     let Skin { look, palette, .. } = skin;
-    let height = 32.0;
-    let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::hover());
-    let widths: Vec<f32> = buttons
-        .iter()
-        .map(|button| button.width(ui, look))
-        .collect();
-    let total = widths.iter().sum::<f32>() + 8.0 * widths.len().saturating_sub(1) as f32;
-    let mut left = row.right() - total;
+    let mut left = row.right() - buttons_width(ui, &buttons, look);
     let mut pressed = None;
-    for (index, (button, width)) in buttons.into_iter().zip(widths).enumerate() {
-        let place = Rect::from_min_size(pos2(left, row.top()), vec2(width, height));
+    for (index, button) in buttons.into_iter().enumerate() {
+        let width = button.width(ui, look);
+        let place = Rect::from_min_size(pos2(left, row.top()), vec2(width, row.height()));
         left += width + 8.0;
         if button.show_at(ui, place, look, palette).clicked() {
             pressed = Some(index);
         }
     }
-    (row, pressed)
+    pressed
 }
 
 /// The place in `buttons` of the one that has the keyboard. Asked before
@@ -430,6 +448,7 @@ fn confirm_write(app: &mut App, ctx: &egui::Context) {
         columns,
         tag: workspace.environment.label(crate::env::Platform::of(&look)),
     };
+    let dialect = workspace.driver.dialect();
     // Taken before anything is drawn, as the other prompt takes it: the
     // button that sends is pressed, never reached by a stray Enter.
     let enter = ctx.input_mut(|input| consume_press(input, Modifiers::NONE, Key::Enter));
@@ -437,22 +456,41 @@ fn confirm_write(app: &mut App, ctx: &egui::Context) {
     let Some(Dialog::ConfirmWrite(prompt)) = &mut app.dialog else {
         return;
     };
+    let mut copy = false;
     let top = if look.terminal {
         confirm_box(ctx, prompt, &facts, skin, enter, &mut actions)
     } else {
-        confirm_sheet(ctx, &prompt.statements, &facts, skin, enter, &mut actions)
+        let lines = &prompt.review.lines;
+        let sheet = confirm_sheet(ctx, lines, &facts, skin, enter, &mut actions);
+        copy = sheet.copy;
+        sheet.top
     };
     if top && ctx.input_mut(|input| input.consume_key(Modifiers::NONE, Key::Escape)) {
         actions.push(Action::CancelWrite);
     }
+    if copy {
+        // The whole statements, never the lines as the sheet shows them:
+        // those are cut. Of the set the sheet was made with, which is what
+        // it shows and all it would send: the tab's own need not be the
+        // one in front, nor, were it to change, the one that was read.
+        let whole = crate::review::of(dialect, &prompt.changeset, &[], Values::Whole);
+        ctx.copy_text(review::text(&whole, locale));
+    }
     app.actions.extend(actions);
 }
 
-/// The statements a save would send, one to a line in the code face, in a
-/// bordered box that scrolls both ways: a line longer than the box is cut
-/// by it, never wrapped into what could read as another statement.
-fn statements(ui: &mut egui::Ui, list: &[String], skin: Skin<'_>) {
-    let Skin { look, palette, .. } = skin;
+/// The statements a save would send, as Review SQL draws them: its lines
+/// one to a row in the code face, in a bordered box as tall as they are, to
+/// at most [`review::MAX_ROWS`] of them. It scrolls both ways: a line
+/// longer than the box is cut by it, never wrapped into what could read as
+/// another. The lines are painted and cannot be selected: a value is shown
+/// cut, and a copy of it would be pasted as it is.
+fn statements(ui: &mut egui::Ui, lines: &[Line], skin: Skin<'_>) {
+    let Skin {
+        look,
+        palette,
+        locale,
+    } = skin;
     let (fill, line, radius) = if look.terminal {
         (palette.panel, palette.outline, 3)
     } else {
@@ -465,32 +503,40 @@ fn statements(ui: &mut egui::Ui, list: &[String], skin: Skin<'_>) {
         .inner_margin(Margin::symmetric(10, 8))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
+            // Before `show_rows`, which reads it from the `ui` it is given.
+            ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
+            let row = review::row_height(ui.ctx(), look);
             egui::ScrollArea::both()
-                .max_height(STATEMENTS_HEIGHT)
+                .max_height(review::MAX_ROWS as f32 * row)
                 .auto_shrink([false, true])
-                .show(ui, |ui| {
-                    ui.spacing_mut().item_spacing = vec2(0.0, 4.0);
-                    for statement in list {
-                        let laid = Text::one(look, widgets::code(look), statement, palette.text)
-                            .layout(ui.ctx());
-                        ui.add(egui::Label::new(laid.galley).selectable(true).extend());
-                    }
+                .min_scrolled_height(0.0)
+                .show_rows(ui, row, lines.len(), |ui, range| {
+                    review::rows(ui, lines, range, look, palette, locale);
                 });
         });
 }
 
+/// What the sheet says of itself once it is drawn.
+struct Sheet {
+    /// It is the dialog on top.
+    top: bool,
+    /// Its Copy SQL was pressed.
+    copy: bool,
+}
+
 /// macOS and Windows: a band of the production red along the top, what is
-/// saved and where, the statements, and Cancel and the button that sends.
-/// `enter` says Enter was pressed: it cancels with the keyboard on Cancel,
-/// and never confirms. Returns whether the prompt is the dialog on top.
+/// saved and where, the statements, and a foot with what the save is, Copy
+/// SQL, Cancel and the button that sends. `enter` says Enter was pressed:
+/// it cancels with the keyboard on Cancel, copies with it on Copy SQL, and
+/// never confirms.
 fn confirm_sheet(
     ctx: &egui::Context,
-    list: &[String],
+    lines: &[Line],
     facts: &Facts,
     skin: Skin<'_>,
     enter: bool,
     actions: &mut Vec<Action>,
-) -> bool {
+) -> Sheet {
     let Skin {
         look,
         palette,
@@ -504,6 +550,7 @@ fn confirm_sheet(
     );
     let about = format!("{} · {}", facts.connection, facts.rows);
     let (frame, radius) = skin.frame();
+    let mut copy = false;
     let modal = widgets::modal(Id::new("write-prompt"), look, palette)
         .frame(frame)
         .show(ctx, |ui| {
@@ -533,39 +580,57 @@ fn confirm_sheet(
                         .layout(ui.ctx())
                         .label(ui);
                     ui.add_space(12.0);
-                    statements(ui, list, skin);
+                    statements(ui, lines, skin);
                     ui.add_space(14.0);
-                    let (cancel, save) = (
+                    let (cancel, save, copy_sql) = (
                         gettext(locale, "Cancel"),
                         gettext(locale, "Save to production"),
+                        gettext(locale, "Copy SQL"),
                     );
                     let buttons = vec![
                         ButtonSpec::new(&cancel),
                         ButtonSpec::new(&save).danger().padding(16.0),
                     ];
-                    if enter && keyboard_on(ui, &buttons) == Some(0) {
-                        actions.push(Action::CancelWrite);
+                    let (row, _) =
+                        ui.allocate_exact_size(vec2(ui.available_width(), ROW), Sense::hover());
+                    let y = row.center().y;
+                    // What the save is, at the row's left, where it has the
+                    // room beside the buttons: it gives way to them.
+                    let said = gettext(locale, "One transaction");
+                    let said = || Text::one(look, widgets::body(look), &said, palette.secondary);
+                    let copier = ButtonSpec::new(&copy_sql).quiet();
+                    let copier_width = copier.width(ui, look);
+                    let end = row.right() - buttons_width(ui, &buttons, look) - 8.0;
+                    let mut left = row.left();
+                    if left + widgets::measure(ui, said()) + 8.0 + copier_width <= end {
+                        left += widgets::paint_label(ui, left, y, said()) + 8.0;
                     }
-                    let (row, pressed) = button_row(ui, buttons, skin);
-                    match pressed {
+                    let place =
+                        Rect::from_min_size(pos2(left, y - COPY / 2.0), vec2(copier_width, COPY));
+                    // Enter was taken before the buttons are drawn: it does
+                    // what the one that has the keyboard does, and with the
+                    // keyboard on the one that sends, or nowhere, nothing.
+                    if enter {
+                        if copier.has_keyboard(ui) {
+                            copy = true;
+                        } else if keyboard_on(ui, &buttons) == Some(0) {
+                            actions.push(Action::CancelWrite);
+                        }
+                    }
+                    // Made first, as it is read first: the keyboard reaches
+                    // it before Cancel.
+                    copy |= copier.show_at(ui, place, look, palette).clicked();
+                    match buttons_in(ui, row, buttons, skin) {
                         Some(0) => actions.push(Action::CancelWrite),
                         Some(_) => actions.push(Action::ConfirmWrite),
                         None => {}
                     }
-                    widgets::paint_label(
-                        ui,
-                        row.left(),
-                        row.center().y,
-                        Text::one(
-                            look,
-                            widgets::body(look),
-                            &gettext(locale, "One transaction"),
-                            palette.secondary,
-                        ),
-                    );
                 });
         });
-    modal.is_top_modal
+    Sheet {
+        top: modal.is_top_modal,
+        copy,
+    }
 }
 
 /// The terminal look: the box in the danger colour, its head with the
@@ -633,7 +698,7 @@ fn confirm_box(
                         .layout(ui.ctx())
                         .label(ui);
                     ui.add_space(10.0);
-                    statements(ui, &prompt.statements, skin);
+                    statements(ui, &prompt.review.lines, skin);
                     ui.add_space(12.0);
                     let ask = widgets::label(ui, role, &ask, palette.dim, look);
                     ui.add_space(6.0);
@@ -745,16 +810,25 @@ mod tests {
         change(&mut harness, (tab, id), 3, 1, "dan@example.com");
         harness.app.apply(Action::WriteEdits { tab, id });
         harness.settle();
-        let statements = match &harness.app.dialog {
-            Some(Dialog::ConfirmWrite(prompt)) => prompt.statements.clone(),
+        let lines: Vec<String> = match &harness.app.dialog {
+            Some(Dialog::ConfirmWrite(prompt)) => {
+                let lines = prompt.review.lines.iter();
+                lines
+                    .filter_map(|line| {
+                        crate::ui::review::comment(line, harness.app.locale).or_else(|| line.sql())
+                    })
+                    .collect()
+            }
             other => panic!("expected the confirmation, got {other:?}"),
         };
-        assert_eq!(statements.len(), 2);
-        for statement in &statements {
-            assert!(statement.starts_with("UPDATE"), "{statement}");
+        // Two comments and a statement's three lines for each of the rows.
+        assert_eq!(lines.len(), 10);
+        assert_eq!(lines[0], "-- row id 2");
+        assert_eq!(lines[7], r#"UPDATE "main"."users""#);
+        for line in &lines {
             assert!(
-                harness.painted.iter().any(|(text, _)| text == statement),
-                "{statement} is on screen"
+                harness.painted.iter().any(|(text, _)| text == line),
+                "{line} is on screen"
             );
         }
         assert_eq!(writes(&harness), 0, "nothing is sent before the answer");

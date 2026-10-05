@@ -319,33 +319,20 @@ impl App {
             };
             // No save is offered with a statement that cannot be shown:
             // its row fails here as it would in the save, with the
-            // builder's reason.
-            let shown: Result<Vec<String>, (usize, Error)> = changes
-                .rows
-                .iter()
-                .enumerate()
-                .map(
-                    |(index, row)| match dialect.update_row(&changes.object, row) {
-                        Ok(update) => Ok(update.shown),
-                        Err(error) => Err((index, error)),
-                    },
-                )
-                .collect();
-            let statements = match shown {
-                Ok(statements) => statements,
-                Err((index, error)) => {
-                    if let Some(object) = self.object_tab_mut(tab, id) {
-                        object.edits.saved = None;
-                        object.edits.fail(rows.get(index).copied(), error);
-                    }
-                    return;
+            // builder's reason. No cell is to fix: Save was not disabled.
+            let review = crate::review::of(dialect, &changes, &[], Values::Shown);
+            if let Some((index, error)) = review.refused.clone() {
+                if let Some(object) = self.object_tab_mut(tab, id) {
+                    object.edits.saved = None;
+                    object.edits.fail(rows.get(index).copied(), error);
                 }
-            };
+                return;
+            }
             let cells = changes.rows.iter().map(|row| row.set.len()).sum();
             self.dialog = Some(Dialog::ConfirmWrite(Box::new(WritePrompt {
                 tab,
                 id,
-                statements,
+                review,
                 changes: cells,
                 rows: rows.len(),
                 typed: String::new(),

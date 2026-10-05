@@ -1205,8 +1205,8 @@ pub struct LeavePrompt {
 pub struct WritePrompt {
     pub tab: ConnTabId,
     pub id: TabId,
-    /// The statements as a person reads them, one per row.
-    pub statements: Vec<String>,
+    /// The statements the save would run, as lines to read.
+    pub review: crate::review::Review,
     pub changes: usize,
     pub rows: usize,
     /// What the Omarchy box's field holds: `write` confirms.

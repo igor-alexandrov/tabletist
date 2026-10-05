@@ -10684,11 +10684,19 @@ mod tests {
             let Some(Dialog::ConfirmWrite(prompt)) = &harness.app.dialog else {
                 panic!("expected the confirmation");
             };
-            assert_eq!(prompt.statements.len(), 1);
-            assert!(
-                prompt.statements[0].starts_with("UPDATE"),
-                "{}",
-                prompt.statements[0]
+            let lines: Vec<String> = prompt
+                .review
+                .lines
+                .iter()
+                .filter_map(crate::review::Line::sql)
+                .collect();
+            assert_eq!(
+                lines,
+                [
+                    r#"UPDATE "main"."users""#,
+                    r#"   SET "email" = 'bob@example.com'"#,
+                    r#" WHERE "id" = 2;"#,
+                ]
             );
             assert_eq!((prompt.changes, prompt.rows), (1, 1));
             // Cancel sends nothing and keeps the set.

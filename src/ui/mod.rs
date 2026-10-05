@@ -15938,8 +15938,26 @@ mod tests {
         assert_eq!(writes(&harness), 1);
     }
 
+    /// The lines of the review the confirmation holds, each as it is
+    /// painted: a comment as it is worded, a statement's line as it reads.
+    fn confirmed_lines(harness: &Harness) -> Vec<String> {
+        let locale = harness.app.locale;
+        match &harness.app.dialog {
+            Some(crate::model::Dialog::ConfirmWrite(prompt)) => {
+                let lines = prompt.review.lines.iter();
+                lines
+                    .filter_map(|line| {
+                        crate::ui::review::comment(line, locale).or_else(|| line.sql())
+                    })
+                    .collect()
+            }
+            other => panic!("expected the confirmation, got {other:?}"),
+        }
+    }
+
     /// The fixture's table on a production connection, with two changes in
-    /// two rows and the save asked for: the confirmation is up.
+    /// two rows and the save asked for: the confirmation is up. With it,
+    /// the lines of its review as they are painted.
     fn confirming(look: Look) -> (Harness, ConnTabId, TabId, Vec<String>) {
         let (mut harness, tab, id) = editable_in(look);
         harness.app.workspace_mut(tab).unwrap().environment = crate::env::Environment::Production;
@@ -15947,18 +15965,18 @@ mod tests {
         make_pending(&mut harness, tab, id, (3, 1), "dan@example.com");
         harness.app.apply(Action::WriteEdits { tab, id });
         harness.finish_animations();
-        let statements = match &harness.app.dialog {
-            Some(crate::model::Dialog::ConfirmWrite(prompt)) => prompt.statements.clone(),
-            other => panic!("expected the confirmation, got {other:?}"),
-        };
-        (harness, tab, id, statements)
+        let lines = confirmed_lines(&harness);
+        (harness, tab, id, lines)
     }
 
     #[test]
     fn a_save_to_production_shows_its_statements_and_is_confirmed() {
         for look in Look::ALL {
             let (mut harness, tab, id, statements) = confirming(look);
-            assert_eq!(statements.len(), 2, "{}", look.name);
+            let palette = harness.app.palette;
+            // Two comments and a statement's three lines for each row.
+            assert_eq!(statements.len(), 10, "{}", look.name);
+            assert_eq!(statements[..5], BOB, "{}", look.name);
             // What it is about, and every statement it would send.
             let (title, facts) = if look.terminal {
                 ("write 2 changes?", "2 rows in users · email")
@@ -15971,9 +15989,16 @@ mod tests {
             assert!(harness.has(title), "{}", look.name);
             assert!(harness.has(facts), "{}", look.name);
             for statement in &statements {
-                assert!(statement.starts_with("UPDATE"), "{statement}");
                 assert!(painted(&harness, statement), "{}: {statement}", look.name);
             }
+            // As Review SQL draws them: a statement in the SQL editor's
+            // colours, a comment in a comment's.
+            assert!(
+                painted_in(&harness, BOB[2], palette.magenta),
+                "{}",
+                look.name
+            );
+            assert!(painted_in(&harness, BOB[0], palette.dim), "{}", look.name);
             assert_eq!(writes(&harness), 0, "{}", look.name);
             // Enter alone confirms nothing.
             harness.press(Key::Enter, Modifiers::NONE);
@@ -17757,5 +17782,198 @@ mod tests {
         harness.copied = None;
         type_key(&mut harness, Key::Y, "Y");
         assert_eq!(harness.copied.as_deref(), Some(long.as_str()));
+    }
+
+    /// The save that was sent last: its rows, since a set prints its
+    /// counts only.
+    fn sent_rows(harness: &Harness) -> Vec<tabletist_db::RowChange> {
+        let mut sent = harness.app.backend.sent.iter().rev();
+        sent.find_map(|command| match command {
+            crate::backend::Command::Write { changes, .. } => Some(changes.rows.clone()),
+            _ => None,
+        })
+        .expect("a save was sent")
+    }
+
+    /// The fixture's table on a production connection in `look`, with
+    /// `email` of the row `id 2` pending as a value of 100 characters and
+    /// the save asked for: the confirmation is up. With it, the value.
+    fn confirming_a_long_value(look: Look) -> (Harness, ConnTabId, TabId, String) {
+        let long = "x".repeat(100);
+        let (mut harness, tab, id) = editable_in(look);
+        harness.app.workspace_mut(tab).unwrap().environment = crate::env::Environment::Production;
+        make_pending(&mut harness, tab, id, (1, 1), &long);
+        harness.app.apply(Action::WriteEdits { tab, id });
+        harness.finish_animations();
+        assert!(matches!(
+            harness.app.dialog,
+            Some(crate::model::Dialog::ConfirmWrite(_))
+        ));
+        (harness, tab, id, long)
+    }
+
+    /// What Copy SQL gives for the fixture's row `id 2` with `email` set to
+    /// `value`: the line that says what the text is, and the whole
+    /// statement.
+    fn copied_text(value: &str) -> String {
+        format!(
+            "-- What Tabletist runs to save these changes, in one transaction. \
+             Each statement runs only while its row is still as the comment above it says.\n\
+             -- row id 2\n\
+             -- only if email is still 'user2@example.com'\n\
+             UPDATE \"main\".\"users\"\n   \
+             SET \"email\" = '{value}'\n \
+             WHERE \"id\" = 2;\n"
+        )
+    }
+
+    #[test]
+    fn the_confirmation_cuts_a_long_value_as_the_drawer_does() {
+        for look in Look::ALL {
+            let (mut harness, _tab, _id, long) = confirming_a_long_value(look);
+            // Sixty characters of the literal: its quote, 57 of the value,
+            // the mark and the quote that closes it.
+            let cut = format!("   SET \"email\" = '{}…'", "x".repeat(57));
+            assert!(
+                painted(&harness, &cut),
+                "{}: {:?}",
+                look.name,
+                harness.painted
+            );
+            // No line holds the whole of it (the grid's cell behind the
+            // confirmation does).
+            let whole = |(text, _): &(String, _)| is_line(text) && text.contains(&long);
+            assert!(!harness.painted.iter().any(whole), "{}", look.name);
+            // What is sent is the whole value.
+            if look.terminal {
+                type_text(&mut harness, "write");
+                harness.press(Key::Enter, Modifiers::NONE);
+            } else {
+                click_dialog(&mut harness, "Save to production");
+            }
+            assert!(harness.app.dialog.is_none(), "{}", look.name);
+            assert_eq!(writes(&harness), 1, "{}", look.name);
+            let rows = sent_rows(&harness);
+            assert_eq!(rows.len(), 1, "{}", look.name);
+            assert_eq!(
+                rows[0].set[0].new,
+                tabletist_db::NewValue::Text(long.clone()),
+                "{}",
+                look.name
+            );
+        }
+    }
+
+    #[test]
+    fn copy_sql_in_the_sheet_takes_the_whole_statements() {
+        for look in desktop_looks() {
+            let (mut harness, tab, id, long) = confirming_a_long_value(look);
+            assert!(painted(&harness, "One transaction"), "{}", look.name);
+            harness.copied = None;
+            click_dialog(&mut harness, "Copy SQL");
+            // The value whole, where the sheet shows it cut.
+            assert_eq!(
+                harness.copied.as_deref(),
+                Some(copied_text(&long).as_str()),
+                "{}",
+                look.name
+            );
+            // Copying closes nothing and sends nothing.
+            assert!(harness.app.dialog.is_some(), "{}", look.name);
+            assert_eq!(writes(&harness), 0, "{}", look.name);
+            assert_eq!(edits(&harness, tab, id).cells.len(), 1, "{}", look.name);
+            // With the keyboard on it, Enter copies and confirms nothing.
+            harness.copied = None;
+            focus_dialog(&mut harness, "Copy SQL");
+            harness.press(Key::Enter, Modifiers::NONE);
+            assert_eq!(
+                harness.copied.as_deref(),
+                Some(copied_text(&long).as_str()),
+                "{}",
+                look.name
+            );
+            assert!(harness.app.dialog.is_some(), "{}", look.name);
+            assert_eq!(writes(&harness), 0, "{}", look.name);
+            // And Enter held on it copies once more at most, and still
+            // sends nothing.
+            hold(&mut harness, Key::Enter);
+            assert!(harness.app.dialog.is_some(), "{}", look.name);
+            assert_eq!(writes(&harness), 0, "{}", look.name);
+            // What is copied is what the sheet shows, of the set it was
+            // made with: not the tab's set as it stands when the button is
+            // pressed. (Nothing the user does changes it under the sheet;
+            // were it to change, the sheet would send nothing.)
+            let object = harness.app.workspace_mut(tab).unwrap();
+            object.object_tab_mut(id).unwrap().edits = crate::edit::Edits::default();
+            harness.copied = None;
+            click_dialog(&mut harness, "Copy SQL");
+            assert_eq!(
+                harness.copied.as_deref(),
+                Some(copied_text(&long).as_str()),
+                "{}",
+                look.name
+            );
+        }
+    }
+
+    /// A change in `users` on a production connection, `orders` opened
+    /// beside it and in front, the connection's tab asked to close, and
+    /// the Leave prompt answered with its save: the confirmation is up for
+    /// a tab that is not the one on screen.
+    fn confirming_behind_another_tab(look: Look) -> (Harness, ConnTabId, TabId) {
+        let (mut harness, tab, id) = editable_in(look);
+        harness.app.workspace_mut(tab).unwrap().environment = crate::env::Environment::Production;
+        make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
+        harness.app.apply(Action::OpenObject {
+            tab,
+            object: tabletist_db::ObjectRef::new("main", "orders"),
+            kind: tabletist_db::ObjectKind::Table,
+            pin: true,
+        });
+        harness.answer_structure(crate::testing::fixture_structure());
+        harness.answer_rows(crate::testing::page(3, false));
+        harness.settle();
+        assert_ne!(harness.app.workspace(tab).unwrap().active_tab, Some(id));
+        harness.app.apply(Action::CloseConnTab(tab));
+        harness.finish_animations();
+        assert!(leaving(&harness), "{}", look.name);
+        harness.app.apply(Action::LeaveSave);
+        harness.finish_animations();
+        match &harness.app.dialog {
+            Some(crate::model::Dialog::ConfirmWrite(prompt)) => {
+                assert_eq!((prompt.tab, prompt.id), (tab, id), "{}", look.name);
+            }
+            other => panic!("{}: expected the confirmation, got {other:?}", look.name),
+        }
+        assert_ne!(harness.app.workspace(tab).unwrap().active_tab, Some(id));
+        (harness, tab, id)
+    }
+
+    #[test]
+    fn the_sheet_of_a_tab_that_is_not_in_front_still_lists_and_copies() {
+        for look in desktop_looks() {
+            let (mut harness, _tab, _id) = confirming_behind_another_tab(look);
+            assert_eq!(confirmed_lines(&harness), BOB, "{}", look.name);
+            for line in BOB {
+                assert!(painted(&harness, line), "{}: {line}", look.name);
+            }
+            assert_eq!(drawn(&harness), None, "{}", look.name);
+            harness.copied = None;
+            click_dialog(&mut harness, "Copy SQL");
+            assert_eq!(
+                harness.copied.as_deref(),
+                Some(copied_text("bob@example.com").as_str()),
+                "{}",
+                look.name
+            );
+            assert_eq!(writes(&harness), 0, "{}", look.name);
+            // Confirmed, the save of `users` goes out.
+            click_dialog(&mut harness, "Save to production");
+            assert_eq!(writes(&harness), 1, "{}", look.name);
+            assert_eq!(
+                sent_rows(&harness)[0].key,
+                [("id".to_owned(), tabletist_db::Value::Int(2))]
+            );
+        }
     }
 }
