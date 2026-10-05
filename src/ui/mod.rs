@@ -11507,6 +11507,67 @@ mod tests {
     }
 
     #[test]
+    fn a_saved_cell_is_found_by_its_row_and_then_its_column() {
+        for look in Look::ALL {
+            let (mut harness, tab, id) = editable_in(look);
+            let palette = harness.app.palette;
+            // Cells of two columns, the later column in the earlier row:
+            // the save's list is in the set's order, by row and then by
+            // column, which is not their order by column and then by row.
+            let written = [
+                (0, 2, "[1]"),
+                (1, 1, "b@x.io"),
+                (2, 2, "[1,2]"),
+                (3, 1, "d@x.io"),
+                (4, 2, "[1,2,3]"),
+            ];
+            for (row, col, text) in written {
+                make_pending(&mut harness, tab, id, (row, col), text);
+            }
+            harness.app.workspace_mut(tab).unwrap().row_panel = false;
+            harness.app.apply(Action::WriteEdits { tab, id });
+            harness.settle();
+            let rows = written.map(|(row, col, text)| {
+                let mut values = crate::testing::page(5, false).rows.swap_remove(row);
+                values[col] = tabletist_db::Value::Text(text.into());
+                values
+            });
+            harness.answer_written(Ok(tabletist_db::WriteOutcome::Written {
+                rows: rows.to_vec(),
+                elapsed: std::time::Duration::from_millis(14),
+            }));
+            harness.settle();
+            // A cell by the email of its row, which every look writes as it
+            // is: the email's own cell is behind it, and the document's is
+            // the one after it. (A look writes a document in its own way.)
+            let emails = [
+                "user1@example.com",
+                "b@x.io",
+                "user3@example.com",
+                "d@x.io",
+                "user5@example.com",
+            ];
+            let green = Tone::Success.fill(&look, &palette);
+            let is_green = |row: usize, col: usize| {
+                let email = harness.painted_rect(emails[row]).expect("the row's email");
+                let mut fills = harness.fills.iter();
+                fills.any(|(rect, fill)| {
+                    let in_row = rect.y_range().contains(email.center().y);
+                    let behind = rect.contains(email.center());
+                    let after = rect.left() >= email.right();
+                    let there = if col == 1 { behind } else { after };
+                    *fill == green && rect.width() < 500.0 && in_row && there
+                })
+            };
+            // Every cell the save wrote, and no other.
+            for (row, col) in (0..5).flat_map(|row| [(row, 1), (row, 2)]) {
+                let wrote = written.iter().any(|&(r, c, _)| (r, c) == (row, col));
+                assert_eq!(is_green(row, col), wrote, "{row}, {col} {}", look.name);
+            }
+        }
+    }
+
+    #[test]
     fn a_sql_result_is_drawn_as_before() {
         for look in Look::ALL {
             let mut harness = Harness::new();

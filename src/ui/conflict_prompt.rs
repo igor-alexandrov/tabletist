@@ -236,6 +236,15 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
     // No answer in the question's first moment: what was on its way to
     // the grid when it came up is not one. It is dropped without a sign.
     let ripe = crate::edit::answers_taken(prompt.shown);
+    // A click is its press too: one that went down in that first moment
+    // answers nothing, whenever it is let go. The question remembers, for
+    // the press that is down, whether it took answers when it came.
+    let went_down = Id::new("conflict-prompt-pressed");
+    if ctx.input(|input| input.pointer.any_pressed()) {
+        ctx.data_mut(|data| data.insert_temp(went_down, ripe));
+    }
+    let early = ctx.input(|input| input.pointer.any_released())
+        && ctx.data(|data| data.get_temp::<bool>(went_down)) != Some(true);
     // Taken before anything is drawn: a button that has the keyboard would
     // read Enter as a press of itself, and Overwrite is one of them. Space
     // presses a button. What the key answers is for the buttons to say,
@@ -274,7 +283,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
     if top && ctx.input_mut(escape) {
         answers.push(Answer::KeepMine);
     }
-    if ripe {
+    if ripe && !early {
         // Each names the row that was drawn: a click or a key a frame
         // behind is no answer to the row that comes after it.
         let answers = answers.into_iter();
@@ -479,7 +488,8 @@ fn headed(ui: &mut egui::Ui, title: &Title, skin: Skin<'_>) {
     let (shown, whole) = (title.with(&name), title.whole());
     let text = Text::one(look, role, &shown, palette.text);
     let id = ui.id().with("conflict-title");
-    written(ui, place, 0.0, id, text, &whole, shown != whole);
+    let cut = (shown != whole).then_some(&*whole);
+    written(ui, place, 0.0, id, text, &whole, cut);
 }
 
 /// The values of the terminal's box: a header in the dim colour and under
@@ -659,10 +669,14 @@ fn line(
         .map(|(value, ..)| Reading::of(value, marks))
         .collect();
     let painted = told_apart(&read, room, |text| role.width(ui.ctx(), look.faces, text));
+    // What a screen reader is told of a value the server changed, after
+    // the value: its tint, or its colour, is all that says so on screen.
+    let changed = skin.say("changed on the server");
     let cells = values.into_iter().zip(read.into_iter().zip(painted));
     for (at, ((_, tone, color), (read, painted))) in cells.enumerate() {
         let place = form.cell(row, of, at);
         let salt = (index, at);
+        let changed = (tone == Some(Tone::Danger)).then_some(changed.as_str());
         match tone {
             Some(tone) if form.tinted => {
                 let corner = CornerRadius {
@@ -678,13 +692,14 @@ fn line(
             Some(Tone::Danger) if read.is_none() => {
                 let text = Text::one(look, grid::data_role(look), "NULL", color);
                 let id = ui.id().with(("conflict-value", salt));
-                written(ui, place, form.inset, id, text, "NULL", false);
+                let name = named("NULL", changed);
+                written(ui, place, form.inset, id, text, &name, None);
                 continue;
             }
             _ => {}
         }
         let text = read.zip(painted);
-        self::value(ui, place, salt, text, (color, form.inset), skin);
+        self::value(ui, place, salt, text, (color, form.inset), (changed, skin));
     }
     if form.tinted {
         // The hairline above the line, over its tints.
@@ -698,7 +713,17 @@ fn line(
     let cut = grid::ellipsize(&name, form.name - 2.0 * form.inset, false, measure);
     let text = Text::one(look, role, &cut, palette.text);
     let id = ui.id().with(("conflict-name", index));
-    written(ui, place, form.inset, id, text, &name, cut != name);
+    let whole = (cut != name).then_some(&*name);
+    written(ui, place, form.inset, id, text, &name, whole);
+}
+
+/// The name of a value's cell for a screen reader: what it reads, and for
+/// one the server changed, that it did (`changed`, in words).
+fn named(reads: &str, changed: Option<&str>) -> String {
+    match changed {
+        Some(changed) => format!("{reads}, {changed}"),
+        None => reads.to_owned(),
+    }
 }
 
 /// What a cell of the question reads of a value that is not NULL: one
@@ -844,13 +869,15 @@ fn told_apart(
 /// A value of a line in its cell `place`: the look's NULL, or what was
 /// read of it and what of that its cell paints (`text`), in `color` and
 /// `inset` into the cell. `salt` tells the cell from the table's others.
+/// `changed` is what a screen reader is told after a value the server
+/// changed.
 fn value(
     ui: &mut egui::Ui,
     place: Rect,
     salt: (usize, usize),
     text: Option<(Reading, String)>,
     (color, inset): (Color32, f32),
-    skin: Skin<'_>,
+    (changed, skin): (Option<&str>, Skin<'_>),
 ) {
     let Skin { look, palette, .. } = skin;
     let role = grid::data_role(look);
@@ -865,25 +892,39 @@ fn value(
         let builder = egui::UiBuilder::new()
             .id_salt(("conflict-null", salt))
             .max_rect(at);
-        grid::null_label(&mut ui.new_child(builder), look, palette);
+        let null = grid::null_label(&mut ui.new_child(builder), look, palette);
+        if changed.is_some() {
+            let name = named("NULL", changed);
+            null.widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, &name));
+        }
         return;
     };
     let whole = read.whole();
-    let cut = shown != whole;
     let text = Text::one(look, role, &shown, color);
     let id = ui.id().with(("conflict-value", salt));
-    written(ui, place, inset, id, text, &whole, cut);
+    let name = named(&whole, changed);
+    let hover = (shown != whole).then_some(&*whole);
+    written(ui, place, inset, id, text, &name, hover);
 }
 
-/// Paints `text` in the cell `place`, `inset` in and on its middle.
-/// `whole` is what a screen reader reads there, and with `cut`, what the
-/// pointer shows over the cell. `id` tells the cell from every other.
-fn written(ui: &mut egui::Ui, place: Rect, inset: f32, id: Id, text: Text, whole: &str, cut: bool) {
+/// Paints `text` in the cell `place`, `inset` in and on its middle. `name`
+/// is what a screen reader reads there, and `whole` what the pointer shows
+/// over a cell that paints less than it holds. `id` tells the cell from
+/// every other.
+fn written(
+    ui: &mut egui::Ui,
+    place: Rect,
+    inset: f32,
+    id: Id,
+    text: Text,
+    name: &str,
+    whole: Option<&str>,
+) {
     widgets::paint_text(ui, place.left() + inset, place.center().y, text);
     // Hovered and no more: nothing in the table is pressed.
     let response = ui.interact(place, id, Sense::hover());
-    response.widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, whole));
-    if cut {
+    response.widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, name));
+    if let Some(whole) = whole {
         response.on_hover_text(whole);
     }
 }
@@ -1440,9 +1481,11 @@ mod tests {
             let (loaded, color) = piece(&harness, r#"{"plan":"pro"}"#);
             assert_eq!(color, palette.text, "{said}");
             assert!(!tinted(&harness, loaded, danger), "{said}");
-            // The fill says it changed, the chip says to what.
+            // The fill says it changed, the chip says to what, and a
+            // screen reader is told both.
             let (null, _) = piece(&harness, "NULL");
-            assert!(named(&mut harness, "NULL", null), "{said}");
+            let name = "NULL, changed on the server";
+            assert!(named(&mut harness, name, null), "{said}");
             assert!(tinted(&harness, null, danger), "{said}");
             assert!(loaded.right() <= null.left(), "{said}");
             assert!((null.center().y - loaded.center().y).abs() < 15.0, "{said}");
@@ -1904,6 +1947,122 @@ mod tests {
             click_dialog(&mut harness, "Use server values");
             assert!(!asking(&harness), "{said}");
             assert!(cells(&harness).is_empty(), "{said}");
+        }
+    }
+
+    #[test]
+    fn an_answer_given_at_once_to_the_next_rows_question_is_not_taken() {
+        for look in looks() {
+            let said = look.name;
+            // A double click on a button: the first click answers the row
+            // shown, and the second finds the next row's question in its
+            // place, with the same button under the pointer.
+            for name in ["Use server values", "Overwrite", "Keep mine, reload row"] {
+                let (mut harness, tab, id) = two_rows(look);
+                let tree = harness.settle();
+                let place = crate::testing::bounds(&tree, name, Role::Button);
+                let place = place.unwrap_or_else(|| panic!("{said}: no button {name}"));
+                let first = std::time::Instant::now();
+                click_at(&mut harness, place.center());
+                assert_eq!(asked_about(&harness), Some(1), "{said}: {name}");
+                click_at(&mut harness, place.center());
+                // (Unless the test itself took the half second.)
+                if first.elapsed() < crate::edit::ANSWER_AFTER {
+                    assert_eq!(asked_about(&harness), Some(1), "{said}: {name}");
+                    assert_eq!(writes(&harness), 1, "{said}: {name}");
+                    assert!(pending_cells(&harness, tab, id).contains(&(3, 1)));
+                }
+                // Once it has been up for its moment, the same click is its
+                // answer.
+                shown(&mut harness, true);
+                click_at(&mut harness, place.center());
+                assert_eq!(asked_about(&harness), None, "{said}: {name}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_click_pressed_in_the_first_moment_and_let_go_after_it_is_no_answer() {
+        let button = |pos: egui::Pos2, pressed: bool| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        };
+        for look in looks() {
+            for name in ["Use server values", "Overwrite", "Keep mine, reload row"] {
+                let said = format!("{}: {name}", look.name);
+                let (mut harness, tab, id) = conflict_in(look, Some("eve@example.com"));
+                let tree = harness.settle();
+                let place = crate::testing::bounds(&tree, name, Role::Button);
+                let at = place.unwrap_or_else(|| panic!("{said}")).center();
+                // The pointer goes down on the button while the question
+                // has only just come up, and is let go once it takes
+                // answers: the click began before the user can have read
+                // what it answers.
+                shown(&mut harness, false);
+                harness.frame(vec![egui::Event::PointerMoved(at)]);
+                harness.frame(vec![button(at, true)]);
+                shown(&mut harness, true);
+                harness.frame(vec![button(at, false)]);
+                harness.settle();
+                assert!(asking(&harness), "{said}");
+                assert_eq!(writes(&harness), 1, "{said}");
+                let loaded = text("user2@example.com");
+                assert_eq!(state(&harness, tab, id), (1, loaded), "{said}");
+                // Pressed again, it answers.
+                click_at(&mut harness, at);
+                assert!(!asking(&harness), "{said}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_screen_reader_is_told_which_value_changed_on_the_server() {
+        for look in looks() {
+            let said = look.name;
+            // The email is another on the server, the `meta` is as it was
+            // loaded.
+            let (mut harness, tab, id) = fixture_in(look);
+            pend(&mut harness, (tab, id), (1, 1), "bob@example.com");
+            pend(&mut harness, (tab, id), (1, 2), "[1]");
+            saved(
+                &mut harness,
+                (tab, id),
+                vec![changed(0, server("eve@example.com"))],
+            );
+            let place = |text: &str| piece(&harness, text).0;
+            let (was, now, mine) = (
+                place("user2@example.com"),
+                place("eve@example.com"),
+                place("bob@example.com"),
+            );
+            // The tint, or the colour, is all that marks it on screen: its
+            // name says it in words.
+            let marked = "eve@example.com, changed on the server";
+            assert!(named(&mut harness, marked, now), "{said}");
+            assert!(!named(&mut harness, "eve@example.com", now), "{said}");
+            // The values beside it are named as they read, and so is one
+            // the server kept.
+            assert!(named(&mut harness, "user2@example.com", was), "{said}");
+            assert!(named(&mut harness, "bob@example.com", mine), "{said}");
+            for (_, null, _) in pieces(&harness, |piece| piece == "NULL") {
+                assert!(named(&mut harness, "NULL", null), "{said}");
+            }
+            // What the pointer shows over a cut value is the value alone.
+            let long = format!("{}@example.com", "e".repeat(108));
+            let (mut harness, tab, id) = fixture_in(look);
+            pend(&mut harness, (tab, id), (1, 1), "bob@example.com");
+            saved(&mut harness, (tab, id), vec![changed(0, server(&long))]);
+            let found = pieces(&harness, |piece| piece.starts_with("eee"));
+            let [(_, place, _)] = found[..] else {
+                panic!("{said}: {found:?}");
+            };
+            let marked = format!("{long}, changed on the server");
+            assert!(named(&mut harness, &marked, place), "{said}");
+            hover(&mut harness, place.center());
+            piece(&harness, &long);
+            assert!(unsaid(&harness, &marked), "{said}");
         }
     }
 
@@ -2550,7 +2709,7 @@ mod tests {
             ]
         );
         let (null, _) = piece(&harness, "NULL");
-        assert!(named(&mut harness, "NULL", null));
+        assert!(named(&mut harness, "NULL, changed on the server", null));
     }
 
     #[test]

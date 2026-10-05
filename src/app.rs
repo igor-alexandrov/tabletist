@@ -12977,6 +12977,31 @@ mod tests {
         }
 
         #[test]
+        fn the_next_rows_question_comes_up_when_the_row_before_it_is_answered() {
+            let mut harness = Harness::new();
+            two_conflicts(&mut harness);
+            let came_up = |harness: &Harness| match &harness.app.dialog {
+                Some(Dialog::Conflict(prompt)) => prompt.shown,
+                other => panic!("no conflict question: {other:?}"),
+            };
+            // The first row's question has been up for a while.
+            let earlier = std::time::Instant::now()
+                .checked_sub(2 * crate::edit::ANSWER_AFTER)
+                .expect("an earlier instant");
+            if let Some(Dialog::Conflict(prompt)) = &mut harness.app.dialog {
+                prompt.shown = earlier;
+            }
+            assert!(crate::edit::answers_taken(came_up(&harness)));
+            let answered = std::time::Instant::now();
+            answer(&mut harness, Answer::UseServer);
+            // The second row's has not: it is a new question on screen, in
+            // the place of the one that was answered, and the second click
+            // of a double click is no answer to it.
+            assert_eq!(asking(&harness), Some((1, 3, 2)));
+            assert!(came_up(&harness) >= answered);
+        }
+
+        #[test]
         fn several_conflicts_are_asked_one_after_another() {
             let mut harness = Harness::new();
             let (tab, id) = two_conflicts(&mut harness);
