@@ -356,8 +356,9 @@ const DELETED: &str = "2026-10-04 09:30:00";
 /// user reaches it, through the model, so it is the same state in every
 /// look: the bar, the tints and the dialogs on macOS and Windows; the mode
 /// line, the gutter and the error line on Omarchy.
-const EDITING: [(&str, Scene); 7] = [
+const EDITING: [(&str, Scene); 8] = [
     ("edit-pending", edit_pending),
+    ("edit-review", edit_review),
     ("edit-field", edit_field),
     ("edit-large", edit_large),
     ("edit-saved", edit_saved),
@@ -373,6 +374,19 @@ fn edit_pending(harness: &mut Harness) {
     retire_image(harness, tab, id);
     retype(harness, tab, id, (3, BOOK_ID), "107233x");
     step_aside(harness, tab, id);
+}
+
+/// Review SQL open on those three cells: the statement of the row a save
+/// can send, under its two comments, and the row whose book is no number
+/// as a comment alone. The drawer above the bar on macOS and Windows, the
+/// `:diff` panel above the status line on Omarchy.
+fn edit_review(harness: &mut Harness) {
+    let (tab, id) = editable(harness);
+    retire_image(harness, tab, id);
+    retype(harness, tab, id, (3, BOOK_ID), "107233x");
+    step_aside(harness, tab, id);
+    let show = true;
+    harness.app.apply(Action::ReviewEdits { tab, id, show });
 }
 
 /// The field open on a cell, holding a text its column does not take: red,
@@ -459,8 +473,10 @@ fn edit_leave(harness: &mut Harness) {
 }
 
 /// A save to production, before anything is sent: its statements, and
-/// what confirms them. The production connection opens writable here (its
-/// "Open read-only" box unticked), or nothing could be saved on it.
+/// what confirms them. On Omarchy the statements are in the `:diff` panel,
+/// and the box stands above it and points at it. The production connection
+/// opens writable here (its "Open read-only" box unticked), or nothing
+/// could be saved on it.
 fn edit_to_production(harness: &mut Harness) {
     let own = workspace(harness);
     let tab = production_beside(harness, own);
@@ -899,8 +915,9 @@ fn shots() {
             cell: CellPos { row: 1, col: 0 },
         });
     });
-    // Editing a table's values: what is pending, the two editors, a save
-    // that wrote and one that did not, and the two questions.
+    // Editing a table's values: what is pending and the statements a save
+    // of it would run, the two editors, a save that wrote and one that did
+    // not, and the two questions.
     for (name, scene) in EDITING {
         both(name, scene);
     }

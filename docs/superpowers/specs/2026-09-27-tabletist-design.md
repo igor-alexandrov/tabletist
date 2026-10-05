@@ -120,6 +120,7 @@ tabletist/
     app.rs                   App state, apply(Action) reducer
     app/editing.rs           the reducer's part in editing: the guard, the editor, the save
     edit.rs                  editing a table's values: locks, checks, the pending set
+    review.rs                Review SQL: a pending set as the lines of the statements a save runs
     model.rs                 Action, ConnTab, Workspace, Tree, ObjectTab, Fetch, Dialog
     backend.rs               runtime thread, Command/Event, sessions
     connections.rs           saved connections store (JSON)
@@ -145,7 +146,8 @@ tabletist/
     ui/data_view.rs          footer and grid, or the error or empty state
     ui/grid.rs               virtualized data grid
     ui/cell_editor.rs        the editor on a cell, its popover, the words for checks and locks
-    ui/pending_bar.rs        pending changes above the footer, with Save and Discard all
+    ui/pending_bar.rs        pending changes above the footer, with Review SQL, Save and Discard all
+    ui/review.rs             Review SQL as it is read: its drawer or panel, its lines, the copied text
     ui/write_prompts.rs      asks before pending changes are dropped or saved to production
     ui/terminal_dialog.rs    the head, foot and key hints of an Omarchy dialog
     ui/structure.rs          columns, indexes, foreign keys
@@ -531,10 +533,14 @@ enum Dialog { Connection(..), Password(..), HostKey(..), QuickOpen(..), Help,
   pointer, until Save writes every pending change of the tab in one
   transaction; a value its column does not take is caught before anything
   is sent. The pending bar above the footer (the status line on Omarchy)
-  counts the changes and holds Save and Discard all. An action that would
-  drop a page with pending changes asks first, and a save to production
-  shows its statements and is confirmed. Copying takes the pending value a
-  cell shows. A SQL result's grid is not edited. The whole of it is in
+  counts the changes and holds Review SQL, Save and Discard all. Review SQL
+  shows the statements a save would run, one `UPDATE` per changed row under
+  a comment that says what the save checks first, in a drawer above the bar
+  (on Omarchy the `:diff` panel above the status line); Copy SQL takes
+  them whole. An action that would drop a page with pending changes asks
+  first, and a save to production is confirmed with its statements on
+  screen. Copying takes the pending value a cell shows. A SQL result's
+  grid is not edited. The whole of it is in
   `2026-10-03-value-editing-core-design.md`.
 - Footer: Data/Structure switch, row range, estimated (`~`) or exact total,
   previous/next page, Count, elapsed time, and a stop button while a query
@@ -615,6 +621,9 @@ read-only table (structure data is small; the data grid is not needed).
 | Esc (Omarchy: Esc keeps the edit, Ctrl+C drops it) | Leave the editor, dropping the edit |
 | Cmd/Ctrl+Backspace (Omarchy: `x`) | Set the cell NULL |
 | Cmd/Ctrl+Z (Omarchy: `u`) | Revert the cell |
+| Cmd/Ctrl+Shift+D (Omarchy: also `:diff`) | Show or hide the SQL of the pending changes |
+| Omarchy: Esc, `Y` | Close the SQL of the pending changes, copy it |
+| Page Up/Down | In the confirmation of a save to production: scroll its statements |
 | Cmd/Ctrl+S (Omarchy: Ctrl+S, `:w`) | Save all pending changes |
 | Cmd/Ctrl+Alt+Backspace (Omarchy: `:e!`) | Discard all pending changes |
 | ? | Shortcuts dialog |

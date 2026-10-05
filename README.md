@@ -42,8 +42,10 @@ Linux (Omarchy and Hyprland first), macOS and Windows.
   in which browsing, a raw WHERE and the SQL editor still only read.
 - On a writable connection a table's values are edited in its grid: changes
   stay pending until Save writes them in one transaction, which never
-  overwrites a row someone else changed, and a save to production shows its
-  statements and asks first.
+  overwrites a row someone else changed. Before saving, Review SQL shows
+  the statements that will run (`:diff` on Omarchy, Cmd/Ctrl+Shift+D
+  everywhere) and copies them, and a save to production asks first, with
+  them on screen.
 - A sidebar of recent objects and one schema's tables and views, folded into
   prefix groups (`book_`) or listed flat; each table opens with a data grid
   (keys, foreign keys, value tags, JSON at a glance), a row panel showing

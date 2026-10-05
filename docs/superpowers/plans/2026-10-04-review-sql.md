@@ -12,6 +12,7 @@
 
 ## Before you start
 
+- **All eleven tasks are built,** with what their reviews changed: see "As built", before "What this plan leaves for later". The tasks below are the draft they were built from.
 - Cargo is `~/.cargo/bin/cargo`. Never a cargo target dir under `/tmp`. Export both test server URLs when you run the whole suite:
 
       export TABLETIST_TEST_PG_URL=postgres://tabletist:tabletist@localhost:55432/tabletist
@@ -2322,6 +2323,31 @@ Commit: "Describe Review SQL as built".
 
 ---
 
+## As built
+
+The eleven tasks as above, with these differences from the draft. The value-editing spec says the whole of it in the present tense ("Review SQL", "What a copied text is", "Saving to production").
+
+- **`ReviewEdits` is dropped under a prompt from task 5 on,** not from task 10 (decision 23): shown, the review closes an open editor as a left edit, and the set would then be another than the one a Leave prompt or a confirmation asks about.
+- **When the Omarchy box points** (decision 19, task 10). The draft asked three things: a panel is on screen, it is the prompt's tab's, and 300 points are left above it. Built, it asks six. The panel was drawn in the very frame the box is (`review::placed_now`): one that stood there a frame ago is not on screen. It is the prompt's own tab's. It draws the review the prompt holds (`Edits::review` equals `WritePrompt::review`). It shows its lines: all of them, or three at once at the least (`Placed::lines`). The widest line of the review fits the width the lines stand in (`Placed::width`, `review::widest`): under the box neither the pointer nor a key moves the panel's lines sideways, so in a narrow window, or beside the row panel, the right part of a statement would be confirmed unread. And the window leaves the room above it. The widest line is measured once for a review and kept, by a hash of its lines, the look, the locale and the scale: a large set is not laid out again every frame.
+- **The statements' height is capped by the window** (decisions 13 and 20, task 9): to twelve lines, and to what the window leaves besides the rest of the sheet or the box, never under three. In a low window the question and its answers stay on screen.
+- **A page is the rows in view,** not twelve rows (task 10): a panel that shows three lines pages by three, so no line is passed over unseen.
+- **Page Up and Page Down are the confirmation's** (task 10). The draft had the panel read them whenever its tab's confirmation was up, which moved the drawer dimmed behind the desktop sheet and left a list in the sheet or the box without a key. The confirmation takes them: it turns the panel's pages where the box points at it (`review::turn`, applied when the panel is next drawn), and moves its own list everywhere else.
+- **What the builder refuses** (task 1). PostgreSQL text that holds a NUL and a SQLite key whose text holds U+FFFD were refused by the drivers beside `Dialect::update_row`, so the review, Copy SQL and the production confirmation showed a statement for a row the save then failed. Both are refused in `update_row`, with the same words, and the drivers' own checks are gone: each driver builds every statement first and fails the row whose statement is refused.
+- **A MySQL NUL is written as `\0`** in the shown literal, after its backslashes are doubled (decision 11 left a raw NUL in the copied text, which a clipboard may end the text at). The bound save is untouched.
+- **The cut** (decision 9). SQLite's text around a NUL is closed with `…')` in a string and with `…)` between two, never inside ` || char(0) || `. A MySQL `\0` is never split.
+- **What a copied text is** (decision 11) names a third place another client reads it otherwise: CR before LF in a SQLite value through the `sqlite3` shell, which stores LF alone.
+- **The head says when a cell is still being edited** (decision 16 covers only the moment the review is shown): an editor opened and typed into under the open review is not in its lines, and Save would send it. The head then reads "Without the cell being edited", in the warning colour. The lines are not made again per keystroke.
+- **A structure that arrives drops the tab's review,** which is made again in that round of actions (decision 3 named the set alone).
+- **A numeric's scale** is held to its range without negating it (`crates/tabletist-db/src/class.rs`): a type name with the least `i32` for a scale states nothing, where it panicked.
+- **The scene** `edit-review` is the eighth of `EDITING`.
+
+Left as found:
+
+- `Mod+Shift+D` on an editor that was only opened, with nothing else pending, closes the editor and shows nothing.
+- A name in a shown line is not capped: only values are cut.
+- A loaded text that holds `' and ` reads as two conditions in the check's comment.
+- Under the Omarchy box nothing copies the statements: `Y` and the panel's Copy SQL are not reached under a dialog, and the box has no Copy of its own.
+
 ## What this plan leaves for later
 
 - **Step 5, the conflict dialog,** is planned beside this plan and touches the same files. The two can be built in either order; whoever comes second rebases these places:
@@ -2340,6 +2366,5 @@ Commit: "Describe Review SQL as built".
 - **A drawer the user can resize,** and a height it remembers.
 - **A row whose last save failed** is not marked in the review: the bar and the grid say it.
 - **`Y`, `:diff` and the other letters on a keyboard layout without them:** matched by the character typed, as step 3 left Omarchy's letters. The chord and the panel's hidden buttons reach Review SQL there; a way to type the prompt's commands does not exist yet.
-- **A MySQL value that holds a NUL is copied as it is:** the shown literal carries the NUL itself, which MySQL takes where the app binds the value, and which a clipboard or the place it is pasted into may cut. SQLite's own form for it (`char(0)`) has no like on MySQL here.
 - **The checks a save makes that the grid does not** (a SQLite column whose list of allowed values holds non-numbers): the review now says such a row "cannot be sent" before Save is pressed, but Save is still offered and fails the row, as step 3 left it.
 - **Undo and redo, pasting, the editors by type, the row form, adding and deleting rows:** slices 2 to 5 of the spec's "Editing as a whole". Each new kind of statement (`INSERT`, `DELETE`) needs its own lines in `src/review.rs` and its parts from the builder.

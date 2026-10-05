@@ -1,11 +1,13 @@
 # Editing values, slice 1: the core and its safety surfaces
 
 Date: 2026-10-03. Status: steps 1 (writable connections), 2 (the save in
-`tabletist-db` and the backend) and 3 (editing in the grid) are built, see
-`docs/superpowers/plans/2026-10-03-writable-connections.md`,
-`docs/superpowers/plans/2026-10-03-connection-write.md` and
-`docs/superpowers/plans/2026-10-04-grid-editing.md`; steps 4 and 5 are not
-yet planned.
+`tabletist-db` and the backend), 3 (editing in the grid) and 4 (Review SQL)
+are built, see `docs/superpowers/plans/2026-10-03-writable-connections.md`,
+`docs/superpowers/plans/2026-10-03-connection-write.md`,
+`docs/superpowers/plans/2026-10-04-grid-editing.md` and
+`docs/superpowers/plans/2026-10-04-review-sql.md`; step 5 (the conflict
+dialog) is planned in `docs/superpowers/plans/2026-10-04-conflict-dialog.md`
+and not built.
 
 ## Intent
 
@@ -366,8 +368,9 @@ structure says `bigint`).
 | Integer | A whole number | "int8 expects a whole number" |
 | | within the type's range | "int2 holds -32768 to 32767" |
 | Decimal | A plain number, without an exponent | "numeric expects a number" |
-| | within the scale the type states | "Up to 2 decimals. 12.505 would be stored as 12.51." |
-| | within the digits it holds before the point | "At most 8 digits before the point" |
+| | kept as typed by the scale the type states, whatever the scale: so many decimals, none, or, for PostgreSQL's scale below zero, whole tens, hundreds or thousands. The message says what would be stored | "Up to 2 decimals. 12.505 would be stored as 12.51.", "No decimals. 12.5 would be stored as 13.", "Whole hundreds only. 12345 would be stored as 12300." |
+| | within the digits it holds before the point: the type's digits less its scale, so more of them for a scale below zero | "At most 8 digits before the point" |
+| | with a scale past the digits (`numeric(3,5)`), under what the digits reach | "numeric holds values between -0.01 and 0.01" |
 | Decimal on SQLite | A number SQLite keeps digit for digit | "9223372036854775808 would be stored as 9223372036854776000" |
 | Float | A finite number; on PostgreSQL also `nan`, `inf` and `infinity`, in any case | "float8 expects a number" |
 | Boolean | `true` or `false`; also `1` or `0` | "bool expects true or false" |
@@ -388,9 +391,11 @@ INTEGER holds or a REAL that is written with the same digits. A column
 with a list of allowed values is checked against the list alone, before
 its class.
 
-Every rule blocks: a decimal with more digits than the scale is refused
-with what the database would have stored, never rounded silently. Every
-other rule is the database's, and its rejection is the Failed state.
+Every rule blocks: a decimal its scale would round is refused with what
+the database would have stored, never rounded silently. A type whose
+digits or scale are past what a database takes (a scale beyond 1000 either
+way) states nothing, and its value is checked as a number only. Every other
+rule is the database's, and its rejection is the Failed state.
 
 While the text fails its check the editor is red and shows the message;
 Enter, Tab and `Mod+Enter` do not leave it. Clicking elsewhere keeps the
@@ -415,14 +420,16 @@ again.
   Everything under "Leaving with pending changes" serves that.
 - **The bar** above the footer on macOS and Windows, shown while the set is
   not empty, a save runs, or the last save left a line: "3 changes in 2
-  rows", "1 to fix", **Discard all**, **Save** (`Mod+S`). Review SQL is
-  step 4 and is not drawn yet. Save is disabled, with the reason as its
-  tooltip: "Fix 1 value to save" while a cell is to fix, "Not connected",
-  "This connection opens read-only" on a session that came back read-only,
-  and "These changes cannot be sent: the table's key is not known" when no
-  change set can be built from the set. While a save runs the bar reads
-  "Saving…" with a Cancel, and Discard all is disabled. A line with nothing
-  pending has **Dismiss** in place of the two buttons.
+  rows", "1 to fix", **Review SQL** (**Hide SQL** while its drawer is
+  open, see "Review SQL"), **Discard all**, **Save** (`Mod+S`). Review SQL
+  stays enabled while a save runs: the drawer then shows what was sent.
+  Save is disabled, with the reason as its tooltip: "Fix 1 value to save"
+  while a cell is to fix, "Not connected", "This connection opens
+  read-only" on a session that came back read-only, and "These changes
+  cannot be sent: the table's key is not known" when no change set can be
+  built from the set. While a save runs the bar reads "Saving…" with a
+  Cancel, and Discard all is disabled. A line with nothing pending has
+  **Dismiss** in place of the buttons.
 - Omarchy has no bar. Its status line shows the same counts ("3 pending · 2
   rows", "1 error") whenever the set is not empty, and why a save cannot be
   made, in the same words.
@@ -453,7 +460,9 @@ again.
 | Apply in the popover | `Mod+Enter` | Ctrl+Enter |
 | Set NULL | `Mod+Backspace` | `x` |
 | Revert the cell | `Mod+Z` | `u` |
-| Review SQL | step 4 | `:diff`, step 4 |
+| Review SQL | `Mod+Shift+D`, the bar's button | `:diff`, `Mod+Shift+D` |
+| Close Review SQL | `Mod+Shift+D`, the bar's button | Esc, `Mod+Shift+D` |
+| Copy the SQL | Copy SQL, in the drawer's head | `Y`, while the panel is open |
 | Save all | `Mod+S` | `:w`, Ctrl+S |
 | Discard all | `Mod+Alt+Backspace` | `:e!` |
 
@@ -464,6 +473,11 @@ again.
   editor open, whatever has the keyboard (the grid, the tree, a button, a
   filter's field) and in the Structure view too. From an open editor it
   takes what is being typed. On Omarchy Ctrl+S is the same chord.
+- `Mod+Shift+D` shows and hides Review SQL by the same rule, in every look:
+  wherever the table's tab shows, with something pending or an editor
+  open. Shown, it takes what is being typed, as a save does. It is matched
+  by its key, so it reaches Review SQL on a keyboard layout that cannot
+  type `:diff`. Held, it shows or hides once.
 - **A key acts only on the cell it was meant for.** Within one frame the
   order of a key and a click is lost, and a click selects its cell only
   once the frame is drawn. So on macOS and Windows a typed character,
@@ -486,12 +500,16 @@ again.
   does not close the row panel. Only Ctrl+C itself drops the edit, and it
   copies nothing: Ctrl+Shift+C and any other copy are the field's.
 - Omarchy gains a `:` prompt in the status line, on any active table tab.
-  It takes `w` and `e!`. `diff` arrives with Review SQL in step 4; until
-  then it is "not a command", like any other text, which the line says
-  until the next key.
+  It takes `w`, `diff` and `e!`. Any other text is "not a command", which
+  the line says until the next key. `diff` opens the panel and never
+  closes it; with nothing pending it opens nothing, and the line says
+  `nothing pending` until the next key or the next edit. With a SQL editor
+  in front it does nothing, as `w` does.
 - All of it is handled in `ui/keys.rs`. The shortcuts screen lists each
   look's own editing keys (`keys::shortcuts(look)`): chords on macOS and
-  Windows, letters and the prompt on Omarchy.
+  Windows, letters and the prompt on Omarchy. `Mod+Shift+D` is listed in
+  every look, and `:diff`, the Esc that closes the panel and `Y` on
+  Omarchy.
 
 ### Leaving with pending changes
 
@@ -608,8 +626,11 @@ written over the first.
 
 One transaction, for every row of the set:
 
-1. Every statement is built first. A value the builder cannot convert is
-   `Failed` for its row before anything is sent.
+1. Every statement is built first. A value the builder cannot convert,
+   and a row it refuses outright (see the drivers below), is `Failed` for
+   its row before anything is sent. The builder is the one place that
+   refuses, so Review SQL shows such a row without a statement, and a save
+   to production asks nothing about it.
 2. Begin, read-write, from no transaction: whatever the session has open
    is rolled back first, so a save can never commit what an earlier one
    left.
@@ -661,10 +682,10 @@ rather than guess. Per driver:
   takes a name in other ASCII letters for the column all the same, so a
   save refuses: a name that more than one of the row's columns reads as; a
   name not spelled as the table spells it; a key whose text holds U+FFFD
-  (a key that really holds one pays for this); and a changed column whose
-  stored text is not UTF-8, as `Failed` and not as a conflict, since a
-  conflict offers to write over what the file holds, which would still be
-  unknown.
+  (a key that really holds one pays for this), which the statement builder
+  refuses; and a changed column whose stored text is not UTF-8, as `Failed`
+  and not as a conflict, since a conflict offers to write over what the
+  file holds, which would still be unknown.
 - **PostgreSQL.** The transaction is managed as text (`ROLLBACK; START
   TRANSACTION READ WRITE; SET LOCAL client_encoding = 'UTF8'`, then
   `COMMIT` or `ROLLBACK`), not through the driver's transaction type,
@@ -676,7 +697,8 @@ rather than guess. Per driver:
   floats print alike and the key of one finds the other, and a zone's
   abbreviation can read back as another zone. A page on a server
   configured otherwise shows the difference. Text with a NUL is refused
-  before it is sent.
+  by the statement builder, before anything is sent: PostgreSQL text holds
+  none, and the driver cannot put one in a message.
 - **MySQL.** Only a table whose engine has transactions: one transaction
   is the promise, and MyISAM cannot roll back. The engine is checked
   before the transaction and again after the locking reads, which hold the
@@ -708,10 +730,11 @@ converts nothing, so there the builder follows what the cell held: a
 number stays a number if the new text is one, and text stays text. A
 binary column, or a cell that held bytes, is refused outright, a NULL for
 it too. The builder is the only place that decides a value's form, so the
-literal Review SQL shows (`12`, `1`) is the value the driver binds. Two
-SQLite literals are written so that the shown text runs when pasted: text
-holding a NUL as `('a' || char(0) || 'b')`, and an infinite float as
-`9e999`.
+literal Review SQL shows (`12`, `1`) is the value the driver binds. Three
+literals are written so that the shown text runs when pasted and holds no
+raw NUL: SQLite text holding a NUL as `('a' || char(0) || 'b')`, an
+infinite SQLite float as `9e999`, and a NUL in MySQL text as `\0`, after
+its backslashes are doubled.
 
 The backend has `Command::Write { session, request, changes }` and
 `Event::Written { session, request, result }`, queued and answered like
@@ -755,44 +778,157 @@ the status line says it.
 
 ## Review SQL
 
-- One `UPDATE` per changed row, by key, with the values as literals, under
-  "runs in one transaction". The check of step 3 is a comment line above
-  the statement: `-- only if kind is still 'print' and alt_text is still
-  NULL`.
-- The text is the statement that runs: PostgreSQL sends it as written, and
-  MySQL and SQLite send the same statement with the values bound. One
-  builder in `dialect.rs` produces both forms from a `ChangeSet`, so they
-  cannot drift.
-- A row with a cell to fix appears as a comment only: `-- row id 4 ·
-  blocked: fix publisher_id first`.
-- A literal longer than 60 characters is shortened with `…` where it is
-  shown. That is display only.
-- macOS and Windows: a drawer above the pending bar, toggled by **Review
-  SQL** and **Hide SQL**. Omarchy: the `:diff` panel, closed with Esc.
-- The reducer builds the text when the pending set changes; drawing only
-  lays it out.
+Before saving, a user reads the statements a save of the tab's pending
+changes would run. `src/review.rs` makes them from the pending set as
+lines of data, and one view, `src/ui/review.rs`, words and draws them
+wherever they show: the drawer, the `:diff` panel and the production
+confirmation.
+
+- **The statements.** One `UPDATE` per changed row, by key, with the values
+  as literals, laid out in lines: the table, each value that is set, each
+  column of the key, and `;` at its end. Only the white space between its
+  words is the layout's. Quoted names, the schema and upper-case keywords
+  are as the statement runs, in every look. PostgreSQL sends it as
+  written, and MySQL and SQLite send the same statement with the values
+  bound. One builder in `dialect.rs` (`Dialect::update_row`) produces both
+  forms from a `ChangeSet`, so they cannot drift, and says where the parts
+  of the shown text stand (`RowUpdate::parts`), so nothing searches a
+  statement for where a value begins and ends. The `WHERE` is the key
+  only.
+- **Two comments stand above each statement:** `-- row id 2`, the row by
+  the key that finds it (several columns as `-- row order_id 7, line 2`),
+  and the check a save makes, `-- only if kind is still 'print' and
+  alt_text is still NULL`, naming every changed column with what the page
+  loaded: text in single quotes, a number bare, `NULL`, `true` or `false`.
+- **No value ends a comment or passes for a line.** A line break or
+  another hidden character in a name or a value is written out
+  (`<U+000A>`) where it is shown, and in a comment where it is copied too.
+- **A row without a statement is a comment only,** in the danger colour. A
+  row with a cell to fix: `-- row id 4 · blocked: fix publisher_id first`,
+  every column to fix named. A row the builder refuses: `-- row id 4 ·
+  cannot be sent:` and the builder's reason. The builder refuses whatever
+  a save refuses before it sends anything: a value its column's form does
+  not take, a binary value, PostgreSQL text that holds a NUL, a SQLite key
+  that may not have been read exactly. A set no change set comes of is one
+  line: `-- these changes cannot be sent: the table's key is not known`.
+- **A literal longer than 60 characters is cut where it is shown:** its
+  beginning, `…`, and what closes it. The cut never falls between the two
+  halves of a doubled quote or backslash, nor after the backslash of
+  MySQL's `\0`, nor inside what joins the strings of SQLite's text around
+  a NUL (`('aaa…')`, `('aaa'…)`). The value in a check's comment is cut
+  the same way. That is display only: what runs, and what is copied, hold
+  the whole value.
+- **The lines cannot be selected.** What is shown is cut, and a copy of it
+  would be pasted as it is. **Copy SQL** puts the whole statements on the
+  clipboard instead (see "What a copied text is").
+- **The review is the tab's, and goes with the set.** Each table tab has
+  its own (`Edits::reviewing`, `Edits::review`). It stays open while
+  another tab shows, through a save that runs, fails or conflicts, and
+  through a lost connection. It goes when nothing is pending any more
+  (written, discarded, the last cell reverted) and does not come back by
+  itself with the next change. The reducer makes the lines when the set
+  changed or a structure arrived (`App::make_reviews`, once per round of
+  actions); drawing lays out the lines in view and makes nothing.
+- **Showing the review closes an open editor,** as a save does: its text is
+  taken as a left edit, pending or to fix, so what is reviewed is what a
+  save would send. An editor that was only opened is no change, and with
+  nothing else pending nothing opens. Hiding leaves an open editor alone.
+- **The head says when a cell is still being edited.** An editor opened
+  under an open review is not in its lines until it commits, while Save
+  would send its text. For as long as it holds typed text the head reads
+  "Without the cell being edited", in the warning colour, where it says
+  what a save is.
+- **macOS and Windows:** a drawer above the pending bar, toggled by the
+  bar's **Review SQL** and **Hide SQL** and by `Mod+Shift+D`. Its head
+  reads "Runs in one transaction", with **Copy SQL** at its right. It is as
+  tall as its lines, to twelve of them and to half of the tab's area, and
+  scrolls both ways past that: a line is never wrapped into what could
+  read as two.
+- **Omarchy:** the `:diff` panel, a bottom panel above the status line and
+  the grid's error line, as wide as the grid. Its head reads `pending · 3
+  changes · 2 rows` and `one transaction`; its foot `esc close` and `Y
+  copy sql`, each with a button that is not drawn over it ("Hide SQL",
+  "Copy SQL"), and `:w write`. `:diff` and `Mod+Shift+D` open it, Esc
+  closes it before it closes the row panel, and `Y` copies the whole SQL
+  while it is open. It does not take the keyboard: the grid keeps its
+  keys, and `u` reverts the active cell while the panel follows. While
+  something is pending the status line's hints include `:diff review`.
+- Every line in view is read to a screen reader, a comment as it is
+  worded.
+- Under a prompt about the pending changes nothing shows or hides the
+  review (`dropped_under_a_prompt`).
+
+### What a copied text is
+
+The app's statements with every value whole, under their comments as
+shown, after a first comment line that says so: `-- What Tabletist runs to
+save these changes, in one transaction. Each statement runs only while its
+row is still as the comment above it says.` It is not a script that checks
+or wraps anything: it has no `BEGIN` and no `COMMIT`, and nothing in it
+compares a row with what was loaded. Pasted elsewhere it changes each row
+by its key, whatever the row holds by then.
+
+Each statement stores what the app's own save stores. In three places
+another client reads it otherwise:
+
+- **MySQL under `NO_BACKSLASH_ESCAPES`.** The text doubles a backslash and
+  writes a NUL as `\0`, as the app's session reads strings. A session in
+  that mode stores each backslash twice, and a backslash and a zero where
+  the NUL was.
+- **A SQLite REAL with a very large exponent.** Written as text it can
+  read back as a neighbouring double, where the app binds the exact value.
+- **CR before LF in a SQLite value, through the `sqlite3` shell.** The
+  shell stores LF alone. Through the app the value is exact.
 
 ## Saving to production
 
 Only when the workspace's environment is production
-(`Environment::confirms_writes()`), every Save first asks, in a dialog
-that lists every statement it would send (`Dialect::update_row(..).shown`
-for each row, built once when the dialog opens). Both looks list the
-statements in this step, since `:diff` does not exist yet.
+(`Environment::confirms_writes()`), every Save first asks, with every
+statement it would send on screen. The statements are the review of the
+set the confirmation was made with (`WritePrompt::review`), and both looks
+draw them as Review SQL does: the same lines, colours and cut, not
+selectable, in a box that scrolls both ways. The box is as tall as its
+lines, to twelve of them, and lower in a low window, so the question and
+its answers stay on screen with them.
 
-- macOS and Windows: a band of the production red along the top, "Save 2
-  changes to production?", the connection's name and database and "1 row
-  in book_covers", the statements in a box that scrolls, "One transaction",
-  **Cancel** and **Save to production**. Enter does not confirm: the button
-  is pressed. Enter cancels with the keyboard on Cancel, and Esc cancels.
+- macOS and Windows: a sheet with a band of the production red along the
+  top, "Save 2 changes to production?", the connection's name and database
+  and "1 row in book_covers", the statements, "One transaction", **Copy
+  SQL**, **Cancel** and **Save to production**. Copy SQL gives the whole
+  statements of the set the sheet shows. Enter does not confirm: the
+  button is pressed. Enter cancels with the keyboard on Cancel and copies
+  with it on Copy SQL, and Esc cancels. No drawer opens behind the sheet.
 - Omarchy: the box with the danger border, its head with the `PROD` tag
   and "write 2 changes?", the connection's name and database, "1 row in
   book_covers" and the columns the save sets, the statements, "type write
   to confirm" and a field that takes the word; Enter confirms only when
-  the field holds exactly `write`, Esc cancels. From step 4 on the box
-  points at the `:diff` panel ("sql shown with :diff") in place of listing
-  the statements: a production save then opens the panel if it is closed
-  and the box sits beside it.
+  the field holds exactly `write`, Esc cancels. The reducer opens the
+  tab's `:diff` panel with the box, holding the review the box was made
+  with.
+- **The Omarchy box points at the panel** ("sql shown with :diff", in
+  place of the statements) only when all of this holds in the frame it is
+  drawn: the panel is on screen for the box's own tab; it draws the review
+  the box holds; it shows its lines, all of them or three at once at the
+  least; the widest of them fits its width; and the window leaves 300
+  points above it. The box then stands in that room, clear of the panel
+  and without a backdrop, so the statements under it are read at full
+  strength. It takes every click all the same.
+- **Everywhere else the box lists the statements itself,** over the
+  backdrop every dialog has: its tab is not the one in front (a save asked
+  for by the Leave prompt of a tab, a connection or the window), another
+  tab's panel is on screen, or the window is too low or the panel too
+  narrow for its lines. Width counts as height does: under the box
+  nothing moves the panel's lines sideways, and what is past its edge of a
+  statement would be confirmed unread.
+- **Page Up and Page Down** move the statements that are asked about, a
+  page being the rows in view: the panel's where the box points at it
+  (its foot then says `pgup/pgdn scroll sql`, since the pointer does not
+  reach the panel under a dialog), and the confirmation's own list in the
+  sheet and in the box that lists. A drawer or a panel behind a
+  confirmation that lists is not moved.
+- After Cancel the Omarchy panel stays open: the statements were just
+  declined and are still what is pending. After a save that wrote it
+  closes with the set.
 - A row whose statement cannot be built opens no confirmation: its cells
   fail with the builder's reason, as they would in the save.
 - The confirmation holds the change set it showed. When it is confirmed,
@@ -860,24 +996,30 @@ Each step ends compiling, tested and shippable, and gets its own plan run:
 No step ships a production save without its confirmation and its
 statements.
 
-Steps 1 to 3 are built.
+Steps 1 to 4 are built. Step 5 is planned in
+`docs/superpowers/plans/2026-10-04-conflict-dialog.md` and not built.
 
 ## What step 3 leaves for steps 4 and 5
 
-For step 4, Review SQL:
+Step 4 is built. Left as found in Review SQL:
 
-- The bar's **Review SQL** button and its drawer, and Omarchy's `:diff`
-  panel. `run_command` (`src/app/editing.rs`) takes `w` and `e!` today and
-  answers "not a command" to `diff`.
-- The statements are built once, when the production confirmation opens
-  (`WritePrompt::statements`). Review SQL needs them kept up to date in the
-  reducer as the pending set changes.
-- The Omarchy PROD box lists the statements itself. It should point at the
-  panel instead.
 - Omarchy's letters and its `:` are matched by the character typed, so on
-  a keyboard layout without Latin letters `i`, `x`, `u`, `cc` and `:` do
-  nothing. Insert mode is still reached there by Enter or a double-click;
-  `:diff` would have no other way in.
+  a keyboard layout without Latin letters `i`, `x`, `u`, `cc`, `Y` and `:`
+  do nothing. Insert mode is still reached there by Enter or a
+  double-click, and Review SQL by `Mod+Shift+D` and the panel's two
+  buttons; the prompt's other commands have no way in.
+- `Mod+Shift+D` on an editor that was only opened, with nothing else
+  pending, closes the editor and shows nothing.
+- A name in a shown line is not cut: only values are.
+- A loaded text that holds `' and ` reads as two conditions in the check's
+  comment. A comment is read and never run.
+- Under the Omarchy box nothing copies the statements: `Y` and the panel's
+  Copy SQL are the panel's, and are not reached under a dialog.
+- A row whose last save failed is not marked in the review. The bar and
+  the grid say it.
+- The drawer and the panel are not resized, and remember no height.
+- The Omarchy panel has no cursor of its own: the design's `]c next
+  change` and `u revert under cursor` in its foot are not built.
 
 For step 5, the conflict dialog:
 
@@ -902,7 +1044,8 @@ Open in the save as the grid shows it:
   save ends while it is up.
 - A column with a list of allowed values is checked against the list
   before its class, so a SQLite `INTEGER` column whose list holds
-  non-numbers passes the check and fails in the save.
+  non-numbers passes the check. Review SQL says such a row cannot be sent,
+  but Save is still offered, and fails the row.
 - MySQL stores some values adjusted without a word (`'1.6'` into a
   `TINYINT` is 2). The checks catch a non-integer in an integer column; a
   `FLOAT`'s precision is not checked.
@@ -940,15 +1083,21 @@ Open in the save as the grid shows it:
     `VACUUM INTO`, `PRAGMA journal_mode`, `PRAGMA wal_checkpoint`;
   - the statement builder's two forms agree for every fixture type.
 - Reducer tests: the pending set, the checks, the leaving guard and its
-  held action, rows replaced after a save, rebasing after each conflict
-  choice, mixed conflict answers, and a tab with pending changes keeping
-  its page across a reconnect and saving afterwards.
+  held action, rows replaced after a save, the review made when the set or
+  the structure changes and closed with the set, a row the builder refuses
+  failing in place of a confirmation, rebasing after each conflict choice,
+  mixed conflict answers, and a tab with pending changes keeping its page
+  across a reconnect and saving afterwards.
+- `src/review.rs`: the lines against the builder's statement for every
+  dialect, whatever names and values hold; the cut; that no value ends a
+  comment.
 - Headless UI tests, in every look: the lifecycle, the keys, the popover,
-  the bar, the three dialogs, locked cells saying why, the shipped screens'
-  new texts.
+  the bar, the drawer and the panel, the three dialogs, where the Omarchy
+  box points and where it lists, locked cells saying why, the shipped
+  screens' new texts.
 - `src/shots.rs` has a scene for review of each editing state, on its
-  Bookshop data and in every look: `edit-pending`, `edit-field`,
-  `edit-large`, `edit-saved`, `edit-failed`, `edit-leave` and
+  Bookshop data and in every look: `edit-pending`, `edit-review`,
+  `edit-field`, `edit-large`, `edit-saved`, `edit-failed`, `edit-leave` and
   `edit-production`. They need a GPU and are run by hand. No test compares
   a screen with the design.
 
