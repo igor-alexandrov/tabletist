@@ -157,8 +157,10 @@ same answer. No run is read-write without having passed them.
         pub stopped: bool,
         pub end: ScriptEnd,
         /// What the database said when it could not undo everything
-        /// (MySQL's non-transactional tables). With it, `RolledBack` and
-        /// `Partly` no longer say that the rest is gone.
+        /// (MySQL's non-transactional tables), or why the run cannot say
+        /// that it did (a MySQL DDL statement that failed, which no
+        /// transaction holds). With it, `RolledBack` and `Partly` no
+        /// longer say that the rest is gone.
         pub rollback_warning: Option<String>,
         /// A `Write` run only: the session could not be put back after
         /// the run and must be closed. `end` still holds.
@@ -285,9 +287,14 @@ an empty list of statements is `Ok` with no results, as today.
    `DESCRIBE`, `DESC`), never makes the server commit, so "outside" after
    such a statement failed notes nothing. The work since the last noted
    commit is gone, and commits noted earlier stand. A DDL statement that
-   loses a deadlock has still committed what came before it. A stop between two statements is
-   asked the same question, since the check that would have seen a commit
-   by the statement before it does not run.
+   loses a deadlock has still committed what came before it. A stop
+   between two statements is asked the same question, since the check
+   that would have seen a commit by the statement before it does not run.
+   A statement that can make the server commit is held by no transaction
+   itself: when it fails or is stopped, part of it may be applied (`DROP
+   TABLE here, missing` drops `here` where DDL is not atomic). The run
+   then says so in `rollback_warning`, so that nothing reads "the rest
+   was rolled back".
 4. With every statement done: `COMMIT`, after `stop.finish()`, and
    `ScriptEnd::Committed`. A `COMMIT` that fails is `CommitFailed`, after a
    `ROLLBACK`, with the count of what the server had committed by itself

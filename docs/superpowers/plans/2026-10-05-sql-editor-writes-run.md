@@ -5178,6 +5178,13 @@ A review of the finished code found one fault, fixed in a commit of its own afte
 - **MySQL, `close` in `mysql/script/write.rs`.** With every statement done and a stop set, the run rolled back and said `RolledBack`. When the last statement had made the server commit, nothing was left to roll back and all of the run was written. `close` now asks `inside` in that branch, as `settle` does between statements: outside a transaction, the end is `Committed`, with `stopped` still set. The test is `a_stop_during_a_last_statement_that_committed_is_not_said_to_be_rolled_back` in `tests/mysql.rs`.
 - In the same commit `roll_back` reads `SHOW WARNINGS` as rows, not as a typed tuple, which would panic on a row that does not convert.
 
+After the pull request was opened (#83), on top of value editing (#76), which had landed meanwhile:
+
+- **The first run against the servers.** Every PostgreSQL and MySQL test passed but one in each suite, and for one reason: value editing's tests make and drop tables named `write_stopped`, `write_session` and `write_myisam` too. The tables of this plan's tests are `script_*` now.
+- **A cancel that lands on a `COMMIT`** is decided in one function, `script::cancelled_commit`, which SQLite and MySQL share and which has unit tests for each answer. On PostgreSQL `a_cancel_that_lands_on_the_commit_rolls_the_run_back` cancels a commit that a deferred trigger keeps busy.
+- **MySQL: a statement no transaction holds.** A statement that can make the server commit, and then fails or is stopped, may be applied in part. The run puts a sentence saying so in `rollback_warning` (`Run::applied_in_part`), so the end no longer reads as "the rest was rolled back". The test is `a_failed_statement_no_transaction_holds_is_not_said_to_be_undone`.
+- `session_setup` on PostgreSQL returns a `String` and carries the settings #76 added at connect (how floats and time zones print), so a run that writes sets them again after its reset.
+
 Found and left for step 2, which is the step that lets a tab write (the spec says so now):
 
 - **SQLite pragmas that outlive a run.** A script may set `ignore_check_constraints`, `recursive_triggers`, `legacy_alter_table` or `locking_mode`, in a read-only run too, and `set_session_pragmas` does not put them back. That was so before this plan and harmed nothing while no run could commit.

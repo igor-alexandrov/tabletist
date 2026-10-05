@@ -71,8 +71,10 @@ pub struct ScriptOutcome {
     /// How the run's transaction ended.
     pub end: ScriptEnd,
     /// What the database said when it could not undo everything (MySQL's
-    /// non-transactional tables). With it, `RolledBack` and `Partly` no
-    /// longer say that the rest is gone.
+    /// non-transactional tables), or why the run cannot say that it did (a
+    /// MySQL DDL statement that failed is held by no transaction, and may
+    /// be applied in part). With it, `RolledBack` and `Partly` no longer
+    /// say that the rest is gone.
     pub rollback_warning: Option<String>,
     /// A [`ScriptMode::Write`] run only: the session could not be put back
     /// after the run and must be closed. `end` still holds.

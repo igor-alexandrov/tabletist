@@ -2142,6 +2142,53 @@ async fn what_the_server_committed_by_itself_is_said_to_be_written() {
 }
 
 #[tokio::test]
+async fn a_failed_statement_no_transaction_holds_is_not_said_to_be_undone() {
+    let Some(connection) = connect_as(Access::Writable).await else {
+        return;
+    };
+    let mut admin = admin().await;
+    scratch(&mut admin, "script_ddl").await;
+    admin
+        .query_drop("DROP TABLE IF EXISTS script_ddl_here, script_ddl_missing")
+        .await
+        .unwrap();
+    admin
+        .query_drop("CREATE TABLE script_ddl_here (id int)")
+        .await
+        .unwrap();
+    // The server commits the insert, then fails the DROP on the table
+    // that is missing. Whether the table that is there went with it is
+    // the server's to decide: MySQL 8 drops all or none, MariaDB and older
+    // MySQL drop what they find. The run cannot know, and says so.
+    let outcome = write(
+        &connection,
+        "INSERT INTO script_ddl (id) VALUES (1);
+         DROP TABLE script_ddl_here, script_ddl_missing",
+        10,
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        outcome.results[1].outcome,
+        StatementOutcome::Error { .. }
+    ));
+    assert_eq!(outcome.end, ScriptEnd::Partly { committed: 1 });
+    let warning = outcome
+        .rollback_warning
+        .expect("the run says it cannot know");
+    assert!(warning.contains("may have been applied"), "{warning}");
+    assert_eq!(
+        counted(&mut admin, "SELECT count(*) FROM script_ddl").await,
+        1
+    );
+    assert!(writes_between_scripts(&connection).await);
+    admin
+        .query_drop("DROP TABLE IF EXISTS script_ddl, script_ddl_here")
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
 async fn the_limit_cuts_what_is_shown_and_nothing_that_is_written() {
     let Some(connection) = connect_as(Access::Writable).await else {
         return;

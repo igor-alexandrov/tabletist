@@ -56,7 +56,16 @@ struct Run {
     /// A check could not be made, or a transaction could not start: the
     /// session is closed with this error, and the run's end is not told.
     broken: Option<Error>,
+    /// The statement that failed or was stopped is one no transaction
+    /// holds (the server had committed before it ran it), so part of it
+    /// may be applied: `DROP TABLE here, missing` drops `here` on a server
+    /// whose DDL is not atomic, and fails.
+    applied_in_part: bool,
 }
+
+/// What a run says in place of "the rest was rolled back" when the
+/// statement that failed or was stopped is not one a rollback undoes.
+const APPLIED_IN_PART: &str = "the statement that did not finish is not transactional on MySQL: part of it may have been applied";
 
 /// Starts a transaction, and holds the server to saying so: `inside` reads
 /// the same mark later.
@@ -134,7 +143,7 @@ async fn statements(
                     elapsed: Duration::ZERO,
                     outcome: StatementOutcome::Cancelled,
                 });
-                return settle(conn, stop, run, Some(index)).await;
+                return settle(conn, stop, run, Some(index)).await.map(|_| ());
             }
             Err(error) if error.is_connection_lost() => return Err(error),
             // Where the session stands is not known: nothing more runs.
@@ -161,7 +170,13 @@ async fn statements(
             // server commit: it committed what came before. After one
             // that cannot, the server rolled the transaction back, and
             // what it committed earlier stands.
-            return settle(conn, stop, run, can_commit(text).then_some(index)).await;
+            let commits = can_commit(text);
+            let outside = settle(conn, stop, run, commits.then_some(index)).await?;
+            // The server committed before it ran this statement, so no
+            // transaction held it, and no rollback undoes what it did
+            // before it failed.
+            run.applied_in_part = outside && commits;
+            return Ok(());
         }
     }
     Ok(())
@@ -174,29 +189,31 @@ async fn statements(
 ///
 /// Nothing more of the script runs, so the backend is told to stop
 /// repeating its cancel first; one that is on its way gets the question
-/// asked once more. `Err` is a lost session.
+/// asked once more. Says whether the session was found outside a
+/// transaction. `Err` is a lost session.
 async fn settle(
     conn: &mut mysql_async::Conn,
     stop: &StopFlag,
     run: &mut Run,
     outside: Option<usize>,
-) -> Result<()> {
+) -> Result<bool> {
     stop.finish();
     match retry_cancelled!(inside(conn)) {
-        Ok(true) => {}
+        Ok(true) => Ok(false),
         Ok(false) => {
             if let Some(committed) = outside {
                 run.committed = committed;
             }
+            Ok(true)
         }
-        Err(error) if error.is_connection_lost() => return Err(error),
+        Err(error) if error.is_connection_lost() => Err(error),
         Err(error) => {
             run.broken = Some(Error::ConnectionLost(format!(
                 "could not ask where the session stands: {error}"
             )));
+            Ok(false)
         }
     }
-    Ok(())
 }
 
 /// The check before the statement at `index`: a session found outside a
@@ -269,6 +286,14 @@ async fn close(
     };
     if let Ok(warning) = &rolled_back {
         outcome.rollback_warning.clone_from(warning);
+    }
+    if run.applied_in_part {
+        // After what the server said of its rollback, if it said anything.
+        let said = outcome.rollback_warning.take();
+        outcome.rollback_warning = Some(match said {
+            Some(warning) => format!("{warning} {APPLIED_IN_PART}"),
+            None => APPLIED_IN_PART.to_owned(),
+        });
     }
     if outcome.end != ScriptEnd::Committed {
         outcome.end = match commit_error {
