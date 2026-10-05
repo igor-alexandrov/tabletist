@@ -539,6 +539,12 @@ pub struct Edits {
     pub saved: Option<Saved>,
     /// What the last save came to when it wrote nothing.
     pub note: Option<Note>,
+    /// Review SQL is open: the drawer on macOS and Windows, the terminal
+    /// look's `:diff` panel.
+    pub reviewing: bool,
+    /// What a save would run, as lines to read: made by the reducer while
+    /// `reviewing`. `None` once the set changed, until it is made again.
+    pub review: Option<crate::review::Review>,
 }
 
 /// How much is pending.
@@ -604,6 +610,19 @@ impl Edits {
 
     pub fn row_mark(&self, row: usize) -> RowMark {
         row_mark(&self.cells, row)
+    }
+
+    /// Makes `pending` the new value of the cell at `at` (row, column).
+    /// What was made of the set, its review, is stale.
+    pub fn put(&mut self, at: (usize, usize), pending: Pending) {
+        self.cells.insert(at, pending);
+        self.review = None;
+    }
+
+    /// Takes the cell at `at` out of the set: it is as it loaded again.
+    pub fn revert(&mut self, at: (usize, usize)) {
+        self.cells.remove(&at);
+        self.review = None;
     }
 }
 
@@ -1498,6 +1517,40 @@ mod tests {
         let printed = format!("{edits:?}");
         assert!(!printed.contains("secret"), "{printed}");
         assert!(printed.contains("cells: 1"), "{printed}");
+    }
+
+    #[test]
+    fn a_change_of_the_set_leaves_its_review_stale() {
+        let made = || crate::review::Review {
+            changes: 1,
+            rows: 1,
+            lines: Vec::new(),
+            refused: None,
+        };
+        let pending = || Pending {
+            new: NewValue::Text("a secret".into()),
+            state: State::Ready,
+        };
+        let mut edits = Edits {
+            reviewing: true,
+            review: Some(made()),
+            ..Edits::default()
+        };
+        edits.put((0, 1), pending());
+        assert!(edits.review.is_none() && edits.reviewing);
+        assert_eq!(edits.counts().changes, 1);
+        edits.review = Some(made());
+        edits.revert((0, 1));
+        assert!(edits.review.is_none() && edits.reviewing);
+        assert!(edits.cells.is_empty());
+        // A failed statement changes no statement: the review stands.
+        edits.put((0, 1), pending());
+        edits.review = Some(made());
+        edits.fail(Some(0), Error::query("no"));
+        assert!(edits.review.is_some());
+        // The review is not printed either.
+        let printed = format!("{edits:?}");
+        assert!(!printed.contains("secret"), "{printed}");
     }
 
     #[test]

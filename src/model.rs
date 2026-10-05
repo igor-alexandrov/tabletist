@@ -293,6 +293,13 @@ pub enum Action {
         tab: ConnTabId,
         id: TabId,
     },
+    /// Show or hide Review SQL: what a save of the tab's pending changes
+    /// would run.
+    ReviewEdits {
+        tab: ConnTabId,
+        id: TabId,
+        show: bool,
+    },
     /// The Leave prompt's Save: save, then do what was held if everything
     /// was written.
     LeaveSave,

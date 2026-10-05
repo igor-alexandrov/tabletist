@@ -14,6 +14,7 @@ use crate::model::{
     Action, CellPos, ConnTabId, Dialog, EditStart, Held, LeavePrompt, ObjectTab, Pane, SaveBlock,
     SessionStatus, TabId, WritePrompt,
 };
+use crate::review::Values;
 
 /// Whether `action` is dropped while a prompt about pending changes is up:
 /// what edits, saves or discards, what moves the selection (it closes an
@@ -555,9 +556,9 @@ impl App {
         let key = (cell.row, cell.col);
         if changed {
             let state = problem.map_or(State::Ready, State::ToFix);
-            object.edits.cells.insert(key, Pending { new, state });
+            object.edits.put(key, Pending { new, state });
         } else {
-            object.edits.cells.remove(&key);
+            object.edits.revert(key);
         }
         // The row panel shows the pending value.
         object.fields = None;
@@ -584,18 +585,16 @@ impl App {
         };
         let key = (cell.row, cell.col);
         if changed {
-            object.edits.cells.insert(
-                key,
-                Pending {
-                    new: NewValue::Null,
-                    state: State::Ready,
-                },
-            );
+            let null = Pending {
+                new: NewValue::Null,
+                state: State::Ready,
+            };
+            object.edits.put(key, null);
             // As opening an editor does: a tab with a pending cell is no
             // preview for the next single click to replace.
             object.pinned = true;
         } else {
-            object.edits.cells.remove(&key);
+            object.edits.revert(key);
         }
         object.fields = None;
     }
@@ -629,6 +628,62 @@ impl App {
         if let Some(action) = action {
             self.apply(action);
         }
+    }
+
+    /// Shows or hides the Review SQL of the tab. Shown, it takes the text
+    /// being typed first, as a save does: what is reviewed is what a save
+    /// would send. It opens only on something pending, and its text is
+    /// made at the frame's end (see `make_reviews`).
+    pub(super) fn review_edits(&mut self, tab: ConnTabId, id: TabId, show: bool) {
+        if show {
+            self.close_editor(tab, id, true);
+        }
+        if let Some(object) = self.object_tab_mut(tab, id) {
+            object.edits.reviewing = show && !object.edits.cells.is_empty();
+            if !object.edits.reviewing {
+                object.edits.review = None;
+            }
+        }
+    }
+
+    /// Makes the Review SQL of every table tab that shows it and whose
+    /// pending set changed since it was made, and closes the review of a
+    /// tab with nothing pending any more. Once per batch of actions, as
+    /// the row panel's text is formatted: a frame that changes no set
+    /// builds no statement, and a tab whose review is closed builds none
+    /// at all.
+    pub(super) fn make_reviews(&mut self) {
+        let stale: Vec<(ConnTabId, TabId)> = self
+            .open_connections()
+            .flat_map(|(tab, workspace)| {
+                workspace
+                    .object_tabs()
+                    .filter(|object| object.edits.reviewing && object.edits.review.is_none())
+                    .map(move |object| (tab, object.id))
+            })
+            .collect();
+        for (tab, id) in stale {
+            let review = self
+                .table(tab, id, |table, object| {
+                    crate::review::build(&object.object, table, &object.edits.cells, Values::Shown)
+                })
+                .flatten();
+            if let Some(object) = self.object_tab_mut(tab, id) {
+                object.edits.reviewing = review.is_some();
+                object.edits.review = review;
+            }
+        }
+    }
+
+    /// The tab's Review SQL with every value whole: what the clipboard
+    /// gets. Made when it is asked for, and kept nowhere: a value can be a
+    /// quarter of a megabyte, and the review that is drawn holds sixty
+    /// characters of each.
+    pub fn review_whole(&self, tab: ConnTabId, id: TabId) -> Option<crate::review::Review> {
+        self.table(tab, id, |table, object| {
+            crate::review::build(&object.object, table, &object.edits.cells, Values::Whole)
+        })
+        .flatten()
     }
 
     /// A save was answered: `Event::Written`.

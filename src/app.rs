@@ -278,6 +278,7 @@ impl App {
             }
         }
         self.format_rows();
+        self.make_reviews();
     }
 
     /// Formats the row each open row panel shows, once per selection or
@@ -853,7 +854,7 @@ impl App {
                     && object.edits.editor.is_none()
                     && object.edits.saving.is_none()
                 {
-                    object.edits.cells.remove(&(cell.row, cell.col));
+                    object.edits.revert((cell.row, cell.col));
                     object.fields = None;
                 }
             }
@@ -874,6 +875,7 @@ impl App {
                 }
             }
             Action::WriteEdits { tab, id } => self.write_edits(tab, id, None),
+            Action::ReviewEdits { tab, id, show } => self.review_edits(tab, id, show),
             Action::LeaveStay => {
                 if matches!(self.dialog, Some(Dialog::Leave(_))) {
                     self.dialog = None;
@@ -10986,6 +10988,308 @@ mod tests {
             assert_eq!(writes(&harness), 1);
             assert_eq!(pending(&harness), 1);
             assert_eq!(prompt(&harness, tab), (None, None));
+        }
+
+        /// The statements of the tab's Review SQL, as the end of a frame
+        /// leaves it: `None` while it is closed.
+        fn reviewed(harness: &mut Harness, tab: ConnTabId, id: TabId) -> Option<Vec<String>> {
+            // What a frame does once its actions are applied.
+            harness.app.apply_actions();
+            let review = object(harness, tab, id).edits.review.as_ref()?;
+            Some(
+                review
+                    .lines
+                    .iter()
+                    .filter_map(crate::review::Line::sql)
+                    .collect(),
+            )
+        }
+
+        fn show_review(harness: &mut Harness, tab: ConnTabId, id: TabId, show: bool) {
+            harness.app.apply(Action::ReviewEdits { tab, id, show });
+        }
+
+        #[test]
+        fn review_sql_is_made_when_it_opens_and_again_when_the_set_changes() {
+            let mut harness = Harness::new();
+            let (tab, id) = harness.editable();
+            // Nothing pending: there is nothing to open it on.
+            show_review(&mut harness, tab, id, true);
+            assert!(!object(&harness, tab, id).edits.reviewing);
+            type_into(&mut harness, tab, id, at(1, 1), "bob@example.com");
+            // Closed, it is not made: no statement is built for nobody.
+            assert_eq!(reviewed(&mut harness, tab, id), None);
+            show_review(&mut harness, tab, id, true);
+            assert!(object(&harness, tab, id).edits.reviewing);
+            let one = [
+                r#"UPDATE "main"."users""#,
+                r#"   SET "email" = 'bob@example.com'"#,
+                r#" WHERE "id" = 2;"#,
+            ];
+            assert_eq!(reviewed(&mut harness, tab, id).unwrap(), one);
+            let review = object(&harness, tab, id).edits.review.as_ref().unwrap();
+            assert_eq!((review.changes, review.rows), (1, 1));
+            // A frame that changes nothing makes nothing again: the review
+            // is the one that was made.
+            let lines = review.lines.as_ptr();
+            harness.app.apply_actions();
+            harness.app.apply(Action::SelectCell {
+                tab,
+                id,
+                cell: at(3, 1),
+            });
+            harness.app.apply_actions();
+            let review = object(&harness, tab, id).edits.review.as_ref().unwrap();
+            assert_eq!(review.lines.as_ptr(), lines);
+            // A second change: stale at once, and made again by the frame.
+            type_into(&mut harness, tab, id, at(3, 1), "dan@example.com");
+            assert!(object(&harness, tab, id).edits.review.is_none());
+            let two = reviewed(&mut harness, tab, id).unwrap();
+            assert_eq!(two.len(), 6);
+            assert_eq!(two[4], r#"   SET "email" = 'dan@example.com'"#);
+            // NULL, and the revert of one cell, change it too.
+            harness.app.apply(Action::SelectCell {
+                tab,
+                id,
+                cell: at(0, 2),
+            });
+            harness.app.apply(Action::SetNull { tab, id });
+            let three = reviewed(&mut harness, tab, id).unwrap();
+            assert_eq!(three[1], r#"   SET "meta" = NULL"#);
+            harness.app.apply(Action::RevertCell { tab, id });
+            assert_eq!(reviewed(&mut harness, tab, id).unwrap(), two);
+            // A cell to fix blocks its row: the row has no statement.
+            type_into(&mut harness, tab, id, at(3, 2), "{oops");
+            harness.app.apply(Action::LeaveEdit { tab, id });
+            assert_eq!(reviewed(&mut harness, tab, id).unwrap(), one);
+            let review = object(&harness, tab, id).edits.review.as_ref().unwrap();
+            assert_eq!(
+                review.lines.last(),
+                Some(&crate::review::Line::Blocked {
+                    row: "id 4".into(),
+                    columns: vec!["meta".into()],
+                })
+            );
+            // Hidden, it is dropped.
+            show_review(&mut harness, tab, id, false);
+            let edits = &object(&harness, tab, id).edits;
+            assert!(!edits.reviewing && edits.review.is_none());
+            assert_eq!(reviewed(&mut harness, tab, id), None);
+        }
+
+        #[test]
+        fn showing_the_review_takes_what_is_being_typed() {
+            let mut harness = Harness::new();
+            let (tab, id) = harness.editable();
+            // Only an editor is open, and typed into: shown, the review
+            // holds its text, as a save would send it.
+            harness.app.apply(Action::EditCell {
+                tab,
+                id,
+                cell: at(1, 1),
+                start: EditStart::Replace("bob@example.com".into()),
+            });
+            show_review(&mut harness, tab, id, true);
+            let edits = &object(&harness, tab, id).edits;
+            assert!(edits.editor.is_none() && edits.reviewing);
+            assert_eq!(
+                reviewed(&mut harness, tab, id).unwrap()[1],
+                r#"   SET "email" = 'bob@example.com'"#
+            );
+            // A text its column does not take is kept as a cell to fix,
+            // and its row is blocked.
+            harness.app.apply(Action::EditCell {
+                tab,
+                id,
+                cell: at(3, 2),
+                start: EditStart::Replace("{oops".into()),
+            });
+            assert!(object(&harness, tab, id).edits.editor.is_some());
+            show_review(&mut harness, tab, id, true);
+            assert!(object(&harness, tab, id).edits.editor.is_none());
+            assert_eq!(object(&harness, tab, id).edits.counts().to_fix, 1);
+            assert_eq!(reviewed(&mut harness, tab, id).unwrap().len(), 3);
+            // Hiding it leaves an open editor alone.
+            harness.app.apply(Action::EditCell {
+                tab,
+                id,
+                cell: at(2, 1),
+                start: EditStart::Replace("cy@example.com".into()),
+            });
+            show_review(&mut harness, tab, id, false);
+            let edits = &object(&harness, tab, id).edits;
+            assert!(edits.editor.is_some() && !edits.reviewing);
+            // An editor that was only opened is no change: nothing is
+            // pending, and nothing opens.
+            harness.app.apply(Action::DiscardEdits { tab, id });
+            harness.app.apply(Action::EditCell {
+                tab,
+                id,
+                cell: at(1, 1),
+                start: EditStart::Value,
+            });
+            show_review(&mut harness, tab, id, true);
+            let edits = &object(&harness, tab, id).edits;
+            assert!(edits.editor.is_none() && !edits.reviewing);
+        }
+
+        #[test]
+        fn the_review_closes_with_the_set_and_stays_through_a_save_that_wrote_nothing() {
+            let mut harness = Harness::new();
+            let (tab, id) = harness.editable();
+            type_into(&mut harness, tab, id, at(1, 1), "bob@example.com");
+            show_review(&mut harness, tab, id, true);
+            let made = reviewed(&mut harness, tab, id).unwrap();
+            // While the save runs it shows what was sent.
+            harness.app.apply(Action::WriteEdits { tab, id });
+            assert!(object(&harness, tab, id).edits.saving.is_some());
+            assert_eq!(reviewed(&mut harness, tab, id).unwrap(), made);
+            // A statement that failed leaves the set, and the review of it.
+            harness.answer_written(Ok(WriteOutcome::Failed {
+                row: 0,
+                error: tabletist_db::Error::query("no"),
+            }));
+            assert_eq!(reviewed(&mut harness, tab, id).unwrap(), made);
+            assert!(object(&harness, tab, id).edits.reviewing);
+            // Written: nothing is pending, and nothing is reviewed.
+            harness.app.apply(Action::WriteEdits { tab, id });
+            harness.answer_written(written("bob@example.com"));
+            let edits = &object(&harness, tab, id).edits;
+            assert!(!edits.reviewing && edits.review.is_none());
+            // It does not come back by itself with the next change.
+            type_into(&mut harness, tab, id, at(3, 1), "dan@example.com");
+            assert_eq!(reviewed(&mut harness, tab, id), None);
+            // Discarded, and reverted to nothing, it closes as well.
+            show_review(&mut harness, tab, id, true);
+            harness.app.apply(Action::DiscardEdits { tab, id });
+            assert!(!object(&harness, tab, id).edits.reviewing);
+            type_into(&mut harness, tab, id, at(3, 1), "dan@example.com");
+            show_review(&mut harness, tab, id, true);
+            assert!(reviewed(&mut harness, tab, id).is_some());
+            harness.app.apply(Action::SelectCell {
+                tab,
+                id,
+                cell: at(3, 1),
+            });
+            harness.app.apply(Action::RevertCell { tab, id });
+            // Open until the frame ends, with nothing to show.
+            assert_eq!(reviewed(&mut harness, tab, id), None);
+            assert!(!object(&harness, tab, id).edits.reviewing);
+        }
+
+        #[test]
+        fn each_tab_has_its_own_review_and_keeps_it_while_another_shows() {
+            let mut harness = Harness::new();
+            let (tab, id) = harness.editable();
+            type_into(&mut harness, tab, id, at(1, 1), "bob@example.com");
+            show_review(&mut harness, tab, id, true);
+            let made = reviewed(&mut harness, tab, id).unwrap();
+            let orders = open(&mut harness, tab, "orders", true);
+            harness.answer_structure(crate::testing::fixture_structure());
+            harness.answer_rows(page(3, false));
+            type_into(&mut harness, tab, orders, at(0, 1), "eve@example.com");
+            // The other tab's review is its own, and closed.
+            assert!(!object(&harness, tab, orders).edits.reviewing);
+            harness.app.apply_actions();
+            assert!(object(&harness, tab, orders).edits.review.is_none());
+            // Back on the first tab it is as it was left.
+            harness.app.apply(Action::ActivateTab { tab, id });
+            assert_eq!(reviewed(&mut harness, tab, id).unwrap(), made);
+            // Without a session the statements are still there to read.
+            harness.app.workspace_mut(tab).unwrap().status =
+                crate::model::SessionStatus::Disconnected(tabletist_db::Error::ConnectionLost(
+                    "reset".into(),
+                ));
+            type_into(&mut harness, tab, id, at(3, 1), "dan@example.com");
+            assert_eq!(reviewed(&mut harness, tab, id).unwrap().len(), 6);
+        }
+
+        #[test]
+        fn what_is_copied_holds_every_value_whole() {
+            let mut harness = Harness::new();
+            let (tab, id) = harness.editable();
+            assert!(harness.app.review_whole(tab, id).is_none());
+            let long = "x".repeat(100);
+            type_into(&mut harness, tab, id, at(1, 1), &long);
+            show_review(&mut harness, tab, id, true);
+            // Shown, the value is cut at sixty characters.
+            let shown = reviewed(&mut harness, tab, id).unwrap();
+            assert_eq!(
+                shown[1],
+                format!(r#"   SET "email" = '{}…'"#, "x".repeat(57))
+            );
+            // Whole, it is the statement that runs. Asked for with the
+            // review closed too: the keys that copy do not open it.
+            for show in [true, false] {
+                show_review(&mut harness, tab, id, show);
+                let whole = harness.app.review_whole(tab, id).unwrap();
+                let lines: Vec<String> = whole
+                    .lines
+                    .iter()
+                    .filter_map(crate::review::Line::sql)
+                    .collect();
+                assert_eq!(lines[1], format!(r#"   SET "email" = '{long}'"#));
+            }
+            // Asking for it leaves the tab's own review as it was.
+            show_review(&mut harness, tab, id, true);
+            assert_eq!(reviewed(&mut harness, tab, id).unwrap(), shown);
+        }
+
+        #[test]
+        fn a_cell_that_is_as_it_loaded_again_leaves_the_review_stale() {
+            let mut harness = Harness::new();
+            let (tab, id) = harness.editable();
+            type_into(&mut harness, tab, id, at(1, 1), "bob@example.com");
+            type_into(&mut harness, tab, id, at(2, 2), "{}");
+            type_into(&mut harness, tab, id, at(3, 1), "dan@example.com");
+            show_review(&mut harness, tab, id, true);
+            assert_eq!(reviewed(&mut harness, tab, id).unwrap().len(), 9);
+            // The loaded text typed back is no change any more.
+            type_into(&mut harness, tab, id, at(3, 1), "user4@example.com");
+            assert!(object(&harness, tab, id).edits.review.is_none());
+            assert_eq!(reviewed(&mut harness, tab, id).unwrap().len(), 6);
+            // Nor is NULL for a cell that loaded NULL.
+            harness.app.apply(Action::SelectCell {
+                tab,
+                id,
+                cell: at(2, 2),
+            });
+            harness.app.apply(Action::SetNull { tab, id });
+            assert!(object(&harness, tab, id).edits.review.is_none());
+            assert_eq!(reviewed(&mut harness, tab, id).unwrap().len(), 3);
+        }
+
+        #[test]
+        fn a_page_that_takes_the_tabs_place_closes_its_review() {
+            let mut harness = Harness::new();
+            let (tab, id) = harness.editable();
+            type_into(&mut harness, tab, id, at(1, 1), "bob@example.com");
+            show_review(&mut harness, tab, id, true);
+            assert!(reviewed(&mut harness, tab, id).is_some());
+            // Another page is asked for: under the question the review
+            // stands, and its Discard drops it with the set.
+            harness.app.apply(Action::SortBy {
+                tab,
+                object_tab: id,
+                column: "email".into(),
+            });
+            assert_eq!(leave_prompt(&harness), Some(true));
+            assert!(object(&harness, tab, id).edits.review.is_some());
+            harness.app.apply(Action::LeaveDiscard);
+            let edits = &object(&harness, tab, id).edits;
+            assert!(!edits.reviewing && edits.review.is_none());
+            harness.answer_rows(page(5, false));
+            assert_eq!(reviewed(&mut harness, tab, id), None);
+            // Whatever brought a page: a review made of the rows it
+            // replaces does not outlive them.
+            type_into(&mut harness, tab, id, at(1, 1), "bob@example.com");
+            show_review(&mut harness, tab, id, true);
+            assert!(reviewed(&mut harness, tab, id).is_some());
+            harness.app.fetch_rows(tab, id);
+            harness.answer_rows(page(5, false));
+            let edits = &object(&harness, tab, id).edits;
+            assert!(!edits.reviewing && edits.review.is_none());
+            assert_eq!(reviewed(&mut harness, tab, id), None);
         }
 
         #[test]
