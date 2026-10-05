@@ -46,7 +46,12 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
             model::Tab::Object(object) => {
                 let shared = workspace.name_is_shared(&object.object);
                 let name = crate::ui::format::object_title(&object.object, shared);
-                let unsaved = !object.edits.cells.is_empty();
+                // Pending cells, or an editor that was typed into: left
+                // behind another tab its text is not yet a pending cell,
+                // and nothing else would say the tab holds it.
+                let typed = object.edits.editor.as_ref();
+                let typed = typed.is_some_and(|editor| editor.touched);
+                let unsaved = !object.edits.cells.is_empty() || typed;
                 (object.id, name, object.pinned, false, unsaved)
             }
             model::Tab::Sql(sql) => (

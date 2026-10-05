@@ -11731,6 +11731,43 @@ mod tests {
     }
 
     #[test]
+    fn a_tab_whose_editor_was_typed_into_says_it_is_unsaved() {
+        let marked = |harness: &mut Harness| {
+            let tree = harness.finish_animations();
+            let role = egui::accesskit::Role::Button;
+            crate::testing::bounds(&tree, "users tab, unsaved", role).is_some()
+        };
+        for look in Look::ALL {
+            let (mut harness, tab, id) = editable_in(look);
+            let cell = CellPos { row: 1, col: 1 };
+            // An editor that was only opened holds nothing of the user's.
+            let start = EditStart::Value;
+            harness.app.apply(Action::EditCell {
+                tab,
+                id,
+                cell,
+                start,
+            });
+            assert!(!marked(&mut harness), "{}", look.name);
+            harness.app.apply(Action::CancelEdit { tab, id });
+            // Typed into and left behind another tab, its text is not yet
+            // a pending cell: the tab says so all the same, since nothing
+            // else on screen does.
+            let start = EditStart::Replace("x".into());
+            harness.app.apply(Action::EditCell {
+                tab,
+                id,
+                cell,
+                start,
+            });
+            harness.app.apply(Action::NewSqlTab(tab));
+            assert!(edits(&harness, tab, id).cells.is_empty(), "{}", look.name);
+            assert!(edits(&harness, tab, id).editor.is_some(), "{}", look.name);
+            assert!(marked(&mut harness), "{}", look.name);
+        }
+    }
+
+    #[test]
     fn typing_starts_the_edit_with_that_character() {
         for look in desktop_looks() {
             let (mut harness, tab, id) = editable_in(look);
