@@ -625,7 +625,18 @@ fn line(
     };
     values.push((&shown.yours, Some(Tone::Warning), mine));
     let of = values.len();
-    for (at, (value, tone, color)) in values.into_iter().enumerate() {
+    // What each cell paints is settled for the line as a whole: two values
+    // that differ are not painted alike. The cells are all one width.
+    let role = grid::data_role(look);
+    let marks = grid::marks(ui.ctx(), look);
+    let room = form.cell(row, of, 0).width() - 2.0 * form.inset;
+    let read: Vec<_> = values
+        .iter()
+        .map(|(value, ..)| Reading::of(value, marks))
+        .collect();
+    let painted = told_apart(&read, room, |text| role.width(ui.ctx(), look.faces, text));
+    let cells = values.into_iter().zip(read.into_iter().zip(painted));
+    for (at, ((_, tone, color), (read, painted))) in cells.enumerate() {
         let place = form.cell(row, of, at);
         let salt = (index, at);
         match tone {
@@ -640,7 +651,7 @@ fn line(
             // Its colour is all a look without tints has to say that the
             // value changed on the server, and the look's own NULL is
             // faint whatever became of it: the word, in that colour.
-            Some(Tone::Danger) if matches!(value, Shown::Null) => {
+            Some(Tone::Danger) if read.is_none() => {
                 let text = Text::one(look, grid::data_role(look), "NULL", color);
                 let id = ui.id().with(("conflict-value", salt));
                 written(ui, place, form.inset, id, text, "NULL", false);
@@ -648,7 +659,8 @@ fn line(
             }
             _ => {}
         }
-        self::value(ui, place, salt, value, (color, form.inset), skin);
+        let text = read.zip(painted);
+        self::value(ui, place, salt, text, (color, form.inset), skin);
     }
     if form.tinted {
         // The hairline above the line, over its tints.
@@ -665,14 +677,71 @@ fn line(
     written(ui, place, form.inset, id, text, &name, cut != name);
 }
 
-/// What a cell of the question shows of `value`, whole: one line, as a
-/// grid cell writes a text, behind a "…" where it starts inside the value.
-/// `None` is NULL.
-fn reads(value: &Shown, marks: Marks) -> Option<String> {
-    match value {
-        Shown::Null => None,
-        Shown::Text { text, cut: false } => Some(one_line(text, marks)),
-        Shown::Text { text, cut: true } => Some(format!("…{}", one_line(text, marks))),
+/// What a cell of the question reads of a value that is not NULL: one
+/// line of the text the reducer kept of it, which is a cell's worth and no
+/// more however long the value.
+struct Reading {
+    /// The line, as a grid cell writes a text.
+    line: String,
+    /// How many characters of the value stand before it.
+    from: usize,
+}
+
+impl Reading {
+    /// The reading of `value`. `None` is NULL.
+    fn of(value: &Shown, marks: Marks) -> Option<Self> {
+        match value {
+            Shown::Null => None,
+            Shown::Text { text, from } => Some(Self {
+                line: one_line(text, marks),
+                from: *from,
+            }),
+        }
+    }
+
+    /// All of it, behind a "…" where it starts inside the value: what a
+    /// screen reader reads in its cell, and the pointer shows over one
+    /// that paints less.
+    fn whole(&self) -> String {
+        if self.from > 0 {
+            format!("…{}", self.line)
+        } else {
+            self.line.clone()
+        }
+    }
+
+    /// What a cell with `room` paints of it, as `width` measures. With no
+    /// place to show (`differs`), its start, cut with "…" to the cell.
+    /// With one, the line from inside itself: the [`LEAD`] characters
+    /// before that place are only there to find it by, so they are given
+    /// up first, one by one. The end is cut only when the line is too long
+    /// from the place itself on, and never before it: two values that
+    /// differ never read alike for want of room.
+    fn fitted(&self, differs: Option<usize>, room: f32, width: impl Fn(&str) -> f32) -> String {
+        let whole = self.whole();
+        if width(&whole) <= room {
+            return whole;
+        }
+        let Some(differs) = differs else {
+            return grid::ellipsize(&whole, room, false, width).into_owned();
+        };
+        let starts: Vec<usize> = self.line.char_indices().map(|(start, _)| start).collect();
+        let differs = differs.min(starts.len());
+        let mut line = String::new();
+        for dropped in differs.saturating_sub(LEAD)..=differs {
+            // A line that ends where its lead does has nothing after the
+            // mark.
+            let rest = starts.get(dropped).map_or("", |&start| &self.line[start..]);
+            line = if dropped == 0 && self.from == 0 {
+                rest.to_owned()
+            } else {
+                format!("…{rest}")
+            };
+            if width(&line) <= room {
+                return line;
+            }
+        }
+        grid::ellipsize(&line, room, false, width).into_owned()
     }
 }
 
@@ -683,57 +752,85 @@ fn one_line(text: &str, marks: Marks) -> String {
     format::blank_text(text, marks).unwrap_or_else(|| format::cell_line(text, marks).into_owned())
 }
 
-/// The line of a value that starts inside itself (`text`, read whole as
-/// `whole`), fitted to `room` as `width` measures: the [`LEAD`] characters
-/// before the place it differs from its line's other values are only
-/// there to find that place by, so they are given up first, one by one.
-/// The end is cut only when the difference itself is too long, and never
-/// before it: two values that differ never read alike for want of room.
-fn from_inside(
-    text: &str,
-    whole: &str,
-    marks: Marks,
+/// What the cells of one line paint of its values, each cell `room` wide
+/// as `width` measures (`None` is NULL, which reads like nothing else).
+/// Two values that differ are not painted alike because their cells are
+/// narrow: where two would be, each is painted from before the first place
+/// they differ. Pair by pair: with three values, two that are still alike
+/// from there are painted from before their own first difference. Two that
+/// are the same value are painted the same. This works on the readings
+/// alone, a cell's worth of each: where two values differ past that, the
+/// reducer has kept the part of each that shows it (`edit::shown_lines`).
+fn told_apart(
+    read: &[Option<Reading>],
     room: f32,
     width: impl Fn(&str) -> f32,
-) -> String {
-    if width(whole) <= room {
-        return whole.to_owned();
-    }
-    let mut line = String::new();
-    for dropped in 1..=LEAD {
-        let rest = text
-            .char_indices()
-            .nth(dropped)
-            .map_or("", |(start, _)| &text[start..]);
-        // A value that ends where its lead does has nothing after the
-        // mark: not the `''` of a text that is empty.
-        line = if rest.is_empty() {
-            "…".to_owned()
-        } else {
-            format!("…{}", one_line(rest, marks))
-        };
-        if width(&line) <= room {
-            return line;
+) -> Vec<Option<String>> {
+    // The place in each line that its cell has to show. A value that is
+    // read from inside itself starts [`LEAD`] before such a place.
+    let lead = |read: &Reading| (read.from > 0).then_some(LEAD);
+    let mut differs: Vec<Option<usize>> = read
+        .iter()
+        .map(|read| read.as_ref().and_then(lead))
+        .collect();
+    let paint = |differs: &[Option<usize>]| -> Vec<Option<String>> {
+        let cells = read.iter().zip(differs);
+        cells
+            .map(|(read, &differs)| Some(read.as_ref()?.fitted(differs, room, &width)))
+            .collect()
+    };
+    let mut painted = paint(&differs);
+    // A round moves the values that are painted like another. Each pair
+    // parts at its first difference, so there are no more rounds than
+    // values.
+    for _ in read {
+        // For each value, the first place it differs from one it is
+        // painted like.
+        let mut found: Vec<Option<usize>> = vec![None; read.len()];
+        for (later, theirs) in read.iter().enumerate() {
+            for (earlier, ours) in read.iter().enumerate().take(later) {
+                let (Some(ours), Some(theirs)) = (ours, theirs) else {
+                    continue;
+                };
+                // Only two parts of the same place in their values tell
+                // where the values differ.
+                let apart = ours.from == theirs.from && ours.line != theirs.line;
+                if !apart || painted[earlier] != painted[later] {
+                    continue;
+                }
+                let same = ours.line.chars().zip(theirs.line.chars());
+                let at = same.take_while(|(ours, theirs)| ours == theirs).count();
+                for value in [earlier, later] {
+                    found[value] = Some(found[value].map_or(at, |first| first.min(at)));
+                }
+            }
         }
+        let shown = differs.iter().zip(found);
+        let next: Vec<Option<usize>> = shown.map(|(&shown, found)| found.or(shown)).collect();
+        if next == differs {
+            // Nothing more to tell apart, or no room to.
+            break;
+        }
+        differs = next;
+        painted = paint(&differs);
     }
-    grid::ellipsize(&line, room, false, width).into_owned()
+    painted
 }
 
-/// A value of a line in its cell `place`: the look's NULL, or its text in
-/// `color`, `inset` into the cell and cut with "…" to it. `salt` tells the
-/// cell from the table's others.
+/// A value of a line in its cell `place`: the look's NULL, or what was
+/// read of it and what of that its cell paints (`text`), in `color` and
+/// `inset` into the cell. `salt` tells the cell from the table's others.
 fn value(
     ui: &mut egui::Ui,
     place: Rect,
     salt: (usize, usize),
-    value: &Shown,
+    text: Option<(Reading, String)>,
     (color, inset): (Color32, f32),
     skin: Skin<'_>,
 ) {
     let Skin { look, palette, .. } = skin;
     let role = grid::data_role(look);
-    let marks = grid::marks(ui.ctx(), look);
-    let Some(whole) = reads(value, marks) else {
+    let Some((read, shown)) = text else {
         // Laid out where a text would start, on the row's middle.
         let height = role.row_height(ui.ctx(), look.faces);
         let top = place.center().y - height / 2.0;
@@ -747,14 +844,9 @@ fn value(
         grid::null_label(&mut ui.new_child(builder), look, palette);
         return;
     };
-    let room = place.width() - 2.0 * inset;
-    let measure = |text: &str| role.width(ui.ctx(), look.faces, text);
-    let shown = match value {
-        Shown::Text { text, cut: true } => from_inside(text, &whole, marks, room, measure),
-        _ => grid::ellipsize(&whole, room, false, measure).into_owned(),
-    };
-    let text = Text::one(look, role, &shown, color);
+    let whole = read.whole();
     let cut = shown != whole;
+    let text = Text::one(look, role, &shown, color);
     let id = ui.id().with(("conflict-value", salt));
     written(ui, place, inset, id, text, &whole, cut);
 }
@@ -1362,6 +1454,213 @@ mod tests {
             );
             // None of them is the value from its start.
             assert!(pieces(&harness, |piece| piece.starts_with("xxx")).is_empty());
+        }
+    }
+
+    /// `len` letters in no pattern: a piece of them stands in one place.
+    fn letters(len: usize) -> String {
+        let mut state = 12345_u32;
+        let mut next = || {
+            state = state.wrapping_mul(1_103_515_245).wrapping_add(12345);
+            char::from(b'a' + ((state >> 16) % 26) as u8)
+        };
+        (0..len).map(|_| next()).collect()
+    }
+
+    /// [`letters`] with other characters at some places.
+    fn lettered_with(len: usize, others: &[(usize, char)]) -> String {
+        let mut text: Vec<char> = letters(len).chars().collect();
+        for &(at, other) in others {
+            text[at] = other;
+        }
+        text.into_iter().collect()
+    }
+
+    /// Three values of one line (loaded, on the server, the user's) that
+    /// differ where a cell that shows each from its start need not show
+    /// it, by what the three are an example of. With them, for each the
+    /// place its cell has to show: where it first differs from the one it
+    /// reads most like.
+    type Alike = (&'static str, [String; 3], [Option<usize>; 3]);
+
+    /// The values a cell's width alone would make read alike.
+    fn alike() -> Vec<Alike> {
+        let three = |values: [&str; 3]| values.map(str::to_owned);
+        // One place where all three differ.
+        let at = |len: usize, at: usize| {
+            let values = ['A', 'B', 'C'].map(|other| lettered_with(len, &[(at, other)]));
+            (values, [Some(at); 3])
+        };
+        // The server's differs from the two others early, and those two
+        // from each other late.
+        let twice = |len: usize, early: usize, late: usize| {
+            let value = |first, second| lettered_with(len, &[(early, first), (late, second)]);
+            let values = [value('A', 'P'), value('B', 'P'), value('A', 'Q')];
+            (values, [Some(late), Some(early), Some(late)])
+        };
+        // Where the two that differ late are alike for a cell's worth and
+        // the server's is not, the two are read from inside themselves and
+        // the server's from its start, as any value that reads like no
+        // other: it is told from them, and its cell need not reach the
+        // place.
+        let (values, _) = twice(1000, 50, 900);
+        let mixed = (values, [Some(900), None, Some(900)]);
+        let mut triples = vec![
+            (
+                "the domain's end",
+                three(["u@example.com", "u@example.org", "u@example.net"]),
+                [Some(10); 3],
+            ),
+            (
+                "a longer address",
+                three([
+                    "margaret.hamilton@example.com",
+                    "margaret.hamilton@example.org",
+                    "margaret.hamilton@example.net",
+                ]),
+                [Some(26); 3],
+            ),
+            (
+                "the seconds",
+                three([
+                    "2026-10-04 12:34:56",
+                    "2026-10-04 12:34:57",
+                    "2026-10-04 12:34:58",
+                ]),
+                [Some(18); 3],
+            ),
+            (
+                "a key's last digit",
+                three([
+                    "0199a3f2-7c1e-7abc-8def-0123456789ab",
+                    "0199a3f2-7c1e-7abc-8def-0123456789ac",
+                    "0199a3f2-7c1e-7abc-8def-0123456789ad",
+                ]),
+                [Some(35); 3],
+            ),
+        ];
+        for (said, (values, places)) in [
+            ("the middle of 100", at(100, 50)),
+            ("the end of 100", at(100, 99)),
+            ("the middle of 300", at(300, 150)),
+            ("the end of 300", at(300, 299)),
+            ("two places of 100", twice(100, 20, 80)),
+            ("two places of 300", twice(300, 100, 200)),
+            ("two places, one past a cell's worth", mixed),
+            ("two places past a cell's worth", twice(1000, 300, 900)),
+            (
+                "two places past a cell's worth and near",
+                twice(1000, 300, 340),
+            ),
+        ] {
+            triples.push((said, values, places));
+        }
+        triples
+    }
+
+    /// Whether `painted`, a cell's line of `value`, shows the character at
+    /// `place` of it where it stands: from the value's start, or behind a
+    /// "…" from inside it.
+    fn holds(painted: &str, value: &str, place: usize) -> bool {
+        let inside = painted.starts_with('…');
+        let piece = painted.trim_matches('…');
+        let mut starts = value.match_indices(piece).map(|(start, _)| start);
+        starts.any(|start| (inside || start == 0) && (start..start + piece.len()).contains(&place))
+    }
+
+    /// In `look`, at every width a window gets to: two values of a line
+    /// that differ are painted apart, each with the place it differs at.
+    fn painted_apart_in(look: Look) {
+        for width in [420.0, 520.0, 640.0, 1280.0] {
+            for (what, values, places) in alike() {
+                let said = format!("{}, {width} wide, {what}", look.name);
+                let [loaded, now, yours] = &values;
+                let mut page = crate::testing::page(5, false);
+                page.rows[1][1] = text(loaded);
+                let structure = crate::testing::fixture_structure();
+                let size = egui::vec2(width, 800.0);
+                let (mut harness, tab, id) = table_of(look, size, structure, page);
+                pend(&mut harness, (tab, id), (1, 1), yours);
+                let now = vec![Value::Int(2), text(now), Value::Null];
+                saved(&mut harness, (tab, id), vec![changed(0, now)]);
+                let line = line_of(&harness, "email");
+                let painted: Vec<&str> = line[1..].iter().map(|(piece, _)| &**piece).collect();
+                assert_eq!(painted.len(), 3, "{said}: {painted:?}");
+                for (one, other) in [(0, 1), (0, 2), (1, 2)] {
+                    assert_ne!(painted[one], painted[other], "{said}: {painted:?}");
+                }
+                for ((painted, value), place) in painted.iter().zip(&values).zip(places) {
+                    let held = place.is_none_or(|place| holds(painted, value, place));
+                    assert!(held, "{said}: {painted} at {place:?}");
+                }
+            }
+        }
+    }
+
+    // One test for each look: a question is asked for every triple at
+    // every width, which is slow enough to run side by side.
+    #[test]
+    fn two_values_that_differ_are_painted_apart_in_the_standard_sheet() {
+        painted_apart_in(Look::standard());
+    }
+
+    #[test]
+    fn two_values_that_differ_are_painted_apart_in_the_macos_sheet() {
+        painted_apart_in(Look::macos());
+    }
+
+    #[test]
+    fn two_values_that_differ_are_painted_apart_in_the_terminal_box() {
+        painted_apart_in(Look::omarchy());
+    }
+
+    #[test]
+    fn parts_of_two_places_in_their_values_are_not_compared() {
+        // What the reducer kept of two values from two places in them:
+        // each for a difference from a third, twelve characters in. Where
+        // the two parts differ says nothing of where the values do, so
+        // each cell shows the place its part was kept for.
+        let read = |rest: usize, from: usize| {
+            let line = format!("{}P{}", "x".repeat(12), "x".repeat(rest));
+            Some(super::Reading { line, from })
+        };
+        let width = |text: &str| text.chars().count() as f32;
+        let painted = super::told_apart(&[read(40, 288), read(90, 888)], 8.0, width);
+        let painted: Vec<&str> = painted.iter().flatten().map(String::as_str).collect();
+        assert_eq!(painted, ["…Pxxxxx…"; 2]);
+        // Two parts of one place are: these differ at their ends.
+        let painted = super::told_apart(&[read(40, 288), read(90, 288)], 8.0, width);
+        assert_eq!(painted[0].as_deref(), Some("…xxxxxxx"));
+        assert_eq!(painted[1].as_deref(), Some("…xxxxxx…"));
+    }
+
+    #[test]
+    fn a_value_the_server_kept_is_painted_as_the_loaded_one_is() {
+        // What was loaded is still on the server, and the user's differs
+        // from it in its last character: the two that are one value read
+        // as one, wherever they are shown from.
+        let (kept, mine) = (
+            "margaret.hamilton@example.com",
+            "margaret.hamilton@example.org",
+        );
+        for (look, width) in looks().flat_map(|look| [(look, 420.0), (look, 1280.0)]) {
+            let said = format!("{}, {width} wide", look.name);
+            let mut page = crate::testing::page(5, false);
+            page.rows[1][1] = text(kept);
+            let structure = crate::testing::fixture_structure();
+            let size = egui::vec2(width, 800.0);
+            let (mut harness, tab, id) = table_of(look, size, structure, page);
+            pend(&mut harness, (tab, id), (1, 1), mine);
+            pend(&mut harness, (tab, id), (1, 2), "[1]");
+            let now = vec![Value::Int(2), text(kept), text("[2]")];
+            saved(&mut harness, (tab, id), vec![changed(0, now)]);
+            let line = line_of(&harness, "email");
+            let painted: Vec<&str> = line[1..].iter().map(|(piece, _)| &**piece).collect();
+            assert_eq!(painted.len(), 3, "{said}: {painted:?}");
+            assert_eq!(painted[0], painted[1], "{said}");
+            assert_ne!(painted[0], painted[2], "{said}");
+            assert!(holds(painted[0], kept, 26), "{said}: {painted:?}");
+            assert!(holds(painted[2], mine, 26), "{said}: {painted:?}");
         }
     }
 

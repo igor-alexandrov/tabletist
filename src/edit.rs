@@ -934,11 +934,12 @@ pub enum Shown {
     Null,
     /// The value's text, or the part of it to show: at most a cell's worth
     /// of characters and one more, so the cell that draws it still marks
-    /// what it cuts. `cut` says the text starts inside the value: the
-    /// values of its line read alike up to there.
+    /// what it cuts. `from` is how many characters of the value stand
+    /// before it: more than none where the value reads up to there as
+    /// another of its line does.
     Text {
         text: String,
-        cut: bool,
+        from: usize,
     },
 }
 
@@ -970,43 +971,73 @@ fn read(text: &str) -> String {
 }
 
 /// The values of one line as they are shown, in the order given (`None`
-/// is NULL). Each is a cell's worth of its text from the start, unless two
-/// of them read alike there and are not the same text (they differ past
+/// is NULL). Each is a cell's worth of its text from the start, unless it
+/// reads there as another does that is not the same text (they differ past
 /// what a cell shows): those are shown from just before the first place
-/// two of them differ, so the difference is on screen.
+/// they differ, so the difference is on screen. Pair by pair: where two of
+/// three would still be one text from there, those two are shown from just
+/// before their own first difference. What a cell has the room to paint of
+/// each is for the view to say (see `ui::conflict_prompt`).
 fn shown(values: &[Option<&str>]) -> Vec<Shown> {
-    let reads: Vec<Option<String>> = values.iter().map(|text| text.map(read)).collect();
-    // Which values read like another that they are not, and the first
-    // place such a pair differs.
-    let mut alike = vec![false; values.len()];
-    let mut from = usize::MAX;
-    for (later, theirs) in values.iter().enumerate() {
-        for (earlier, ours) in values.iter().enumerate().take(later) {
-            let (Some(ours), Some(theirs)) = (ours, theirs) else {
-                continue;
-            };
-            if ours != theirs && reads[earlier] == reads[later] {
-                let same = ours.chars().zip(theirs.chars());
-                from = from.min(same.take_while(|(ours, theirs)| ours == theirs).count());
-                alike[earlier] = true;
-                alike[later] = true;
-            }
-        }
-    }
-    let from = from.saturating_sub(LEAD);
     let piece = crate::ui::format::CELL_MAX_CHARS + 1;
-    values
-        .iter()
-        .zip(alike)
-        .map(|(text, alike)| match text {
-            None => Shown::Null,
-            Some(text) => {
-                let skip = if alike { from } else { 0 };
-                Shown::Text {
-                    text: text.chars().skip(skip).take(piece).collect(),
-                    cut: skip > 0,
+    let part =
+        |text: &str, from: usize| -> String { text.chars().skip(from).take(piece).collect() };
+    // How many characters of each value stand before what is shown of it.
+    let mut from = vec![0; values.len()];
+    // A round moves the values that read like another from the same place
+    // on. Each pair parts at its first difference, so there are no more
+    // rounds than values.
+    for _ in values {
+        let reads: Vec<Option<String>> = values
+            .iter()
+            .zip(&from)
+            .map(|(text, &from)| text.map(|text| read(&part(text, from))))
+            .collect();
+        // For each value, the first place it differs from one it reads
+        // like.
+        let mut differs: Vec<Option<usize>> = vec![None; values.len()];
+        for (later, theirs) in values.iter().enumerate() {
+            for (earlier, ours) in values.iter().enumerate().take(later) {
+                let (Some(ours), Some(theirs)) = (ours, theirs) else {
+                    continue;
+                };
+                let alike = from[earlier] == from[later] && reads[earlier] == reads[later];
+                if ours == theirs || !alike {
+                    continue;
+                }
+                let same = ours.chars().zip(theirs.chars());
+                let at = same.take_while(|(ours, theirs)| ours == theirs).count();
+                // Two that are shown from their difference already read
+                // alike wherever they are read from (a tab against a
+                // space): they hold neither back from another it differs
+                // from further on.
+                if at.saturating_sub(LEAD) <= from[earlier] {
+                    continue;
+                }
+                for value in [earlier, later] {
+                    differs[value] = Some(differs[value].map_or(at, |first| first.min(at)));
                 }
             }
+        }
+        let mut moved = false;
+        for (from, differs) in from.iter_mut().zip(differs) {
+            let to = differs.map_or(*from, |at| at.saturating_sub(LEAD));
+            moved |= to != *from;
+            *from = to;
+        }
+        if !moved {
+            break;
+        }
+    }
+    values
+        .iter()
+        .zip(from)
+        .map(|(text, from)| match text {
+            None => Shown::Null,
+            Some(text) => Shown::Text {
+                text: part(text, from),
+                from,
+            },
         })
         .collect()
 }
@@ -2298,12 +2329,12 @@ mod tests {
         assert_eq!(settled(&table, &cells, 1, &server), Vec::<usize>::new());
     }
 
-    /// A shown value by its text and whether it starts inside the value.
+    /// A shown value by its text and how far inside the value that starts.
     /// `None` is NULL.
-    fn seen(shown: &Shown) -> Option<(&str, bool)> {
+    fn seen(shown: &Shown) -> Option<(&str, usize)> {
         match shown {
             Shown::Null => None,
-            Shown::Text { text, cut } => Some((text.as_str(), *cut)),
+            Shown::Text { text, from } => Some((text.as_str(), *from)),
         }
     }
 
@@ -2326,26 +2357,26 @@ mod tests {
         assert_eq!((email.name.as_str(), meta.name.as_str()), ("email", "meta"));
         // A line break is not a space: a cell marks it, so the two read
         // apart as they are, each from its start.
-        assert_eq!(seen(&email.loaded), Some(("a b", false)));
-        assert_eq!(seen(&email.yours), Some(("a\nb", false)));
-        assert_eq!(email.server.as_ref().map(seen), Some(Some(("a b", false))));
+        assert_eq!(seen(&email.loaded), Some(("a b", 0)));
+        assert_eq!(seen(&email.yours), Some(("a\nb", 0)));
+        assert_eq!(email.server.as_ref().map(seen), Some(Some(("a b", 0))));
         assert!(!email.moved);
         // The documents read alike for all a cell shows of them: each is
         // shown from twelve characters before the first place two differ.
         let piece = |end: &str| format!("{}{end}", "x".repeat(12));
-        assert_eq!(seen(&meta.loaded), Some((piece("loaded").as_str(), true)));
-        assert_eq!(seen(&meta.yours), Some((piece("yours").as_str(), true)));
+        assert_eq!(seen(&meta.loaded), Some((piece("loaded").as_str(), 288)));
+        assert_eq!(seen(&meta.yours), Some((piece("yours").as_str(), 288)));
         let server = meta.server.as_ref().map(seen);
-        assert_eq!(server, Some(Some((piece("server").as_str(), true))));
+        assert_eq!(server, Some(Some((piece("server").as_str(), 288))));
         assert!(meta.moved);
         // Only what reads like another value is shown from inside: a short
         // value beside two long ones is whole.
         cells.insert((0, 2), pending(NewValue::Text("{}".into())));
         let lines = shown_lines(&page, &cells, &conflict);
-        assert_eq!(seen(&lines[1].yours), Some(("{}", false)));
+        assert_eq!(seen(&lines[1].yours), Some(("{}", 0)));
         assert_eq!(
             seen(&lines[1].loaded),
-            Some((piece("loaded").as_str(), true))
+            Some((piece("loaded").as_str(), 288))
         );
         // A value the server kept is the same text, not one that reads
         // like it: both are shown from the start, a cell's worth and one
@@ -2356,12 +2387,77 @@ mod tests {
         };
         let lines = shown_lines(&page, &cells, &kept);
         let start = "x".repeat(257);
-        assert_eq!(seen(&lines[1].loaded), Some((start.as_str(), false)));
+        assert_eq!(seen(&lines[1].loaded), Some((start.as_str(), 0)));
         assert_eq!(
             lines[1].server.as_ref().map(seen),
-            Some(Some((start.as_str(), false)))
+            Some(Some((start.as_str(), 0)))
         );
         assert!(lines[0].moved && !lines[1].moved);
+    }
+
+    #[test]
+    fn three_values_that_differ_in_two_places_are_each_shown_where_they_differ() {
+        // A thousand characters. What was loaded and the user's are the
+        // same for nine hundred; the server's is another from the three
+        // hundredth on.
+        let long = |early: char, late: char| {
+            let mut text: Vec<char> = "x".repeat(1000).chars().collect();
+            (text[300], text[900]) = (early, late);
+            text.into_iter().collect::<String>()
+        };
+        let loaded = vec![Value::Int(1), text("a b"), text(&long('a', 'p'))];
+        let page = self::page(vec![loaded]);
+        let mut cells = BTreeMap::new();
+        cells.insert((0, 2), pending(NewValue::Text(long('a', 'q'))));
+        let now = vec![Value::Int(1), text("a b"), text(&long('b', 'p'))];
+        let conflict = Conflicting {
+            row: 0,
+            server: Some(now),
+        };
+        let lines = shown_lines(&page, &cells, &conflict);
+        let meta = &lines[0];
+        // From twelve before the first place the three differ, the loaded
+        // one and the user's would still be one text: those two are shown
+        // from twelve before the place they differ.
+        let late = |at: char| format!("{}{at}{}", "x".repeat(12), "x".repeat(99));
+        assert_eq!(seen(&meta.loaded), Some((late('p').as_str(), 888)));
+        assert_eq!(seen(&meta.yours), Some((late('q').as_str(), 888)));
+        let early = format!("{}b{}", "x".repeat(12), "x".repeat(244));
+        let server = meta.server.as_ref().map(seen);
+        assert_eq!(server, Some(Some((early.as_str(), 288))));
+        // With the server's as it was loaded, the two that are one text
+        // are shown as one, and the user's apart from them.
+        let kept = Conflicting {
+            row: 0,
+            server: Some(vec![Value::Int(1), text("a b"), text(&long('a', 'p'))]),
+        };
+        let lines = shown_lines(&page, &cells, &kept);
+        let meta = &lines[0];
+        assert_eq!(seen(&meta.loaded), Some((late('p').as_str(), 888)));
+        assert_eq!(meta.server.as_ref().map(seen), Some(seen(&meta.loaded)));
+        assert_eq!(seen(&meta.yours), Some((late('q').as_str(), 888)));
+        // A server's value that reads as the loaded one does wherever it
+        // is read from (a tab where that has a space) does not hold the
+        // loaded one where the two differ: the user's differs from it
+        // further on.
+        let conflict = Conflicting {
+            row: 0,
+            server: Some(vec![Value::Int(1), text("a b"), text(&long('\t', 'p'))]),
+        };
+        let page = self::page(vec![vec![
+            Value::Int(1),
+            text("a b"),
+            text(&long(' ', 'p')),
+        ]]);
+        cells.insert((0, 2), pending(NewValue::Text(long(' ', 'q'))));
+        let lines = shown_lines(&page, &cells, &conflict);
+        let meta = &lines[0];
+        let late = |at: char| format!("{}{at}{}", "x".repeat(12), "x".repeat(99));
+        assert_eq!(seen(&meta.loaded), Some((late('p').as_str(), 888)));
+        assert_eq!(seen(&meta.yours), Some((late('q').as_str(), 888)));
+        let early = format!("{}\t{}", "x".repeat(12), "x".repeat(244));
+        let server = meta.server.as_ref().map(seen);
+        assert_eq!(server, Some(Some((early.as_str(), 288))));
     }
 
     #[test]
@@ -2378,10 +2474,10 @@ mod tests {
         // NULL is NULL and the empty text is a text: the cell that draws
         // them tells them apart.
         assert_eq!(seen(&lines[0].loaded), None);
-        assert_eq!(seen(&lines[0].yours), Some(("", false)));
-        assert_eq!(lines[0].server.as_ref().map(seen), Some(Some(("x", false))));
+        assert_eq!(seen(&lines[0].yours), Some(("", 0)));
+        assert_eq!(lines[0].server.as_ref().map(seen), Some(Some(("x", 0))));
         // A number as a cell writes it, and a value that became NULL.
-        assert_eq!(seen(&lines[1].loaded), Some(("1.5", false)));
+        assert_eq!(seen(&lines[1].loaded), Some(("1.5", 0)));
         assert_eq!(seen(&lines[1].yours), None);
         assert_eq!(lines[1].server.as_ref().map(seen), Some(None));
         assert!(lines[0].moved && lines[1].moved);
