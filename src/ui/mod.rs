@@ -12872,6 +12872,367 @@ mod tests {
     }
 
     #[test]
+    fn insert_mode_is_named_in_the_mode_line_with_the_column_and_the_counts() {
+        let (mut harness, tab, id) = normal_mode((1, 1));
+        let palette = harness.app.palette;
+        assert!(!painted(&harness, "-- INSERT --"));
+        type_key(&mut harness, Key::I, "i");
+        assert!(
+            painted_in(&harness, "-- INSERT --", palette.success),
+            "{:?}",
+            harness.painted
+        );
+        assert!(painted(&harness, "email · TEXT"));
+        assert!(painted(&harness, "esc normal · tab next cell"));
+        // Normal mode's keys are not offered while it lasts, and nothing
+        // is counted while nothing is pending.
+        assert!(!painted(&harness, "j/k row"));
+        let counted = |harness: &Harness| {
+            let mut pieces = harness.painted.iter();
+            pieces.any(|(piece, _)| piece.contains("pending"))
+        };
+        assert!(!counted(&harness));
+        type_text(&mut harness, "x");
+        harness.press(Key::Escape, Modifiers::NONE);
+        // Back in normal mode the counts stand after its keys.
+        assert!(!painted(&harness, "-- INSERT --"));
+        assert!(painted_in(&harness, "1 pending · 1 row", palette.warning));
+        assert!(painted(&harness, "j/k row"));
+        let keys = harness.painted_rect("j/k row").unwrap();
+        let counts = harness.painted_rect("1 pending · 1 row").unwrap();
+        assert!(counts.left() > keys.right());
+        // In insert mode again they stand with it, and a cell to fix is
+        // counted in red.
+        leave_pending(&mut harness, tab, id, (2, 2), "{");
+        select(&mut harness, tab, id, (3, 2));
+        assert!(painted_in(&harness, "1 error", palette.danger));
+        select(&mut harness, tab, id, (3, 1));
+        type_key(&mut harness, Key::I, "i");
+        assert!(painted_in(&harness, "-- INSERT --", palette.success));
+        assert!(painted_in(&harness, "2 pending · 2 rows", palette.warning));
+        assert!(painted_in(&harness, "1 error", palette.danger));
+        let mode = harness.painted_rect("-- INSERT --").unwrap();
+        let column = harness.painted_rect("email · TEXT").unwrap();
+        let counts = harness.painted_rect("2 pending · 2 rows").unwrap();
+        let errors = harness.painted_rect("1 error").unwrap();
+        assert!(mode.right() < column.left() && column.right() < counts.left());
+        assert!(counts.right() < errors.left());
+        // A window too narrow for all of it keeps the mode and the counts:
+        // the keys at the right give way first, then the column.
+        harness.size.x = 420.0;
+        harness.settle();
+        assert!(edits(&harness, tab, id).editor.is_some());
+        assert!(painted(&harness, "-- INSERT --"), "{:?}", harness.painted);
+        assert!(painted(&harness, "2 pending · 2 rows"));
+        assert!(painted(&harness, "1 error"));
+        assert!(!painted(&harness, "esc normal · tab next cell"));
+        harness.size.x = 300.0;
+        harness.settle();
+        assert!(painted(&harness, "-- INSERT --"), "{:?}", harness.painted);
+        assert!(painted(&harness, "2 pending · 2 rows"));
+        assert!(!painted(&harness, "email · TEXT"));
+    }
+
+    /// The line under the terminal's grid that names the first cell in
+    /// trouble, as the last frame painted it.
+    fn error_line(harness: &Harness) -> Option<(String, egui::Color32)> {
+        let mut pieces = harness.painted.iter();
+        pieces.find(|(piece, _)| piece.starts_with("! ")).cloned()
+    }
+
+    #[test]
+    fn the_gutter_and_the_error_line_show_a_cell_to_fix() {
+        let (mut harness, tab, id) = normal_mode((1, 2));
+        let palette = harness.app.palette;
+        // The row panel names the fields too: the grid alone is looked at.
+        harness.app.workspace_mut(tab).unwrap().row_panel = false;
+        harness.settle();
+        assert_eq!(error_line(&harness), None);
+        // A pending cell that is ready to save is no trouble.
+        make_pending(&mut harness, tab, id, (3, 1), "dan@example.com");
+        harness.settle();
+        assert!(painted_in(&harness, "~", palette.warning));
+        assert_eq!(error_line(&harness), None);
+        leave_pending(&mut harness, tab, id, (1, 2), "{");
+        harness.settle();
+        assert!(painted_in(&harness, "!", palette.danger), "the gutter");
+        let (line, color) = error_line(&harness).expect("the error line");
+        // The row by its number, the column, and what the check said.
+        let problem = match &edits(&harness, tab, id).cells[&(1, 2)].state {
+            crate::edit::State::ToFix(problem) => problem.clone(),
+            other => panic!("{other:?}"),
+        };
+        let said = crate::ui::cell_editor::problem_text(
+            &problem,
+            "JSON",
+            Some("{"),
+            crate::i18n::Locale::English,
+        );
+        assert_eq!(line, format!("! 2:meta  {said}"));
+        assert_eq!(color, palette.danger);
+        // Under the grid's rows, over the status line.
+        let at = harness.painted_rect(&line).unwrap();
+        let last = harness.painted_rect("user5@example.com").unwrap();
+        let status = harness.painted_rect("j/k row").unwrap();
+        assert!(at.top() >= last.bottom(), "{at:?} under {last:?}");
+        assert!(at.bottom() <= status.top(), "{at:?} over {status:?}");
+        assert!(at.left() < last.left(), "{at:?}: from the grid's left");
+        // The first in trouble, by row and then by column.
+        leave_pending(&mut harness, tab, id, (0, 2), "[");
+        harness.settle();
+        let (line, _) = error_line(&harness).expect("the error line");
+        assert!(line.starts_with("! 1:meta  "), "{line}");
+        // Put right, the line goes.
+        for row in [0, 1] {
+            select(&mut harness, tab, id, (row, 2));
+            type_key(&mut harness, Key::U, "u");
+        }
+        assert_eq!(error_line(&harness), None);
+        assert!(!painted_in(&harness, "!", palette.danger));
+
+        // A row whose statement the database refused says its words.
+        harness.press(Key::S, Modifiers::COMMAND);
+        harness.answer_written(Ok(tabletist_db::WriteOutcome::Failed {
+            row: 0,
+            error: tabletist_db::Error::Query {
+                code: Some("23514".into()),
+                message: "new row violates check constraint \"users_email_check\"".into(),
+                detail: None,
+                hint: None,
+            },
+        }));
+        harness.settle();
+        let (line, color) = error_line(&harness).expect("the error line");
+        assert_eq!(
+            line,
+            "! 4:email  23514 new row violates check constraint \"users_email_check\""
+        );
+        assert_eq!(color, palette.danger);
+        // The other looks have no such line.
+        for look in desktop_looks() {
+            let (mut harness, tab, id) = editable_in(look);
+            leave_pending(&mut harness, tab, id, (1, 2), "{");
+            harness.settle();
+            assert_eq!(error_line(&harness), None, "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn a_locked_cell_says_why_in_the_mode_line() {
+        let (mut harness, tab, id) = normal_mode((1, 0));
+        let why = "part of the row's key";
+        assert!(!painted(&harness, why));
+        type_key(&mut harness, Key::I, "i");
+        assert!(edits(&harness, tab, id).editor.is_none());
+        assert!(painted(&harness, why), "{:?}", harness.painted);
+        assert!(harness.has(why));
+        // In the mode line, not at the cell.
+        let said = harness.painted_rect(why).unwrap();
+        let keys = harness.painted_rect("j/k row").unwrap();
+        assert!((said.center().y - keys.center().y).abs() < 1.0);
+        assert!(said.left() > keys.right());
+        assert!(!painted(&harness, "Part of the row's key"));
+        // Until the selection moves.
+        type_key(&mut harness, Key::J, "j");
+        assert!(!painted(&harness, why));
+        // Enter and `cc` ask as `i` does.
+        harness.press(Key::Enter, Modifiers::NONE);
+        assert!(painted(&harness, why));
+        type_key(&mut harness, Key::K, "k");
+        type_key(&mut harness, Key::C, "c");
+        type_key(&mut harness, Key::C, "c");
+        assert!(painted(&harness, why));
+        // A table's name is its own: the look's lower case is for the
+        // words round it.
+        let look = Look::omarchy();
+        let locale = crate::i18n::Locale::English;
+        let line = |lock| crate::ui::workspace::lock_line(lock, "Users", &look, locale);
+        assert_eq!(
+            line(crate::edit::Lock::NoKey),
+            "Users has no primary key or unique index, so a row can't be targeted safely"
+        );
+        assert_eq!(
+            line(crate::edit::Lock::ReadOnly),
+            "this connection opens read-only"
+        );
+    }
+
+    #[test]
+    fn the_tab_of_a_table_with_pending_changes_ends_in_a_plus() {
+        let (mut harness, tab, id) = normal_mode((1, 1));
+        let palette = harness.app.palette;
+        assert!(painted_in(&harness, "users", palette.text));
+        assert!(!painted(&harness, "users [+]"));
+        make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
+        harness.settle();
+        // In the tab's own colour: the active tab's.
+        assert!(
+            painted_in(&harness, "users [+]", palette.text),
+            "{:?}",
+            harness.painted
+        );
+        // Behind another tab it is as dim as that tab's name.
+        harness.app.apply(Action::NewSqlTab(tab));
+        harness.settle();
+        assert!(painted_in(&harness, "users [+]", palette.dim));
+        // Reverted, the mark goes.
+        harness.app.apply(Action::ActivateTab { tab, id });
+        harness.app.apply(Action::RevertCell { tab, id });
+        harness.settle();
+        assert!(!painted(&harness, "users [+]"));
+        // The other looks mark the tab with their dot, not with this.
+        for look in desktop_looks() {
+            let (mut harness, tab, id) = editable_in(look);
+            make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
+            harness.settle();
+            assert!(!painted(&harness, "users [+]"), "{}", look.name);
+        }
+    }
+
+    /// The mark the terminal's status line leads what a save came to with,
+    /// and its colour: the piece painted just left of `text`.
+    fn mark_before(harness: &Harness, text: &str) -> Option<(String, egui::Color32)> {
+        let said = harness.painted_rect(text)?;
+        let marks = harness.text_rects.iter().zip(&harness.painted);
+        marks
+            .filter(|((_, rect), _)| {
+                (rect.center().y - said.center().y).abs() < 2.0
+                    && rect.right() <= said.left()
+                    && said.left() - rect.right() < 12.0
+            })
+            .map(|(_, (piece, color))| (piece.clone(), *color))
+            .next_back()
+    }
+
+    #[test]
+    fn a_written_save_and_a_conflict_are_said_in_the_status_line() {
+        use tabletist_db::{Conflict, WriteOutcome};
+        let (mut harness, tab, id) = normal_mode((1, 1));
+        let palette = harness.app.palette;
+        // The marks are drawn by the look's font, which is the desktop's
+        // own: the first of each kind that it has.
+        let font = crate::typography::TextRole::OSecondary.font_id(Look::omarchy().faces);
+        let drawn = |harness: &Harness, mark: &str| {
+            harness.ctx.fonts_mut(|fonts| fonts.has_glyphs(&font, mark))
+        };
+        make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
+        make_pending(&mut harness, tab, id, (3, 1), "dan@example.com");
+        harness.press(Key::S, Modifiers::COMMAND);
+        let changed = Conflict {
+            row: 0,
+            server: Some(vec![
+                tabletist_db::Value::Int(2),
+                tabletist_db::Value::Text("other@example.com".into()),
+                tabletist_db::Value::Null,
+            ]),
+        };
+        harness.answer_written(Ok(WriteOutcome::Conflicts(vec![changed])));
+        harness.settle();
+        let said = "conflict row id 2 changed on the server. nothing was written.";
+        assert!(painted(&harness, said), "{:?}", harness.painted);
+        assert!(harness.has(said));
+        assert_eq!(
+            mark_before(&harness, said),
+            Some(("≠".to_owned(), palette.warning))
+        );
+        // The set stays, and so do its counts.
+        assert!(painted(&harness, "2 pending · 2 rows"));
+        // A statement the database refused.
+        harness.press(Key::S, Modifiers::COMMAND);
+        harness.answer_written(Ok(WriteOutcome::Failed {
+            row: 0,
+            error: tabletist_db::Error::Query {
+                code: Some("23514".into()),
+                message: "check users_email_check".into(),
+                detail: None,
+                hint: None,
+            },
+        }));
+        harness.settle();
+        let said = "failed 23514 · check users_email_check. nothing was written.";
+        assert!(painted(&harness, said), "{:?}", harness.painted);
+        let (mark, color) = mark_before(&harness, said).expect("its mark");
+        assert!(["✗", "✕"].contains(&mark.as_str()), "{mark}");
+        assert!(drawn(&harness, &mark), "{mark}: a replacement box");
+        assert_eq!(color, palette.danger);
+        assert!(painted_in(
+            &harness,
+            "rolled back · cells stay pending in red",
+            palette.dim
+        ));
+        // Written: the mark in the success colour, and what it came to.
+        harness.press(Key::S, Modifiers::COMMAND);
+        harness.answer_written(Ok(WriteOutcome::Written {
+            rows: vec![
+                vec![
+                    tabletist_db::Value::Int(2),
+                    tabletist_db::Value::Text("bob@example.com".into()),
+                    tabletist_db::Value::Null,
+                ],
+                vec![
+                    tabletist_db::Value::Int(4),
+                    tabletist_db::Value::Text("dan@example.com".into()),
+                    tabletist_db::Value::Null,
+                ],
+            ],
+            elapsed: std::time::Duration::from_millis(14),
+        }));
+        harness.settle();
+        let said = "written 2 changes · 2 rows · 14 ms";
+        assert!(painted(&harness, said), "{:?}", harness.painted);
+        let (mark, color) = mark_before(&harness, said).expect("its mark");
+        assert!(["✓", "√"].contains(&mark.as_str()), "{mark}");
+        assert!(drawn(&harness, &mark), "{mark}: a replacement box");
+        assert_eq!(color, palette.success);
+        assert!(!painted(&harness, "2 pending · 2 rows"));
+        // It gives way while a cell is edited.
+        type_key(&mut harness, Key::I, "i");
+        assert!(!painted(&harness, said));
+        harness.press(Key::Escape, Modifiers::NONE);
+        // What a save came to is never cut off by the keys: they give way.
+        make_pending(&mut harness, tab, id, (1, 1), "ann@example.com");
+        harness.press(Key::S, Modifiers::COMMAND);
+        harness.answer_written(Err(tabletist_db::Error::Cancelled));
+        harness.size.x = 720.0;
+        harness.settle();
+        let said = "save cancelled. nothing was written.";
+        assert!(painted(&harness, said), "{:?}", harness.painted);
+        assert!(painted(&harness, "1 pending · 1 row"));
+        // Nothing else of the line stands on it.
+        let at = harness.painted_rect(said).unwrap();
+        let over: Vec<_> = harness
+            .text_rects
+            .iter()
+            .filter(|(text, rect)| text != said && rect.intersects(at))
+            .collect();
+        assert!(over.is_empty(), "{over:?}");
+        assert!(!painted(&harness, "ctrl+b tables"));
+        // And the page's range is at the line's end still.
+        let range = harness
+            .text_rects
+            .iter()
+            .find(|(text, _)| text.ends_with("/5 · 12 ms"))
+            .map(|(_, rect)| *rect)
+            .expect("the page's range");
+        assert!(at.right() < range.left(), "{at:?} before {range:?}");
+    }
+
+    #[test]
+    fn the_keys_struck_through_are_the_ones_still_to_come() {
+        let (mut harness, tab, _id) = normal_mode((1, 1));
+        // The row panel strikes its own keys through: the status line's
+        // alone are looked at.
+        harness.app.workspace_mut(tab).unwrap().row_panel = false;
+        harness.settle();
+        for hint in ["o new row", "dd delete", ":w write"] {
+            assert!(painted(&harness, hint), "{hint}: {:?}", harness.painted);
+        }
+        // `i edit` is live now, and the struck `e edit` is gone.
+        assert!(!painted(&harness, "e edit"));
+        assert!(painted(&harness, "i edit"));
+    }
+
+    #[test]
     fn the_counts_stay_in_a_window_too_narrow_for_the_keys() {
         let (mut harness, tab, id) = normal_mode((1, 1));
         make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");

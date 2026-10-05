@@ -1101,12 +1101,85 @@ pub fn type_line(
     (line, key)
 }
 
+/// The terminal look's line under the grid for the first cell that is to
+/// fix or that a save failed on: `! 4:publisher_id  int8 expects a whole
+/// number` (the row's number, the column, what was said). A bottom panel:
+/// called before the grid is drawn, it stands under it.
+fn error_line(app: &App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId) {
+    let (locale, palette, look) = (app.locale, app.palette, app.look);
+    let said = app
+        .workspace(tab)
+        .and_then(|workspace| workspace.object_tab(object_tab))
+        .and_then(|object| {
+            let page = object.page()?;
+            // The set is in the page's order: by row, then by column.
+            let (&(row, col), pending) = object
+                .edits
+                .cells
+                .iter()
+                .find(|(_, pending)| pending.state != State::Ready)?;
+            let column = page.columns.get(col)?;
+            let message = match &pending.state {
+                State::Ready => return None,
+                State::ToFix(problem) => {
+                    let typed = match &pending.new {
+                        NewValue::Text(text) => Some(text.as_str()),
+                        NewValue::Null => None,
+                    };
+                    let type_name = format::type_label(&column.type_name, column.kind);
+                    let type_name = format::display_safe(&type_name);
+                    cell_editor::problem_text(problem, &type_name, typed, locale)
+                }
+                State::Failed(error) => failure_text(error),
+            };
+            // The database's words and the column's values as they are:
+            // the look's lower case is for the app's own.
+            Some(format!(
+                "! {}:{}  {message}",
+                object.query.offset + row as u64 + 1,
+                format::display_safe(&column.name)
+            ))
+        });
+    let Some(said) = said else {
+        // A panel takes one of its parent's ids: passed over while there
+        // is no line, so the grid under it is the same widget with the
+        // line and without.
+        ui.skip_ahead_auto_ids(1);
+        return;
+    };
+    let role = TextRole::OBody;
+    let height = role.row_height(ui.ctx(), look.faces) + 10.0;
+    egui::Panel::bottom(Id::new(("error-line", tab.0, object_tab.0)))
+        .exact_size(height)
+        .resizable(false)
+        .show_separator_line(false)
+        .frame(Frame::new().fill(palette.window))
+        .show(ui, |ui| {
+            let rect = ui.max_rect();
+            widgets::hline(ui, rect.x_range(), rect.top() + 0.5, palette.outline);
+            let left = rect.left() + grid::cell_pad(&look);
+            let y = rect.top() + 1.0 + (height - 1.0) / 2.0;
+            let room = (rect.right() - grid::cell_pad(&look) - left).max(0.0);
+            let shown = grid::ellipsize(&said, room, false, |text| {
+                role.width(ui.ctx(), look.faces, text)
+            });
+            let text = Text::one(&look, role, &shown, palette.danger);
+            let width = widgets::paint_text(ui, left, y, text);
+            // The whole of it for a screen reader, cut or not.
+            let place = Rect::from_min_size(pos2(left, rect.top()), vec2(width.max(1.0), height));
+            widgets::announce(ui, place, &said);
+        });
+}
+
 pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId) {
     let locale = app.locale;
     let palette = app.palette;
     let look = app.look;
     // An editor that is open has the keyboard, unless a dialog has it.
     let hold = app.dialog.is_none();
+    if look.terminal {
+        error_line(app, ui, tab, object_tab);
+    }
     let Some(workspace) = app.workspace(tab) else {
         return;
     };

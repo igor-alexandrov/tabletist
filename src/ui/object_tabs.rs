@@ -375,6 +375,12 @@ fn terminal_tab(
     } else {
         tab.name.to_owned()
     };
+    // A table with pending changes says so after its name.
+    let name = if tab.unsaved {
+        format!("{name} [+]")
+    } else {
+        name
+    };
     let name_color = match (tab.active, tab.pinned) {
         (true, _) => palette.text,
         (false, true) => palette.dim,
@@ -536,12 +542,19 @@ mod tests {
             );
             let after = crate::testing::bounds(&tree, "users tab, unsaved", Role::Button)
                 .unwrap_or_else(|| panic!("{}: the tab says it is unsaved", look.name));
-            assert_eq!(after, before, "{}", look.name);
-            // The terminal's mark is its own, and not a dot.
+            // The terminal's mark is its own, and not a dot: `[+]` after
+            // the name, which the tab grows by.
             assert_eq!(marked(&harness, after), !look.terminal, "{}", look.name);
             if look.terminal {
+                let role = TextRole::OBody;
+                let mark = role.width(&harness.ctx, look.faces, " [+]");
+                assert_eq!(after.min, before.min, "{}", look.name);
+                assert_eq!(after.height(), before.height(), "{}", look.name);
+                let grown = after.width() - before.width();
+                assert!((grown - mark).abs() < 0.5, "{}: by {grown}", look.name);
                 continue;
             }
+            assert_eq!(after, before, "{}", look.name);
             // Its close button is still there to press, and under the
             // pointer it shows in the dot's place.
             assert!(crate::testing::node(&tree, "Close users", Role::Button).is_some());
