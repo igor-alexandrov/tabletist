@@ -10746,6 +10746,11 @@ mod tests {
                 start: EditStart::Value,
             });
             assert_eq!(counted_and_saved(&mut harness, tab, id), (2, 2));
+            // A pending cell typed back to what it loaded leaves the set
+            // when the editor closes: it is one change fewer.
+            let (mut harness, tab, id) = two_pending();
+            typing(&mut harness, tab, id, at(3, 1), "user4@example.com");
+            assert_eq!(counted_and_saved(&mut harness, tab, id), (1, 1));
         }
 
         #[test]

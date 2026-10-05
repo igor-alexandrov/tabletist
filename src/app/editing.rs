@@ -218,9 +218,10 @@ impl App {
     /// Save, which closes the editor first, would make it one more. That
     /// is an editor that was typed into, on a cell that is not pending
     /// already, whose text is a change of what was loaded: one its column
-    /// refuses as well, which is left as a cell to fix. An open editor
-    /// with nothing pending yet still counts as one: a tab that holds
-    /// edits never counts as none.
+    /// refuses as well, which is left as a cell to fix. A pending cell
+    /// typed back to what it loaded is one fewer: closing the editor
+    /// takes it out of the set. An open editor with nothing pending yet
+    /// still counts as one: a tab that holds edits never counts as none.
     fn unwritten(&self, tab: ConnTabId, id: TabId) -> usize {
         let Some(edits) = self
             .workspace(tab)
@@ -230,10 +231,17 @@ impl App {
             return 0;
         };
         let closed = self.table(tab, id, typed).flatten();
-        let editing = closed.is_some_and(|typed| {
-            typed.changed && !edits.cells.contains_key(&(typed.cell.row, typed.cell.col))
-        });
-        (edits.counts().changes + usize::from(editing)).max(1)
+        let pending = closed
+            .as_ref()
+            .is_some_and(|typed| edits.cells.contains_key(&(typed.cell.row, typed.cell.col)));
+        let changed = closed.as_ref().map(|typed| typed.changed);
+        let changes = edits.counts().changes;
+        let changes = match (changed, pending) {
+            (Some(true), false) => changes + 1,
+            (Some(false), true) => changes.saturating_sub(1),
+            _ => changes,
+        };
+        changes.max(1)
     }
 
     /// Does what was held, now that nothing is in its way. It passes the

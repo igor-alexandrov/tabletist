@@ -560,7 +560,9 @@ again.
   changes it writes. A text its column refuses counts as well, since
   leaving the editor keeps it as a cell to fix. An editor on a cell that
   is pending already adds nothing, nor does one whose text is what the
-  cell loaded or one that was only opened. A tab that holds edits never
+  cell loaded or one that was only opened. A pending cell typed back to
+  what it loaded counts one fewer: closing the editor takes it out of the
+  set. A tab that holds edits never
   counts as none: an editor that was only opened, with nothing pending, is
   one. Several tabs are summed.
 - **Enter never discards.** It follows the button that has the keyboard:
