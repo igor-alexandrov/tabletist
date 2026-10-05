@@ -49,6 +49,43 @@ pub(super) fn dropped_under_a_prompt(action: &Action) -> bool {
     )
 }
 
+/// What the text of an editor that was typed into comes to once the editor
+/// closes.
+struct Typed {
+    cell: CellPos,
+    /// The text, as the cell's new value.
+    new: NewValue,
+    /// It differs from what the cell loaded. A text that does not is no
+    /// pending change, and takes one the cell had out of the set.
+    changed: bool,
+    /// What the column's check refuses of a text that is a change.
+    problem: Option<Problem>,
+}
+
+/// What closing the tab's editor makes of its text: `None` where no editor
+/// is open, it was not typed into, or its cell is no longer on the page.
+fn typed(table: &Table<'_>, object: &ObjectTab) -> Option<Typed> {
+    let editor = object.edits.editor.as_ref()?;
+    let cell = editor.cell;
+    let column = table.column(cell.col)?;
+    let class = column_class(table.dialect, &column.type_name);
+    let loaded = table.page.rows.get(cell.row)?.get(cell.col)?;
+    if !editor.touched {
+        return None;
+    }
+    let new = NewValue::Text(editor.text.clone());
+    let changed = is_change(loaded, &new, class);
+    let problem = changed
+        .then(|| check(table.dialect, column, &editor.text))
+        .flatten();
+    Some(Typed {
+        cell,
+        new,
+        changed,
+        problem,
+    })
+}
+
 impl App {
     /// What editing may know of a table tab: `None` while it has no page.
     fn table<T>(
@@ -161,12 +198,7 @@ impl App {
             self.notice = Some("Save or discard the pending changes first.".into());
             return;
         }
-        // An open editor with nothing pending yet still counts as one.
-        let changes = tabs
-            .iter()
-            .filter_map(edits)
-            .map(|edits| edits.counts().changes.max(1))
-            .sum();
+        let changes = tabs.iter().map(|&(tab, id)| self.unwritten(tab, id)).sum();
         // Never under a save, which blocks the tab's Save as well.
         let can_save = match tabs.as_slice() {
             [(tab, id)] => self.save_blocked(*tab, *id).is_none(),
@@ -179,6 +211,29 @@ impl App {
             changes,
             saving,
         })));
+    }
+
+    /// How many changes the tab holds, as the question about leaving it
+    /// counts them: its pending cells, and the cell being edited where
+    /// Save, which closes the editor first, would make it one more. That
+    /// is an editor that was typed into, on a cell that is not pending
+    /// already, whose text is a change of what was loaded: one its column
+    /// refuses as well, which is left as a cell to fix. An open editor
+    /// with nothing pending yet still counts as one: a tab that holds
+    /// edits never counts as none.
+    fn unwritten(&self, tab: ConnTabId, id: TabId) -> usize {
+        let Some(edits) = self
+            .workspace(tab)
+            .and_then(|workspace| workspace.object_tab(id))
+            .map(|object| &object.edits)
+        else {
+            return 0;
+        };
+        let closed = self.table(tab, id, typed).flatten();
+        let editing = closed.is_some_and(|typed| {
+            typed.changed && !edits.cells.contains_key(&(typed.cell.row, typed.cell.col))
+        });
+        (edits.counts().changes + usize::from(editing)).max(1)
     }
 
     /// Does what was held, now that nothing is in its way. It passes the
@@ -523,26 +578,17 @@ impl App {
     /// as a cell to fix, so typing is never lost. Says whether the editor
     /// closed.
     pub(super) fn close_editor(&mut self, tab: ConnTabId, id: TabId, left: bool) -> bool {
-        let verdict = self.table(tab, id, |table, object| {
-            let editor = object.edits.editor.as_ref()?;
-            let cell = editor.cell;
-            let column = table.column(cell.col)?;
-            let class = column_class(table.dialect, &column.type_name);
-            let loaded = table.page.rows.get(cell.row)?.get(cell.col)?;
-            if !editor.touched {
-                return None;
-            }
-            let new = NewValue::Text(editor.text.clone());
-            let changed = is_change(loaded, &new, class);
-            let problem = changed
-                .then(|| check(table.dialect, column, &editor.text))
-                .flatten();
-            Some((cell, new, changed, problem))
-        });
+        let verdict = self.table(tab, id, typed);
         let Some(object) = self.object_tab_mut(tab, id) else {
             return false;
         };
-        let Some(Some((cell, new, changed, problem))) = verdict else {
+        let Some(Some(Typed {
+            cell,
+            new,
+            changed,
+            problem,
+        })) = verdict
+        else {
             // Nothing was typed, or there is no page or no such cell any
             // more: the editor closes and the set stays as it was.
             return object.edits.editor.take().is_some();

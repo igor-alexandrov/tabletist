@@ -10674,6 +10674,149 @@ mod tests {
             assert_eq!(leave_prompt(&harness), Some(false));
         }
 
+        /// Opens the editor on `cell` and sets its text as a field would:
+        /// the editor stays open, typed into.
+        fn typing(harness: &mut Harness, tab: ConnTabId, id: TabId, cell: CellPos, text: &str) {
+            harness.app.apply(Action::EditCell {
+                tab,
+                id,
+                cell,
+                start: EditStart::Value,
+            });
+            let editor = harness.app.editor_mut(tab, id).expect("an editor");
+            editor.text = text.to_owned();
+            harness.app.apply(Action::EditorTyped { tab, id });
+        }
+
+        /// The fixture's table with two cells pending.
+        fn two_pending() -> (Harness, ConnTabId, TabId) {
+            let mut harness = Harness::new();
+            let (tab, id) = harness.editable();
+            type_into(&mut harness, tab, id, at(1, 1), "bob@example.com");
+            type_into(&mut harness, tab, id, at(3, 1), "dan@example.com");
+            (harness, tab, id)
+        }
+
+        /// How many changes the Leave prompt that is up asks about.
+        fn asked_about(harness: &Harness) -> usize {
+            match &harness.app.dialog {
+                Some(Dialog::Leave(prompt)) => prompt.changes,
+                other => panic!("expected the Leave prompt, got {other:?}"),
+            }
+        }
+
+        /// Asks to close the tab, reads the count the Leave prompt gives,
+        /// and answers it with Save: the count, and how many cells the save
+        /// then holds as pending.
+        fn counted_and_saved(harness: &mut Harness, tab: ConnTabId, id: TabId) -> (usize, usize) {
+            harness.app.apply(Action::CloseTab { tab, id });
+            let asked = asked_about(harness);
+            harness.app.apply(Action::LeaveSave);
+            (asked, object(harness, tab, id).edits.cells.len())
+        }
+
+        #[test]
+        fn the_leave_prompt_counts_the_cell_being_edited() {
+            // Two cells pending and an editor typed into on a third: its
+            // text is part of what Save writes, and of what is asked about.
+            let (mut harness, tab, id) = two_pending();
+            typing(&mut harness, tab, id, at(4, 1), "eve@example.com");
+            let before = harness.app.backend.sent.len();
+            assert_eq!(counted_and_saved(&mut harness, tab, id), (3, 3));
+            let sent = write_since(&harness, before).expect("a Write");
+            let cells: usize = sent.rows.iter().map(|row| row.set.len()).sum();
+            assert_eq!(cells, 3);
+            // On one of the pending cells it is that cell, counted already.
+            let (mut harness, tab, id) = two_pending();
+            typing(&mut harness, tab, id, at(3, 1), "fay@example.com");
+            assert_eq!(counted_and_saved(&mut harness, tab, id), (2, 2));
+            // Typed into and left with the text the cell loaded, it is no
+            // change.
+            let (mut harness, tab, id) = two_pending();
+            typing(&mut harness, tab, id, at(4, 1), "user5@example.com");
+            let editor = object(&harness, tab, id).edits.editor.as_ref();
+            assert!(editor.is_some_and(|editor| editor.touched));
+            assert_eq!(counted_and_saved(&mut harness, tab, id), (2, 2));
+            // Nor is an editor that was opened and not typed into.
+            let (mut harness, tab, id) = two_pending();
+            harness.app.apply(Action::EditCell {
+                tab,
+                id,
+                cell: at(4, 1),
+                start: EditStart::Value,
+            });
+            assert_eq!(counted_and_saved(&mut harness, tab, id), (2, 2));
+        }
+
+        #[test]
+        fn a_tab_that_holds_edits_never_counts_as_none() {
+            // An editor that was only opened, with nothing pending.
+            let mut harness = Harness::new();
+            let (tab, id) = harness.editable();
+            harness.app.apply(Action::EditCell {
+                tab,
+                id,
+                cell: at(1, 1),
+                start: EditStart::Value,
+            });
+            harness.app.apply(Action::CloseTab { tab, id });
+            assert_eq!(asked_about(&harness), 1);
+            // One that was typed into is the one change, not a second.
+            let mut harness = Harness::new();
+            let (tab, id) = harness.editable();
+            typing(&mut harness, tab, id, at(1, 1), "bob@example.com");
+            assert_eq!(counted_and_saved(&mut harness, tab, id), (1, 1));
+        }
+
+        #[test]
+        fn a_text_its_column_refuses_counts_as_the_cell_to_fix_it_becomes() {
+            // Left by the prompt's Save, the text stays as a cell to fix:
+            // it is one of the tab's changes, though no save is sent.
+            let (mut harness, tab, id) = two_pending();
+            typing(&mut harness, tab, id, at(1, 2), "{oops");
+            assert_eq!(counted_and_saved(&mut harness, tab, id), (3, 3));
+            let edits = &object(&harness, tab, id).edits;
+            assert!(matches!(edits.cells[&(1, 2)].state, State::ToFix(_)));
+            assert_eq!(edits.counts().to_fix, 1);
+            assert_eq!(writes(&harness), 0);
+        }
+
+        #[test]
+        fn the_leave_prompt_sums_what_several_tabs_hold() {
+            // Two pending and a third being typed in one tab, one pending
+            // and an editor only opened on another cell in the next.
+            let (mut harness, tab, id) = two_pending();
+            typing(&mut harness, tab, id, at(4, 1), "eve@example.com");
+            let orders = open(&mut harness, tab, "orders", true);
+            harness.answer_structure(crate::testing::fixture_structure());
+            harness.answer_rows(page(5, false));
+            type_into(&mut harness, tab, orders, at(0, 1), "x@example.com");
+            harness.app.apply(Action::EditCell {
+                tab,
+                id: orders,
+                cell: at(2, 1),
+                start: EditStart::Value,
+            });
+            for id in [id, orders] {
+                assert!(object(&harness, tab, id).edits.editor.is_some());
+            }
+            harness.app.apply(Action::Disconnect(tab));
+            assert_eq!(asked_about(&harness), 4);
+            // A third whose editor was only opened is one more.
+            harness.app.apply(Action::LeaveStay);
+            let items = open(&mut harness, tab, "items", true);
+            harness.answer_structure(crate::testing::fixture_structure());
+            harness.answer_rows(page(5, false));
+            harness.app.apply(Action::EditCell {
+                tab,
+                id: items,
+                cell: at(0, 1),
+                start: EditStart::Value,
+            });
+            harness.app.apply(Action::Disconnect(tab));
+            assert_eq!(asked_about(&harness), 5);
+        }
+
         #[test]
         fn a_guarded_action_is_ignored_while_the_save_runs_and_refused_under_another_dialog() {
             let mut harness = Harness::new();
