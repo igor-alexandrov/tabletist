@@ -33,7 +33,7 @@ impl Conn {
     /// the session inside the transaction, with the script's settings. The
     /// backend never drops one; it stops a run through `stop` and the
     /// session's cancel.
-    pub async fn run_script(
+    pub(super) async fn script(
         &self,
         texts: &[String],
         limit: u32,
@@ -496,13 +496,14 @@ mod tests {
     use super::super::cancel;
     use super::super::tests::{session, test_url};
     use super::*;
+    use crate::adapter::Adapter;
 
     /// The backend spawns a script run, so its future must be `Send`. This
     /// fails to compile, not to run.
     #[test]
     fn a_script_run_can_be_spawned() {
         fn send<T: Send>(_: &T) {}
-        let _check = |conn: &Conn, texts: &[String], stop: &StopFlag| {
+        let _check = |conn: &Conn, texts: Vec<String>, stop: &StopFlag| {
             send(&conn.run_script(texts, 10, ScriptMode::ReadOnly, stop));
             send(&conn.server_version());
         };
@@ -788,7 +789,7 @@ mod tests {
         let texts: Vec<String> = script.iter().map(|&text| text.to_owned()).collect();
         tokio::time::timeout(
             Duration::from_secs(10),
-            conn.run_script(&texts, 10, ScriptMode::ReadOnly, stop),
+            conn.script(&texts, 10, ScriptMode::ReadOnly, stop),
         )
         .await
         .expect("the run hung")

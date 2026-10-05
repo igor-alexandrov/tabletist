@@ -11,10 +11,12 @@ use std::time::{Duration, Instant};
 use tokio_postgres::tls::{MakeTlsConnect, TlsConnect};
 use tokio_postgres::{SimpleQueryMessage, Socket};
 
+use crate::adapter::Adapter;
 use crate::{
-    Access, ColumnInfo, ColumnMeta, ConnectSpec, Dialect, Error, ForeignKeyInfo, IndexInfo,
-    MAX_LISTED, ObjectInfo, ObjectKind, ObjectRef, Result, RowPage, RowQuery, Secrets, Structure,
-    Value, ValueKind, value_from_pg_text,
+    Access, CancelHandle, CancelInner, ChangeSet, ColumnInfo, ColumnMeta, ConnectSpec, Dialect,
+    Error, ForeignKeyInfo, IndexInfo, MAX_LISTED, ObjectInfo, ObjectKind, ObjectRef, Result,
+    RowPage, RowQuery, ScriptMode, ScriptOutcome, Secrets, StopFlag, Structure, Value, ValueKind,
+    WriteOutcome, value_from_pg_text,
 };
 use tokio_postgres::error::SqlState;
 use tokio_postgres_rustls::MakeRustlsConnect;
@@ -239,19 +241,6 @@ fn row_values(row: &tokio_postgres::SimpleQueryRow, columns: &[ColumnMeta]) -> R
 }
 
 impl Conn {
-    /// See [`crate::Connection::server_version`].
-    pub async fn server_version(&self) -> Result<String> {
-        let client = self.client.lock().await;
-        let messages = client
-            .simple_query("SHOW server_version")
-            .await
-            .map_err(query_error)?;
-        let version = first_text(&messages).unwrap_or_default();
-        // "17.2 (Debian 17.2-1.pgdg120+1)" reads as "17.2".
-        let version = version.split_whitespace().next().unwrap_or_default();
-        Ok(format!("PostgreSQL {version}"))
-    }
-
     /// Connects to the spec's server, or through a tunnel's local port `via`.
     pub async fn connect(
         spec: &ConnectSpec,
@@ -316,20 +305,6 @@ impl Conn {
     ) -> Result<Vec<tokio_postgres::Row>> {
         let client = self.client.lock().await;
         client.query(sql, params).await.map_err(query_error)
-    }
-
-    pub async fn list_databases(&self) -> Result<Vec<String>> {
-        if let Some(aliases) = self.database_listing(Duration::from_secs(10)).await {
-            return Ok(aliases);
-        }
-        let rows = self
-            .catalog(
-                "SELECT datname::text FROM pg_database \
-                 WHERE datallowconn AND NOT datistemplate ORDER BY datname",
-                &[],
-            )
-            .await?;
-        rows.iter().map(|row| column(row, 0)).collect()
     }
 
     /// PgBouncer's reserved admin database is the protocol-level source of
@@ -405,48 +380,6 @@ impl Conn {
         Some(aliases)
     }
 
-    pub async fn list_schemas(&self) -> Result<Vec<String>> {
-        let rows = self
-            .catalog(
-                &format!(
-                    "SELECT nspname::text FROM pg_namespace ORDER BY nspname LIMIT {MAX_LISTED}"
-                ),
-                &[],
-            )
-            .await?;
-        rows.iter().map(|row| column(row, 0)).collect()
-    }
-
-    pub async fn list_objects(&self, schema: &str) -> Result<Vec<ObjectInfo>> {
-        let rows = self
-            .catalog(
-                &format!(
-                    "SELECT c.relname::text, c.relkind::text, c.reltuples::float8 \
-                     FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace \
-                     WHERE n.nspname = $1 AND c.relkind IN ('r', 'p', 'f', 'v', 'm') \
-                     ORDER BY c.relname LIMIT {MAX_LISTED}"
-                ),
-                &[&schema],
-            )
-            .await?;
-        rows.iter()
-            .map(|row| {
-                let kind: String = column(row, 1)?;
-                let tuples: f64 = column(row, 2)?;
-                Ok(ObjectInfo {
-                    name: column(row, 0)?,
-                    kind: match kind.as_str() {
-                        "v" => ObjectKind::View,
-                        "m" => ObjectKind::MaterializedView,
-                        _ => ObjectKind::Table,
-                    },
-                    // -1 means never analyzed (PostgreSQL 14+).
-                    estimated_rows: (tuples >= 0.0).then_some(tuples as u64),
-                })
-            })
-            .collect()
-    }
-
     async fn relation(&self, object: &ObjectRef) -> Result<u32> {
         let rows = self
             .catalog(
@@ -503,8 +436,90 @@ impl Conn {
             .await?;
         rows.iter().map(|row| column(row, 0)).collect()
     }
+}
 
-    pub async fn describe(&self, object: &ObjectRef) -> Result<Structure> {
+impl Adapter for Conn {
+    fn is_encrypted(&self) -> bool {
+        self.encrypted
+    }
+
+    fn cancel_handle(&self) -> CancelHandle {
+        CancelHandle(CancelInner::Postgres {
+            token: self.cancel.clone(),
+            tls: self.tls.clone(),
+        })
+    }
+
+    /// See [`crate::Connection::server_version`].
+    async fn server_version(&self) -> Result<String> {
+        let client = self.client.lock().await;
+        let messages = client
+            .simple_query("SHOW server_version")
+            .await
+            .map_err(query_error)?;
+        let version = first_text(&messages).unwrap_or_default();
+        // "17.2 (Debian 17.2-1.pgdg120+1)" reads as "17.2".
+        let version = version.split_whitespace().next().unwrap_or_default();
+        Ok(format!("PostgreSQL {version}"))
+    }
+
+    async fn list_databases(&self) -> Result<Vec<String>> {
+        if let Some(aliases) = self.database_listing(Duration::from_secs(10)).await {
+            return Ok(aliases);
+        }
+        let rows = self
+            .catalog(
+                "SELECT datname::text FROM pg_database \
+                 WHERE datallowconn AND NOT datistemplate ORDER BY datname",
+                &[],
+            )
+            .await?;
+        rows.iter().map(|row| column(row, 0)).collect()
+    }
+
+    async fn list_schemas(&self) -> Result<Vec<String>> {
+        let rows = self
+            .catalog(
+                &format!(
+                    "SELECT nspname::text FROM pg_namespace ORDER BY nspname LIMIT {MAX_LISTED}"
+                ),
+                &[],
+            )
+            .await?;
+        rows.iter().map(|row| column(row, 0)).collect()
+    }
+
+    async fn list_objects(&self, schema: &str) -> Result<Vec<ObjectInfo>> {
+        let rows = self
+            .catalog(
+                &format!(
+                    "SELECT c.relname::text, c.relkind::text, c.reltuples::float8 \
+                     FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace \
+                     WHERE n.nspname = $1 AND c.relkind IN ('r', 'p', 'f', 'v', 'm') \
+                     ORDER BY c.relname LIMIT {MAX_LISTED}"
+                ),
+                &[&schema],
+            )
+            .await?;
+        rows.iter()
+            .map(|row| {
+                let kind: String = column(row, 1)?;
+                let tuples: f64 = column(row, 2)?;
+                Ok(ObjectInfo {
+                    name: column(row, 0)?,
+                    kind: match kind.as_str() {
+                        "v" => ObjectKind::View,
+                        "m" => ObjectKind::MaterializedView,
+                        _ => ObjectKind::Table,
+                    },
+                    // -1 means never analyzed (PostgreSQL 14+).
+                    estimated_rows: (tuples >= 0.0).then_some(tuples as u64),
+                })
+            })
+            .collect()
+    }
+
+    async fn describe(&self, object: &ObjectRef) -> Result<Structure> {
         let oid = self.relation(object).await?;
         let columns = self
             .catalog(
@@ -647,7 +662,7 @@ impl Conn {
     /// One page. The SQL is prepared first, which refuses a second statement
     /// and yields the column types; it then runs through the simple-query
     /// protocol (every value as text) inside a read-only transaction.
-    pub async fn fetch_rows(&self, query: &RowQuery) -> Result<RowPage> {
+    async fn fetch_rows(&self, query: &RowQuery) -> Result<RowPage> {
         let key = self.primary_key(&query.object).await?;
         let binary = self.binary_columns(query).await?;
         let sql = Dialect::Postgres.select_rows(query, &key, &binary);
@@ -687,7 +702,7 @@ impl Conn {
         })
     }
 
-    pub async fn count_rows(&self, query: &RowQuery) -> Result<u64> {
+    async fn count_rows(&self, query: &RowQuery) -> Result<u64> {
         let binary = self.binary_columns(query).await?;
         let sql = Dialect::Postgres.count_rows(query, &binary);
         let mut client = self.client.lock().await;
@@ -715,6 +730,20 @@ impl Conn {
                 _ => None,
             })
             .ok_or_else(|| Error::query("the count returned no number"))
+    }
+
+    async fn run_script(
+        &self,
+        texts: Vec<String>,
+        limit: u32,
+        mode: ScriptMode,
+        stop: &StopFlag,
+    ) -> Result<ScriptOutcome> {
+        self.script(&texts, limit, mode, stop).await
+    }
+
+    async fn write(&self, changes: &ChangeSet, stop: &StopFlag) -> Result<WriteOutcome> {
+        self.save(changes, stop).await
     }
 }
 

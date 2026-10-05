@@ -8,6 +8,7 @@
 //! transactions (on SQLite under `query_only`), and a script run in
 //! [`ScriptMode::ReadOnly`] cannot write.
 
+mod adapter;
 mod catalog;
 mod check;
 mod class;
@@ -32,6 +33,7 @@ mod write;
 use std::fmt;
 use std::sync::Arc;
 
+use adapter::Adapter;
 pub use catalog::{
     ColumnInfo, ForeignKeyInfo, IndexInfo, MAX_LISTED, ObjectInfo, ObjectKind, ObjectRef, Structure,
 };
@@ -161,9 +163,9 @@ impl Connection {
     /// TLS, so this can be false whatever the spec asked for.
     pub fn is_encrypted(&self) -> bool {
         match &self.inner {
-            Inner::Sqlite(_) => false,
-            Inner::Postgres(conn) => conn.encrypted,
-            Inner::MySql(conn) => conn.encrypted,
+            Inner::Sqlite(conn) => conn.is_encrypted(),
+            Inner::Postgres(conn) => conn.is_encrypted(),
+            Inner::MySql(conn) => conn.is_encrypted(),
         }
     }
 
@@ -209,8 +211,8 @@ impl Connection {
         let texts: Vec<String> = statements.iter().map(|s| s.text.clone()).collect();
         match &self.inner {
             Inner::Sqlite(conn) => conn.run_script(texts, limit, mode, stop).await,
-            Inner::Postgres(conn) => conn.run_script(&texts, limit, mode, stop).await,
-            Inner::MySql(conn) => conn.run_script(&texts, limit, mode, stop).await,
+            Inner::Postgres(conn) => conn.run_script(texts, limit, mode, stop).await,
+            Inner::MySql(conn) => conn.run_script(texts, limit, mode, stop).await,
         }
     }
 
@@ -228,9 +230,9 @@ impl Connection {
     /// apply (SQLite, and MySQL where databases are listed as schemas).
     pub async fn list_databases(&self) -> Result<Vec<String>> {
         match &self.inner {
-            Inner::Sqlite(_) => Ok(Vec::new()),
+            Inner::Sqlite(conn) => conn.list_databases().await,
             Inner::Postgres(conn) => conn.list_databases().await,
-            Inner::MySql(_) => Ok(Vec::new()),
+            Inner::MySql(conn) => conn.list_databases().await,
         }
     }
 
@@ -313,16 +315,9 @@ impl Connection {
     /// A handle that cancels whatever this session is running, from any task.
     pub fn cancel_handle(&self) -> CancelHandle {
         match &self.inner {
-            Inner::Sqlite(conn) => CancelHandle(CancelInner::Sqlite(conn.interrupt_handle())),
-            Inner::MySql(conn) => CancelHandle(CancelInner::MySql {
-                opts: conn.opts.clone(),
-                id: conn.id,
-                server: conn.server.clone(),
-            }),
-            Inner::Postgres(conn) => CancelHandle(CancelInner::Postgres {
-                token: conn.cancel.clone(),
-                tls: conn.tls.clone(),
-            }),
+            Inner::Sqlite(conn) => conn.cancel_handle(),
+            Inner::Postgres(conn) => conn.cancel_handle(),
+            Inner::MySql(conn) => conn.cancel_handle(),
         }
     }
 
