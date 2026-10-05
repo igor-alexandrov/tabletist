@@ -90,6 +90,30 @@ impl ScriptOutcome {
                 .iter()
                 .any(|result| result.outcome == StatementOutcome::Cancelled)
     }
+
+    /// Whether every statement that started ran to its end: what a run
+    /// that writes needs before it commits.
+    pub(crate) fn succeeded(&self) -> bool {
+        !self.stopped
+            && self.results.iter().all(|result| {
+                matches!(
+                    result.outcome,
+                    StatementOutcome::Rows { .. } | StatementOutcome::Done { .. }
+                )
+            })
+    }
+
+    /// The outcome of a run that writes, once its transaction has ended
+    /// and the session was put back, or could not be. The end is known
+    /// either way, so it is told: a run that is committed is never shown
+    /// as one that may be. A session that could not be put back is closed
+    /// for it (`broken`).
+    pub(crate) fn put_back(mut self, session: Result<()>) -> Self {
+        if let Err(error) = session {
+            self.broken = Some(cleanup_failed(ScriptMode::Write, &error));
+        }
+        self
+    }
 }
 
 /// One statement's outcome and how long it took.
@@ -233,6 +257,50 @@ mod tests {
         assert_eq!(outcome.rollback_warning, None);
         assert_eq!(outcome.broken, None);
         assert_eq!(ScriptMode::default(), ScriptMode::ReadOnly);
+    }
+
+    #[test]
+    fn a_run_whose_session_could_not_be_put_back_keeps_its_end() {
+        let committed = ScriptOutcome {
+            end: ScriptEnd::Committed,
+            ..ScriptOutcome::default()
+        };
+        assert_eq!(committed.clone().put_back(Ok(())), committed);
+        let told = committed.put_back(Err(Error::query("no")));
+        assert_eq!(told.end, ScriptEnd::Committed);
+        let broken = told.broken.expect("the session is to be closed");
+        assert!(broken.is_connection_lost());
+        assert_eq!(
+            broken.to_string(),
+            "the connection was lost: could not end the transaction: no"
+        );
+    }
+
+    #[test]
+    fn a_run_succeeded_when_every_statement_ran_to_its_end() {
+        let result = |outcome| StatementResult {
+            elapsed: Duration::ZERO,
+            outcome,
+        };
+        let done = StatementOutcome::Done {
+            affected: Some(1),
+            warnings: 0,
+        };
+        let failed = StatementOutcome::Error {
+            error: Error::query("no"),
+            position: None,
+        };
+        let of = |outcomes: Vec<StatementOutcome>, stopped| ScriptOutcome {
+            results: outcomes.into_iter().map(result).collect(),
+            stopped,
+            ..ScriptOutcome::default()
+        };
+        assert!(of(vec![done.clone(), done.clone()], false).succeeded());
+        assert!(of(Vec::new(), false).succeeded());
+        assert!(!of(vec![done.clone(), failed], false).succeeded());
+        assert!(!of(vec![done.clone(), StatementOutcome::Cancelled], true).succeeded());
+        // Stopped after its last statement.
+        assert!(!of(vec![done], true).succeeded());
     }
 
     #[test]

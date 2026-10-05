@@ -7,8 +7,8 @@ use std::time::Duration;
 
 use tabletist_db::{
     Access, CellChange, ChangeSet, Conflict, ConnectSpec, Connection, Dialect, Driver, Error,
-    Filter, FilterOp, HostKeys, NewValue, ObjectRef, RowChange, RowQuery, ScriptMode, Secrets,
-    Sort, SortDir, StatementOutcome, StopFlag, Value, ValueKind, WriteOutcome,
+    Filter, FilterOp, HostKeys, NewValue, ObjectRef, RowChange, RowQuery, ScriptEnd, ScriptMode,
+    Secrets, Sort, SortDir, StatementOutcome, StopFlag, Value, ValueKind, WriteOutcome,
 };
 
 async fn fixture_as(access: Access) -> (Connection, tempfile::TempDir) {
@@ -878,6 +878,204 @@ async fn a_refusal_names_the_transaction_of_its_mode() {
     );
     // Nothing of either script ran.
     assert_eq!(connection.count_rows(&users(10)).await.unwrap(), 5);
+}
+
+/// The first cell of a query's only row, read in a read-only run.
+async fn number(connection: &Connection, sql: &str) -> i64 {
+    let outcome = run(connection, sql).await.unwrap();
+    match &outcome.results[0].outcome {
+        StatementOutcome::Rows { rows, .. } => match rows[0][0] {
+            Value::Int(number) => number,
+            ref other => panic!("{sql}: {other:?}"),
+        },
+        other => panic!("{sql}: {other:?}"),
+    }
+}
+
+/// What each statement of a run did, as its row count, or `None` for one
+/// that has none or did not end well.
+fn affected(outcome: &tabletist_db::ScriptOutcome) -> Vec<Option<u64>> {
+    outcome
+        .results
+        .iter()
+        .map(|result| match result.outcome {
+            StatementOutcome::Done { affected, .. } => affected,
+            _ => None,
+        })
+        .collect()
+}
+
+/// Whether the session refuses a write in a read-only run, as it must
+/// after every run that writes.
+async fn is_fenced(connection: &Connection) -> bool {
+    let outcome = run(connection, "DELETE FROM events").await.unwrap();
+    matches!(
+        &outcome.results[0].outcome,
+        StatementOutcome::Error {
+            error: Error::Query { code: Some(code), .. },
+            ..
+        } if code == "8"
+    )
+}
+
+#[tokio::test]
+async fn a_run_that_writes_is_committed_and_counts_its_rows() {
+    let (connection, _dir) = fixture_as(Access::Writable).await;
+    let outcome = write(
+        &connection,
+        "INSERT INTO events (kind, payload) VALUES ('probe', 'a'), ('probe', 'b'), ('probe', 'c');
+         UPDATE events SET payload = 'x' WHERE kind = 'probe' AND payload <> 'c';
+         DELETE FROM events WHERE kind = 'probe' AND payload = 'c';
+         CREATE TABLE notes (id INTEGER PRIMARY KEY)",
+    )
+    .await
+    .unwrap();
+    assert_eq!(outcome.end, ScriptEnd::Committed);
+    assert!(!outcome.was_cancelled());
+    assert_eq!(outcome.broken, None);
+    assert_eq!(affected(&outcome), [Some(3), Some(2), Some(1), None]);
+    let kept = "SELECT count(*) FROM events WHERE kind = 'probe' AND payload = 'x'";
+    assert_eq!(number(&connection, kept).await, 2);
+    assert_eq!(number(&connection, "SELECT count(*) FROM notes").await, 0);
+    assert!(is_fenced(&connection).await);
+}
+
+#[tokio::test]
+async fn a_statement_that_fails_rolls_the_whole_run_back() {
+    let (connection, _dir) = fixture_as(Access::Writable).await;
+    let outcome = write(
+        &connection,
+        "INSERT INTO events (kind) VALUES ('probe');
+         CREATE TABLE notes (id INTEGER PRIMARY KEY);
+         INSERT INTO no_such_table VALUES (1);
+         INSERT INTO events (kind) VALUES ('probe')",
+    )
+    .await
+    .unwrap();
+    assert_eq!(outcome.end, ScriptEnd::RolledBack);
+    // The statement after the error never ran.
+    assert_eq!(outcome.results.len(), 3);
+    assert!(matches!(
+        outcome.results[2].outcome,
+        StatementOutcome::Error { .. }
+    ));
+    let probes = "SELECT count(*) FROM events WHERE kind = 'probe'";
+    assert_eq!(number(&connection, probes).await, 0);
+    let tables = "SELECT count(*) FROM sqlite_master WHERE name = 'notes'";
+    assert_eq!(number(&connection, tables).await, 0);
+    assert!(is_fenced(&connection).await);
+}
+
+#[tokio::test]
+async fn a_run_that_writes_and_is_stopped_is_rolled_back() {
+    let (connection, _dir) = fixture_as(Access::Writable).await;
+    let connection = std::sync::Arc::new(connection);
+    let probes = "SELECT count(*) FROM events WHERE kind = 'probe'";
+    // Stopped before it began: nothing runs.
+    let stop = StopFlag::new();
+    stop.stop();
+    let text = "INSERT INTO events (kind) VALUES ('probe')";
+    let outcome = within(connection.run_script(&script(text), 10, ScriptMode::Write, &stop))
+        .await
+        .unwrap();
+    assert!(outcome.results.is_empty() && outcome.was_cancelled());
+    assert_eq!(outcome.end, ScriptEnd::RolledBack);
+    assert_eq!(number(&connection, probes).await, 0);
+    // Stopped while its second statement runs: the first is undone.
+    let stop = StopFlag::new();
+    let running = {
+        let (connection, stop) = (std::sync::Arc::clone(&connection), stop.clone());
+        let text = format!("{text}; {FOREVER}");
+        tokio::spawn(async move {
+            connection
+                .run_script(&script(&text), 10, ScriptMode::Write, &stop)
+                .await
+        })
+    };
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    stop.stop();
+    let outcome = within(running).await.unwrap().unwrap();
+    assert!(outcome.was_cancelled());
+    assert_eq!(outcome.end, ScriptEnd::RolledBack);
+    assert_eq!(affected(&outcome), [Some(1), None]);
+    assert_eq!(number(&connection, probes).await, 0);
+    assert!(is_fenced(&connection).await);
+}
+
+#[tokio::test]
+async fn rows_a_write_returns_are_cut_at_the_limit_and_every_row_is_written() {
+    let (connection, _dir) = fixture_as(Access::Writable).await;
+    let text = "UPDATE big SET label = 'seen' RETURNING id";
+    let outcome =
+        within(connection.run_script(&script(text), 10, ScriptMode::Write, &StopFlag::new()))
+            .await
+            .unwrap();
+    assert_eq!(outcome.end, ScriptEnd::Committed);
+    assert!(matches!(
+        &outcome.results[0].outcome,
+        StatementOutcome::Rows { rows, truncated: true, .. } if rows.len() == 10
+    ));
+    let seen = "SELECT count(*) FROM big WHERE label = 'seen'";
+    assert_eq!(number(&connection, seen).await, 100_000);
+}
+
+#[tokio::test]
+async fn a_commit_that_fails_writes_nothing_and_the_next_run_can_begin() {
+    let (connection, _dir) = fixture_as(Access::Writable).await;
+    let tables = write(
+        &connection,
+        "CREATE TABLE shelves (id INTEGER PRIMARY KEY);
+         CREATE TABLE slots (
+             id INTEGER PRIMARY KEY,
+             shelf_id INTEGER REFERENCES shelves (id) DEFERRABLE INITIALLY DEFERRED
+         )",
+    )
+    .await
+    .unwrap();
+    assert_eq!(tables.end, ScriptEnd::Committed);
+    // The statement succeeds; the commit finds the shelf missing.
+    let outcome = write(&connection, "INSERT INTO slots VALUES (1, 99)")
+        .await
+        .unwrap();
+    assert_eq!(affected(&outcome), [Some(1)]);
+    assert!(
+        matches!(
+            &outcome.end,
+            ScriptEnd::CommitFailed {
+                error: Error::Query { message, .. },
+                committed: 0,
+            } if message.contains("FOREIGN KEY constraint failed")
+        ),
+        "{:?}",
+        outcome.end
+    );
+    assert_eq!(outcome.broken, None);
+    assert_eq!(number(&connection, "SELECT count(*) FROM slots").await, 0);
+    assert!(is_fenced(&connection).await);
+    // SQLite keeps the transaction open after a failed COMMIT. The run
+    // rolled it back, so the next one starts.
+    let outcome = write(
+        &connection,
+        "INSERT INTO shelves VALUES (99); INSERT INTO slots VALUES (1, 99)",
+    )
+    .await
+    .unwrap();
+    assert_eq!(outcome.end, ScriptEnd::Committed);
+    assert_eq!(number(&connection, "SELECT count(*) FROM slots").await, 1);
+}
+
+#[tokio::test]
+async fn a_run_that_writes_nothing_is_committed_all_the_same() {
+    let (connection, _dir) = fixture_as(Access::Writable).await;
+    let outcome = write(&connection, "SELECT count(*) FROM users")
+        .await
+        .unwrap();
+    assert_eq!(outcome.end, ScriptEnd::Committed);
+    let empty = within(connection.run_script(&[], 10, ScriptMode::Write, &StopFlag::new()))
+        .await
+        .unwrap();
+    assert!(empty.results.is_empty());
+    assert_eq!(empty.end, ScriptEnd::RolledBack);
 }
 
 #[tokio::test]
