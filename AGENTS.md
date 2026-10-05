@@ -14,6 +14,11 @@ MySQL, SQLite) on egui/eframe and fastframe. The design lives in
 - Database, network, and disk work runs on the backend runtime
   (`src/backend.rs`), never on the UI thread.
 - `crates/tabletist-db` has no UI dependencies.
+- Code that depends on the database engine matches on `Driver` or `Dialect`
+  and names every variant: no `==`, `!=`, `matches!` or `_` arm. A new engine
+  then fails to compile wherever nobody has decided for it.
+  `tests/engines.rs` finds `==`, `!=` and `matches!`. Nothing finds a `_`
+  arm, or a comparison written with `Self::` in the enums' own methods.
 - The workspace forbids `unsafe`. AppKit calls that cannot be made without it
   go in `crates/tabletist-appkit`, and SQLite calls in
   `crates/tabletist-sqlite-ffi`, behind a safe API, each with a SAFETY note;

@@ -35,10 +35,6 @@ fn sources() -> Vec<(String, String)> {
         .collect()
 }
 
-/// Files whose comparisons are still to become matches. Each task of the
-/// plan takes its own out; the last one removes the list.
-const PENDING: &[&str] = &[];
-
 /// The code of a file on one line: no comment lines, and nothing from its
 /// `tests` module on. A comparison split over lines reads as one, and a
 /// test may compare what it likes.
@@ -139,7 +135,6 @@ fn no_code_compares_a_driver_or_a_dialect() {
     // not compile until someone has.
     let found: Vec<String> = sources()
         .iter()
-        .filter(|(path, _)| !PENDING.contains(&path.as_str()))
         .flat_map(|(path, text)| {
             comparisons(&code(text))
                 .into_iter()
