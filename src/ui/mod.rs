@@ -960,6 +960,64 @@ mod tests {
     }
 
     #[test]
+    fn the_shortcuts_dialog_lists_each_looks_own_editing_keys() {
+        use crate::ui::keys::keys_label;
+        // The keys, and what is said of a key that does another thing in
+        // the other looks (Esc drops an edit there, and keeps it here).
+        let desktop = [
+            "Enter, F2".to_owned(),
+            keys_label("Mod+Backspace"),
+            keys_label("Mod+Z"),
+            keys_label("Mod+S"),
+            keys_label("Mod+Alt+Backspace"),
+            "Cancel the edit".to_owned(),
+        ];
+        let terminal = [
+            "i, Enter".to_owned(),
+            "cc".to_owned(),
+            "x".to_owned(),
+            "u".to_owned(),
+            "Ctrl+C".to_owned(),
+            keys_label(":w, Mod+S"),
+            ":e!".to_owned(),
+            "Leave the editor and keep the edit".to_owned(),
+            "Drop the edit".to_owned(),
+        ];
+        for look in crate::theme::Look::ALL {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            harness.app.apply(crate::model::Action::ShowHelp);
+            // By name, as a screen reader has the list: the rows scrolled
+            // out of view are not painted.
+            let names = crate::testing::labels(&harness.finish_animations());
+            let shown = |text: &str| names.iter().any(|name| name == text);
+            let (own, others) = if look.terminal {
+                (&terminal[..], &desktop[..])
+            } else {
+                (&desktop[..], &terminal[..])
+            };
+            for text in own {
+                assert!(shown(text), "{}: {text} is missing", look.name);
+            }
+            for text in others {
+                assert!(!shown(text), "{}: {text} is another look's", look.name);
+            }
+            // What holds in every look is listed in every look.
+            for text in [
+                "Tab, Shift+Tab".to_owned(),
+                keys_label("Space, Mod+Shift+R"),
+                "Edit the cell".to_owned(),
+                "Set NULL".to_owned(),
+                "Revert the cell".to_owned(),
+                "Save all pending changes".to_owned(),
+                "Discard all pending changes".to_owned(),
+            ] {
+                assert!(shown(&text), "{}: {text} is missing", look.name);
+            }
+        }
+    }
+
+    #[test]
     fn the_shortcuts_dialog_opens_the_settings_in_every_look() {
         for look in crate::theme::Look::ALL {
             let mut harness = Harness::new();

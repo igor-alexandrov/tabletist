@@ -8,7 +8,7 @@ use super::App;
 use crate::backend::{Command, RequestId, SessionId};
 use crate::edit::{
     Editor, Edits, Lock, Note, Pending, Problem, Saved, Saving, State, Table, change_set, check,
-    is_change, opens_large, start_text,
+    is_change, opens_large, same_changes, start_text,
 };
 use crate::model::{
     Action, CellPos, ConnTabId, Dialog, EditStart, Held, LeavePrompt, ObjectTab, Pane, SaveBlock,
@@ -392,8 +392,10 @@ impl App {
                 change_set(&object.object, table, &object.edits.cells)
             })
             .flatten();
+        // By the bits of its floats: a NaN the page loaded is the same
+        // NaN now, and a set that holds one is still the set that was shown.
         if let Some((changes, rows)) = now
-            && changes == changeset
+            && same_changes(&changes, &changeset)
         {
             self.send_write(tab, id, changes, rows, then);
         }

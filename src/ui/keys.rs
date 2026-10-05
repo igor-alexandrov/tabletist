@@ -17,52 +17,103 @@ const NUMBERS: [Key; 9] = [
     Key::Num9,
 ];
 
-/// Every shortcut, for the help dialog. `Mod` is Cmd on macOS, Ctrl elsewhere.
-pub const SHORTCUTS: &[(&str, &str)] = &[
-    ("Mod+O", "Connections"),
-    ("Mod+Shift+W", "Close connection"),
-    ("Mod+1…9, Ctrl+Tab, Ctrl+Shift+Tab", "Switch connection"),
-    ("Mod+N", "New connection"),
+/// The looks a shortcut holds in. The help dialog lists a row only where
+/// its keys are the look's own: a cell is edited with chords on macOS and
+/// Windows, and with letters and the `:` prompt on Omarchy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Holds {
+    All,
+    /// macOS and Windows.
+    Desktop,
+    /// Omarchy.
+    Terminal,
+}
+
+const ALL: Holds = Holds::All;
+const DESKTOP: Holds = Holds::Desktop;
+const TERMINAL: Holds = Holds::Terminal;
+
+/// Every shortcut, for the help dialog, with the looks it holds in. `Mod`
+/// is Cmd on macOS, Ctrl elsewhere.
+pub const SHORTCUTS: &[(&str, &str, Holds)] = &[
+    ("Mod+O", "Connections", ALL),
+    ("Mod+Shift+W", "Close connection", ALL),
+    (
+        "Mod+1…9, Ctrl+Tab, Ctrl+Shift+Tab",
+        "Switch connection",
+        ALL,
+    ),
+    ("Mod+N", "New connection", ALL),
     (
         "Mod+S, Mod+T, Mod+Enter",
         "Save, test, or save and connect in the connection dialog",
+        ALL,
     ),
-    ("Mod+T", "New SQL editor"),
-    ("Mod+Return, Mod+Shift+Return", "Run statement / run all"),
-    ("Mod+Shift+F", "Format SQL"),
-    ("Ctrl+Space, Mod+I", "Complete in the SQL editor"),
-    ("Mod+W", "Close tab"),
-    ("Mod+Shift+[ / ]", "Previous / next tab"),
-    ("Mod+R", "Refresh"),
-    ("Mod+F", "Filter bar"),
-    ("Mod+P", "Quick open"),
-    ("Mod+B", "Show or hide the sidebar"),
-    ("F6, Shift+F6", "Next / previous part of the window"),
-    ("Mod+Alt+Left / Right", "Previous / next page"),
-    ("Mod+.", "Cancel running query"),
-    ("Esc", "Cancel connecting"),
-    ("Space, Mod+Shift+R", "Toggle row panel"),
-    ("Mod+C, Mod+Shift+C", "Copy cell / copy row"),
+    ("Mod+T", "New SQL editor", ALL),
+    (
+        "Mod+Return, Mod+Shift+Return",
+        "Run statement / run all",
+        ALL,
+    ),
+    ("Mod+Shift+F", "Format SQL", ALL),
+    ("Ctrl+Space, Mod+I", "Complete in the SQL editor", ALL),
+    ("Mod+W", "Close tab", ALL),
+    ("Mod+Shift+[ / ]", "Previous / next tab", ALL),
+    ("Mod+R", "Refresh", ALL),
+    ("Mod+F", "Filter bar", ALL),
+    ("Mod+P", "Quick open", ALL),
+    ("Mod+B", "Show or hide the sidebar", ALL),
+    ("F6, Shift+F6", "Next / previous part of the window", ALL),
+    ("Mod+Alt+Left / Right", "Previous / next page", ALL),
+    ("Mod+.", "Cancel running query", ALL),
+    ("Esc", "Cancel connecting", ALL),
+    ("Space, Mod+Shift+R", "Toggle row panel", ALL),
+    ("Mod+C, Mod+Shift+C", "Copy cell / copy row", ALL),
     (
         "Arrows, Enter, Shift+Enter, Mod+E, Mod+D, Mod+Backspace",
         "Pick, open again, edit, duplicate or delete a connection",
+        ALL,
     ),
-    ("Arrows, Home/End, Enter", "Move in the tree"),
-    ("Arrows, Page Up/Down, Home/End", "Move in the grid"),
-    ("Enter, F2", "Edit the cell"),
-    ("Tab, Shift+Tab", "Commit and move right or left"),
-    ("Esc", "Cancel the edit"),
-    ("Mod+Backspace", "Set NULL"),
-    ("Mod+Z", "Revert the cell"),
-    ("Mod+S", "Save all pending changes"),
-    ("Mod+Alt+Backspace", "Discard all pending changes"),
+    ("Arrows, Home/End, Enter", "Move in the tree", ALL),
+    ("Arrows, Page Up/Down, Home/End", "Move in the grid", ALL),
+    // Editing a table's cells: each look's own keys for the same things.
+    ("Enter, F2", "Edit the cell", DESKTOP),
+    ("i, Enter", "Edit the cell", TERMINAL),
+    ("cc", "Edit the cell from nothing", TERMINAL),
+    ("Tab, Shift+Tab", "Commit and move right or left", ALL),
+    ("Esc", "Cancel the edit", DESKTOP),
+    ("Esc", "Leave the editor and keep the edit", TERMINAL),
+    ("Ctrl+C", "Drop the edit", TERMINAL),
+    ("Mod+Backspace", "Set NULL", DESKTOP),
+    ("x", "Set NULL", TERMINAL),
+    ("Mod+Z", "Revert the cell", DESKTOP),
+    ("u", "Revert the cell", TERMINAL),
+    ("Mod+S", "Save all pending changes", DESKTOP),
+    (":w, Mod+S", "Save all pending changes", TERMINAL),
+    ("Mod+Alt+Backspace", "Discard all pending changes", DESKTOP),
+    (":e!", "Discard all pending changes", TERMINAL),
     (
         "j/k, h/l, Ctrl+H/L, [ ], i, Enter, cc, x, u, Ctrl+S, :w, :e!, Space, Esc, /, y, s, d, gd, za, t, 1…9",
         "Omarchy: vim keys (shown in the status line)",
+        ALL,
     ),
-    ("Mod+,", "Settings"),
-    ("?", "Shortcuts"),
+    ("Mod+,", "Settings", ALL),
+    ("?", "Shortcuts", ALL),
 ];
+
+/// The shortcuts that hold in `look`, as the help dialog lists them: its
+/// keys and what they do. None that only another look has.
+pub fn shortcuts(look: &crate::theme::Look) -> impl Iterator<Item = (&'static str, &'static str)> {
+    let terminal = look.terminal;
+    SHORTCUTS
+        .iter()
+        .filter(move |(_, _, holds)| match holds {
+            Holds::All => true,
+            Holds::Desktop => !terminal,
+            Holds::Terminal => terminal,
+        })
+        .map(|(keys, what, _)| (*keys, *what))
+}
 
 /// `keys` with `Mod` named for this platform.
 pub fn keys_label(keys: &str) -> String {
@@ -1088,18 +1139,22 @@ mod tests {
         assert!(
             SHORTCUTS
                 .iter()
-                .any(|(keys, what)| keys.contains("Mod+S") && what.contains("connection dialog"))
+                .any(|(keys, what, _)| keys.contains("Mod+S") && what.contains("connection dialog"))
         );
     }
 
     #[test]
     fn the_shortcut_table_lists_the_settings_key() {
-        assert!(SHORTCUTS.contains(&("Mod+,", "Settings")));
+        assert!(
+            SHORTCUTS
+                .iter()
+                .any(|(keys, what, _)| (*keys, *what) == ("Mod+,", "Settings"))
+        );
     }
 
     #[test]
     fn the_shortcut_table_covers_the_spec_map() {
-        let descriptions: Vec<&str> = SHORTCUTS.iter().map(|(_, what)| *what).collect();
+        let descriptions: Vec<&str> = SHORTCUTS.iter().map(|(_, what, _)| *what).collect();
         for expected in [
             "Connections",
             "Close connection",
@@ -1135,32 +1190,94 @@ mod tests {
 
     #[test]
     fn the_shortcut_table_names_the_keys_that_edit_a_cell() {
-        let keys = |what: &str| {
-            SHORTCUTS
-                .iter()
-                .find(|(_, description)| *description == what)
-                .map(|(keys, _)| *keys)
+        use crate::theme::Look;
+        // The keys of `what` as `look` has them.
+        let keys = |look: Look, what: &str| {
+            let rows: Vec<&str> = shortcuts(&look)
+                .filter(|(_, description)| *description == what)
+                .map(|(keys, _)| keys)
+                .collect();
+            match rows.as_slice() {
+                [keys] => Some(*keys),
+                [] => None,
+                several => panic!("{}: {what} twice: {several:?}", look.name),
+            }
         };
-        assert_eq!(keys("Edit the cell"), Some("Enter, F2"));
+        // macOS and Windows edit with chords.
+        for look in [Look::standard(), Look::macos()] {
+            let keys = |what| keys(look, what);
+            assert_eq!(keys("Edit the cell"), Some("Enter, F2"));
+            assert_eq!(
+                keys("Commit and move right or left"),
+                Some("Tab, Shift+Tab")
+            );
+            assert_eq!(keys("Cancel the edit"), Some("Esc"));
+            assert_eq!(keys("Set NULL"), Some("Mod+Backspace"));
+            assert_eq!(keys("Revert the cell"), Some("Mod+Z"));
+            assert_eq!(keys("Save all pending changes"), Some("Mod+S"));
+            assert_eq!(
+                keys("Discard all pending changes"),
+                Some("Mod+Alt+Backspace")
+            );
+            // Omarchy's own are not theirs.
+            for what in [
+                "Edit the cell from nothing",
+                "Leave the editor and keep the edit",
+                "Drop the edit",
+            ] {
+                assert_eq!(keys(what), None, "{}: {what}", look.name);
+            }
+        }
+        // Omarchy edits with letters and its `:` prompt, and its Esc keeps
+        // the edit where theirs drops it.
+        let keys = |what| keys(Look::omarchy(), what);
+        assert_eq!(keys("Edit the cell"), Some("i, Enter"));
+        assert_eq!(keys("Edit the cell from nothing"), Some("cc"));
         assert_eq!(
             keys("Commit and move right or left"),
             Some("Tab, Shift+Tab")
         );
-        assert_eq!(keys("Cancel the edit"), Some("Esc"));
-        assert_eq!(keys("Set NULL"), Some("Mod+Backspace"));
-        assert_eq!(keys("Revert the cell"), Some("Mod+Z"));
-        assert_eq!(keys("Save all pending changes"), Some("Mod+S"));
-        assert_eq!(
-            keys("Discard all pending changes"),
-            Some("Mod+Alt+Backspace")
-        );
+        assert_eq!(keys("Leave the editor and keep the edit"), Some("Esc"));
+        assert_eq!(keys("Drop the edit"), Some("Ctrl+C"));
+        assert_eq!(keys("Cancel the edit"), None);
+        assert_eq!(keys("Set NULL"), Some("x"));
+        assert_eq!(keys("Revert the cell"), Some("u"));
+        assert_eq!(keys("Save all pending changes"), Some(":w, Mod+S"));
+        assert_eq!(keys("Discard all pending changes"), Some(":e!"));
+    }
+
+    #[test]
+    fn every_look_lists_what_holds_in_all_of_them() {
+        use crate::theme::Look;
+        for look in Look::ALL {
+            let listed: Vec<_> = shortcuts(&look).collect();
+            for (keys, what, holds) in SHORTCUTS {
+                let own = match holds {
+                    Holds::All => true,
+                    Holds::Desktop => !look.terminal,
+                    Holds::Terminal => look.terminal,
+                };
+                assert_eq!(
+                    listed.contains(&(*keys, *what)),
+                    own,
+                    "{}: {keys} {what}",
+                    look.name
+                );
+            }
+            // In the table's order.
+            let places = listed.iter().map(|(keys, what)| {
+                let mut rows = SHORTCUTS.iter();
+                rows.position(|(row, said, _)| row == keys && said == what)
+            });
+            assert!(places.is_sorted(), "{}", look.name);
+        }
     }
 
     #[test]
     fn the_shortcut_table_names_omarchys_keys_that_edit() {
-        let (keys, _) = SHORTCUTS
+        let (keys, _, _) = SHORTCUTS
             .iter()
-            .find(|(_, what)| what.starts_with("Omarchy:"))
+            .find(|(_, what, _)| what.starts_with("Omarchy:"))
             .expect("Omarchy's row");
         let keys: Vec<&str> = keys.split(", ").collect();
         for key in ["i", "Enter", "cc", "x", "u", "Ctrl+S", ":w", ":e!", "Space"] {
@@ -1175,8 +1292,8 @@ mod tests {
         let keys = |what: &str| {
             SHORTCUTS
                 .iter()
-                .find(|(_, description)| *description == what)
-                .map(|(keys, _)| *keys)
+                .find(|(_, description, _)| *description == what)
+                .map(|(keys, _, _)| *keys)
         };
         assert_eq!(keys("New SQL editor"), Some("Mod+T"));
         assert_eq!(keys("Connections"), Some("Mod+O"));

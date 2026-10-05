@@ -10984,6 +10984,67 @@ mod tests {
         }
 
         #[test]
+        fn a_confirmed_save_is_sent_though_a_loaded_value_is_not_a_number() {
+            // A table with a float column, on production. The changed
+            // cell loaded NaN, which a PostgreSQL float can hold and which
+            // is not equal to itself.
+            let mut harness = Harness::new();
+            let tab = harness.connect_fake_as(false);
+            harness.app.apply(Action::OpenObject {
+                tab,
+                object: tabletist_db::ObjectRef::new("main", "users"),
+                kind: ObjectKind::Table,
+                pin: true,
+            });
+            let mut structure = crate::testing::fixture_structure();
+            structure.columns.push(tabletist_db::ColumnInfo {
+                name: "level".into(),
+                type_name: "REAL".into(),
+                nullable: true,
+                ..tabletist_db::ColumnInfo::default()
+            });
+            harness.answer_structure(structure);
+            let mut page = crate::testing::page(5, false);
+            page.columns.push(tabletist_db::ColumnMeta {
+                name: "level".into(),
+                type_name: "REAL".into(),
+                kind: tabletist_db::ValueKind::Numeric,
+            });
+            for row in &mut page.rows {
+                row.push(Value::Float(f64::NAN));
+            }
+            harness.answer_rows(page);
+            let id = harness.app.workspace(tab).unwrap().active_tab.unwrap();
+            harness.app.workspace_mut(tab).unwrap().environment =
+                crate::env::Environment::Production;
+            type_into(&mut harness, tab, id, at(1, 3), "2.5");
+            harness.app.apply(Action::WriteEdits { tab, id });
+            let shown = confirming(&harness).expect("the confirmation").clone();
+            assert!(matches!(
+                shown.rows[0].set[0].loaded,
+                Value::Float(loaded) if loaded.is_nan()
+            ));
+            assert_eq!(writes(&harness), 0);
+            // The set is the one the confirmation shows: it is sent.
+            harness.app.apply(Action::ConfirmWrite);
+            assert!(harness.app.dialog.is_none());
+            assert_eq!(writes(&harness), 1);
+            let Some(Command::Write { changes, .. }) = harness.app.backend.sent.last() else {
+                panic!("a save was sent");
+            };
+            assert!(crate::edit::same_changes(changes, &shown));
+            // One that changed under the confirmation is still not sent.
+            harness.answer_written(Err(tabletist_db::Error::Cancelled));
+            harness.app.apply(Action::WriteEdits { tab, id });
+            assert!(confirming(&harness).is_some());
+            let object = harness.app.object_tab_mut(tab, id).unwrap();
+            object.rows.value.as_mut().unwrap().rows[1][3] = Value::Float(0.5);
+            harness.app.apply(Action::ConfirmWrite);
+            assert!(harness.app.dialog.is_none());
+            assert_eq!(writes(&harness), 1);
+        }
+
+        #[test]
         fn the_prompt_changes_nothing_under_a_question_about_the_changes() {
             let mut harness = Harness::new();
             let (tab, id) = harness.editable();

@@ -721,11 +721,138 @@ pub fn change_set(
     })
 }
 
+/// Whether `a` and `b` hold the same value, a float by its bits: as a
+/// save compares what a row holds with what the page loaded. Not a number
+/// is itself that way, where `==` says it is not, and the two zeroes are
+/// two values.
+fn same_value(a: &Value, b: &Value) -> bool {
+    match (a, b) {
+        (Value::Float(a), Value::Float(b)) => a.to_bits() == b.to_bits(),
+        _ => a == b,
+    }
+}
+
+/// Whether `a` and `b` are the same save: the same table, rows, keys and
+/// cells, every value compared as `same_value` does. The sets' own `==`
+/// would call a set with a NaN in it another set than itself.
+pub fn same_changes(a: &ChangeSet, b: &ChangeSet) -> bool {
+    // Every field by name: one added to a set is one to compare here.
+    let (
+        ChangeSet { object, rows },
+        ChangeSet {
+            object: other,
+            rows: others,
+        },
+    ) = (a, b);
+    let same_cell = |a: &CellChange, b: &CellChange| {
+        let CellChange {
+            column,
+            type_name,
+            loaded,
+            new,
+        } = a;
+        *column == b.column
+            && *type_name == b.type_name
+            && same_value(loaded, &b.loaded)
+            && *new == b.new
+    };
+    let same_row = |a: &RowChange, b: &RowChange| {
+        let RowChange { key, set } = a;
+        key.len() == b.key.len()
+            && key
+                .iter()
+                .zip(&b.key)
+                .all(|((name, value), (other, with))| name == other && same_value(value, with))
+            && set.len() == b.set.len()
+            && set.iter().zip(&b.set).all(|(a, b)| same_cell(a, b))
+    };
+    object == other
+        && rows.len() == others.len()
+        && rows.iter().zip(others).all(|(a, b)| same_row(a, b))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::time::Duration;
     use tabletist_db::{ColumnMeta, IndexInfo, ObjectRef, ValueKind};
+
+    #[test]
+    fn two_change_sets_are_the_same_save_by_the_bits_of_their_floats() {
+        let cell = |column: &str, loaded: Value, new: &str| CellChange {
+            column: column.into(),
+            type_name: "float8".into(),
+            loaded,
+            new: NewValue::Text(new.into()),
+        };
+        let row = |key: Value, set: Vec<CellChange>| RowChange {
+            key: vec![("id".into(), key)],
+            set,
+        };
+        let set = |rows: Vec<RowChange>| ChangeSet {
+            object: ObjectRef::new("main", "readings"),
+            rows,
+        };
+        let nan = || Value::Float(f64::NAN);
+        // Not a number is itself, as a changed cell's loaded value and as a
+        // row's key: the derived comparison says it is not.
+        let made = || {
+            set(vec![
+                row(Value::Int(1), vec![cell("level", nan(), "2.5")]),
+                row(nan(), vec![cell("level", Value::Float(1.5), "2.5")]),
+            ])
+        };
+        assert_ne!(made(), made());
+        assert!(same_changes(&made(), &made()));
+        // The two zeroes are two values: a save tells them apart.
+        let zero = |value: f64| {
+            set(vec![row(
+                Value::Int(1),
+                vec![cell("level", Value::Float(value), "1")],
+            )])
+        };
+        assert!(same_changes(&zero(0.0), &zero(0.0)));
+        assert!(!same_changes(&zero(0.0), &zero(-0.0)));
+        // Anything else that differs is another save.
+        let one = || row(Value::Int(1), vec![cell("level", nan(), "2.5")]);
+        let base = set(vec![one()]);
+        let others = [
+            // An added cell.
+            set(vec![row(
+                Value::Int(1),
+                vec![cell("level", nan(), "2.5"), cell("depth", nan(), "2.5")],
+            )]),
+            // Another new value, another loaded one, another column.
+            set(vec![row(Value::Int(1), vec![cell("level", nan(), "2.6")])]),
+            set(vec![row(
+                Value::Int(1),
+                vec![cell("level", Value::Null, "2.5")],
+            )]),
+            set(vec![row(Value::Int(1), vec![cell("depth", nan(), "2.5")])]),
+            // Another row, by its key, and one more row.
+            set(vec![row(Value::Int(2), vec![cell("level", nan(), "2.5")])]),
+            set(vec![one(), one()]),
+            set(Vec::new()),
+        ];
+        for other in &others {
+            assert!(!same_changes(&base, other), "{other:?}");
+            assert!(!same_changes(other, &base), "{other:?}");
+        }
+        // Another type name, a NULL for a text, another key column, and
+        // another table.
+        let mut typed = base.clone();
+        typed.rows[0].set[0].type_name = "float4".into();
+        let mut null = base.clone();
+        null.rows[0].set[0].new = NewValue::Null;
+        let mut keyed = base.clone();
+        keyed.rows[0].key[0].0 = "uuid".into();
+        let mut table = base.clone();
+        table.object = ObjectRef::new("main", "levels");
+        for other in [typed, null, keyed, table] {
+            assert!(!same_changes(&base, &other), "{other:?}");
+        }
+        assert!(same_changes(&base, &base.clone()));
+    }
 
     fn column(name: &str, type_name: &str) -> ColumnInfo {
         ColumnInfo {
