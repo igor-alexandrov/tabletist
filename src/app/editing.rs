@@ -283,7 +283,12 @@ impl App {
             }
             return;
         }
-        if self.save_blocked(tab, id).is_some() {
+        if let Some(block) = self.save_blocked(tab, id) {
+            // The terminal's line says why, whatever it said before. A
+            // save that is running says so already.
+            if let Some(workspace) = self.workspace_mut(tab) {
+                workspace.save_refused = block != SaveBlock::Saving;
+            }
             return;
         }
         let built = self
@@ -449,6 +454,11 @@ impl App {
     pub(super) fn edit_cell(&mut self, tab: ConnTabId, id: TabId, cell: CellPos, start: EditStart) {
         // An editor open on another cell keeps its text.
         self.close_editor(tab, id, true);
+        // What this edit comes to (a cell that is locked) is what the
+        // terminal's line says next, not why the last save was not made.
+        if let Some(workspace) = self.workspace_mut(tab) {
+            workspace.save_refused = false;
+        }
         let (asked, touched) = match &start {
             EditStart::Value => (true, false),
             EditStart::Replace(_) => (true, true),
@@ -601,6 +611,7 @@ impl App {
         };
         workspace.focus_command = false;
         workspace.command_error = None;
+        workspace.save_refused = false;
         let Some(text) = workspace.command.take() else {
             return;
         };

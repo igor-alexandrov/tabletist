@@ -562,6 +562,7 @@ impl App {
                     workspace.command = Some(String::new());
                     workspace.focus_command = true;
                     workspace.command_error = None;
+                    workspace.save_refused = false;
                 }
             }
             Action::CloseCommand(tab) => {
@@ -569,6 +570,7 @@ impl App {
                     workspace.command = None;
                     workspace.focus_command = false;
                     workspace.command_error = None;
+                    workspace.save_refused = false;
                 }
             }
             Action::RunCommand(tab) => self.run_command(tab),
@@ -3617,9 +3619,12 @@ impl App {
         // the last frame's actions left, after anything the backend
         // delivered just now.
         self.refresh_completion(ui.ctx());
-        // A dialog takes the keyboard: no shortcut acts behind it.
+        // A dialog takes the keyboard: no shortcut acts behind it, and a
+        // first key that waited for its second (`cc`) waits no longer.
         if self.dialog.is_none() {
             crate::ui::keys::handle(self, ui.ctx());
+        } else {
+            crate::ui::keys::forget_pending(ui.ctx());
         }
         crate::ui::show(self, ui);
         // Over everything drawn: the ring of what has the keyboard.

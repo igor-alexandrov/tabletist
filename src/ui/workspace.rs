@@ -1564,7 +1564,8 @@ struct Editing {
     pending: Option<String>,
     /// The cells to fix and the ones a save failed on: "1 error".
     errors: Option<String>,
-    /// Why the cell asked for is locked, or what the last save came to.
+    /// Why the cell asked for is locked, what the last save came to, or
+    /// why what is pending cannot be saved.
     said: Option<Said>,
 }
 
@@ -1576,8 +1577,8 @@ struct Said {
     text: String,
     /// What follows a failure, dimmed: where there is room for it.
     tail: Option<String>,
-    /// The tone of the text itself, where it has one.
-    tone: Option<states::Tone>,
+    /// The colour of the text itself.
+    color: egui::Color32,
 }
 
 /// The mark of a save that wrote. The second for a face without the first:
@@ -1598,14 +1599,15 @@ fn drawable(
     marks.iter().copied().find(|mark| has(mark))
 }
 
-/// What editing adds to the line of the table `workspace` shows.
-fn editing_status(
-    workspace: &crate::model::Workspace,
-    look: &Look,
-    locale: crate::i18n::Locale,
-) -> Editing {
-    use super::pending_bar::{counted, note_text, written_text};
+/// What editing adds to the line of the table the workspace of `tab`
+/// shows.
+fn editing_status(app: &App, tab: ConnTabId) -> Editing {
+    use super::pending_bar::{block_text, counted, note_line, written_text};
     use crate::edit::Note;
+    let (palette, look, locale) = (&app.palette, &app.look, app.locale);
+    let Some(workspace) = app.workspace(tab) else {
+        return Editing::default();
+    };
     let Some(object) = workspace.active_object_tab() else {
         return Editing::default();
     };
@@ -1638,6 +1640,20 @@ fn editing_status(
     });
     let errors = counts.to_fix + counts.failed;
     let errors = (errors > 0).then(|| counted(locale, errors, "error", "errors"));
+    // What a save came to stands a step back from the keys and the counts.
+    let back = palette.secondary;
+    // Why what is pending cannot be saved, as the other looks say it on
+    // their disabled Save. A save that is running is said by its tab.
+    let blocked = (counts.changes > 0)
+        .then(|| app.save_blocked(tab, object.id))
+        .flatten()
+        .filter(|block| *block != crate::model::SaveBlock::Saving)
+        .map(|block| Said {
+            mark: None,
+            text: look.label(&block_text(block, counts.to_fix, locale)),
+            tail: None,
+            color: back,
+        });
     let said = if let Some(line) = &workspace.command_error {
         // What the `:` prompt was given, until the next key.
         let line = crate::ui::format::capped(line);
@@ -1645,26 +1661,33 @@ fn editing_status(
             mark: None,
             text: format!("{} {}", say("not a command:"), display_safe(&line)),
             tail: None,
-            tone: Some(states::Tone::Danger),
+            color: states::Tone::Danger.color(palette),
         })
+    } else if workspace.save_refused && blocked.is_some() {
+        // A save was just asked for: why it was not made comes first,
+        // until the next key.
+        blocked
     } else if let Some((_, lock)) = edits.why.filter(|_| data) {
-        // In place of the note the other looks hang on the cell.
+        // In place of the note the other looks hang on the cell. It was
+        // asked for a moment ago: it reads as the keys do.
         let table = display_safe(&object.object.name);
         let text = lock_line(lock, &table, look, locale);
         (!text.is_empty()).then_some(Said {
             mark: None,
             text,
             tail: None,
-            tone: None,
+            color: palette.text,
         })
     } else if let Some(note) = &edits.note {
-        let text = look.label(&note_text(note, object, locale));
+        // The row's key and the database's words as they are: the look's
+        // lower case is for the app's own.
+        let text = note_line(note, object, look, locale);
         Some(match note {
             Note::Conflict { .. } => Said {
                 mark: Some((&["≠"], states::Tone::Warning)),
                 text: format!("{} {text}", say("conflict")),
                 tail: None,
-                tone: None,
+                color: back,
             },
             Note::Failed { .. } => Said {
                 mark: Some((FAILED, states::Tone::Danger)),
@@ -1674,24 +1697,26 @@ fn editing_status(
                     say("rolled back"),
                     say("cells stay pending in red")
                 )),
-                tone: None,
+                color: back,
             },
             _ => Said {
                 mark: Some((FAILED, states::Tone::Danger)),
                 text,
                 tail: None,
-                tone: None,
+                color: back,
             },
         })
     } else {
         // Until the next edit or page, as the other looks' footer has it.
+        // With something pending, why it cannot be saved, while it cannot.
         let saved = edits.saved.as_ref().filter(|_| !edits.holds());
-        saved.map(|saved| Said {
+        let saved = saved.map(|saved| Said {
             mark: Some((WROTE, states::Tone::Success)),
             text: look.label(&written_text(saved, locale)),
             tail: None,
-            tone: None,
-        })
+            color: back,
+        });
+        saved.or(blocked)
     };
     Editing {
         can_edit,
@@ -1713,10 +1738,7 @@ fn command_id(tab: ConnTabId) -> egui::Id {
 /// prompt's text and takes its focus flag, and nothing else.
 fn command_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
     let (palette, look, locale) = (app.palette, app.look, app.locale);
-    let Some(workspace) = app.workspace(tab) else {
-        return;
-    };
-    let editing = editing_status(workspace, &look, locale);
+    let editing = editing_status(app, tab);
     let Some(workspace) = app.workspace_mut(tab) else {
         return;
     };
@@ -1848,7 +1870,7 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
             })
         })
         .unwrap_or_default();
-    let editing = editing_status(workspace, &look, locale);
+    let editing = editing_status(app, tab);
     egui::Panel::bottom(egui::Id::new(("status-line", tab.0)))
         .exact_size(31.0)
         .resizable(false)
@@ -2070,14 +2092,8 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                     x += widgets::paint_text(ui, x, y, Text::one(&look, role, mark, color))
                         + measure(" ");
                 }
-                // A lock was asked for a moment ago: it reads as the keys
-                // do. What a save came to stands a step back.
-                let color = match whole.tone {
-                    Some(tone) => tone.color(&palette),
-                    None if whole.mark.is_none() => palette.text,
-                    None => palette.secondary,
-                };
-                let width = widgets::paint_text(ui, x, y, Text::one(&look, role, &shown, color));
+                let text = Text::one(&look, role, &shown, whole.color);
+                let width = widgets::paint_text(ui, x, y, text);
                 // The whole of it for a screen reader, cut or not.
                 let place = Rect::from_min_size(pos2(x, y - 8.0), vec2(width.max(1.0), 16.0));
                 widgets::announce(ui, place, &whole.text);

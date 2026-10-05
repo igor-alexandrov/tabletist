@@ -64,22 +64,42 @@ fn row_name(object: &ObjectTab, row: usize) -> String {
 
 /// What a save that wrote nothing came to, as the user reads it.
 pub fn note_text(note: &Note, object: &ObjectTab, locale: Locale) -> String {
-    let nothing = gettext(locale, "Nothing was written.");
+    note_said(note, object, locale, str::to_owned)
+}
+
+/// [`note_text`] as the terminal's line says it: the app's own words in the
+/// look's lower case, and the row's key and the database's words as they
+/// are.
+pub fn note_line(
+    note: &Note,
+    object: &ObjectTab,
+    look: &crate::theme::Look,
+    locale: Locale,
+) -> String {
+    note_said(note, object, locale, |words| look.label(words))
+}
+
+/// What `note` says, the app's own words put through `own`: the values of
+/// a row's key and what the database said are theirs, and stay as they are.
+fn note_said(
+    note: &Note,
+    object: &ObjectTab,
+    locale: Locale,
+    own: impl Fn(&str) -> String,
+) -> String {
+    let say = |text: &'static str| own(&gettext(locale, text));
+    let nothing = say("Nothing was written.");
     match note {
         Note::Conflict { row, gone, others } => {
             let what = if *gone {
-                gettext(locale, "no longer exists on the server.")
+                say("no longer exists on the server.")
             } else {
-                gettext(locale, "changed on the server.")
+                say("changed on the server.")
             };
-            let mut text = format!(
-                "{} {} {what} {nothing}",
-                gettext(locale, "Row"),
-                row_name(object, *row)
-            );
+            let mut text = format!("{} {} {what} {nothing}", say("Row"), row_name(object, *row));
             if *others > 0 {
                 let plural = u32::try_from(*others).unwrap_or(u32::MAX);
-                let more = ngettext(locale, "more row too.", "more rows too.", plural);
+                let more = own(&ngettext(locale, "more row too.", "more rows too.", plural));
                 text.push_str(&format!(" {others} {more}"));
             }
             text
@@ -96,13 +116,9 @@ pub fn note_text(note: &Note, object: &ObjectTab, locale: Locale) -> String {
                 sentence(&format::capped(&other.to_string()))
             ),
         },
-        Note::Lost => gettext(
-            locale,
-            "The connection was lost while saving. Reload to see what was written.",
-        )
-        .into_owned(),
-        Note::NotSent => gettext(locale, "Not connected. Nothing was sent.").into_owned(),
-        Note::Cancelled => format!("{} {nothing}", gettext(locale, "Save cancelled.")),
+        Note::Lost => say("The connection was lost while saving. Reload to see what was written."),
+        Note::NotSent => say("Not connected. Nothing was sent."),
+        Note::Cancelled => format!("{} {nothing}", say("Save cancelled.")),
         Note::Refused(error) => format!(
             "{} {nothing}",
             sentence(&format::capped(&error.to_string()))
@@ -122,8 +138,9 @@ pub fn written_text(saved: &Saved, locale: Locale) -> String {
     )
 }
 
-/// Why Save cannot be pressed, as its tooltip says it.
-fn block_text(block: SaveBlock, to_fix: usize, locale: Locale) -> String {
+/// Why Save cannot be pressed, as its tooltip says it, and the terminal's
+/// status line.
+pub(crate) fn block_text(block: SaveBlock, to_fix: usize, locale: Locale) -> String {
     match block {
         SaveBlock::Saving => gettext(locale, "Saving…").into_owned(),
         SaveBlock::ToFix => {

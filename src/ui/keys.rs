@@ -93,7 +93,7 @@ pub const SHORTCUTS: &[(&str, &str, Holds)] = &[
     ("Mod+Alt+Backspace", "Discard all pending changes", DESKTOP),
     (":e!", "Discard all pending changes", TERMINAL),
     (
-        "j/k, h/l, Ctrl+H/L, [ ], i, Enter, cc, x, u, Ctrl+S, :w, :e!, Space, Esc, /, y, s, d, gd, za, t, 1…9",
+        "j/k, h/l, Ctrl+H/L, [ ], i, Enter, cc, x, u, Mod+S, :w, :e!, Space, Esc, /, y, s, d, gd, za, t, 1…9",
         "Omarchy: vim keys (shown in the status line)",
         ALL,
     ),
@@ -162,23 +162,29 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
     // The terminal's WHERE line was asked for, and takes the keyboard when
     // it is drawn, later in this frame (it is drawn with the grid, and
     // nowhere else). What is typed until then is no letter of the grid's:
-    // an `x` meant for the clause must not set a cell NULL.
-    let asked = terminal
-        && grid
-        && app
-            .workspace(active)
-            .is_some_and(|workspace| workspace.opened() && workspace.focus_where);
+    // an `x` meant for the clause must not set a cell NULL. So with the
+    // table's filter bar, which Mod+F opens in every look: it is drawn
+    // with the grid too, and takes its flag and the keyboard then, and a
+    // character typed before that must not start an edit of the cell.
+    let asked = grid
+        && app.workspace(active).is_some_and(|workspace| {
+            let bar = workspace
+                .active_object_tab()
+                .is_some_and(|object| object.filter.open && object.filter.focus);
+            workspace.opened() && (workspace.focus_where || bar)
+        });
     // The terminal's `:` prompt is open, and what it last refused is still
-    // said. The prompt's field is in the status line, which is drawn as
-    // long as the workspace is.
+    // said, or why a save was not made. The prompt's field is in the status
+    // line, which is drawn as long as the workspace is. A save refused
+    // under the open prompt (Mod+S) leaves it open: the keys typed into it
+    // next close nothing.
     let (prompt, refused) = app
         .workspace(active)
         .filter(|workspace| terminal && workspace.opened())
         .map_or((false, false), |workspace| {
-            (
-                workspace.command.is_some(),
-                workspace.command_error.is_some(),
-            )
+            let prompt = workspace.command.is_some();
+            let save = workspace.save_refused && !prompt;
+            (prompt, workspace.command_error.is_some() || save)
         });
     // An editor that just opened takes the keyboard when its field is
     // first drawn, later in this frame: the keys are its own already, and
@@ -186,7 +192,7 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
     let editing = ctx.text_edit_focused() || open || asked || prompt;
     // What the prompt refused is said until the next key, whatever the key
     // goes on to do. A fresh press: the Enter that ran the line may still
-    // be held.
+    // be held, or the Mod+S that asked for the save.
     let dismiss = refused
         && ctx.input(|input| {
             input.events.iter().any(|event| {
@@ -455,6 +461,12 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
             None => {}
         }
     }
+    // The Ctrl+C that drops the terminal's edit may be held. Its repeats
+    // come as copies like the first (a copy says nothing of being a
+    // repeat), and with the editor gone they would copy the cell.
+    if terminal {
+        held_copy(ctx, open);
+    }
     if !editing && grid {
         let (copy, shift) = ctx.input(|input| {
             (
@@ -480,7 +492,16 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
         editing_keys(app, ctx, keyboard, &mut actions);
     }
     if !editing && app.dialog.is_none() {
+        // A click ends a first key's wait: what is typed after it is typed
+        // at what the click chose.
+        if ctx.input(|input| input.pointer.any_pressed()) {
+            forget_pending(ctx);
+        }
         letters(app, ctx, &mut actions);
+    } else {
+        // The keys are a field's: a first key that waited is not the
+        // first of what is typed once they are the grid's again.
+        forget_pending(ctx);
     }
     // `?` as typed text, so it works on every keyboard layout.
     if !editing
@@ -501,6 +522,50 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
         actions.insert(0, Action::CloseCommand(active));
     }
     app.actions.extend(actions);
+}
+
+/// Whether a copy that comes this frame is Ctrl+C where Ctrl is the command
+/// key, by what is held: Ctrl and nothing else. Not Cmd+C, the copy where
+/// Cmd is the command key; nor Ctrl+Shift+C, a Copy key or a menu's Copy,
+/// which come with something else held or with nothing.
+pub(crate) fn copy_is_ctrl_c(input: &egui::InputState) -> bool {
+    let held = input.modifiers;
+    held.matches_exact(Modifiers::CTRL) && !held.mac_cmd
+}
+
+/// Whether the Ctrl+C that dropped an edit is still down.
+fn copy_held_id() -> egui::Id {
+    egui::Id::new("copy-held")
+}
+
+/// Takes the repeats of a Ctrl+C that an editor (`open`, at this frame's
+/// start) took to drop its edit: the copies that come until the key or Ctrl
+/// comes up. The next Ctrl+C is the grid's again.
+fn held_copy(ctx: &egui::Context, open: bool) {
+    let held: bool = ctx
+        .data(|data| data.get_temp(copy_held_id()))
+        .unwrap_or(false);
+    let held = ctx.input_mut(|input| {
+        let copy = |event: &egui::Event| matches!(event, egui::Event::Copy);
+        let up = |event: &egui::Event| {
+            matches!(
+                event,
+                egui::Event::Key {
+                    key: Key::C,
+                    pressed: false,
+                    ..
+                }
+            )
+        };
+        let ctrl_c = copy_is_ctrl_c(input);
+        // The editor's own: it drops the edit when its field is drawn.
+        let taken = open && ctrl_c && input.events.iter().any(copy);
+        if held && !taken {
+            input.events.retain(|event| !copy(event));
+        }
+        (held || taken) && ctrl_c && !input.events.iter().any(up)
+    });
+    ctx.data_mut(|data| data.insert_temp(copy_held_id(), held));
 }
 
 /// Whether `key` with `modifiers` went down this frame. Consumes the
@@ -698,6 +763,16 @@ fn editing_keys(app: &App, ctx: &egui::Context, keyboard: bool, actions: &mut Ve
         if take_press(input, Modifiers::COMMAND | Modifiers::ALT, Key::Backspace) > 0 {
             actions.push(Action::DiscardEdits { tab, id });
         }
+        // A click selects its cell once the frame is drawn, after these
+        // keys were read: what acts on the active cell, or opens its
+        // editor, would land on the cell the selection leaves.
+        let clicked = input
+            .events
+            .iter()
+            .any(|event| matches!(event, egui::Event::PointerButton { .. }));
+        if clicked {
+            return;
+        }
         if take_press(input, Modifiers::COMMAND, Key::Backspace) > 0 {
             actions.push(Action::SetNull { tab, id });
         }
@@ -762,7 +837,9 @@ fn editing_keys(app: &App, ctx: &egui::Context, keyboard: bool, actions: &mut Ve
 /// nothing else: beside a key that moves the selection, or anything that
 /// was asked for already (`actions`), the order the two came in is lost,
 /// and the letter might reach another cell than the one it was typed on.
-/// It is dropped there.
+/// It is dropped there. So beside a pointer's button, going down or coming
+/// up: a click selects its cell when the grid is drawn, after these keys
+/// were read, and the letter would act on the cell the selection leaves.
 ///
 /// `waiting` says a first `c` came in an earlier frame; returns whether one
 /// waits now.
@@ -799,7 +876,7 @@ fn editing_letters(
                 event if enter(event) => {}
                 egui::Event::Key { pressed: true, .. } => keys += 1,
                 egui::Event::Text(text) if mine(text) => letters += 1,
-                egui::Event::Text(_) => other = true,
+                egui::Event::Text(_) | egui::Event::PointerButton { .. } => other = true,
                 _ => {}
             }
         }
@@ -869,6 +946,14 @@ fn pending_id() -> egui::Id {
     egui::Id::new("pending-key")
 }
 
+/// Ends the wait of a first key (`c` of `cc`, `g` of `gd`): the key after
+/// it is a first key again. It waits through frames that bring no key, and
+/// no longer than the keys stay the grid's: not past a click, a field that
+/// has the keyboard, the `:` prompt or a dialog.
+pub(crate) fn forget_pending(ctx: &egui::Context) {
+    ctx.data_mut(|data| data.insert_temp(pending_id(), None::<char>));
+}
+
 /// Whether a text field had the keyboard when the last frame ended.
 fn was_editing_id() -> egui::Id {
     egui::Id::new("was-editing")
@@ -916,6 +1001,9 @@ fn letters(app: &mut App, ctx: &egui::Context, actions: &mut Vec<Action>) {
         .unwrap_or(false);
     let mut next_pending = None;
     let pressed = |key: Key| ctx.input_mut(|input| input.consume_key(Modifiers::NONE, key));
+    // A press of its own: not the repeats of a key held since it did
+    // something else (the Esc that left insert mode).
+    let fresh = |key: Key| ctx.input_mut(|input| consume_press(input, Modifiers::NONE, key));
     let command = |key: Key| ctx.input_mut(|input| input.consume_key(Modifiers::COMMAND, key));
     if let crate::model::ConnTabContent::Picker(picker) = &app.active_tab().content {
         let selected = picker.selected.clone();
@@ -996,6 +1084,19 @@ fn letters(app: &mut App, ctx: &egui::Context, actions: &mut Vec<Action>) {
         .active_sql_tab()
         .filter(|sql| sql.selected_row().is_some())
         .map(|sql| sql.id);
+    // What the last save came to, with nothing pending any more: Esc takes
+    // it off the status line, as Dismiss does in the other looks. Before
+    // the row panel's Esc, and in its place: the key does no more.
+    let note = workspace
+        .active_object_tab()
+        .filter(|object| object.edits.note.is_some() && !object.edits.holds())
+        .map(|object| object.id);
+    if let Some(id) = note
+        && !left_field
+        && fresh(Key::Escape)
+    {
+        actions.push(Action::DismissNote { tab, id });
+    }
     for (index, number) in NUMBERS.into_iter().enumerate() {
         if pressed(number)
             && let Some(id) = tabs.get(index)
@@ -1066,6 +1167,13 @@ fn letters(app: &mut App, ctx: &egui::Context, actions: &mut Vec<Action>) {
             next_pending = Some('c');
         }
     }
+    // The prompt opens wherever a table's tab shows, as the status line
+    // offers it there (`:w`) and as Mod+S saves there: with the arrows on
+    // the tree, in the Structure view, on a button. On the grid the
+    // letters above took the colon.
+    if active.is_some() && typed(ctx, ":") {
+        actions.push(Action::OpenCommand(tab));
+    }
     // The row panel's keys: an object tab's, or a SQL result's while a row
     // of it is selected (with none its panel has nothing to show).
     if let Some(id) = active.or(sql_row) {
@@ -1081,8 +1189,9 @@ fn letters(app: &mut App, ctx: &egui::Context, actions: &mut Vec<Action>) {
                 actions.push(Action::ToggleRowPanel(tab));
             }
         }
-        // An Esc that left a text field did only that.
-        if panel && !left_field && pressed(Key::Escape) {
+        // An Esc that left a text field did only that, and so do its
+        // repeats while it is held.
+        if panel && !left_field && fresh(Key::Escape) {
             actions.push(Action::ToggleRowPanel(tab));
         }
         if pressed(Key::Z) {
@@ -1280,9 +1389,12 @@ mod tests {
             .find(|(_, what, _)| what.starts_with("Omarchy:"))
             .expect("Omarchy's row");
         let keys: Vec<&str> = keys.split(", ").collect();
-        for key in ["i", "Enter", "cc", "x", "u", "Ctrl+S", ":w", ":e!", "Space"] {
+        for key in ["i", "Enter", "cc", "x", "u", "Mod+S", ":w", ":e!", "Space"] {
             assert!(keys.contains(&key), "{key}: {keys:?}");
         }
+        // Saving is Mod+S, as the row of the terminal's own keys has it:
+        // Cmd where Cmd is the command key.
+        assert!(!keys.contains(&"Ctrl+S"), "{keys:?}");
         // `s` is the Structure view's still.
         assert!(keys.contains(&"s"));
     }

@@ -559,6 +559,9 @@ pub struct Workspace {
     /// What the prompt was given that is not a command, until the next
     /// key.
     pub command_error: Option<String>,
+    /// A save was asked for and could not be made. The terminal's line
+    /// says why ahead of what else it has to say, until the next key.
+    pub save_refused: bool,
     /// Fold or unfold the row panel's documents on the next frame (`za`).
     pub fold_documents: Option<TabId>,
     /// When the session last connected, in seconds since the Unix epoch
@@ -2551,6 +2554,7 @@ impl Workspace {
             command: None,
             focus_command: false,
             command_error: None,
+            save_refused: false,
             fold_documents: None,
             connected_at: None,
         }

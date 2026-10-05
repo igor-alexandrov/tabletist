@@ -12,7 +12,7 @@ use crate::theme::{Look, Palette};
 use crate::typography::Text;
 use crate::ui::focus::{self, Ring};
 use crate::ui::format::display_safe;
-use crate::ui::keys::{consume_press, is_press};
+use crate::ui::keys::{consume_press, copy_is_ctrl_c, is_press};
 use crate::ui::states::Tone;
 use crate::ui::{grid, sql_complete, widgets};
 
@@ -111,8 +111,11 @@ fn leaving_keys(input: &mut egui::InputState, mine: bool, terminal: bool, outcom
     }
     // Ctrl+C comes as a copy where Ctrl is the command key, and is taken
     // before the field sees it: nothing is copied. Where Cmd is, the copy
-    // is Cmd+C and stays the field's, and Ctrl+C is a key.
-    let copy = !input.modifiers.mac_cmd;
+    // is Cmd+C and stays the field's, and Ctrl+C is a key. A copy asked
+    // for any other way is the field's too, and copies what is selected:
+    // Ctrl+Shift+C, a Copy key and a menu's Copy, which come with nothing
+    // held.
+    let copy = copy_is_ctrl_c(input);
     let mut ended = false;
     input.events.retain(|event| {
         if ended {

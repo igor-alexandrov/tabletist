@@ -12525,6 +12525,128 @@ mod tests {
     }
 
     #[test]
+    fn a_letter_in_the_frame_of_a_click_is_no_key() {
+        // A click selects its cell once the frame is drawn, after the keys
+        // were read: a letter that shares the frame would act on the cell
+        // the selection leaves. With the button going down, coming up, or
+        // both in the letter's frame.
+        for (key, text) in [(Key::X, "x"), (Key::U, "u")] {
+            for shared in ["press", "release", "press and release"] {
+                let (mut harness, tab, id) = normal_mode((0, 2));
+                // `u` would put back what was loaded, and `x` set NULL.
+                make_pending(&mut harness, tab, id, (0, 2), "[1]");
+                harness.settle();
+                let at = cell_of(&harness, "user3@example.com");
+                let button = |pressed| egui::Event::PointerButton {
+                    pos: at,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: Modifiers::NONE,
+                };
+                let with = |mut events: Vec<egui::Event>| {
+                    events.extend(key_down(key, text));
+                    events
+                };
+                harness.frame(vec![egui::Event::PointerMoved(at)]);
+                match shared {
+                    "press" => {
+                        harness.frame(with(vec![button(true)]));
+                        harness.frame(vec![button(false)]);
+                    }
+                    "release" => {
+                        harness.frame(vec![button(true)]);
+                        harness.frame(with(vec![button(false)]));
+                    }
+                    _ => {
+                        harness.frame(with(vec![button(true), button(false)]));
+                    }
+                }
+                harness.frame(vec![crate::testing::release(key, Modifiers::NONE)]);
+                harness.settle();
+                assert_eq!(
+                    pending_text(&harness, tab, id, (0, 2)).as_deref(),
+                    Some("[1]"),
+                    "{text} with the {shared}"
+                );
+                assert_eq!(edits(&harness, tab, id).cells.len(), 1, "{text}: {shared}");
+                assert_eq!(
+                    selected(&harness, tab, id),
+                    Some((2, 1)),
+                    "{text} with the {shared}: the click selected its cell"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_key_in_the_frame_of_a_click_is_not_the_old_cells_in_the_desktop_looks() {
+        // The same in the looks without letters: what is typed, and the
+        // chords that act on the active cell, would land on the cell the
+        // click's selection leaves.
+        let null = crate::testing::key(Key::Backspace, Modifiers::COMMAND);
+        for look in [crate::theme::Look::standard(), crate::theme::Look::macos()] {
+            for typed in [vec![egui::Event::Text("x".into())], vec![null.clone()]] {
+                let (mut harness, tab, id) = editable_in(look);
+                harness.app.apply(Action::SelectCell {
+                    tab,
+                    id,
+                    cell: CellPos { row: 0, col: 2 },
+                });
+                harness.settle();
+                let at = cell_of(&harness, "user3@example.com");
+                let button = |pressed| egui::Event::PointerButton {
+                    pos: at,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: Modifiers::NONE,
+                };
+                harness.frame(vec![egui::Event::PointerMoved(at)]);
+                let mut events = vec![button(true), button(false)];
+                events.extend(typed);
+                harness.frame(events);
+                harness.settle();
+                let now = edits(&harness, tab, id);
+                assert!(
+                    now.cells.is_empty() && now.editor.is_none(),
+                    "{}: {now:?}",
+                    look.name
+                );
+                assert_eq!(selected(&harness, tab, id), Some((2, 1)), "{}", look.name);
+            }
+        }
+    }
+
+    #[test]
+    fn a_letter_typed_as_the_filter_bar_opens_starts_no_edit_in_the_desktop_looks() {
+        // Mod+F asks for the filter bar, whose field takes the keyboard
+        // when it is next drawn. What is typed before that is meant for
+        // the bar, not for the cell.
+        for look in [crate::theme::Look::standard(), crate::theme::Look::macos()] {
+            let (mut harness, tab, id) = editable_in(look);
+            harness.app.apply(Action::SelectCell {
+                tab,
+                id,
+                cell: CellPos { row: 1, col: 1 },
+            });
+            harness.settle();
+            harness.frame(vec![crate::testing::key(Key::F, Modifiers::COMMAND)]);
+            harness.frame(vec![egui::Event::Text("x".into())]);
+            harness.settle();
+            let now = edits(&harness, tab, id);
+            assert!(
+                now.cells.is_empty() && now.editor.is_none(),
+                "{}: {now:?}",
+                look.name
+            );
+            assert!(
+                harness.ctx.text_edit_focused(),
+                "{}: the bar's field",
+                look.name
+            );
+        }
+    }
+
+    #[test]
     fn a_letter_typed_as_the_where_line_opens_is_no_key() {
         // `/` asks for the WHERE line, which takes the keyboard when it is
         // next drawn. An `x` that comes before that is meant for the
@@ -12543,6 +12665,39 @@ mod tests {
             pending_text(&harness, tab, id, (0, 2)).as_deref(),
             Some("NULL")
         );
+    }
+
+    #[test]
+    fn a_letter_typed_as_the_filter_bar_opens_is_no_key() {
+        let filter = crate::testing::key(Key::F, Modifiers::COMMAND);
+        // Mod+F asks for the filter bar, whose field takes the keyboard
+        // when it is next drawn. A letter that comes before that is meant
+        // for the bar, not for the cell: `u` would put back what was
+        // loaded, and `x` set NULL.
+        for (key, text) in [(Key::U, "u"), (Key::X, "x")] {
+            let (mut harness, tab, id) = normal_mode((0, 2));
+            make_pending(&mut harness, tab, id, (0, 2), "[1]");
+            harness.settle();
+            let pending = |harness: &Harness| pending_text(harness, tab, id, (0, 2));
+            harness.frame(vec![filter.clone()]);
+            harness.frame(key_down(key, text));
+            harness.settle();
+            assert_eq!(pending(&harness).as_deref(), Some("[1]"), "{text}");
+            assert!(harness.ctx.text_edit_focused(), "{text}: the bar's field");
+            // So with the bar open and the keyboard asked back into it.
+            harness.press(Key::Escape, Modifiers::NONE);
+            assert!(!harness.ctx.text_edit_focused(), "{text}");
+            harness.frame(vec![filter.clone()]);
+            harness.frame(key_down(key, text));
+            harness.settle();
+            assert_eq!(pending(&harness).as_deref(), Some("[1]"), "{text}");
+            assert!(harness.ctx.text_edit_focused(), "{text}: the bar's field");
+            // Out of the bar the letter is the grid's again.
+            harness.press(Key::Escape, Modifiers::NONE);
+            type_key(&mut harness, key, text);
+            let after = if text == "u" { None } else { Some("NULL") };
+            assert_eq!(pending(&harness).as_deref(), after, "{text}");
+        }
     }
 
     #[test]
@@ -12566,14 +12721,50 @@ mod tests {
         type_key(&mut harness, Key::J, "j");
         assert_eq!(selected(&harness, tab, id), Some((2, 1)));
         // With the whole text selected too: the field never sees the copy.
+        let ctrl = Modifiers::CTRL | Modifiers::COMMAND;
+        let ctrl_c = |harness: &mut Harness| {
+            harness.frame(vec![egui::Event::ModifiersChanged(ctrl), egui::Event::Copy]);
+            harness.frame(vec![egui::Event::ModifiersChanged(Modifiers::NONE)]);
+            harness.settle();
+        };
         type_key(&mut harness, Key::I, "i");
         type_text(&mut harness, "x");
         harness.press(Key::A, Modifiers::COMMAND);
-        harness.frame(vec![egui::Event::Copy]);
-        harness.settle();
+        ctrl_c(&mut harness);
         assert!(edits(&harness, tab, id).editor.is_none());
         assert!(edits(&harness, tab, id).cells.is_empty());
         assert_eq!(harness.copied, None, "nothing was copied");
+        // Any other copy is the field's, which copies what is selected:
+        // Ctrl+Shift+C, the copy of every terminal and this app's "copy
+        // row", a Copy key or a menu's Copy, which come with nothing held,
+        // and Cmd+C with Ctrl held too.
+        let ctrl_cmd = Modifiers::MAC_CMD | Modifiers::COMMAND | Modifiers::CTRL;
+        for held in [Some(ctrl | Modifiers::SHIFT), None, Some(ctrl_cmd)] {
+            type_key(&mut harness, Key::I, "i");
+            type_text(&mut harness, "x");
+            harness.press(Key::A, Modifiers::COMMAND);
+            let mut events = Vec::from_iter(held.map(egui::Event::ModifiersChanged));
+            events.push(egui::Event::Copy);
+            harness.frame(events);
+            harness.frame(vec![egui::Event::ModifiersChanged(Modifiers::NONE)]);
+            harness.settle();
+            assert_eq!(
+                editor_text(&harness, tab, id).as_deref(),
+                Some("user3@example.comx"),
+                "{held:?}: the edit is kept"
+            );
+            assert_eq!(
+                harness.copied.as_deref(),
+                Some("user3@example.comx"),
+                "{held:?}"
+            );
+            // Ctrl+C alone drops it still.
+            harness.copied = None;
+            ctrl_c(&mut harness);
+            assert!(edits(&harness, tab, id).editor.is_none(), "{held:?}");
+            assert!(edits(&harness, tab, id).cells.is_empty(), "{held:?}");
+            assert_eq!(harness.copied, None, "{held:?}: nothing was copied");
+        }
         // Where Ctrl is not the command key, Ctrl+C is a key and the copy
         // is Cmd+C: the first drops the edit, the second copies as in any
         // field.
@@ -12610,7 +12801,11 @@ mod tests {
         assert!(is_large(&harness, tab, id));
         type_text(&mut harness, "junk");
         harness.copied = None;
-        harness.frame(vec![egui::Event::Copy]);
+        harness.frame(vec![
+            egui::Event::ModifiersChanged(Modifiers::CTRL | Modifiers::COMMAND),
+            egui::Event::Copy,
+        ]);
+        harness.frame(vec![egui::Event::ModifiersChanged(Modifiers::NONE)]);
         harness.settle();
         assert!(edits(&harness, tab, id).editor.is_none());
         assert_eq!(
@@ -12709,6 +12904,311 @@ mod tests {
         let now = edits(&harness, tab, id);
         assert!(now.editor.is_none());
         assert!(matches!(now.why, Some((_, crate::edit::Lock::KeyColumn))));
+    }
+
+    #[test]
+    fn a_waiting_first_key_ends_with_a_click() {
+        // `c`, a click on another cell, `c`: the second is a first again,
+        // not the `cc` that would empty the cell the click selected.
+        let (mut harness, tab, id) = normal_mode((1, 1));
+        type_key(&mut harness, Key::C, "c");
+        let at = cell_of(&harness, "user3@example.com");
+        click_at(&mut harness, at);
+        assert_eq!(selected(&harness, tab, id), Some((2, 1)));
+        type_key(&mut harness, Key::C, "c");
+        assert!(edits(&harness, tab, id).editor.is_none());
+        // It waits in its turn: `cc` is as it was.
+        type_key(&mut harness, Key::C, "c");
+        assert_eq!(editor_text(&harness, tab, id).as_deref(), Some(""));
+        // So with the first key of `gd`: after a click, `d` is the Data
+        // view's key again.
+        let (mut harness, tab, id) = normal_mode((1, 1));
+        let view = |harness: &Harness| {
+            let workspace = harness.app.workspace(tab).unwrap();
+            workspace.object_tab(id).unwrap().view
+        };
+        type_key(&mut harness, Key::S, "s");
+        assert_eq!(view(&harness), crate::model::ObjectView::Structure);
+        type_key(&mut harness, Key::G, "g");
+        type_key(&mut harness, Key::D, "d");
+        assert_eq!(view(&harness), crate::model::ObjectView::Structure, "gd");
+        type_key(&mut harness, Key::G, "g");
+        let middle = egui::Rect::from_min_size(egui::Pos2::ZERO, harness.size).center();
+        click_at(&mut harness, middle);
+        type_key(&mut harness, Key::D, "d");
+        assert_eq!(view(&harness), crate::model::ObjectView::Data);
+    }
+
+    #[test]
+    fn a_waiting_first_key_ends_where_the_keys_are_not_the_grids() {
+        // `c`, an edit of another cell, and one `c` when it is over: the
+        // editor does not open from nothing over what was just typed.
+        // However the editor came to open, a double click (as here) or not.
+        let (mut harness, tab, id) = normal_mode((1, 1));
+        type_key(&mut harness, Key::C, "c");
+        let at = cell_of(&harness, "user3@example.com");
+        click_at(&mut harness, at);
+        click_at(&mut harness, at);
+        assert!(edits(&harness, tab, id).editor.is_some());
+        type_text(&mut harness, "!");
+        harness.press(Key::Escape, Modifiers::NONE);
+        type_key(&mut harness, Key::C, "c");
+        assert!(edits(&harness, tab, id).editor.is_none());
+        assert_eq!(
+            pending_text(&harness, tab, id, (2, 1)).as_deref(),
+            Some("user3@example.com!")
+        );
+        // An editor, the WHERE line, the `:` prompt and a dialog, each
+        // opened with no key and no click of its own, and left with Esc.
+        for what in ["an editor", "the WHERE line", "the prompt", "a dialog"] {
+            let (mut harness, tab, id) = normal_mode((1, 1));
+            type_key(&mut harness, Key::C, "c");
+            match what {
+                "an editor" => open_editor(&mut harness, tab, id, (3, 1)),
+                "the WHERE line" => harness.app.apply(Action::FocusWhere(tab)),
+                "the prompt" => harness.app.apply(Action::OpenCommand(tab)),
+                _ => harness.app.apply(Action::ShowHelp),
+            }
+            harness.settle();
+            harness.press(Key::Escape, Modifiers::NONE);
+            assert!(harness.app.dialog.is_none(), "{what}");
+            assert_eq!(command(&harness, tab), None, "{what}");
+            assert!(!harness.ctx.text_edit_focused(), "{what}");
+            assert!(edits(&harness, tab, id).editor.is_none(), "{what}");
+            type_key(&mut harness, Key::C, "c");
+            assert!(edits(&harness, tab, id).editor.is_none(), "{what}");
+            // `cc` after it is as it was.
+            type_key(&mut harness, Key::C, "c");
+            assert_eq!(
+                editor_text(&harness, tab, id).as_deref(),
+                Some(""),
+                "{what}"
+            );
+        }
+        // Frames that bring no key keep a first key waiting, as they did:
+        // `za` folds the row's documents.
+        let (mut harness, _tab, _id) = normal_mode((0, 2));
+        assert!(harness.has(r#""plan": "pro""#));
+        type_key(&mut harness, Key::Z, "z");
+        for _ in 0..30 {
+            harness.frame(Vec::new());
+        }
+        type_key(&mut harness, Key::A, "a");
+        assert!(harness.has("{ 1 key }"));
+    }
+
+    /// Holds `key` down: its press, six repeats (egui marks a press of a
+    /// key that is down already as one) and its release.
+    fn hold(harness: &mut Harness, key: Key) {
+        for _ in 0..7 {
+            harness.frame(vec![crate::testing::key(key, Modifiers::NONE)]);
+        }
+        harness.frame(vec![crate::testing::release(key, Modifiers::NONE)]);
+        harness.settle();
+    }
+
+    #[test]
+    fn a_held_escape_leaves_insert_mode_and_does_no_more() {
+        let (mut harness, tab, id) = normal_mode((1, 1));
+        let panel = |harness: &Harness| harness.app.workspace(tab).unwrap().row_panel;
+        type_key(&mut harness, Key::I, "i");
+        type_text(&mut harness, "x");
+        hold(&mut harness, Key::Escape);
+        assert!(edits(&harness, tab, id).editor.is_none());
+        assert_eq!(
+            pending_text(&harness, tab, id, (1, 1)).as_deref(),
+            Some("user2@example.comx")
+        );
+        assert!(panel(&harness), "the repeats are no press of normal mode's");
+        // A press of its own closes the panel, once however long it is held.
+        hold(&mut harness, Key::Escape);
+        assert!(!panel(&harness));
+        // An Esc that is down since before the editor opened (it closed
+        // the panel) ends nothing in it: its repeats are taken.
+        harness.frame(vec![crate::testing::key(Key::Escape, Modifiers::NONE)]);
+        open_editor(&mut harness, tab, id, (2, 1));
+        type_text(&mut harness, "y");
+        for _ in 0..3 {
+            harness.frame(vec![crate::testing::key(Key::Escape, Modifiers::NONE)]);
+        }
+        harness.settle();
+        assert_eq!(
+            editor_text(&harness, tab, id).as_deref(),
+            Some("user3@example.comy")
+        );
+        assert!(harness.ctx.text_edit_focused());
+        harness.frame(vec![crate::testing::release(Key::Escape, Modifiers::NONE)]);
+        harness.press(Key::Escape, Modifiers::NONE);
+        assert!(edits(&harness, tab, id).editor.is_none());
+        assert_eq!(
+            pending_text(&harness, tab, id, (2, 1)).as_deref(),
+            Some("user3@example.comy")
+        );
+    }
+
+    #[test]
+    fn a_held_ctrl_c_drops_the_edit_and_copies_nothing() {
+        let (mut harness, tab, id) = normal_mode((1, 1));
+        let ctrl = Modifiers::CTRL | Modifiers::COMMAND;
+        type_key(&mut harness, Key::I, "i");
+        type_text(&mut harness, "x");
+        harness.copied = None;
+        // A copy says nothing of being a repeat: the held key's come as
+        // the first did.
+        harness.frame(vec![egui::Event::ModifiersChanged(ctrl), egui::Event::Copy]);
+        for _ in 0..6 {
+            harness.frame(Vec::new());
+            harness.frame(vec![egui::Event::Copy]);
+        }
+        harness.settle();
+        let now = edits(&harness, tab, id);
+        assert!(now.editor.is_none() && now.cells.is_empty());
+        assert_eq!(harness.copied, None, "the repeats copied the cell");
+        // Once the key is up, Ctrl+C copies the cell as it did, Ctrl held
+        // still or not.
+        harness.frame(vec![crate::testing::release(Key::C, ctrl)]);
+        harness.frame(vec![egui::Event::Copy]);
+        assert_eq!(harness.copied.as_deref(), Some("user2@example.com"));
+        // So when it is Ctrl that came up, whatever became of the key.
+        harness.frame(vec![egui::Event::ModifiersChanged(Modifiers::NONE)]);
+        type_key(&mut harness, Key::J, "j");
+        type_key(&mut harness, Key::I, "i");
+        harness.copied = None;
+        harness.frame(vec![egui::Event::ModifiersChanged(ctrl), egui::Event::Copy]);
+        harness.frame(vec![egui::Event::Copy]);
+        assert!(edits(&harness, tab, id).editor.is_none());
+        assert_eq!(harness.copied, None);
+        harness.frame(vec![egui::Event::ModifiersChanged(Modifiers::NONE)]);
+        harness.frame(vec![egui::Event::ModifiersChanged(ctrl), egui::Event::Copy]);
+        assert_eq!(harness.copied.as_deref(), Some("user3@example.com"));
+        harness.frame(vec![
+            crate::testing::release(Key::C, ctrl),
+            egui::Event::ModifiersChanged(Modifiers::NONE),
+        ]);
+        // Where Ctrl+C is a key (Cmd is the command key), its repeats are
+        // keys too, and no key of normal mode's.
+        type_key(&mut harness, Key::I, "i");
+        type_text(&mut harness, "x");
+        harness.copied = None;
+        for _ in 0..7 {
+            harness.frame(vec![crate::testing::key(Key::C, Modifiers::CTRL)]);
+        }
+        harness.frame(vec![crate::testing::release(Key::C, Modifiers::CTRL)]);
+        harness.settle();
+        let now = edits(&harness, tab, id);
+        assert!(now.editor.is_none() && now.cells.is_empty());
+        assert_eq!(harness.copied, None);
+    }
+
+    #[test]
+    fn escape_takes_what_a_save_came_to_off_the_line_once_nothing_is_pending() {
+        let (mut harness, tab, id) = normal_mode((1, 1));
+        let panel = |harness: &Harness| harness.app.workspace(tab).unwrap().row_panel;
+        make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
+        harness.press(Key::S, Modifiers::COMMAND);
+        harness.answer_written(Err(tabletist_db::Error::Cancelled));
+        harness.settle();
+        let said = "save cancelled. nothing was written.";
+        assert!(painted(&harness, said), "{:?}", harness.painted);
+        // With the change pending still, Esc is the row panel's, and the
+        // line says what it said.
+        harness.press(Key::Escape, Modifiers::NONE);
+        assert!(!panel(&harness));
+        assert!(painted(&harness, said));
+        type_key(&mut harness, Key::Space, " ");
+        assert!(panel(&harness));
+        // `u` empties the set, and the line still says it.
+        type_key(&mut harness, Key::U, "u");
+        assert!(edits(&harness, tab, id).cells.is_empty());
+        assert!(painted(&harness, said));
+        // An Esc held to leave insert mode does that and no more: its
+        // repeats are no press of normal mode's.
+        type_key(&mut harness, Key::I, "i");
+        assert!(edits(&harness, tab, id).editor.is_some());
+        hold(&mut harness, Key::Escape);
+        assert!(edits(&harness, tab, id).editor.is_none());
+        assert!(painted(&harness, said));
+        assert!(panel(&harness));
+        // Esc takes it away, as Dismiss does in the other looks, and does
+        // no more, however long it is held: the panel stays.
+        hold(&mut harness, Key::Escape);
+        assert!(!painted(&harness, said), "{:?}", harness.painted);
+        assert!(edits(&harness, tab, id).note.is_none());
+        assert!(panel(&harness));
+        // The next one is the panel's again.
+        harness.press(Key::Escape, Modifiers::NONE);
+        assert!(!panel(&harness));
+    }
+
+    #[test]
+    fn tab_and_shift_tab_commit_and_move_in_insert_mode() {
+        let (mut harness, tab, id) = normal_mode((1, 1));
+        type_key(&mut harness, Key::I, "i");
+        type_text(&mut harness, "x");
+        harness.press(Key::Tab, Modifiers::NONE);
+        assert!(edits(&harness, tab, id).editor.is_none());
+        assert_eq!(
+            pending_text(&harness, tab, id, (1, 1)).as_deref(),
+            Some("user2@example.comx")
+        );
+        assert_eq!(selected(&harness, tab, id), Some((1, 2)));
+        // Normal mode again, on the grid: the keyboard went to no button.
+        assert!(!harness.ctx.text_edit_focused());
+        assert!(!crate::ui::focus::on_control(&harness.ctx));
+        type_key(&mut harness, Key::J, "j");
+        type_key(&mut harness, Key::H, "h");
+        assert_eq!(selected(&harness, tab, id), Some((2, 1)));
+        type_key(&mut harness, Key::I, "i");
+        type_text(&mut harness, "y");
+        harness.press(Key::Tab, Modifiers::SHIFT);
+        assert!(edits(&harness, tab, id).editor.is_none());
+        assert_eq!(
+            pending_text(&harness, tab, id, (2, 1)).as_deref(),
+            Some("user3@example.comy")
+        );
+        assert_eq!(selected(&harness, tab, id), Some((2, 0)));
+        assert!(!crate::ui::focus::on_control(&harness.ctx));
+    }
+
+    #[test]
+    fn the_keys_of_normal_mode_are_text_in_insert_mode() {
+        let (mut harness, tab, id) = normal_mode((1, 1));
+        // A second tab for a digit to go to.
+        harness.app.apply(Action::NewSqlTab(tab));
+        harness.app.apply(Action::ActivateTab { tab, id });
+        focus_grid(&mut harness, tab);
+        harness.settle();
+        type_key(&mut harness, Key::I, "i");
+        harness.copied = None;
+        for (key, text) in [
+            (Key::Num1, "1"),
+            (Key::Num2, "2"),
+            (Key::Space, " "),
+            (Key::Questionmark, "?"),
+            (Key::S, "s"),
+            (Key::D, "d"),
+            (Key::Y, "y"),
+            (Key::Slash, "/"),
+            (Key::Colon, ":"),
+        ] {
+            type_key(&mut harness, key, text);
+        }
+        assert_eq!(
+            editor_text(&harness, tab, id).as_deref(),
+            Some("user2@example.com12 ?sdy/:")
+        );
+        // No tab, view, panel, prompt or dialog changed, and nothing was
+        // copied.
+        let workspace = harness.app.workspace(tab).unwrap();
+        assert_eq!(workspace.active_tab, Some(id));
+        let object = workspace.object_tab(id).unwrap();
+        assert_eq!(object.view, crate::model::ObjectView::Data);
+        assert_eq!(object.filter.raw_text, "");
+        assert!(workspace.row_panel);
+        assert_eq!(workspace.command, None);
+        assert!(harness.app.dialog.is_none());
+        assert_eq!(harness.copied, None);
+        assert_eq!(selected(&harness, tab, id), Some((1, 1)));
     }
 
     #[test]
@@ -13275,6 +13775,243 @@ mod tests {
         assert!(at.right() < range.left(), "{at:?} before {range:?}");
     }
 
+    #[test]
+    fn the_status_line_keeps_a_keys_value_and_the_databases_words_as_they_are() {
+        use tabletist_db::{Conflict, Value, WriteOutcome};
+        // A table whose key is a text column, with capitals in the
+        // column's name and in the key's value.
+        let mut harness = Harness::new();
+        harness.set_look(Look::omarchy());
+        let tab = harness.connect_fake_as(false);
+        harness.app.apply(Action::OpenObject {
+            tab,
+            object: tabletist_db::ObjectRef::new("main", "users"),
+            kind: tabletist_db::ObjectKind::Table,
+            pin: true,
+        });
+        let mut structure = crate::testing::fixture_structure();
+        structure.columns[1].name = "Email".into();
+        structure.primary_key = vec!["Email".into()];
+        harness.answer_structure(structure);
+        let mut page = crate::testing::page(5, false);
+        page.columns[1].name = "Email".into();
+        page.rows[1][1] = Value::Text("AbC".into());
+        harness.answer_rows(page);
+        let id = harness.app.workspace(tab).unwrap().active_tab.unwrap();
+        focus_grid(&mut harness, tab);
+        make_pending(&mut harness, tab, id, (1, 2), "[1]");
+        harness.press(Key::S, Modifiers::COMMAND);
+        assert_eq!(writes(&harness), 1);
+        let changed = Conflict {
+            row: 0,
+            server: Some(vec![
+                Value::Int(2),
+                Value::Text("AbC".into()),
+                Value::Text("[2]".into()),
+            ]),
+        };
+        harness.answer_written(Ok(WriteOutcome::Conflicts(vec![changed])));
+        harness.settle();
+        // The look's lower case is for the app's own words.
+        let said = "conflict row Email AbC changed on the server. nothing was written.";
+        assert!(painted(&harness, said), "{:?}", harness.painted);
+        assert!(harness.has(said));
+        // So with what the database said of a statement it refused.
+        harness.press(Key::S, Modifiers::COMMAND);
+        harness.answer_written(Ok(WriteOutcome::Failed {
+            row: 0,
+            error: tabletist_db::Error::Query {
+                code: Some("23514".into()),
+                message: "New row violates CHECK \"Users_Meta_Check\"".into(),
+                detail: None,
+                hint: None,
+            },
+        }));
+        harness.settle();
+        let said = "failed 23514 · New row violates CHECK \"Users_Meta_Check\". \
+                    nothing was written.";
+        assert!(painted(&harness, said), "{:?}", harness.painted);
+        // And with an error that came with no code.
+        harness.press(Key::S, Modifiers::COMMAND);
+        harness.answer_written(Ok(WriteOutcome::Failed {
+            row: 0,
+            error: tabletist_db::Error::query("Disk Full"),
+        }));
+        harness.settle();
+        let said = harness.painted.iter().map(|(piece, _)| piece.as_str());
+        let said: Vec<&str> = said.filter(|piece| piece.starts_with("failed ")).collect();
+        assert!(
+            matches!(said.as_slice(), [said] if said.contains("Disk Full")
+                && said.ends_with(" nothing was written.")),
+            "{said:?}"
+        );
+    }
+
+    #[test]
+    fn a_save_that_cannot_be_made_says_why_in_the_status_line() {
+        let (mut harness, tab, id) = normal_mode((1, 1));
+        let palette = harness.app.palette;
+        let fix = "fix 1 value to save";
+        // A set that can be saved has nothing to say of it.
+        make_pending(&mut harness, tab, id, (3, 1), "dan@example.com");
+        harness.settle();
+        assert!(painted(&harness, "1 pending · 1 row"));
+        assert!(!painted(&harness, fix));
+        // With a cell to fix it says why not, after the counts and a step
+        // back from them: in the words of the other looks' disabled Save.
+        leave_pending(&mut harness, tab, id, (1, 2), "{");
+        harness.settle();
+        assert!(
+            painted_in(&harness, fix, palette.secondary),
+            "{:?}",
+            harness.painted
+        );
+        assert!(harness.has(fix));
+        let counts = harness.painted_rect("1 error").unwrap();
+        let said = harness.painted_rect(fix).unwrap();
+        assert!((said.center().y - counts.center().y).abs() < 1.0);
+        assert!(said.left() > counts.right());
+        // Ctrl+S and `:w` send nothing, and the line says why.
+        harness.press(Key::S, Modifiers::COMMAND);
+        assert!(painted(&harness, fix));
+        type_key(&mut harness, Key::Colon, ":");
+        type_text(&mut harness, "w");
+        harness.press(Key::Enter, Modifiers::NONE);
+        assert_eq!(command(&harness, tab), None);
+        assert!(painted(&harness, fix), "{:?}", harness.painted);
+        assert_eq!(writes(&harness), 0);
+        // Asked for from the open prompt, it leaves the prompt open: what
+        // is typed next is the prompt's still.
+        type_key(&mut harness, Key::Colon, ":");
+        harness.press(Key::S, Modifiers::COMMAND);
+        type_key(&mut harness, Key::E, "e");
+        assert_eq!(command(&harness, tab).as_deref(), Some("e"));
+        harness.press(Key::Escape, Modifiers::NONE);
+        assert_eq!(writes(&harness), 0);
+        // Put right, there is nothing to say.
+        type_key(&mut harness, Key::U, "u");
+        assert!(!painted(&harness, fix));
+
+        // Whatever the line said when the save was asked for, it says why
+        // the save was not made, until the next key.
+        harness.press(Key::S, Modifiers::COMMAND);
+        assert_eq!(writes(&harness), 1);
+        harness.answer_written(Err(tabletist_db::Error::Cancelled));
+        leave_pending(&mut harness, tab, id, (1, 2), "{");
+        harness.settle();
+        let cancelled = "save cancelled. nothing was written.";
+        assert!(painted(&harness, cancelled), "{:?}", harness.painted);
+        assert!(!painted(&harness, fix));
+        for refused in ["ctrl+s", ":w"] {
+            if refused == ":w" {
+                type_key(&mut harness, Key::Colon, ":");
+                type_text(&mut harness, "w");
+                harness.press(Key::Enter, Modifiers::NONE);
+            } else {
+                harness.press(Key::S, Modifiers::COMMAND);
+            }
+            assert!(painted_in(&harness, fix, palette.secondary), "{refused}");
+            assert!(!painted(&harness, cancelled), "{refused}");
+            assert_eq!(writes(&harness), 1, "{refused}");
+            type_key(&mut harness, Key::J, "j");
+            assert!(painted(&harness, cancelled), "{refused}");
+            assert!(!painted(&harness, fix), "{refused}");
+        }
+        // And over the lock of a cell that was asked for.
+        select(&mut harness, tab, id, (1, 0));
+        type_key(&mut harness, Key::I, "i");
+        assert!(painted(&harness, "part of the row's key"));
+        harness.press(Key::S, Modifiers::COMMAND);
+        assert!(painted(&harness, fix));
+        assert!(!painted(&harness, "part of the row's key"));
+        // A cell asked for after that, with no key (a double click), says
+        // its own.
+        let cell = CellPos { row: 2, col: 0 };
+        let start = EditStart::Value;
+        harness.app.apply(Action::EditCell {
+            tab,
+            id,
+            cell,
+            start,
+        });
+        harness.settle();
+        assert!(painted(&harness, "part of the row's key"));
+        assert!(!painted(&harness, fix));
+
+        // The other reasons, in the line's own lower case.
+        let said_on_the_line = |harness: &Harness, text: &str| {
+            let counts = harness.painted_rect("1 pending · 1 row").unwrap();
+            let mut pieces = harness.text_rects.iter().zip(&harness.painted);
+            pieces.any(|((piece, rect), (_, color))| {
+                piece == text
+                    && *color == palette.secondary
+                    && (rect.center().y - counts.center().y).abs() < 1.0
+                    && rect.left() > counts.right()
+            })
+        };
+        let (mut harness, tab, id) = normal_mode((1, 1));
+        make_pending(&mut harness, tab, id, (3, 1), "dan@example.com");
+        let session = harness.app.workspace(tab).unwrap().session;
+        harness
+            .app
+            .apply(Action::Backend(crate::backend::Event::Disconnected {
+                session,
+                error: tabletist_db::Error::ConnectionLost("server went away".into()),
+            }));
+        harness.settle();
+        assert_eq!(
+            harness.app.save_blocked(tab, id),
+            Some(crate::model::SaveBlock::Disconnected)
+        );
+        assert!(
+            said_on_the_line(&harness, "not connected"),
+            "{:?}",
+            harness.painted
+        );
+        harness.press(Key::S, Modifiers::COMMAND);
+        assert!(said_on_the_line(&harness, "not connected"));
+        assert_eq!(writes(&harness), 0);
+        // A session that came back read-only.
+        let (mut harness, tab, id) = normal_mode((1, 1));
+        make_pending(&mut harness, tab, id, (3, 1), "dan@example.com");
+        harness.app.workspace_mut(tab).unwrap().access = tabletist_db::Access::ReadOnly;
+        harness.settle();
+        assert!(
+            said_on_the_line(&harness, "this connection opens read-only"),
+            "{:?}",
+            harness.painted
+        );
+        // A set that no change set comes of.
+        let (mut harness, tab, id) = normal_mode((1, 1));
+        make_pending(&mut harness, tab, id, (3, 1), "dan@example.com");
+        let workspace = harness.app.workspace_mut(tab).unwrap();
+        let structure = workspace
+            .object_tab_mut(id)
+            .unwrap()
+            .structure
+            .value
+            .as_mut();
+        structure.unwrap().primary_key.clear();
+        harness.settle();
+        assert!(
+            said_on_the_line(
+                &harness,
+                "these changes cannot be sent: the table's key is not known"
+            ),
+            "{:?}",
+            harness.painted
+        );
+        // The other looks say it on their disabled Save, and have no such
+        // line.
+        for look in desktop_looks() {
+            let (mut harness, tab, id) = editable_in(look);
+            leave_pending(&mut harness, tab, id, (1, 2), "{");
+            harness.settle();
+            assert!(!painted(&harness, fix), "{}", look.name);
+            assert!(!painted(&harness, "Fix 1 value to save"), "{}", look.name);
+        }
+    }
+
     /// The terminal's `:` prompt: its text while it is open.
     fn command(harness: &Harness, tab: ConnTabId) -> Option<String> {
         harness.app.workspace(tab).unwrap().command.clone()
@@ -13390,22 +14127,65 @@ mod tests {
         assert_eq!(command(&harness, tab), None);
         harness.app.apply(Action::CancelEdit { tab, id });
         harness.settle();
-        // No prompt with the arrows on the tree, in the Structure view, or
-        // on a SQL editor.
-        harness.app.workspace_mut(tab).unwrap().pane = crate::model::Pane::Tree;
-        type_key(&mut harness, Key::Colon, ":");
-        assert_eq!(command(&harness, tab), None);
-        focus_grid(&mut harness, tab);
-        type_key(&mut harness, Key::S, "s");
-        type_key(&mut harness, Key::Colon, ":");
-        assert_eq!(command(&harness, tab), None);
-        type_key(&mut harness, Key::D, "d");
+        // No prompt on a SQL editor, whose line offers none.
         harness.app.apply(Action::NewSqlTab(tab));
         harness.settle();
         harness.press(Key::Escape, Modifiers::NONE);
         type_key(&mut harness, Key::Colon, ":");
         assert_eq!(command(&harness, tab), None);
         assert_eq!(edits(&harness, tab, id).cells.len(), 1);
+    }
+
+    #[test]
+    fn the_prompt_opens_wherever_the_line_offers_it() {
+        let (mut harness, tab, id) = normal_mode((1, 1));
+        let palette = harness.app.palette;
+        // The row panel strikes its own keys through: the status line's
+        // alone are looked at.
+        harness.app.workspace_mut(tab).unwrap().row_panel = false;
+        make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
+        // With the arrows on the tree the line offers `:w`, and Ctrl+S
+        // saves: so does the prompt.
+        harness.app.workspace_mut(tab).unwrap().pane = crate::model::Pane::Tree;
+        harness.settle();
+        assert!(painted_in(&harness, ":w write", palette.text));
+        type_key(&mut harness, Key::Colon, ":");
+        assert_eq!(command(&harness, tab).as_deref(), Some(""));
+        assert!(harness.ctx.text_edit_focused());
+        // What is typed is its text, and no key of the tree's.
+        type_key(&mut harness, Key::T, "t");
+        assert_eq!(command(&harness, tab).as_deref(), Some("t"));
+        assert!(!harness.app.workspace(tab).unwrap().tree.flat);
+        harness.press(Key::Backspace, Modifiers::NONE);
+        type_key(&mut harness, Key::W, "w");
+        harness.press(Key::Enter, Modifiers::NONE);
+        assert_eq!(command(&harness, tab), None);
+        assert_eq!(writes(&harness), 1);
+        harness.answer_written(Ok(written_row("bob@example.com")));
+        assert!(edits(&harness, tab, id).cells.is_empty());
+        // In the Structure view too, where `:e!` drops what is pending.
+        focus_grid(&mut harness, tab);
+        make_pending(&mut harness, tab, id, (3, 1), "dan@example.com");
+        type_key(&mut harness, Key::S, "s");
+        let view = |harness: &Harness| {
+            let workspace = harness.app.workspace(tab).unwrap();
+            workspace.object_tab(id).unwrap().view
+        };
+        assert_eq!(view(&harness), crate::model::ObjectView::Structure);
+        assert!(painted_in(&harness, ":w write", palette.text));
+        type_key(&mut harness, Key::Colon, ":");
+        assert_eq!(command(&harness, tab).as_deref(), Some(""));
+        type_key(&mut harness, Key::E, "e");
+        type_key(&mut harness, Key::Num1, "!");
+        // `d` there is the prompt's text, not the Data view's key.
+        type_key(&mut harness, Key::D, "d");
+        assert_eq!(command(&harness, tab).as_deref(), Some("e!d"));
+        assert_eq!(view(&harness), crate::model::ObjectView::Structure);
+        harness.press(Key::Backspace, Modifiers::NONE);
+        harness.press(Key::Enter, Modifiers::NONE);
+        assert!(edits(&harness, tab, id).cells.is_empty());
+        assert_eq!(writes(&harness), 1);
+        assert_eq!(view(&harness), crate::model::ObjectView::Structure);
     }
 
     #[test]
@@ -13453,6 +14233,15 @@ mod tests {
         harness.press(Key::Enter, Modifiers::NONE);
         type_key(&mut harness, Key::U, "u");
         assert!(edits(&harness, tab, id).cells.is_empty());
+        assert!(!painted(&harness, "not a command: nope"));
+        // The Enter that ran the line may be held: its repeats are no next
+        // key, and open no editor.
+        type_key(&mut harness, Key::Colon, ":");
+        type_text(&mut harness, "nope");
+        hold(&mut harness, Key::Enter);
+        assert!(painted(&harness, "not a command: nope"));
+        assert!(edits(&harness, tab, id).editor.is_none());
+        type_key(&mut harness, Key::J, "j");
         assert!(!painted(&harness, "not a command: nope"));
     }
 
