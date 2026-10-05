@@ -37,12 +37,7 @@ fn sources() -> Vec<(String, String)> {
 
 /// Files whose comparisons are still to become matches. Each task of the
 /// plan takes its own out; the last one removes the list.
-const PENDING: &[&str] = &[
-    "src/ui/connect_dialog/sheet.rs",
-    "src/ui/connect_dialog/terminal.rs",
-    "src/ui/picker.rs",
-    "src/ui/workspace.rs",
-];
+const PENDING: &[&str] = &[];
 
 /// The code of a file on one line: no comment lines, and nothing from its
 /// `tests` module on. A comparison split over lines reads as one, and a

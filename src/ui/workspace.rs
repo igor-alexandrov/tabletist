@@ -184,27 +184,26 @@ fn opening(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
 /// connect with nothing to lose, the button that gives up: in the middle
 /// of the tab, or in the terminal look from its top left.
 fn connecting(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
+    use tabletist_db::Driver;
     let (locale, palette, look) = (app.locale, app.palette, app.look);
     let Some(workspace) = app.workspace(tab) else {
         return;
     };
     let say = |text: &'static str| look.label(&gettext(locale, text));
     let spec = &workspace.spec;
-    let sqlite = spec.driver == tabletist_db::Driver::Sqlite;
-    let target = if sqlite {
-        spec.summary()
-    } else {
-        format!("{}:{}", spec.host, spec.port)
-    };
-    let target = match spec.ssh.as_ref().filter(|_| !sqlite) {
-        Some(ssh) => format!("{target} {} {}", say("via"), ssh.host),
-        None => target,
+    let (reach, target) = match spec.driver {
+        Driver::Sqlite => ("Open", spec.summary()),
+        Driver::Postgres | Driver::MySql => {
+            let target = format!("{}:{}", spec.host, spec.port);
+            let target = match &spec.ssh {
+                Some(ssh) => format!("{target} {} {}", say("via"), ssh.host),
+                None => target,
+            };
+            ("Connect to", target)
+        }
     };
     let connected = matches!(workspace.status, SessionStatus::Connected);
-    let (reach, load) = (
-        say(if sqlite { "Open" } else { "Connect to" }),
-        say("Load schema"),
-    );
+    let (reach, load) = (say(reach), say("Load schema"));
     let list = [
         states::Step {
             state: if connected {
@@ -290,14 +289,16 @@ fn failure_title(
             Icon::Lock,
             format!("{} {}", say("Password rejected for"), spec.user),
         ),
-        Error::Connect(_) | Error::Timeout if spec.driver == Driver::Sqlite => (
-            Icon::CircleAlert,
-            format!("{} {}", say("Can't open"), spec.summary()),
-        ),
-        Error::Connect(_) | Error::Timeout => (
-            Icon::WifiOff,
-            format!("{} {}:{}", say("Can't reach"), spec.host, spec.port),
-        ),
+        Error::Connect(_) | Error::Timeout => match spec.driver {
+            Driver::Sqlite => (
+                Icon::CircleAlert,
+                format!("{} {}", say("Can't open"), spec.summary()),
+            ),
+            Driver::Postgres | Driver::MySql => (
+                Icon::WifiOff,
+                format!("{} {}:{}", say("Can't reach"), spec.host, spec.port),
+            ),
+        },
         Error::Tls(_) => (Icon::ShieldAlert, say("TLS or certificate problem")),
         Error::Ssh {
             stage: SshStage::HostKeyUnknown { .. } | SshStage::HostKeyMismatch { .. },
@@ -483,14 +484,22 @@ struct Chip {
     card: Vec<(String, String)>,
 }
 
+/// Whether a connection's traffic leaves this machine: a file's never does.
+fn is_remote(workspace: &crate::model::Workspace) -> bool {
+    use tabletist_db::Driver;
+    match workspace.driver {
+        Driver::Sqlite => false,
+        Driver::Postgres | Driver::MySql => !crate::model::is_local_host(&workspace.spec.host),
+    }
+}
+
 fn bar_info(app: &App, tab: ConnTabId) -> Option<BarInfo> {
+    use tabletist_db::Driver;
     let workspace = app.workspace(tab)?;
     let spec = &workspace.spec;
-    let sqlite = workspace.driver == tabletist_db::Driver::Sqlite;
     // Local traffic never crosses a network, so its TLS says nothing; a
     // remote connection always says how far it can be trusted.
-    let remote = !sqlite && !crate::model::is_local_host(&spec.host);
-    let tls = remote.then(|| {
+    let tls = is_remote(workspace).then(|| {
         let encrypted =
             matches!(workspace.status, SessionStatus::Connected).then_some(workspace.encrypted);
         let (text, warn) = tls_status(spec.effective_tls(), encrypted);
@@ -499,10 +508,9 @@ fn bar_info(app: &App, tab: ConnTabId) -> Option<BarInfo> {
     Some(BarInfo {
         env: workspace.environment,
         read_only: workspace.access == tabletist_db::Access::ReadOnly,
-        database: if sqlite {
-            String::new()
-        } else {
-            spec.database.clone()
+        database: match workspace.driver {
+            Driver::Sqlite => String::new(),
+            Driver::Postgres | Driver::MySql => spec.database.clone(),
         },
         databases: workspace.databases.value.clone().unwrap_or_default(),
         tls,
@@ -550,24 +558,27 @@ fn card_rows(
     locale: crate::i18n::Locale,
     now: u64,
 ) -> Vec<(String, String)> {
+    use tabletist_db::Driver;
     let say = |text: &'static str| look.label(&gettext(locale, text));
     let spec = &workspace.spec;
-    let sqlite = workspace.driver == tabletist_db::Driver::Sqlite;
     let mut rows = Vec::new();
-    if sqlite {
-        let path = spec
-            .sqlite_path
-            .as_ref()
-            .map(|path| path.display().to_string())
-            .unwrap_or_default();
-        rows.push((say("File"), path));
-    } else {
-        rows.push((say("Host"), format!("{}:{}", spec.host, spec.port)));
-        if !spec.database.is_empty() {
-            rows.push((say("Database"), display_safe(&spec.database).into_owned()));
+    match workspace.driver {
+        Driver::Sqlite => {
+            let path = spec
+                .sqlite_path
+                .as_ref()
+                .map(|path| path.display().to_string())
+                .unwrap_or_default();
+            rows.push((say("File"), path));
         }
-        if !spec.user.is_empty() {
-            rows.push((say("User"), spec.user.clone()));
+        Driver::Postgres | Driver::MySql => {
+            rows.push((say("Host"), format!("{}:{}", spec.host, spec.port)));
+            if !spec.database.is_empty() {
+                rows.push((say("Database"), display_safe(&spec.database).into_owned()));
+            }
+            if !spec.user.is_empty() {
+                rows.push((say("User"), spec.user.clone()));
+            }
         }
     }
     let server = workspace
@@ -577,8 +588,7 @@ fn card_rows(
         .unwrap_or_else(|| workspace.driver.label().to_owned());
     rows.push((say("Server"), server));
     let connected = matches!(workspace.status, SessionStatus::Connected);
-    let remote = !sqlite && !crate::model::is_local_host(&spec.host);
-    let tls = if remote {
+    let tls = if is_remote(workspace) {
         let encrypted = connected.then_some(workspace.encrypted);
         say(tls_status(spec.effective_tls(), encrypted).0)
     } else {
