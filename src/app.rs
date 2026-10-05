@@ -11351,6 +11351,53 @@ mod tests {
         }
 
         #[test]
+        fn the_confirmation_holds_its_review_and_the_terminal_look_opens_the_panel() {
+            let lines = |review: &crate::review::Review| -> Vec<String> {
+                let lines = review.lines.iter();
+                lines.filter_map(crate::review::Line::sql).collect()
+            };
+            // macOS and Windows: the sheet lists the statements itself, and
+            // no drawer opens behind it.
+            let mut harness = Harness::new();
+            assert!(!harness.app.look.terminal);
+            let (tab, id) = production(&mut harness);
+            type_into(&mut harness, tab, id, at(1, 1), "bob@example.com");
+            harness.app.apply(Action::WriteEdits { tab, id });
+            let Some(Dialog::ConfirmWrite(prompt)) = &harness.app.dialog else {
+                panic!("expected the confirmation");
+            };
+            assert_eq!(lines(&prompt.review).len(), 3);
+            assert!(!object(&harness, tab, id).edits.reviewing);
+            // The terminal look: its box points at the panel, so the panel
+            // is open under it, with the review the box was made with.
+            let mut harness = Harness::new();
+            harness.set_look(crate::theme::Look::omarchy());
+            let (tab, id) = production(&mut harness);
+            type_into(&mut harness, tab, id, at(1, 1), "bob@example.com");
+            harness.app.apply(Action::WriteEdits { tab, id });
+            let Some(Dialog::ConfirmWrite(prompt)) = &harness.app.dialog else {
+                panic!("expected the confirmation");
+            };
+            let edits = &object(&harness, tab, id).edits;
+            assert!(edits.reviewing);
+            assert_eq!(edits.review.as_ref(), Some(&prompt.review));
+            // Under the confirmation the panel is not closed.
+            show_review(&mut harness, tab, id, false);
+            assert!(object(&harness, tab, id).edits.reviewing);
+            // Cancelled, it stays: the statements were just declined, and
+            // are still what is pending.
+            harness.app.apply(Action::CancelWrite);
+            assert!(harness.app.dialog.is_none());
+            assert!(object(&harness, tab, id).edits.reviewing);
+            assert_eq!(reviewed(&mut harness, tab, id).unwrap().len(), 3);
+            // Confirmed and written, it closes with the set.
+            harness.app.apply(Action::WriteEdits { tab, id });
+            harness.app.apply(Action::ConfirmWrite);
+            harness.answer_written(written("bob@example.com"));
+            assert!(!object(&harness, tab, id).edits.reviewing);
+        }
+
+        #[test]
         fn a_confirmed_save_is_sent_though_a_loaded_value_is_not_a_number() {
             // A table with a float column, on production. The changed
             // cell loaded NaN, which a PostgreSQL float can hold and which

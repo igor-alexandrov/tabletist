@@ -17519,10 +17519,25 @@ mod tests {
             assert!(!edits(&harness, tab, id).reviewing, "{}", look.name);
             assert!(leaving(&harness), "{}", look.name);
             assert_eq!(drawn(&harness), None, "{}", look.name);
-            // The confirmation of a save to production.
+            // The confirmation of a save to production. The chord leaves
+            // the review as the confirmation left it: closed on macOS and
+            // Windows, and open in the terminal look, whose box opens the
+            // panel it points at. The chord must not close that one.
             let (mut harness, tab, id, _) = confirming(look);
+            assert_eq!(
+                edits(&harness, tab, id).reviewing,
+                look.terminal,
+                "{}",
+                look.name
+            );
             harness.press(Key::D, REVIEW_CHORD);
-            assert!(!edits(&harness, tab, id).reviewing, "{}", look.name);
+            assert_eq!(
+                edits(&harness, tab, id).reviewing,
+                look.terminal,
+                "{}",
+                look.name
+            );
+            assert_eq!(drawn(&harness).is_some(), look.terminal, "{}", look.name);
             assert!(matches!(
                 harness.app.dialog,
                 Some(crate::model::Dialog::ConfirmWrite(_))

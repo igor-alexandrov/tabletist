@@ -328,6 +328,15 @@ impl App {
                 }
                 return;
             }
+            // The terminal's box does not list the statements: its panel
+            // does, beside it, open or not until now. The set is the one
+            // the review was made of.
+            if self.look.terminal
+                && let Some(object) = self.object_tab_mut(tab, id)
+            {
+                object.edits.reviewing = true;
+                object.edits.review = Some(review.clone());
+            }
             let cells = changes.rows.iter().map(|row| row.set.len()).sum();
             self.dialog = Some(Dialog::ConfirmWrite(Box::new(WritePrompt {
                 tab,
