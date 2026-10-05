@@ -14779,12 +14779,14 @@ mod tests {
             assert!(paste.chars().count() > MAX_EDIT_BYTES);
             harness.frame(vec![egui::Event::Paste(paste)]);
             let editor = edits(&harness, tab, id).editor.as_ref().unwrap();
-            assert_eq!(
-                editor.text.chars().count(),
-                MAX_EDIT_BYTES,
-                "large: {large}"
-            );
+            // Held in bytes, just over the limit: a text of these
+            // characters cut by their count alone would be larger still.
             assert!(editor.text.len() > MAX_EDIT_BYTES, "large: {large}");
+            assert!(
+                editor.text.len() <= MAX_EDIT_BYTES + '☺'.len_utf8(),
+                "large: {large}: {}",
+                editor.text.len()
+            );
             assert_eq!(editor.problem, Some(Problem::TooLarge), "large: {large}");
             let tree = harness.frame(Vec::new());
             let said = "Over 256 KiB: values this large cannot be edited yet";

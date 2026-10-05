@@ -255,12 +255,14 @@ pub fn field(
         .desired_width(place.width())
         // Tab ends the edit; it is not egui's to move the keyboard with.
         .lock_focus(true)
-        // A paste of any size is cut here, so what is laid out each frame
-        // is bounded. In characters, which is how egui counts: the check
-        // holds the text to that many bytes.
-        .char_limit(MAX_EDIT_BYTES)
+        // A paste of any size is cut here, in characters, which is how
+        // egui counts; `bound` then holds it in bytes. One more than the
+        // limit is let in, so a text that was cut is over the limit and
+        // says so: one cut to the limit itself would pass for a value.
+        .char_limit(MAX_EDIT_BYTES + 1)
         .layouter(&mut layouter)
         .show(&mut child);
+    bound(&mut editor.text);
     if look.terminal
         && output.response.has_focus()
         && let Some(cursor) = output.cursor_range
@@ -445,12 +447,14 @@ pub fn large(
                             // Tab is the text's own.
                             .lock_focus(true)
                             // As the field on the cell: what is laid
-                            // out is bounded, in characters.
-                            .char_limit(MAX_EDIT_BYTES)
+                            // out is bounded, and a text that was cut
+                            // is over the limit.
+                            .char_limit(MAX_EDIT_BYTES + 1)
                             .layouter(&mut layouter),
                     )
                 })
                 .inner;
+            bound(&mut editor.text);
             // The name only: the field keeps the role and the value egui
             // gave it.
             let name = format!("{} {}", gettext(locale, "Edit"), display_safe(&target.name));
@@ -589,6 +593,23 @@ fn say_under(ui: &Ui, rect: Rect, id: Id, message: &str, look: &Look, palette: &
     widgets::announce(ui, place, message);
 }
 
+/// Holds an editor's text to just over `MAX_EDIT_BYTES`, in bytes, at a
+/// character's edge: characters of several bytes would otherwise make the
+/// text several times the limit, and all of it is laid out every frame. It
+/// is left over the limit, never at it: the check then says the value is
+/// too large, where a text cut to the limit would be taken for the value
+/// that was pasted.
+fn bound(text: &mut String) {
+    if text.len() <= MAX_EDIT_BYTES {
+        return;
+    }
+    let mut end = MAX_EDIT_BYTES + 1;
+    while !text.is_char_boundary(end) {
+        end += 1;
+    }
+    text.truncate(end);
+}
+
 /// What a typed value fails, as the user reads it. `type_name` is the
 /// column's type as the grid's header shows it (the page's `ColumnMeta`:
 /// `int8`, where the structure says `bigint`); `typed` is the text that
@@ -696,6 +717,44 @@ pub fn lock_text(lock: Lock, table: &str, locale: Locale) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_text_is_held_just_over_the_limit_at_a_characters_edge() {
+        // Under the limit and at it, nothing is cut.
+        for len in [0, 5, MAX_EDIT_BYTES] {
+            let mut text = "x".repeat(len);
+            bound(&mut text);
+            assert_eq!(text.len(), len);
+        }
+        // Over it, one byte more than the limit is kept, so the check
+        // still says the value is too large: a text cut to the limit
+        // itself would pass for the value that was pasted.
+        let mut text = "x".repeat(MAX_EDIT_BYTES * 2);
+        bound(&mut text);
+        assert_eq!(text.len(), MAX_EDIT_BYTES + 1);
+        // Characters of several bytes are not split, and the text is no
+        // larger than the limit and one character.
+        for letter in ["é", "☺", "😀"] {
+            let mut text = letter.repeat(MAX_EDIT_BYTES);
+            bound(&mut text);
+            assert!(text.len() > MAX_EDIT_BYTES, "{letter}");
+            assert!(text.len() <= MAX_EDIT_BYTES + letter.len(), "{letter}");
+            assert!(
+                text.chars().all(|held| letter.starts_with(held)),
+                "{letter}"
+            );
+        }
+        // And what is left is refused as too large.
+        let column = tabletist_db::ColumnInfo {
+            name: "note".into(),
+            type_name: "text".into(),
+            ..tabletist_db::ColumnInfo::default()
+        };
+        assert_eq!(
+            crate::edit::check(tabletist_db::Dialect::Postgres, &column, &text),
+            Some(Problem::TooLarge)
+        );
+    }
 
     #[test]
     fn every_problem_and_every_lock_has_words() {
