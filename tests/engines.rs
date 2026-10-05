@@ -74,10 +74,27 @@ fn code(text: &str) -> String {
         .join(" ")
 }
 
+/// `before` without the parentheses that only group what follows it, and
+/// how many there were. One that follows a name opens a call's arguments,
+/// and stays: `label(Driver::Sqlite) == text` compares the label.
+fn ungrouped(mut before: &str) -> (&str, usize) {
+    let mut groups = 0;
+    while let Some(rest) = before.trim_end().strip_suffix('(') {
+        let called = |c: char| c.is_alphanumeric() || matches!(c, '_' | ')' | ']' | '>' | '!');
+        if rest.ends_with(called) {
+            break;
+        }
+        before = rest;
+        groups += 1;
+    }
+    (before.trim_end(), groups)
+}
+
 /// The comparisons of a `Driver` or a `Dialect` with one of its variants in
 /// `code`: `==`, `!=` and `matches!`, each with a little of what is around.
-/// A variant behind `&` or in `Some(` is compared all the same. One written
-/// `Self::` is not found: only the two enums' own methods can write that.
+/// A variant behind `&`, in `Some(` or in parentheses of its own is compared
+/// all the same. One written `Self::` is not found: only the two enums' own
+/// methods can write that.
 fn comparisons(code: &str) -> Vec<String> {
     let mut found = Vec::new();
     for name in ["Driver::", "Dialect::"] {
@@ -86,22 +103,25 @@ fn comparisons(code: &str) -> Vec<String> {
             if code[..at].ends_with(|c: char| c.is_alphanumeric() || c == '_') {
                 continue;
             }
-            let before = code[..at]
+            let left = code[..at]
                 .trim_end_matches("tabletist_db::")
                 .trim_end_matches("crate::")
-                .trim_end_matches('&')
-                .trim_end_matches("Some(")
-                .trim_end();
+                .trim_end_matches('&');
+            let (before, groups) = ungrouped(left);
+            let before = before.trim_end_matches("Some(").trim_end();
             let variant = code[at + name.len()..]
                 .chars()
                 .take_while(|c| c.is_alphanumeric() || *c == '_')
                 .count();
             let end = at + name.len() + variant;
-            let after = code[end..].trim_start();
+            let mut after = code[end..].trim_start();
+            for _ in 0..groups {
+                after = after.strip_prefix(')').map_or(after, str::trim_start);
+            }
             // Inside a `matches!(` that has not closed yet.
-            let in_matches = before.rfind("matches!(").is_some_and(|call| {
+            let in_matches = left.rfind("matches!(").is_some_and(|call| {
                 let mut depth = 1;
-                for c in before[call + "matches!(".len()..].chars() {
+                for c in left[call + "matches!(".len()..].chars() {
                     match c {
                         '(' => depth += 1,
                         ')' => depth -= 1,
@@ -140,6 +160,8 @@ fn the_scan_finds_each_way_to_compare() {
         "if matches!(self.dialect, Dialect::Postgres | Dialect::Sqlite) {",
         "if matches!(driver.dialect(), Dialect::MySql) {",
         "if Dialect::Ms_Sql == dialect {",
+        "if driver == (Driver::Sqlite) {",
+        "if (Dialect::MySql) != dialect {",
         "#[cfg(test)]\nmod helpers;\n\nfn file(driver: Driver) -> bool {\n    driver == Driver::Sqlite\n}",
         "let file = saved.map(|saved| saved.driver) == Some(Driver::Sqlite);",
         "if drivers.iter().any(|driver| driver == &Driver::Sqlite) {",
@@ -157,6 +179,8 @@ fn the_scan_finds_each_way_to_compare() {
         "if matches!(kind, TokenKind::Word) && is_keyword(Dialect::Postgres, word) {",
         "if error == DriverError::Closed || kind != SqlDialect::Ansi {",
         "if kind == MyDriver::Sqlite {",
+        "if label(Driver::Sqlite) == text {",
+        "if text == quote(Dialect::MySql, name) {",
     ] {
         assert_eq!(comparisons(&code(text)), [""; 0], "{text}");
     }
