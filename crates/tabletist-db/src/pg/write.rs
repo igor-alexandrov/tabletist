@@ -8,8 +8,10 @@ use tokio_postgres::SimpleQueryMessage;
 use super::{Conn, column_metas, query_error, row_values};
 use crate::dialect::RowUpdate;
 use crate::script::retry_cancelled;
-use crate::write::{Applied, changed_since_loaded, more_than_one, not_read_back};
-use crate::{ChangeSet, ColumnMeta, Conflict, Dialect, Error, Result, Value, WriteOutcome};
+use crate::write::{
+    Applied, changed_since_loaded, conflicts_of, more_than_one, not_read_back, same_row_twice,
+};
+use crate::{ChangeSet, ColumnMeta, Dialect, Error, Result, Value, WriteOutcome};
 
 impl Conn {
     /// See [`crate::Connection::write`]. Rows are read through the
@@ -147,6 +149,9 @@ async fn apply(
     // Every row is locked and compared before any is changed. The lock is
     // what makes the comparison hold: a change someone has not committed
     // yet is waited for, and then it is their row that is read.
+    // Each change's row as its read found it, kept until every change has
+    // read its own: two that read the same row are one row named twice.
+    let mut read = Vec::with_capacity(changes.rows.len());
     let mut conflicts = Vec::new();
     for (row, change) in changes.rows.iter().enumerate() {
         let select = dialect.select_row(&changes.object, &change.key, true);
@@ -154,20 +159,21 @@ async fn apply(
         if found.len() > 1 {
             return Err(more_than_one());
         }
-        match found.pop() {
-            None => conflicts.push(Conflict { row, server: None }),
-            Some(server) => {
-                if changed_since_loaded(change, &names, &server)? {
-                    conflicts.push(Conflict {
-                        row,
-                        server: Some(server),
-                    });
-                }
-            }
+        let server = found.pop();
+        let differs = match &server {
+            None => true,
+            Some(server) => changed_since_loaded(change, &names, server)?,
+        };
+        if differs {
+            conflicts.push(row);
         }
+        read.push(server);
     }
+    // Before a conflict is answered too: a set that names a row twice is
+    // not one to offer writing over what the server holds.
+    same_row_twice(&changes.rows, &names, &read)?;
     if !conflicts.is_empty() {
-        return Ok(Applied::Conflicts(conflicts));
+        return Ok(Applied::Conflicts(conflicts_of(conflicts, read)));
     }
     for (row, update) in updates.iter().enumerate() {
         let messages = match client

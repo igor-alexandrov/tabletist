@@ -264,7 +264,9 @@ impl Connection {
     /// Writes `changes` in one transaction, or nothing: the crate's only
     /// writing call. Each row is found by its key, locked, and compared
     /// with what the page loaded in the columns the save changes; a row
-    /// that differs or is gone makes the whole save a conflict.
+    /// that differs or is gone makes the whole save a conflict. Two changes
+    /// that read the same row, however each spells its key, are an error:
+    /// the database decides which row a key finds.
     ///
     /// On a read-only connection it is refused before the set is even
     /// looked at. The future must be awaited to its end and never dropped:

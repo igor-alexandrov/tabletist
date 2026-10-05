@@ -2241,6 +2241,104 @@ async fn a_key_that_matches_two_rows_is_an_error_and_nothing_is_written() {
     .await;
 }
 
+/// The changes to the row `column` finds by `key`.
+fn keyed(column: &str, key: Value, set: Vec<CellChange>) -> RowChange {
+    RowChange {
+        key: vec![(column.into(), key)],
+        set,
+    }
+}
+
+fn names_the_same_row(outcome: &tabletist_db::Result<WriteOutcome>) -> bool {
+    matches!(outcome, Err(Error::Query { message, .. }) if message.contains("name the same row"))
+}
+
+/// The database decides which row a key finds. `'1'` is an untyped literal,
+/// and finds the row of the integer 1; a row has two unique columns; `0.0`
+/// and `-0.0` are one float. Each pair passes `check`, which compares the
+/// keys as values, and each would read the row as it was twice and write
+/// the second change over the first.
+#[tokio::test]
+async fn changes_that_read_the_same_row_are_refused_and_nothing_is_written() {
+    let Some(connection) = connect_as(Access::Writable).await else {
+        return;
+    };
+    on_its_own_tables(
+        "DROP TABLE IF EXISTS write_same_row, write_same_zero",
+        &format!(
+            "{};
+             CREATE TABLE write_same_zero (k float8 PRIMARY KEY, name text, note text);
+             INSERT INTO write_same_zero VALUES (0, 'zero', 'old'), (1.5, 'more', 'old')",
+            people("write_same_row")
+        ),
+        async move {
+            let (columns, people) = page_of(&connection, "write_same_row").await;
+            let change = |row: usize, column: &str, new: &str| {
+                vec![cell(&columns, &people[row], column, "text", to(new))]
+            };
+            for (column, key) in [("id", text("1")), ("email", text("a@x"))] {
+                let changes = changes_to(
+                    "write_same_row",
+                    vec![
+                        by_id(1, change(0, "name", "Mine")),
+                        keyed(column, key.clone(), change(0, "score", "9")),
+                    ],
+                );
+                assert_eq!(changes.check(), Ok(()));
+                let outcome = within(connection.write(&changes)).await;
+                assert!(
+                    names_the_same_row(&outcome),
+                    "{column} {key:?}: {outcome:?}"
+                );
+                assert_eq!(page_of(&connection, "write_same_row").await.1, people);
+            }
+
+            let (_, zeros) = page_of(&connection, "write_same_zero").await;
+            assert_eq!(zeros[0][0], Value::Float(0.0));
+            let note = |new: &str, column: &str, loaded: &str| CellChange {
+                column: column.into(),
+                type_name: "text".into(),
+                loaded: text(loaded),
+                new: to(new),
+            };
+            let changes = changes_to(
+                "write_same_zero",
+                vec![
+                    keyed("k", Value::Float(0.0), vec![note("Mine", "name", "zero")]),
+                    keyed("k", Value::Float(-0.0), vec![note("mine", "note", "old")]),
+                ],
+            );
+            assert_eq!(changes.check(), Ok(()));
+            let outcome = within(connection.write(&changes)).await;
+            assert!(names_the_same_row(&outcome), "{outcome:?}");
+            assert_eq!(page_of(&connection, "write_same_zero").await.1, zeros);
+
+            // Two rows are two rows, however their keys are spelled.
+            let changes = changes_to(
+                "write_same_row",
+                vec![
+                    by_id(1, change(0, "name", "Mine")),
+                    keyed("id", text("2"), change(1, "name", "Theirs")),
+                    keyed("email", text("c@x"), change(2, "name", "Third")),
+                ],
+            );
+            let outcome = within(connection.write(&changes)).await;
+            assert!(
+                matches!(outcome, Ok(WriteOutcome::Written { .. })),
+                "{outcome:?}"
+            );
+            let names: Vec<Value> = page_of(&connection, "write_same_row")
+                .await
+                .1
+                .into_iter()
+                .map(|row| row[2].clone())
+                .collect();
+            assert_eq!(names, [text("Mine"), text("Theirs"), text("Third")]);
+        },
+    )
+    .await;
+}
+
 /// An `UPDATE` that changes no row (here a trigger drops it) is not a save:
 /// the row before it is put back.
 #[tokio::test]

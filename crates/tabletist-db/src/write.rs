@@ -195,6 +195,73 @@ fn same_key(a: &[(String, Value)], b: &[(String, Value)]) -> bool {
         })
 }
 
+/// The conflicts of a save: the changes at `places` in its set, each with
+/// the row its read found among `read` (`None` when it is gone).
+pub(crate) fn conflicts_of(places: Vec<usize>, mut read: Vec<Option<Vec<Value>>>) -> Vec<Conflict> {
+    places
+        .into_iter()
+        .map(|row| Conflict {
+            row,
+            server: read.get_mut(row).and_then(Option::take),
+        })
+        .collect()
+}
+
+/// Refuses a save two of whose changes read the same row. `check` has let
+/// through only keys that differ as values, and the database decides which
+/// row a key finds: `1` and `'1'` find the row of an integer key alike,
+/// `0.0` and `-0.0` the row of a float one, and a row can be named by one
+/// unique column and by another. Both changes would then be compared with
+/// the row as it was, and the later written over the earlier.
+///
+/// `read` holds, for each of `rows`, the row its locking read found (`None`
+/// when it is gone), and `columns` names the values of every one of them:
+/// they are reads of one table in one transaction. Two reads found the same
+/// row when their rows hold the same values, as the database returned them,
+/// in the key columns of either change: each read found one row by a key
+/// that names one row, so a row with that key's values is that row.
+pub(crate) fn same_row_twice(
+    rows: &[RowChange],
+    columns: &[String],
+    read: &[Option<Vec<Value>>],
+) -> Result<()> {
+    // Where each change's key columns are among a row's values.
+    let mut keys = Vec::with_capacity(rows.len());
+    for row in rows {
+        let places: Vec<usize> = row
+            .key
+            .iter()
+            .map(|(name, _)| {
+                columns
+                    .iter()
+                    .position(|column| column == name)
+                    .ok_or_else(|| Error::query(format!("no such column: {name}")))
+            })
+            .collect::<Result<_>>()?;
+        keys.push(places);
+    }
+    for (later, theirs) in read.iter().enumerate() {
+        let Some(theirs) = theirs else { continue };
+        for (earlier, ours) in read.iter().enumerate().take(later) {
+            let Some(ours) = ours else { continue };
+            let alike = |key: Option<&Vec<usize>>| {
+                key.is_some_and(|places| {
+                    places.iter().all(|&place| {
+                        matches!(
+                            (ours.get(place), theirs.get(place)),
+                            (Some(ours), Some(theirs)) if same(ours, theirs)
+                        )
+                    })
+                })
+            };
+            if alike(keys.get(earlier)) || alike(keys.get(later)) {
+                return Err(Error::query("two changes of the save name the same row"));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Whether the row as the database holds it (`server`, whose values
 /// `columns` name) differs from what the page loaded in a column the save
 /// changes. Other columns are not this save's business.
@@ -384,5 +451,149 @@ mod tests {
         // A column the table does not have is an error, not a conflict.
         let gone = row(vec![("id", Value::Int(1))], vec![cell("nick")]);
         assert!(changed_since_loaded(&gone, &columns, &server("old", "a@x")).is_err());
+    }
+
+    #[test]
+    fn two_changes_that_read_the_same_row_are_refused() {
+        let columns = ["id".to_owned(), "email".to_owned(), "name".to_owned()];
+        let person = |id: Value, email: &str| {
+            Some(vec![
+                id,
+                Value::Text(email.into()),
+                Value::Text("old".into()),
+            ])
+        };
+        let by =
+            |column: &str, value: Value, set: &str| row(vec![(column, value)], vec![cell(set)]);
+        let said = |rows: &[RowChange], read: &[Option<Vec<Value>>]| {
+            same_row_twice(rows, &columns, read).map_err(|error| error.to_string())
+        };
+        let twice = Err("two changes of the save name the same row".to_owned());
+        // One key spelled two ways: the database found the row of the
+        // number for both, and the set passes `check`.
+        let spelled = [
+            by("id", Value::Int(1), "name"),
+            by("id", Value::Text("1".into()), "email"),
+        ];
+        assert_eq!(set(spelled.to_vec()).check(), Ok(()));
+        assert_eq!(
+            said(
+                &spelled,
+                &[person(Value::Int(1), "a@x"), person(Value::Int(1), "a@x")]
+            ),
+            twice
+        );
+        // The same two keys where the database holds them apart (a column
+        // of no type on SQLite): two rows.
+        assert_eq!(
+            said(
+                &spelled,
+                &[
+                    person(Value::Int(1), "a@x"),
+                    person(Value::Text("1".into()), "b@x")
+                ]
+            ),
+            Ok(())
+        );
+        // One row by two of its unique columns, whichever comes first.
+        let two_ways = [
+            by("id", Value::Int(1), "name"),
+            by("email", Value::Text("a@x".into()), "name"),
+        ];
+        assert_eq!(
+            said(
+                &two_ways,
+                &[person(Value::Int(1), "a@x"), person(Value::Int(1), "a@x")]
+            ),
+            twice
+        );
+        assert_eq!(
+            said(
+                &two_ways,
+                &[person(Value::Int(1), "a@x"), person(Value::Int(2), "b@x")]
+            ),
+            Ok(())
+        );
+        // A float key by its bits, as the database returned it: the row
+        // read for `0.0` and for `-0.0` holds one of them.
+        let zeros = [
+            by("id", Value::Float(0.0), "name"),
+            by("id", Value::Float(-0.0), "email"),
+        ];
+        assert_eq!(set(zeros.to_vec()).check(), Ok(()));
+        assert_eq!(
+            said(
+                &zeros,
+                &[
+                    person(Value::Float(0.0), "a@x"),
+                    person(Value::Float(0.0), "a@x")
+                ]
+            ),
+            twice
+        );
+        assert_eq!(
+            said(
+                &[
+                    by("id", Value::Float(f64::NAN), "name"),
+                    by("email", Value::Text("a@x".into()), "name")
+                ],
+                &[
+                    person(Value::Float(f64::NAN), "a@x"),
+                    person(Value::Float(f64::NAN), "a@x")
+                ]
+            ),
+            twice
+        );
+        // Not only neighbours, and a row that is gone is no row twice.
+        let three = [
+            by("id", Value::Int(1), "name"),
+            by("id", Value::Int(2), "name"),
+            by("id", Value::Text("1".into()), "email"),
+        ];
+        assert_eq!(
+            said(
+                &three,
+                &[
+                    person(Value::Int(1), "a@x"),
+                    person(Value::Int(2), "b@x"),
+                    person(Value::Int(1), "a@x")
+                ]
+            ),
+            twice
+        );
+        assert_eq!(
+            said(&three, &[None, person(Value::Int(2), "b@x"), None]),
+            Ok(())
+        );
+        // A composite key is the same only in every column.
+        let pairs = [
+            row(
+                vec![("id", Value::Int(1)), ("email", Value::Text("a@x".into()))],
+                vec![cell("name")],
+            ),
+            row(
+                vec![("id", Value::Int(1)), ("email", Value::Text("b@x".into()))],
+                vec![cell("name")],
+            ),
+        ];
+        assert_eq!(
+            said(
+                &pairs,
+                &[person(Value::Int(1), "a@x"), person(Value::Int(1), "b@x")]
+            ),
+            Ok(())
+        );
+        // A key column the rows do not have is an error of its own.
+        let unknown = [
+            by("id", Value::Int(1), "name"),
+            by("code", Value::Int(2), "name"),
+        ];
+        assert_eq!(
+            said(
+                &unknown,
+                &[person(Value::Int(1), "a@x"), person(Value::Int(2), "b@x")]
+            ),
+            Err("no such column: code".to_owned())
+        );
     }
 }

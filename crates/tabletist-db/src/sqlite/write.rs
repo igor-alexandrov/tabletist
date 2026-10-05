@@ -8,9 +8,10 @@ use rusqlite::types::ValueRef;
 use super::{end_transaction, from_sqlite, map_error};
 use crate::dialect::RowUpdate;
 use crate::write::{
-    Applied, changed_since_loaded, more_than_one, not_read_back, spelled_otherwise,
+    Applied, changed_since_loaded, conflicts_of, more_than_one, not_read_back, same_row_twice,
+    spelled_otherwise,
 };
-use crate::{ChangeSet, Conflict, Dialect, Error, Result, RowChange, Sql, Value, WriteOutcome};
+use crate::{ChangeSet, Dialect, Error, Result, RowChange, Sql, Value, WriteOutcome};
 
 pub(super) fn write(
     connection: &rusqlite::Connection,
@@ -206,6 +207,10 @@ fn apply(
     let dialect = Dialect::Sqlite;
     // The transaction holds the file, so a row read here is the row the
     // update will find.
+    // Each change's row as its read found it, kept until every change has
+    // read its own: two that read the same row are one row named twice.
+    let mut names = Vec::new();
+    let mut rows_read = Vec::with_capacity(changes.rows.len());
     let mut conflicts = Vec::new();
     for (row, change) in changes.rows.iter().enumerate() {
         let select = dialect.select_row(&changes.object, &change.key, true);
@@ -226,12 +231,13 @@ fn apply(
         if found.len() > 1 {
             return Err(more_than_one());
         }
-        match found.pop() {
-            None => conflicts.push(Conflict { row, server: None }),
+        let server = found.pop();
+        let differs = match &server {
+            None => true,
             Some(server) => {
                 // A failure, not a conflict: a conflict offers to write
                 // over what the file holds, which would still be unknown.
-                if let Some(name) = unreadable(change, &columns, &server) {
+                if let Some(name) = unreadable(change, &columns, server) {
                     return Ok(Applied::Failed {
                         row,
                         error: Error::query(format!(
@@ -240,17 +246,20 @@ fn apply(
                         )),
                     });
                 }
-                if changed_since_loaded(change, &columns, &server.values)? {
-                    conflicts.push(Conflict {
-                        row,
-                        server: Some(server.values),
-                    });
-                }
+                changed_since_loaded(change, &columns, &server.values)?
             }
+        };
+        if differs {
+            conflicts.push(row);
         }
+        rows_read.push(server.map(|server| server.values));
+        names = columns;
     }
+    // Before a conflict is answered too: a set that names a row twice is
+    // not one to offer writing over what the file holds.
+    same_row_twice(&changes.rows, &names, &rows_read)?;
     if !conflicts.is_empty() {
-        return Ok(Applied::Conflicts(conflicts));
+        return Ok(Applied::Conflicts(conflicts_of(conflicts, rows_read)));
     }
     for (row, update) in updates.iter().enumerate() {
         let params = rusqlite::params_from_iter(update.sql.params.iter().map(exact));

@@ -12,11 +12,11 @@ use super::{
 };
 use crate::script::retry_cancelled;
 use crate::write::{
-    Applied, changed_since_loaded, more_than_one, not_read_back, spelled_otherwise,
+    Applied, changed_since_loaded, conflicts_of, more_than_one, not_read_back, same_row_twice,
+    spelled_otherwise,
 };
 use crate::{
-    ChangeSet, ColumnMeta, Conflict, Dialect, Error, ObjectRef, Result, RowChange, Sql, Value,
-    WriteOutcome,
+    ChangeSet, ColumnMeta, Dialect, Error, ObjectRef, Result, RowChange, Sql, Value, WriteOutcome,
 };
 
 /// One row's statements, built before anything is sent.
@@ -353,10 +353,14 @@ async fn apply(
     // Every row is locked and compared before any is changed. The lock is
     // what makes the comparison hold: a change someone has not committed
     // yet is waited for, and then it is their row that is read.
+    // Each change's row as its read found it, kept until every change has
+    // read its own: two that read the same row are one row named twice.
+    let mut names = Vec::new();
+    let mut read = Vec::with_capacity(changes.rows.len());
     let mut conflicts = Vec::new();
     for (row, (change, statement)) in changes.rows.iter().zip(statements).enumerate() {
         let (columns, mut found) = rows(conn, &statement.lock).await?;
-        let names: Vec<String> = columns.iter().map(|column| column.name.clone()).collect();
+        names = columns.iter().map(|column| column.name.clone()).collect();
         if let Some(name) = spelled_otherwise(change, &names) {
             return Err(Error::query(format!(
                 "the table spells {name} another way, so the save cannot be sure which column \
@@ -374,18 +378,19 @@ async fn apply(
         if found.len() > 1 {
             return Err(more_than_one());
         }
-        match found.pop() {
-            None => conflicts.push(Conflict { row, server: None }),
-            Some(server) => {
-                if changed_since_loaded(change, &names, &server)? {
-                    conflicts.push(Conflict {
-                        row,
-                        server: Some(server),
-                    });
-                }
-            }
+        let server = found.pop();
+        let differs = match &server {
+            None => true,
+            Some(server) => changed_since_loaded(change, &names, server)?,
+        };
+        if differs {
+            conflicts.push(row);
         }
+        read.push(server);
     }
+    // Before a conflict is answered too: a set that names a row twice is
+    // not one to offer writing over what the server holds.
+    same_row_twice(&changes.rows, &names, &read)?;
     // Asked again now that the reads hold the table: its metadata lock
     // lasts until the transaction ends, so an `ALTER TABLE` waits, and the
     // engine found here is the engine the updates run on. Before the reads
@@ -401,7 +406,7 @@ async fn apply(
     // this read the engine as it was then. So no plain read goes before it.
     transactional(conn, &changes.object).await?;
     if !conflicts.is_empty() {
-        return Ok(Applied::Conflicts(conflicts));
+        return Ok(Applied::Conflicts(conflicts_of(conflicts, read)));
     }
     for (row, statement) in statements.iter().enumerate() {
         if let Some(error) = update(conn, &statement.update).await? {

@@ -2717,6 +2717,88 @@ async fn a_key_finds_the_row_whose_key_is_that_kind_of_value() {
     );
 }
 
+/// SQLite decides which row a key finds, by the column's declared type. An
+/// `INTEGER PRIMARY KEY` reads the text `'1'` as the number, so both keys
+/// find one row; a `REAL` key holds one zero, which `0.0` and `-0.0` both
+/// find. Each pair passes `check`, which compares the keys as values, and
+/// each would read the row as it was twice and write the second change over
+/// the first. In a column of no type the number and the text are two keys,
+/// of two rows.
+#[tokio::test]
+async fn changes_that_read_the_same_row_are_refused_and_nothing_is_written() {
+    let (connection, dir) = fixture_as(Access::Writable).await;
+    let other = other_program(&dir);
+    other
+        .execute_batch(
+            "CREATE TABLE typed (id INTEGER PRIMARY KEY, a TEXT, b TEXT);
+             INSERT INTO typed VALUES (1, 'a', 'b'), (2, 'a', 'b');
+             CREATE TABLE measured (k REAL PRIMARY KEY, a TEXT, b TEXT);
+             INSERT INTO measured VALUES (0.0, 'a', 'b'), (1.5, 'a', 'b');
+             CREATE TABLE loose (k PRIMARY KEY, a, b);
+             INSERT INTO loose VALUES (1, 'a', 'b'), ('1', 'a', 'b');",
+        )
+        .unwrap();
+    let before = std::fs::read(dir.path().join("fixture.db")).unwrap();
+    let pair = |table: &str, key: &str, first: Value, second: Value| {
+        let change = |key_value: Value, column: &str, loaded: &str| RowChange {
+            key: vec![(key.into(), key_value)],
+            set: vec![CellChange {
+                column: column.into(),
+                type_name: "TEXT".into(),
+                loaded: Value::Text(loaded.into()),
+                new: to("mine"),
+            }],
+        };
+        ChangeSet {
+            object: ObjectRef::new("main", table),
+            rows: vec![change(first, "a", "a"), change(second, "b", "b")],
+        }
+    };
+    for (table, key, first, second) in [
+        ("typed", "id", Value::Int(1), Value::Text("1".into())),
+        ("measured", "k", Value::Float(0.0), Value::Float(-0.0)),
+        // A whole number finds a real key too.
+        ("measured", "k", Value::Float(0.0), Value::Int(0)),
+    ] {
+        let changes = pair(table, key, first, second);
+        assert_eq!(changes.check(), Ok(()));
+        let refused = connection.write(&changes).await;
+        assert!(
+            matches!(
+                &refused,
+                Err(Error::Query { message, .. }) if message.contains("name the same row")
+            ),
+            "{table}: {refused:?}"
+        );
+        assert_eq!(
+            std::fs::read(dir.path().join("fixture.db")).unwrap(),
+            before,
+            "{table}"
+        );
+        assert_eq!(query_only(&connection).await, Value::Int(1));
+    }
+    // Two rows are two rows: the same two keys where SQLite converts
+    // nothing, and two keys of the typed table spelled two ways.
+    for (table, key, first, second) in [
+        ("loose", "k", Value::Int(1), Value::Text("1".into())),
+        ("typed", "id", Value::Int(1), Value::Text("2".into())),
+    ] {
+        let outcome = connection.write(&pair(table, key, first, second)).await;
+        assert!(
+            matches!(outcome, Ok(WriteOutcome::Written { .. })),
+            "{table}: {outcome:?}"
+        );
+        assert_eq!(
+            pairs(&other, &format!("SELECT a, b FROM {table} ORDER BY rowid")),
+            [
+                ("mine".to_owned(), "b".to_owned()),
+                ("a".to_owned(), "mine".to_owned()),
+            ],
+            "{table}"
+        );
+    }
+}
+
 /// Every cell of `table`, as SQLite holds it: its storage class and its
 /// value.
 fn stored(other: &rusqlite::Connection, table: &str) -> Vec<Vec<rusqlite::types::Value>> {
