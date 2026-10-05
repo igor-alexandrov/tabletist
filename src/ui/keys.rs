@@ -93,6 +93,11 @@ pub const SHORTCUTS: &[(&str, &str, Holds)] = &[
     ("Mod+Alt+Backspace", "Discard all pending changes", DESKTOP),
     (":e!", "Discard all pending changes", TERMINAL),
     (
+        "Mod+Shift+D",
+        "Show or hide the SQL of the pending changes",
+        ALL,
+    ),
+    (
         "j/k, h/l, Ctrl+H/L, [ ], i, Enter, cc, x, u, Mod+S, :w, :e!, Space, Esc, /, y, s, d, gd, za, t, 1…9",
         "Omarchy: vim keys (shown in the status line)",
         ALL,
@@ -720,8 +725,9 @@ fn take_press(input: &mut egui::InputState, modifiers: Modifiers, key: Key) -> u
 /// pending. `keyboard` says the grid's keys are the grid's: no field or
 /// button has them, nor the tree, and the look is not the terminal's, which
 /// edits with letters (see `editing_letters`). Mod+S does not wait for
-/// that, in any look: it saves from wherever the table's tab shows. A SQL
-/// editor's result takes none of them.
+/// that, in any look: it saves from wherever the table's tab shows, and
+/// Mod+Shift+D shows and hides Review SQL there. A SQL editor's result
+/// takes none of them.
 fn editing_keys(app: &App, ctx: &egui::Context, keyboard: bool, actions: &mut Vec<Action>) {
     let Some((tab, id)) = app.active_object() else {
         return;
@@ -749,6 +755,21 @@ fn editing_keys(app: &App, ctx: &egui::Context, keyboard: bool, actions: &mut Ve
             actions.push(Action::EditorTyped { tab, id });
         }
         actions.push(Action::WriteEdits { tab, id });
+    }
+    // Review SQL by the same rule: wherever the table's tab shows, with
+    // something pending or an editor open, in every look. A fresh press
+    // only: a held chord would show and hide it by turns.
+    let review = |input: &mut egui::InputState| {
+        consume_press(input, Modifiers::COMMAND | Modifiers::SHIFT, Key::D)
+    };
+    if (open || !object.edits.cells.is_empty()) && ctx.input_mut(review) {
+        // Shown, the review takes what is being typed, as a save does:
+        // noted as typed for the reason the save notes it.
+        if typing {
+            actions.push(Action::EditorTyped { tab, id });
+        }
+        let show = !object.edits.reviewing;
+        actions.push(Action::ReviewEdits { tab, id, show });
     }
     // An open editor has the keyboard or is about to take it, and takes
     // the keys below with it: none of them opens another, and what is typed
@@ -1250,6 +1271,15 @@ mod tests {
                 .iter()
                 .any(|(keys, what, _)| keys.contains("Mod+S") && what.contains("connection dialog"))
         );
+    }
+
+    #[test]
+    fn the_shortcut_table_names_the_keys_that_review_sql() {
+        for look in crate::theme::Look::ALL {
+            let listed = shortcuts(&look)
+                .any(|row| row == ("Mod+Shift+D", "Show or hide the SQL of the pending changes"));
+            assert!(listed, "{}", look.name);
+        }
     }
 
     #[test]

@@ -1,6 +1,8 @@
 //! Review SQL as it is read: the words of its comment lines, the colours of
 //! its statements, its lines one to a row, and the text the clipboard gets.
-//! Every place that shows a review draws it with what is here.
+//! Every place that shows a review draws it with what is here. The panel
+//! itself is here too: the drawer above the pending bar on macOS and
+//! Windows, and the terminal look's panel above its status line.
 
 use egui::{Color32, Frame, Id, Rect, Sense, WidgetInfo, WidgetType, pos2, vec2};
 use tabletist_db::Access;
@@ -205,7 +207,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, id: TabId) {
     let lines = &review.lines;
     let row = row_height(ui.ctx(), &look);
     let body = lines.len().min(MAX_ROWS) as f32 * row + 2.0 * PAD;
-    // The terminal look has no bar under the panel to hide it from.
+    // Only the terminal look's panel has a foot: the other looks hide the
+    // drawer from the bar under it, and copy from its head.
     let foot = if look.terminal { FOOT } else { 0.0 };
     // As tall as its lines, to at most `MAX_ROWS` of them, and never more
     // than half of what the tab has for its grid and for this.

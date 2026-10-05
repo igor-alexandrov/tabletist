@@ -17285,4 +17285,233 @@ mod tests {
         assert!(!painted_from(&harness, PANEL));
         assert!(!painted(&harness, BOB[2]));
     }
+
+    /// The chord that shows and hides Review SQL.
+    const REVIEW_CHORD: Modifiers = Modifiers::COMMAND.plus(Modifiers::SHIFT);
+
+    #[test]
+    fn mod_shift_d_shows_and_hides_the_review_in_every_look() {
+        for look in Look::ALL {
+            let (mut harness, tab, id) = editable_in(look);
+            let view = |harness: &Harness| {
+                let workspace = harness.app.workspace(tab).unwrap();
+                workspace.object_tab(id).unwrap().view
+            };
+            // With nothing pending and no editor open there is nothing to
+            // review.
+            harness.press(Key::D, REVIEW_CHORD);
+            assert!(!edits(&harness, tab, id).reviewing, "{}", look.name);
+            assert_eq!(drawn(&harness), None, "{}", look.name);
+            make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
+            harness.press(Key::D, REVIEW_CHORD);
+            assert!(edits(&harness, tab, id).reviewing, "{}", look.name);
+            for line in BOB {
+                assert!(painted(&harness, line), "{}: {line}", look.name);
+            }
+            let placed = drawn(&harness).expect("the panel was drawn");
+            assert_eq!((placed.tab, placed.id), (tab, id), "{}", look.name);
+            // A second press hides it.
+            harness.press(Key::D, REVIEW_CHORD);
+            assert!(!edits(&harness, tab, id).reviewing, "{}", look.name);
+            assert!(!painted(&harness, BOB[2]), "{}", look.name);
+            assert_eq!(drawn(&harness), None, "{}", look.name);
+            // With the arrows on the tree it works all the same.
+            harness.app.workspace_mut(tab).unwrap().pane = crate::model::Pane::Tree;
+            harness.press(Key::D, REVIEW_CHORD);
+            assert!(
+                edits(&harness, tab, id).reviewing,
+                "{}: the tree",
+                look.name
+            );
+            harness.press(Key::D, REVIEW_CHORD);
+            assert!(
+                !edits(&harness, tab, id).reviewing,
+                "{}: the tree",
+                look.name
+            );
+            // And in the Structure view, which it leaves showing: the
+            // terminal's `d` is another key.
+            focus_grid(&mut harness, tab);
+            harness.app.apply(Action::SetView {
+                tab,
+                object_tab: id,
+                view: crate::model::ObjectView::Structure,
+            });
+            harness.settle();
+            harness.press(Key::D, REVIEW_CHORD);
+            assert!(
+                edits(&harness, tab, id).reviewing,
+                "{}: Structure",
+                look.name
+            );
+            assert!(painted(&harness, BOB[4]), "{}: Structure", look.name);
+            assert_eq!(view(&harness), crate::model::ObjectView::Structure);
+            // One pending cell is all it was ever about.
+            assert_eq!(edits(&harness, tab, id).cells.len(), 1, "{}", look.name);
+            // A SQL editor in front keeps the chord for itself: the
+            // table's review is as it was.
+            harness.app.apply(Action::NewSqlTab(tab));
+            harness.settle();
+            harness.press(Key::D, REVIEW_CHORD);
+            assert!(edits(&harness, tab, id).reviewing, "{}: SQL", look.name);
+        }
+    }
+
+    #[test]
+    fn the_chord_takes_what_is_being_typed() {
+        for look in desktop_looks() {
+            // Only an editor, typed into: shown, the review closes it as
+            // an edit that was left, and its text is what is reviewed.
+            let (mut harness, tab, id) = editable_in(look);
+            select(&mut harness, tab, id, (1, 1));
+            type_text(&mut harness, "bob@example.com");
+            assert_eq!(
+                editor_text(&harness, tab, id).as_deref(),
+                Some("bob@example.com"),
+                "{}",
+                look.name
+            );
+            assert!(edits(&harness, tab, id).cells.is_empty(), "{}", look.name);
+            assert!(harness.ctx.text_edit_focused(), "{}", look.name);
+            harness.press(Key::D, REVIEW_CHORD);
+            assert!(edits(&harness, tab, id).editor.is_none(), "{}", look.name);
+            assert_eq!(
+                pending_text(&harness, tab, id, (1, 1)).as_deref(),
+                Some("bob@example.com"),
+                "{}",
+                look.name
+            );
+            assert!(edits(&harness, tab, id).reviewing, "{}", look.name);
+            for line in BOB {
+                assert!(painted(&harness, line), "{}: {line}", look.name);
+            }
+            // Open, with an editor open on another cell: hidden, the
+            // editor is left alone, its text and the keyboard with it.
+            open_editor(&mut harness, tab, id, (3, 1));
+            type_text(&mut harness, "x");
+            assert!(edits(&harness, tab, id).reviewing, "{}", look.name);
+            harness.press(Key::D, REVIEW_CHORD);
+            assert!(!edits(&harness, tab, id).reviewing, "{}", look.name);
+            assert!(!painted(&harness, DRAWER), "{}", look.name);
+            assert_eq!(
+                editor_text(&harness, tab, id).as_deref(),
+                Some("user4@example.comx"),
+                "{}",
+                look.name
+            );
+            assert!(harness.ctx.text_edit_focused(), "{}", look.name);
+            assert_eq!(edits(&harness, tab, id).cells.len(), 1, "{}", look.name);
+            // What is typed next is still the editor's.
+            type_text(&mut harness, "y");
+            assert_eq!(
+                editor_text(&harness, tab, id).as_deref(),
+                Some("user4@example.comxy"),
+                "{}",
+                look.name
+            );
+            // A text its column does not take is kept as a cell to fix,
+            // and its row is a comment: no statement is shown that a save
+            // would not run.
+            let (mut harness, tab, id) = editable_in(look);
+            make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
+            select(&mut harness, tab, id, (3, 2));
+            type_text(&mut harness, "{oops");
+            harness.press(Key::D, REVIEW_CHORD);
+            assert!(edits(&harness, tab, id).editor.is_none(), "{}", look.name);
+            assert!(edits(&harness, tab, id).reviewing, "{}", look.name);
+            assert!(
+                painted(&harness, "-- row id 4 · blocked: fix meta first"),
+                "{}",
+                look.name
+            );
+            assert!(!painted(&harness, r#" WHERE "id" = 4;"#), "{}", look.name);
+            // A character typed in the frame of the chord is in the
+            // review too: the editor is noted as typed into before it is
+            // closed, as a save notes it.
+            let (mut harness, tab, id) = editable_in(look);
+            open_editor(&mut harness, tab, id, (1, 1));
+            harness.frame(vec![
+                egui::Event::Text("x".into()),
+                crate::testing::key(Key::D, REVIEW_CHORD),
+            ]);
+            harness.frame(vec![crate::testing::release(Key::D, REVIEW_CHORD)]);
+            harness.settle();
+            assert_eq!(
+                pending_text(&harness, tab, id, (1, 1)).as_deref(),
+                Some("user2@example.comx"),
+                "{}",
+                look.name
+            );
+            assert!(edits(&harness, tab, id).reviewing, "{}", look.name);
+            assert!(
+                painted(&harness, r#"   SET "email" = 'user2@example.comx'"#),
+                "{}",
+                look.name
+            );
+            // An editor that was only opened is no change: the chord
+            // closes it, and with nothing else pending nothing opens.
+            let (mut harness, tab, id) = editable_in(look);
+            open_editor(&mut harness, tab, id, (1, 1));
+            harness.press(Key::D, REVIEW_CHORD);
+            let after = edits(&harness, tab, id);
+            assert!(after.editor.is_none(), "{}", look.name);
+            assert!(after.cells.is_empty() && !after.reviewing, "{}", look.name);
+            assert_eq!(drawn(&harness), None, "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn a_held_chord_shows_the_review_once() {
+        for look in Look::ALL {
+            let (mut harness, tab, id) = editable_in(look);
+            make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
+            harness.settle();
+            let down = |repeat| egui::Event::Key {
+                key: Key::D,
+                physical_key: None,
+                pressed: true,
+                repeat,
+                modifiers: REVIEW_CHORD,
+            };
+            // The key goes down and is held: its repeats would hide the
+            // review and show it by turns.
+            harness.frame(vec![down(false)]);
+            harness.frame(vec![down(true)]);
+            assert!(edits(&harness, tab, id).reviewing, "{}", look.name);
+            harness.frame(vec![down(true)]);
+            harness.settle();
+            assert!(edits(&harness, tab, id).reviewing, "{}", look.name);
+            assert!(painted(&harness, BOB[2]), "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn the_chord_does_nothing_under_a_dialog() {
+        for look in Look::ALL {
+            // The question before the changes are dropped.
+            let (mut harness, tab, id) = leaving_one_change(look);
+            harness.press(Key::D, REVIEW_CHORD);
+            assert!(!edits(&harness, tab, id).reviewing, "{}", look.name);
+            assert!(leaving(&harness), "{}", look.name);
+            assert_eq!(drawn(&harness), None, "{}", look.name);
+            // The confirmation of a save to production.
+            let (mut harness, tab, id, _) = confirming(look);
+            harness.press(Key::D, REVIEW_CHORD);
+            assert!(!edits(&harness, tab, id).reviewing, "{}", look.name);
+            assert!(matches!(
+                harness.app.dialog,
+                Some(crate::model::Dialog::ConfirmWrite(_))
+            ));
+            assert_eq!(writes(&harness), 0, "{}", look.name);
+            // Any other dialog: here the shortcuts. Open under it, the
+            // review stays open; closed, it stays closed.
+            let (mut harness, tab, id) = editable_in(look);
+            make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
+            harness.app.apply(Action::ShowHelp);
+            harness.finish_animations();
+            assert!(harness.app.dialog.is_some(), "{}", look.name);
+            harness.press(Key::D, REVIEW_CHORD);
+            assert!(!edits(&harness, tab, id).reviewing, "{}", look.name);
+        }
+    }
 }
