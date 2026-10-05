@@ -40,8 +40,6 @@ fn sources() -> Vec<(String, String)> {
 const PENDING: &[&str] = &[
     "crates/tabletist-db/src/lib.rs",
     "crates/tabletist-db/src/spec.rs",
-    "crates/tabletist-db/src/sql.rs",
-    "crates/tabletist-db/src/sql/format.rs",
     "src/app.rs",
     "src/edit.rs",
     "src/model.rs",
