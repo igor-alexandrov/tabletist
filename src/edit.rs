@@ -7,8 +7,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
 
 use tabletist_db::{
-    Access, CellChange, ChangeSet, ColumnClass, ColumnInfo, Dialect, Error, NewValue, ObjectKind,
-    ObjectRef, RowChange, RowPage, Structure, Value, column_class,
+    Access, CellChange, ChangeSet, ColumnClass, ColumnInfo, Conflict, Dialect, Error, NewValue,
+    ObjectKind, ObjectRef, RowChange, RowPage, Structure, Value, column_class,
 };
 
 use crate::backend::RequestId;
@@ -739,6 +739,20 @@ pub struct Saved {
 /// How long a saved cell shows it.
 pub const SAVED_FOR: Duration = Duration::from_millis(1200);
 
+/// How long a question that came up unasked has been on screen before it
+/// takes an answer: the question about a row a save found changed, which
+/// comes when the database answers, and the production confirmation where
+/// another dialog's answer opened it. What was on its way elsewhere then
+/// (a key, a click) is no answer to it, and the second click of a double
+/// click is none to the question that took the first one's place.
+pub const ANSWER_AFTER: Duration = Duration::from_millis(500);
+
+/// Whether a question that came up at `shown` takes answers yet. An
+/// instant still to come has lasted no time.
+pub fn answers_taken(shown: Instant) -> bool {
+    Instant::now().saturating_duration_since(shown) >= ANSWER_AFTER
+}
+
 /// What a save came to when it wrote nothing. The view words it.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Note {
@@ -761,6 +775,277 @@ pub enum Note {
     /// The save was refused or undone, with the database's or the app's
     /// reason.
     Refused(Error),
+}
+
+/// A row a save found changed on the server, by its place in the page.
+#[derive(Clone, PartialEq)]
+pub struct Conflicting {
+    /// The page's row.
+    pub row: usize,
+    /// The row as the database holds it now, as wide as the page. `None`
+    /// when it is gone.
+    pub server: Option<Vec<Value>>,
+}
+
+/// Without the row: it is the database's, and can be megabytes.
+impl std::fmt::Debug for Conflicting {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Conflicting {{ row: {}, gone: {} }}",
+            self.row,
+            self.server.is_none()
+        )
+    }
+}
+
+/// A save's conflicts as rows of `page`, in the save's order. `places` is
+/// the page's row of each row the save sent (`Saving::rows`): the answer
+/// names rows by their place in the set. `None` when there is nothing to
+/// ask from it: it names a row the save did not send or the page does not
+/// hold, the same row twice, or brings a row that is not as wide as the
+/// page (the table is no longer the one the page was read from).
+pub fn conflicting(
+    places: &[usize],
+    conflicts: Vec<Conflict>,
+    page: &RowPage,
+) -> Option<Vec<Conflicting>> {
+    let mut seen = BTreeSet::new();
+    conflicts
+        .into_iter()
+        .map(|conflict| {
+            let row = *places.get(conflict.row)?;
+            page.rows.get(row)?;
+            if !seen.insert(row) {
+                return None;
+            }
+            let fits = |server: &Vec<Value>| server.len() == page.columns.len();
+            if !conflict.server.as_ref().is_none_or(fits) {
+                return None;
+            }
+            Some(Conflicting {
+                row,
+                server: conflict.server,
+            })
+        })
+        .collect()
+}
+
+/// What the user answers about a row a save found changed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Answer {
+    /// The server's row becomes the loaded one and the pending cells stay
+    /// on top of it. For a row that is gone: its cells stay as they are.
+    KeepMine,
+    /// The server's row becomes the loaded one and the row's pending cells
+    /// are dropped.
+    UseServer,
+    /// As `KeepMine`, and the save may run again once every row is
+    /// answered.
+    Overwrite,
+    /// For a row that is gone: its pending cells are dropped.
+    Discard,
+}
+
+impl Answer {
+    /// Whether the question about a row offers this answer: `gone` says
+    /// the row no longer exists.
+    pub fn offered(self, gone: bool) -> bool {
+        match self {
+            Self::KeepMine => true,
+            Self::UseServer | Self::Overwrite => !gone,
+            Self::Discard => gone,
+        }
+    }
+}
+
+/// One column the user changed in a row a save found changed, as the
+/// question about the row shows it.
+#[derive(Clone, Copy, PartialEq)]
+pub struct ConflictLine<'a> {
+    /// The page's column.
+    pub col: usize,
+    pub loaded: &'a Value,
+    /// What the database holds now. `None` when the row is gone.
+    pub server: Option<&'a Value>,
+    pub yours: &'a NewValue,
+    /// The server's value is another than the loaded one: this column is
+    /// one the conflict is about.
+    pub moved: bool,
+}
+
+/// The columns the user changed in `conflict`'s row, in the page's order:
+/// what the page loaded, what the server holds now and the pending value.
+pub fn conflict_lines<'a>(
+    page: &'a RowPage,
+    cells: &'a BTreeMap<(usize, usize), Pending>,
+    conflict: &'a Conflicting,
+) -> Vec<ConflictLine<'a>> {
+    let Some(loaded) = page.rows.get(conflict.row) else {
+        return Vec::new();
+    };
+    let row = conflict.row;
+    cells
+        .range((row, 0)..=(row, usize::MAX))
+        .filter_map(|(&(_, col), pending)| {
+            let loaded = loaded.get(col)?;
+            let server = match &conflict.server {
+                Some(server) => Some(server.get(col)?),
+                None => None,
+            };
+            Some(ConflictLine {
+                col,
+                loaded,
+                server,
+                yours: &pending.new,
+                // As the save compared them: a float by its bits.
+                moved: server.is_some_and(|server| !same_value(server, loaded)),
+            })
+        })
+        .collect()
+}
+
+/// The pending cells of the page's row `row`, by their column, that are no
+/// change any more once the row holds `server`: a new value equal to what
+/// the server holds now is where an editor on it would start.
+pub fn settled(
+    table: &Table<'_>,
+    cells: &BTreeMap<(usize, usize), Pending>,
+    row: usize,
+    server: &[Value],
+) -> Vec<usize> {
+    cells
+        .range((row, 0)..=(row, usize::MAX))
+        .filter(|&(&(_, col), pending)| {
+            let class = table.class(col).unwrap_or(ColumnClass::Other);
+            server
+                .get(col)
+                .is_some_and(|now| !is_change(now, &pending.new, class))
+        })
+        .map(|(&(_, col), _)| col)
+        .collect()
+}
+
+/// A value as the question about a conflict shows it.
+#[derive(Clone, PartialEq)]
+pub enum Shown {
+    Null,
+    /// The value's text, or the part of it to show: at most a cell's worth
+    /// of characters and one more, so the cell that draws it still marks
+    /// what it cuts. `cut` says the text starts inside the value: the
+    /// values of its line read alike up to there.
+    Text {
+        text: String,
+        cut: bool,
+    },
+}
+
+/// One column the user changed in a row a save found changed, made ready
+/// to draw once, when its question comes up: a value can be megabytes,
+/// too much to compare in every frame.
+#[derive(Clone, PartialEq)]
+pub struct ShownLine {
+    /// The column's name, as the page has it.
+    pub name: String,
+    pub loaded: Shown,
+    /// What the database holds now. `None` when the row is gone.
+    pub server: Option<Shown>,
+    pub yours: Shown,
+    /// The server's value is another than the loaded one.
+    pub moved: bool,
+}
+
+/// How many characters stand before the first difference of two values
+/// that are shown from there: enough to find the place by.
+const LEAD: usize = 12;
+
+/// What a cell makes of `text`: one line, a cell's worth of it. Two texts
+/// with the same answer read the same in the question.
+fn read(text: &str) -> String {
+    use crate::ui::format::{Marks, blank_text, cell_line};
+    blank_text(text, Marks::PLAIN).unwrap_or_else(|| cell_line(text, Marks::PLAIN).into_owned())
+}
+
+/// The values of one line as they are shown, in the order given (`None`
+/// is NULL). Each is a cell's worth of its text from the start, unless two
+/// of them read alike there and are not the same text (they differ past
+/// what a cell shows): those are shown from just before the first place
+/// two of them differ, so the difference is on screen.
+fn shown(values: &[Option<&str>]) -> Vec<Shown> {
+    let reads: Vec<Option<String>> = values.iter().map(|text| text.map(read)).collect();
+    // Which values read like another that they are not, and the first
+    // place such a pair differs.
+    let mut alike = vec![false; values.len()];
+    let mut from = usize::MAX;
+    for (later, theirs) in values.iter().enumerate() {
+        for (earlier, ours) in values.iter().enumerate().take(later) {
+            let (Some(ours), Some(theirs)) = (ours, theirs) else {
+                continue;
+            };
+            if ours != theirs && reads[earlier] == reads[later] {
+                let same = ours.chars().zip(theirs.chars());
+                from = from.min(same.take_while(|(ours, theirs)| ours == theirs).count());
+                alike[earlier] = true;
+                alike[later] = true;
+            }
+        }
+    }
+    let from = from.saturating_sub(LEAD);
+    let piece = crate::ui::format::CELL_MAX_CHARS + 1;
+    values
+        .iter()
+        .zip(alike)
+        .map(|(text, alike)| match text {
+            None => Shown::Null,
+            Some(text) => {
+                let skip = if alike { from } else { 0 };
+                Shown::Text {
+                    text: text.chars().skip(skip).take(piece).collect(),
+                    cut: skip > 0,
+                }
+            }
+        })
+        .collect()
+}
+
+/// The lines the question about `conflict`'s row shows: one for each
+/// column the user changed, in the page's order.
+pub fn shown_lines(
+    page: &RowPage,
+    cells: &BTreeMap<(usize, usize), Pending>,
+    conflict: &Conflicting,
+) -> Vec<ShownLine> {
+    // A text as it is; any other value as a cell writes it, which is short.
+    fn text(value: &Value) -> Option<std::borrow::Cow<'_, str>> {
+        match value {
+            Value::Null => None,
+            Value::Text(text) => Some(std::borrow::Cow::Borrowed(text)),
+            other => Some(crate::ui::format::cell_text(other)),
+        }
+    }
+    conflict_lines(page, cells, conflict)
+        .into_iter()
+        .filter_map(|line| {
+            let loaded = text(line.loaded);
+            let server = line.server.map(text);
+            let yours = match line.yours {
+                NewValue::Null => None,
+                NewValue::Text(text) => Some(text.as_str()),
+            };
+            let mut values = vec![loaded.as_deref(), yours];
+            if let Some(server) = &server {
+                values.push(server.as_deref());
+            }
+            let mut values = shown(&values).into_iter();
+            Some(ShownLine {
+                name: page.columns.get(line.col)?.name.clone(),
+                loaded: values.next()?,
+                yours: values.next()?,
+                server: values.next(),
+                moved: line.moved,
+            })
+        })
+        .collect()
 }
 
 /// The change set a save sends for the pending `cells`, and the page's row
@@ -1843,5 +2128,282 @@ mod tests {
         assert_eq!(edits.gone, gone);
         assert!(!edits.holds());
         assert!(format!("{edits:?}").contains("gone: {1}"));
+    }
+
+    fn pending(new: NewValue) -> Pending {
+        Pending {
+            new,
+            state: State::Ready,
+        }
+    }
+
+    #[test]
+    fn a_saves_conflicts_are_rows_of_the_page_in_the_saves_order() {
+        let page = page(rows());
+        let server = vec![Value::Int(2), text("eve@example.com"), text("{}")];
+        // The set's rows 0 and 1 were the page's rows 1 and 0.
+        let places = [1, 0];
+        let both = vec![
+            Conflict {
+                row: 0,
+                server: Some(server.clone()),
+            },
+            Conflict {
+                row: 1,
+                server: None,
+            },
+        ];
+        assert_eq!(
+            conflicting(&places, both, &page),
+            Some(vec![
+                Conflicting {
+                    row: 1,
+                    server: Some(server),
+                },
+                Conflicting {
+                    row: 0,
+                    server: None,
+                },
+            ])
+        );
+        let one = |row: usize, server: Option<Vec<Value>>| vec![Conflict { row, server }];
+        // Nothing to ask from: a row the save did not send, a row the page
+        // does not hold, one row twice, a row of another width.
+        assert_eq!(conflicting(&places, one(2, None), &page), None);
+        assert_eq!(conflicting(&[7], one(0, None), &page), None);
+        let twice = [one(0, None), one(0, None)].concat();
+        assert_eq!(conflicting(&places, twice, &page), None);
+        let narrow = one(0, Some(vec![Value::Int(2)]));
+        assert_eq!(conflicting(&places, narrow, &page), None);
+        // No conflict is no row.
+        assert_eq!(conflicting(&places, Vec::new(), &page), Some(Vec::new()));
+        // A row is printed without what the database holds in it.
+        let row = Conflicting {
+            row: 1,
+            server: Some(vec![text("secret")]),
+        };
+        assert_eq!(format!("{row:?}"), "Conflicting { row: 1, gone: false }");
+    }
+
+    #[test]
+    fn a_conflict_shows_the_columns_the_user_changed_and_which_of_them_moved() {
+        let page = page(rows());
+        let mut cells = BTreeMap::new();
+        cells.insert((1, 2), pending(NewValue::Null));
+        cells.insert((1, 1), pending(NewValue::Text("bobby@example.com".into())));
+        cells.insert((0, 1), pending(NewValue::Text("a@example.com".into())));
+        let changed = Conflicting {
+            row: 1,
+            server: Some(vec![Value::Int(2), text("eve@example.com"), text("{}")]),
+        };
+        let lines = conflict_lines(&page, &cells, &changed);
+        // The row's own cells and no other's, in the page's column order.
+        let cols: Vec<usize> = lines.iter().map(|line| line.col).collect();
+        assert_eq!(cols, [1, 2]);
+        assert_eq!(lines[0].loaded, &text("bob@example.com"));
+        assert_eq!(lines[0].server, Some(&text("eve@example.com")));
+        assert_eq!(lines[0].yours, &NewValue::Text("bobby@example.com".into()));
+        assert_eq!(lines[1].yours, &NewValue::Null);
+        // The email is another on the server, and meta is as it was loaded.
+        assert!(lines[0].moved && !lines[1].moved);
+        // A row that is gone has nothing on the server.
+        let gone = Conflicting {
+            row: 1,
+            server: None,
+        };
+        let lines = conflict_lines(&page, &cells, &gone);
+        assert_eq!(lines.len(), 2);
+        assert!(
+            lines
+                .iter()
+                .all(|line| line.server.is_none() && !line.moved)
+        );
+        // Not a number is the value it was, as the save compares it.
+        let floats = self::page(vec![vec![
+            Value::Int(1),
+            Value::Float(f64::NAN),
+            Value::Null,
+        ]]);
+        let mut cells = BTreeMap::new();
+        cells.insert((0, 1), pending(NewValue::Text("1.5".into())));
+        cells.insert((0, 2), pending(NewValue::Text("{}".into())));
+        let same = Conflicting {
+            row: 0,
+            server: Some(vec![Value::Int(1), Value::Float(f64::NAN), text("[]")]),
+        };
+        let lines = conflict_lines(&floats, &cells, &same);
+        assert!(!lines[0].moved && lines[1].moved);
+        // A row the page does not hold shows nothing.
+        let missing = Conflicting {
+            row: 9,
+            server: None,
+        };
+        assert!(conflict_lines(&page, &cells, &missing).is_empty());
+        // Each answer is offered where it means something.
+        for answer in [Answer::UseServer, Answer::Overwrite] {
+            assert!(answer.offered(false) && !answer.offered(true), "{answer:?}");
+        }
+        assert!(Answer::Discard.offered(true) && !Answer::Discard.offered(false));
+        assert!(Answer::KeepMine.offered(true) && Answer::KeepMine.offered(false));
+    }
+
+    #[test]
+    fn a_pending_value_the_server_holds_now_is_no_change_any_more() {
+        let (structure, page) = (structure(), page(rows()));
+        let table = table(Some(&structure), &page);
+        let mut cells = BTreeMap::new();
+        cells.insert((1, 1), pending(NewValue::Text("eve@example.com".into())));
+        cells.insert((1, 2), pending(NewValue::Null));
+        cells.insert((0, 1), pending(NewValue::Text("eve@example.com".into())));
+        // The server holds the new email, and still a value in meta.
+        let server = [Value::Int(2), text("eve@example.com"), text("{}")];
+        assert_eq!(settled(&table, &cells, 1, &server), [1]);
+        // It holds NULL in meta now: both cells are what it has.
+        let server = [Value::Int(2), text("eve@example.com"), Value::Null];
+        assert_eq!(settled(&table, &cells, 1, &server), [1, 2]);
+        // Text is never NULL: the empty string over a NULL stays a change.
+        cells.insert((1, 2), pending(NewValue::Text(String::new())));
+        assert_eq!(settled(&table, &cells, 1, &server), [1]);
+        // A cell to fix or failed is settled the same way: its state is
+        // about the new value, not about what was loaded.
+        cells.insert(
+            (1, 1),
+            Pending {
+                new: NewValue::Text("eve@example.com".into()),
+                state: State::Failed(Error::query("violates check")),
+            },
+        );
+        assert_eq!(settled(&table, &cells, 1, &server), [1]);
+        // Another row's cells are not this row's to settle, and a row
+        // narrower than the page settles nothing.
+        let other = [Value::Int(1), text("x@example.com"), Value::Null];
+        assert_eq!(settled(&table, &cells, 0, &other), Vec::<usize>::new());
+        assert_eq!(
+            settled(&table, &cells, 1, &[Value::Int(2)]),
+            Vec::<usize>::new()
+        );
+        // A boolean column is compared as its editor starts: `true` is the
+        // 1 SQLite holds.
+        let mut flags = self::structure();
+        flags.columns[2].type_name = "BOOLEAN".into();
+        let table = self::table(Some(&flags), &page);
+        let mut cells = BTreeMap::new();
+        cells.insert((1, 2), pending(NewValue::Text("true".into())));
+        let server = [Value::Int(2), text("bob@example.com"), Value::Int(1)];
+        assert_eq!(settled(&table, &cells, 1, &server), [2]);
+        let server = [Value::Int(2), text("bob@example.com"), Value::Int(0)];
+        assert_eq!(settled(&table, &cells, 1, &server), Vec::<usize>::new());
+    }
+
+    /// A shown value by its text and whether it starts inside the value.
+    /// `None` is NULL.
+    fn seen(shown: &Shown) -> Option<(&str, bool)> {
+        match shown {
+            Shown::Null => None,
+            Shown::Text { text, cut } => Some((text.as_str(), *cut)),
+        }
+    }
+
+    #[test]
+    fn two_values_of_a_line_that_differ_are_not_shown_alike() {
+        // Three documents that are the same for 300 characters.
+        let long = |end: &str| format!("{}{end}", "x".repeat(300));
+        let loaded = vec![Value::Int(1), text("a b"), text(&long("loaded"))];
+        let page = self::page(vec![loaded]);
+        let mut cells = BTreeMap::new();
+        cells.insert((0, 1), pending(NewValue::Text("a\nb".into())));
+        cells.insert((0, 2), pending(NewValue::Text(long("yours"))));
+        let conflict = Conflicting {
+            row: 0,
+            server: Some(vec![Value::Int(1), text("a b"), text(&long("server"))]),
+        };
+        let lines = shown_lines(&page, &cells, &conflict);
+        assert_eq!(lines.len(), 2);
+        let (email, meta) = (&lines[0], &lines[1]);
+        assert_eq!((email.name.as_str(), meta.name.as_str()), ("email", "meta"));
+        // A line break is not a space: a cell marks it, so the two read
+        // apart as they are, each from its start.
+        assert_eq!(seen(&email.loaded), Some(("a b", false)));
+        assert_eq!(seen(&email.yours), Some(("a\nb", false)));
+        assert_eq!(email.server.as_ref().map(seen), Some(Some(("a b", false))));
+        assert!(!email.moved);
+        // The documents read alike for all a cell shows of them: each is
+        // shown from twelve characters before the first place two differ.
+        let piece = |end: &str| format!("{}{end}", "x".repeat(12));
+        assert_eq!(seen(&meta.loaded), Some((piece("loaded").as_str(), true)));
+        assert_eq!(seen(&meta.yours), Some((piece("yours").as_str(), true)));
+        let server = meta.server.as_ref().map(seen);
+        assert_eq!(server, Some(Some((piece("server").as_str(), true))));
+        assert!(meta.moved);
+        // Only what reads like another value is shown from inside: a short
+        // value beside two long ones is whole.
+        cells.insert((0, 2), pending(NewValue::Text("{}".into())));
+        let lines = shown_lines(&page, &cells, &conflict);
+        assert_eq!(seen(&lines[1].yours), Some(("{}", false)));
+        assert_eq!(
+            seen(&lines[1].loaded),
+            Some((piece("loaded").as_str(), true))
+        );
+        // A value the server kept is the same text, not one that reads
+        // like it: both are shown from the start, a cell's worth and one
+        // character more for the cell to cut at.
+        let kept = Conflicting {
+            row: 0,
+            server: Some(vec![Value::Int(1), text("c d"), text(&long("loaded"))]),
+        };
+        let lines = shown_lines(&page, &cells, &kept);
+        let start = "x".repeat(257);
+        assert_eq!(seen(&lines[1].loaded), Some((start.as_str(), false)));
+        assert_eq!(
+            lines[1].server.as_ref().map(seen),
+            Some(Some((start.as_str(), false)))
+        );
+        assert!(lines[0].moved && !lines[1].moved);
+    }
+
+    #[test]
+    fn null_numbers_and_a_row_that_is_gone_are_shown_as_they_are() {
+        let page = self::page(vec![vec![Value::Int(7), Value::Null, Value::Float(1.5)]]);
+        let mut cells = BTreeMap::new();
+        cells.insert((0, 1), pending(NewValue::Text(String::new())));
+        cells.insert((0, 2), pending(NewValue::Null));
+        let conflict = Conflicting {
+            row: 0,
+            server: Some(vec![Value::Int(7), text("x"), Value::Null]),
+        };
+        let lines = shown_lines(&page, &cells, &conflict);
+        // NULL is NULL and the empty text is a text: the cell that draws
+        // them tells them apart.
+        assert_eq!(seen(&lines[0].loaded), None);
+        assert_eq!(seen(&lines[0].yours), Some(("", false)));
+        assert_eq!(lines[0].server.as_ref().map(seen), Some(Some(("x", false))));
+        // A number as a cell writes it, and a value that became NULL.
+        assert_eq!(seen(&lines[1].loaded), Some(("1.5", false)));
+        assert_eq!(seen(&lines[1].yours), None);
+        assert_eq!(lines[1].server.as_ref().map(seen), Some(None));
+        assert!(lines[0].moved && lines[1].moved);
+        // A row that is gone has no third value.
+        let gone = Conflicting {
+            row: 0,
+            server: None,
+        };
+        let lines = shown_lines(&page, &cells, &gone);
+        assert_eq!(lines.len(), 2);
+        assert!(
+            lines
+                .iter()
+                .all(|line| line.server.is_none() && !line.moved)
+        );
+    }
+
+    #[test]
+    fn a_question_takes_answers_once_it_has_been_up_for_a_moment() {
+        let now = Instant::now();
+        assert!(!answers_taken(now));
+        // An instant still to come has lasted no time.
+        assert!(!answers_taken(now + Duration::from_secs(3600)));
+        let earlier = now.checked_sub(ANSWER_AFTER).expect("an earlier instant");
+        assert!(answers_taken(earlier));
+        assert_eq!(ANSWER_AFTER, Duration::from_millis(500));
     }
 }
