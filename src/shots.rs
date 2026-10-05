@@ -896,6 +896,7 @@ fn shots() {
         let refused = tabletist_db::Error::Refused {
             line: 6,
             what: "COMMIT".into(),
+            mode: tabletist_db::ScriptMode::ReadOnly,
         };
         harness.answer_sql(Err(refused), None);
         let sql_tab = harness.app.workspace(tab).unwrap().active_tab.unwrap();
@@ -1016,6 +1017,7 @@ fn sql_editor(harness: &mut Harness) -> ConnTabId {
                 },
             }],
             stopped: false,
+            ..Default::default()
         }),
         None,
     );

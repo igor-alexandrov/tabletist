@@ -801,7 +801,7 @@ async fn a_running_query_can_be_cancelled() {
     assert!(connection.fetch_rows(&users(1)).await.is_ok());
 }
 
-use tabletist_db::{Dialect, ScriptOutcome, StatementOutcome, StopFlag};
+use tabletist_db::{Dialect, ScriptMode, ScriptOutcome, StatementOutcome, StopFlag};
 
 /// A writable session for arranging and probing, outside the adapter.
 async fn admin() -> tokio_postgres::Client {
@@ -992,7 +992,8 @@ async fn run(
     text: &str,
     limit: u32,
 ) -> tabletist_db::Result<ScriptOutcome> {
-    within(connection.run_script(&script(text), limit, &StopFlag::new())).await
+    within(connection.run_script(&script(text), limit, ScriptMode::ReadOnly, &StopFlag::new()))
+        .await
 }
 
 #[tokio::test]
@@ -1097,7 +1098,10 @@ async fn show_and_statements_without_rows() {
     // SET has no row count; the driver's 0 for its command tag is not one.
     assert_eq!(
         outcome.results[1].outcome,
-        StatementOutcome::Done { affected: None }
+        StatementOutcome::Done {
+            affected: None,
+            warnings: 0,
+        }
     );
 }
 
@@ -1252,7 +1256,11 @@ async fn cancelled_while_running(
     let running = {
         let connection = std::sync::Arc::clone(&connection);
         let stop = stop.clone();
-        tokio::spawn(async move { connection.run_script(&script(text), limit, &stop).await })
+        tokio::spawn(async move {
+            connection
+                .run_script(&script(text), limit, ScriptMode::ReadOnly, &stop)
+                .await
+        })
     };
     runs_on_the_server(&admin, marker).await;
     stop.stop();
@@ -1325,7 +1333,9 @@ async fn a_stop_between_statements_lets_the_running_one_finish() {
         let stop = stop.clone();
         tokio::spawn(async move {
             let text = "DO $$ BEGIN /* tabletist between */ PERFORM pg_sleep(1); END $$; SELECT 2";
-            connection.run_script(&script(text), 10, &stop).await
+            connection
+                .run_script(&script(text), 10, ScriptMode::ReadOnly, &stop)
+                .await
         })
     };
     // A stop without a cancel: the first statement runs to its end, the
@@ -1336,7 +1346,10 @@ async fn a_stop_between_statements_lets_the_running_one_finish() {
     assert_eq!(outcome.results.len(), 2);
     assert_eq!(
         outcome.results[0].outcome,
-        StatementOutcome::Done { affected: None }
+        StatementOutcome::Done {
+            affected: None,
+            warnings: 0,
+        }
     );
     assert_eq!(outcome.results[1].outcome, StatementOutcome::Cancelled);
     assert!(outcome.stopped);
@@ -1449,9 +1462,14 @@ async fn a_script_stopped_before_it_starts_runs_nothing() {
     };
     let stop = StopFlag::new();
     stop.stop();
-    let outcome = within(connection.run_script(&script("SELECT 1; SELECT 2"), 10, &stop))
-        .await
-        .unwrap();
+    let outcome = within(connection.run_script(
+        &script("SELECT 1; SELECT 2"),
+        10,
+        ScriptMode::ReadOnly,
+        &stop,
+    ))
+    .await
+    .unwrap();
     assert_eq!(outcome.results.len(), 1);
     assert_eq!(outcome.results[0].outcome, StatementOutcome::Cancelled);
     assert!(outcome.stopped && outcome.was_cancelled());
@@ -1494,9 +1512,10 @@ async fn one_piece_cannot_hold_two_statements() {
     // it anyway, and the text does not run another way.
     let mut statements = script("SELECT 1");
     statements[0].text = "SELECT 1; SELECT 2".into();
-    let outcome = within(connection.run_script(&statements, 10, &StopFlag::new()))
-        .await
-        .unwrap();
+    let outcome =
+        within(connection.run_script(&statements, 10, ScriptMode::ReadOnly, &StopFlag::new()))
+            .await
+            .unwrap();
     assert_eq!(outcome.results.len(), 1);
     assert!(matches!(
         &outcome.results[0].outcome,

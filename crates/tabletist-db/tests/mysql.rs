@@ -995,7 +995,7 @@ async fn a_cancelled_query_leaves_no_transaction_holding_locks() {
     );
 }
 
-use tabletist_db::{Dialect, ScriptOutcome, StatementOutcome, StopFlag};
+use tabletist_db::{Dialect, ScriptMode, ScriptOutcome, StatementOutcome, StopFlag};
 
 fn script(text: &str) -> Vec<tabletist_db::sql::Statement> {
     tabletist_db::sql::statements(Dialect::MySql, text)
@@ -1014,7 +1014,8 @@ async fn run(
     text: &str,
     limit: u32,
 ) -> tabletist_db::Result<ScriptOutcome> {
-    within(connection.run_script(&script(text), limit, &StopFlag::new())).await
+    within(connection.run_script(&script(text), limit, ScriptMode::ReadOnly, &StopFlag::new()))
+        .await
 }
 
 /// The rows of a script's only statement.
@@ -1211,7 +1212,10 @@ async fn statements_without_rows_and_explain() {
     // SET has no row count; the server's 0 for it is not one.
     assert_eq!(
         outcome.results[0].outcome,
-        StatementOutcome::Done { affected: None }
+        StatementOutcome::Done {
+            affected: None,
+            warnings: 0,
+        }
     );
     assert!(matches!(
         &outcome.results[1].outcome,
@@ -1224,7 +1228,10 @@ async fn statements_without_rows_and_explain() {
     ));
     assert_eq!(
         outcome.results[3].outcome,
-        StatementOutcome::Done { affected: None }
+        StatementOutcome::Done {
+            affected: None,
+            warnings: 0,
+        }
     );
 }
 
@@ -1278,9 +1285,10 @@ async fn what_the_prepared_protocol_refuses_is_the_statements_error() {
     // The splitter would never hand over such a piece.
     let mut statements = script("SELECT 1");
     statements[0].text = "SELECT 1; SELECT 2".into();
-    let outcome = within(connection.run_script(&statements, 10, &StopFlag::new()))
-        .await
-        .unwrap();
+    let outcome =
+        within(connection.run_script(&statements, 10, ScriptMode::ReadOnly, &StopFlag::new()))
+            .await
+            .unwrap();
     assert_eq!(outcome.results.len(), 1);
     assert!(matches!(
         &outcome.results[0].outcome,
@@ -1530,7 +1538,13 @@ async fn bypasses_cannot_write() {
                     ),
                 "{attempt}"
             );
-            let ran = within(connection.run_script(&statements, 10, &StopFlag::new())).await;
+            let ran = within(connection.run_script(
+                &statements,
+                10,
+                ScriptMode::ReadOnly,
+                &StopFlag::new(),
+            ))
+            .await;
             assert!(
                 matches!(ran, Err(Error::Refused { .. })),
                 "{attempt}: {ran:?}"
@@ -1668,7 +1682,9 @@ async fn a_cancelled_script_keeps_earlier_results_and_the_session() {
             // A sleep of its own length, for `runs_on_the_server`. With a
             // table the interrupted SLEEP is an error; alone it answers 1.
             let text = "SELECT 1; SELECT count(*) FROM users WHERE SLEEP(31) = 0; SELECT 3";
-            connection.run_script(&script(text), 10, &stop).await
+            connection
+                .run_script(&script(text), 10, ScriptMode::ReadOnly, &stop)
+                .await
         })
     };
     runs_on_the_server(&mut admin, "SLEEP(31)").await;
@@ -1716,7 +1732,9 @@ async fn a_cancel_reaches_a_session_an_earlier_run_reset() {
             let stop = stop.clone();
             tokio::spawn(async move {
                 let text = format!("SELECT 1; SELECT count(*) FROM users WHERE {sleep} = 0");
-                connection.run_script(&script(&text), 10, &stop).await
+                connection
+                    .run_script(&script(&text), 10, ScriptMode::ReadOnly, &stop)
+                    .await
             })
         };
         runs_on_the_server(&mut admin, sleep).await;
@@ -1752,7 +1770,9 @@ async fn cancels_that_land_on_the_cleanup_leave_the_session_read_only_or_closed(
         let stop = stop.clone();
         tokio::spawn(async move {
             let text = "SELECT 1; SELECT count(*) FROM users WHERE SLEEP(32) = 0";
-            connection.run_script(&script(text), 10, &stop).await
+            connection
+                .run_script(&script(text), 10, ScriptMode::ReadOnly, &stop)
+                .await
         })
     };
     runs_on_the_server(&mut admin, "SLEEP(32)").await;
@@ -1797,7 +1817,9 @@ async fn a_stop_between_statements_lets_the_running_one_finish() {
         let stop = stop.clone();
         tokio::spawn(async move {
             let text = "SELECT SLEEP(1.5); SELECT 2";
-            connection.run_script(&script(text), 10, &stop).await
+            connection
+                .run_script(&script(text), 10, ScriptMode::ReadOnly, &stop)
+                .await
         })
     };
     // A stop without a cancel: the first statement runs to its end, the
@@ -1824,9 +1846,14 @@ async fn a_script_stopped_before_it_starts_runs_nothing() {
     };
     let stop = StopFlag::new();
     stop.stop();
-    let outcome = within(connection.run_script(&script("SELECT 1; SELECT 2"), 10, &stop))
-        .await
-        .unwrap();
+    let outcome = within(connection.run_script(
+        &script("SELECT 1; SELECT 2"),
+        10,
+        ScriptMode::ReadOnly,
+        &stop,
+    ))
+    .await
+    .unwrap();
     assert_eq!(outcome.results.len(), 1);
     assert_eq!(outcome.results[0].outcome, StatementOutcome::Cancelled);
     assert!(outcome.stopped && outcome.was_cancelled());

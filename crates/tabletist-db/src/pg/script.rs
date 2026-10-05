@@ -8,9 +8,10 @@ use tokio_postgres::SimpleQueryMessage;
 use tokio_postgres::error::SqlState;
 
 use super::{Conn, column_metas, first_text, query_error, row_values};
-use crate::script::{cleanup_failed, retry_cancelled, statement_failed};
+use crate::script::{cannot_start, cleanup_failed, retry_cancelled, statement_failed};
 use crate::{
-    ColumnMeta, Dialect, Error, Result, ScriptOutcome, StatementOutcome, StatementResult, StopFlag,
+    ColumnMeta, Dialect, Error, Result, ScriptMode, ScriptOutcome, StatementOutcome,
+    StatementResult, StopFlag,
 };
 
 impl Conn {
@@ -24,8 +25,12 @@ impl Conn {
         &self,
         texts: &[String],
         limit: u32,
+        mode: ScriptMode,
         stop: &StopFlag,
     ) -> Result<ScriptOutcome> {
+        if mode == ScriptMode::Write {
+            return Err(Error::Unsupported("read-write runs on PostgreSQL"));
+        }
         let client = self.client.lock().await;
         let mut outcome = ScriptOutcome::default();
         let tx = match open(&client).await {
@@ -44,9 +49,7 @@ impl Conn {
             Err(error) => {
                 stop.finish();
                 close(&client, Tx::Aborted).await.ok();
-                return Err(Error::ConnectionLost(format!(
-                    "could not start the read-only transaction: {error}"
-                )));
+                return Err(cannot_start(ScriptMode::ReadOnly, &error));
             }
         };
         // From here on a cancel would land on the cleanup: tell the
@@ -172,7 +175,7 @@ async fn close(client: &tokio_postgres::Client, tx: Tx) -> Result<()> {
     let rolled_back = retry_cancelled!(rollback(client));
     match (tx, rolled_back) {
         (Ok(Tx::Left), _) => Err(Error::LeftReadOnly),
-        (Err(error), _) | (_, Err(error)) => Err(cleanup_failed(&error)),
+        (Err(error), _) | (_, Err(error)) => Err(cleanup_failed(ScriptMode::ReadOnly, &error)),
         (Ok(_), Ok(())) => unlocked(retry_cancelled!(unlock(client))),
     }
 }
@@ -407,7 +410,13 @@ async fn run_statement(
                         _ => None,
                     })
                     .filter(|_| counts_rows(text));
-                Ok((StatementOutcome::Done { affected }, Tx::Open))
+                Ok((
+                    StatementOutcome::Done {
+                        affected,
+                        warnings: 0,
+                    },
+                    Tx::Open,
+                ))
             }
             Err(error) => failed(error, Some(0)),
         };
@@ -465,7 +474,7 @@ mod tests {
     fn a_script_run_can_be_spawned() {
         fn send<T: Send>(_: &T) {}
         let _check = |conn: &Conn, texts: &[String], stop: &StopFlag| {
-            send(&conn.run_script(texts, 10, stop));
+            send(&conn.run_script(texts, 10, ScriptMode::ReadOnly, stop));
             send(&conn.server_version());
         };
     }
@@ -569,9 +578,12 @@ mod tests {
         stop: &StopFlag,
     ) -> Result<ScriptOutcome> {
         let texts: Vec<String> = script.iter().map(|&text| text.to_owned()).collect();
-        tokio::time::timeout(Duration::from_secs(10), conn.run_script(&texts, 10, stop))
-            .await
-            .expect("the run hung")
+        tokio::time::timeout(
+            Duration::from_secs(10),
+            conn.run_script(&texts, 10, ScriptMode::ReadOnly, stop),
+        )
+        .await
+        .expect("the run hung")
     }
 
     /// Statements the refusal stops long before they get here. Run past

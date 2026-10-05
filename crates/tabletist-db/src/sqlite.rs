@@ -12,10 +12,12 @@ use rusqlite::config::DbConfig;
 use rusqlite::types::{FromSql, FromSqlError, FromSqlResult, ValueRef};
 use rusqlite::{ErrorCode, OpenFlags};
 
+use crate::script::cleanup_failed;
 use crate::{
     Access, ChangeSet, ColumnInfo, ColumnMeta, Dialect, Error, ForeignKeyInfo, IndexInfo,
-    MAX_LISTED, ObjectInfo, ObjectKind, ObjectRef, Result, RowPage, RowQuery, ScriptOutcome,
-    StatementOutcome, StatementResult, StopFlag, Structure, Value, ValueKind, WriteOutcome,
+    MAX_LISTED, ObjectInfo, ObjectKind, ObjectRef, Result, RowPage, RowQuery, ScriptMode,
+    ScriptOutcome, StatementOutcome, StatementResult, StopFlag, Structure, Value, ValueKind,
+    WriteOutcome,
 };
 
 mod fence;
@@ -109,7 +111,8 @@ fn script(
             outcome.stopped = true;
             // The interrupt may have left a transaction open.
             stop.finish();
-            end_transaction(connection).map_err(|error| crate::script::cleanup_failed(&error))?;
+            end_transaction(connection)
+                .map_err(|error| cleanup_failed(ScriptMode::ReadOnly, &error))?;
             return Ok(outcome);
         }
         Err(error) => return Err(error),
@@ -132,7 +135,7 @@ fn script(
             .unwrap_or(false);
     let ended = end_transaction(connection);
     ran?;
-    ended.map_err(|error| crate::script::cleanup_failed(&error))?;
+    ended.map_err(|error| cleanup_failed(ScriptMode::ReadOnly, &error))?;
     if left {
         return Err(Error::LeftReadOnly);
     }
@@ -251,7 +254,10 @@ fn statement(
     let text = code_only(text);
     // Only comments: SQLite prepares nothing, and there is nothing to run.
     if text.is_empty() {
-        return Ok(StatementOutcome::Done { affected: None });
+        return Ok(StatementOutcome::Done {
+            affected: None,
+            warnings: 0,
+        });
     }
     // A second statement in the text is refused (MultipleStatement), but
     // only after rusqlite prepared it. SQLite asks the authorizer for it as
@@ -263,6 +269,7 @@ fn statement(
         let changed = statement.raw_execute().map_err(map_error)?;
         return Ok(StatementOutcome::Done {
             affected: counts_changes(text).then_some(changed as u64),
+            warnings: 0,
         });
     }
     let mut rows = statement.raw_query();
@@ -645,8 +652,12 @@ impl Conn {
         &self,
         texts: Vec<String>,
         limit: u32,
+        mode: ScriptMode,
         stop: &StopFlag,
     ) -> Result<ScriptOutcome> {
+        if mode == ScriptMode::Write {
+            return Err(Error::Unsupported("read-write runs on SQLite"));
+        }
         let stop = stop.clone();
         let limit = limit as usize;
         // If the caller drops this future, `run` interrupts the statement
@@ -1143,7 +1154,9 @@ mod tests {
                 let (conn, _dir) = fixture_as(access).await;
                 without_the_authorizer(&conn).await;
                 let script = texts.iter().map(|text| (*text).to_owned()).collect();
-                let ran = conn.run_script(script, 10, &StopFlag::new()).await;
+                let ran = conn
+                    .run_script(script, 10, ScriptMode::ReadOnly, &StopFlag::new())
+                    .await;
                 assert!(
                     matches!(ran, Err(Error::LeftReadOnly)),
                     "{access:?} {texts:?}: {ran:?}"
@@ -1171,7 +1184,8 @@ mod tests {
     /// `Connection::run_script` applies.
     async fn run_unrefused(conn: &Conn, texts: &[&str]) -> Result<ScriptOutcome> {
         let script = texts.iter().map(|text| (*text).to_owned()).collect();
-        conn.run_script(script, 10, &StopFlag::new()).await
+        conn.run_script(script, 10, ScriptMode::ReadOnly, &StopFlag::new())
+            .await
     }
 
     /// The session's `query_only` and whether it is out of a transaction.

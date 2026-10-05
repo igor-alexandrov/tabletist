@@ -873,6 +873,7 @@ mod tests {
         let refused = Error::Refused {
             line: 1,
             what: "COMMIT".into(),
+            mode: tabletist_db::ScriptMode::ReadOnly,
         };
         for driver in [Driver::Postgres, Driver::MySql, Driver::Sqlite] {
             assert!(refuses_writes(&refused, driver));

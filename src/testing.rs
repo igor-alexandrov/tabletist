@@ -712,6 +712,7 @@ pub fn script_outcome(
             })
             .collect(),
         stopped,
+        ..Default::default()
     }
 }
 
@@ -721,6 +722,7 @@ pub fn stopped_before_it_began() -> tabletist_db::ScriptOutcome {
     tabletist_db::ScriptOutcome {
         results: Vec::new(),
         stopped: true,
+        ..Default::default()
     }
 }
 

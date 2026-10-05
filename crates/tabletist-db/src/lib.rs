@@ -38,7 +38,9 @@ pub use class::{ColumnClass, column_class};
 pub use dialect::{Dialect, RowUpdate, Sql, UpdateParts, escape_like, quote_literal};
 pub use error::{Error, Result, SshStage};
 pub use query::{Filter, FilterOp, RowPage, RowQuery, Sort, SortDir};
-pub use script::{ScriptOutcome, StatementOutcome, StatementResult, StopFlag};
+pub use script::{
+    ScriptEnd, ScriptMode, ScriptOutcome, StatementOutcome, StatementResult, StopFlag,
+};
 pub use spec::{ConnectSpec, Driver, ParsedUrl, Secrets, SshAuth, SshSpec, TlsMode};
 pub use ssh::HostKeys;
 pub use value::{ColumnMeta, Value, ValueKind, value_from_pg_text};
@@ -163,8 +165,14 @@ impl Connection {
         self.driver().dialect()
     }
 
-    /// Runs `statements` in order in one read-only transaction that is
-    /// always rolled back, keeping at most `limit` rows per statement.
+    /// Runs `statements` in order in one transaction, keeping at most
+    /// `limit` rows per statement. In [`ScriptMode::ReadOnly`] the
+    /// transaction is read-only and always rolled back. In
+    /// [`ScriptMode::Write`] it is read-write, committed when every
+    /// statement succeeded and rolled back otherwise; the outcome's `end`
+    /// says which. A `Write` run on a session opened
+    /// [`Access::ReadOnly`] is [`Error::ReadOnly`], with nothing sent.
+    ///
     /// Refuses the whole script, running nothing, when a statement could
     /// leave the transaction (see [`sql::refusal`]). `stop` ends the run
     /// between statements (and, on SQLite, inside one); the caller also
@@ -173,14 +181,19 @@ impl Connection {
         &self,
         statements: &[sql::Statement],
         limit: u32,
+        mode: ScriptMode,
         stop: &StopFlag,
     ) -> Result<ScriptOutcome> {
+        if mode == ScriptMode::Write && self.access == Access::ReadOnly {
+            return Err(Error::ReadOnly);
+        }
         let dialect = self.dialect();
         for statement in statements {
             if let Some(what) = sql::refusal(dialect, &statement.text) {
                 return Err(Error::Refused {
                     line: statement.first_line,
                     what,
+                    mode,
                 });
             }
         }
@@ -189,9 +202,9 @@ impl Connection {
         }
         let texts: Vec<String> = statements.iter().map(|s| s.text.clone()).collect();
         match &self.inner {
-            Inner::Sqlite(conn) => conn.run_script(texts, limit, stop).await,
-            Inner::Postgres(conn) => conn.run_script(&texts, limit, stop).await,
-            Inner::MySql(conn) => conn.run_script(&texts, limit, stop).await,
+            Inner::Sqlite(conn) => conn.run_script(texts, limit, mode, stop).await,
+            Inner::Postgres(conn) => conn.run_script(&texts, limit, mode, stop).await,
+            Inner::MySql(conn) => conn.run_script(&texts, limit, mode, stop).await,
         }
     }
 

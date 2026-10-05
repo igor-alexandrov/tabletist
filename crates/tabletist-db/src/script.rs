@@ -7,6 +7,60 @@ use std::time::Duration;
 
 use crate::{ColumnMeta, Error, Result, Value};
 
+/// How a script's transaction is meant to end.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ScriptMode {
+    /// One read-only transaction, rolled back whatever the script did.
+    #[default]
+    ReadOnly,
+    /// One read-write transaction: committed when every statement
+    /// succeeded, rolled back after the first error, cancel or timeout.
+    Write,
+}
+
+impl ScriptMode {
+    /// The transaction a run of this mode is in, for a message.
+    pub(crate) fn transaction(self) -> &'static str {
+        match self {
+            Self::ReadOnly => "the read-only transaction",
+            Self::Write => "the transaction",
+        }
+    }
+}
+
+/// Why a statement the guard refused cannot run in a script of `mode`.
+pub(crate) fn refusal_sentence(mode: &ScriptMode, what: &str) -> String {
+    match mode {
+        ScriptMode::ReadOnly => format!(
+            "Tabletist runs every query in a read-only transaction, so {what} is not allowed"
+        ),
+        ScriptMode::Write => format!(
+            "Tabletist runs and commits the script in one transaction of its own, so {what} is \
+             not allowed"
+        ),
+    }
+}
+
+/// What remains of a script's work once its run is over.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub enum ScriptEnd {
+    /// Nothing: the transaction was rolled back. Every read-only run ends
+    /// so.
+    #[default]
+    RolledBack,
+    /// Every statement's work is written.
+    Committed,
+    /// The database committed on its own before the run failed or was
+    /// stopped (MySQL, at DDL): the first `committed` statements are
+    /// written, the rest is not.
+    Partly { committed: usize },
+    /// The commit itself failed, and what it would have kept is rolled
+    /// back. `committed` is 0 wherever a transaction holds a whole run: then
+    /// nothing is written. On MySQL it counts the statements the database
+    /// had committed on its own before that, as `Partly` does.
+    CommitFailed { error: Error, committed: usize },
+}
+
 /// What a script did: one result per statement that started, in order.
 /// After an `Error` or `Cancelled` outcome no further statement runs.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -14,6 +68,15 @@ pub struct ScriptOutcome {
     pub results: Vec<StatementResult>,
     /// A stop or cancel ended the run.
     pub stopped: bool,
+    /// How the run's transaction ended.
+    pub end: ScriptEnd,
+    /// What the database said when it could not undo everything (MySQL's
+    /// non-transactional tables). With it, `RolledBack` and `Partly` no
+    /// longer say that the rest is gone.
+    pub rollback_warning: Option<String>,
+    /// A [`ScriptMode::Write`] run only: the session could not be put back
+    /// after the run and must be closed. `end` still holds.
+    pub broken: Option<Error>,
 }
 
 impl ScriptOutcome {
@@ -46,8 +109,12 @@ pub enum StatementOutcome {
         truncated: bool,
     },
     /// A statement without a result set, with the rows it affected when
-    /// the database says (`None` when it has no meaningful count).
-    Done { affected: Option<u64> },
+    /// the database says (`None` when it has no meaningful count), and the
+    /// warnings it raised (MySQL counts them; the others have none).
+    Done {
+        affected: Option<u64>,
+        warnings: u16,
+    },
     /// The statement failed. `position` is a 1-based character position in
     /// the statement's text (PostgreSQL reports one).
     Error {
@@ -117,8 +184,14 @@ pub(crate) fn statement_failed(error: Error, position: Option<usize>) -> Result<
 
 /// A cleanup failure closes the session: it may still be inside the
 /// script's transaction.
-pub(crate) fn cleanup_failed(error: &Error) -> Error {
-    Error::ConnectionLost(format!("could not end the read-only transaction: {error}"))
+pub(crate) fn cleanup_failed(mode: ScriptMode, error: &Error) -> Error {
+    Error::ConnectionLost(format!("could not end {}: {error}", mode.transaction()))
+}
+
+/// A transaction that could not start closes the session: the next run
+/// would fail the same way.
+pub(crate) fn cannot_start(mode: ScriptMode, error: &Error) -> Error {
+    Error::ConnectionLost(format!("could not start {}: {error}", mode.transaction()))
 }
 
 /// Runs a cleanup step again once when a cancel meant for a statement
@@ -151,6 +224,35 @@ mod tests {
         clone.stop();
         assert!(flag.is_stopped());
         assert!(flag.is_finishing());
+    }
+
+    #[test]
+    fn an_outcome_starts_rolled_back_and_whole() {
+        let outcome = ScriptOutcome::default();
+        assert_eq!(outcome.end, ScriptEnd::RolledBack);
+        assert_eq!(outcome.rollback_warning, None);
+        assert_eq!(outcome.broken, None);
+        assert_eq!(ScriptMode::default(), ScriptMode::ReadOnly);
+    }
+
+    #[test]
+    fn a_failed_start_or_end_names_the_modes_transaction() {
+        let error = Error::query("no");
+        for (mode, start, end) in [
+            (
+                ScriptMode::ReadOnly,
+                "the connection was lost: could not start the read-only transaction: no",
+                "the connection was lost: could not end the read-only transaction: no",
+            ),
+            (
+                ScriptMode::Write,
+                "the connection was lost: could not start the transaction: no",
+                "the connection was lost: could not end the transaction: no",
+            ),
+        ] {
+            assert_eq!(cannot_start(mode, &error).to_string(), start);
+            assert_eq!(cleanup_failed(mode, &error).to_string(), end);
+        }
     }
 
     #[test]
