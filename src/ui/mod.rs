@@ -3575,7 +3575,7 @@ mod tests {
     }
 
     /// Clicks the pointer at `pos`.
-    fn click_at(harness: &mut Harness, pos: egui::Pos2) {
+    pub(super) fn click_at(harness: &mut Harness, pos: egui::Pos2) {
         let button = |pressed| egui::Event::PointerButton {
             pos,
             button: egui::PointerButton::Primary,
@@ -5301,7 +5301,7 @@ mod tests {
     }
 
     /// A key that `keys::letters` reads as the character it types.
-    fn type_key(harness: &mut Harness, key: Key, text: &str) {
+    pub(super) fn type_key(harness: &mut Harness, key: Key, text: &str) {
         harness.settle();
         harness.frame(vec![
             crate::testing::key(key, Modifiers::NONE),
@@ -13816,8 +13816,7 @@ mod tests {
                 tabletist_db::Value::Null,
             ]),
         };
-        harness.answer_written(Ok(WriteOutcome::Conflicts(vec![changed])));
-        harness.settle();
+        conflicts_under_a_dialog(&mut harness, vec![changed]);
         let said = "conflict row id 2 changed on the server. nothing was written.";
         assert!(painted(&harness, said), "{:?}", harness.painted);
         assert!(harness.has(said));
@@ -13942,8 +13941,7 @@ mod tests {
                 Value::Text("[2]".into()),
             ]),
         };
-        harness.answer_written(Ok(WriteOutcome::Conflicts(vec![changed])));
-        harness.settle();
+        conflicts_under_a_dialog(&mut harness, vec![changed]);
         // The look's lower case is for the app's own words.
         let said = "conflict row Email AbC changed on the server. nothing was written.";
         assert!(painted(&harness, said), "{:?}", harness.painted);
@@ -15439,6 +15437,13 @@ mod tests {
     fn conflicts_under_a_dialog(harness: &mut Harness, conflicts: Vec<tabletist_db::Conflict>) {
         harness.app.apply(Action::ShowHelp);
         harness.answer_written(Ok(tabletist_db::WriteOutcome::Conflicts(conflicts)));
+        // It is that dialog still, in every look: closing the question
+        // unanswered would leave the same line.
+        assert!(
+            matches!(harness.app.dialog, Some(crate::model::Dialog::Help)),
+            "{:?}",
+            harness.app.dialog
+        );
         harness.app.apply(Action::CloseDialog);
         harness.settle();
     }

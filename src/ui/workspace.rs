@@ -1591,7 +1591,7 @@ const WROTE: &[&str] = &["✓", "√"];
 const FAILED: &[&str] = &["✗", "✕", "x"];
 
 /// The first of `marks` that `role`'s font has a glyph for.
-fn drawable(
+pub(super) fn drawable(
     ui: &egui::Ui,
     role: TextRole,
     look: &Look,

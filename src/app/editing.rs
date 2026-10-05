@@ -710,9 +710,8 @@ impl App {
         result: Result<WriteOutcome, Error>,
     ) {
         // A dialog the user is in is never replaced: a conflict that arrives
-        // under one is a line, as a failure is. So it is in the terminal
-        // look, until its box is drawn there.
-        let free = self.dialog.is_none() && !self.look.terminal;
+        // under one is a line, as a failure is.
+        let free = self.dialog.is_none();
         // An answer for a closed tab, or for a save a reconnect gave up,
         // finds no tab saving.
         let Some(tab) = self.tab_for_session(session) else {

@@ -2,11 +2,12 @@
 //! to do with each, one after another. On macOS and Windows a sheet: what
 //! was loaded, what the server holds now and what the user typed, side by
 //! side for every column the user changed, and the answers at its foot.
-//! The terminal look has the answers alone until its box is drawn.
+//! In the terminal look a box: the same three values in their colours,
+//! without rules, and the answers as keys in its foot.
 
 use egui::{
-    Color32, CornerRadius, Frame, Id, Key, Modifiers, Rect, Sense, Stroke, WidgetInfo, WidgetType,
-    pos2, vec2,
+    Color32, CornerRadius, Frame, Id, Key, Margin, Modifiers, Rect, Sense, Stroke, WidgetInfo,
+    WidgetType, pos2, vec2,
 };
 
 use crate::app::App;
@@ -19,26 +20,83 @@ use crate::ui::format::{self, Marks};
 use crate::ui::grid;
 use crate::ui::keys::consume_press;
 use crate::ui::states::Tone;
+use crate::ui::terminal_dialog;
 use crate::ui::widgets::{self, ButtonSpec};
 use crate::ui::write_prompts::{ROW, Skin, buttons_in, fitted};
 
 /// How wide the sheet is, where the window has the room.
 const WIDTH: f32 = 520.0;
 
+/// How wide the terminal's box is, where the window has the room.
+const BOX_WIDTH: f32 = 560.0;
+
 /// A row of the sheet's table: its header, and each column the user
 /// changed.
 const LINE: f32 = 30.0;
 
-/// The table's first column, which names the column a line is about. The
-/// values share what is left.
-const NAME: f32 = 80.0;
-
-/// How far into its cell a text starts, and how far from its end it stops.
-const INSET: f32 = 8.0;
-
-/// The most the table's lines take of the sheet before they scroll: what
+/// The most a table's lines take of the question before they scroll: what
 /// the production confirmation gives its statements.
 const MOST: f32 = 220.0;
+
+/// How a table of the question lays out a line and marks its values.
+#[derive(Clone, Copy)]
+struct Form {
+    /// The first column, which names the column a line is about. The
+    /// values share what is left.
+    name: f32,
+    /// What lies between two columns.
+    gap: f32,
+    /// How far into its cell a text starts, and how far from its end it
+    /// stops.
+    inset: f32,
+    /// A value is marked by a tint behind it, and a hairline parts the
+    /// lines. Without them a value's colour is its mark.
+    tinted: bool,
+}
+
+/// The sheet's table: cells that touch, each with room inside it for its
+/// tint.
+const SHEET: Form = Form {
+    name: 80.0,
+    gap: 0.0,
+    inset: 8.0,
+    tinted: true,
+};
+
+/// The values of the terminal's box: columns apart, with no rules.
+const BOX: Form = Form {
+    name: 90.0,
+    gap: 10.0,
+    inset: 0.0,
+    tinted: false,
+};
+
+impl Form {
+    /// The cell of `row` for the value at `at` of the `of` a line shows,
+    /// after the column's name: they share the row's width equally.
+    fn cell(self, row: Rect, of: usize, at: usize) -> Rect {
+        let width = ((row.width() - self.name) / of.max(1) as f32 - self.gap).max(0.0);
+        let left = row.left() + self.name + self.gap + (width + self.gap) * at as f32;
+        Rect::from_min_max(pos2(left, row.top()), pos2(left + width, row.bottom()))
+    }
+}
+
+/// The keys of the terminal's box in the order its foot has them, as the
+/// design writes them: the answer, the letter that gives it, and what its
+/// hint says.
+const KEYS: [(Answer, &str, &str); 4] = [
+    (Answer::Overwrite, "o", "overwrite"),
+    (Answer::UseServer, "s", "use server"),
+    (Answer::KeepMine, "k", "keep mine, reload"),
+    (Answer::Discard, "d", "discard my changes"),
+];
+
+/// The answer a letter typed in the terminal's box stands for.
+fn lettered(typed: &str) -> Option<Answer> {
+    let mut keys = KEYS.iter();
+    keys.find(|(_, letter, _)| *letter == typed)
+        .map(|(answer, ..)| *answer)
+}
 
 /// What the question about a row is headed with, in the parts its line is
 /// laid out from: only the row's name gives way when the line is too long.
@@ -112,6 +170,17 @@ pub fn answers(gone: bool) -> &'static [(&'static str, Answer)] {
     }
 }
 
+/// The keys a question was given in a frame, taken before it is drawn.
+#[derive(Clone, Copy)]
+struct Pressed {
+    /// Enter was pressed. It answers only as Keep mine, with the keyboard
+    /// on that button.
+    enter: bool,
+    /// Page Down less Page Up, as often as each was pressed: how far the
+    /// lines move, in pages of what is shown of them.
+    pages: f32,
+}
+
 /// What the question about one row is drawn from.
 struct Asked<'a> {
     title: Title,
@@ -163,11 +232,19 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
     // presses a button. What the key answers is for the buttons to say,
     // where they are made.
     let enter = ctx.input_mut(|input| consume_press(input, Modifiers::NONE, Key::Enter));
+    // Page Up and Page Down move the lines where there are more than are
+    // shown at once: a question answered from the keyboard is read from
+    // it. Never a list behind the question.
+    let pages = ctx.input_mut(|input| {
+        let mut pressed = |key: Key| input.count_and_consume_key(Modifiers::NONE, key) as f32;
+        pressed(Key::PageDown) - pressed(Key::PageUp)
+    });
+    let pressed = Pressed { enter, pages };
     let mut answers = Vec::new();
     let top = if look.terminal {
-        stand_in(ctx, &asked, skin, &mut answers)
+        conflict_box(ctx, &asked, skin, pressed, &mut answers)
     } else {
-        sheet(ctx, &asked, skin, enter, &mut answers)
+        sheet(ctx, &asked, skin, pressed, &mut answers)
     };
     // Esc is Keep mine for the row shown: nothing of the user's is dropped
     // and nothing is written.
@@ -184,63 +261,19 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
     }
 }
 
-/// The terminal look, until its box is drawn: the row, where it is, and
-/// its answers as buttons. Returns whether the question is the dialog on
-/// top.
-fn stand_in(
-    ctx: &egui::Context,
-    asked: &Asked<'_>,
-    skin: Skin<'_>,
-    answers: &mut Vec<Answer>,
-) -> bool {
-    let Skin {
-        look,
-        palette,
-        locale,
-    } = skin;
-    let modal = widgets::modal(Id::new("conflict-prompt"), look, palette).show(ctx, |ui| {
-        let role = widgets::dialog_title(look);
-        widgets::label(ui, role, &asked.title.whole(), palette.text, look);
-        ui.add_space(4.0);
-        let role = widgets::body(look);
-        widgets::label(ui, role, &asked.place, palette.secondary, look);
-        ui.add_space(14.0);
-        for (name, answer) in self::answers(asked.gone) {
-            let name = gettext(locale, name);
-            let button = ButtonSpec::new(&name);
-            if button.show(ui, 30.0, look, palette).clicked() {
-                answers.push(*answer);
-            }
-        }
-    });
-    modal.is_top_modal
-}
-
 /// macOS and Windows: the row and where it is, the table of what was
 /// loaded, what the server holds now and what the user typed, and the
-/// answers. `enter` says Enter was pressed: it answers only as Keep mine,
-/// with the keyboard on that button. Returns whether the question is the
-/// dialog on top.
+/// answers. Of the keys `pressed`, Enter answers only as Keep mine, with
+/// the keyboard on that button, and Page Up and Page Down move the
+/// table's lines. Returns whether the question is the dialog on top.
 fn sheet(
     ctx: &egui::Context,
     asked: &Asked<'_>,
     skin: Skin<'_>,
-    enter: bool,
+    pressed: Pressed,
     answers: &mut Vec<Answer>,
 ) -> bool {
-    let Skin {
-        look,
-        palette,
-        locale,
-    } = skin;
-    let sentence = gettext(
-        locale,
-        if asked.gone {
-            "Someone deleted it after you loaded it. Nothing was written."
-        } else {
-            "Someone saved it after you loaded it. Nothing was written."
-        },
-    );
+    let Skin { look, palette, .. } = skin;
     let modal = widgets::modal(Id::new("conflict-prompt"), look, palette).show(ctx, |ui| {
         ui.set_width(fitted(ui.ctx(), WIDTH));
         ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
@@ -253,22 +286,237 @@ fn sheet(
         let name = grid::ellipsize(&asked.title.name, width, false, measure);
         let (title, whole) = (asked.title.with(&name), asked.title.whole());
         said(ui, &title, &whole, role, palette.text, look);
-        ui.add_space(4.0);
-        let role = widgets::body(look);
-        let measure = |text: &str| role.width(ui.ctx(), look.faces, text);
-        let place = grid::ellipsize(&asked.place, width, false, measure);
-        said(ui, &place, &asked.place, role, palette.secondary, look);
-        ui.add_space(4.0);
-        Text::one(look, role, &sentence, palette.secondary)
-            .wrap(width)
-            .layout(ui.ctx())
-            .label(ui);
+        told(ui, asked, palette.secondary, skin);
         ui.add_space(12.0);
-        table(ui, asked, skin);
+        table(ui, asked, pressed.pages, skin);
         ui.add_space(14.0);
-        foot(ui, asked.gone, skin, enter, answers);
+        foot(ui, asked.gone, skin, pressed.enter, answers);
     });
     modal.is_top_modal
+}
+
+/// Under the title, in `color`: where the row is, on one line, and what
+/// became of it, wrapped.
+fn told(ui: &mut egui::Ui, asked: &Asked<'_>, color: Color32, skin: Skin<'_>) {
+    let Skin { look, .. } = skin;
+    let sentence = skin.say(if asked.gone {
+        "Someone deleted it after you loaded it. Nothing was written."
+    } else {
+        "Someone saved it after you loaded it. Nothing was written."
+    });
+    let width = ui.available_width();
+    ui.add_space(4.0);
+    let role = widgets::body(look);
+    let measure = |text: &str| role.width(ui.ctx(), look.faces, text);
+    let place = grid::ellipsize(&asked.place, width, false, measure);
+    said(ui, &place, &asked.place, role, color, look);
+    ui.add_space(4.0);
+    Text::one(look, role, &sentence, color)
+        .wrap(width)
+        .layout(ui.ctx())
+        .label(ui);
+}
+
+/// The terminal look: `≠ conflict` and the row, where it is, the values
+/// in their colours, and the answers as keys in the foot, each its button
+/// too. The letters answer as typed text. Of the keys `pressed`, Enter
+/// answers only as Keep mine, with the keyboard on that hint's button, and
+/// Page Up and Page Down move the lines. Returns whether the question is
+/// the dialog on top.
+fn conflict_box(
+    ctx: &egui::Context,
+    asked: &Asked<'_>,
+    skin: Skin<'_>,
+    pressed: Pressed,
+    answers: &mut Vec<Answer>,
+) -> bool {
+    let Skin {
+        look,
+        palette,
+        locale,
+    } = skin;
+    // The letters, as typed text. Not while a key is held: the question
+    // comes up when the database answers, and the key that was moving
+    // through the grid may still be down (`k` goes up a row there), so
+    // its repeats are no answer. Nor while a field has the keyboard: one
+    // behind the box keeps it for the frame the box opens in, and what is
+    // typed then went into its text.
+    let typing = ctx.text_edit_focused();
+    let typed = ctx.input_mut(|input| {
+        let held = input.events.iter().any(|event| {
+            matches!(
+                event,
+                egui::Event::Key {
+                    pressed: true,
+                    repeat: true,
+                    ..
+                }
+            )
+        });
+        let mut typed = None;
+        input.events.retain(|event| match event {
+            egui::Event::Text(text) if lettered(text).is_some() => {
+                typed = typed.or(lettered(text));
+                false
+            }
+            _ => true,
+        });
+        typed.filter(|_| !held && !typing)
+    });
+    // A letter the row does not offer is no answer to it.
+    answers.extend(typed.filter(|answer| answer.offered(asked.gone)));
+    let (frame, radius) = skin.frame();
+    let height = TextRole::OBody.row_height(ctx, look.faces) + 4.0;
+    let modal = widgets::modal(Id::new("conflict-prompt"), look, palette)
+        .frame(frame)
+        .show(ctx, |ui| {
+            ui.set_width(fitted(ui.ctx(), BOX_WIDTH));
+            ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
+            Frame::new()
+                .inner_margin(Margin::symmetric(18, 14))
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    headed(ui, &asked.title, skin);
+                    told(ui, asked, palette.dim, skin);
+                    ui.add_space(10.0);
+                    values(ui, asked, height, pressed.pages, skin);
+                });
+            let foot = terminal_dialog::foot(ui, radius, palette);
+            // The foot's keys: what each answers, how it is written, what
+            // it does, and the name of its button.
+            let mut keys = Vec::new();
+            // How the lines are moved, where they do not all show. Said
+            // first, so a narrow foot gives it up before a key that
+            // answers, and no button: the keys themselves do it.
+            if asked.lines.len() as f32 * height > MOST {
+                keys.push((None, "pgup/pgdn".to_owned(), skin.say("scroll"), None));
+            }
+            // The answers this row has, by the names the sheet's buttons
+            // have.
+            let offered = self::answers(asked.gone);
+            for (answer, letter, words) in KEYS {
+                if let Some((name, _)) = offered.iter().find(|(_, of)| *of == answer) {
+                    let name = gettext(locale, name);
+                    keys.push((
+                        Some(answer),
+                        format!("[{letter}]"),
+                        skin.say(words),
+                        Some(name),
+                    ));
+                }
+            }
+            let hints: Vec<_> = keys
+                .iter()
+                .map(|(answer, key, label, button)| terminal_dialog::Key {
+                    key,
+                    label,
+                    button: button.as_deref(),
+                    // The design writes every letter in the accent colour:
+                    // none of the answers is the one to take.
+                    lead: answer.is_some(),
+                    disabled: None,
+                })
+                .collect();
+            let given = |index: usize| keys.get(index).and_then(|(answer, ..)| *answer);
+            // Enter was taken before the buttons are drawn: it answers as
+            // the one that has the keyboard only where that keeps the
+            // user's changes and writes nothing.
+            let entered = terminal_dialog::keyboard_on(ui, &hints)
+                .filter(|&index| pressed.enter && given(index) == Some(Answer::KeepMine));
+            let clicked = terminal_dialog::keys(ui, foot, 0.0, &hints, look, palette);
+            answers.extend(clicked.or(entered).and_then(given));
+        });
+    modal.is_top_modal
+}
+
+/// The first line of the terminal's box: the mark and `conflict` in the
+/// warning colour, then the title, whose name gives way as the sheet's
+/// does. The whole title is what a screen reader reads and, where the
+/// name was cut, what the pointer shows.
+fn headed(ui: &mut egui::Ui, title: &Title, skin: Skin<'_>) {
+    let Skin { look, palette, .. } = skin;
+    let role = TextRole::OGroup;
+    let height = role.row_height(ui.ctx(), look.faces);
+    let size = vec2(ui.available_width(), height);
+    let (row, _) = ui.allocate_exact_size(size, Sense::hover());
+    let y = row.center().y;
+    let measure = |text: &str| role.width(ui.ctx(), look.faces, text);
+    let mut left = row.left();
+    // Where the look's font has no such glyph the word stands alone, as in
+    // the status line.
+    if let Some(mark) = super::workspace::drawable(ui, role, look, &["≠"]) {
+        let mark = Text::one(look, role, mark, palette.warning);
+        left += widgets::paint_text(ui, left, y, mark) + measure(" ");
+    }
+    let word = Text::one(look, role, &skin.say("conflict"), palette.warning);
+    left += widgets::paint_label(ui, left, y, word) + 10.0;
+    let place = Rect::from_min_max(pos2(left.min(row.right()), row.top()), row.max);
+    let name = grid::ellipsize(&title.name, place.width(), false, |name| {
+        measure(&title.with(name))
+    });
+    let (shown, whole) = (title.with(&name), title.whole());
+    let text = Text::one(look, role, &shown, palette.text);
+    let id = ui.id().with("conflict-title");
+    written(ui, place, 0.0, id, text, &whole, shown != whole);
+}
+
+/// The values of the terminal's box: a header in the dim colour and under
+/// it a line for each column the user changed, each `height` high, with
+/// no rules. More lines than [`MOST`] holds scroll under the header, and
+/// `pages` moves them.
+fn values(ui: &mut egui::Ui, asked: &Asked<'_>, height: f32, pages: f32, skin: Skin<'_>) {
+    let Skin { look, palette, .. } = skin;
+    let gone = asked.gone;
+    let size = vec2(ui.available_width(), height);
+    let (head, _) = ui.allocate_exact_size(size, Sense::hover());
+    // A row that is gone has nothing on the server to show.
+    let words: &[&'static str] = if gone {
+        &["loaded", "yours"]
+    } else {
+        &["loaded", "server", "yours"]
+    };
+    for (at, word) in words.iter().enumerate() {
+        let x = BOX.cell(head, words.len(), at).left();
+        let text = Text::one(look, TextRole::OBody, &skin.say(word), palette.dim);
+        widgets::paint_label(ui, x, head.center().y, text);
+    }
+    lines(ui, asked, height, pages, |ui, row, index, shown| {
+        line(ui, row, (index, 0), shown, (gone, BOX), skin);
+    });
+}
+
+/// The lines of a table under its header, each `height` high and drawn by
+/// `draw` in its row, with its place among them. More of them than
+/// [`MOST`] holds scroll, and `pages` moves them by as many pages of the
+/// whole lines in view: Page Down and Page Up, for a hand that is on the
+/// keyboard.
+fn lines(
+    ui: &mut egui::Ui,
+    asked: &Asked<'_>,
+    height: f32,
+    pages: f32,
+    draw: impl Fn(&mut egui::Ui, Rect, usize, &ShownLine),
+) {
+    let size = vec2(ui.available_width(), height);
+    egui::ScrollArea::vertical()
+        .id_salt(("conflict-lines", asked.at))
+        .max_height(MOST)
+        .auto_shrink([false, true])
+        .show(ui, |ui| {
+            // A page is the whole lines in view, so none is passed over
+            // unseen. The lines move up for Page Down.
+            if pages != 0.0 {
+                let shown = MOST.min(asked.lines.len() as f32 * height);
+                let page = (shown / height).floor().max(1.0) * height;
+                ui.scroll_with_delta(vec2(0.0, -pages * page));
+            }
+            for (index, shown) in asked.lines.iter().enumerate() {
+                let (row, _) = ui.allocate_exact_size(size, Sense::hover());
+                if ui.is_rect_visible(row) {
+                    draw(ui, row, index, shown);
+                }
+            }
+        });
 }
 
 /// One line across `ui`: `shown` painted, and `whole` for a screen reader
@@ -287,8 +535,9 @@ fn said(ui: &mut egui::Ui, shown: &str, whole: &str, role: TextRole, color: Colo
 }
 
 /// The sheet's table: a header, and under it a line for each column the
-/// user changed. More lines than [`MOST`] holds scroll under the header.
-fn table(ui: &mut egui::Ui, asked: &Asked<'_>, skin: Skin<'_>) {
+/// user changed. More lines than [`MOST`] holds scroll under the header,
+/// and `pages` moves them.
+fn table(ui: &mut egui::Ui, asked: &Asked<'_>, pages: f32, skin: Skin<'_>) {
     let Skin {
         look,
         palette,
@@ -319,86 +568,93 @@ fn table(ui: &mut egui::Ui, asked: &Asked<'_>, skin: Skin<'_>) {
                 &["loaded", "now on server", "yours"]
             };
             for (at, word) in words.iter().enumerate() {
-                let x = cell(head, words.len(), at).left() + INSET;
+                let x = SHEET.cell(head, words.len(), at).left() + SHEET.inset;
                 let word = gettext(locale, word);
                 let role = widgets::secondary(look);
                 let text = Text::one(look, role, &word, palette.secondary);
                 widgets::paint_label(ui, x, head.center().y, text);
             }
-            egui::ScrollArea::vertical()
-                .id_salt(("conflict-lines", asked.at))
-                .max_height(MOST)
-                .auto_shrink([false, true])
-                .show(ui, |ui| {
-                    for (index, shown) in asked.lines.iter().enumerate() {
-                        let (row, _) = ui.allocate_exact_size(size, Sense::hover());
-                        // The last line's tint ends in the frame's corner.
-                        let last = index + 1 == asked.lines.len();
-                        let end = if last { radius } else { 0 };
-                        if ui.is_rect_visible(row) {
-                            line(ui, row, (index, end), shown, gone, skin);
-                        }
-                    }
-                });
+            lines(ui, asked, LINE, pages, |ui, row, index, shown| {
+                // The last line's tint ends in the frame's corner.
+                let last = index + 1 == asked.lines.len();
+                let end = if last { radius } else { 0 };
+                line(ui, row, (index, end), shown, (gone, SHEET), skin);
+            });
         });
 }
 
-/// The cell of `row` for the value at `at` of the `of` a line shows, after
-/// the column's name: they share the row's width equally.
-fn cell(row: Rect, of: usize, at: usize) -> Rect {
-    let width = (row.width() - NAME).max(0.0) / of.max(1) as f32;
-    let left = row.left() + NAME + width * at as f32;
-    Rect::from_min_max(pos2(left, row.top()), pos2(left + width, row.bottom()))
-}
-
-/// One line of the table in `row`: the column's name, the value that was
-/// loaded, the one the server holds now (not for a row that is `gone`),
-/// on a red tint where it is another, and the user's on the amber tint a
-/// pending cell has in the grid. `index` tells the line from the others,
-/// and `end` is how round its last cell's lower right corner is.
+/// One line of a table in `row`, laid out as `form` has it: the column's
+/// name, the value that was loaded, the one the server holds now (not for
+/// a row that is `gone`) and the user's. In the sheet the server's is on a
+/// red tint where it is another than the loaded one, and the user's on the
+/// amber tint a pending cell has in the grid; in the terminal's box each
+/// is written in that colour. `index` tells the line from the others, and
+/// `end` is how round its last cell's lower right corner is.
 fn line(
     ui: &mut egui::Ui,
     row: Rect,
     (index, end): (usize, u8),
     shown: &ShownLine,
-    gone: bool,
+    (gone, form): (bool, Form),
     skin: Skin<'_>,
 ) {
     let Skin { look, palette, .. } = skin;
-    // Each value, the tint behind it and the colour it is written in.
+    // Each value, the tone that marks it and the colour it is written in.
     let mut values = vec![(&shown.loaded, None, palette.text)];
     if let (false, Some(server)) = (gone, &shown.server) {
-        // The fill says that it changed there; a NULL on it says to what.
+        // The tint says that it changed there; a NULL on it says to what.
         values.push(if shown.moved {
             (server, Some(Tone::Danger), Tone::Danger.color(palette))
         } else {
             (server, None, palette.text)
         });
     }
-    values.push((&shown.yours, Some(Tone::Warning), palette.text));
+    // On its tint the user's value is plain.
+    let mine = if form.tinted {
+        palette.text
+    } else {
+        Tone::Warning.color(palette)
+    };
+    values.push((&shown.yours, Some(Tone::Warning), mine));
     let of = values.len();
     for (at, (value, tone, color)) in values.into_iter().enumerate() {
-        let place = cell(row, of, at);
-        if let Some(tone) = tone {
-            let corner = CornerRadius {
-                se: if at + 1 == of { end } else { 0 },
-                ..CornerRadius::ZERO
-            };
-            ui.painter()
-                .rect_filled(place, corner, tone.fill(look, palette));
+        let place = form.cell(row, of, at);
+        let salt = (index, at);
+        match tone {
+            Some(tone) if form.tinted => {
+                let corner = CornerRadius {
+                    se: if at + 1 == of { end } else { 0 },
+                    ..CornerRadius::ZERO
+                };
+                ui.painter()
+                    .rect_filled(place, corner, tone.fill(look, palette));
+            }
+            // Its colour is all a look without tints has to say that the
+            // value changed on the server, and the look's own NULL is
+            // faint whatever became of it: the word, in that colour.
+            Some(Tone::Danger) if matches!(value, Shown::Null) => {
+                let text = Text::one(look, grid::data_role(look), "NULL", color);
+                let id = ui.id().with(("conflict-value", salt));
+                written(ui, place, form.inset, id, text, "NULL", false);
+                continue;
+            }
+            _ => {}
         }
-        self::value(ui, place, (index, at), value, color, skin);
+        self::value(ui, place, salt, value, (color, form.inset), skin);
     }
-    // The hairline above the line, over its tints.
-    widgets::hline(ui, row.x_range(), row.top() + 0.5, palette.surface);
+    if form.tinted {
+        // The hairline above the line, over its tints.
+        widgets::hline(ui, row.x_range(), row.top() + 0.5, palette.surface);
+    }
     let name = format::display_safe(&shown.name);
-    let role = widgets::code(look);
-    let place = Rect::from_min_max(row.min, pos2(row.left() + NAME, row.bottom()));
+    // The terminal writes the name as it writes the values beside it.
+    let role = TextRole::pick(look, widgets::code(look), TextRole::OBody);
+    let place = Rect::from_min_max(row.min, pos2(row.left() + form.name, row.bottom()));
     let measure = |text: &str| role.width(ui.ctx(), look.faces, text);
-    let cut = grid::ellipsize(&name, NAME - 2.0 * INSET, false, measure);
+    let cut = grid::ellipsize(&name, form.name - 2.0 * form.inset, false, measure);
     let text = Text::one(look, role, &cut, palette.text);
     let id = ui.id().with(("conflict-name", index));
-    written(ui, place, id, text, &name, cut != name);
+    written(ui, place, form.inset, id, text, &name, cut != name);
 }
 
 /// What a cell of the question shows of `value`, whole: one line, as a
@@ -455,15 +711,15 @@ fn from_inside(
     grid::ellipsize(&line, room, false, width).into_owned()
 }
 
-/// A value of a line in its cell `place`: the grid's NULL, or its text in
-/// `color`, cut with "…" to the cell. `salt` tells the cell from the
-/// table's others.
+/// A value of a line in its cell `place`: the look's NULL, or its text in
+/// `color`, `inset` into the cell and cut with "…" to it. `salt` tells the
+/// cell from the table's others.
 fn value(
     ui: &mut egui::Ui,
     place: Rect,
     salt: (usize, usize),
     value: &Shown,
-    color: Color32,
+    (color, inset): (Color32, f32),
     skin: Skin<'_>,
 ) {
     let Skin { look, palette, .. } = skin;
@@ -474,7 +730,7 @@ fn value(
         let height = role.row_height(ui.ctx(), look.faces);
         let top = place.center().y - height / 2.0;
         let at = Rect::from_min_max(
-            pos2(place.left() + INSET, top),
+            pos2(place.left() + inset, top),
             pos2(place.right(), top + height),
         );
         let builder = egui::UiBuilder::new()
@@ -483,7 +739,7 @@ fn value(
         grid::null_label(&mut ui.new_child(builder), look, palette);
         return;
     };
-    let room = place.width() - 2.0 * INSET;
+    let room = place.width() - 2.0 * inset;
     let measure = |text: &str| role.width(ui.ctx(), look.faces, text);
     let shown = match value {
         Shown::Text { text, cut: true } => from_inside(text, &whole, marks, room, measure),
@@ -492,14 +748,14 @@ fn value(
     let text = Text::one(look, role, &shown, color);
     let cut = shown != whole;
     let id = ui.id().with(("conflict-value", salt));
-    written(ui, place, id, text, &whole, cut);
+    written(ui, place, inset, id, text, &whole, cut);
 }
 
-/// Paints `text` in the cell `place`, [`INSET`] in and on its middle.
+/// Paints `text` in the cell `place`, `inset` in and on its middle.
 /// `whole` is what a screen reader reads there, and with `cut`, what the
 /// pointer shows over the cell. `id` tells the cell from every other.
-fn written(ui: &mut egui::Ui, place: Rect, id: Id, text: Text, whole: &str, cut: bool) {
-    widgets::paint_text(ui, place.left() + INSET, place.center().y, text);
+fn written(ui: &mut egui::Ui, place: Rect, inset: f32, id: Id, text: Text, whole: &str, cut: bool) {
+    widgets::paint_text(ui, place.left() + inset, place.center().y, text);
     // Hovered and no more: nothing in the table is pressed.
     let response = ui.interact(place, id, Sense::hover());
     response.widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, whole));
@@ -566,13 +822,15 @@ mod tests {
     use crate::model::{Action, CellPos, ConnTabId, Dialog, EditStart, TabId};
     use crate::testing::Harness;
     use crate::theme::Look;
+    use crate::typography::TextRole;
     use crate::ui::states::Tone;
-    use crate::ui::tests::{click_dialog, focus_dialog, focused_name, hover, pressable};
+    use crate::ui::tests::{
+        click_at, click_dialog, focus_dialog, focused_name, hover, pressable, type_key,
+    };
 
-    /// The looks that ask the question. The terminal look keeps the line
-    /// until its box is drawn.
+    /// The looks that ask the question: every one of them.
     fn looks() -> impl Iterator<Item = Look> {
-        Look::ALL.into_iter().filter(|look| !look.terminal)
+        Look::ALL.into_iter()
     }
 
     /// The looks that ask with the sheet, for what is the sheet's alone:
@@ -672,16 +930,19 @@ mod tests {
     }
 
     /// The pieces of text the question itself painted that `wanted` picks,
-    /// each with its place and its colour. Its title is the first thing it
-    /// writes, and nothing behind it reads as one: the grid there writes
-    /// the same values, and may stand where the sheet does.
+    /// each with its place and its colour. Its title is the first thing
+    /// the sheet writes, and the word `conflict` the first of the box
+    /// (after its mark): nothing behind either reads as one, while the
+    /// grid there writes the same values, and may stand where the
+    /// question does.
     fn pieces(
         harness: &Harness,
         wanted: impl Fn(&str) -> bool,
     ) -> Vec<(String, egui::Rect, egui::Color32)> {
         let painted = harness.painted.iter().zip(&harness.text_rects);
         let own = painted.skip_while(|((piece, _), _)| {
-            !(piece.starts_with("Row ") && piece.ends_with("on the server"))
+            let title = piece.starts_with("Row ") && piece.ends_with("on the server");
+            !(title || piece == "conflict")
         });
         own.filter(|((piece, _), _)| wanted(piece))
             .map(|((piece, color), (_, rect))| (piece.clone(), *rect, *color))
@@ -1484,43 +1745,53 @@ mod tests {
         }
     }
 
+    /// A table of twelve columns of text beside its key, all of them
+    /// changed in the row `id 2` and found changed by the save, in `look`
+    /// and in a window of `size`: more lines than the question shows at
+    /// once. The column `c1` was `was c1`, is `now c1` on the server and
+    /// `my c1` pending, and so on to `c12`.
+    fn twelve_columns(look: Look, size: egui::Vec2) -> (Harness, ConnTabId, TabId) {
+        let names: Vec<String> = (1..=12).map(|at| format!("c{at}")).collect();
+        let mut structure = crate::testing::fixture_structure();
+        structure.columns.truncate(1);
+        let mut page = crate::testing::page(5, false);
+        page.columns.truncate(1);
+        for name in &names {
+            structure.columns.push(tabletist_db::ColumnInfo {
+                name: name.clone(),
+                type_name: "TEXT".into(),
+                nullable: true,
+                ..tabletist_db::ColumnInfo::default()
+            });
+            page.columns.push(tabletist_db::ColumnMeta {
+                name: name.clone(),
+                type_name: "TEXT".into(),
+                kind: tabletist_db::ValueKind::Text,
+            });
+        }
+        for row in &mut page.rows {
+            row.truncate(1);
+            row.extend(names.iter().map(|name| text(&format!("was {name}"))));
+        }
+        let (mut harness, tab, id) = table_of(look, size, structure, page);
+        for (at, name) in names.iter().enumerate() {
+            pend(&mut harness, (tab, id), (1, at + 1), &format!("my {name}"));
+        }
+        let mut now = vec![Value::Int(2)];
+        now.extend(names.iter().map(|name| text(&format!("now {name}"))));
+        saved(&mut harness, (tab, id), vec![changed(0, now)]);
+        (harness, tab, id)
+    }
+
     #[test]
     fn the_sheet_fits_a_small_window() {
         for look in sheets() {
             let said = look.name;
             // Twelve columns of text beside the key, all of them changed
             // in one row.
-            let names: Vec<String> = (1..=12).map(|at| format!("c{at}")).collect();
-            let mut structure = crate::testing::fixture_structure();
-            structure.columns.truncate(1);
-            let mut page = crate::testing::page(5, false);
-            page.columns.truncate(1);
-            for name in &names {
-                structure.columns.push(tabletist_db::ColumnInfo {
-                    name: name.clone(),
-                    type_name: "TEXT".into(),
-                    nullable: true,
-                    ..tabletist_db::ColumnInfo::default()
-                });
-                page.columns.push(tabletist_db::ColumnMeta {
-                    name: name.clone(),
-                    type_name: "TEXT".into(),
-                    kind: tabletist_db::ValueKind::Text,
-                });
-            }
-            for row in &mut page.rows {
-                row.truncate(1);
-                row.extend(names.iter().map(|name| text(&format!("was {name}"))));
-            }
             let size = egui::vec2(720.0, 480.0);
             let window = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
-            let (mut harness, tab, id) = table_of(look, size, structure, page);
-            for (at, name) in names.iter().enumerate() {
-                pend(&mut harness, (tab, id), (1, at + 1), &format!("my {name}"));
-            }
-            let mut now = vec![Value::Int(2)];
-            now.extend(names.iter().map(|name| text(&format!("now {name}"))));
-            saved(&mut harness, (tab, id), vec![changed(0, now)]);
+            let (mut harness, ..) = twelve_columns(look, size);
             assert!(window.contains_rect(sheet(&harness)), "{said}");
             let tree = harness.settle();
             for name in ["Keep mine, reload row", "Use server values", "Overwrite"] {
@@ -1533,6 +1804,833 @@ mod tests {
             // not.
             piece(&harness, "my c1");
             assert!(unsaid(&harness, "my c12"), "{said}");
+        }
+    }
+
+    /// The cells pending in the table, as row and column.
+    fn pending_cells(harness: &Harness, tab: ConnTabId, id: TabId) -> Vec<(usize, usize)> {
+        let workspace = harness.app.workspace(tab).unwrap();
+        let edits = &workspace.object_tab(id).unwrap().edits;
+        edits.cells.keys().copied().collect()
+    }
+
+    /// The pieces the question painted on the line of `name`, from the
+    /// left: what each says, and in what colour.
+    fn line_of(harness: &Harness, name: &str) -> Vec<(String, egui::Color32)> {
+        let (at, _) = piece(harness, name);
+        let mut line = pieces(harness, |_| true);
+        line.retain(|(_, rect, _)| (rect.center().y - at.center().y).abs() < 6.0);
+        line.sort_by(|(_, a, _), (_, b, _)| a.left().total_cmp(&b.left()));
+        line.into_iter()
+            .map(|(piece, _, color)| (piece, color))
+            .collect()
+    }
+
+    /// The hints of the box's foot for a row that changed, in their order.
+    const HINTS: [&str; 3] = ["[o] overwrite", "[s] use server", "[k] keep mine, reload"];
+
+    #[test]
+    fn the_box_says_conflict_and_writes_the_values_in_their_colours() {
+        let look = Look::omarchy();
+        let (mut harness, ..) = conflict_in(look, Some("eve@example.com"));
+        let palette = harness.app.palette;
+        let frame = sheet(&harness);
+        // The first line: the word in the warning colour, then the row.
+        let (word, color) = piece(&harness, "conflict");
+        assert_eq!(color, palette.warning);
+        let (title, color) = piece(&harness, "row id 2 changed on the server");
+        assert_eq!(color, palette.text);
+        assert!(word.right() < title.left(), "{word:?} {title:?}");
+        assert!((word.center().y - title.center().y).abs() < 1.0);
+        // Its mark stands before the word, where the look's font has it.
+        let mut texts = harness.painted.iter();
+        let at = texts.position(|(piece, _)| piece == "conflict").unwrap();
+        let font = TextRole::OGroup.font_id(look.faces);
+        let mut left = word.left();
+        if harness.ctx.fonts_mut(|fonts| fonts.has_glyphs(&font, "≠")) {
+            assert_eq!(harness.painted[at - 1], ("≠".to_owned(), palette.warning));
+            let (_, mark) = harness.text_rects[at - 1];
+            assert!(mark.right() < word.left(), "{mark:?} {word:?}");
+            assert!((mark.center().y - word.center().y).abs() < 3.0);
+            left = mark.left();
+        }
+        // Where the row is and what happened, each on its own line under
+        // that, dim.
+        let (place, color) = piece(&harness, "Fixture · users");
+        assert_eq!(color, palette.dim);
+        assert!(title.bottom() <= place.top());
+        assert_eq!(place.left(), left);
+        let sentence = "someone saved it after you loaded it. nothing was written.";
+        let (sentence, color) = piece(&harness, sentence);
+        assert_eq!(color, palette.dim);
+        assert!(place.bottom() <= sentence.top());
+        // The values under their headers: the loaded one plain, the
+        // server's in the danger colour, the user's in the warning colour.
+        let (name, color) = piece(&harness, "email");
+        assert_eq!((color, name.left()), (palette.text, left));
+        let values = [
+            ("loaded", "user2@example.com", palette.text),
+            ("server", "eve@example.com", palette.danger),
+            ("yours", "bob@example.com", palette.warning),
+        ]
+        .map(|(header, value, color)| {
+            let (header, dim) = piece(&harness, header);
+            assert_eq!(dim, palette.dim, "{value}");
+            let (value, painted) = piece(&harness, value);
+            assert_eq!(painted, color, "{value:?}");
+            assert_eq!(header.left(), value.left());
+            assert!(sentence.bottom() <= header.top());
+            assert!(header.bottom() <= value.top());
+            assert!((value.center().y - name.center().y).abs() < 3.0);
+            value
+        });
+        assert!(unsaid(&harness, "now on server"));
+        // A first column of 90, and the three others equal and 10 apart.
+        assert!((values[0].left() - left - 100.0).abs() < 0.5);
+        let step = values[1].left() - values[0].left();
+        assert!((values[2].left() - values[1].left() - step).abs() < 0.5);
+        let inner = frame.right() - 20.0 - left;
+        assert!(
+            (step - (inner - 90.0) / 3.0).abs() < 1.0,
+            "{step} of {inner}"
+        );
+        // No rules and no fills: the colours say it all.
+        for tone in [Tone::Danger, Tone::Warning] {
+            assert!(fills(&harness, tone.fill(&look, &palette)).is_empty());
+        }
+        // The keys in the foot, under the values: each letter in the
+        // accent colour, in the design's order, ending at the foot's right.
+        let hints = HINTS.map(|hint| {
+            let (place, color) = piece(&harness, hint);
+            assert_eq!(color, palette.accent, "{hint}");
+            assert!(values[2].bottom() < place.top(), "{hint}");
+            assert!(frame.contains_rect(place), "{hint}");
+            assert!(place.top() > frame.bottom() - 43.0, "{hint}");
+            place
+        });
+        assert!(hints[0].right() < hints[1].left() && hints[1].right() < hints[2].left());
+        let end = frame.right() - hints[2].right();
+        assert!((14.0..=17.0).contains(&end), "{end}");
+        // Each hint is its button too.
+        let tree = harness.settle();
+        for (name, hint) in ["Overwrite", "Use server values", "Keep mine, reload row"]
+            .iter()
+            .zip(hints)
+        {
+            let button = crate::testing::bounds(&tree, name, Role::Button);
+            let button = button.unwrap_or_else(|| panic!("no button {name}"));
+            assert!(button.contains(hint.center()), "{name}");
+        }
+        // Nothing says how to scroll lines that all fit.
+        assert!(pieces(&harness, |piece| piece.starts_with("pgup")).is_empty());
+    }
+
+    #[test]
+    fn a_value_the_server_kept_is_written_plain_and_one_that_became_null_in_the_danger_colour() {
+        let look = Look::omarchy();
+        let (mut harness, tab, id) = fixture_in(look);
+        let palette = harness.app.palette;
+        pend(&mut harness, (tab, id), (1, 1), "bob@example.com");
+        pend(&mut harness, (tab, id), (1, 2), "[1]");
+        let conflict = changed(0, server("eve@example.com"));
+        saved(&mut harness, (tab, id), vec![conflict]);
+        // Two lines, in the page's order.
+        let ((email, _), (meta, _)) = (piece(&harness, "email"), piece(&harness, "meta"));
+        assert!(email.bottom() <= meta.top());
+        // The `meta` the server still holds as it was loaded is the look's
+        // own NULL, as the loaded one is.
+        let plain = |text: &str, color: egui::Color32| (text.to_owned(), color);
+        assert_eq!(
+            line_of(&harness, "meta"),
+            [
+                plain("meta", palette.text),
+                plain("NULL", palette.faint),
+                plain("NULL", palette.faint),
+                plain("[1]", palette.warning),
+            ]
+        );
+        // A value that became NULL there: the word, in the danger colour.
+        let (mut harness, tab, id) = fixture_in(look);
+        pend(&mut harness, (tab, id), (0, 2), "[1]");
+        let now = vec![Value::Int(1), text("user1@example.com"), Value::Null];
+        saved(&mut harness, (tab, id), vec![changed(0, now)]);
+        assert_eq!(
+            line_of(&harness, "meta"),
+            [
+                plain("meta", palette.text),
+                plain(r#"{"plan":"pro"}"#, palette.text),
+                plain("NULL", palette.danger),
+                plain("[1]", palette.warning),
+            ]
+        );
+        let (null, _) = piece(&harness, "NULL");
+        assert!(named(&mut harness, "NULL", null));
+    }
+
+    #[test]
+    fn k_s_and_o_answer_and_d_discards_a_row_that_is_gone() {
+        let look = Look::omarchy();
+        let (eve, loaded) = (|| text("eve@example.com"), || text("user2@example.com"));
+        let (mut harness, tab, id) = conflict_in(look, Some("eve@example.com"));
+        type_key(&mut harness, Key::K, "k");
+        assert!(!asking(&harness));
+        assert_eq!(state(&harness, tab, id), (1, eve()));
+        assert_eq!(writes(&harness), 1, "nothing is saved again");
+        let (mut harness, tab, id) = conflict_in(look, Some("eve@example.com"));
+        type_key(&mut harness, Key::S, "s");
+        assert!(!asking(&harness));
+        assert_eq!(state(&harness, tab, id), (0, eve()));
+        assert_eq!(writes(&harness), 1);
+        let (mut harness, tab, id) = conflict_in(look, Some("eve@example.com"));
+        type_key(&mut harness, Key::O, "o");
+        assert!(!asking(&harness));
+        assert_eq!(state(&harness, tab, id), (1, eve()));
+        assert_eq!(writes(&harness), 2, "the save runs again");
+        // A row that is gone: `d` discards its changes.
+        let (mut harness, tab, id) = conflict_in(look, None);
+        type_key(&mut harness, Key::D, "d");
+        assert!(!asking(&harness));
+        assert_eq!(state(&harness, tab, id), (0, loaded()));
+        let workspace = harness.app.workspace(tab).unwrap();
+        assert!(workspace.object_tab(id).unwrap().edits.gone.contains(&1));
+        // And `k` keeps them, as Esc does: the line says the row is gone.
+        let (mut harness, tab, id) = conflict_in(look, None);
+        type_key(&mut harness, Key::K, "k");
+        assert!(!asking(&harness));
+        assert_eq!(state(&harness, tab, id), (1, loaded()));
+        assert!(
+            harness.has("conflict row id 2 no longer exists on the server. nothing was written.")
+        );
+    }
+
+    #[test]
+    fn a_letter_the_row_does_not_offer_does_nothing() {
+        let look = Look::omarchy();
+        let changed: &[(Key, &str)] = &[(Key::D, "d"), (Key::J, "j"), (Key::X, "x")];
+        let gone: &[(Key, &str)] = &[(Key::O, "o"), (Key::S, "s"), (Key::J, "j"), (Key::X, "x")];
+        for (email, letters) in [(Some("eve@example.com"), changed), (None, gone)] {
+            let (mut harness, tab, id) = conflict_in(look, email);
+            let seen = |harness: &Harness| {
+                let workspace = harness.app.workspace(tab).unwrap();
+                let object = workspace.object_tab(id).unwrap();
+                let gone = object.edits.gone.len();
+                (state(harness, tab, id), object.selection, gone)
+            };
+            let before = seen(&harness);
+            assert_eq!(before.0, (1, text("user2@example.com")));
+            for (key, letter) in letters {
+                type_key(&mut harness, *key, letter);
+                assert!(asking(&harness), "{letter}");
+                assert_eq!(writes(&harness), 1, "{letter}");
+                assert_eq!(seen(&harness), before, "{letter}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_held_letter_is_no_answer() {
+        let look = Look::omarchy();
+        let (mut harness, tab, id) = fixture_in(look);
+        pend(&mut harness, (tab, id), (1, 1), "bob@example.com");
+        harness.app.apply(Action::WriteEdits { tab, id });
+        // The key is down when the save is answered, and stays down: what
+        // it repeats is typed into every frame, and is no answer. (egui
+        // reads a press of a key that is down already as a repeat.)
+        let held = |harness: &mut Harness, key: Key, letter: &str| {
+            let down = crate::testing::key(key, Modifiers::NONE);
+            harness.frame(vec![down, egui::Event::Text(letter.into())]);
+        };
+        harness.frame(vec![crate::testing::key(Key::O, Modifiers::NONE)]);
+        let conflict = changed(0, server("eve@example.com"));
+        harness.answer_written(Ok(WriteOutcome::Conflicts(vec![conflict])));
+        harness.finish_animations();
+        shown(&mut harness, true);
+        for _ in 0..3 {
+            held(&mut harness, Key::O, "o");
+            assert!(asking(&harness));
+            assert_eq!(writes(&harness), 1);
+        }
+        // Let go and pressed again, it answers nothing while it is held
+        // either: the letter of another answer the same.
+        harness.frame(vec![crate::testing::release(Key::O, Modifiers::NONE)]);
+        harness.frame(vec![crate::testing::key(Key::S, Modifiers::NONE)]);
+        for _ in 0..3 {
+            held(&mut harness, Key::S, "s");
+            assert!(asking(&harness));
+            assert_eq!(state(&harness, tab, id), (1, text("user2@example.com")));
+        }
+        // Typed once it is let go, the letter is its answer.
+        harness.frame(vec![crate::testing::release(Key::S, Modifiers::NONE)]);
+        type_key(&mut harness, Key::S, "s");
+        assert!(!asking(&harness));
+        assert_eq!(state(&harness, tab, id), (0, text("eve@example.com")));
+    }
+
+    #[test]
+    fn the_letters_wait_out_the_questions_first_moment() {
+        let look = Look::omarchy();
+        let (mut harness, tab, id) = conflict_in(look, Some("eve@example.com"));
+        shown(&mut harness, false);
+        for (key, letter) in [(Key::O, "o"), (Key::S, "s"), (Key::K, "k")] {
+            type_key(&mut harness, key, letter);
+            assert!(asking(&harness), "{letter}");
+            assert_eq!(writes(&harness), 1, "{letter}");
+            assert_eq!(state(&harness, tab, id), (1, text("user2@example.com")));
+        }
+        // Nothing was kept for later: the moment over, it is still up,
+        // and the same letter answers.
+        shown(&mut harness, true);
+        harness.settle();
+        assert!(asking(&harness));
+        type_key(&mut harness, Key::S, "s");
+        assert!(!asking(&harness));
+        assert_eq!(state(&harness, tab, id), (0, text("eve@example.com")));
+        // So with the one letter of a row that is gone.
+        let (mut harness, tab, id) = conflict_in(look, None);
+        shown(&mut harness, false);
+        type_key(&mut harness, Key::D, "d");
+        assert!(asking(&harness));
+        assert_eq!(state(&harness, tab, id), (1, text("user2@example.com")));
+        shown(&mut harness, true);
+        type_key(&mut harness, Key::D, "d");
+        assert!(!asking(&harness));
+    }
+
+    /// The box about the fixture's row `id 2`, which holds another email
+    /// now, as if it had only just come up. With it, whether nothing has
+    /// come of what was done to it since.
+    fn just_asked() -> (Harness, impl Fn(&Harness) -> bool) {
+        let (mut harness, tab, id) = conflict_in(Look::omarchy(), Some("eve@example.com"));
+        shown(&mut harness, false);
+        let untouched = move |harness: &Harness| {
+            let loaded = text("user2@example.com");
+            asking(harness) && writes(harness) == 1 && state(harness, tab, id) == (1, loaded)
+        };
+        (harness, untouched)
+    }
+
+    #[test]
+    fn enter_and_space_wait_out_the_boxs_first_moment() {
+        let (mut harness, untouched) = just_asked();
+        // Enter on the one button that Enter does press.
+        focus_dialog(&mut harness, "Keep mine, reload row");
+        harness.press(Key::Enter, Modifiers::NONE);
+        assert!(untouched(&harness), "Enter");
+        // Nothing was kept for later: the moment over, it is still up, and
+        // the same key answers.
+        shown(&mut harness, true);
+        harness.settle();
+        assert!(untouched(&harness));
+        harness.press(Key::Enter, Modifiers::NONE);
+        assert!(!asking(&harness));
+        // Space on each of the three.
+        for name in ["Keep mine, reload row", "Use server values", "Overwrite"] {
+            let (mut harness, untouched) = just_asked();
+            focus_dialog(&mut harness, name);
+            harness.press(Key::Space, Modifiers::NONE);
+            assert!(untouched(&harness), "Space on {name}");
+            shown(&mut harness, true);
+            harness.press(Key::Space, Modifiers::NONE);
+            assert!(!asking(&harness), "Space on {name}");
+        }
+    }
+
+    #[test]
+    fn a_click_on_a_key_hint_waits_out_the_boxs_first_moment() {
+        // By the pointer, on the hint as it is painted.
+        for hint in HINTS {
+            let (mut harness, untouched) = just_asked();
+            let (place, _) = piece(&harness, hint);
+            click_at(&mut harness, place.center());
+            assert!(untouched(&harness), "a click on {hint}");
+            // The moment over, the same click answers.
+            shown(&mut harness, true);
+            harness.settle();
+            assert!(untouched(&harness), "{hint}");
+            click_at(&mut harness, place.center());
+            assert!(!asking(&harness), "a click on {hint}");
+        }
+        // By a screen reader, on the hint's button.
+        for name in ["Keep mine, reload row", "Use server values", "Overwrite"] {
+            let (mut harness, untouched) = just_asked();
+            click_dialog(&mut harness, name);
+            assert!(untouched(&harness), "a press of {name}");
+            shown(&mut harness, true);
+            click_dialog(&mut harness, name);
+            assert!(!asking(&harness), "a press of {name}");
+        }
+    }
+
+    #[test]
+    fn escape_waits_out_the_boxs_first_moment() {
+        let (mut harness, untouched) = just_asked();
+        harness.press(Key::Escape, Modifiers::NONE);
+        assert!(untouched(&harness));
+        // The moment over, Esc keeps the user's changes over the row as
+        // the server holds it.
+        shown(&mut harness, true);
+        harness.settle();
+        assert!(untouched(&harness));
+        harness.press(Key::Escape, Modifiers::NONE);
+        assert!(!asking(&harness));
+        assert_eq!(writes(&harness), 1);
+    }
+
+    #[test]
+    fn enter_in_the_box_answers_only_as_keep_mine() {
+        let look = Look::omarchy();
+        let loaded = || text("user2@example.com");
+        let (mut harness, tab, id) = conflict_in(look, Some("eve@example.com"));
+        // With the keyboard on no button.
+        harness.press(Key::Enter, Modifiers::NONE);
+        assert!(asking(&harness));
+        assert_eq!(writes(&harness), 1);
+        // The Tab key comes to the hints as they stand: `[o]` first, and
+        // Enter does not overwrite.
+        harness.press(Key::Tab, Modifiers::NONE);
+        assert_eq!(focused_name(&harness.settle()), "Overwrite");
+        harness.press(Key::Enter, Modifiers::NONE);
+        assert!(asking(&harness));
+        assert_eq!(writes(&harness), 1);
+        assert_eq!(state(&harness, tab, id), (1, loaded()));
+        focus_dialog(&mut harness, "Use server values");
+        harness.press(Key::Enter, Modifiers::NONE);
+        assert!(asking(&harness));
+        assert_eq!(state(&harness, tab, id), (1, loaded()));
+        // On Keep mine it is that button's answer.
+        focus_dialog(&mut harness, "Keep mine, reload row");
+        harness.press(Key::Enter, Modifiers::NONE);
+        assert!(!asking(&harness));
+        assert_eq!(state(&harness, tab, id), (1, text("eve@example.com")));
+        assert_eq!(writes(&harness), 1);
+        // Space presses the button that has the keyboard, as everywhere.
+        let (mut harness, ..) = conflict_in(look, Some("eve@example.com"));
+        focus_dialog(&mut harness, "Overwrite");
+        harness.press(Key::Space, Modifiers::NONE);
+        assert!(!asking(&harness));
+        assert_eq!(writes(&harness), 2);
+        // Enter never discards either.
+        let (mut harness, tab, id) = conflict_in(look, None);
+        focus_dialog(&mut harness, "Discard my changes");
+        harness.press(Key::Enter, Modifiers::NONE);
+        assert!(asking(&harness));
+        assert_eq!(state(&harness, tab, id), (1, loaded()));
+    }
+
+    #[test]
+    fn several_rows_are_asked_one_after_another_in_the_box() {
+        let (mut harness, tab, id) = two_rows(Look::omarchy());
+        let palette = harness.app.palette;
+        let (_, color) = piece(&harness, "Fixture · users · 1 of 2");
+        assert_eq!(color, palette.dim);
+        piece(&harness, "row id 2 changed on the server");
+        type_key(&mut harness, Key::S, "s");
+        assert!(asking(&harness));
+        shown(&mut harness, true);
+        harness.settle();
+        let (_, color) = piece(&harness, "Fixture · users · 2 of 2");
+        assert_eq!(color, palette.dim);
+        piece(&harness, "row id 4 changed on the server");
+        piece(&harness, "fay@example.com");
+        assert!(unsaid(&harness, "eve@example.com"));
+        assert_eq!(pending_cells(&harness, tab, id), [(3, 1)]);
+        type_key(&mut harness, Key::K, "k");
+        assert!(!asking(&harness));
+        assert_eq!(pending_cells(&harness, tab, id), [(3, 1)]);
+        assert_eq!(writes(&harness), 1);
+    }
+
+    #[test]
+    fn an_answer_names_the_row_the_box_drew() {
+        let (mut harness, tab, id) = two_rows(Look::omarchy());
+        type_key(&mut harness, Key::K, "k");
+        assert!(asking(&harness));
+        assert_eq!(pending_cells(&harness, tab, id), [(1, 1), (3, 1)]);
+        // An answer that names the row before is none to this one: `k`
+        // typed twice, its second a frame behind.
+        let answer = crate::edit::Answer::KeepMine;
+        harness.app.apply(Action::AnswerConflict { at: 0, answer });
+        assert!(asking(&harness));
+        // The box's own names the row it shows.
+        shown(&mut harness, true);
+        harness.settle();
+        piece(&harness, "row id 4 changed on the server");
+        type_key(&mut harness, Key::S, "s");
+        assert!(!asking(&harness));
+        assert_eq!(pending_cells(&harness, tab, id), [(1, 1)]);
+    }
+
+    #[test]
+    fn a_long_key_gives_way_in_the_box_too() {
+        let look = Look::omarchy();
+        // The title as it is painted: the one line that ends as it does.
+        let title = |harness: &Harness| {
+            let found = pieces(harness, |piece| piece.ends_with("changed on the server"));
+            let [(text, rect, _)] = &found[..] else {
+                panic!("{found:?}");
+            };
+            (text.clone(), *rect)
+        };
+        for key in [
+            "0199a3f2-7c1e-7abc-8def-0123456789ab".to_owned(),
+            "k".repeat(120),
+        ] {
+            let mut structure = crate::testing::fixture_structure();
+            structure.primary_key = vec!["email".into()];
+            let mut page = crate::testing::page(5, false);
+            page.rows[1][1] = text(&key);
+            let size = egui::vec2(1280.0, 800.0);
+            let (mut harness, tab, id) = table_of(look, size, structure, page);
+            pend(&mut harness, (tab, id), (1, 2), "[1]");
+            let now = vec![Value::Int(2), text(&key), text("[2]")];
+            saved(&mut harness, (tab, id), vec![changed(0, now)]);
+            // The key is the database's, and stays as it is.
+            let whole = format!("row email {key} changed on the server");
+            let (painted_as, rect) = title(&harness);
+            // On the first line, after the word, inside the box's margins.
+            let (word, _) = piece(&harness, "conflict");
+            assert!(word.right() < rect.left(), "{key}");
+            assert!((word.center().y - rect.center().y).abs() < 1.0, "{key}");
+            // (The box's body is 18 in at the sides and 14 from the top.)
+            let inner = sheet(&harness).shrink2(egui::vec2(19.0, 15.0));
+            assert!(inner.contains_rect(rect), "{painted_as}: {rect:?}");
+            assert!(rect.height() < 30.0, "{key}");
+            // Only the name gave way.
+            assert!(painted_as.starts_with("row email "), "{painted_as}");
+            assert!(painted_as.contains('…'), "{painted_as}");
+            if key.len() == 120 {
+                assert!(painted_as.contains("k…"), "{painted_as}");
+            }
+            // A screen reader is told the whole of it, and so is the
+            // pointer.
+            assert!(named(&mut harness, &whole, rect), "{key}");
+            assert!(unsaid(&harness, &whole), "{key}");
+            hover(&mut harness, rect.center());
+            piece(&harness, &whole);
+        }
+        // A title that fits is painted whole, and says no more under the
+        // pointer.
+        let (mut harness, ..) = conflict_in(look, Some("eve@example.com"));
+        let (_, rect) = title(&harness);
+        hover(&mut harness, rect.center());
+        piece(&harness, "row id 2 changed on the server");
+    }
+
+    #[test]
+    fn a_row_that_is_gone_has_its_own_words_and_one_key_in_the_box() {
+        let look = Look::omarchy();
+        let (mut harness, tab, id) = conflict_in(look, None);
+        let palette = harness.app.palette;
+        for text in [
+            "conflict",
+            "row id 2 no longer exists on the server",
+            "Fixture · users",
+            "someone deleted it after you loaded it. nothing was written.",
+            "email",
+        ] {
+            piece(&harness, text);
+        }
+        // Nothing is on the server to show: the two columns share what
+        // three do.
+        assert!(unsaid(&harness, "server"));
+        let ((name, _), (loaded, _), (mine, _)) = (
+            piece(&harness, "email"),
+            piece(&harness, "loaded"),
+            piece(&harness, "yours"),
+        );
+        let (was, color) = piece(&harness, "user2@example.com");
+        assert_eq!((was.left(), color), (loaded.left(), palette.text));
+        let (yours, color) = piece(&harness, "bob@example.com");
+        assert_eq!((yours.left(), color), (mine.left(), palette.warning));
+        assert!((loaded.left() - name.left() - 100.0).abs() < 0.5);
+        let inner = sheet(&harness).right() - 20.0 - name.left();
+        let step = mine.left() - loaded.left();
+        assert!(
+            (step - (inner - 90.0) / 2.0).abs() < 1.0,
+            "{step} of {inner}"
+        );
+        // One key, which is its button, and none of the three others.
+        let (hint, color) = piece(&harness, "[d] discard my changes");
+        assert_eq!(color, palette.accent);
+        for hint in HINTS {
+            assert!(unsaid(&harness, hint), "{hint}");
+        }
+        assert_eq!(pressable(&mut harness, "Discard my changes").len(), 1);
+        for name in ["Keep mine, reload row", "Use server values", "Overwrite"] {
+            assert!(pressable(&mut harness, name).is_empty(), "{name}");
+        }
+        click_at(&mut harness, hint.center());
+        assert!(!asking(&harness));
+        assert_eq!(state(&harness, tab, id), (0, text("user2@example.com")));
+    }
+
+    #[test]
+    fn a_long_value_is_cut_to_its_column_in_the_box_and_whole_under_the_pointer() {
+        let look = Look::omarchy();
+        let long = format!("{}@example.com", "b".repeat(108));
+        let (mut harness, tab, id) = fixture_in(look);
+        let palette = harness.app.palette;
+        pend(&mut harness, (tab, id), (1, 1), &long);
+        let conflict = changed(0, server("eve@example.com"));
+        saved(&mut harness, (tab, id), vec![conflict]);
+        let found = pieces(&harness, |piece| piece.starts_with("bbb"));
+        let [(yours, place, color)] = &found[..] else {
+            panic!("{found:?}");
+        };
+        assert!(yours.ends_with('…') && yours.len() < 60, "{yours}");
+        assert_eq!(*color, palette.warning);
+        // It starts under its header and ends inside the box's margin.
+        let (header, _) = piece(&harness, "yours");
+        assert_eq!(place.left(), header.left());
+        assert!(place.right() <= sheet(&harness).right() - 20.0, "{place:?}");
+        // The server's, in the column before, stops short of it.
+        let (server, _) = piece(&harness, "eve@example.com");
+        assert!(server.right() < place.left());
+        // A screen reader is told the whole value; it is painted whole
+        // only once the pointer is over it.
+        assert!(named(&mut harness, &long, *place));
+        assert!(unsaid(&harness, &long));
+        hover(&mut harness, place.center());
+        piece(&harness, &long);
+    }
+
+    #[test]
+    fn a_letter_typed_into_a_field_as_the_box_comes_up_is_no_answer() {
+        let look = Look::omarchy();
+        let (mut harness, tab, id) = fixture_in(look);
+        harness.app.workspace_mut(tab).unwrap().pane = crate::model::Pane::Grid;
+        pend(&mut harness, (tab, id), (1, 1), "bob@example.com");
+        harness.app.apply(Action::WriteEdits { tab, id });
+        // While the save runs the user goes on to the WHERE line. The
+        // question comes up with that field holding the keyboard, and the
+        // field keeps it for the frame the box is first drawn in: what is
+        // typed then is the field's, and answers nothing.
+        type_key(&mut harness, Key::Slash, "/");
+        assert!(
+            harness.ctx.text_edit_focused(),
+            "the WHERE line has the keys"
+        );
+        let conflict = changed(0, server("eve@example.com"));
+        harness.answer_written(Ok(WriteOutcome::Conflicts(vec![conflict])));
+        assert!(asking(&harness));
+        shown(&mut harness, true);
+        harness.frame(vec![
+            crate::testing::key(Key::S, Modifiers::NONE),
+            egui::Event::Text("s".into()),
+        ]);
+        assert!(asking(&harness));
+        assert_eq!(state(&harness, tab, id), (1, text("user2@example.com")));
+        harness.frame(vec![crate::testing::release(Key::S, Modifiers::NONE)]);
+        // Once the box has the keyboard its letters answer.
+        harness.finish_animations();
+        assert!(!harness.ctx.text_edit_focused());
+        shown(&mut harness, true);
+        type_key(&mut harness, Key::S, "s");
+        assert!(!asking(&harness));
+        assert_eq!(state(&harness, tab, id), (0, text("eve@example.com")));
+    }
+
+    #[test]
+    fn the_letters_answer_after_a_click_outside_the_box() {
+        let look = Look::omarchy();
+        let (mut harness, tab, id) = conflict_in(look, Some("eve@example.com"));
+        // A click beside the box takes the keyboard from whatever had it,
+        // and answers nothing.
+        focus_dialog(&mut harness, "Overwrite");
+        let frame = sheet(&harness);
+        click_at(&mut harness, frame.left_top() - egui::vec2(40.0, 40.0));
+        assert!(asking(&harness));
+        assert_eq!(focused_name(&harness.settle()), "");
+        assert_eq!(state(&harness, tab, id), (1, text("user2@example.com")));
+        // The letters are read as what is typed, wherever the keyboard is.
+        type_key(&mut harness, Key::K, "k");
+        assert!(!asking(&harness));
+        assert_eq!(state(&harness, tab, id), (1, text("eve@example.com")));
+        assert_eq!(writes(&harness), 1);
+    }
+
+    #[test]
+    fn the_box_is_drawn_and_answers_over_the_sql_panel() {
+        let look = Look::omarchy();
+        let (mut harness, tab, id) = fixture_in(look);
+        harness.app.workspace_mut(tab).unwrap().pane = crate::model::Pane::Grid;
+        // The tab's `:diff` panel is open on a pending cell, and the save
+        // is asked for from insert mode in another row: it closes the
+        // editor and takes its text with it.
+        pend(&mut harness, (tab, id), (3, 1), "dan@example.com");
+        let show = true;
+        harness.app.apply(Action::ReviewEdits { tab, id, show });
+        let cell = CellPos { row: 1, col: 1 };
+        let start = EditStart::Replace("bob@example.com".into());
+        harness.app.apply(Action::EditCell {
+            tab,
+            id,
+            cell,
+            start,
+        });
+        harness.settle();
+        harness.settle();
+        assert!(harness.ctx.text_edit_focused(), "insert mode");
+        harness.press(Key::S, Modifiers::COMMAND);
+        assert_eq!(writes(&harness), 1);
+        let conflict = changed(0, server("eve@example.com"));
+        harness.answer_written(Ok(WriteOutcome::Conflicts(vec![conflict])));
+        harness.finish_animations();
+        assert!(asking(&harness));
+        // The panel is on screen, and the box over it and the window,
+        // whole.
+        let panel = crate::ui::review::placed(&harness.ctx).expect("the panel is drawn");
+        assert_eq!((panel.tab, panel.id), (tab, id));
+        let frame = sheet(&harness);
+        let window = egui::Rect::from_min_size(egui::Pos2::ZERO, harness.size);
+        assert!(window.contains_rect(frame), "{frame:?}");
+        for text in [
+            "conflict",
+            "row id 2 changed on the server",
+            "Fixture · users",
+            "eve@example.com",
+            "bob@example.com",
+        ] {
+            let (place, _) = piece(&harness, text);
+            assert!(frame.contains_rect(place), "{text}");
+        }
+        for hint in HINTS {
+            let (place, _) = piece(&harness, hint);
+            assert!(frame.contains_rect(place), "{hint}");
+        }
+        // Its letters answer, with the panel open under it.
+        shown(&mut harness, true);
+        type_key(&mut harness, Key::S, "s");
+        assert!(!asking(&harness));
+        assert_eq!(state(&harness, tab, id), (1, text("eve@example.com")));
+        assert_eq!(pending_cells(&harness, tab, id), [(3, 1)]);
+    }
+
+    #[test]
+    fn overwrite_on_production_asks_again_with_the_row_as_the_server_holds_it() {
+        let look = Look::omarchy();
+        let (mut harness, tab, id) = fixture_in(look);
+        harness.app.workspace_mut(tab).unwrap().pane = crate::model::Pane::Grid;
+        harness.app.workspace_mut(tab).unwrap().environment = crate::env::Environment::Production;
+        pend(&mut harness, (tab, id), (1, 1), "bob@example.com");
+        // The save, confirmed with its word: asked for by the user, it
+        // answers at once.
+        harness.app.apply(Action::WriteEdits { tab, id });
+        harness.finish_animations();
+        harness.frame(vec![egui::Event::Text("write".into())]);
+        harness.press(Key::Enter, Modifiers::NONE);
+        assert_eq!(writes(&harness), 1);
+        // The row changed. The confirmation opened the tab's panel, and
+        // the question stands over it.
+        let conflict = changed(0, server("eve@example.com"));
+        harness.answer_written(Ok(WriteOutcome::Conflicts(vec![conflict])));
+        harness.finish_animations();
+        assert!(asking(&harness));
+        assert!(crate::ui::review::placed(&harness.ctx).is_some());
+        piece(&harness, "row id 2 changed on the server");
+        shown(&mut harness, true);
+        type_key(&mut harness, Key::O, "o");
+        harness.finish_animations();
+        // Overwrite brings the confirmation up again, with the review of
+        // the row as it is now: the check is on what the server holds.
+        let checked = "-- only if email is still 'eve@example.com'";
+        let Some(Dialog::ConfirmWrite(prompt)) = &harness.app.dialog else {
+            panic!("expected the confirmation, got {:?}", harness.app.dialog);
+        };
+        let locale = harness.app.locale;
+        let comments = prompt.review.lines.iter();
+        let comments: Vec<String> = comments
+            .filter_map(|line| crate::ui::review::comment(line, locale))
+            .collect();
+        assert_eq!(comments, ["-- row id 2", checked]);
+        assert!(prompt.after_answer.is_some(), "an answer opened it");
+        // It is the review the tab's panel shows, and the box points at
+        // the panel, which lists it.
+        let workspace = harness.app.workspace(tab).unwrap();
+        let edits = &workspace.object_tab(id).unwrap().edits;
+        assert!(edits.reviewing);
+        assert_eq!(edits.review.as_ref(), Some(&prompt.review));
+        let panel = crate::ui::review::placed(&harness.ctx).expect("the panel is drawn");
+        assert!(
+            painted(&harness, "sql shown with :diff"),
+            "{:?}",
+            harness.painted
+        );
+        let place = harness.painted_rect(checked).expect("the check's line");
+        assert!(panel.rect.contains_rect(place));
+        assert_eq!(writes(&harness), 1, "nothing is sent before the answer");
+        // In the moment after the answer that opened it, it takes none:
+        // the word stays typed, and Enter and Esc do nothing.
+        let opened = |harness: &mut Harness, long: bool| {
+            let now = std::time::Instant::now();
+            let Some(Dialog::ConfirmWrite(prompt)) = &mut harness.app.dialog else {
+                panic!("expected the confirmation, got {:?}", harness.app.dialog);
+            };
+            prompt.after_answer = Some(if long {
+                now.checked_sub(crate::edit::ANSWER_AFTER)
+                    .expect("an earlier instant")
+            } else {
+                now + std::time::Duration::from_secs(3600)
+            });
+        };
+        opened(&mut harness, false);
+        harness.frame(vec![egui::Event::Text("write".into())]);
+        harness.press(Key::Enter, Modifiers::NONE);
+        harness.press(Key::Escape, Modifiers::NONE);
+        assert!(matches!(harness.app.dialog, Some(Dialog::ConfirmWrite(_))));
+        assert_eq!(writes(&harness), 1);
+        opened(&mut harness, true);
+        harness.press(Key::Enter, Modifiers::NONE);
+        assert!(harness.app.dialog.is_none());
+        assert_eq!(writes(&harness), 2, "the save runs again");
+    }
+
+    #[test]
+    fn page_down_moves_the_lines_that_do_not_fit() {
+        for look in looks() {
+            let said = look.name;
+            let size = egui::vec2(720.0, 480.0);
+            let window = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
+            let (mut harness, tab, id) = twelve_columns(look, size);
+            // More lines than are shown at once: the first is drawn, the
+            // last is not, and the question is whole in the window.
+            assert!(window.contains_rect(sheet(&harness)), "{said}");
+            piece(&harness, "my c1");
+            assert!(unsaid(&harness, "my c12"), "{said}");
+            // The keys bring the rest into view, and answer nothing.
+            harness.press(Key::PageDown, Modifiers::NONE);
+            harness.finish_animations();
+            piece(&harness, "my c12");
+            assert!(unsaid(&harness, "my c1"), "{said}");
+            assert!(asking(&harness), "{said}");
+            assert_eq!(pending_cells(&harness, tab, id).len(), 12, "{said}");
+            assert_eq!(writes(&harness), 1, "{said}");
+            // The header stays where it is, over them.
+            piece(&harness, "loaded");
+            harness.press(Key::PageUp, Modifiers::NONE);
+            harness.finish_animations();
+            piece(&harness, "my c1");
+            assert!(unsaid(&harness, "my c12"), "{said}");
+            // In the question's first moment too: reading answers nothing.
+            shown(&mut harness, false);
+            harness.press(Key::PageDown, Modifiers::NONE);
+            harness.finish_animations();
+            piece(&harness, "my c12");
+            assert!(asking(&harness), "{said}");
+            if !look.terminal {
+                continue;
+            }
+            // The box says which keys, before the ones that answer, and
+            // every key that answers is on screen with it.
+            let (pages, _) = piece(&harness, "pgup/pgdn scroll");
+            let (first, _) = piece(&harness, HINTS[0]);
+            assert!(pages.right() < first.left(), "{said}");
+            let tree = harness.settle();
+            for name in ["Overwrite", "Use server values", "Keep mine, reload row"] {
+                let place = crate::testing::bounds(&tree, name, Role::Button);
+                let place = place.unwrap_or_else(|| panic!("no button {name}"));
+                assert!(window.contains_rect(place), "{name} at {place:?}");
+            }
         }
     }
 }
