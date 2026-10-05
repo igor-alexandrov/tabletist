@@ -57,7 +57,7 @@ pub const SHORTCUTS: &[(&str, &str)] = &[
     ("Mod+S", "Save all pending changes"),
     ("Mod+Alt+Backspace", "Discard all pending changes"),
     (
-        "j/k, h/l, Ctrl+H/L, [ ], i, Enter, cc, x, u, Ctrl+S, Space, Esc, /, y, s, d, gd, za, t, 1…9",
+        "j/k, h/l, Ctrl+H/L, [ ], i, Enter, cc, x, u, Ctrl+S, :w, :e!, Space, Esc, /, y, s, d, gd, za, t, 1…9",
         "Omarchy: vim keys (shown in the status line)",
     ),
     ("Mod+,", "Settings"),
@@ -117,10 +117,38 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
         && app
             .workspace(active)
             .is_some_and(|workspace| workspace.opened() && workspace.focus_where);
+    // The terminal's `:` prompt is open, and what it last refused is still
+    // said. The prompt's field is in the status line, which is drawn as
+    // long as the workspace is.
+    let (prompt, refused) = app
+        .workspace(active)
+        .filter(|workspace| terminal && workspace.opened())
+        .map_or((false, false), |workspace| {
+            (
+                workspace.command.is_some(),
+                workspace.command_error.is_some(),
+            )
+        });
     // An editor that just opened takes the keyboard when its field is
     // first drawn, later in this frame: the keys are its own already, and
-    // none of them is the grid's (Space, an arrow).
-    let editing = ctx.text_edit_focused() || open || asked;
+    // none of them is the grid's (Space, an arrow). So with the prompt.
+    let editing = ctx.text_edit_focused() || open || asked || prompt;
+    // What the prompt refused is said until the next key, whatever the key
+    // goes on to do. A fresh press: the Enter that ran the line may still
+    // be held.
+    let dismiss = refused
+        && ctx.input(|input| {
+            input.events.iter().any(|event| {
+                matches!(
+                    event,
+                    egui::Event::Key {
+                        pressed: true,
+                        repeat: false,
+                        ..
+                    }
+                )
+            })
+        });
     // A SQL editor's result is a grid too, while its Results pane shows it.
     let sql_grid = sql.is_some_and(|(tab, id)| {
         app.workspace(tab)
@@ -415,6 +443,12 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
     {
         actions.push(Action::ShowHelp);
     }
+    // Ahead of what the key asked for, which may be the prompt again. Put
+    // there only now: a letter that edits acts only where nothing else was
+    // asked for before it.
+    if dismiss {
+        actions.insert(0, Action::CloseCommand(active));
+    }
     app.actions.extend(actions);
 }
 
@@ -667,10 +701,11 @@ fn editing_keys(app: &App, ctx: &egui::Context, keyboard: bool, actions: &mut Ve
 
 /// The terminal look's normal mode on the grid of the table `id`: `i` and
 /// Enter edit the selected cell from its value, `cc` from nothing, `x` sets
-/// it NULL and `u` puts back what was loaded. The letters are read as the
+/// it NULL, `u` puts back what was loaded, and `:` opens the prompt that
+/// writes and discards. The letters are read as the
 /// text they type, in the order they came, and taken: a letter that opens
-/// an editor is no part of its text, and what follows it in its frame does
-/// nothing (the editor is not there yet to be typed into).
+/// an editor or the prompt is no part of its text, and what follows it in
+/// its frame does nothing (the field is not there yet to be typed into).
 ///
 /// They act on the selected cell, so they act only in a frame that brings
 /// nothing else: beside a key that moves the selection, or anything that
@@ -697,7 +732,7 @@ fn editing_letters(
         })
     };
     let alone = actions.is_empty();
-    let mine = |text: &str| matches!(text, "i" | "c" | "x" | "u");
+    let mine = |text: &str| matches!(text, "i" | "c" | "x" | "u" | ":");
     let enter = |event: &egui::Event| is_press(event, Modifiers::NONE, Key::Enter);
     ctx.input_mut(|input| {
         // A chord types nothing, though some systems send its letter as
@@ -721,7 +756,7 @@ fn editing_letters(
         // A first `c` waits for its second, and for nothing else.
         let mut first = waiting;
         let mut waits = false;
-        // Whether an editor was asked for: the frame's typing ends there.
+        // Whether a field was asked for: the frame's typing ends there.
         let mut opened = false;
         input.events.retain(|event| {
             if enter(event) {
@@ -760,6 +795,10 @@ fn editing_letters(
                 }
                 "x" => actions.push(Action::SetNull { tab, id }),
                 "u" => actions.push(Action::RevertCell { tab, id }),
+                ":" => {
+                    opened = true;
+                    actions.push(Action::OpenCommand(tab));
+                }
                 _ => {}
             }
             false
@@ -1124,7 +1163,7 @@ mod tests {
             .find(|(_, what)| what.starts_with("Omarchy:"))
             .expect("Omarchy's row");
         let keys: Vec<&str> = keys.split(", ").collect();
-        for key in ["i", "Enter", "cc", "x", "u", "Ctrl+S", "Space"] {
+        for key in ["i", "Enter", "cc", "x", "u", "Ctrl+S", ":w", ":e!", "Space"] {
             assert!(keys.contains(&key), "{key}: {keys:?}");
         }
         // `s` is the Structure view's still.

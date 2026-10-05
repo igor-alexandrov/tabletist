@@ -552,6 +552,26 @@ impl App {
                     workspace.focus_where = true;
                 }
             }
+            Action::OpenCommand(tab) => {
+                // The keys do not run under a dialog, and neither does
+                // the prompt they open.
+                if self.dialog.is_some() {
+                    return;
+                }
+                if let Some(workspace) = self.workspace_mut(tab) {
+                    workspace.command = Some(String::new());
+                    workspace.focus_command = true;
+                    workspace.command_error = None;
+                }
+            }
+            Action::CloseCommand(tab) => {
+                if let Some(workspace) = self.workspace_mut(tab) {
+                    workspace.command = None;
+                    workspace.focus_command = false;
+                    workspace.command_error = None;
+                }
+            }
+            Action::RunCommand(tab) => self.run_command(tab),
             Action::ClearSort { tab, object_tab } => {
                 if let Some(object) = self.object_tab_mut(tab, object_tab)
                     && !object.query.sort.is_empty()
@@ -10886,6 +10906,107 @@ mod tests {
             let sent = harness.app.backend.sent.iter();
             sent.filter(|command| matches!(command, Command::Write { .. }))
                 .count()
+        }
+
+        /// The terminal's `:` prompt as the workspace holds it: its text
+        /// while it is open, and what it last refused.
+        fn prompt(harness: &Harness, tab: ConnTabId) -> (Option<String>, Option<String>) {
+            let workspace = harness.app.workspace(tab).unwrap();
+            (workspace.command.clone(), workspace.command_error.clone())
+        }
+
+        /// Opens the prompt, types `text` as its field does, and runs it.
+        fn run(harness: &mut Harness, tab: ConnTabId, text: &str) {
+            harness.app.apply(Action::OpenCommand(tab));
+            let workspace = harness.app.workspace_mut(tab).unwrap();
+            *workspace.command.as_mut().expect("the prompt is open") = text.to_owned();
+            harness.app.apply(Action::RunCommand(tab));
+        }
+
+        #[test]
+        fn the_prompt_runs_w_and_e_bang_and_refuses_the_rest() {
+            let mut harness = Harness::new();
+            let (tab, id) = harness.editable();
+            let pending = |harness: &Harness| {
+                let workspace = harness.app.workspace(tab).unwrap();
+                workspace.object_tab(id).unwrap().edits.cells.len()
+            };
+            type_into(&mut harness, tab, id, at(1, 1), "bob@example.com");
+            // Anything else is not a command: it is kept to say so, and
+            // nothing is sent or dropped. `diff` comes with Review SQL.
+            for text in ["diff", "wq", "W", "e", "w!", "e !"] {
+                run(&mut harness, tab, text);
+                assert_eq!(
+                    prompt(&harness, tab),
+                    (None, Some(text.to_owned())),
+                    "{text}"
+                );
+                assert_eq!(writes(&harness), 0, "{text}");
+                assert_eq!(pending(&harness), 1, "{text}");
+            }
+            // The prompt opens empty, and takes the message away.
+            harness.app.apply(Action::OpenCommand(tab));
+            assert_eq!(prompt(&harness, tab), (Some(String::new()), None));
+            assert!(harness.app.workspace(tab).unwrap().focus_command);
+            // Closed, it runs nothing.
+            harness.app.workspace_mut(tab).unwrap().command = Some("e!".into());
+            harness.app.apply(Action::CloseCommand(tab));
+            assert_eq!(prompt(&harness, tab), (None, None));
+            harness.app.apply(Action::RunCommand(tab));
+            assert_eq!(pending(&harness), 1);
+            // An empty line is no command and no mistake.
+            run(&mut harness, tab, "  ");
+            assert_eq!(prompt(&harness, tab), (None, None));
+            // `w` writes, the spaces round it overlooked.
+            run(&mut harness, tab, " w ");
+            assert_eq!(prompt(&harness, tab), (None, None));
+            assert_eq!(writes(&harness), 1);
+            harness.answer_written(written("bob@example.com"));
+            assert_eq!(pending(&harness), 0);
+            // `e!` discards.
+            type_into(&mut harness, tab, id, at(3, 1), "dan@example.com");
+            run(&mut harness, tab, "e!");
+            assert_eq!(pending(&harness), 0);
+            assert_eq!(writes(&harness), 1);
+            assert_eq!(prompt(&harness, tab), (None, None));
+            // What was refused is taken away by closing too.
+            run(&mut harness, tab, "nope");
+            harness.app.apply(Action::CloseCommand(tab));
+            assert_eq!(prompt(&harness, tab), (None, None));
+            // With a SQL editor in front there is no table to write.
+            type_into(&mut harness, tab, id, at(3, 1), "dan@example.com");
+            harness.app.apply(Action::NewSqlTab(tab));
+            run(&mut harness, tab, "w");
+            run(&mut harness, tab, "e!");
+            assert_eq!(writes(&harness), 1);
+            assert_eq!(pending(&harness), 1);
+            assert_eq!(prompt(&harness, tab), (None, None));
+        }
+
+        #[test]
+        fn the_prompt_changes_nothing_under_a_question_about_the_changes() {
+            let mut harness = Harness::new();
+            let (tab, id) = harness.editable();
+            type_into(&mut harness, tab, id, at(1, 1), "bob@example.com");
+            // The tab is asked to close, and the question is up.
+            harness.app.apply(Action::CloseTab { tab, id });
+            assert!(matches!(harness.app.dialog, Some(Dialog::Leave(_))));
+            // No prompt opens under a dialog: the keys do not run there.
+            harness.app.apply(Action::OpenCommand(tab));
+            assert_eq!(prompt(&harness, tab), (None, None));
+            // One that was open when the question came runs nothing: what
+            // is asked about stays as it is.
+            for text in ["e!", "w"] {
+                harness.app.workspace_mut(tab).unwrap().command = Some(text.into());
+                harness.app.apply(Action::RunCommand(tab));
+                assert_eq!(prompt(&harness, tab), (None, None), "{text}");
+                let workspace = harness.app.workspace(tab).unwrap();
+                let edits = &workspace.object_tab(id).unwrap().edits;
+                assert_eq!(edits.cells.len(), 1, "{text}");
+                assert!(edits.saving.is_none(), "{text}");
+                assert_eq!(writes(&harness), 0, "{text}");
+                assert!(matches!(harness.app.dialog, Some(Dialog::Leave(_))));
+            }
         }
 
         /// `Harness::editable` on a connection to production, whose saves

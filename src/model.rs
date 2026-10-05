@@ -138,6 +138,14 @@ pub enum Action {
     },
     /// Put keyboard focus in the terminal look's WHERE line.
     FocusWhere(ConnTabId),
+    /// Open the terminal look's `:` prompt in the status line.
+    OpenCommand(ConnTabId),
+    /// Close the prompt, and take away what it said of its last line.
+    CloseCommand(ConnTabId),
+    /// Run what the prompt holds: `w` writes the pending changes of the
+    /// table on screen, `e!` discards them, and anything else is not a
+    /// command.
+    RunCommand(ConnTabId),
     /// Put keyboard focus in the picker's search.
     FocusPickerSearch(ConnTabId),
     /// Fold (or unfold) every JSON document in the row panel (`za`).
@@ -543,6 +551,14 @@ pub struct Workspace {
     pub full_precision: bool,
     /// Focus the WHERE line on the next frame.
     pub focus_where: bool,
+    /// The terminal look's `:` prompt: the text after the colon while it
+    /// is open. Only the text is the view's to change.
+    pub command: Option<String>,
+    /// Focus the prompt on the next frame.
+    pub focus_command: bool,
+    /// What the prompt was given that is not a command, until the next
+    /// key.
+    pub command_error: Option<String>,
     /// Fold or unfold the row panel's documents on the next frame (`za`).
     pub fold_documents: Option<TabId>,
     /// When the session last connected, in seconds since the Unix epoch
@@ -2532,6 +2548,9 @@ impl Workspace {
             sidebar_hidden: false,
             full_precision: false,
             focus_where: false,
+            command: None,
+            focus_command: false,
+            command_error: None,
             fold_documents: None,
             connected_at: None,
         }

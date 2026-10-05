@@ -13217,6 +13217,211 @@ mod tests {
         assert!(at.right() < range.left(), "{at:?} before {range:?}");
     }
 
+    /// The terminal's `:` prompt: its text while it is open.
+    fn command(harness: &Harness, tab: ConnTabId) -> Option<String> {
+        harness.app.workspace(tab).unwrap().command.clone()
+    }
+
+    #[test]
+    fn colon_opens_the_prompt_and_enter_runs_it() {
+        let (mut harness, tab, id) = normal_mode((1, 1));
+        make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
+        harness.settle();
+        assert_eq!(command(&harness, tab), None);
+        type_key(&mut harness, Key::Colon, ":");
+        // The colon opened it, and is no part of its text.
+        assert_eq!(command(&harness, tab).as_deref(), Some(""));
+        assert!(harness.ctx.text_edit_focused());
+        // It stands in the status line, in place of the keys, and what is
+        // pending is counted beside it.
+        let colon = harness.painted_rect(":").expect("the prompt's colon");
+        let counts = harness.painted_rect("1 pending · 1 row").unwrap();
+        assert!((colon.center().y - counts.center().y).abs() < 1.0);
+        assert!(!painted(&harness, "j/k row"));
+        // What is typed is its text: none of it is a key of the grid's.
+        type_key(&mut harness, Key::X, "x");
+        type_key(&mut harness, Key::U, "u");
+        type_key(&mut harness, Key::J, "j");
+        assert_eq!(command(&harness, tab).as_deref(), Some("xuj"));
+        assert_eq!(edits(&harness, tab, id).cells.len(), 1);
+        assert_eq!(selected(&harness, tab, id), Some((1, 1)));
+        for _ in 0..3 {
+            harness.press(Key::Backspace, Modifiers::NONE);
+        }
+        type_key(&mut harness, Key::W, "w");
+        assert_eq!(command(&harness, tab).as_deref(), Some("w"));
+        assert_eq!(writes(&harness), 0);
+        harness.press(Key::Enter, Modifiers::NONE);
+        assert_eq!(command(&harness, tab), None);
+        assert_eq!(writes(&harness), 1);
+        assert!(edits(&harness, tab, id).saving.is_some());
+        assert!(!harness.ctx.text_edit_focused());
+        harness.answer_written(Ok(written_row("bob@example.com")));
+        // The grid has its keys again.
+        type_key(&mut harness, Key::J, "j");
+        assert_eq!(selected(&harness, tab, id), Some((2, 1)));
+        // `:e!` discards.
+        make_pending(&mut harness, tab, id, (3, 1), "dan@example.com");
+        make_pending(&mut harness, tab, id, (0, 2), "[1]");
+        harness.settle();
+        type_key(&mut harness, Key::Colon, ":");
+        type_text(&mut harness, "e!");
+        assert_eq!(edits(&harness, tab, id).cells.len(), 2);
+        harness.press(Key::Enter, Modifiers::NONE);
+        assert!(edits(&harness, tab, id).cells.is_empty());
+        assert_eq!(command(&harness, tab), None);
+        assert_eq!(writes(&harness), 1);
+        // A letter in the frame after the colon, before the field has
+        // drawn once, is the prompt's too: `x` there sets nothing NULL.
+        select(&mut harness, tab, id, (0, 2));
+        harness.frame(key_down(Key::Colon, ":"));
+        harness.frame(key_down(Key::X, "x"));
+        harness.settle();
+        assert!(edits(&harness, tab, id).cells.is_empty());
+        assert_eq!(command(&harness, tab).as_deref(), Some("x"));
+        // And one that shares the colon's frame is nobody's.
+        harness.press(Key::Escape, Modifiers::NONE);
+        let mut events = key_down(Key::Colon, ":");
+        events.extend(key_down(Key::X, "x"));
+        harness.frame(events);
+        harness.settle();
+        assert!(edits(&harness, tab, id).cells.is_empty());
+        assert_eq!(command(&harness, tab).as_deref(), Some(""));
+    }
+
+    #[test]
+    fn escape_closes_the_prompt() {
+        let (mut harness, tab, id) = normal_mode((1, 1));
+        make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
+        let panel = |harness: &Harness| harness.app.workspace(tab).unwrap().row_panel;
+        assert!(panel(&harness));
+        type_key(&mut harness, Key::Colon, ":");
+        type_text(&mut harness, "e!");
+        harness.press(Key::Escape, Modifiers::NONE);
+        assert_eq!(command(&harness, tab), None);
+        assert!(!harness.ctx.text_edit_focused());
+        // Nothing ran, and Esc closed the prompt and no more.
+        assert_eq!(edits(&harness, tab, id).cells.len(), 1);
+        assert!(panel(&harness));
+        assert!(painted(&harness, "j/k row"));
+        // A click elsewhere closes it too.
+        type_key(&mut harness, Key::Colon, ":");
+        type_text(&mut harness, "e!");
+        let at = cell_of(&harness, "user3@example.com");
+        click_at(&mut harness, at);
+        assert_eq!(command(&harness, tab), None);
+        assert_eq!(edits(&harness, tab, id).cells.len(), 1);
+        // In insert mode the colon is text.
+        select(&mut harness, tab, id, (3, 1));
+        type_key(&mut harness, Key::I, "i");
+        type_key(&mut harness, Key::Colon, ":");
+        assert_eq!(command(&harness, tab), None);
+        assert_eq!(
+            editor_text(&harness, tab, id).as_deref(),
+            Some("user4@example.com:")
+        );
+        // And what shares the frame of the key that opens the editor does
+        // not open the prompt beside it.
+        harness.app.apply(Action::CancelEdit { tab, id });
+        harness.settle();
+        let mut events = key_down(Key::I, "i");
+        events.extend(key_down(Key::Colon, ":"));
+        harness.frame(events);
+        harness.settle();
+        assert!(edits(&harness, tab, id).editor.is_some());
+        assert_eq!(command(&harness, tab), None);
+        harness.app.apply(Action::CancelEdit { tab, id });
+        harness.settle();
+        // No prompt with the arrows on the tree, in the Structure view, or
+        // on a SQL editor.
+        harness.app.workspace_mut(tab).unwrap().pane = crate::model::Pane::Tree;
+        type_key(&mut harness, Key::Colon, ":");
+        assert_eq!(command(&harness, tab), None);
+        focus_grid(&mut harness, tab);
+        type_key(&mut harness, Key::S, "s");
+        type_key(&mut harness, Key::Colon, ":");
+        assert_eq!(command(&harness, tab), None);
+        type_key(&mut harness, Key::D, "d");
+        harness.app.apply(Action::NewSqlTab(tab));
+        harness.settle();
+        harness.press(Key::Escape, Modifiers::NONE);
+        type_key(&mut harness, Key::Colon, ":");
+        assert_eq!(command(&harness, tab), None);
+        assert_eq!(edits(&harness, tab, id).cells.len(), 1);
+    }
+
+    #[test]
+    fn an_unknown_command_says_so() {
+        let (mut harness, tab, id) = normal_mode((1, 1));
+        let palette = harness.app.palette;
+        make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
+        for text in ["diff", "wq"] {
+            type_key(&mut harness, Key::Colon, ":");
+            type_text(&mut harness, text);
+            harness.press(Key::Enter, Modifiers::NONE);
+            let said = format!("not a command: {text}");
+            assert!(
+                painted_in(&harness, &said, palette.danger),
+                "{:?}",
+                harness.painted
+            );
+            assert!(harness.has(&said));
+            assert_eq!(command(&harness, tab), None);
+            assert!(!harness.ctx.text_edit_focused());
+            // Nothing was written or dropped, and the counts stand.
+            assert_eq!(writes(&harness), 0);
+            assert_eq!(edits(&harness, tab, id).cells.len(), 1);
+            assert!(painted(&harness, "1 pending · 1 row"));
+            // Until the next key, which does what it does.
+            for _ in 0..30 {
+                harness.frame(Vec::new());
+            }
+            assert!(painted(&harness, &said));
+            type_key(&mut harness, Key::J, "j");
+            assert!(!painted(&harness, &said));
+            type_key(&mut harness, Key::K, "k");
+            assert_eq!(selected(&harness, tab, id), Some((1, 1)));
+        }
+        // The key that takes the message away may be the prompt's own, or
+        // one that edits.
+        type_key(&mut harness, Key::Colon, ":");
+        type_text(&mut harness, "nope");
+        harness.press(Key::Enter, Modifiers::NONE);
+        assert!(painted(&harness, "not a command: nope"));
+        type_key(&mut harness, Key::Colon, ":");
+        assert_eq!(command(&harness, tab).as_deref(), Some(""));
+        assert!(!painted(&harness, "not a command: nope"));
+        type_text(&mut harness, "nope");
+        harness.press(Key::Enter, Modifiers::NONE);
+        type_key(&mut harness, Key::U, "u");
+        assert!(edits(&harness, tab, id).cells.is_empty());
+        assert!(!painted(&harness, "not a command: nope"));
+    }
+
+    #[test]
+    fn the_prompts_keys_are_offered_where_a_save_can_be_made() {
+        let (mut harness, tab, _id) = normal_mode((1, 1));
+        let palette = harness.app.palette;
+        // The row panel strikes its own keys through: the status line's
+        // alone are looked at.
+        harness.app.workspace_mut(tab).unwrap().row_panel = false;
+        harness.settle();
+        // Live, as the keys before it are.
+        assert!(
+            painted_in(&harness, ":w write", palette.text),
+            "{:?}",
+            harness.painted
+        );
+        // Struck through still on a connection that only reads.
+        let mut harness = Harness::new();
+        harness.set_look(Look::omarchy());
+        let tab = with_page(&mut harness);
+        harness.app.workspace_mut(tab).unwrap().row_panel = false;
+        harness.settle();
+        assert!(painted(&harness, ":w write"));
+        assert!(!painted_in(&harness, ":w write", palette.text));
+    }
+
     #[test]
     fn the_keys_struck_through_are_the_ones_still_to_come() {
         let (mut harness, tab, _id) = normal_mode((1, 1));
@@ -13224,7 +13429,7 @@ mod tests {
         // alone are looked at.
         harness.app.workspace_mut(tab).unwrap().row_panel = false;
         harness.settle();
-        for hint in ["o new row", "dd delete", ":w write"] {
+        for hint in ["o new row", "dd delete"] {
             assert!(painted(&harness, hint), "{hint}: {:?}", harness.painted);
         }
         // `i edit` is live now, and the struck `e edit` is gone.

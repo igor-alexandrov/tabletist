@@ -588,6 +588,36 @@ impl App {
         object.fields = None;
     }
 
+    /// Runs what the terminal's `:` prompt holds, and closes it: `w` saves
+    /// the pending changes of the table on screen and `e!` drops them, as
+    /// their keys do in the other looks. Any other text is not a command,
+    /// and is kept for the status line to say so (`diff` too, until Review
+    /// SQL is there to show).
+    pub(super) fn run_command(&mut self, tab: ConnTabId) {
+        let Some(workspace) = self.workspace_mut(tab) else {
+            return;
+        };
+        workspace.focus_command = false;
+        workspace.command_error = None;
+        let Some(text) = workspace.command.take() else {
+            return;
+        };
+        let table = workspace.active_object_tab().map(|object| object.id);
+        let action = match text.trim() {
+            "" => return,
+            "w" => table.map(|id| Action::WriteEdits { tab, id }),
+            "e!" => table.map(|id| Action::DiscardEdits { tab, id }),
+            other => {
+                workspace.command_error = Some(other.to_owned());
+                return;
+            }
+        };
+        // As from a key: under a question about the changes it is dropped.
+        if let Some(action) = action {
+            self.apply(action);
+        }
+    }
+
     /// A save was answered: `Event::Written`.
     pub(super) fn written(
         &mut self,
