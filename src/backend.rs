@@ -4481,6 +4481,25 @@ mod tests {
         Vec::new()
     }
 
+    /// Waits until the backend says the settings file's watch is live, and
+    /// gives the texts of the file it sent before saying so.
+    fn texts_until_live(backend: &mut Backend) -> Vec<String> {
+        let deadline = std::time::Instant::now() + WAIT;
+        let mut texts = Vec::new();
+        loop {
+            match backend.wait(Duration::from_millis(200)) {
+                Some(Event::SettingsWatch { live }) => {
+                    assert!(live, "expected the watch to be live again");
+                    return texts;
+                }
+                Some(Event::SettingsFile { text, .. }) => texts.push(text),
+                None => {}
+                other => panic!("expected the watch to be live again, got {other:?}"),
+            }
+            assert!(std::time::Instant::now() < deadline, "never said");
+        }
+    }
+
     #[test]
     fn the_settings_file_is_read_when_it_changes() {
         let dir = tempfile::tempdir().unwrap();
@@ -5309,11 +5328,16 @@ mod tests {
         // A plain file takes the link's place: live again, and read.
         std::fs::remove_file(&path).unwrap();
         crate::util::write_atomic(&path, b"[data]\npage_size = 50\n").unwrap();
-        assert!(matches!(
-            backend.wait(WAIT),
-            Some(Event::SettingsWatch { live: true })
-        ));
-        assert!(!texts_until(&mut backend, "[data]\npage_size = 50\n").is_empty());
+        let plain = "[data]\npage_size = 50\n";
+        // The reader that has just said the watch is lost reads the file
+        // next, and finds the plain one when it is there already: its text
+        // then comes before the word that the watch is live, and only once.
+        let early = texts_until_live(&mut backend);
+        if early.is_empty() {
+            assert!(!texts_until(&mut backend, plain).is_empty());
+        } else {
+            assert_eq!(early, [plain]);
+        }
         std::fs::write(&path, "[data]\npage_size = 100\n").unwrap();
         assert!(!texts_until(&mut backend, "[data]\npage_size = 100\n").is_empty());
     }
