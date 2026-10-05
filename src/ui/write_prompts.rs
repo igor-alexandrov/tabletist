@@ -164,6 +164,20 @@ pub(super) fn keyboard_on(ui: &egui::Ui, buttons: &[ButtonSpec<'_>]) -> Option<u
     buttons.iter().position(|button| button.has_keyboard(ui))
 }
 
+/// Whether the pointer comes up this frame from a press that went down
+/// before the question took answers. A click is its press too: one that
+/// went down in a question's first moment answers nothing, whenever it is
+/// let go, and the frame's answers are withheld. `ripe` says whether the
+/// question takes answers now. Under `id` it remembers, for the press that
+/// is down, whether it took them when that came.
+pub(super) fn pressed_early(ctx: &egui::Context, id: Id, ripe: bool) -> bool {
+    if ctx.input(|input| input.pointer.any_pressed()) {
+        ctx.data_mut(|data| data.insert_temp(id, ripe));
+    }
+    ctx.input(|input| input.pointer.any_released())
+        && ctx.data(|data| data.get_temp::<bool>(id)) != Some(true)
+}
+
 /// Asks before pending changes are dropped. Enter never discards: it
 /// answers as the button that has the keyboard where that is Cancel or
 /// Save, saves where Save is offered and the keyboard is on no button, and
@@ -463,6 +477,10 @@ fn confirm_write(app: &mut App, ctx: &egui::Context) {
     // field in that moment stays typed, and Page Up and Page Down still
     // move the statements: reading them answers nothing.
     let ripe = prompt.after_answer.is_none_or(crate::edit::answers_taken);
+    // Nor does a click whose press went down in that moment, let go after
+    // it: on the button that sends, on Cancel, on Copy SQL or on a key hint
+    // of the terminal's box.
+    let early = pressed_early(ctx, Id::new("write-prompt-pressed"), ripe);
     let table = format::display_safe(&prompt.changeset.object.name).into_owned();
     let mut columns: Vec<String> = Vec::new();
     for change in prompt.changeset.rows.iter().flat_map(|row| &row.set) {
@@ -537,7 +555,7 @@ fn confirm_write(app: &mut App, ctx: &egui::Context) {
     }
     // Not in that first moment either: a click that was meant for the
     // dialog before this one does not replace what is on the clipboard.
-    if copy && ripe {
+    if copy && ripe && !early {
         // The whole statements, never the lines as the sheet shows them:
         // those are cut. Of the set the sheet was made with, which is what
         // it shows and all it would send: the tab's own need not be the
@@ -545,7 +563,7 @@ fn confirm_write(app: &mut App, ctx: &egui::Context) {
         let whole = crate::review::of(dialect, &prompt.changeset, &[], Values::Whole);
         ctx.copy_text(review::text(&whole, locale));
     }
-    if ripe {
+    if ripe && !early {
         app.actions.extend(actions);
     }
 }
@@ -973,7 +991,9 @@ mod tests {
     use crate::model::{Action, CellPos, ConnTabId, Dialog, EditStart, TabId};
     use crate::testing::Harness;
     use crate::theme::Look;
-    use crate::ui::tests::{click_dialog, focus_dialog, held_with_enter, pressable as buttons};
+    use crate::ui::tests::{
+        click_at, click_dialog, focus_dialog, held_with_enter, pressable as buttons,
+    };
     use egui::{Key, Modifiers};
 
     /// Makes `text` the pending value of column `col` in row `row`, as an
@@ -1266,6 +1286,118 @@ mod tests {
         } else {
             now + std::time::Duration::from_secs(3600)
         });
+    }
+
+    /// What the pointer presses to give each of the confirmation's answers
+    /// in `look`, by the answer's name and where it is on screen: a button
+    /// of the sheet, a key hint of the terminal's box as it is painted.
+    fn answers_at(harness: &mut Harness, look: Look) -> Vec<(&'static str, egui::Pos2)> {
+        let tree = harness.settle();
+        let button = |name: &str| {
+            crate::testing::bounds(&tree, name, egui::accesskit::Role::Button)
+                .unwrap_or_else(|| panic!("{}: no button {name}", look.name))
+                .center()
+        };
+        let hint = |text: &str| {
+            let place = harness.painted_rect(text);
+            place.unwrap_or_else(|| panic!("no hint {text}")).center()
+        };
+        if look.terminal {
+            vec![
+                ("Save to production", hint("enter confirm")),
+                ("Cancel", hint("esc cancel")),
+            ]
+        } else {
+            ["Save to production", "Cancel", "Copy SQL"]
+                .map(|name| (name, button(name)))
+                .to_vec()
+        }
+    }
+
+    /// The fixture's table in `look` on a production connection with one
+    /// change, its tab asked to close and the Leave prompt answered with
+    /// Save: the confirmation that answer opened is up, in its first
+    /// moment. The terminal's field holds the word, typed in that moment.
+    fn confirming_after_an_answer(look: Look) -> (Harness, (ConnTabId, TabId)) {
+        let mut harness = Harness::new();
+        harness.set_look(look);
+        let (tab, id) = harness.editable();
+        harness.app.workspace_mut(tab).unwrap().environment = crate::env::Environment::Production;
+        change(&mut harness, (tab, id), 1, 1, "bob@example.com");
+        harness.app.apply(Action::CloseTab { tab, id });
+        harness.app.apply(Action::LeaveSave);
+        harness.finish_animations();
+        opened(&mut harness, false);
+        if look.terminal {
+            harness.frame(vec![egui::Event::Text("write".into())]);
+        }
+        (harness, (tab, id))
+    }
+
+    #[test]
+    fn a_click_pressed_in_the_confirmations_first_moment_and_let_go_after_it_is_no_answer() {
+        let button = |pos: egui::Pos2, pressed: bool| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        };
+        let up = |harness: &Harness| matches!(harness.app.dialog, Some(Dialog::ConfirmWrite(_)));
+        for look in Look::ALL {
+            let (mut harness, _) = confirming_after_an_answer(look);
+            for (name, at) in answers_at(&mut harness, look) {
+                let said = format!("{}: {name}", look.name);
+                let (mut harness, edited) = confirming_after_an_answer(look);
+                // The pointer goes down on the answer while the
+                // confirmation has only just come up, and is let go once
+                // it takes answers: the click began as one for the dialog
+                // before this one.
+                harness.frame(vec![egui::Event::PointerMoved(at)]);
+                harness.frame(vec![button(at, true)]);
+                opened(&mut harness, true);
+                harness.frame(vec![button(at, false)]);
+                harness.settle();
+                assert!(up(&harness), "{said}");
+                assert!(kept(&harness, edited), "{said}");
+                assert_eq!(harness.copied, None, "{said}");
+                // Pressed again, it answers.
+                click_at(&mut harness, at);
+                assert_eq!(up(&harness), name == "Copy SQL", "{said}");
+                let sent = usize::from(name == "Save to production");
+                assert_eq!(writes(&harness), sent, "{said}");
+                assert_eq!(harness.copied.is_some(), name == "Copy SQL", "{said}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_confirmation_that_save_opened_answers_a_click_at_once() {
+        for look in Look::ALL {
+            let (mut harness, _) = confirming(look);
+            if look.terminal {
+                harness.frame(vec![egui::Event::Text("write".into())]);
+            }
+            for (name, at) in answers_at(&mut harness, look) {
+                let said = format!("{}: {name}", look.name);
+                let (mut harness, edited) = confirming(look);
+                let Some(Dialog::ConfirmWrite(prompt)) = &harness.app.dialog else {
+                    panic!("{said}: expected the confirmation");
+                };
+                assert!(prompt.after_answer.is_none(), "{said}");
+                if look.terminal {
+                    harness.frame(vec![egui::Event::Text("write".into())]);
+                }
+                // No moment to wait out: the user asked for this save, and
+                // the first click on an answer gives it.
+                click_at(&mut harness, at);
+                let copies = name == "Copy SQL";
+                assert_eq!(harness.app.dialog.is_some(), copies, "{said}");
+                let sent = usize::from(name == "Save to production");
+                assert_eq!(writes(&harness), sent, "{said}");
+                assert_eq!(harness.copied.is_some(), copies, "{said}");
+                assert_eq!(pending(&harness, edited), 1, "{said}");
+            }
+        }
     }
 
     #[test]

@@ -22,7 +22,7 @@ use crate::ui::keys::{consume_press, drop_repeats, take_enter};
 use crate::ui::states::Tone;
 use crate::ui::terminal_dialog;
 use crate::ui::widgets::{self, ButtonSpec};
-use crate::ui::write_prompts::{ROW, Skin, buttons_in, fitted};
+use crate::ui::write_prompts::{ROW, Skin, buttons_in, fitted, pressed_early};
 
 /// How wide the sheet is, where the window has the room.
 const WIDTH: f32 = 520.0;
@@ -238,14 +238,8 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
     // the grid when it came up is not one. It is dropped without a sign.
     let ripe = crate::edit::answers_taken(prompt.shown);
     // A click is its press too: one that went down in that first moment
-    // answers nothing, whenever it is let go. The question remembers, for
-    // the press that is down, whether it took answers when it came.
-    let went_down = Id::new("conflict-prompt-pressed");
-    if ctx.input(|input| input.pointer.any_pressed()) {
-        ctx.data_mut(|data| data.insert_temp(went_down, ripe));
-    }
-    let early = ctx.input(|input| input.pointer.any_released())
-        && ctx.data(|data| data.get_temp::<bool>(went_down)) != Some(true);
+    // answers nothing, whenever it is let go.
+    let early = pressed_early(ctx, Id::new("conflict-prompt-pressed"), ripe);
     // Taken before anything is drawn: a button that has the keyboard would
     // read Enter as a press of itself, and Overwrite is one of them. With a
     // modifier too, which is no Enter to the question and answers nothing.
