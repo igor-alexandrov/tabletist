@@ -257,20 +257,23 @@ impl ConnectSpec {
     pub fn effective_tls(&self) -> TlsMode {
         match (self.driver, self.tls, &self.ca_file) {
             (Driver::Postgres, TlsMode::Require, Some(_)) => TlsMode::VerifyCa,
-            (_, tls, _) => tls,
+            (Driver::Postgres | Driver::MySql | Driver::Sqlite, tls, _) => tls,
         }
     }
 
     /// A one-line description without secrets: `user@host:port/db`, or the
     /// file name for SQLite.
     pub fn summary(&self) -> String {
-        if self.driver == Driver::Sqlite {
-            return self
-                .sqlite_path
-                .as_ref()
-                .and_then(|path| path.file_name())
-                .map(|name| name.to_string_lossy().into_owned())
-                .unwrap_or_default();
+        match self.driver {
+            Driver::Sqlite => {
+                return self
+                    .sqlite_path
+                    .as_ref()
+                    .and_then(|path| path.file_name())
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+            }
+            Driver::Postgres | Driver::MySql => {}
         }
         let mut text = String::new();
         if !self.user.is_empty() {

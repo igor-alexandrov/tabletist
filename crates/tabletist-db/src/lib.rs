@@ -115,7 +115,11 @@ impl Connection {
         host_keys: &HostKeys,
         access: Access,
     ) -> Result<Self> {
-        let ssh = spec.ssh.as_ref().filter(|_| spec.driver != Driver::Sqlite);
+        // A file is opened here, whatever tunnel its spec still names.
+        let ssh = match spec.driver {
+            Driver::Sqlite => None,
+            Driver::Postgres | Driver::MySql => spec.ssh.as_ref(),
+        };
         let Some(ssh) = ssh else {
             return Ok(Self {
                 inner: Inner::connect(spec, secrets, None, access).await?,

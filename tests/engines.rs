@@ -38,8 +38,6 @@ fn sources() -> Vec<(String, String)> {
 /// Files whose comparisons are still to become matches. Each task of the
 /// plan takes its own out; the last one removes the list.
 const PENDING: &[&str] = &[
-    "crates/tabletist-db/src/lib.rs",
-    "crates/tabletist-db/src/spec.rs",
     "src/app.rs",
     "src/edit.rs",
     "src/model.rs",
