@@ -16538,6 +16538,13 @@ mod tests {
         r#" WHERE "id" = 2;"#,
     ];
 
+    /// Whether `text` is a line of a review, as one is painted.
+    fn is_line(text: &str) -> bool {
+        ["-- ", "UPDATE ", "   SET ", "       ", " WHERE ", "   AND "]
+            .iter()
+            .any(|start| text.starts_with(start))
+    }
+
     /// The panel the last frame drew, if it drew one.
     fn drawn(harness: &Harness) -> Option<crate::ui::review::Placed> {
         crate::ui::review::placed(&harness.ctx)
@@ -16775,7 +16782,7 @@ mod tests {
                 // low it is: none lies over the bar under it.
                 let lines = |harness: &Harness| {
                     let all = harness.text_rects.clone().into_iter();
-                    all.filter(|(text, _)| text.starts_with("-- ") || text.contains(r#""id" = "#))
+                    all.filter(|(text, _)| is_line(text))
                 };
                 for (text, rect) in lines(&harness) {
                     assert!(
@@ -17016,5 +17023,266 @@ mod tests {
             assert!(edits(&harness, tab, id).reviewing, "{}", look.name);
             assert!(painted(&harness, BOB[3]), "{}", look.name);
         }
+    }
+
+    /// What the terminal look's panel always paints: the start of its head.
+    const PANEL: &str = "pending · ";
+
+    /// Whether the last frame painted a text that begins with `start`.
+    fn painted_from(harness: &Harness, start: &str) -> bool {
+        harness
+            .painted
+            .iter()
+            .any(|(text, _)| text.starts_with(start))
+    }
+
+    #[test]
+    fn the_terminal_panel_has_its_head_and_its_foot() {
+        let (mut harness, tab, id) = editable_in(Look::omarchy());
+        let palette = harness.app.palette;
+        make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
+        make_pending(&mut harness, tab, id, (3, 1), &"x".repeat(100));
+        assert!(!painted_from(&harness, PANEL));
+        review(&mut harness, tab, id);
+        let placed = drawn(&harness).expect("the panel was drawn");
+        assert_eq!((placed.tab, placed.id), (tab, id));
+        // The head: the counts in the text colour, and at its right what
+        // a save is, stepped back.
+        let within = |harness: &Harness, text: &str| {
+            let mut found = harness
+                .text_rects
+                .iter()
+                .filter(|(painted, _)| painted == text);
+            found.any(|(_, rect)| placed.rect.contains_rect(*rect))
+        };
+        let head = "pending · 2 changes · 2 rows";
+        assert!(within(&harness, head), "{:?}", harness.painted);
+        assert!(painted_in(&harness, head, palette.text));
+        assert!(within(&harness, "one transaction"));
+        assert!(painted_in(&harness, "one transaction", palette.dim));
+        let counts = harness.painted_rect(head).unwrap();
+        let said = harness.painted_rect("one transaction").unwrap();
+        assert!(counts.right() < said.left());
+        // The other looks' head is not its head.
+        assert!(!painted(&harness, DRAWER));
+        assert!(pressable(&mut harness, "Copy SQL").len() == 1);
+        // The foot: what the keys do at the left, the save at the right.
+        for hint in ["esc close", "Y copy sql", ":w write"] {
+            assert!(within(&harness, hint), "{hint}: {:?}", harness.painted);
+        }
+        let hints = ["esc close", "Y copy sql", ":w write"].map(|hint| {
+            let mut found = harness
+                .text_rects
+                .iter()
+                .filter(|(painted, _)| painted == hint);
+            found
+                .find(|(_, rect)| placed.rect.contains_rect(*rect))
+                .map(|(_, rect)| *rect)
+                .unwrap()
+        });
+        assert!(hints[0].right() < hints[1].left() && hints[1].right() < hints[2].left());
+        // Head, lines, foot: from the top, none over the next.
+        let first = harness.painted_rect("-- row id 2").unwrap();
+        let last = harness.painted_rect(r#" WHERE "id" = 4;"#).unwrap();
+        assert!(counts.bottom() <= first.top());
+        assert!(last.bottom() <= hints[0].top());
+        // Each of the two left hints is its button too.
+        let tree = harness.settle();
+        for (name, hint) in [("Hide SQL", hints[0]), ("Copy SQL", hints[1])] {
+            let button = crate::testing::bounds(&tree, name, egui::accesskit::Role::Button)
+                .unwrap_or_else(|| panic!("no button {name}"));
+            assert!(button.contains(hint.center()), "{name}");
+        }
+        // Copy gives the whole statements, the cut value too.
+        harness.copied = None;
+        harness.click("Copy SQL");
+        let copied = harness.copied.clone().expect("the text was copied");
+        assert!(copied.starts_with("-- What Tabletist runs to save these changes"));
+        assert!(copied.contains(&format!("   SET \"email\" = '{}'\n", "x".repeat(100))));
+        assert!(!copied.contains('…'));
+        assert!(painted_from(&harness, PANEL), "copying leaves it open");
+        // Hide closes it.
+        harness.click("Hide SQL");
+        assert!(!edits(&harness, tab, id).reviewing);
+        assert!(!painted_from(&harness, PANEL));
+        assert_eq!(drawn(&harness), None);
+        assert!(!harness.has("Hide SQL") && !harness.has("Copy SQL"));
+        // One change in one row is counted in the singular.
+        make_pending(&mut harness, tab, id, (3, 1), "user4@example.com");
+        review(&mut harness, tab, id);
+        assert!(painted(&harness, "pending · 1 change · 1 row"));
+        // A connection that cannot write is offered no write: the status
+        // line strikes its `:w write` out, and the foot leaves it out.
+        harness.app.workspace_mut(tab).unwrap().access = tabletist_db::Access::ReadOnly;
+        harness.settle();
+        let placed = drawn(&harness).expect("the panel was drawn");
+        let mut writes = harness
+            .text_rects
+            .iter()
+            .filter(|(text, _)| text == ":w write");
+        assert!(!writes.any(|(_, rect)| placed.rect.contains_rect(*rect)));
+        assert!(painted(&harness, "esc close"));
+    }
+
+    #[test]
+    fn the_terminal_panel_stands_between_the_error_line_and_the_status_line() {
+        let (mut harness, tab, id) = editable_in(Look::omarchy());
+        // The row panel names the fields too: the grid alone is looked at.
+        harness.app.workspace_mut(tab).unwrap().row_panel = false;
+        make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
+        leave_pending(&mut harness, tab, id, (3, 2), "{oops");
+        review(&mut harness, tab, id);
+        let start = |start: &str| {
+            let mut texts = harness.text_rects.iter();
+            texts
+                .find(|(text, _)| text.starts_with(start))
+                .map(|(_, rect)| *rect)
+                .unwrap_or_else(|| panic!("nothing begins {start:?}: {:?}", harness.painted))
+        };
+        let placed = drawn(&harness).expect("the panel was drawn");
+        let order = [
+            ("the grid's last row", start("user5@example.com")),
+            ("the error line", start("! 4:meta")),
+            ("the panel's head", start(PANEL)),
+            (
+                "the panel's last line",
+                start("-- row id 4 · blocked: fix meta first"),
+            ),
+            ("the panel's foot", start("esc close")),
+            ("the status line", start("j/k row")),
+        ];
+        for pair in order.windows(2) {
+            let ((above, upper), (below, lower)) = (pair[0], pair[1]);
+            assert!(
+                upper.bottom() <= lower.top(),
+                "{above} at {upper:?} is not above {below} at {lower:?}"
+            );
+        }
+        // The panel holds its own three, and neither neighbour.
+        for (name, rect) in &order[2..5] {
+            assert!(placed.rect.contains_rect(*rect), "{name}");
+        }
+        assert!(order[1].1.bottom() <= placed.rect.top());
+        assert!(placed.rect.bottom() <= order[5].1.top());
+    }
+
+    #[test]
+    fn the_terminal_panel_wears_the_same_colours_and_scrolls_the_same() {
+        let (mut harness, tab, id) = editable_in(Look::omarchy());
+        let palette = harness.app.palette;
+        make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
+        leave_pending(&mut harness, tab, id, (3, 2), "{oops");
+        review(&mut harness, tab, id);
+        assert!(painted_in(&harness, BOB[2], palette.magenta));
+        assert!(painted_in(&harness, BOB[0], palette.dim));
+        let blocked = "-- row id 4 · blocked: fix meta first";
+        assert!(painted_in(&harness, blocked, palette.danger));
+        assert!(!painted(&harness, r#" WHERE "id" = 4;"#));
+        for line in BOB {
+            assert!(harness.has(line), "{line}");
+        }
+        // More lines than it shows at once: the first are there, the last
+        // are not, and the grid keeps half of what the two share.
+        harness.app.apply(Action::DiscardEdits { tab, id });
+        for row in 0..5 {
+            let email = format!("new{row}@example.com");
+            make_pending(&mut harness, tab, id, (row, 1), &email);
+        }
+        review(&mut harness, tab, id);
+        assert_eq!(
+            edits(&harness, tab, id)
+                .review
+                .as_ref()
+                .unwrap()
+                .lines
+                .len(),
+            25
+        );
+        let placed = drawn(&harness).expect("the panel was drawn");
+        assert!(placed.rect.height() <= harness.size.y / 2.0);
+        assert!(painted(&harness, "-- row id 1"));
+        assert!(!painted(&harness, r#" WHERE "id" = 5;"#));
+        assert!(painted(&harness, "pending · 5 changes · 5 rows"));
+        // No line lies over the foot: each begins above where the lines
+        // end, 8 over the foot's 28.
+        let end = placed.rect.bottom() - 28.0 - 8.0;
+        let mut lines = 0;
+        for (text, rect) in &harness.text_rects {
+            if is_line(text) {
+                lines += 1;
+                assert!(rect.top() < end, "{text} at {rect:?}");
+            }
+        }
+        assert!(lines > 5, "{lines} lines are painted");
+        // Where there is the room, twelve lines between the head and the
+        // foot.
+        let mut harness = Harness::with_size(egui::vec2(1280.0, 1400.0));
+        harness.set_look(Look::omarchy());
+        let (tab, id) = harness.editable();
+        focus_grid(&mut harness, tab);
+        for row in 0..5 {
+            let email = format!("new{row}@example.com");
+            make_pending(&mut harness, tab, id, (row, 1), &email);
+        }
+        review(&mut harness, tab, id);
+        let placed = drawn(&harness).expect("the panel was drawn");
+        let row = crate::ui::review::row_height(&harness.ctx, &Look::omarchy());
+        let most = 32.0 + 12.0 * row + 16.0 + 28.0;
+        assert!(
+            (placed.rect.height() - most).abs() < 0.5,
+            "{} for {most}",
+            placed.rect.height()
+        );
+    }
+
+    #[test]
+    fn the_terminal_panel_is_its_tabs_and_goes_with_the_set() {
+        let (mut harness, tab, id) = editable_in(Look::omarchy());
+        make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
+        review(&mut harness, tab, id);
+        assert!(painted_from(&harness, PANEL));
+        // Another table beside it has no panel of its own.
+        harness.app.apply(Action::OpenObject {
+            tab,
+            object: tabletist_db::ObjectRef::new("main", "orders"),
+            kind: tabletist_db::ObjectKind::Table,
+            pin: true,
+        });
+        harness.answer_structure(crate::testing::fixture_structure());
+        harness.answer_rows(crate::testing::page(3, false));
+        harness.settle();
+        assert_ne!(harness.app.workspace(tab).unwrap().active_tab, Some(id));
+        assert!(!painted_from(&harness, PANEL));
+        assert!(!painted(&harness, BOB[2]));
+        assert_eq!(drawn(&harness), None);
+        // Back on its tab it is open still, in the Structure view too.
+        harness.app.apply(Action::ActivateTab { tab, id });
+        harness.settle();
+        assert!(painted(&harness, "pending · 1 change · 1 row"));
+        for line in BOB {
+            assert!(painted(&harness, line), "{line}");
+        }
+        harness.app.apply(Action::SetView {
+            tab,
+            object_tab: id,
+            view: crate::model::ObjectView::Structure,
+        });
+        harness.settle();
+        assert!(painted_from(&harness, PANEL));
+        assert!(painted(&harness, BOB[4]));
+        // It follows the set, and goes with it; the next change does not
+        // bring it back.
+        make_pending(&mut harness, tab, id, (3, 1), "dan@example.com");
+        harness.settle();
+        assert!(painted(&harness, "pending · 2 changes · 2 rows"));
+        assert!(painted(&harness, r#" WHERE "id" = 4;"#));
+        harness.app.apply(Action::DiscardEdits { tab, id });
+        harness.settle();
+        assert!(!painted_from(&harness, PANEL));
+        assert_eq!(drawn(&harness), None);
+        make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
+        harness.settle();
+        assert!(!painted_from(&harness, PANEL));
+        assert!(!painted(&harness, BOB[2]));
     }
 }

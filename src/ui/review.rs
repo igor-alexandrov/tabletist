@@ -3,14 +3,16 @@
 //! Every place that shows a review draws it with what is here.
 
 use egui::{Color32, Frame, Id, Rect, Sense, WidgetInfo, WidgetType, pos2, vec2};
+use tabletist_db::Access;
 use tabletist_db::sql::TokenKind;
 
 use crate::app::App;
 use crate::i18n::{Locale, gettext};
-use crate::model::{ConnTabId, TabId};
+use crate::model::{Action, ConnTabId, TabId};
 use crate::review::{Ink, Line, Review};
 use crate::theme::{Look, Palette};
-use crate::typography::Text;
+use crate::typography::{Text, TextRole};
+use crate::ui::pending_bar::counted;
 use crate::ui::sql_text;
 use crate::ui::states::Tone;
 use crate::ui::widgets::{self, ButtonSpec};
@@ -30,6 +32,13 @@ const BUTTON: f32 = 24.0;
 
 /// The room above the lines and under them.
 const PAD: f32 = 8.0;
+
+/// The terminal look's foot under the lines.
+const FOOT: f32 = 28.0;
+
+/// The room between two things on the terminal look's head or foot, as
+/// its status line keeps it.
+const GAP: f32 = 18.0;
 
 /// What a copied review opens with, after the comment's dashes: pasted
 /// elsewhere, nothing checks a row and nothing wraps a transaction.
@@ -171,11 +180,11 @@ pub fn text(review: &Review, locale: Locale) -> String {
 
 /// The Review SQL of the table tab `id`, while it is open: a bottom panel.
 /// Called after the pending bar it stands on it; in the terminal look it
-/// stands on the status line.
+/// stands on the status line, under the grid's error line.
 pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, id: TabId) {
     let (locale, palette, look) = (app.locale, app.palette, app.look);
-    let review = app
-        .workspace(tab)
+    let workspace = app.workspace(tab);
+    let review = workspace
         .and_then(|workspace| workspace.object_tab(id))
         .filter(|object| object.edits.reviewing)
         .and_then(|object| object.edits.review.as_ref());
@@ -187,16 +196,26 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, id: TabId) {
         ui.skip_ahead_auto_ids(1);
         return;
     };
+    let read_only = workspace.is_some_and(|workspace| workspace.access == Access::ReadOnly);
+    let skin = Skin {
+        look: &look,
+        palette: &palette,
+        locale,
+    };
     let lines = &review.lines;
     let row = row_height(ui.ctx(), &look);
     let body = lines.len().min(MAX_ROWS) as f32 * row + 2.0 * PAD;
+    // The terminal look has no bar under the panel to hide it from.
+    let foot = if look.terminal { FOOT } else { 0.0 };
     // As tall as its lines, to at most `MAX_ROWS` of them, and never more
     // than half of what the tab has for its grid and for this.
-    let height = (HEAD + body).min(ui.available_height() / 2.0).max(0.0);
+    let height = (HEAD + body + foot)
+        .min(ui.available_height() / 2.0)
+        .max(0.0);
     // The neighbour under it sets the lines' left edge: the bar's, or the
     // status line's.
     let side = if look.terminal { 12.0 } else { 20.0 };
-    let mut copy = false;
+    let mut asked = Asked::default();
     let panel = egui::Panel::bottom(Id::new(("review-sql", tab.0, id.0)))
         .exact_size(height)
         .resizable(false)
@@ -208,25 +227,16 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, id: TabId) {
             ui.painter().rect_filled(head, 0, palette.panel);
             widgets::hline(ui, head.x_range(), head.top() + 0.5, palette.outline);
             widgets::hline(ui, head.x_range(), head.bottom() - 0.5, palette.outline);
-            let y = head.center().y;
-            // The button first, from the right: what the head says gives
-            // way to it.
-            let name = gettext(locale, "Copy SQL");
-            let button = ButtonSpec::new(&name).quiet();
-            let width = button.width(ui, &look);
-            let at = Rect::from_min_size(
-                pos2(head.right() - side - width, y - BUTTON / 2.0),
-                vec2(width, BUTTON),
-            );
-            copy = button.show_at(ui, at, &look, &palette).clicked();
-            let said = gettext(locale, "Runs in one transaction");
-            let said = || Text::one(&look, widgets::body(&look), &said, palette.secondary);
-            if head.left() + side + widgets::measure(ui, said()) <= at.left() - 8.0 {
-                widgets::paint_label(ui, head.left() + side, y, said());
+            if look.terminal {
+                terminal_head(ui, head, side, (review.changes, review.rows), skin);
+                let foot = Rect::from_min_max(pos2(full.left(), full.bottom() - FOOT), full.max);
+                asked = terminal_foot(ui, foot, side, read_only, skin);
+            } else {
+                asked.copy = desktop_head(ui, head, side, skin);
             }
             let place = Rect::from_min_max(
                 pos2(full.left() + side, head.bottom() + PAD),
-                pos2(full.right() - side, full.bottom() - PAD),
+                pos2(full.right() - side, full.bottom() - foot - PAD),
             );
             if !place.is_positive() {
                 return;
@@ -248,7 +258,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, id: TabId) {
         });
     // The whole statements, never the lines as they are shown: those are
     // cut.
-    if copy && let Some(text) = copy_text(app, tab, id) {
+    if asked.copy
+        && let Some(text) = copy_text(app, tab, id)
+    {
         ui.ctx().copy_text(text);
     }
     let placed = Placed {
@@ -259,6 +271,142 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, id: TabId) {
     let now = ui.ctx().cumulative_frame_nr();
     ui.ctx()
         .data_mut(|data| data.insert_temp(placed_id(), (placed, now)));
+    if asked.hide {
+        let show = false;
+        app.actions.push(Action::ReviewEdits { tab, id, show });
+    }
+}
+
+/// How the panel draws.
+#[derive(Clone, Copy)]
+struct Skin<'a> {
+    look: &'a Look,
+    palette: &'a Palette,
+    locale: Locale,
+}
+
+impl Skin<'_> {
+    /// `text` translated, in the look's case.
+    fn say(&self, text: &'static str) -> String {
+        self.look.label(&gettext(self.locale, text))
+    }
+}
+
+/// What the panel's buttons were pressed for.
+#[derive(Default)]
+struct Asked {
+    copy: bool,
+    hide: bool,
+}
+
+/// The head on macOS and Windows: what a save is, and Copy SQL at its
+/// right. The counts are in the bar under the drawer. Returns whether the
+/// button was pressed.
+fn desktop_head(ui: &mut egui::Ui, head: Rect, side: f32, skin: Skin<'_>) -> bool {
+    let Skin {
+        look,
+        palette,
+        locale,
+    } = skin;
+    let y = head.center().y;
+    // The button first, from the right: what the head says gives way to
+    // it.
+    let name = gettext(locale, "Copy SQL");
+    let button = ButtonSpec::new(&name).quiet();
+    let width = button.width(ui, look);
+    let at = Rect::from_min_size(
+        pos2(head.right() - side - width, y - BUTTON / 2.0),
+        vec2(width, BUTTON),
+    );
+    let copy = button.show_at(ui, at, look, palette).clicked();
+    let said = gettext(locale, "Runs in one transaction");
+    let said = || Text::one(look, widgets::body(look), &said, palette.secondary);
+    if head.left() + side + widgets::measure(ui, said()) <= at.left() - 8.0 {
+        widgets::paint_label(ui, head.left() + side, y, said());
+    }
+    copy
+}
+
+/// The terminal look's head: how much is pending, since the look has no
+/// bar to say it, and at the right what a save is. Its buttons are in the
+/// foot.
+fn terminal_head(
+    ui: &egui::Ui,
+    head: Rect,
+    side: f32,
+    (changes, rows): (usize, usize),
+    skin: Skin<'_>,
+) {
+    let Skin {
+        look,
+        palette,
+        locale,
+    } = skin;
+    let y = head.center().y;
+    let counts = format!(
+        "{} · {} · {}",
+        skin.say("pending"),
+        look.label(&counted(locale, changes, "change", "changes")),
+        look.label(&counted(locale, rows, "row", "rows"))
+    );
+    let counts = Text::one(look, TextRole::OGroup, &counts, palette.text);
+    let left = head.left() + side;
+    let end = left + widgets::paint_label(ui, left, y, counts);
+    // Where the head has the room for both.
+    let said = skin.say("one transaction");
+    let said = || Text::one(look, TextRole::OSecondary, &said, palette.dim);
+    let start = head.right() - side - widgets::measure(ui, said());
+    if end + GAP <= start {
+        widgets::paint_label(ui, start, y, said());
+    }
+}
+
+/// The terminal look's foot: the keys that close the panel and copy its
+/// SQL at the left, the one that saves at the right, drawn as the status
+/// line under it draws its keys. Over each of the two left hints lies a
+/// button that is not drawn, so the pointer and a screen reader reach what
+/// the keys do.
+fn terminal_foot(
+    ui: &mut egui::Ui,
+    foot: Rect,
+    side: f32,
+    read_only: bool,
+    skin: Skin<'_>,
+) -> Asked {
+    let Skin {
+        look,
+        palette,
+        locale,
+    } = skin;
+    ui.painter().rect_filled(foot, 0, palette.panel);
+    widgets::hline(ui, foot.x_range(), foot.top() + 0.5, palette.outline);
+    let y = foot.top() + 1.0 + (FOOT - 1.0) / 2.0;
+    let (close, copy, write) = (skin.say("close"), skin.say("copy sql"), skin.say("write"));
+    let names = [gettext(locale, "Hide SQL"), gettext(locale, "Copy SQL")];
+    let mut pressed = [false; 2];
+    let mut x = foot.left() + side;
+    for (index, hint) in [("esc", &*close, true), ("Y", &*copy, true)]
+        .into_iter()
+        .enumerate()
+    {
+        let width = widgets::key_hints(ui, (x, y), &[hint], GAP, look, palette);
+        let place = Rect::from_min_max(pos2(x, foot.top() + 1.0), pos2(x + width, foot.bottom()));
+        pressed[index] = ButtonSpec::new(&names[index])
+            .hidden_at(ui, place)
+            .clicked();
+        x += width + GAP;
+    }
+    // Left out on a connection that cannot write, as the status line
+    // strikes it out there; and where the foot is too narrow for it.
+    let hint = [(":w", &*write, true)];
+    let start = foot.right() - side - widgets::key_hints_width(ui, &hint, GAP, look, palette);
+    if !read_only && x <= start {
+        widgets::key_hints(ui, (start, y), &hint, GAP, look, palette);
+    }
+    Asked {
+        hide: pressed[0],
+        copy: pressed[1],
+    }
 }
 
 /// What Copy SQL puts on the clipboard: the tab's review with every value
