@@ -1266,8 +1266,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
         if let Some(cell) = output.clicked {
             actions.push(Action::SelectCell { tab, id, cell });
         }
-        // A second click edits the cell, where the look edits in place.
-        if let Some(cell) = output.double_clicked.filter(|_| !look.terminal) {
+        // A second click edits the cell.
+        if let Some(cell) = output.double_clicked {
             let start = EditStart::Value;
             actions.push(Action::EditCell {
                 tab,

@@ -12,7 +12,7 @@ use crate::theme::{Look, Palette};
 use crate::typography::Text;
 use crate::ui::focus::{self, Ring};
 use crate::ui::format::display_safe;
-use crate::ui::keys::consume_press;
+use crate::ui::keys::{consume_press, is_press};
 use crate::ui::states::Tone;
 use crate::ui::{grid, sql_complete, widgets};
 
@@ -23,9 +23,10 @@ pub struct Outcome {
     pub changed: bool,
     /// Enter, Tab or Shift+Tab ended the edit.
     pub commit: Option<Advance>,
-    /// Esc.
+    /// Esc, or the terminal look's Ctrl+C: the edit is dropped.
     pub cancel: bool,
-    /// The keyboard went elsewhere.
+    /// The keyboard went elsewhere, or the terminal look's Esc left insert
+    /// mode: the text is kept.
     pub left: bool,
     /// Alt+Enter.
     pub large: bool,
@@ -77,7 +78,7 @@ fn take_keyboard(ctx: &egui::Context, id: Id, text: &str) {
 /// take Enter as giving the keyboard up, and Alt+Enter with it. Tab and
 /// Esc are egui's to move and drop the keyboard with, unless the field
 /// holds them (see `hold_keys`).
-fn ending_keys(ui: &Ui, has: bool, had: bool, outcome: &mut Outcome) {
+fn ending_keys(ui: &Ui, has: bool, had: bool, terminal: bool, outcome: &mut Outcome) {
     ui.input_mut(|input| {
         if has {
             // Alt first: a match lets an extra Alt and Shift through.
@@ -91,11 +92,58 @@ fn ending_keys(ui: &Ui, has: bool, had: bool, outcome: &mut Outcome) {
                 outcome.commit = Some(Advance::Right);
             }
         }
-        // In the first frames of a field egui still drops the keyboard on
-        // Esc before any of this runs: the key is the editor's all the same.
-        if (has || had) && consume_press(input, Modifiers::NONE, Key::Escape) {
-            outcome.cancel = true;
+        leaving_keys(input, has || had, terminal, outcome);
+    });
+}
+
+/// Esc and, in the terminal look, Ctrl+C, for a field that has the
+/// keyboard or `had` it a frame ago: in the first frames of a field egui
+/// still drops the keyboard on Esc before any of this runs, and the key is
+/// the editor's all the same. Esc drops the edit. In the terminal look it
+/// leaves insert mode with the text kept, and Ctrl+C drops it.
+fn leaving_keys(input: &mut egui::InputState, mine: bool, terminal: bool, outcome: &mut Outcome) {
+    if !mine {
+        return;
+    }
+    if !terminal {
+        outcome.cancel |= consume_press(input, Modifiers::NONE, Key::Escape);
+        return;
+    }
+    // Ctrl+C comes as a copy where Ctrl is the command key, and is taken
+    // before the field sees it: nothing is copied. Where Cmd is, the copy
+    // is Cmd+C and stays the field's, and Ctrl+C is a key.
+    let copy = !input.modifiers.mac_cmd;
+    let mut ended = false;
+    input.events.retain(|event| {
+        if ended {
+            // What is typed after the key that left is not the text's:
+            // insert mode ended there. Nor is it normal mode's, whose keys
+            // were read before the field was drawn.
+            return !matches!(
+                event,
+                egui::Event::Text(_) | egui::Event::Paste(_) | egui::Event::Copy | egui::Event::Cut
+            );
         }
+        match event {
+            egui::Event::Copy if copy => outcome.cancel = true,
+            event if is_press(event, Modifiers::CTRL, Key::C) => outcome.cancel = true,
+            egui::Event::Key {
+                key: Key::Escape,
+                pressed: true,
+                repeat,
+                modifiers,
+                ..
+            } if modifiers.matches_logically(Modifiers::NONE) => {
+                // A held key's repeats are taken and end nothing.
+                if *repeat {
+                    return false;
+                }
+                outcome.left = true;
+            }
+            _ => return true,
+        }
+        ended = true;
+        false
     });
 }
 
@@ -156,7 +204,7 @@ pub fn field(
     if has {
         keep_keyboard(ui.ctx());
     }
-    ending_keys(ui, has, had, &mut outcome);
+    ending_keys(ui, has, had, look.terminal, &mut outcome);
 
     // Over the cell: the row's fill would show through a field with none.
     ui.painter()
@@ -197,16 +245,36 @@ pub fn field(
     );
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(place));
     let mut layouter = crate::typography::layouter(look, role, palette.text);
-    let response = child.add(
-        egui::TextEdit::singleline(&mut editor.text)
-            .id(id)
-            .font(role.font_id(look.faces))
-            .frame(egui::Frame::new().inner_margin(inside))
-            .desired_width(place.width())
-            // Tab ends the edit; it is not egui's to move the keyboard with.
-            .lock_focus(true)
-            .layouter(&mut layouter),
-    );
+    let output = egui::TextEdit::singleline(&mut editor.text)
+        .id(id)
+        .font(role.font_id(look.faces))
+        .frame(egui::Frame::new().inner_margin(inside))
+        .desired_width(place.width())
+        // Tab ends the edit; it is not egui's to move the keyboard with.
+        .lock_focus(true)
+        .layouter(&mut layouter)
+        .show(&mut child);
+    if look.terminal
+        && output.response.has_focus()
+        && let Some(cursor) = output.cursor_range
+    {
+        // A terminal's cursor is a block: one character wide from where
+        // the next one goes, over the caret's line. Tinted, so the
+        // character under it reads through.
+        let caret = output.galley.pos_from_cursor(cursor.primary);
+        let block = Rect::from_min_size(
+            output.galley_pos + caret.min.to_vec2(),
+            vec2(role.width(ui.ctx(), look.faces, "0"), caret.height()),
+        );
+        ui.painter()
+            .with_clip_rect(output.text_clip_rect.intersect(ui.clip_rect()))
+            .rect_filled(
+                block,
+                CornerRadius::ZERO,
+                palette.accent.gamma_multiply(0.5),
+            );
+    }
+    let response: egui::Response = output.response.response;
     // The name only: the field keeps the role and the value egui gave it.
     let name = format!("{} {}", gettext(locale, "Edit"), display_safe(&target.name));
     ui.ctx().accesskit_node_builder(id, |node| {
@@ -217,12 +285,27 @@ pub fn field(
         hold_keys(ui.ctx(), id);
     }
     // The ring is the cell's: red while the text fails its check.
-    let ring = if editor.problem.is_some() {
-        Ring::Failing { radius: 0 }
+    let failing = editor.problem.is_some();
+    if look.terminal {
+        // The cursor's line, as the grid draws it round the cell its keys
+        // are on, and no halo: the grid marks its own cell.
+        let color = if failing {
+            palette.danger
+        } else {
+            palette.accent
+        };
+        ui.painter().rect_stroke(
+            rect,
+            CornerRadius::ZERO,
+            Stroke::new(2.0, color),
+            StrokeKind::Inside,
+        );
+        focus::hint(ui, &response, rect, Ring::Own);
+    } else if failing {
+        focus::hint(ui, &response, rect, Ring::Failing { radius: 0 });
     } else {
-        Ring::Field { radius: 0 }
-    };
-    focus::hint(ui, &response, rect, ring);
+        focus::hint(ui, &response, rect, Ring::Field { radius: 0 });
+    }
     if let (Some(problem), true) = (&editor.problem, target.hold) {
         let message = problem_text(problem, &target.type_name, Some(&editor.text), locale);
         say_under(ui, rect, id, &message, look, palette);
@@ -249,8 +332,9 @@ fn keyboard_after(
     outcome: &mut Outcome,
 ) {
     let ended = outcome.commit.is_some() || outcome.cancel || outcome.large;
-    // The keyboard went elsewhere: to a click, to another field.
-    outcome.left = had && !has && !ended;
+    // The keyboard went elsewhere: to a click, to another field. Or the
+    // terminal's Esc left the field already.
+    outcome.left = !ended && (outcome.left || (had && !has));
     if target.hold && !has && !had {
         // A prompt was up when it left, and the editor is open still: it
         // has the keyboard again once nothing else is asked.
@@ -314,9 +398,7 @@ pub fn large(
                 if has && consume_press(input, Modifiers::COMMAND, Key::Enter) {
                     outcome.commit = Some(Advance::Stay);
                 }
-                if (has || had) && consume_press(input, Modifiers::NONE, Key::Escape) {
-                    outcome.cancel = true;
-                }
+                leaving_keys(input, has || had, look.terminal, &mut outcome);
             });
             let (rect, _) = ui.allocate_exact_size(LARGE, egui::Sense::hover());
             // A press beside the text (the band, the padding) is the
@@ -416,12 +498,22 @@ fn band(
     widgets::hline(ui, rect.x_range().shrink(1.0), top, line);
     let y = top + BAND / 2.0;
     let role = widgets::secondary(look);
-    let keys = format!(
-        "{}↩ {} · esc {}",
-        look.command_key(),
-        gettext(locale, "apply"),
-        gettext(locale, "cancel")
-    );
+    // The terminal's Esc keeps the text, and its keys are spelled out.
+    let keys = if look.terminal {
+        format!(
+            "{}enter {} · esc {}",
+            look.label(look.command_key()),
+            gettext(locale, "apply"),
+            gettext(locale, "keep")
+        )
+    } else {
+        format!(
+            "{}↩ {} · esc {}",
+            look.command_key(),
+            gettext(locale, "apply"),
+            gettext(locale, "cancel")
+        )
+    };
     let right = rect.right() - LARGE_PAD;
     let taken = widgets::paint_text_right(ui, right, y, Text::one(look, role, &keys, palette.dim));
     let left = rect.left() + LARGE_PAD;

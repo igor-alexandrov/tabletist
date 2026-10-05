@@ -1586,6 +1586,30 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
             })
         })
         .unwrap_or_default();
+    // What editing adds to a table's line: whether `i` would open an
+    // editor on the selected cell, and how much is pending.
+    let table = workspace
+        .active_object_tab()
+        .filter(|object| object.view == ObjectView::Data);
+    let can_edit = table.is_some_and(|object| {
+        let cell = object.selection;
+        let table = crate::edit::Table::of(workspace, object);
+        table
+            .zip(cell)
+            .is_some_and(|(table, cell)| table.lock(cell).is_none())
+    });
+    let pending = workspace
+        .active_object_tab()
+        .map(|object| object.edits.counts())
+        .filter(|counts| counts.changes > 0)
+        .map(|counts| {
+            format!(
+                "{} {} · {}",
+                counts.changes,
+                gettext(locale, "pending"),
+                super::pending_bar::counted(locale, counts.rows, "row", "rows")
+            )
+        });
     egui::Panel::bottom(egui::Id::new(("status-line", tab.0)))
         .exact_size(31.0)
         .resizable(false)
@@ -1595,16 +1619,22 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
             let rect = ui.max_rect();
             widgets::hline(ui, rect.x_range(), rect.top() + 0.5, palette.outline);
             let y = rect.top() + 1.0 + 15.0;
-            let table_hints = [
+            // Space shows the row; `i` edits the cell, where it can be.
+            let edit = gettext(locale, "edit");
+            let mut table_hints: Vec<widgets::Hint<'_>> = vec![
                 ("j/k", "row", true),
                 ("h/l", "col", true),
-                ("enter", "inspect", true),
-                ("i", "inspector", true),
+                ("space", "inspect", true),
+            ];
+            if can_edit {
+                table_hints.push(("i", &*edit, true));
+            }
+            table_hints.extend([
                 ("/", "filter", true),
                 ("ctrl+b", "tables", true),
                 ("y", "copy", true),
                 ("s", "structure", true),
-            ];
+            ]);
             // An editor's keys: a table's do nothing on it.
             let words = [
                 "run",
@@ -1670,13 +1700,18 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                 (tag, width)
             });
             let tag_room = tag.as_ref().map_or(0.0, |(_, width)| width + gap);
-            let limit = rect.right() - 12.0 - summary_width - gap - tag_room;
+            // What is pending is never dropped for width: the keys give
+            // way to it, and then the page's range.
+            let pending_room = pending.as_ref().map_or(0.0, |text| measure(text) + gap);
+            let limit = rect.right() - 12.0 - summary_width - gap - tag_room - pending_room;
             let disabled = ["e edit", "o new row", "dd delete", ":w write"];
             let disabled_width = disabled.iter().map(|text| measure(text)).sum::<f32>()
                 + 14.0 * (disabled.len() - 1) as f32;
             let mut x = rect.left() + 12.0;
             let shown = fit(limit);
-            x += widgets::key_hints(ui, (x, y), &hints[..shown], gap, &look, &palette) + gap;
+            if shown > 0 {
+                x += widgets::key_hints(ui, (x, y), &hints[..shown], gap, &look, &palette) + gap;
+            }
             let separator = measure("│");
             if shown == hints.len() && x + separator + gap + disabled_width <= limit {
                 x += widgets::paint_text(ui, x, y, Text::one(&look, role, "│", palette.outline))
@@ -1706,13 +1741,25 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                     StrokeKind::Inside,
                 );
                 widgets::paint_text(ui, x + 7.0, y, Text::one(&look, role, tag, palette.dim));
+                x += width + gap;
             }
-            widgets::paint_text_right(
-                ui,
-                rect.right() - 12.0,
-                y,
-                Text::one(&look, role, &summary, palette.dim),
-            );
+            if let Some(pending) = &pending {
+                x += widgets::paint_label(
+                    ui,
+                    x,
+                    y,
+                    Text::one(&look, role, pending, palette.warning),
+                ) + gap;
+            }
+            // The range, unless what stands before it reaches that far.
+            if x <= rect.right() - 12.0 - summary_width {
+                widgets::paint_text_right(
+                    ui,
+                    rect.right() - 12.0,
+                    y,
+                    Text::one(&look, role, &summary, palette.dim),
+                );
+            }
         });
 }
 
