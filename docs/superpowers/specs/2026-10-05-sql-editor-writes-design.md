@@ -199,7 +199,9 @@ of statements is `Ok` with no results, as today.
   run's `Err`. In a `Write` run whose end is known the outcome is returned
   with the failure in `broken`, and the backend closes the session after
   it has delivered the result: a run known to be committed is never shown
-  as one that may be.
+  as one that may be. The end is known once the `COMMIT` or the `ROLLBACK`
+  was answered. A connection lost before that, or a `ROLLBACK` that fails,
+  stays the run's `Err`: no end is made up for it.
 
 ### PostgreSQL
 
@@ -261,7 +263,14 @@ of statements is `Ok` with no results, as today.
    question once more before `ROLLBACK`, and notes the same. A failed
    `CREATE TABLE` has still committed what came before it. The status the
    driver holds is no answer here: an error packet carries none, and
-   mysql_async empties what it held, so only a new query tells.
+   mysql_async empties what it held, so only a new query tells. One case
+   reads the other way: a deadlock (1213), and a lock wait timeout (1205)
+   on a server set to roll back on it, make the server roll the whole
+   transaction back, which also leaves the session outside one. After a
+   statement that failed with either code, "outside" notes nothing: the
+   work since the last noted commit is gone, and commits noted earlier
+   stand. The plan checks this against the test server before it relies
+   on it.
 4. With every statement done: `COMMIT`, after `stop.finish()`, and
    `ScriptEnd::Committed`. A `COMMIT` that fails is `CommitFailed`, after a
    `ROLLBACK`.
@@ -597,7 +606,10 @@ No step ships a read-write run on production without its confirmation.
 - MySQL: `CREATE TABLE` between two inserts with a failing statement at
   the end is `Partly` with the right count; a failing `CREATE TABLE` still
   counts what came before it; a failing statement with no DDL before it
-  is `RolledBack`, not `Partly`; an `INSERT ... SELECT` and a `CREATE
+  is `RolledBack`, not `Partly`; two sessions that deadlock end the
+  losing run `RolledBack`, with the probe table untouched, and after a
+  `CREATE TABLE` earlier in it `Partly` with only what preceded the commit;
+  an `INSERT ... SELECT` and a `CREATE
   TABLE ... SELECT` copy more rows than the limit; a rolled back change to
   a MyISAM table sets `rollback_warning`; a truncating insert in a session
   without strict mode reports its warning.
