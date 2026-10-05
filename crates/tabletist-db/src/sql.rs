@@ -1000,6 +1000,62 @@ pub fn kind(dialect: Dialect, statement: &str) -> StatementKind {
     }
 }
 
+/// A statement that changes or removes rows, for [`unbounded`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Verb {
+    Update,
+    Delete,
+}
+
+/// The words a statement's own verb can be, once a `WITH` list and an
+/// `EXPLAIN` in front of it are passed.
+const VERBS: [&str; 8] = [
+    "SELECT", "INSERT", "UPDATE", "DELETE", "MERGE", "VALUES", "TABLE", "REPLACE",
+];
+
+/// `UPDATE` or `DELETE` when `statement` is one with no `WHERE` of its
+/// own: it reaches every row of its table. A `WHERE` inside parentheses
+/// belongs to a subquery and does not count. A `WITH` in front is passed,
+/// and so is an `EXPLAIN` that has `ANALYZE`, which runs the statement
+/// behind it. An `INSERT` that updates on a conflict and a `MERGE` are
+/// bounded by their rows, and are never named.
+pub fn unbounded(dialect: Dialect, statement: &str) -> Option<Verb> {
+    let tokens = tokenize(dialect, statement);
+    // The words outside parentheses, in order.
+    let mut top = Vec::new();
+    let mut depth = 0_usize;
+    let mut analyzed = false;
+    for token in &tokens {
+        match (token.kind, &statement[token.range.clone()]) {
+            (TokenKind::Punctuation, "(") => depth += 1,
+            (TokenKind::Punctuation, ")") => depth = depth.saturating_sub(1),
+            _ => {
+                if let Some(word) = bare_word(statement, token) {
+                    // Also as an option: EXPLAIN (ANALYZE).
+                    analyzed |= ANALYZES.contains(&word.as_str());
+                    if depth == 0 {
+                        top.push(word);
+                    }
+                }
+            }
+        }
+    }
+    let leads = match top.first()?.as_str() {
+        "UPDATE" | "DELETE" | "WITH" => true,
+        word => EXPLAINS.contains(&word) && analyzed,
+    };
+    if !leads {
+        return None;
+    }
+    let at = top.iter().position(|word| VERBS.contains(&word.as_str()))?;
+    let verb = match top[at].as_str() {
+        "UPDATE" => Verb::Update,
+        "DELETE" => Verb::Delete,
+        _ => return None,
+    };
+    (!top[at + 1..].iter().any(|word| word == "WHERE")).then_some(verb)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2274,5 +2330,101 @@ mod tests {
                 let _ = kind(dialect, text);
             }
         }
+    }
+
+    #[test]
+    fn an_update_or_delete_without_a_where_is_unbounded() {
+        for dialect in DIALECTS {
+            for (text, verb) in [
+                ("UPDATE books SET title = 'x'", Verb::Update),
+                ("delete from books", Verb::Delete),
+                ("DELETE FROM books -- WHERE id = 1", Verb::Delete),
+                ("UPDATE books SET title = 'WHERE id = 1'", Verb::Update),
+                // A WHERE of a subquery bounds the subquery.
+                (
+                    "UPDATE books SET title = (SELECT name FROM drafts WHERE drafts.id = books.id)",
+                    Verb::Update,
+                ),
+                ("DELETE FROM books ORDER BY id LIMIT 5", Verb::Delete),
+                (
+                    "WITH old AS (SELECT id FROM books WHERE id < 5) DELETE FROM books",
+                    Verb::Delete,
+                ),
+                (
+                    "WITH old AS (SELECT 1) UPDATE books SET title = 'x'",
+                    Verb::Update,
+                ),
+                // It runs the statement behind it.
+                ("EXPLAIN ANALYZE DELETE FROM books", Verb::Delete),
+                ("EXPLAIN ANALYSE DELETE FROM books", Verb::Delete),
+                (
+                    "EXPLAIN (ANALYZE, BUFFERS) UPDATE books SET title = 'x'",
+                    Verb::Update,
+                ),
+            ] {
+                assert_eq!(unbounded(dialect, text), Some(verb), "{dialect:?} {text}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_where_outside_parentheses_bounds_the_statement() {
+        for dialect in DIALECTS {
+            for text in [
+                "UPDATE books SET title = 'x' WHERE id = 1",
+                "delete from books where id = 1",
+                "DELETE FROM books WHERE id IN (SELECT book_id FROM drafts)",
+                "UPDATE books SET title = 'x' WHERE CURRENT OF pick",
+                "WITH old AS (SELECT 1) DELETE FROM books WHERE id = 1",
+                "EXPLAIN ANALYZE DELETE FROM books WHERE id = 1",
+            ] {
+                assert_eq!(unbounded(dialect, text), None, "{dialect:?} {text}");
+            }
+        }
+    }
+
+    #[test]
+    fn only_an_update_or_a_delete_is_ever_unbounded() {
+        for dialect in DIALECTS {
+            for text in [
+                "SELECT * FROM books",
+                "SELECT * FROM books FOR UPDATE",
+                "WITH x AS (SELECT 1) SELECT * FROM x FOR UPDATE",
+                "INSERT INTO books VALUES (1)",
+                "INSERT INTO books VALUES (1) ON CONFLICT (id) DO UPDATE SET title = 'x'",
+                "INSERT INTO books VALUES (1) ON DUPLICATE KEY UPDATE title = 'x'",
+                "WITH s AS (SELECT 1) INSERT INTO books SELECT * FROM s ON CONFLICT (id) DO UPDATE SET title = 'x'",
+                "MERGE INTO books USING drafts ON books.id = drafts.id WHEN MATCHED THEN UPDATE SET title = 'x'",
+                "TRUNCATE books",
+                "DROP TABLE books",
+                // Nothing runs.
+                "EXPLAIN DELETE FROM books",
+                "",
+                "-- DELETE FROM books",
+            ] {
+                assert_eq!(unbounded(dialect, text), None, "{dialect:?} {text}");
+            }
+        }
+    }
+
+    #[test]
+    fn odd_text_never_panics_the_unbounded_check() {
+        for dialect in DIALECTS {
+            for text in [
+                "(",
+                ")",
+                ")))",
+                "'",
+                "/*",
+                "é",
+                "UPDATE",
+                "DELETE (",
+                "WITH",
+                "EXPLAIN ANALYZE",
+            ] {
+                let _ = unbounded(dialect, text);
+            }
+        }
+        assert_eq!(unbounded(Dialect::Postgres, "UPDATE"), Some(Verb::Update));
     }
 }
