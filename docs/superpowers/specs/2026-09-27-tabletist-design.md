@@ -29,8 +29,12 @@ PostgreSQL, MySQL, SQLite. No others in v1.
 4. Selecting a row shows every field of that row, in full, in the row panel.
 5. The Structure view lists columns, indexes, and foreign keys.
 6. On a read-only connection no action in the app can modify data in the
-   connected database. On a writable one browsing, a raw WHERE and the SQL
-   editor still cannot (see `2026-10-03-value-editing-core-design.md`).
+   connected database. On a writable one the app edits the values of
+   existing rows in a table's grid, and only Save writes: every pending
+   change of the tab in one transaction, which never overwrites a row
+   someone else changed unless the user, asked about that row, chooses to,
+   and on production only after its statements were shown and confirmed. Browsing, a raw WHERE and the SQL editor still
+   cannot write (see `2026-10-03-value-editing-core-design.md`).
 7. The UI thread never blocks on the database, network, or disk; any running
    query can be cancelled.
 8. The app follows the Omarchy theme live, and the OS light/dark setting
@@ -95,14 +99,17 @@ tabletist/
     src/lib.rs               Connection (driver + optional SSH tunnel), CancelHandle
     src/spec.rs              ConnectSpec, Driver, TlsMode, SshSpec, Secrets, URL parsing
     src/value.rs             Value, ColumnMeta, ValueKind
-    src/catalog.rs           ObjectRef, ObjectInfo, ObjectKind, Structure
+    src/catalog.rs           ObjectRef, ObjectInfo, ObjectKind, Structure, the row key
+    src/class.rs             ColumnClass: what a column takes, by its type's name
     src/query.rs             RowQuery, Filter, Sort, RowPage
     src/dialect.rs           per-dialect SQL builder and identifier quoting
+    src/write.rs             ChangeSet, WriteOutcome, the checks a save shares
     src/error.rs             Error, SshStage
     src/tls.rs               rustls config per TlsMode (libpq sslmode meanings)
     src/ssh.rs               russh tunnel, host key check
     src/pg.rs  src/mysql.rs  src/sqlite.rs   adapters
     src/sqlite/fence.rs      what SQLite's authorizer lets a script and a raw WHERE do
+    src/{pg,mysql,sqlite}/write.rs   the save, one transaction per driver
     src/fixtures.rs          fixture scripts; writes the SQLite demo database
     fixtures/                postgres.sql, mysql.sql, sqlite.sql
     tests/                   integration tests per driver and SSH; ssh/ test keys
@@ -111,6 +118,9 @@ tabletist/
     lib.rs                   module list
     entrypoint.rs            CLI (clap), demo flags, logging, native window
     app.rs                   App state, apply(Action) reducer
+    app/editing.rs           the reducer's part in editing: the guard, the editor, the save
+    edit.rs                  editing a table's values: locks, checks, the pending set, a save's conflicts
+    review.rs                Review SQL: a pending set as the lines of the statements a save runs
     model.rs                 Action, ConnTab, Workspace, Tree, ObjectTab, Fetch, Dialog
     backend.rs               runtime thread, Command/Event, sessions
     connections.rs           saved connections store (JSON)
@@ -135,6 +145,12 @@ tabletist/
     ui/object_tabs.rs        object tab bar (preview tabs in italics)
     ui/data_view.rs          footer and grid, or the error or empty state
     ui/grid.rs               virtualized data grid
+    ui/cell_editor.rs        the editor on a cell, its popover, the words for checks and locks
+    ui/pending_bar.rs        pending changes above the footer, with Review SQL, Save and Discard all
+    ui/review.rs             Review SQL as it is read: its drawer or panel, its lines, the copied text
+    ui/write_prompts.rs      asks before pending changes are dropped or saved to production
+    ui/conflict_prompt.rs    asks about each row a save found changed on the server, or gone
+    ui/terminal_dialog.rs    the head, foot and key hints of an Omarchy dialog
     ui/structure.rs          columns, indexes, foreign keys
     ui/row_panel.rs          every field of the selected row
     ui/filter_bar.rs         filter rows and raw WHERE
@@ -215,6 +231,8 @@ impl Connection {
     pub async fn describe(&self, obj: &ObjectRef) -> Result<Structure>;
     pub async fn fetch_rows(&self, q: &RowQuery) -> Result<RowPage>;
     pub async fn count_rows(&self, q: &RowQuery) -> Result<u64>;
+    /// The only writing call: changed rows, in one transaction or not at all.
+    pub async fn write(&self, changes: &ChangeSet) -> Result<WriteOutcome>;
     pub fn cancel_handle(&self) -> CancelHandle;
     pub async fn close(self) -> Result<()>;
 }
@@ -264,8 +282,16 @@ state. Browsing, a raw WHERE and the SQL editor still cannot write there:
 row fetches and counts run in read-only transactions on PostgreSQL and
 MySQL, and on SQLite under `query_only` with an authorizer fencing the raw
 WHERE; a script runs behind the SQL editor's guard, which makes a MySQL
-session read-only for the run. Nothing in the app writes yet. The detail is
-in `2026-10-03-value-editing-core-design.md`, "Sessions".
+session read-only for the run. The crate writes in exactly one place,
+`Connection::write`, which a read-only session refuses. The app calls it
+from one place as well: the Save of a table tab's pending changes
+(`Command::Write`, sent by the reducer in `src/app/editing.rs`). The detail
+is in `2026-10-03-value-editing-core-design.md`, "Sessions", "Editing in
+the grid" and "Saving".
+
+Every session also fixes how values print, since a save sends back what a
+page showed: PostgreSQL sets `extra_float_digits = 3` and `DateStyle =
+'ISO'` at connect, and MySQL sets `sql_notes = 1`.
 
 ### 4.4 Catalog
 
@@ -275,10 +301,18 @@ in `2026-10-03-value-editing-core-design.md`, "Sessions".
   SQLite.
 - `Structure { columns: Vec<ColumnInfo>, primary_key: Vec<String>,
   indexes: Vec<IndexInfo>, foreign_keys: Vec<ForeignKeyInfo> }` where
-  `ColumnInfo { name, type_name, nullable, default, comment }`,
-  `IndexInfo { name, columns, unique, primary, method }`,
+  `ColumnInfo { name, type_name, nullable, default, comment, generated }`,
+  `IndexInfo { name, columns, key_columns, unique, primary, method,
+  partial }`,
   `ForeignKeyInfo { name: Option<String>, columns, ref_schema, ref_table,
   ref_columns, on_update, on_delete }`.
+- `generated` marks a column the database computes (generated columns,
+  and identity columns that are always generated). `partial` marks an
+  index over only some rows, and `key_columns` names an index's columns
+  when each is one whole column compared as the column compares. From
+  these `Structure::row_key` gives the columns that tell one row from
+  every other, for a save to find a row by, and `column_class` reads from
+  a column's type name what it takes (see the value-editing spec).
 - Sources: `pg_catalog` (PostgreSQL), `information_schema` (MySQL),
   `PRAGMA table_xinfo`, `index_list`, `index_info`, `foreign_key_list`
   (SQLite).
@@ -400,13 +434,17 @@ Workspace { session: SessionId, conn_id: ConnectionId, name, color, spec: Connec
 ObjectTab { id: ObjectTabId, object: ObjectRef, kind: ObjectKind, pinned: bool,
             view: ObjectView /* Data | Structure */, query: RowQuery,
             rows: Fetch<RowPage>, structure: Fetch<Structure>, selection: Option<CellPos>,
-            estimated_rows: Option<u64>, count: Fetch<u64>, filter: FilterBar }
+            estimated_rows: Option<u64>, count: Fetch<u64>, filter: FilterBar,
+            edits: Edits /* pending cells, the open editor, the running save */ }
 
 enum SessionStatus { Connecting { request }, Connected, Disconnected(Error), Cancelled }
-enum Dialog { Connection(..), Password(..), HostKey(..), QuickOpen(..), Help }
+enum Dialog { Connection(..), Password(..), HostKey(..), QuickOpen(..), Help,
+              Leave(..), ConfirmWrite(..), Conflict(..), .. }
 
 // Loadable state is `Fetch<T> { value, pending: Option<RequestId>, error }`:
 // only the pending request's result is accepted, which drops stale results.
+// A tab that holds edits keeps its page and its structure: an action that
+// would drop them is held in `Dialog::Leave` until the user answers.
 ```
 
 ### 5.2 Layout
@@ -490,6 +528,26 @@ enum Dialog { Connection(..), Password(..), HostKey(..), QuickOpen(..), Help }
 - Selection: one cell, which also selects its row. Arrows, Page Up/Down,
   Home/End move it. Cmd/Ctrl+C copies the cell, Shift+Cmd/Ctrl+C copies the
   row as TSV.
+- On a writable connection a table's cells are edited in the grid, as text:
+  on the cell, or in a popover for long, multi-line and JSON values. A
+  changed cell is pending, drawn in amber with what it was under the
+  pointer, until Save writes every pending change of the tab in one
+  transaction; a value its column does not take is caught before anything
+  is sent. The pending bar above the footer (the status line on Omarchy)
+  counts the changes and holds Review SQL, Save and Discard all. Review SQL
+  shows the statements a save would run, one `UPDATE` per changed row under
+  a comment that says what the save checks first, in a drawer above the bar
+  (on Omarchy the `:diff` panel above the status line); Copy SQL takes
+  them whole. An action that would drop a page with pending changes asks
+  first, and a save to production is confirmed with its statements on
+  screen. A save that finds a row changed on the server, or gone, writes
+  nothing and asks about each such row, with what was loaded, what the
+  server holds now and the user's side by side: keep mine, use the
+  server's values or overwrite, and for a row that is gone, discard. The
+  save runs again only where the answers call for it. Copying takes the
+  pending value a cell shows. A SQL result's
+  grid is not edited. The whole of it is in
+  `2026-10-03-value-editing-core-design.md`.
 - Footer: Data/Structure switch, row range, estimated (`~`) or exact total,
   previous/next page, Count, elapsed time, and a stop button while a query
   runs. Each page fetches one extra row; "Next" is enabled when that row
@@ -521,9 +579,15 @@ enum Dialog { Connection(..), Password(..), HostKey(..), QuickOpen(..), Help }
   one is selected (see the SQL editor spec).
 - What is folded or expanded belongs to a row of one page or one result:
   another page, a refresh or a new result starts fresh.
-- On Omarchy an Esc that leaves a text field does only that (the next one
-  closes the panel), Enter opens the panel only when no widget has the
-  keyboard, and `za` folds only while the panel shows.
+- A pending cell's field shows its new value with the pending mark and
+  "was <loaded value>" under it, so the panel never disagrees with the
+  grid. The panel itself stays read-only: its Edit, Duplicate and Delete
+  are disabled.
+- On Omarchy `i` and Enter edit the cell on a table's grid, and Space and
+  Cmd/Ctrl+Shift+R open the panel there. On a SQL result `i` and Enter
+  still open it, Enter only when no widget has the keyboard. An Esc that
+  leaves a text field does only that (the next one closes the panel), and
+  `za` folds only while the panel shows.
 
 ### 5.8 Structure view
 
@@ -558,12 +622,30 @@ read-only table (structure data is small; the data grid is not needed).
 | Cmd/Ctrl+C, Cmd/Ctrl+Shift+C | Copy cell / copy row |
 | Arrows, Home/End, Enter | Move in the tree |
 | Arrows, Page Up/Down, Home/End | Move in the grid |
+| Enter, F2 (Omarchy: `i`, Enter, `cc` from nothing) | Edit the cell of a table's grid |
+| Tab, Shift+Tab | Commit the edit and move right or left |
+| Esc (Omarchy: Ctrl+C) | Leave the editor, dropping the edit |
+| Omarchy: Esc | Leave insert mode, keeping the edit as a pending change |
+| Cmd/Ctrl+Backspace (Omarchy: `x`) | Set the cell NULL |
+| Cmd/Ctrl+Z (Omarchy: `u`) | Revert the cell |
+| Cmd/Ctrl+Shift+D (Omarchy: also `:diff`) | Show or hide the SQL of the pending changes |
+| Omarchy: Esc, `Y` | Close the SQL of the pending changes, copy it |
+| Page Up/Down | In the confirmation of a save to production: scroll its statements. In the question about a row a save found changed: scroll its lines |
+| Cmd/Ctrl+S (Omarchy: Ctrl+S, `:w`) | Save all pending changes |
+| Cmd/Ctrl+Alt+Backspace (Omarchy: `:e!`) | Discard all pending changes |
 | ? | Shortcuts dialog |
 
 All handled in `ui/keys.rs`, apart from the connection dialog's own keys,
-which the dialog takes while it is open (no other shortcut acts behind it).
+which the dialog takes while it is open (no other shortcut acts behind it),
+and the keys that answer a question about pending changes, which the
+question names itself: Omarchy's `[w]` and `[d]` before leaving, and its
+`[o]`, `[s]`, `[k]` and `[d]` about a row a save found changed.
 Plain keys (arrows, Space, `?`) and copy are
 suppressed while a text field has focus; Cmd/Ctrl shortcuts are not.
+The keys that edit are each look's own, chords on macOS and Windows,
+letters and the `:` prompt on Omarchy, and the shortcuts dialog lists only
+the look's. On macOS and Windows typing a character on a cell also starts
+an edit with it.
 
 ### 5.11 Platform integration
 

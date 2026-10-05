@@ -138,6 +138,14 @@ pub enum Action {
     },
     /// Put keyboard focus in the terminal look's WHERE line.
     FocusWhere(ConnTabId),
+    /// Open the terminal look's `:` prompt in the status line.
+    OpenCommand(ConnTabId),
+    /// Close the prompt, and take away what it said of its last line.
+    CloseCommand(ConnTabId),
+    /// Run what the prompt holds: `w` writes the pending changes of the
+    /// table on screen, `e!` discards them, and anything else is not a
+    /// command.
+    RunCommand(ConnTabId),
     /// Put keyboard focus in the picker's search.
     FocusPickerSearch(ConnTabId),
     /// Fold (or unfold) every JSON document in the row panel (`za`).
@@ -222,6 +230,95 @@ pub enum Action {
         tab: ConnTabId,
         id: TabId,
         cell: CellPos,
+    },
+    /// Open the editor on a cell of a table's grid, or say why it cannot
+    /// be edited.
+    EditCell {
+        tab: ConnTabId,
+        id: TabId,
+        cell: CellPos,
+        start: EditStart,
+    },
+    /// The editor's text changed: check it again.
+    EditorTyped {
+        tab: ConnTabId,
+        id: TabId,
+    },
+    /// Take the editor's text as the cell's new value, if its column takes
+    /// it, and move on.
+    CommitEdit {
+        tab: ConnTabId,
+        id: TabId,
+        then: Advance,
+    },
+    /// The editor lost the keyboard: keep its text, as a cell to fix when
+    /// its column does not take it.
+    LeaveEdit {
+        tab: ConnTabId,
+        id: TabId,
+    },
+    /// Close the editor and drop its text.
+    CancelEdit {
+        tab: ConnTabId,
+        id: TabId,
+    },
+    /// Add a line break and move the text into the large editor.
+    EditorBreak {
+        tab: ConnTabId,
+        id: TabId,
+    },
+    /// Make the active cell NULL, where its column allows it.
+    SetNull {
+        tab: ConnTabId,
+        id: TabId,
+    },
+    /// Put back the active cell's loaded value.
+    RevertCell {
+        tab: ConnTabId,
+        id: TabId,
+    },
+    /// Drop every pending change of the tab.
+    DiscardEdits {
+        tab: ConnTabId,
+        id: TabId,
+    },
+    /// Take away what the tab's last save came to, and nothing else: an
+    /// editor that is open keeps its text.
+    DismissNote {
+        tab: ConnTabId,
+        id: TabId,
+    },
+    /// Save the tab's pending changes, in one transaction.
+    WriteEdits {
+        tab: ConnTabId,
+        id: TabId,
+    },
+    /// Show or hide Review SQL: what a save of the tab's pending changes
+    /// would run.
+    ReviewEdits {
+        tab: ConnTabId,
+        id: TabId,
+        show: bool,
+    },
+    /// The Leave prompt's Save: save, then do what was held if everything
+    /// was written.
+    LeaveSave,
+    /// The Leave prompt's Discard: drop the pending changes and do what was
+    /// held.
+    LeaveDiscard,
+    /// The Leave prompt's Cancel: keep the pending changes and drop what
+    /// was held.
+    LeaveStay,
+    /// Send the save the production confirmation shows.
+    ConfirmWrite,
+    /// Close the production confirmation and send nothing.
+    CancelWrite,
+    /// Answer the question about a row a save found changed. `at` is the
+    /// row's place among the save's conflicts as the question showed it: an
+    /// answer for another row than the one asked about is dropped.
+    AnswerConflict {
+        at: usize,
+        answer: crate::edit::Answer,
     },
     /// Arrow keys (±1), Page Up/Down (±page), Home/End (isize::MIN/MAX).
     MoveSelection {
@@ -468,6 +565,20 @@ pub struct Workspace {
     pub full_precision: bool,
     /// Focus the WHERE line on the next frame.
     pub focus_where: bool,
+    /// The terminal look's `:` prompt: the text after the colon while it
+    /// is open. Only the text is the view's to change.
+    pub command: Option<String>,
+    /// Focus the prompt on the next frame.
+    pub focus_command: bool,
+    /// What the prompt was given that is not a command, until the next
+    /// key.
+    pub command_error: Option<String>,
+    /// A save was asked for and could not be made. The terminal's line
+    /// says why ahead of what else it has to say, until the next key.
+    pub save_refused: bool,
+    /// `:diff` was run with nothing pending. The terminal's line says so,
+    /// until the next key.
+    pub review_refused: bool,
     /// Fold or unfold the row panel's documents on the next frame (`za`).
     pub fold_documents: Option<TabId>,
     /// When the session last connected, in seconds since the Unix epoch
@@ -1068,6 +1179,97 @@ pub enum Dialog {
     About,
     /// The Settings window.
     Settings(Box<SettingsDialog>),
+    /// Pending changes are about to be dropped: save, discard or stay.
+    Leave(Box<LeavePrompt>),
+    /// A save to production, with its statements, before anything is sent.
+    ConfirmWrite(Box<WritePrompt>),
+    /// A save found rows changed on the server: what to do with each.
+    Conflict(Box<ConflictPrompt>),
+}
+
+/// What waits for the user's answer about pending changes.
+#[derive(Debug)]
+pub enum Held {
+    Action(Box<Action>),
+    /// The window was asked to close.
+    CloseWindow,
+}
+
+/// Asks before pending changes are dropped.
+#[derive(Debug)]
+pub struct LeavePrompt {
+    pub held: Held,
+    /// The tabs whose pending changes the held action would drop.
+    pub tabs: Vec<(ConnTabId, TabId)>,
+    /// One tab, and its save is not disabled: Save is offered.
+    pub can_save: bool,
+    /// How many changes would be dropped, over all the tabs.
+    pub changes: usize,
+    /// One of the tabs is saving: only the window's close is asked about
+    /// then, and the prompt says what leaving a save comes to.
+    pub saving: bool,
+}
+
+/// Asks before a save to production.
+pub struct WritePrompt {
+    pub tab: ConnTabId,
+    pub id: TabId,
+    /// The statements the save would run, as lines to read.
+    pub review: crate::review::Review,
+    pub changes: usize,
+    pub rows: usize,
+    /// What the Omarchy box's field holds: `write` confirms.
+    pub typed: String,
+    pub focus: bool,
+    /// What the statements are of: a save is sent only while the tab's
+    /// pending set still makes this one.
+    pub(crate) changeset: tabletist_db::ChangeSet,
+    pub(crate) then: Option<Held>,
+    /// When the answer to another dialog brought the confirmation up (Save
+    /// in the Leave prompt, Overwrite in the conflict question): it came up
+    /// under the hand that gave that answer, and takes none in its first
+    /// moment (`edit::ANSWER_AFTER`). `None` when Save itself asked for it.
+    pub after_answer: Option<std::time::Instant>,
+}
+
+/// Asks what to do with each row a save found changed on the server, one
+/// after another. Every answer is applied when it is given.
+pub struct ConflictPrompt {
+    pub tab: ConnTabId,
+    pub id: TabId,
+    /// The rows the save found changed, in its order. One that is answered
+    /// keeps its place and gives up its row.
+    pub rows: Vec<crate::edit::Conflicting>,
+    /// The one being asked about.
+    pub at: usize,
+    /// The columns the user changed in that row, with their values ready
+    /// to draw (`edit::shown_lines`).
+    pub lines: Vec<crate::edit::ShownLine>,
+    /// When that one came on screen: its question takes no answer in its
+    /// first moment (`edit::ANSWER_AFTER`).
+    pub shown: std::time::Instant,
+    /// That one's question has not been drawn yet. Its lines start with
+    /// the first the server changed in view; from then on they are where
+    /// the user moves them. The view that placed them takes this down.
+    pub fresh: bool,
+    /// A row was answered Overwrite: the save may run again.
+    pub(crate) overwrite: bool,
+    /// A row was answered Keep mine: no save runs again by itself.
+    pub(crate) kept: bool,
+}
+
+/// Without the rows: they are the database's, and can be megabytes.
+impl std::fmt::Debug for ConflictPrompt {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "ConflictPrompt {{ tab: {:?}, id: {:?}, rows: {}, at: {} }}",
+            self.tab,
+            self.id,
+            self.rows.len(),
+            self.at
+        )
+    }
 }
 
 /// Cmd/Ctrl+P: find a loaded table or view by name.
@@ -1525,6 +1727,43 @@ pub struct CellPos {
     pub col: usize,
 }
 
+/// Where an editor starts.
+pub enum EditStart {
+    /// From the cell's value, or its pending one, the cursor at the end.
+    Value,
+    /// From this text, with nothing of the old value (Omarchy's `cc`).
+    Replace(String),
+    /// From the character that was typed on the cell. On a cell that cannot
+    /// be edited this does nothing: only an edit that was asked for says
+    /// why.
+    Typed(String),
+}
+
+/// Where the selection goes after an edit is committed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Advance {
+    Stay,
+    Down,
+    Right,
+    Left,
+}
+
+/// Why a tab's pending changes cannot be saved now. The view words it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SaveBlock {
+    /// A save is running.
+    Saving,
+    /// A cell fails its check.
+    ToFix,
+    /// The session is not connected.
+    Disconnected,
+    /// The session came back read-only.
+    ReadOnly,
+    /// No change set can be built from what is pending: the table's key or
+    /// one of the columns is not what the cells were changed under.
+    Unsendable,
+}
+
 /// One open table or view.
 #[derive(Debug)]
 pub struct ObjectTab {
@@ -1544,19 +1783,49 @@ pub struct ObjectTab {
     pub filter: FilterBar,
     /// The row panel's text for the selected row (see `App::format_rows`).
     pub fields: Option<RowFields>,
+    /// What is pending, while the tab's values are edited. A tab that holds
+    /// edits keeps its page.
+    pub edits: crate::edit::Edits,
 }
 
 /// The row panel's text for one row, formatted once when the selection or
 /// the page (or the SQL result) changes: a cell can hold megabytes, too much
 /// to format again every frame.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub struct RowFields {
     /// The request whose answer holds the row: a table's rows, or a SQL
     /// editor's run.
     pub request: Option<RequestId>,
     pub row: usize,
-    /// One per column.
+    /// One per column. A pending cell's is the text of its new value.
     pub fields: Vec<crate::ui::format::FieldText>,
+    /// What is pending in a table's row, one per column. Empty where
+    /// nothing is, and for a SQL editor's result.
+    pub pending: Vec<Option<PendingField>>,
+}
+
+/// A pending cell as the row panel shows it.
+#[derive(Clone, PartialEq)]
+pub struct PendingField {
+    /// The new value, as a value the panel draws.
+    pub new: tabletist_db::Value,
+    /// What the cell loaded as, short, as the grid shows it.
+    pub was: String,
+}
+
+/// Without the texts: a pending cell's is what the user typed, which stays
+/// out of logs and panics, and a loaded one can be megabytes.
+impl std::fmt::Debug for RowFields {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "RowFields {{ request: {:?}, row: {}, fields: {}, pending: {} }}",
+            self.request,
+            self.row,
+            self.fields.len(),
+            self.pending.iter().flatten().count()
+        )
+    }
 }
 
 /// One condition in the filter bar.
@@ -1631,6 +1900,7 @@ impl ObjectTab {
             count: Fetch::default(),
             filter: FilterBar::default(),
             fields: None,
+            edits: crate::edit::Edits::default(),
         }
     }
 
@@ -1641,12 +1911,14 @@ impl ObjectTab {
         std::mem::take(&mut self.count).pending
     }
 
-    /// Every request this tab still waits for.
+    /// Every request this tab still waits for: what it loads, and the save
+    /// it sent.
     pub fn pending(&self) -> impl Iterator<Item = RequestId> {
         [
             self.rows.pending,
             self.structure.pending,
             self.count.pending,
+            self.edits.saving.as_ref().map(|saving| saving.request),
         ]
         .into_iter()
         .flatten()
@@ -1736,9 +2008,11 @@ impl Tab {
         }
     }
 
-    /// A preview tab is replaced by the next single click. SQL tabs never are.
+    /// A preview tab is replaced by the next single click. SQL tabs never
+    /// are, nor is a table that holds edits, whatever its pin says: a
+    /// replaced tab asks nothing.
     pub fn is_preview(&self) -> bool {
-        matches!(self, Self::Object(object) if !object.pinned)
+        matches!(self, Self::Object(object) if !object.pinned && !object.edits.holds())
     }
 }
 
@@ -2341,6 +2615,11 @@ impl Workspace {
             sidebar_hidden: false,
             full_precision: false,
             focus_where: false,
+            command: None,
+            focus_command: false,
+            command_error: None,
+            save_refused: false,
+            review_refused: false,
             fold_documents: None,
             connected_at: None,
         }
@@ -2493,10 +2772,18 @@ impl Workspace {
     /// left pending would look like it runs for ever. The server may differ
     /// too, so its version is asked for again (see `App::after_connect`),
     /// and so are the columns a completion list offers.
-    /// Object tabs are not touched: the connect reloads them.
+    /// What object tabs load is not touched: the connect reloads them. A
+    /// save one of them sent is given up.
     pub fn forget_session_requests(&mut self) {
         for sql in self.sql_tabs_mut() {
             sql.abandon_run();
+        }
+        // A save sent on the old session will not be answered here: what it
+        // wrote is not known. The set is kept.
+        for object in self.object_tabs_mut() {
+            if object.edits.saving.take().is_some() {
+                object.edits.note = Some(crate::edit::Note::Lost);
+            }
         }
         self.server_version = Fetch::default();
         // Fetches the old session will never answer, and names that may
@@ -2520,6 +2807,31 @@ impl std::fmt::Debug for ConnectionForm {
             .field("tls", &self.tls)
             .field("password_mode", &self.password_mode)
             .field("password", &"..")
+            .finish_non_exhaustive()
+    }
+}
+
+// Which it is, without the text: what a user typed stays out of logs and
+// panics, and an action is printed with its fields.
+impl std::fmt::Debug for EditStart {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Value => "Value",
+            Self::Replace(_) => "Replace(..)",
+            Self::Typed(_) => "Typed(..)",
+        })
+    }
+}
+
+// Only the counts: the statements and the change set hold the values the
+// user typed.
+impl std::fmt::Debug for WritePrompt {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WritePrompt")
+            .field("tab", &self.tab)
+            .field("id", &self.id)
+            .field("changes", &self.changes)
+            .field("rows", &self.rows)
             .finish_non_exhaustive()
     }
 }
@@ -3034,6 +3346,7 @@ mod tests {
             request: sql.run.loaded,
             row: 1,
             fields: Vec::new(),
+            pending: Vec::new(),
         });
         assert!(sql.selected_fields().is_some());
         sql.selection = Some(CellPos { row: 2, col: 0 });
@@ -3286,6 +3599,17 @@ mod tests {
         object.rows.start(RequestId(3));
         object.count.start(RequestId(4));
         assert_eq!(tab.pending(), vec![RequestId(3), RequestId(4)]);
+        // A save is the tab's to cancel too.
+        tab.as_object_mut().unwrap().edits.saving = Some(crate::edit::Saving {
+            request: RequestId(5),
+            rows: vec![0],
+            started: std::time::Instant::now(),
+            then: None,
+        });
+        assert_eq!(
+            tab.pending(),
+            vec![RequestId(3), RequestId(4), RequestId(5)]
+        );
         assert!(tab.as_sql().is_none() && tab.as_object().is_some());
     }
 

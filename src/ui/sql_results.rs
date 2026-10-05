@@ -173,6 +173,9 @@ struct Place<'a> {
     fit: data_view::Fit,
     /// Whose error codes the results read.
     driver: tabletist_db::Driver,
+    /// Whether the connection takes writes: a write the editor refused has
+    /// a table's grid to go to.
+    writable: bool,
     /// Whether the arrow keys move in the result's grid.
     keys: bool,
 }
@@ -195,6 +198,7 @@ fn draw(app: &App, ui: &mut Ui, tab: ConnTabId, id: TabId, actions: &mut Vec<Act
         sql,
         fit: data_view::Fit::of(workspace, &app.settings),
         driver: workspace.driver,
+        writable: workspace.access == tabletist_db::Access::Writable,
         keys: workspace.pane == crate::model::Pane::Grid,
     };
     let state = state(sql);
@@ -218,7 +222,7 @@ fn draw(app: &App, ui: &mut Ui, tab: ConnTabId, id: TabId, actions: &mut Vec<Act
         }
         (State::Failed(error), ResultPane::Results) => {
             if format::refuses_writes(error, place.driver) {
-                blocked(&mut body, rest, error, &env);
+                blocked(&mut body, rest, error, place.writable, &env);
             } else {
                 note(&body, rest, &whole(error), palette.danger, &env);
             }
@@ -955,9 +959,10 @@ fn messages(
 /// A write that was refused: said as what it is, the editor reading only,
 /// and not as a mistake in the statement. That holds on every connection,
 /// a writable one too, and whoever refused it: the server, SQLite, or the
-/// editor's own guard. The exact error stays under the card. A pane too
-/// short for it all scrolls.
-fn blocked(ui: &mut Ui, rect: Rect, error: &Error, env: &Env<'_>) {
+/// editor's own guard. A `writable` connection is told where values are
+/// edited. The exact error stays under the card. A pane too short for it
+/// all scrolls.
+fn blocked(ui: &mut Ui, rect: Rect, error: &Error, writable: bool, env: &Env<'_>) {
     let Env { look, palette, .. } = *env;
     let inner = rect.shrink2(vec2(16.0, 14.0));
     let mut pane = ui.new_child(
@@ -975,10 +980,15 @@ fn blocked(ui: &mut Ui, rect: Rect, error: &Error, env: &Env<'_>) {
             column.spacing_mut().item_spacing = vec2(8.0, 10.0);
             let title = env.said(|words| words.say("The SQL editor only reads data"));
             let text = env.said(|words| {
-                words.say(
+                let refused = words.say(
                     "Every query runs in a read-only transaction, so this statement was \
                      refused. Nothing changed.",
-                )
+                );
+                if writable {
+                    format!("{refused} {}", words.say("Edit values in a table's grid."))
+                } else {
+                    refused
+                }
             });
             let card = states::Card {
                 tone: states::Tone::Warning,
@@ -1032,7 +1042,7 @@ fn results(ui: &mut Ui, run: &SqlRun, place: &Place<'_>, env: &Env<'_>, actions:
             if let StatementOutcome::Error { error, .. } = &run.outcome.results[index].outcome
                 && format::refuses_writes(error, place.driver)
             {
-                blocked(ui, rect, error, env);
+                blocked(ui, rect, error, place.writable, env);
                 return;
             }
             // The statement's line, then what the database said of it.
@@ -1122,6 +1132,11 @@ fn results(ui: &mut Ui, run: &SqlRun, place: &Place<'_>, env: &Env<'_>, actions:
         keys,
         palette,
         look,
+        // A result has nothing pending and is never edited: no row is
+        // marked, and no cell has an editor.
+        &|_| crate::edit::RowMark::None,
+        None,
+        None,
         |row, col| {
             data_view::cell(
                 &ctx,
@@ -1743,23 +1758,26 @@ mod tests {
 
     #[test]
     fn a_refused_write_says_the_editor_only_reads() {
-        // The card, whole, as a look says it.
-        let says_so = |harness: &mut Harness, look: &Look, case: &str| {
-            for ours in [
-                "The SQL editor only reads data",
-                "Every query runs in a read-only transaction, so this statement was refused. \
-                 Nothing changed.",
-            ] {
+        // The card, whole, as a look says it. On a connection that takes
+        // writes it ends with where values are edited.
+        let refused = "Every query runs in a read-only transaction, so this statement was \
+                       refused. Nothing changed.";
+        let says_so = |harness: &mut Harness, look: &Look, writable: bool, case: &str| {
+            let body = if writable {
+                format!("{refused} Edit values in a table's grid.")
+            } else {
+                refused.to_owned()
+            };
+            for ours in ["The SQL editor only reads data", body.as_str()] {
                 let said = look.label(ours);
                 assert!(harness.has(&said), "{said}, {case} in {}", look.name);
             }
         };
         for look in Look::ALL {
-            // The card does not read the connection's access: the editor
-            // reads on a writable connection as on a read-only one. Both
-            // are walked so that a card which starts to tell them apart,
-            // and to promise a read-only connection what turning its box
-            // off would not give, fails here.
+            // The editor reads on a writable connection as on a read-only
+            // one, and the card says so on both. Only the way on differs:
+            // a read-only connection is not promised a grid that turning
+            // its box off would give.
             for writable in [false, true] {
                 let (mut harness, tab) = editor(look, "UPDATE users SET email = 'x'");
                 let workspace = harness.app.workspace_mut(tab).unwrap();
@@ -1772,7 +1790,7 @@ mod tests {
                 harness.answer_sql(Ok(script_outcome(vec![read_only_refusal()])), None);
                 show_pane(&mut harness, tab, ResultPane::Results);
                 let case = if writable { "writable" } else { "read-only" };
-                says_so(&mut harness, &look, case);
+                says_so(&mut harness, &look, writable, case);
                 assert!(
                     harness.has("25006 · cannot execute UPDATE in a read-only transaction"),
                     "{case} in {}",
@@ -1788,7 +1806,7 @@ mod tests {
             };
             harness.answer_sql(Err(refused.clone()), None);
             show_pane(&mut harness, tab, ResultPane::Results);
-            says_so(&mut harness, &look, "the editor's guard");
+            says_so(&mut harness, &look, false, "the editor's guard");
             assert!(harness.has(&refused.to_string()), "{}", look.name);
         }
     }

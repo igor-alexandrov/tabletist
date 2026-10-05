@@ -9,11 +9,13 @@ use egui::{
 };
 use tabletist_db::SortDir;
 
+use crate::edit::RowMark;
 use crate::model::CellPos;
 use crate::theme::{DataFont, Icon, Look, Palette};
 use crate::typography::{Text, TextRole};
 use crate::ui::focus;
 use crate::ui::format::{Marks, array_items, display_safe};
+use crate::ui::states::Tone;
 use crate::ui::widgets::virtual_rows;
 
 /// The header's height, per look.
@@ -36,7 +38,7 @@ fn key_width(look: &crate::theme::Look) -> f32 {
 }
 
 /// Space between a cell's edge and its text.
-fn cell_pad(look: &crate::theme::Look) -> f32 {
+pub(crate) fn cell_pad(look: &crate::theme::Look) -> f32 {
     if look.terminal { 8.0 } else { 12.0 }
 }
 const HANDLE_WIDTH: f32 = 6.0;
@@ -59,8 +61,9 @@ pub struct Column<'a> {
 }
 
 /// How a cell draws its text.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub enum Style {
+    #[default]
     Plain,
     /// A value from a column's allowed list, in that palette slot (see
     /// [`crate::ui::value_tags`]).
@@ -81,15 +84,51 @@ pub enum Style {
     Array,
 }
 
+/// What a cell's pending state is, for how it is drawn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Mark {
+    #[default]
+    None,
+    Pending,
+    /// To fix, or failed in the last save.
+    Trouble,
+    /// Pending and being saved.
+    Saving,
+    /// Just written.
+    Saved,
+    /// A cell of a computed column, in a table that can be edited.
+    Locked,
+    /// A cell of a row a save found gone from the server.
+    Gone,
+}
+
+#[derive(Default)]
 pub struct Cell<'a> {
     pub text: Cow<'a, str>,
     pub null: bool,
     pub style: Style,
+    pub mark: Mark,
+    /// What the cell says under the pointer: what a pending cell was, why
+    /// a failed one failed. Never why a cell is locked, which is said only
+    /// when asked.
+    pub hint: Option<String>,
+    /// What the cell says without the pointer on it: why it cannot be
+    /// edited, once that was asked for.
+    pub note: Option<String>,
 }
+
+/// What draws the field of a cell being edited, given the cell's place:
+/// the view's, which holds the text. The grid only says where.
+pub type Editor<'a> = &'a mut dyn FnMut(&mut Ui, Rect);
 
 #[derive(Debug, Default, PartialEq)]
 pub struct GridOutput {
     pub clicked: Option<CellPos>,
+    /// The cell a second click landed on, soon after the first.
+    pub double_clicked: Option<CellPos>,
+    /// Where the cell being edited is, in view or not: what an editor that
+    /// does not sit on the cell is anchored to.
+    pub editing_rect: Option<Rect>,
     pub sort_clicked: Option<usize>,
     /// The keyboard came to the grid this frame (the Tab key, a screen
     /// reader): the arrows should be the grid's.
@@ -203,6 +242,17 @@ pub fn row_fill(
         Some(palette.panel)
     } else {
         None
+    }
+}
+
+/// `palette` with every colour a cell writes in set to `color`.
+fn written_in(palette: &Palette, color: egui::Color32) -> Palette {
+    Palette {
+        text: color,
+        secondary: color,
+        dim: color,
+        faint: color,
+        ..*palette
     }
 }
 
@@ -416,6 +466,11 @@ pub fn show<'a>(
     keys: bool,
     palette: &Palette,
     look: &crate::theme::Look,
+    // What each row's pending cells come to, for its mark.
+    rows: &dyn Fn(usize) -> RowMark,
+    // The cell an editor is open on, and what draws its field on the cell.
+    editing: Option<CellPos>,
+    mut editor: Option<Editor<'_>>,
     mut cell: impl FnMut(usize, usize) -> Cell<'a>,
 ) -> GridOutput {
     let mut output = GridOutput::default();
@@ -456,7 +511,10 @@ pub fn show<'a>(
     let last: Option<CellPos> = ui
         .data(|data| data.get_temp::<Option<CellPos>>(last_id))
         .flatten();
-    let reveal = selection.filter(|cell| Some(*cell) != last);
+    // A cell being edited stays in view, as a selection that just moved
+    // comes into it: egui takes the keyboard from a field that is not
+    // drawn.
+    let reveal = editing.or(selection.filter(|cell| Some(*cell) != last));
     let total = gutter + widths.iter().sum::<f32>();
     let hairline = crate::ui::widgets::hairline(ui);
     let visible = ui.max_rect();
@@ -498,8 +556,10 @@ pub fn show<'a>(
     focus::claim(ui, focus::Region::Grid, &stop);
     output.focused = stop.gained_focus();
     // The cell is lit while the keyboard is in use and its keys come here:
-    // not while a button or a field has them.
-    let lit = keys && focus::visible(ui.ctx()) && !focus::on_control(ui.ctx());
+    // not while a button or a field has them. The field of a cell being
+    // edited is the grid's own: the pane has not lost the keyboard to it.
+    let lit =
+        keys && focus::visible(ui.ctx()) && (editing.is_some() || !focus::on_control(ui.ctx()));
 
     let scroll = egui::ScrollArea::both()
         .id_salt(id)
@@ -548,7 +608,7 @@ pub fn show<'a>(
                 let number = first_row_number + row as u64 + 1;
                 let label = format!("Row {number}");
                 response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, &label));
-                if response.clicked() {
+                if response.clicked() || response.double_clicked() {
                     let col = response
                         .interact_pointer_pos()
                         .map(|pointer| {
@@ -561,9 +621,21 @@ pub fn show<'a>(
                             }
                         })
                         .unwrap_or(0);
-                    output.clicked = Some(CellPos { row, col });
+                    let cell = Some(CellPos { row, col });
+                    if response.clicked() {
+                        output.clicked = cell;
+                    }
+                    if response.double_clicked() {
+                        output.double_clicked = cell;
+                    }
                 }
                 let painter = ui.painter().clone();
+                // A row with pending cells is marked in their tone.
+                let row_tone = match rows(row) {
+                    RowMark::None => None,
+                    RowMark::Changed => Some(Tone::Warning),
+                    RowMark::Trouble => Some(Tone::Danger),
+                };
                 let selected_row = selection.is_some_and(|cell| cell.row == row);
                 // With the keyboard in the grid the cell takes the
                 // selection's colour and its row a lighter tint of it.
@@ -616,41 +688,82 @@ pub fn show<'a>(
                                 Stroke::new(hairline, palette.outline),
                             );
                         }
-                        if selected_row {
-                            if look.terminal {
+                        if look.terminal {
+                            let line = rect.center().y;
+                            if selected_row {
                                 // The cursor: a bold accent block in the
                                 // gutter.
                                 let cursor = Text::one(look, TextRole::OGroup, "▌", palette.accent)
                                     .layout(ui.ctx());
-                                cursor.paint_center(
-                                    &painter,
-                                    pos2(lead.left() + GUTTER / 2.0, rect.center().y),
-                                );
-                            } else if !lit_row {
-                                let bar = Rect::from_min_size(lead.min, vec2(3.0, rect.height()));
-                                painter.rect_filled(bar, CornerRadius::ZERO, palette.accent);
+                                cursor
+                                    .paint_center(&painter, pos2(lead.left() + GUTTER / 2.0, line));
+                            }
+                            if let Some(tone) = row_tone {
+                                // Beside the cursor: `~` on a changed row,
+                                // `!` when one of its cells is in trouble.
+                                let sign = if tone == Tone::Danger { "!" } else { "~" };
+                                Text::one(look, TextRole::OGroup, sign, tone.color(palette))
+                                    .layout(ui.ctx())
+                                    .paint_center(
+                                        &painter,
+                                        pos2(lead.left() + GUTTER * 0.75, line),
+                                    );
                             }
                         }
                         cell_rect.translate(vec2(shift, 0.0))
                     } else {
                         cell_rect
                     };
+                    let edited = editing == Some(CellPos { row, col });
+                    if edited {
+                        output.editing_rect = Some(cell_rect);
+                    }
+                    if edited && let Some(editor) = editor.as_deref_mut() {
+                        // The field in place of the cell's text, in view
+                        // or not: it is drawn as long as it is open.
+                        editor(ui, cell_rect);
+                        continue;
+                    }
                     if !ui.is_rect_visible(cell_rect) {
                         continue;
                     }
                     let content = cell(row, col);
                     let here = selection == Some(CellPos { row, col });
-                    if here && lit && look.terminal {
+                    if content.hint.is_some() || content.note.is_some() {
+                        // Where the cell shows: not the part of it that
+                        // scrolled under the pinned column.
+                        let mut seen = cell_rect;
+                        if pinned && col > 0 {
+                            let lead = rect.left() + shift + gutter + widths[0];
+                            seen.min.x = seen.min.x.max(lead);
+                        }
+                        if seen.is_positive() {
+                            // Hovered and no more: a click is the row's.
+                            let at = ui.interact(seen, id.with(("hint", row, col)), Sense::hover());
+                            if let Some(note) = &content.note {
+                                // It was asked for: said without waiting
+                                // for the pointer.
+                                at.show_tooltip_text(note.as_str());
+                            } else if let Some(hint) = &content.hint {
+                                let _ = at.on_hover_text(hint.as_str());
+                            }
+                        }
+                    }
+                    // What the cell's pending state tints it with. The
+                    // terminal draws a computed column as any other. A row
+                    // that is gone has no tint: nothing of it is pending.
+                    let tone = match content.mark {
+                        Mark::Pending | Mark::Saving => Some(Tone::Warning),
+                        Mark::Trouble => Some(Tone::Danger),
+                        Mark::Saved => Some(Tone::Success),
+                        Mark::None | Mark::Locked | Mark::Gone => None,
+                    };
+                    let locked = content.mark == Mark::Locked && !look.terminal;
+                    if here && lit && look.terminal && tone.is_none() && !edited {
                         // Reverse video, as a terminal marks its cursor:
                         // the accent behind, the text in the window's tone.
                         painter.rect_filled(cell_rect, CornerRadius::ZERO, palette.accent);
-                        let reversed = Palette {
-                            text: palette.window,
-                            secondary: palette.window,
-                            dim: palette.window,
-                            faint: palette.window,
-                            ..*palette
-                        };
+                        let reversed = written_in(palette, palette.window);
                         let plain = Cell {
                             style: Style::Plain,
                             ..content
@@ -666,19 +779,98 @@ pub fn show<'a>(
                         );
                         continue;
                     }
-                    if here && lit {
+                    // A tint stays under the cursor, which is then the
+                    // accent line alone: what is pending reads as pending
+                    // wherever the selection is.
+                    if let Some(tone) = tone {
+                        painter.rect_filled(
+                            cell_rect,
+                            CornerRadius::ZERO,
+                            tone.fill(look, palette),
+                        );
+                    } else if here && lit {
                         painter.rect_filled(cell_rect, CornerRadius::ZERO, palette.selection);
+                    } else if locked {
+                        painter.rect_filled(cell_rect, CornerRadius::ZERO, palette.surface);
                     }
+                    let height = cell_rect.height();
+                    match content.mark {
+                        Mark::Pending | Mark::Saving if !look.terminal => {
+                            let bar = Rect::from_min_size(cell_rect.min, vec2(2.0, height));
+                            painter.rect_filled(
+                                bar,
+                                CornerRadius::ZERO,
+                                Tone::Warning.color(palette),
+                            );
+                        }
+                        Mark::Trouble => {
+                            painter.rect_stroke(
+                                cell_rect,
+                                CornerRadius::ZERO,
+                                Stroke::new(1.0, Tone::Danger.color(palette)),
+                                StrokeKind::Inside,
+                            );
+                        }
+                        _ => {}
+                    }
+                    if col == 0 && !look.terminal {
+                        // The row's bar, over what its first cell is filled
+                        // with: of its pending cells' tone, else the
+                        // accent of a selected row whose cell is not lit.
+                        let color = match row_tone {
+                            Some(tone) => Some(tone.color(palette)),
+                            None => (selected_row && !lit_row).then_some(palette.accent),
+                        };
+                        if let Some(color) = color {
+                            let bar = Rect::from_min_size(cell_rect.min, vec2(3.0, height));
+                            painter.rect_filled(bar, CornerRadius::ZERO, color);
+                        }
+                    }
+                    // The text's colours: dim in a row that is gone, a
+                    // pending cell's tone in the terminal, a changed row's
+                    // on its key, and a computed column a step quieter.
+                    let written = match (tone, row_tone) {
+                        _ if content.mark == Mark::Gone => written_in(palette, palette.dim),
+                        (Some(tone), _) if look.terminal && tone != Tone::Success => {
+                            written_in(palette, tone.color(palette))
+                        }
+                        (None, Some(tone)) if col == 0 && columns[col].key && !look.terminal => {
+                            written_in(palette, tone.color(palette))
+                        }
+                        _ if locked => Palette {
+                            text: palette.secondary,
+                            ..*palette
+                        },
+                        _ => *palette,
+                    };
+                    // A cell being saved keeps room at its right for the
+                    // spinner.
+                    let text_rect = if content.mark == Mark::Saving {
+                        let side = 12.0;
+                        let at = Rect::from_center_size(
+                            pos2(cell_rect.right() - pad - side / 2.0, cell_rect.center().y),
+                            vec2(side, side),
+                        );
+                        crate::ui::states::spinner(ui, at, Tone::Warning.color(palette), palette);
+                        // The text ends 6 short of it.
+                        let right = at.left() - 6.0 + pad;
+                        Rect::from_min_max(cell_rect.min, pos2(right, cell_rect.bottom()))
+                    } else {
+                        cell_rect
+                    };
                     draw_cell(
                         ui,
                         &painter,
-                        cell_rect,
+                        text_rect,
                         &columns[col],
                         &content,
                         look,
-                        palette,
+                        &written,
                     );
-                    if here && lit {
+                    // A cell edited in an editor of its own keeps its
+                    // value and the cursor's line, lit or not: the line
+                    // says which cell the editor is for.
+                    if (here && lit) || edited {
                         // Inside the cell: nothing the grid scrolls under
                         // cuts it.
                         painter.rect_stroke(
@@ -699,6 +891,24 @@ pub fn show<'a>(
                     }
                 }
             });
+
+            // A row scrolled out of view is not built, and its cell's
+            // editor must be drawn all the same to keep the keyboard: where
+            // the cell is, until the grid has scrolled back to it.
+            if let (Some(at), None) = (editing, output.editing_rect)
+                && at.row < row_count
+                && at.col < widths.len()
+            {
+                let place = pos2(
+                    origin.x + gutter + lefts[at.col],
+                    origin.y + header_height + at.row as f32 * row_height,
+                );
+                let rect = Rect::from_min_size(place, vec2(widths[at.col], row_height));
+                output.editing_rect = Some(rect);
+                if let Some(editor) = editor {
+                    editor(ui, rect);
+                }
+            }
 
             // The header, painted over the rows at the top of the visible
             // area so it stays put while rows scroll under it. Its widgets
@@ -1511,10 +1721,12 @@ mod tests {
                     false,
                     &palette,
                     &crate::theme::Look::standard(),
+                    &|_| RowMark::None,
+                    None,
+                    None,
                     |row, col| Cell {
                         text: format!("r{row}c{col}").into(),
-                        null: false,
-                        style: Style::Plain,
+                        ..Default::default()
                     },
                 );
             },
@@ -1565,10 +1777,12 @@ mod tests {
                 keys,
                 palette,
                 look,
+                &|_| RowMark::None,
+                None,
+                None,
                 |row, col| Cell {
                     text: format!("r{row}c{col}").into(),
-                    null: false,
-                    style: Style::Plain,
+                    ..Default::default()
                 },
             );
         });
@@ -1621,6 +1835,324 @@ mod tests {
         }
     }
 
+    /// The colour a text shape is painted in.
+    fn text_color(text: &egui::epaint::TextShape) -> egui::Color32 {
+        text.override_text_color.unwrap_or_else(|| {
+            let section = text.galley.job.sections.first();
+            match section.map(|section| section.format.color) {
+                Some(color) if color != egui::Color32::PLACEHOLDER => color,
+                _ => text.fallback_color,
+            }
+        })
+    }
+
+    /// What a frame of a three-row grid paints with nothing selected, its
+    /// cell (1, 1) marked `mark` and its row 1 marked `row`: the rectangles,
+    /// and each text with its colour and where it starts.
+    fn marked(
+        ctx: &egui::Context,
+        look: &Look,
+        palette: &Palette,
+        mark: Mark,
+        row: RowMark,
+    ) -> (
+        Vec<egui::epaint::RectShape>,
+        Vec<(String, egui::Color32, egui::Pos2)>,
+    ) {
+        marked_with(ctx, look, palette, (mark, row), None, Vec::new())
+    }
+
+    /// [`marked`], with `selection` selected and `events` given.
+    fn marked_with(
+        ctx: &egui::Context,
+        look: &Look,
+        palette: &Palette,
+        (mark, row): (Mark, RowMark),
+        selection: Option<CellPos>,
+        events: Vec<egui::Event>,
+    ) -> (
+        Vec<egui::epaint::RectShape>,
+        Vec<(String, egui::Color32, egui::Pos2)>,
+    ) {
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(800.0, 400.0),
+            )),
+            events,
+            ..Default::default()
+        };
+        let mut output = ctx.run_ui(input, |ui| {
+            focus::begin_frame(ui.ctx());
+            show(
+                ui,
+                egui::Id::new("grid"),
+                &columns(),
+                3,
+                0,
+                selection,
+                true,
+                palette,
+                look,
+                &|at| if at == 1 { row } else { RowMark::None },
+                None,
+                None,
+                |row, col| Cell {
+                    text: format!("r{row}c{col}").into(),
+                    mark: if (row, col) == (1, 1) {
+                        mark
+                    } else {
+                        Mark::None
+                    },
+                    ..Default::default()
+                },
+            );
+        });
+        output.textures_delta.clear();
+        let (mut rects, mut texts) = (Vec::new(), Vec::new());
+        for clipped in output.shapes {
+            match clipped.shape {
+                egui::Shape::Rect(rect) => rects.push(rect),
+                egui::Shape::Text(text) => {
+                    let color = text_color(&text);
+                    texts.push((text.galley.text().to_owned(), color, text.pos));
+                }
+                _ => {}
+            }
+        }
+        (rects, texts)
+    }
+
+    #[test]
+    fn a_marked_cell_is_tinted_and_its_row_is_marked() {
+        use crate::ui::states::Tone;
+        for look in Look::ALL {
+            for palette in [Palette::light(), Palette::dark()] {
+                let said = format!("{}, dark: {}", look.name, palette.dark);
+                let ctx = egui::Context::default();
+                crate::theme::install(&ctx, false, &look);
+                crate::theme::apply(&ctx, &palette, &look);
+                // The columns are fitted on the first frame.
+                marked(&ctx, &look, &palette, Mark::None, RowMark::None);
+                type Texts = [(String, egui::Color32, egui::Pos2)];
+                let (_, plain) = marked(&ctx, &look, &palette, Mark::None, RowMark::None);
+                let place = |cell: &str| {
+                    let found = plain.iter().find(|(text, ..)| text == cell);
+                    found.map(|(_, _, pos)| *pos).expect("the cell's text")
+                };
+                // Where the marked cell's text starts, and its row's key's.
+                // (A cell being saved may show its text cut, to make room.)
+                let (cell, key) = (place("r1c1"), place("r1c0"));
+                let color_at = |texts: &Texts, pos: egui::Pos2| {
+                    let found = texts.iter().find(|(.., at)| *at == pos);
+                    found.map(|(_, color, _)| *color)
+                };
+                // A fill behind the marked cell's text, a cell wide.
+                let behind = |rects: &[egui::epaint::RectShape], fill: egui::Color32| {
+                    rects.iter().any(|rect| {
+                        rect.fill == fill && rect.rect.contains(cell) && rect.rect.width() < 400.0
+                    })
+                };
+                for (mark, row, tone, sign) in [
+                    (Mark::Pending, RowMark::Changed, Tone::Warning, "~"),
+                    (Mark::Saving, RowMark::Changed, Tone::Warning, "~"),
+                    (Mark::Trouble, RowMark::Trouble, Tone::Danger, "!"),
+                ] {
+                    let said = format!("{said}, {mark:?}");
+                    let (rects, texts) = marked(&ctx, &look, &palette, mark, row);
+                    assert!(
+                        behind(&rects, tone.fill(&look, &palette)),
+                        "{said}: the tint"
+                    );
+                    let color = tone.color(&palette);
+                    // A bar down the left of the cell (2 pt) or the row (3).
+                    let bar = |width: f32| {
+                        rects.iter().any(|rect| {
+                            rect.fill == color
+                                && rect.rect.width() == width
+                                && rect.rect.height() == look.grid_row
+                        })
+                    };
+                    let signed = texts
+                        .iter()
+                        .any(|(text, painted, _)| text == sign && *painted == color);
+                    if look.terminal {
+                        assert!(signed, "{said}: the gutter");
+                        assert_eq!(color_at(&texts, cell), Some(color), "{said}: the text");
+                        assert!(!bar(2.0) && !bar(3.0), "{said}");
+                    } else {
+                        // The amber bar is a pending cell's: one to fix
+                        // has its line instead.
+                        assert_eq!(bar(2.0), mark != Mark::Trouble, "{said}: the cell's bar");
+                        assert!(bar(3.0), "{said}: the row's bar");
+                        assert_eq!(color_at(&texts, key), Some(color), "{said}: the key");
+                        assert_eq!(color_at(&texts, cell), Some(palette.text), "{said}");
+                        assert!(!signed, "{said}: no gutter");
+                    }
+                    // A cell to fix has a line inside it as well.
+                    let lined = rects.iter().any(|rect| {
+                        rect.stroke == Stroke::new(1.0, color)
+                            && rect.stroke_kind == StrokeKind::Inside
+                    });
+                    assert_eq!(lined, mark == Mark::Trouble, "{said}: the line");
+                }
+                // Written: green, and no mark on the row.
+                let (rects, _) = marked(&ctx, &look, &palette, Mark::Saved, RowMark::None);
+                assert!(
+                    behind(&rects, Tone::Success.fill(&look, &palette)),
+                    "{said}: saved"
+                );
+                // A computed column: quieter on macOS and Windows, as it
+                // was in the terminal.
+                let (rects, texts) = marked(&ctx, &look, &palette, Mark::Locked, RowMark::None);
+                assert_eq!(
+                    behind(&rects, palette.surface),
+                    !look.terminal,
+                    "{said}: locked"
+                );
+                let quiet = if look.terminal {
+                    palette.text
+                } else {
+                    palette.secondary
+                };
+                assert_eq!(color_at(&texts, cell), Some(quiet), "{said}: locked");
+                // A row a save found gone: its text dim in every look, and
+                // nothing else of a mark.
+                let (rects, texts) = marked(&ctx, &look, &palette, Mark::Gone, RowMark::None);
+                assert_eq!(color_at(&texts, cell), Some(palette.dim), "{said}: gone");
+                for tone in [Tone::Warning, Tone::Danger, Tone::Success] {
+                    assert!(
+                        !behind(&rects, tone.fill(&look, &palette)),
+                        "{said}: gone, {tone:?}"
+                    );
+                }
+                assert!(!behind(&rects, palette.surface), "{said}: gone");
+                assert!(
+                    !texts.iter().any(|(text, ..)| text == "~" || text == "!"),
+                    "{said}: gone"
+                );
+                // Nothing pending: none of it.
+                let (rects, texts) = marked(&ctx, &look, &palette, Mark::None, RowMark::None);
+                for tone in [Tone::Warning, Tone::Danger, Tone::Success] {
+                    assert!(
+                        !behind(&rects, tone.fill(&look, &palette)),
+                        "{said}: {tone:?}"
+                    );
+                }
+                assert!(
+                    !texts.iter().any(|(text, ..)| text == "~" || text == "!"),
+                    "{said}"
+                );
+                assert_eq!(color_at(&texts, cell), Some(palette.text), "{said}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_cursor_on_a_pending_cell_is_a_line_over_its_tint() {
+        use crate::ui::states::Tone;
+        for look in Look::ALL {
+            let palette = Palette::light();
+            let ctx = egui::Context::default();
+            crate::theme::install(&ctx, false, &look);
+            crate::theme::apply(&ctx, &palette, &look);
+            let here = Some(CellPos { row: 1, col: 1 });
+            let pending = (Mark::Pending, RowMark::Changed);
+            // A key, and the arrows are the grid's: its cell is lit.
+            let key = crate::testing::key(egui::Key::ArrowDown, egui::Modifiers::NONE);
+            marked_with(&ctx, &look, &palette, pending, here, vec![key]);
+            let (rects, texts) = marked_with(&ctx, &look, &palette, pending, here, Vec::new());
+            let (_, _, cell) = texts
+                .iter()
+                .find(|(text, ..)| text == "r1c1")
+                .expect("the cell's text");
+            let over = |fill: egui::Color32| {
+                rects.iter().any(|rect| {
+                    rect.fill == fill && rect.rect.contains(*cell) && rect.rect.width() < 400.0
+                })
+            };
+            // The tint, not the selection's colour nor the terminal's block.
+            assert!(over(Tone::Warning.fill(&look, &palette)), "{}", look.name);
+            assert!(
+                !over(palette.selection) && !over(palette.accent),
+                "{}",
+                look.name
+            );
+            // And the cursor's line inside it.
+            let lined = rects.iter().any(|rect| {
+                rect.stroke == Stroke::new(2.0, palette.accent)
+                    && rect.stroke_kind == StrokeKind::Inside
+                    && rect.rect.contains(*cell)
+                    && rect.rect.width() < 400.0
+            });
+            assert!(lined, "{}", look.name);
+            // The terminal keeps the text in the pending colour under it.
+            if look.terminal {
+                let color = texts
+                    .iter()
+                    .find(|(text, ..)| text == "r1c1")
+                    .map(|text| text.1);
+                assert_eq!(color, Some(Tone::Warning.color(&palette)));
+            }
+        }
+    }
+
+    #[test]
+    fn the_terminals_cursor_on_a_gone_cell_is_reverse_video() {
+        let look = Look::omarchy();
+        let palette = Palette::light();
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx, false, &look);
+        crate::theme::apply(&ctx, &palette, &look);
+        let here = Some(CellPos { row: 1, col: 1 });
+        let gone = (Mark::Gone, RowMark::None);
+        // A key, and the arrows are the grid's: its cell is lit.
+        let key = crate::testing::key(egui::Key::ArrowDown, egui::Modifiers::NONE);
+        marked_with(&ctx, &look, &palette, gone, here, vec![key]);
+        let (rects, texts) = marked_with(&ctx, &look, &palette, gone, here, Vec::new());
+        let (_, color, cell) = texts
+            .iter()
+            .find(|(text, ..)| text == "r1c1")
+            .expect("the cell's text");
+        // As on any cell without a mark: the accent behind, the text in the
+        // window's tone. Its dim text would not be read on the accent.
+        let block = rects.iter().any(|rect| {
+            rect.fill == palette.accent && rect.rect.contains(*cell) && rect.rect.width() < 400.0
+        });
+        assert!(block);
+        assert_eq!(*color, palette.window);
+    }
+
+    #[test]
+    fn a_double_click_reports_its_cell() {
+        let ctx = egui::Context::default();
+        let look = crate::theme::Look::standard();
+        crate::theme::install(&ctx, false, &look);
+        ctx.enable_accesskit();
+        frame(&ctx, 10, vec![]);
+        frame(&ctx, 10, vec![]);
+        // The second row, a little into the second column.
+        let widths: Vec<f32> = ctx
+            .data(|data| data.get_temp(egui::Id::new("grid").with(("widths", 2_usize))))
+            .expect("the widths");
+        let pos = egui::pos2(widths[0] + 5.0, header_height(&look) + look.grid_row * 1.5);
+        let press = |pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        let cell = Some(CellPos { row: 1, col: 1 });
+        frame(&ctx, 10, vec![egui::Event::PointerMoved(pos)]);
+        frame(&ctx, 10, vec![press(true)]);
+        // One click selects, and is no double click.
+        let (once, _) = frame(&ctx, 10, vec![press(false)]);
+        assert_eq!((once.clicked, once.double_clicked), (cell, None));
+        frame(&ctx, 10, vec![press(true)]);
+        let (twice, _) = frame(&ctx, 10, vec![press(false)]);
+        assert_eq!((twice.clicked, twice.double_clicked), (cell, cell));
+    }
+
     #[test]
     fn a_leading_key_column_stays_in_sight_while_the_others_scroll() {
         let ctx = egui::Context::default();
@@ -1664,10 +2196,12 @@ mod tests {
                     false,
                     &Palette::light(),
                     &Look::standard(),
+                    &|_| RowMark::None,
+                    None,
+                    None,
                     |row, col| Cell {
                         text: format!("r{row}c{col}").into(),
-                        null: false,
-                        style: Style::Plain,
+                        ..Default::default()
                     },
                 );
             });
@@ -1782,8 +2316,7 @@ mod tests {
             } else {
                 "x".into()
             },
-            null: false,
-            style: Style::Plain,
+            ..Default::default()
         });
         // Nineteen digits at eight points, plus padding: nothing clipped.
         assert!(widths[0] >= 19.0 * 8.0 + 12.0, "{widths:?}");
@@ -1798,8 +2331,7 @@ mod tests {
             } else {
                 "x".repeat(500).into()
             },
-            null: false,
-            style: Style::Plain,
+            ..Default::default()
         });
         assert!(widths[0] >= 48.0 && widths[0] < 120.0, "{widths:?}");
         assert_eq!(widths[1], MAX_INITIAL_WIDTH);

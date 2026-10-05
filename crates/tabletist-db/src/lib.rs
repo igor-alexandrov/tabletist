@@ -1,12 +1,15 @@
 //! Access to PostgreSQL, MySQL and SQLite for Tabletist.
 //!
-//! Nothing in this crate writes to a connected database yet. A session is
-//! read-only unless it is opened [`Access::Writable`], and then it is
-//! fenced: row fetches and counts run in read-only transactions (on SQLite
-//! under `query_only`), and a SQL editor script still cannot write.
+//! The crate writes to a connected database in exactly one place,
+//! [`Connection::write`], and only on a session opened
+//! [`Access::Writable`]. Everything else stays fenced there as on a
+//! read-only session: row fetches and counts run in read-only transactions
+//! (on SQLite under `query_only`), and a SQL editor script still cannot
+//! write.
 
 mod catalog;
 mod check;
+mod class;
 pub mod complete;
 mod dialect;
 mod error;
@@ -23,6 +26,7 @@ mod ssh;
 pub mod ssh_config;
 mod tls;
 mod value;
+mod write;
 
 use std::fmt;
 use std::sync::Arc;
@@ -30,16 +34,18 @@ use std::sync::Arc;
 pub use catalog::{
     ColumnInfo, ForeignKeyInfo, IndexInfo, MAX_LISTED, ObjectInfo, ObjectKind, ObjectRef, Structure,
 };
-pub use dialect::{Dialect, Sql, escape_like, quote_literal};
+pub use class::{ColumnClass, column_class};
+pub use dialect::{Dialect, RowUpdate, Sql, UpdateParts, escape_like, quote_literal};
 pub use error::{Error, Result, SshStage};
 pub use query::{Filter, FilterOp, RowPage, RowQuery, Sort, SortDir};
 pub use script::{ScriptOutcome, StatementOutcome, StatementResult, StopFlag};
 pub use spec::{ConnectSpec, Driver, ParsedUrl, Secrets, SshAuth, SshSpec, TlsMode};
 pub use ssh::HostKeys;
 pub use value::{ColumnMeta, Value, ValueKind, value_from_pg_text};
+pub use write::{CellChange, ChangeSet, Conflict, NewValue, RowChange, WriteOutcome};
 
-/// Whether a session may write. The app has no writing call yet; a
-/// writable session is the one a later `write` will be allowed on.
+/// Whether a session may write. [`Connection::write`] is the one call
+/// that does, and it is refused on a read-only session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Access {
     /// Nothing can write: the session itself is read-only.
@@ -252,6 +258,36 @@ impl Connection {
             Inner::Sqlite(conn) => conn.count_rows(query).await,
             Inner::Postgres(conn) => conn.count_rows(query).await,
             Inner::MySql(conn) => conn.count_rows(query).await,
+        }
+    }
+
+    /// Writes `changes` in one transaction, or nothing: the crate's only
+    /// writing call. Each row is found by its key, locked, and compared
+    /// with what the page loaded in the columns the save changes; a row
+    /// that differs or is gone makes the whole save a conflict. Two changes
+    /// that read the same row, however each spells its key, are an error:
+    /// the database decides which row a key finds.
+    ///
+    /// On a read-only connection it is refused before the set is even
+    /// looked at. The future must be awaited to its end and never dropped:
+    /// a save dropped mid-way would leave its transaction open on the
+    /// session. The backend awaits every command to its end.
+    ///
+    /// `stop` ends the save between two of its statements, where a cancel
+    /// finds nothing to stop: it is asked before every statement and once
+    /// more before `COMMIT`, and a save it ends answers
+    /// [`Error::Cancelled`] with nothing written. After that nothing is
+    /// asked, and the save is written. The caller also fires
+    /// [`CancelHandle::cancel`] for a statement already running.
+    pub async fn write(&self, changes: &ChangeSet, stop: &StopFlag) -> Result<WriteOutcome> {
+        if self.access == Access::ReadOnly {
+            return Err(Error::ReadOnly);
+        }
+        changes.check()?;
+        match &self.inner {
+            Inner::Sqlite(conn) => conn.write(changes, stop).await,
+            Inner::Postgres(conn) => conn.write(changes, stop).await,
+            Inner::MySql(conn) => conn.write(changes, stop).await,
         }
     }
 

@@ -14,7 +14,7 @@ use tabletist_db::{
 
 use crate::connections::{ConnectionId, PasswordMode, SavedConnection};
 use crate::env::Environment;
-use crate::model::{Action, CellPos, ConnTabId};
+use crate::model::{Action, CellPos, ConnTabId, EditStart, TabId};
 use crate::testing::Harness;
 
 const SIZE: egui::Vec2 = egui::vec2(1000.0, 650.0);
@@ -167,6 +167,7 @@ fn structure() -> Structure {
         comment: None,
         // `kind` has a CHECK (kind IN ('cover', 'preview')).
         allowed_values: (name == "kind").then(|| vec!["cover".into(), "preview".into()]),
+        generated: false,
     };
     Structure {
         columns: vec![
@@ -192,16 +193,20 @@ fn structure() -> Structure {
             IndexInfo {
                 name: "book_images_pkey".into(),
                 columns: vec!["id".into()],
+                key_columns: Some(vec!["id".into()]),
                 unique: true,
                 primary: true,
                 method: Some("btree".into()),
+                partial: false,
             },
             IndexInfo {
                 name: "index_book_images_on_book_id_and_kind".into(),
                 columns: vec!["book_id".into(), "kind".into()],
+                key_columns: Some(vec!["book_id".into(), "kind".into()]),
                 unique: true,
                 primary: false,
                 method: Some("btree".into()),
+                partial: false,
             },
         ],
         foreign_keys: vec![ForeignKeyInfo {
@@ -227,6 +232,19 @@ fn workspace(harness: &mut Harness) -> ConnTabId {
     workspace.access = saved.access();
     workspace.spec = saved.spec.clone();
     workspace.driver = Driver::Postgres;
+    workspace.databases.value = Some(vec![
+        "bookshop_development".into(),
+        "bookshop_test".into(),
+        "postgres".into(),
+    ]);
+    tables(harness, tab);
+    tab
+}
+
+/// The Bookshop's tables in the tree of `tab`, `books` and `book_images`
+/// open and row 5 of the second selected.
+fn tables(harness: &mut Harness, tab: ConnTabId) {
+    let workspace = harness.app.workspace_mut(tab).unwrap();
     workspace.tree.schemas.value = Some(vec!["public".into()]);
     let node = workspace.tree.nodes.entry("public".into()).or_default();
     node.expanded = true;
@@ -240,11 +258,6 @@ fn workspace(harness: &mut Harness) -> ConnTabId {
             })
             .collect(),
     );
-    workspace.databases.value = Some(vec![
-        "bookshop_development".into(),
-        "bookshop_test".into(),
-        "postgres".into(),
-    ]);
     // A second, inactive tab next to the active one.
     for name in ["books", "book_images"] {
         harness.app.apply(Action::OpenObject {
@@ -261,12 +274,11 @@ fn workspace(harness: &mut Harness) -> ConnTabId {
         id: object_tab,
         cell: CellPos { row: 4, col: 0 },
     });
-    tab
 }
 
 /// Bookshop's production database open beside the scene's `own`
 /// connection: the header's second chip, as the mockups show it.
-fn production_beside(harness: &mut Harness, own: ConnTabId) {
+fn production_beside(harness: &mut Harness, own: ConnTabId) -> ConnTabId {
     harness.app.apply(Action::ShowConnections);
     let tab = harness.connect_fake();
     let (spec, _) = ConnectSpec::from_url(
@@ -281,6 +293,247 @@ fn production_beside(harness: &mut Harness, own: ConnTabId) {
     workspace.spec = spec;
     workspace.driver = Driver::Postgres;
     harness.app.apply(Action::ActivateConnTab(own));
+    tab
+}
+
+/// `book_images` with its structure known, so its cells can be edited:
+/// the connection and the table's tab.
+fn editable(harness: &mut Harness) -> (ConnTabId, TabId) {
+    let tab = workspace(harness);
+    // The newest describe is the active table's.
+    harness.answer_structure(structure());
+    let id = harness.app.workspace(tab).unwrap().active_tab.unwrap();
+    (tab, id)
+}
+
+/// Types `text` over the value of the cell at `(row, col)` and leaves the
+/// cell: pending, or to fix when its column does not take the text.
+fn retype(
+    harness: &mut Harness,
+    tab: ConnTabId,
+    id: TabId,
+    (row, col): (usize, usize),
+    text: &str,
+) {
+    harness.app.apply(Action::EditCell {
+        tab,
+        id,
+        cell: CellPos { row, col },
+        start: EditStart::Replace(text.into()),
+    });
+    harness.app.apply(Action::LeaveEdit { tab, id });
+}
+
+/// Image 3 becomes a cover that was deleted this morning: two pending
+/// cells in one row.
+fn retire_image(harness: &mut Harness, tab: ConnTabId, id: TabId) {
+    retype(harness, tab, id, (1, KIND), "cover");
+    retype(harness, tab, id, (1, DELETED_AT), DELETED);
+}
+
+/// The selection back on row 5, off the cells that show a state.
+fn step_aside(harness: &mut Harness, tab: ConnTabId, id: TabId) {
+    harness.app.apply(Action::SelectCell {
+        tab,
+        id,
+        cell: CellPos { row: 4, col: 0 },
+    });
+}
+
+/// What puts a scene on a harness.
+type Scene = fn(&mut Harness);
+
+// Columns of `page` by their place.
+const BOOK_ID: usize = 1;
+const KIND: usize = 2;
+const IMAGE_DATA: usize = 3;
+const DELETED_AT: usize = 5;
+
+/// When the scenes' image was deleted.
+const DELETED: &str = "2026-10-04 09:30:00";
+
+/// Editing a table's values, one scene per state. Each is reached as a
+/// user reaches it, through the model, so it is the same state in every
+/// look: the bar, the tints and the dialogs on macOS and Windows; the mode
+/// line, the gutter and the error line on Omarchy.
+const EDITING: [(&str, Scene); 10] = [
+    ("edit-pending", edit_pending),
+    ("edit-review", edit_review),
+    ("edit-field", edit_field),
+    ("edit-large", edit_large),
+    ("edit-saved", edit_saved),
+    ("edit-failed", edit_failed),
+    ("edit-conflict", edit_conflict),
+    ("edit-conflict-gone", edit_conflict_gone),
+    ("edit-leave", edit_leave),
+    ("edit-production", edit_to_production),
+];
+
+/// Three pending cells in two rows, one of them a book's id that is no
+/// number: the counts, and "1 to fix" where a save would be.
+fn edit_pending(harness: &mut Harness) {
+    let (tab, id) = editable(harness);
+    retire_image(harness, tab, id);
+    retype(harness, tab, id, (3, BOOK_ID), "107233x");
+    step_aside(harness, tab, id);
+}
+
+/// Review SQL open on those three cells: the statement of the row a save
+/// can send, under its two comments, and the row whose book is no number
+/// as a comment alone. The drawer above the bar on macOS and Windows, the
+/// `:diff` panel above the status line on Omarchy.
+fn edit_review(harness: &mut Harness) {
+    let (tab, id) = editable(harness);
+    retire_image(harness, tab, id);
+    retype(harness, tab, id, (3, BOOK_ID), "107233x");
+    step_aside(harness, tab, id);
+    let show = true;
+    harness.app.apply(Action::ReviewEdits { tab, id, show });
+}
+
+/// The field open on a cell, holding a text its column does not take: red,
+/// with why. Two cells are pending beside it, for the counts.
+fn edit_field(harness: &mut Harness) {
+    let (tab, id) = editable(harness);
+    retire_image(harness, tab, id);
+    harness.app.apply(Action::EditCell {
+        tab,
+        id,
+        cell: CellPos {
+            row: 3,
+            col: BOOK_ID,
+        },
+        start: EditStart::Replace("107233x".into()),
+    });
+    // What the field says when its text changed: the check runs.
+    harness.app.apply(Action::EditorTyped { tab, id });
+}
+
+/// The popover, on the JSON column.
+fn edit_large(harness: &mut Harness) {
+    let (tab, id) = editable(harness);
+    harness.app.apply(Action::EditCell {
+        tab,
+        id,
+        cell: CellPos {
+            row: 4,
+            col: IMAGE_DATA,
+        },
+        start: EditStart::Value,
+    });
+}
+
+/// Just after a save that wrote: the two cells green, and the footer's
+/// "written 2 changes".
+fn edit_saved(harness: &mut Harness) {
+    let (tab, id) = editable(harness);
+    retire_image(harness, tab, id);
+    step_aside(harness, tab, id);
+    harness.app.apply(Action::WriteEdits { tab, id });
+    // The row as the database holds it now.
+    let mut row = page().rows.swap_remove(1);
+    row[KIND] = Value::Text("cover".into());
+    row[DELETED_AT] = Value::Text(DELETED.into());
+    harness.answer_written(Ok(tabletist_db::WriteOutcome::Written {
+        rows: vec![row],
+        elapsed: Duration::from_millis(14),
+    }));
+}
+
+/// A save the database refused: image 3 was given a book that is not
+/// there. Its row is red and says the database's words; the other row's
+/// change is still pending, and nothing was written.
+fn edit_failed(harness: &mut Harness) {
+    let (tab, id) = editable(harness);
+    retype(harness, tab, id, (1, BOOK_ID), "999");
+    retype(harness, tab, id, (3, KIND), "cover");
+    step_aside(harness, tab, id);
+    // Without the row panel: beside it, a window this wide leaves the
+    // bar's line no room, and it is cut down to its "…".
+    harness.app.apply(Action::ToggleRowPanel(tab));
+    harness.app.apply(Action::WriteEdits { tab, id });
+    harness.answer_written(Ok(tabletist_db::WriteOutcome::Failed {
+        row: 0,
+        error: tabletist_db::Error::Query {
+            code: Some("23503".into()),
+            message: "insert or update on table \"book_images\" violates foreign key \
+                      constraint \"fk_rails_3b1d8f0c2e\""
+                .into(),
+            detail: Some("Key (book_id)=(999) is not present in table \"books\".".into()),
+            hint: None,
+        },
+    }));
+}
+
+/// Image 3 goes to the first image's book, as its cover: two pending
+/// cells in one row, saved and not answered yet. Both are in columns whose
+/// names the conflict sheet's first column holds whole.
+fn rebook_image(harness: &mut Harness) -> (ConnTabId, TabId) {
+    let (tab, id) = editable(harness);
+    retype(harness, tab, id, (1, BOOK_ID), "1048576");
+    retype(harness, tab, id, (1, KIND), "cover");
+    step_aside(harness, tab, id);
+    harness.app.apply(Action::WriteEdits { tab, id });
+    (tab, id)
+}
+
+/// A save that found its row changed: someone gave image 3 to another
+/// book in the meantime. The question shows the two columns the user
+/// changed, what was loaded, what the server holds now and the user's:
+/// `book_id` marked, `kind` as it was loaded.
+fn edit_conflict(harness: &mut Harness) {
+    rebook_image(harness);
+    // The row as the database holds it now: with the third image's book.
+    let mut row = page().rows.swap_remove(1);
+    row[BOOK_ID] = Value::Int(1_048_576 + 2 * 7_919);
+    harness.answer_written(Ok(tabletist_db::WriteOutcome::Conflicts(vec![
+        tabletist_db::Conflict {
+            row: 0,
+            server: Some(row),
+        },
+    ])));
+}
+
+/// A save that found its row gone: someone deleted image 3 in the
+/// meantime. The question shows what was loaded and the user's, and the
+/// one answer it has.
+fn edit_conflict_gone(harness: &mut Harness) {
+    rebook_image(harness);
+    harness.answer_written(Ok(tabletist_db::WriteOutcome::Conflicts(vec![
+        tabletist_db::Conflict {
+            row: 0,
+            server: None,
+        },
+    ])));
+}
+
+/// Closing the tab with three changes pending: save, discard or stay.
+fn edit_leave(harness: &mut Harness) {
+    let (tab, id) = editable(harness);
+    retire_image(harness, tab, id);
+    retype(harness, tab, id, (3, KIND), "cover");
+    step_aside(harness, tab, id);
+    harness.app.apply(Action::CloseTab { tab, id });
+}
+
+/// A save to production, before anything is sent: its statements, and
+/// what confirms them. On Omarchy the statements are in the `:diff` panel,
+/// and the box stands above it and points at it. The production connection
+/// opens writable here (its "Open read-only" box unticked), or nothing
+/// could be saved on it.
+fn edit_to_production(harness: &mut Harness) {
+    let own = workspace(harness);
+    let tab = production_beside(harness, own);
+    harness.app.apply(Action::ActivateConnTab(tab));
+    let workspace = harness.app.workspace_mut(tab).unwrap();
+    workspace.access = crate::connections::access(Some(false), workspace.environment);
+    workspace.databases.value = Some(vec!["bookshop_production".into(), "postgres".into()]);
+    tables(harness, tab);
+    harness.answer_structure(structure());
+    let id = harness.app.workspace(tab).unwrap().active_tab.unwrap();
+    retire_image(harness, tab, id);
+    step_aside(harness, tab, id);
+    harness.app.apply(Action::WriteEdits { tab, id });
 }
 
 fn both(name: &str, scene: impl Fn(&mut Harness)) {
@@ -706,6 +959,13 @@ fn shots() {
             cell: CellPos { row: 1, col: 0 },
         });
     });
+    // Editing a table's values: what is pending and the statements a save
+    // of it would run, the two editors, a save that wrote, one that failed
+    // and one that found its row changed or gone, and the two questions
+    // before leaving and before a save to production.
+    for (name, scene) in EDITING {
+        both(name, scene);
+    }
 }
 
 /// Runs the active SQL editor's statement, or `all` of its script.
@@ -1346,6 +1606,7 @@ mod mock {
             default: None,
             comment: None,
             allowed_values: None,
+            generated: false,
         };
         let mut format = column("format", "edition_format", true);
         format.allowed_values = Some(
@@ -1380,6 +1641,7 @@ mod mock {
             default: None,
             comment: None,
             allowed_values: None,
+            generated: false,
         };
         Structure {
             columns: vec![

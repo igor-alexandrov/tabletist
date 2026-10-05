@@ -2,7 +2,10 @@
 
 use std::fmt::Write as _;
 
-use crate::{Filter, FilterOp, ObjectRef, RowQuery, SortDir, Value};
+use crate::{
+    CellChange, ColumnClass, Error, Filter, FilterOp, NewValue, ObjectRef, Result, RowChange,
+    RowQuery, SortDir, Value, column_class,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Dialect {
@@ -16,6 +19,55 @@ pub enum Dialect {
 pub struct Sql {
     pub text: String,
     pub params: Vec<Value>,
+}
+
+/// A row's `UPDATE`, as a user reads it and as the driver runs it. Both
+/// come from the same values, so they cannot drift apart.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RowUpdate {
+    /// The statement with its values as literals.
+    pub shown: String,
+    /// What the driver sends: for PostgreSQL the shown text, for MySQL and
+    /// SQLite the same statement with the values bound.
+    pub sql: Sql,
+    /// Where the parts of `shown` stand.
+    pub parts: UpdateParts,
+}
+
+/// Where the parts of a shown `UPDATE` stand, as byte offsets into its
+/// text. The builder notes them as it writes the statement, so what lays
+/// the statement out in lines, or shortens a long value where it is shown,
+/// reads no SQL to find them: a name or a value that holds ` SET ` or a
+/// quote cannot move them.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct UpdateParts {
+    /// Where `SET` begins: the table's name ends a space before it.
+    pub set: usize,
+    /// Where each value's column begins: one for each of `values`.
+    pub columns: Vec<usize>,
+    /// Each value's place: the new ones in the order they are set, then
+    /// the key's.
+    pub values: Vec<std::ops::Range<usize>>,
+}
+
+/// A row's key as a `WHERE`, shown and sent, and where its parts stand in
+/// the shown clause.
+struct KeyClause {
+    shown: String,
+    sent: String,
+    columns: Vec<usize>,
+    values: Vec<std::ops::Range<usize>>,
+}
+
+/// A value as a statement holds it. Decided once, here, so the literal a
+/// user reads is the value the driver sends.
+#[derive(Debug, Clone, PartialEq)]
+enum Operand {
+    Null,
+    Int(i64),
+    Float(f64),
+    Text(String),
+    Bytes(Vec<u8>),
 }
 
 /// Escapes `\`, `%` and `_` so `text` matches literally inside a LIKE
@@ -319,6 +371,306 @@ impl Dialect {
         }
     }
 
+    /// `text` as a string literal. PostgreSQL takes the plain form unless
+    /// the text holds a backslash, which only the escape form keeps whatever
+    /// `standard_conforming_strings` is. MySQL reads a backslash as an
+    /// escape in every string (the session keeps `NO_BACKSLASH_ESCAPES`
+    /// off), so it is doubled there, and a NUL is written as the escape
+    /// MySQL has for it: the literal is for a person to read and to copy,
+    /// and a clipboard, or what the text is pasted into, may end text at a
+    /// raw NUL and leave a statement without its `WHERE`. After the
+    /// doubling, so the escape's own backslash stays single.
+    pub(crate) fn literal(self, text: &str) -> String {
+        match self {
+            Self::Postgres if text.contains('\\') => quote_literal(text),
+            Self::Postgres | Self::Sqlite => format!("'{}'", text.replace('\'', "''")),
+            Self::MySql => format!(
+                "'{}'",
+                text.replace('\\', "\\\\")
+                    .replace('\0', "\\0")
+                    .replace('\'', "''")
+            ),
+        }
+    }
+
+    /// Bytes as a literal: PostgreSQL's hex `bytea`, `x'..'` elsewhere.
+    pub(crate) fn bytes_literal(self, bytes: &[u8]) -> String {
+        let mut hex = String::new();
+        for byte in bytes {
+            let _ = write!(hex, "{byte:02x}");
+        }
+        match self {
+            Self::Postgres => quote_literal(&format!("\\x{hex}")),
+            Self::MySql | Self::Sqlite => format!("x'{hex}'"),
+        }
+    }
+
+    /// The operand as a literal. What SQLite's parser would not read as the
+    /// value has a form of its own there, so the text a person copies runs
+    /// and stores what the bound statement does.
+    fn shown(self, operand: &Operand) -> String {
+        match operand {
+            Operand::Null => "NULL".to_owned(),
+            Operand::Int(number) => number.to_string(),
+            // SQLite reads `inf` as a column's name. A number past the
+            // largest real is infinity to it, and is how it writes one.
+            Operand::Float(number) if self == Self::Sqlite && number.is_infinite() => {
+                if number.is_sign_positive() {
+                    "9e999".to_owned()
+                } else {
+                    "-9e999".to_owned()
+                }
+            }
+            // With its point, so a real never reads as a whole number.
+            Operand::Float(number) => format!("{number:?}"),
+            // SQLite's parser ends the statement at a NUL, inside a string
+            // too, so such text is joined around `char(0)`. Not a cast of
+            // its bytes: that reads them in the file's encoding, and a
+            // UTF-16 file would store other text.
+            Operand::Text(text) if self == Self::Sqlite && text.contains('\0') => {
+                let parts: Vec<String> = text.split('\0').map(|part| self.literal(part)).collect();
+                format!("({})", parts.join(" || char(0) || "))
+            }
+            Operand::Text(text) => self.literal(text),
+            Operand::Bytes(bytes) => self.bytes_literal(bytes),
+        }
+    }
+
+    /// The operand in the statement the driver runs: its literal for
+    /// PostgreSQL, whose rows go through the simple-query protocol, and a
+    /// bound value elsewhere. NULL is written out in both.
+    fn sent(self, operand: &Operand, params: &mut Vec<Value>) -> String {
+        if self == Self::Postgres {
+            return self.shown(operand);
+        }
+        params.push(match operand {
+            Operand::Null => return "NULL".to_owned(),
+            Operand::Int(number) => Value::Int(*number),
+            Operand::Float(number) => Value::Float(*number),
+            Operand::Text(text) => Value::Text(text.as_str().into()),
+            Operand::Bytes(bytes) => Value::Bytes(bytes.as_slice().into()),
+        });
+        self.placeholder().to_owned()
+    }
+
+    /// A key's loaded value as the operand that finds its row again.
+    /// PostgreSQL converts a literal to the column's type, so everything
+    /// but a whole number goes as text there.
+    fn key_operand(self, value: &Value) -> Operand {
+        match (self, value) {
+            (_, Value::Null) => Operand::Null,
+            (_, Value::Int(number)) => Operand::Int(*number),
+            (_, Value::Text(text)) => Operand::Text(text.to_string()),
+            (_, Value::Bytes(bytes)) => Operand::Bytes(bytes.to_vec()),
+            (Self::Postgres, Value::Bool(flag)) => Operand::Text(flag.to_string()),
+            (Self::Postgres, Value::Float(number)) => Operand::Text(number.to_string()),
+            (Self::MySql | Self::Sqlite, Value::Bool(flag)) => Operand::Int(i64::from(*flag)),
+            (Self::MySql | Self::Sqlite, Value::Float(number)) => Operand::Float(*number),
+        }
+    }
+
+    /// A cell's new value as an operand. PostgreSQL and MySQL convert text
+    /// to the column's type themselves. Where the database would store the
+    /// text as it is, it is converted here, by the column's class: numbers
+    /// on SQLite, and a boolean on SQLite and MySQL, which keep one as 1 or
+    /// 0. Text that cannot be converted is refused, naming the column.
+    fn new_operand(self, change: &CellChange) -> Result<Operand> {
+        let class = column_class(self, &change.type_name);
+        // A binary column is never sent text (MySQL would store a `bit`'s
+        // text as the characters' codes), and is not edited at all yet: a
+        // NULL for one is refused with the rest.
+        // By what the cell held too: a SQLite column of any declared type
+        // can hold a blob.
+        if class == ColumnClass::Binary || matches!(change.loaded, Value::Bytes(_)) {
+            return Err(Error::query(format!(
+                "{}: binary values cannot be edited yet",
+                change.column
+            )));
+        }
+        let NewValue::Text(text) = &change.new else {
+            return Ok(Operand::Null);
+        };
+        let refused = |expects: &str| {
+            Error::query(format!(
+                "{}: {} expects {expects}",
+                change.column,
+                if change.type_name.is_empty() {
+                    "the column"
+                } else {
+                    &change.type_name
+                }
+            ))
+        };
+        let typed = text.trim();
+        let whole = || typed.parse::<i64>().ok().map(Operand::Int);
+        let real = || {
+            typed
+                .parse::<f64>()
+                .ok()
+                .filter(|number| number.is_finite())
+                .map(Operand::Float)
+        };
+        match (self, class) {
+            (Self::Postgres, _) => Ok(Operand::Text(text.clone())),
+            // A tinyint(1) holds any tinyint, and some tables keep more
+            // than a flag in one.
+            (Self::MySql, ColumnClass::Boolean) => match typed.to_ascii_lowercase().as_str() {
+                "true" => Ok(Operand::Int(1)),
+                "false" => Ok(Operand::Int(0)),
+                _ => typed
+                    .parse::<i8>()
+                    .map(|number| Operand::Int(i64::from(number)))
+                    .map_err(|_| refused("true, false or a whole number from -128 to 127")),
+            },
+            (Self::Sqlite, ColumnClass::Boolean) => match typed.to_ascii_lowercase().as_str() {
+                "true" | "1" => Ok(Operand::Int(1)),
+                "false" | "0" => Ok(Operand::Int(0)),
+                _ => Err(refused("true or false")),
+            },
+            // No declared type, or one SQLite gives no affinity: nothing
+            // converts the text, so a number stays a number only where the
+            // cell held one.
+            (Self::Sqlite, ColumnClass::Other)
+                if matches!(change.loaded, Value::Int(_) | Value::Float(_)) =>
+            {
+                Ok(whole()
+                    .or_else(real)
+                    .unwrap_or_else(|| Operand::Text(text.clone())))
+            }
+            (Self::Sqlite, ColumnClass::Integer { .. }) => {
+                whole().ok_or_else(|| refused("a whole number"))
+            }
+            (Self::Sqlite, ColumnClass::Float) => real().ok_or_else(|| refused("a number")),
+            (Self::Sqlite, ColumnClass::Decimal { .. }) => {
+                whole().or_else(real).ok_or_else(|| refused("a number"))
+            }
+            _ => Ok(Operand::Text(text.clone())),
+        }
+    }
+
+    /// ` WHERE "a" = .. AND "b" = ..` for a row's key.
+    fn key_clause(self, key: &[(String, Value)], params: &mut Vec<Value>) -> KeyClause {
+        let mut clause = KeyClause {
+            shown: String::from(" WHERE "),
+            sent: String::from(" WHERE "),
+            columns: Vec::with_capacity(key.len()),
+            values: Vec::with_capacity(key.len()),
+        };
+        for (index, (column, value)) in key.iter().enumerate() {
+            let operand = self.key_operand(value);
+            let column = self.quote_ident(column);
+            let lead = if index == 0 { "" } else { " AND " };
+            clause.shown.push_str(lead);
+            clause.columns.push(clause.shown.len());
+            let _ = write!(clause.shown, "{column} = ");
+            let literal = self.shown(&operand);
+            let at = clause.shown.len();
+            clause.values.push(at..at + literal.len());
+            clause.shown.push_str(&literal);
+            let sent = self.sent(&operand, params);
+            let _ = write!(clause.sent, "{lead}{column} = {sent}");
+        }
+        clause
+    }
+
+    /// Refuses a SQLite key that may not be the row's. Text that is not
+    /// UTF-8 is read with U+FFFD for its bad bytes, so a key that holds one
+    /// may stand for other bytes, and bound as it reads it finds another
+    /// row, whose key really is that text. A key that really holds U+FFFD
+    /// is refused with it, since the page's value cannot tell the two
+    /// apart. That is accepted.
+    fn key_read_exactly(self, key: &[(String, Value)]) -> Result<()> {
+        let lossy = |value: &Value| matches!(value, Value::Text(text) if text.contains('\u{FFFD}'));
+        if self == Self::Sqlite && key.iter().any(|(_, value)| lossy(value)) {
+            return Err(Error::query(
+                "the row's key holds text that may not have been read exactly, so the save \
+                 cannot be sure which row it names",
+            ));
+        }
+        Ok(())
+    }
+
+    /// The `UPDATE` of one row of a save. `Err` names the value that cannot
+    /// be sent in its column's form, or says why no save sends the row at
+    /// all: a SQLite key that may not be the row's, PostgreSQL text that
+    /// holds a NUL. Refused here and nowhere after it, so what a review
+    /// shows of a row is what a save does with it: each driver builds its
+    /// statements with this before it sends any, and fails the row whose
+    /// statement is refused.
+    pub fn update_row(self, object: &ObjectRef, row: &RowChange) -> Result<RowUpdate> {
+        // Before any value of the row is looked at: without a key that is
+        // the row's there is no row to say anything of.
+        self.key_read_exactly(&row.key)?;
+        let mut params = Vec::new();
+        let mut shown = format!("UPDATE {} SET ", self.qualified(object));
+        let mut sent = shown.clone();
+        let mut parts = UpdateParts {
+            set: shown.len() - "SET ".len(),
+            ..UpdateParts::default()
+        };
+        for (index, change) in row.set.iter().enumerate() {
+            let operand = self.new_operand(change)?;
+            let column = self.quote_ident(&change.column);
+            let lead = if index == 0 { "" } else { ", " };
+            shown.push_str(lead);
+            parts.columns.push(shown.len());
+            let _ = write!(shown, "{column} = ");
+            let literal = self.shown(&operand);
+            parts.values.push(shown.len()..shown.len() + literal.len());
+            shown.push_str(&literal);
+            let value = self.sent(&operand, &mut params);
+            let _ = write!(sent, "{lead}{column} = {value}");
+        }
+        let clause = self.key_clause(&row.key, &mut params);
+        let base = shown.len();
+        parts
+            .columns
+            .extend(clause.columns.iter().map(|column| base + column));
+        parts.values.extend(
+            clause
+                .values
+                .iter()
+                .map(|value| base + value.start..base + value.end),
+        );
+        shown.push_str(&clause.shown);
+        sent.push_str(&clause.sent);
+        // PostgreSQL text cannot hold a NUL, and the driver cannot put one
+        // in a message: it fails in a way that reads as a lost session.
+        // The key's values and the new ones are all in the statement, and
+        // its names with them, so the reads by key need no check of their
+        // own.
+        if self == Self::Postgres && sent.contains('\0') {
+            return Err(Error::query("PostgreSQL text cannot hold a NUL character"));
+        }
+        Ok(RowUpdate {
+            shown,
+            sql: Sql { text: sent, params },
+            parts,
+        })
+    }
+
+    /// The row of `key`, whole. With `lock` it is held until the
+    /// transaction ends, where the database has row locks. Two rows at
+    /// most: a caller only needs to tell none, one and more than one
+    /// apart, and a key that is not one (SQLite cannot say that an index
+    /// compares otherwise than its column) could match a whole table.
+    pub fn select_row(self, object: &ObjectRef, key: &[(String, Value)], lock: bool) -> Sql {
+        let mut params = Vec::new();
+        let clause = self.key_clause(key, &mut params).sent;
+        let lock = if lock && self != Self::Sqlite {
+            " FOR UPDATE"
+        } else {
+            ""
+        };
+        Sql {
+            text: format!(
+                "SELECT * FROM {}{clause} LIMIT 2{lock}",
+                self.qualified(object)
+            ),
+            params,
+        }
+    }
+
     /// One page plus one row (to learn whether there is a next page).
     /// `key` is the primary key, used for a stable default order and as a
     /// tiebreaker after the user's sort. `binary` names the columns that
@@ -368,7 +720,10 @@ impl Dialect {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Filter, FilterOp, ObjectRef, RowQuery, Sort, SortDir, Value};
+    use crate::{
+        CellChange, Filter, FilterOp, NewValue, ObjectRef, RowChange, RowQuery, Sort, SortDir,
+        Value,
+    };
 
     fn query() -> RowQuery {
         RowQuery::new(ObjectRef::new("public", "users"), 300)
@@ -861,5 +1216,480 @@ mod tests {
         // Reserved elsewhere, not here.
         assert_eq!(Dialect::Postgres.ident("key"), "key");
         assert_eq!(Dialect::MySql.ident("user"), "user");
+    }
+
+    fn change(column: &str, type_name: &str, new: NewValue) -> CellChange {
+        CellChange {
+            column: column.into(),
+            type_name: type_name.into(),
+            loaded: Value::Null,
+            new,
+        }
+    }
+
+    fn typed(column: &str, type_name: &str, new: &str) -> CellChange {
+        change(column, type_name, NewValue::Text(new.into()))
+    }
+
+    fn one(key: Vec<(&str, Value)>, set: Vec<CellChange>) -> RowChange {
+        RowChange {
+            key: key
+                .into_iter()
+                .map(|(name, value)| (name.to_owned(), value))
+                .collect(),
+            set,
+        }
+    }
+
+    fn books() -> ObjectRef {
+        ObjectRef::new("public", "books")
+    }
+
+    /// The bound statement with each parameter written in place of its
+    /// placeholder, as the builder would show it.
+    fn inlined(dialect: Dialect, sql: &Sql) -> String {
+        let mut params = sql.params.iter();
+        let mut text = String::new();
+        for (index, piece) in sql.text.split('?').enumerate() {
+            if index > 0 {
+                text.push_str(
+                    &match params.next().expect("a value for each placeholder") {
+                        Value::Int(number) => number.to_string(),
+                        Value::Float(number) => format!("{number:?}"),
+                        Value::Text(value) => dialect.literal(value),
+                        Value::Bytes(bytes) => dialect.bytes_literal(bytes),
+                        other => panic!("{other:?} is never bound"),
+                    },
+                );
+            }
+            text.push_str(piece);
+        }
+        assert!(params.next().is_none(), "a value without a placeholder");
+        text
+    }
+
+    #[test]
+    fn an_update_is_shown_with_its_values_as_literals() {
+        let row = one(
+            vec![("id", Value::Int(2))],
+            vec![
+                typed("kind", "character varying(20)", "ebook"),
+                change("alt_text", "text", NewValue::Null),
+            ],
+        );
+        let update = Dialect::Postgres.update_row(&books(), &row).unwrap();
+        assert_eq!(
+            update.shown,
+            r#"UPDATE "public"."books" SET "kind" = 'ebook', "alt_text" = NULL WHERE "id" = 2"#
+        );
+        // PostgreSQL runs exactly what it shows.
+        assert_eq!(update.sql.text, update.shown);
+        assert!(update.sql.params.is_empty());
+        let update = Dialect::MySql.update_row(&books(), &row).unwrap();
+        assert_eq!(
+            update.shown,
+            "UPDATE `public`.`books` SET `kind` = 'ebook', `alt_text` = NULL WHERE `id` = 2"
+        );
+        assert_eq!(
+            update.sql.text,
+            "UPDATE `public`.`books` SET `kind` = ?, `alt_text` = NULL WHERE `id` = ?"
+        );
+        assert_eq!(update.sql.params, [text("ebook"), Value::Int(2)]);
+    }
+
+    #[test]
+    fn an_update_says_where_its_parts_stand() {
+        // Names and values that hold what the statement is made of: no
+        // reading of the text would find its parts.
+        let row = one(
+            vec![("id", Value::Int(2)), ("code", text("a WHERE b"))],
+            vec![
+                typed("kind", "text", "it's, SET = 'x' WHERE 1"),
+                change("alt_text", "text", NewValue::Null),
+                typed("note", "text", "caf\u{e9} \\ \u{1F600}"),
+            ],
+        );
+        let object = ObjectRef::new("public", "a SET b");
+        for dialect in [Dialect::Postgres, Dialect::MySql, Dialect::Sqlite] {
+            let update = dialect.update_row(&object, &row).unwrap();
+            let (shown, parts) = (&update.shown, &update.parts);
+            assert!(shown[parts.set..].starts_with("SET "), "{dialect:?}");
+            // The table's name ends where ` SET` begins.
+            assert_eq!(
+                &shown[..parts.set - 1],
+                format!("UPDATE {}", dialect.qualified(&object)),
+                "{dialect:?}"
+            );
+            let values: Vec<&str> = parts
+                .values
+                .iter()
+                .map(|range| &shown[range.clone()])
+                .collect();
+            assert_eq!(
+                values,
+                [
+                    dialect.literal("it's, SET = 'x' WHERE 1").as_str(),
+                    "NULL",
+                    dialect.literal("caf\u{e9} \\ \u{1F600}").as_str(),
+                    "2",
+                    dialect.literal("a WHERE b").as_str(),
+                ],
+                "{dialect:?}"
+            );
+            // In the statement's order, the new values before `WHERE` and
+            // the key's after it.
+            assert!(parts.values.is_sorted_by(|a, b| a.end <= b.start));
+            let key = &shown[parts.values[2].end..parts.columns[3]];
+            assert_eq!(key, " WHERE ", "{dialect:?}");
+            // From where its column begins to the value: the name and `=`,
+            // whatever stands between two of them.
+            let leads: Vec<&str> = parts
+                .columns
+                .iter()
+                .zip(&parts.values)
+                .map(|(column, value)| &shown[*column..value.start])
+                .collect();
+            let names = ["kind", "alt_text", "note", "id", "code"];
+            let expected: Vec<String> = names
+                .iter()
+                .map(|name| format!("{} = ", dialect.quote_ident(name)))
+                .collect();
+            assert_eq!(leads, expected, "{dialect:?}");
+        }
+        // SQLite's text around a NUL is one value, its brackets with it.
+        let row = one(
+            vec![("id", Value::Int(2))],
+            vec![typed("note", "text", "a\0b"), typed("kind", "text", "c")],
+        );
+        let update = Dialect::Sqlite.update_row(&object, &row).unwrap();
+        let values: Vec<&str> = update
+            .parts
+            .values
+            .iter()
+            .map(|range| &update.shown[range.clone()])
+            .collect();
+        assert_eq!(values, ["('a' || char(0) || 'b')", "'c'", "2"]);
+    }
+
+    #[test]
+    fn what_is_shown_is_what_is_bound() {
+        let row = one(
+            vec![
+                ("id", Value::Int(7)),
+                ("code", text("it's")),
+                ("uid", Value::Bytes(vec![0x01, 0xab].into())),
+            ],
+            vec![
+                typed("title", "TEXT", "O'Brien \\ co"),
+                typed("pages", "INTEGER", "612"),
+                typed("price", "REAL", "12.5"),
+                typed("in_print", "BOOLEAN", "true"),
+                change("note", "TEXT", NewValue::Null),
+            ],
+        );
+        for dialect in [Dialect::MySql, Dialect::Sqlite] {
+            let row = match dialect {
+                // MySQL's own names for the same columns.
+                Dialect::MySql => one(
+                    row.key
+                        .iter()
+                        .map(|(name, value)| (name.as_str(), value.clone()))
+                        .collect(),
+                    vec![
+                        typed("title", "varchar(200)", "O'Brien \\ co"),
+                        typed("pages", "int", "612"),
+                        typed("price", "double", "12.5"),
+                        typed("in_print", "tinyint(1)", "true"),
+                        change("note", "text", NewValue::Null),
+                    ],
+                ),
+                _ => row.clone(),
+            };
+            let update = dialect.update_row(&books(), &row).unwrap();
+            assert_eq!(inlined(dialect, &update.sql), update.shown, "{dialect:?}");
+            let select = dialect.select_row(&books(), &row.key, true);
+            assert_eq!(select.params.len(), 3, "{dialect:?}");
+        }
+    }
+
+    #[test]
+    fn a_values_form_follows_its_columns_class() {
+        let shown = |dialect: Dialect, cell: CellChange| {
+            dialect
+                .update_row(&books(), &one(vec![("id", Value::Int(1))], vec![cell]))
+                .map(|update| update.shown)
+        };
+        let set = |dialect: Dialect, cell: CellChange| {
+            let shown = shown(dialect, cell).unwrap();
+            let start = shown.find(" = ").unwrap() + 3;
+            shown[start..shown.find(" WHERE").unwrap()].to_owned()
+        };
+        // PostgreSQL converts text itself, whatever the type.
+        assert_eq!(set(Dialect::Postgres, typed("n", "integer", "12")), "'12'");
+        assert_eq!(
+            set(Dialect::Postgres, typed("b", "boolean", "true")),
+            "'true'"
+        );
+        // A backslash needs the escape form there, and only then.
+        assert_eq!(
+            set(Dialect::Postgres, typed("t", "text", r"a\b")),
+            r"E'a\\b'"
+        );
+        assert_eq!(
+            set(Dialect::Postgres, typed("t", "text", "it's")),
+            "'it''s'"
+        );
+        // MySQL converts text too, but a boolean is 1 or 0.
+        assert_eq!(set(Dialect::MySql, typed("n", "int", "12")), "'12'");
+        assert_eq!(set(Dialect::MySql, typed("b", "tinyint(1)", "false")), "0");
+        assert_eq!(set(Dialect::MySql, typed("b", "tinyint(1)", "1")), "1");
+        assert_eq!(
+            set(Dialect::MySql, typed("t", "text", r"a\b'c")),
+            r"'a\\b''c'"
+        );
+        // SQLite stores what it is given, so numbers go as numbers.
+        assert_eq!(set(Dialect::Sqlite, typed("n", "INTEGER", " 12 ")), "12");
+        assert_eq!(set(Dialect::Sqlite, typed("x", "REAL", "1")), "1.0");
+        assert_eq!(set(Dialect::Sqlite, typed("d", "NUMERIC", "12")), "12");
+        assert_eq!(set(Dialect::Sqlite, typed("d", "NUMERIC", "12.50")), "12.5");
+        assert_eq!(set(Dialect::Sqlite, typed("b", "BOOLEAN", "TRUE")), "1");
+        assert_eq!(set(Dialect::Sqlite, typed("t", "TEXT", "12")), "'12'");
+        assert_eq!(set(Dialect::Sqlite, typed("t", "", "12")), "'12'");
+        // A column with no type keeps a number a number, where it held one.
+        let held = |loaded: Value, new: &str| CellChange {
+            loaded,
+            ..typed("t", "", new)
+        };
+        assert_eq!(set(Dialect::Sqlite, held(Value::Int(5), "6")), "6");
+        assert_eq!(set(Dialect::Sqlite, held(Value::Float(1.5), "2")), "2");
+        assert_eq!(set(Dialect::Sqlite, held(Value::Int(5), "six")), "'six'");
+        assert_eq!(
+            set(Dialect::Sqlite, held(Value::Text("5".into()), "6")),
+            "'6'"
+        );
+        // A MySQL tinyint(1) takes what a tinyint holds.
+        assert_eq!(set(Dialect::MySql, typed("b", "tinyint(1)", "true")), "1");
+        assert_eq!(set(Dialect::MySql, typed("b", "tinyint(1)", "5")), "5");
+        // What cannot be converted is refused, with the column and its type.
+        for (dialect, cell) in [
+            (Dialect::Sqlite, typed("pages", "INTEGER", "many")),
+            (Dialect::Sqlite, typed("pages", "INTEGER", "1.5")),
+            (Dialect::Sqlite, typed("price", "REAL", "NaN")),
+            (Dialect::Sqlite, typed("in_print", "BOOLEAN", "maybe")),
+            (Dialect::MySql, typed("in_print", "tinyint(1)", "yes")),
+            (Dialect::MySql, typed("in_print", "tinyint(1)", "128")),
+            // Binary columns are never sent as text.
+            (Dialect::MySql, typed("flags", "bit(8)", "1")),
+            (Dialect::Postgres, typed("cover", "bytea", "x")),
+            (Dialect::Sqlite, typed("cover", "BLOB", "x")),
+            // Nor set to NULL: they are not edited at all.
+            (Dialect::MySql, change("flags", "bit(8)", NewValue::Null)),
+            (Dialect::Postgres, change("cover", "bytea", NewValue::Null)),
+            (Dialect::Sqlite, change("cover", "BLOB", NewValue::Null)),
+            // Nor a blob held by a column of another type, or of none.
+            (
+                Dialect::Sqlite,
+                CellChange {
+                    loaded: Value::Bytes(vec![1, 2].into()),
+                    ..typed("note", "TEXT", "x")
+                },
+            ),
+            (
+                Dialect::Sqlite,
+                CellChange {
+                    loaded: Value::Bytes(vec![1, 2].into()),
+                    ..change("loose", "", NewValue::Null)
+                },
+            ),
+        ] {
+            let column = cell.column.clone();
+            let refused = shown(dialect, cell).unwrap_err().to_string();
+            assert!(refused.starts_with(&column), "{refused}");
+        }
+    }
+
+    #[test]
+    fn sqlite_is_shown_what_its_parser_reads() {
+        let update = |dialect: Dialect, key: Value, new: &str| {
+            dialect
+                .update_row(
+                    &books(),
+                    &one(vec![("k", key)], vec![typed("t", "text", new)]),
+                )
+                .unwrap()
+        };
+        // SQLite's parser stops at a NUL, in a string too, so the text is
+        // joined around `char(0)`. The bound statement holds the text
+        // itself.
+        let nul = update(Dialect::Sqlite, text("a\0'"), "x\0y");
+        assert_eq!(
+            nul.shown,
+            r#"UPDATE "public"."books" SET "t" = ('x' || char(0) || 'y') WHERE "k" = ('a' || char(0) || '''')"#
+        );
+        // A NUL at either end leaves an empty string beside it.
+        assert!(
+            update(Dialect::Sqlite, Value::Int(1), "\0")
+                .shown
+                .contains(r#""t" = ('' || char(0) || '')"#)
+        );
+        assert_eq!(nul.sql.params, [text("x\0y"), text("a\0'")]);
+        // Text without one stays a plain string.
+        assert!(
+            update(Dialect::Sqlite, Value::Int(1), "x0y")
+                .shown
+                .contains(r#""t" = 'x0y'"#)
+        );
+        // `inf` would be read as a column's name. A number past the largest
+        // real is how SQLite itself writes infinity.
+        for (number, shown) in [(f64::INFINITY, "9e999"), (f64::NEG_INFINITY, "-9e999")] {
+            let update = update(Dialect::Sqlite, Value::Float(number), "x");
+            assert!(
+                update.shown.ends_with(&format!(r#" WHERE "k" = {shown}"#)),
+                "{}",
+                update.shown
+            );
+            assert_eq!(update.sql.params[1], Value::Float(number));
+        }
+        // The others keep their own forms. MySQL's is the escape its
+        // strings have for a NUL.
+        assert!(
+            update(Dialect::MySql, text("a\0'"), "x\0y")
+                .shown
+                .ends_with(r"SET `t` = 'x\0y' WHERE `k` = 'a\0'''")
+        );
+        assert!(
+            update(Dialect::MySql, Value::Float(f64::INFINITY), "x")
+                .shown
+                .ends_with("WHERE `k` = inf")
+        );
+        assert!(
+            update(Dialect::Postgres, Value::Float(f64::INFINITY), "x")
+                .shown
+                .ends_with(r#"WHERE "k" = 'inf'"#)
+        );
+    }
+
+    #[test]
+    fn a_row_no_save_would_send_has_no_statement() {
+        let update = |dialect: Dialect, key: Value, new: &str| {
+            dialect.update_row(
+                &books(),
+                &one(vec![("k", key)], vec![typed("t", "text", new)]),
+            )
+        };
+        // PostgreSQL text cannot hold a NUL: in a new value and in the key
+        // alike. What is shown is what a save runs, so a row a save
+        // refuses is refused here, where the review reads it.
+        for (key, new) in [(text("a"), "b\0c"), (text("a\0"), "b")] {
+            let refused = update(Dialect::Postgres, key, new).unwrap_err();
+            assert_eq!(
+                refused.to_string(),
+                "PostgreSQL text cannot hold a NUL character"
+            );
+        }
+        assert!(update(Dialect::Postgres, text("a"), "b").is_ok());
+        // The others hold one, each in its own writing.
+        for dialect in [Dialect::MySql, Dialect::Sqlite] {
+            assert!(update(dialect, text("a\0"), "b\0c").is_ok(), "{dialect:?}");
+        }
+        // SQLite reads text that is not UTF-8 with U+FFFD for its bad
+        // bytes: a key that holds one may be another row's.
+        let inexact = "the row's key holds text that may not have been read exactly, so the \
+                       save cannot be sure which row it names";
+        let refused = update(Dialect::Sqlite, text("caf\u{FFFD}"), "b").unwrap_err();
+        assert_eq!(refused.to_string(), inexact);
+        // Said before any value of the row is looked at.
+        let row = one(
+            vec![("id", Value::Int(1)), ("k", text("caf\u{FFFD}"))],
+            vec![typed("n", "INTEGER", "abc")],
+        );
+        let refused = Dialect::Sqlite.update_row(&books(), &row).unwrap_err();
+        assert_eq!(refused.to_string(), inexact);
+        // Only in the key, and only there: a new value may hold the
+        // character, and the other two read their text exactly.
+        assert!(update(Dialect::Sqlite, text("a"), "caf\u{FFFD}").is_ok());
+        for dialect in [Dialect::Postgres, Dialect::MySql] {
+            assert!(
+                update(dialect, text("caf\u{FFFD}"), "b").is_ok(),
+                "{dialect:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn mysql_writes_a_nul_as_its_escape() {
+        let literal = |text: &str| Dialect::MySql.literal(text);
+        // No raw NUL in what is shown and copied: a clipboard, or what the
+        // text is pasted into, may end text at one, and the statement
+        // would lose its `WHERE`.
+        assert_eq!(literal("a\0b'\\"), r"'a\0b''\\'");
+        assert_eq!(literal("\0"), r"'\0'");
+        // Backslashes are doubled first, so the one the escape is written
+        // with is no half of a pair: a backslash and a NUL are three.
+        assert_eq!(literal("\\\0"), r"'\\\0'");
+        // And a backslash and a zero that were typed are no NUL.
+        assert_eq!(literal(r"\0"), r"'\\0'");
+        for text in ["a\0b'\\", "\0", "\\\0\0'", "s:1:\"\0\";"] {
+            assert!(!literal(text).contains('\0'), "{text:?}");
+        }
+        // Only what is shown: the save binds the text as it is.
+        let update = Dialect::MySql
+            .update_row(
+                &books(),
+                &one(vec![("k", text("a\0'"))], vec![typed("t", "text", "x\0y")]),
+            )
+            .unwrap();
+        assert_eq!(
+            update.shown,
+            r"UPDATE `public`.`books` SET `t` = 'x\0y' WHERE `k` = 'a\0'''"
+        );
+        assert_eq!(update.sql.params, [text("x\0y"), text("a\0'")]);
+        assert_eq!(inlined(Dialect::MySql, &update.sql), update.shown);
+    }
+
+    #[test]
+    fn a_row_is_found_by_its_key_in_the_drivers_own_form() {
+        let key = |value: Value| vec![("id".to_owned(), value)];
+        let select = |dialect: Dialect, value: Value, lock: bool| {
+            dialect.select_row(&books(), &key(value), lock)
+        };
+        assert_eq!(
+            select(Dialect::Postgres, Value::Int(2), true).text,
+            r#"SELECT * FROM "public"."books" WHERE "id" = 2 LIMIT 2 FOR UPDATE"#
+        );
+        assert_eq!(
+            select(Dialect::Postgres, text("a-b"), false).text,
+            r#"SELECT * FROM "public"."books" WHERE "id" = 'a-b' LIMIT 2"#
+        );
+        assert_eq!(
+            select(
+                Dialect::Postgres,
+                Value::Bytes(vec![0x01, 0xab].into()),
+                false
+            )
+            .text,
+            r#"SELECT * FROM "public"."books" WHERE "id" = E'\\x01ab' LIMIT 2"#
+        );
+        assert_eq!(
+            select(Dialect::Postgres, Value::Bool(true), false).text,
+            r#"SELECT * FROM "public"."books" WHERE "id" = 'true' LIMIT 2"#
+        );
+        let mysql = select(Dialect::MySql, Value::Bytes(vec![0x01, 0xab].into()), true);
+        assert_eq!(
+            mysql.text,
+            "SELECT * FROM `public`.`books` WHERE `id` = ? LIMIT 2 FOR UPDATE"
+        );
+        assert_eq!(mysql.params, [Value::Bytes(vec![0x01, 0xab].into())]);
+        // SQLite has no row locks: its transaction holds the file.
+        assert_eq!(
+            select(Dialect::Sqlite, Value::Int(2), true).text,
+            r#"SELECT * FROM "public"."books" WHERE "id" = ? LIMIT 2"#
+        );
+        // Several columns are all asked for.
+        let pair = vec![("a".to_owned(), Value::Int(1)), ("b".to_owned(), text("x"))];
+        assert_eq!(
+            Dialect::Postgres.select_row(&books(), &pair, false).text,
+            r#"SELECT * FROM "public"."books" WHERE "a" = 1 AND "b" = 'x' LIMIT 2"#
+        );
     }
 }

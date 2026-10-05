@@ -19,6 +19,9 @@ pub struct Harness {
     pub viewport_commands: Vec<egui::ViewportCommand>,
     /// Whether the window reports itself fullscreen.
     pub fullscreen: bool,
+    /// Asks the window to close in the next frame, as its close button or
+    /// the desktop does. Taken by that frame.
+    pub close_requested: bool,
     /// Every piece of text the last frame painted, with its color.
     pub painted: Vec<(String, egui::Color32)>,
     /// Where the last frame painted each piece of text, in points.
@@ -69,6 +72,15 @@ impl Harness {
             .entry(egui::ViewportId::ROOT)
             .or_default()
             .fullscreen = Some(self.fullscreen);
+        if std::mem::take(&mut self.close_requested) {
+            // What `ViewportInfo::close_requested` reads.
+            input
+                .viewports
+                .entry(egui::ViewportId::ROOT)
+                .or_default()
+                .events
+                .push(egui::ViewportEvent::Close);
+        }
         let app = &mut self.app;
         let mut output = self.ctx.run_ui(input, |ui| app.frame_ui(ui));
         #[cfg(feature = "shots")]
@@ -79,16 +91,7 @@ impl Harness {
             }
         }
         output.textures_delta.clear();
-        self.painted.clear();
-        self.text_rects.clear();
-        self.fills.clear();
-        self.strokes.clear();
-        self.outlines.clear();
-        for clipped in &output.shapes {
-            collect_text(&clipped.shape, &mut self.painted, &mut self.text_rects);
-            collect_paint(&clipped.shape, &mut self.fills, &mut self.strokes);
-            collect_outlines(&clipped.shape, &mut self.outlines);
-        }
+        self.collect(&output);
         let viewport = output.viewport_output.get(&egui::ViewportId::ROOT);
         self.viewport_commands = viewport
             .map(|viewport| viewport.commands.clone())
@@ -142,10 +145,25 @@ impl Harness {
             });
         });
         output.textures_delta.clear();
+        self.collect(&output);
         output
             .platform_output
             .accesskit_update
             .expect("AccessKit is enabled")
+    }
+
+    /// Keeps what a frame painted: its texts, its fills and its lines.
+    fn collect(&mut self, output: &egui::FullOutput) {
+        self.painted.clear();
+        self.text_rects.clear();
+        self.fills.clear();
+        self.strokes.clear();
+        self.outlines.clear();
+        for clipped in &output.shapes {
+            collect_text(&clipped.shape, &mut self.painted, &mut self.text_rects);
+            collect_paint(&clipped.shape, &mut self.fills, &mut self.strokes);
+            collect_outlines(&clipped.shape, &mut self.outlines);
+        }
     }
 
     pub fn copy(&mut self, shift: bool) {
@@ -440,7 +458,15 @@ impl Harness {
     /// tree's first requests: schema `main` with `users`, `orders` and the
     /// view `active_users`.
     pub fn connect_fake(&mut self) -> ConnTabId {
-        let saved = fixture_connection();
+        self.connect_fake_as(true)
+    }
+
+    /// [`Self::connect_fake`], with the saved connection's "Open read-only"
+    /// box as given. The session's access is read from that box at every
+    /// connect, so a writable fixture comes back writable from a reconnect.
+    pub fn connect_fake_as(&mut self, read_only: bool) -> ConnTabId {
+        let mut saved = fixture_connection();
+        saved.read_only = Some(read_only);
         let conn = saved.id.clone();
         self.app.connections.upsert(saved);
         let tab = self.app.active_tab_id();
@@ -537,7 +563,50 @@ pub fn page(rows: usize, has_more: bool) -> RowPage {
     }
 }
 
+/// The structure of the table `page` holds: `id` is the primary key,
+/// `email` is NOT NULL, `meta` is JSON and may be NULL.
+pub fn fixture_structure() -> tabletist_db::Structure {
+    let column = |name: &str, type_name: &str, nullable: bool| tabletist_db::ColumnInfo {
+        name: name.into(),
+        type_name: type_name.into(),
+        nullable,
+        ..tabletist_db::ColumnInfo::default()
+    };
+    tabletist_db::Structure {
+        columns: vec![
+            column("id", "INTEGER", false),
+            column("email", "TEXT", false),
+            column("meta", "JSON", true),
+        ],
+        primary_key: vec!["id".into()],
+        ..tabletist_db::Structure::default()
+    }
+}
+
 impl Harness {
+    /// A writable connection with `users` open and pinned, its structure
+    /// and a page of five rows loaded: a table whose cells can be edited.
+    /// The saved connection itself is writable, so a reconnect comes back
+    /// writable too.
+    pub fn editable(&mut self) -> (ConnTabId, TabId) {
+        let tab = self.connect_fake_as(false);
+        self.app.apply(Action::OpenObject {
+            tab,
+            object: tabletist_db::ObjectRef::new("main", "users"),
+            kind: ObjectKind::Table,
+            pin: true,
+        });
+        // The describe was sent before the rows were asked for.
+        self.answer_structure(fixture_structure());
+        self.answer_rows(page(5, false));
+        let id = self
+            .app
+            .workspace(tab)
+            .and_then(|workspace| workspace.active_tab)
+            .expect("the table's tab is open");
+        (tab, id)
+    }
+
     /// Answers the newest FetchRows command with `page`.
     pub fn answer_rows(&mut self, page: RowPage) {
         let (session, request) = self
@@ -579,6 +648,31 @@ impl Harness {
             session,
             request,
             result: Ok(structure),
+        }));
+    }
+
+    /// Answers the newest `Write` sent.
+    pub fn answer_written(
+        &mut self,
+        result: Result<tabletist_db::WriteOutcome, tabletist_db::Error>,
+    ) {
+        let (session, request) = self
+            .app
+            .backend
+            .sent
+            .iter()
+            .rev()
+            .find_map(|command| match command {
+                Command::Write {
+                    session, request, ..
+                } => Some((*session, *request)),
+                _ => None,
+            })
+            .expect("a Write was sent");
+        self.app.apply(Action::Backend(Event::Written {
+            session,
+            request,
+            result,
         }));
     }
 }
@@ -692,6 +786,7 @@ impl Harness {
             scale: 1.0,
             viewport_commands: Vec::new(),
             fullscreen: false,
+            close_requested: false,
             painted: Vec::new(),
             text_rects: Vec::new(),
             fills: Vec::new(),

@@ -100,7 +100,13 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                     }
                     if !look.terminal {
                         super::data_view::footer(app, ui, tab, object_tab);
+                        // Bottom panels stack upwards: the bar of pending
+                        // changes stands on the footer.
+                        super::pending_bar::show(app, ui, tab, object_tab);
                     }
+                    // And what a save would run stands on the bar: in the
+                    // terminal look, on the status line.
+                    super::review::show(app, ui, tab, object_tab);
                     egui::CentralPanel::default()
                         .frame(Frame::new().fill(app.palette.window))
                         .show(ui, |ui| match view {
@@ -676,7 +682,7 @@ fn chip_card(ui: &mut egui::Ui, chip: &Chip, hint: Option<&str>, look: &Look, pa
 
 /// Where a connection points, in a word: its database, or the file's name
 /// for SQLite.
-fn target(workspace: &crate::model::Workspace) -> String {
+pub fn target(workspace: &crate::model::Workspace) -> String {
     match &workspace.spec.sqlite_path {
         Some(path) => crate::model::file_name(&path.display().to_string()),
         None => workspace.spec.database.clone(),
@@ -1535,8 +1541,298 @@ pub fn env_badge(
     rect.width()
 }
 
+/// Why a cell cannot be edited, as the terminal's mode line says it: in the
+/// look's lower case, but for the table's name, which is its own.
+pub fn lock_line(
+    lock: crate::edit::Lock,
+    table: &str,
+    look: &Look,
+    locale: crate::i18n::Locale,
+) -> String {
+    let text = super::cell_editor::lock_text(lock, table, locale);
+    match text.strip_prefix(table) {
+        Some(rest) if !table.is_empty() => format!("{table}{}", look.label(rest)),
+        _ => look.label(&text),
+    }
+}
+
+/// What editing adds to a table's line in the terminal look.
+#[derive(Default)]
+struct Editing {
+    /// `i` would open an editor on the selected cell.
+    can_edit: bool,
+    /// Insert mode: the column being edited and its type.
+    insert: Option<String>,
+    /// How much is pending, while anything is: "3 pending · 2 rows".
+    pending: Option<String>,
+    /// The cells to fix and the ones a save failed on: "1 error".
+    errors: Option<String>,
+    /// Why the cell asked for is locked, what the last save came to, or
+    /// why what is pending cannot be saved.
+    said: Option<Said>,
+}
+
+/// One thing the line says besides its keys and its counts.
+struct Said {
+    /// What leads it and in which tone: the first of these marks that the
+    /// look's font can draw.
+    mark: Option<(&'static [&'static str], states::Tone)>,
+    text: String,
+    /// What follows a failure, dimmed: where there is room for it.
+    tail: Option<String>,
+    /// The colour of the text itself.
+    color: egui::Color32,
+}
+
+/// The mark of a save that wrote. The second for a face without the first:
+/// the look's font is the desktop's own, and the bundled one lacks it.
+const WROTE: &[&str] = &["✓", "√"];
+/// The mark of a save that wrote nothing, with the same care.
+const FAILED: &[&str] = &["✗", "✕", "x"];
+
+/// The first of `marks` that `role`'s font has a glyph for.
+pub(super) fn drawable(
+    ui: &egui::Ui,
+    role: TextRole,
+    look: &Look,
+    marks: &[&'static str],
+) -> Option<&'static str> {
+    let font = role.font_id(look.faces);
+    let has = |mark: &str| ui.ctx().fonts_mut(|fonts| fonts.has_glyphs(&font, mark));
+    marks.iter().copied().find(|mark| has(mark))
+}
+
+/// What editing adds to the line of the table the workspace of `tab`
+/// shows.
+fn editing_status(app: &App, tab: ConnTabId) -> Editing {
+    use super::pending_bar::{block_text, counted, note_line, written_text};
+    use crate::edit::Note;
+    let (palette, look, locale) = (&app.palette, &app.look, app.locale);
+    let Some(workspace) = app.workspace(tab) else {
+        return Editing::default();
+    };
+    let Some(object) = workspace.active_object_tab() else {
+        return Editing::default();
+    };
+    let say = |text: &'static str| gettext(locale, text);
+    let edits = &object.edits;
+    // The keys that edit are the grid's: the Structure view has none.
+    let data = object.view == ObjectView::Data;
+    let can_edit = data
+        && crate::edit::Table::of(workspace, object)
+            .zip(object.selection)
+            .is_some_and(|(table, cell)| table.lock(cell).is_none());
+    let insert = edits.editor.as_ref().filter(|_| data).and_then(|editor| {
+        let column = object.page()?.columns.get(editor.cell.col)?;
+        // The type as the grid's header names it.
+        let kind = crate::ui::format::type_label(&column.type_name, column.kind);
+        Some(format!(
+            "{} · {}",
+            display_safe(&column.name),
+            display_safe(&kind)
+        ))
+    });
+    let counts = edits.counts();
+    let pending = (counts.changes > 0).then(|| {
+        format!(
+            "{} {} · {}",
+            counts.changes,
+            say("pending"),
+            counted(locale, counts.rows, "row", "rows")
+        )
+    });
+    let errors = counts.to_fix + counts.failed;
+    let errors = (errors > 0).then(|| counted(locale, errors, "error", "errors"));
+    // What a save came to stands a step back from the keys and the counts.
+    let back = palette.secondary;
+    // Why what is pending cannot be saved, as the other looks say it on
+    // their disabled Save. A save that is running is said by its tab.
+    let blocked = (counts.changes > 0)
+        .then(|| app.save_blocked(tab, object.id))
+        .flatten()
+        .filter(|block| *block != crate::model::SaveBlock::Saving)
+        .map(|block| Said {
+            mark: None,
+            text: look.label(&block_text(block, counts.to_fix, locale)),
+            tail: None,
+            color: back,
+        });
+    let said = if let Some(line) = &workspace.command_error {
+        // What the `:` prompt was given, until the next key.
+        let line = crate::ui::format::capped(line);
+        Some(Said {
+            mark: None,
+            text: format!("{} {}", say("not a command:"), display_safe(&line)),
+            tail: None,
+            color: states::Tone::Danger.color(palette),
+        })
+    } else if workspace.review_refused && counts.changes == 0 {
+        // `:diff` found nothing to show. No mistake of the typing: it
+        // reads as the keys do, until the next key. Never over a table
+        // that has something pending: another tab's, shown by a click.
+        Some(Said {
+            mark: None,
+            text: look.label(&say("nothing pending")),
+            tail: None,
+            color: palette.text,
+        })
+    } else if workspace.save_refused && blocked.is_some() {
+        // A save was just asked for: why it was not made comes first,
+        // until the next key.
+        blocked
+    } else if let Some((_, lock)) = edits.why.filter(|_| data) {
+        // In place of the note the other looks hang on the cell. It was
+        // asked for a moment ago: it reads as the keys do.
+        let table = display_safe(&object.object.name);
+        let text = lock_line(lock, &table, look, locale);
+        (!text.is_empty()).then_some(Said {
+            mark: None,
+            text,
+            tail: None,
+            color: palette.text,
+        })
+    } else if let Some(note) = &edits.note {
+        // The row's key and the database's words as they are: the look's
+        // lower case is for the app's own.
+        let text = note_line(note, object, look, locale);
+        Some(match note {
+            Note::Conflict { .. } => Said {
+                mark: Some((&["≠"], states::Tone::Warning)),
+                text: format!("{} {text}", say("conflict")),
+                tail: None,
+                color: back,
+            },
+            Note::Failed { .. } => Said {
+                mark: Some((FAILED, states::Tone::Danger)),
+                text: format!("{} {text}", say("failed")),
+                tail: Some(format!(
+                    "{} · {}",
+                    say("rolled back"),
+                    say("cells stay pending in red")
+                )),
+                color: back,
+            },
+            _ => Said {
+                mark: Some((FAILED, states::Tone::Danger)),
+                text,
+                tail: None,
+                color: back,
+            },
+        })
+    } else {
+        // Until the next edit or page, as the other looks' footer has it.
+        // With something pending, why it cannot be saved, while it cannot.
+        let saved = edits.saved.as_ref().filter(|_| !edits.holds());
+        let saved = saved.map(|saved| Said {
+            mark: Some((WROTE, states::Tone::Success)),
+            text: look.label(&written_text(saved, locale)),
+            tail: None,
+            color: back,
+        });
+        saved.or(blocked)
+    };
+    Editing {
+        can_edit,
+        insert,
+        pending,
+        errors,
+        said,
+    }
+}
+
+/// The field of the terminal's `:` prompt in the tab `tab`.
+fn command_id(tab: ConnTabId) -> egui::Id {
+    egui::Id::new(("command-line", tab.0))
+}
+
+/// The status line while the `:` prompt is open: the colon, the line being
+/// typed, and at the right what is pending. Enter runs the line; Esc, and
+/// the keyboard going anywhere else, close the prompt. It edits the
+/// prompt's text and takes its focus flag, and nothing else.
+fn command_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
+    let (palette, look, locale) = (app.palette, app.look, app.locale);
+    let editing = editing_status(app, tab);
+    let Some(workspace) = app.workspace_mut(tab) else {
+        return;
+    };
+    let focus = std::mem::take(&mut workspace.focus_command);
+    let Some(line) = workspace.command.as_mut() else {
+        return;
+    };
+    let mut actions = Vec::new();
+    egui::Panel::bottom(egui::Id::new(("status-line", tab.0)))
+        .exact_size(31.0)
+        .resizable(false)
+        .show_separator_line(false)
+        .frame(Frame::new().fill(palette.panel))
+        .show(ui, |ui| {
+            let rect = ui.max_rect();
+            widgets::hline(ui, rect.x_range(), rect.top() + 0.5, palette.outline);
+            let y = rect.top() + 1.0 + 15.0;
+            let role = TextRole::OSecondary;
+            let measure = |text: &str| widgets::measure(ui, label_copy(&look, role, text));
+            // What is pending keeps its place on the line: at its end.
+            let mut right = rect.right() - 12.0;
+            for (text, tone) in [
+                (&editing.errors, states::Tone::Danger),
+                (&editing.pending, states::Tone::Warning),
+            ] {
+                if let Some(text) = text {
+                    let x = right - measure(text);
+                    let text = Text::one(&look, role, text, tone.color(&palette));
+                    right = x - 18.0;
+                    widgets::paint_label(ui, x, y, text);
+                }
+            }
+            let mut x = rect.left() + 12.0;
+            x += widgets::paint_text(ui, x, y, Text::one(&look, role, ":", palette.text));
+            let height = role.row_height(ui.ctx(), look.faces);
+            let field = Rect::from_min_max(
+                pos2(x, y - height / 2.0),
+                pos2(right.max(x), y + height / 2.0),
+            );
+            let id = command_id(tab);
+            if focus {
+                // Before the field is added: what this frame types is its
+                // text already.
+                ui.memory_mut(|memory| memory.request_focus(id));
+            }
+            let mut child = ui.new_child(egui::UiBuilder::new().max_rect(field));
+            let mut layouter = crate::typography::layouter(&look, role, palette.text);
+            let response = child.add(
+                egui::TextEdit::singleline(line)
+                    .id(id)
+                    .font(role.font_id(look.faces))
+                    .frame(Frame::NONE)
+                    .margin(Margin::ZERO)
+                    .desired_width(field.width())
+                    .layouter(&mut layouter),
+            );
+            let name = gettext(locale, "Command");
+            response.widget_info(|| {
+                egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, &*name)
+            });
+            // A line of the bar, not a box: its caret says where the
+            // keyboard is.
+            focus::hint(ui, &response, field, focus::Ring::Own);
+            // Enter gives the keyboard up, and runs the line. Without the
+            // keyboard for any other reason the prompt is closed: it is
+            // open only while it is typed into.
+            let enter = ui.input(|input| input.key_pressed(egui::Key::Enter));
+            if response.lost_focus() && enter {
+                actions.push(Action::RunCommand(tab));
+            } else if !response.has_focus() {
+                actions.push(Action::CloseCommand(tab));
+            }
+        });
+    app.actions.extend(actions);
+}
+
 /// Omarchy's bottom line: the keys that work here, and the page's range
-/// or, on a SQL editor, the cursor and what the last run did.
+/// or, on a SQL editor, the cursor and what the last run did. On a table it
+/// says what is pending too, and while a cell is edited it is the mode
+/// line: `-- INSERT --`, the column, the counts and the keys that leave.
+/// The `:` prompt takes the whole of it while it is open.
 fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
     let palette = app.palette;
     let look = app.look;
@@ -1544,6 +1840,10 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
     let Some(workspace) = app.workspace(tab) else {
         return;
     };
+    if workspace.command.is_some() {
+        command_line(app, ui, tab);
+        return;
+    }
     let read_only = workspace.access == tabletist_db::Access::ReadOnly;
     let editor = super::sql_editor::status_summary(app, tab);
     let on_editor = editor.is_some();
@@ -1583,6 +1883,7 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
             })
         })
         .unwrap_or_default();
+    let editing = editing_status(app, tab);
     egui::Panel::bottom(egui::Id::new(("status-line", tab.0)))
         .exact_size(31.0)
         .resizable(false)
@@ -1592,16 +1893,33 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
             let rect = ui.max_rect();
             widgets::hline(ui, rect.x_range(), rect.top() + 0.5, palette.outline);
             let y = rect.top() + 1.0 + 15.0;
-            let table_hints = [
+            // Space shows the row; `i` edits the cell, where it can be.
+            let edit = gettext(locale, "edit");
+            let mut table_hints: Vec<widgets::Hint<'_>> = vec![
                 ("j/k", "row", true),
                 ("h/l", "col", true),
-                ("enter", "inspect", true),
-                ("i", "inspector", true),
+                ("space", "inspect", true),
+            ];
+            if editing.can_edit {
+                table_hints.push(("i", &*edit, true));
+            }
+            table_hints.extend([
                 ("/", "filter", true),
                 ("ctrl+b", "tables", true),
                 ("y", "copy", true),
                 ("s", "structure", true),
-            ];
+            ]);
+            // The prompt's key that saves, where a save can be made.
+            let write = gettext(locale, "write");
+            if !read_only {
+                table_hints.push((":w", &*write, true));
+            }
+            // And the one that shows what a save would run, while there is
+            // anything to show.
+            let review = gettext(locale, "review");
+            if editing.pending.is_some() {
+                table_hints.push((":diff", &*review, true));
+            }
             // An editor's keys: a table's do nothing on it.
             let words = [
                 "run",
@@ -1659,6 +1977,56 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                 );
                 return;
             }
+            let left = rect.left() + 12.0;
+            let room =
+                |text: &Option<String>| text.as_ref().map_or(0.0, |text| measure(text) + gap);
+            // What is pending is never dropped for width: everything else
+            // on the line gives way to it.
+            let (pending_room, errors_room) = (room(&editing.pending), room(&editing.errors));
+            let counts = |ui: &egui::Ui, mut x: f32| {
+                for (text, tone) in [
+                    (&editing.pending, states::Tone::Warning),
+                    (&editing.errors, states::Tone::Danger),
+                ] {
+                    if let Some(text) = text {
+                        let text = Text::one(&look, role, text, tone.color(&palette));
+                        x += widgets::paint_label(ui, x, y, text) + gap;
+                    }
+                }
+                x
+            };
+            if let Some(column) = &editing.insert {
+                // Insert mode. The keys at the right give way first, then
+                // the column: the mode and the counts stay.
+                let mode = gettext(locale, "-- INSERT --");
+                let mode = || Text::one(&look, TextRole::OModeLine, &mode, palette.success);
+                let words = ["normal", "next cell"].map(|word| gettext(locale, word));
+                let keys = || {
+                    Text::new(&look)
+                        .add(role, "esc", palette.text)
+                        .space(role, " ")
+                        .add(role, &words[0], palette.dim)
+                        .add(role, " · ", palette.dim)
+                        .add(role, "tab", palette.text)
+                        .space(role, " ")
+                        .add(role, &words[1], palette.dim)
+                };
+                let right = rect.right() - 12.0;
+                let fixed = left + widgets::measure(ui, mode()) + pending_room + errors_room;
+                let column_room = measure(column) + gap;
+                let named = fixed + column_room <= right;
+                let keys_width = widgets::measure(ui, keys());
+                let mut x = left + widgets::paint_label(ui, left, y, mode()) + gap;
+                if named {
+                    let text = Text::one(&look, role, column, palette.secondary);
+                    x += widgets::paint_label(ui, x, y, text) + gap;
+                }
+                x = counts(ui, x);
+                if named && x + keys_width <= right {
+                    widgets::paint_text_right(ui, right, y, keys());
+                }
+                return;
+            }
             // A read-only connection's tag ends the keys. Without one,
             // neither it nor the gap before it takes room from them.
             let tag = read_only.then(|| {
@@ -1667,13 +2035,45 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                 (tag, width)
             });
             let tag_room = tag.as_ref().map_or(0.0, |(_, width)| width + gap);
-            let limit = rect.right() - 12.0 - summary_width - gap - tag_room;
-            let disabled = ["e edit", "o new row", "dd delete", ":w write"];
+            let fixed = tag_room + pending_room + errors_room;
+            // Where the page's range begins, a gap before it.
+            let end = rect.right() - 12.0 - summary_width - gap;
+            // What the line says of a lock or of a save: whole where the
+            // line without its keys has the room, cut where it has not.
+            // Its mark is the first the look's font can draw.
+            let said = editing.said.as_ref().map(|said| {
+                let mark = said.mark.and_then(|(marks, tone)| {
+                    drawable(ui, role, &look, marks).map(|mark| (mark, tone.color(&palette)))
+                });
+                let lead = mark.map_or(0.0, |(mark, _)| measure(mark) + measure(" "));
+                let room = (end - left - fixed - lead).max(0.0);
+                let whole = measure(&said.text);
+                // What follows a failure only beside the whole of it.
+                let tail = said
+                    .tail
+                    .as_ref()
+                    .filter(|tail| whole + measure(" ") + measure(tail) <= room);
+                let shown = crate::ui::grid::ellipsize(&said.text, room, false, measure);
+                let tail_room = tail.map_or(0.0, |tail| measure(" ") + measure(tail));
+                let width = lead + measure(&shown) + tail_room;
+                (mark, shown, tail, width)
+            });
+            let said_room = said.as_ref().map_or(0.0, |said| said.3 + gap);
+            let limit = end - fixed - said_room;
+            // `e edit` was here until `i` came to edit, and `:w write`
+            // is here only on a connection that cannot write.
+            let disabled: &[&str] = if read_only {
+                &["o new row", "dd delete", ":w write"]
+            } else {
+                &["o new row", "dd delete"]
+            };
             let disabled_width = disabled.iter().map(|text| measure(text)).sum::<f32>()
                 + 14.0 * (disabled.len() - 1) as f32;
-            let mut x = rect.left() + 12.0;
+            let mut x = left;
             let shown = fit(limit);
-            x += widgets::key_hints(ui, (x, y), &hints[..shown], gap, &look, &palette) + gap;
+            if shown > 0 {
+                x += widgets::key_hints(ui, (x, y), &hints[..shown], gap, &look, &palette) + gap;
+            }
             let separator = measure("│");
             if shown == hints.len() && x + separator + gap + disabled_width <= limit {
                 x += widgets::paint_text(ui, x, y, Text::one(&look, role, "│", palette.outline))
@@ -1703,13 +2103,35 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                     StrokeKind::Inside,
                 );
                 widgets::paint_text(ui, x + 7.0, y, Text::one(&look, role, tag, palette.dim));
+                x += width + gap;
             }
-            widgets::paint_text_right(
-                ui,
-                rect.right() - 12.0,
-                y,
-                Text::one(&look, role, &summary, palette.dim),
-            );
+            x = counts(ui, x);
+            if let (Some((mark, shown, tail, _)), Some(whole)) = (said, &editing.said) {
+                if let Some((mark, color)) = mark {
+                    x += widgets::paint_text(ui, x, y, Text::one(&look, role, mark, color))
+                        + measure(" ");
+                }
+                let text = Text::one(&look, role, &shown, whole.color);
+                let width = widgets::paint_text(ui, x, y, text);
+                // The whole of it for a screen reader, cut or not.
+                let place = Rect::from_min_size(pos2(x, y - 8.0), vec2(width.max(1.0), 16.0));
+                widgets::announce(ui, place, &whole.text);
+                x += width;
+                if let Some(tail) = tail {
+                    x += measure(" ");
+                    x += widgets::paint_label(ui, x, y, Text::one(&look, role, tail, palette.dim));
+                }
+                x += gap;
+            }
+            // The range, unless what stands before it reaches that far.
+            if x <= rect.right() - 12.0 - summary_width {
+                widgets::paint_text_right(
+                    ui,
+                    rect.right() - 12.0,
+                    y,
+                    Text::one(&look, role, &summary, palette.dim),
+                );
+            }
         });
 }
 

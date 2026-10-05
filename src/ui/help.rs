@@ -4,7 +4,7 @@ use crate::app::App;
 use crate::i18n::gettext;
 use crate::model::{Action, Dialog};
 use crate::typography::Text;
-use crate::ui::keys::{SHORTCUTS, keys_label};
+use crate::ui::keys::{keys_label, shortcuts};
 use crate::ui::widgets;
 
 /// Space between the keys and what they do.
@@ -23,7 +23,8 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
         // wider or taller than the window leaves room for: the list scrolls
         // when the window is small, so the buttons stay on screen.
         let (mut keys_width, mut what_width) = (0.0_f32, 0.0_f32);
-        for (keys, what) in SHORTCUTS {
+        // The look's own shortcuts: none that only another look has.
+        for (keys, what) in shortcuts(&look) {
             let keys = Text::one(&look, widgets::code(&look), &keys_label(keys), palette.text);
             let what = Text::one(
                 &look,
@@ -53,7 +54,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                     .num_columns(2)
                     .spacing([GAP, 6.0])
                     .show(ui, |ui| {
-                        for (keys, what) in SHORTCUTS {
+                        for (keys, what) in shortcuts(&look) {
                             widgets::label(
                                 ui,
                                 widgets::code(&look),

@@ -113,6 +113,12 @@ objc2-app-kit = { version = "0.3", default-features = false, features = ["std", 
 # The app menu's About item: the one AppKit call that needs unsafe code, kept
 # in a crate of its own because this one forbids it.
 tabletist-appkit = { path = "crates/tabletist-appkit" }
+# Quit (Cmd+Q, the app menu, the Dock) reaches the app as a close request for
+# its window, which a tab with pending changes holds back to ask first
+# (`App::hold_close`); without the feature AppKit ends the process and
+# nothing is asked. The crate eframe already builds, from the fork patched
+# in below and at the version it resolves to: the feature adds no crate.
+winit = { version = "0.30.13", default-features = false, features = ["macos-quit-as-close"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-native-keyring-store = { version = "1.1", default-features = false }

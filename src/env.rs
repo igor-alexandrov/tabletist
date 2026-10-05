@@ -59,6 +59,15 @@ impl Environment {
         }
     }
 
+    /// Whether a save to a connection in this environment is confirmed
+    /// first, with its statements on screen.
+    pub fn confirms_writes(self) -> bool {
+        match self {
+            Self::Production => true,
+            Self::Local | Self::Dev | Self::Staging | Self::None => false,
+        }
+    }
+
     /// The badge text: the lower-case name in a macOS or Windows pill, the
     /// terminal's upper-case tag on Omarchy.
     pub fn label(self, platform: Platform) -> &'static str {
@@ -169,6 +178,13 @@ pub fn failure_tint(platform: Platform, palette: &Palette) -> (Color32, Color32)
     bar_tint(Environment::Production, platform, palette)
 }
 
+/// The tint of something that went through and the line over it. No
+/// environment's: the palette's green, at the strengths a bar tints with,
+/// so it stands beside a warning and a failure as their equal.
+pub fn success_tint(platform: Platform, palette: &Palette) -> (Color32, Color32) {
+    tint(palette.success, platform, palette)
+}
+
 /// The design's fixed colours: base, badge fill, badge text.
 fn native_table(env: Environment) -> (Color32, Color32, Color32) {
     let rgb = Color32::from_rgb;
@@ -216,24 +232,39 @@ fn native_dark_badge(env: Environment) -> (Color32, Color32) {
 
 fn native(env: Environment, palette: &Palette) -> EnvColors {
     let (base, badge_bg, badge_fg) = native_table(env);
-    if !palette.dark {
-        return EnvColors {
-            base,
-            badge_bg,
-            badge_fg,
-            bar_bg: mix(Color32::WHITE, base, 0.12),
-            bar_border: mix(Color32::WHITE, base, 0.28),
-        };
-    }
-    // Dark mode keeps the colour and mixes it into the content, a little
-    // stronger than on white: a dark tint needs more of it to show.
-    let (badge_bg, badge_fg) = native_dark_badge(env);
+    let (bar_bg, bar_border) = tint(base, Platform::Native, palette);
+    let (badge_bg, badge_fg) = if palette.dark {
+        native_dark_badge(env)
+    } else {
+        (badge_bg, badge_fg)
+    };
     EnvColors {
         base,
         badge_bg,
         badge_fg,
-        bar_bg: mix(palette.window, base, 0.18),
-        bar_border: mix(palette.window, base, 0.34),
+        bar_bg,
+        bar_border,
+    }
+}
+
+/// A bar's tint of `base` and the line a bar draws over it.
+fn tint(base: Color32, platform: Platform, palette: &Palette) -> (Color32, Color32) {
+    match platform {
+        Platform::Native if !palette.dark => (
+            mix(Color32::WHITE, base, 0.12),
+            mix(Color32::WHITE, base, 0.28),
+        ),
+        // Dark mode keeps the colour and mixes it into the content, a
+        // little stronger than on white: a dark tint needs more of it to
+        // show.
+        Platform::Native => (
+            mix(palette.window, base, 0.18),
+            mix(palette.window, base, 0.34),
+        ),
+        Platform::Omarchy => (
+            mix(palette.panel, base, 0.16),
+            mix(palette.panel, base, 0.4),
+        ),
     }
 }
 
@@ -250,12 +281,13 @@ fn omarchy(env: Environment, palette: &Palette) -> EnvColors {
         // `muted`, lightened only if it would not read as a label.
         Environment::None => palette.dim,
     };
+    let (bar_bg, bar_border) = tint(base, Platform::Omarchy, palette);
     EnvColors {
         base,
         badge_bg: base,
         badge_fg: palette.window,
-        bar_bg: mix(palette.panel, base, 0.16),
-        bar_border: mix(palette.panel, base, 0.4),
+        bar_bg,
+        bar_border,
     }
 }
 
@@ -494,6 +526,17 @@ mod tests {
                 env.read_only_by_default(),
                 env == Environment::Production,
                 "{env:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn only_production_asks_before_a_write() {
+        for environment in Environment::ALL {
+            assert_eq!(
+                environment.confirms_writes(),
+                environment == Environment::Production,
+                "{environment:?}"
             );
         }
     }

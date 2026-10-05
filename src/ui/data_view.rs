@@ -6,16 +6,20 @@ use egui::{
     CornerRadius, Frame, Id, Margin, Rect, Sense, Stroke, StrokeKind, WidgetInfo, WidgetType, pos2,
     vec2,
 };
-use tabletist_db::{SortDir, ValueKind};
+use std::collections::{BTreeMap, BTreeSet};
+
+use tabletist_db::{NewValue, SortDir, Value, ValueKind};
 
 use crate::app::App;
+use crate::edit::{Pending, State, Table};
 use crate::i18n::gettext;
-use crate::model::{Action, ConnTabId, ObjectTab, ObjectView, TabId};
+use crate::model::{Action, CellPos, ConnTabId, EditStart, ObjectTab, ObjectView, TabId};
 use crate::theme::{Icon, Look, Palette};
 use crate::typography::{Text, TextRole};
+use crate::ui::cell_editor;
 use crate::ui::focus;
 use crate::ui::format;
-use crate::ui::grid::{self, Cell, Column, Style};
+use crate::ui::grid::{self, Cell, Column, Mark, Style};
 use crate::ui::states;
 use crate::ui::widgets;
 
@@ -873,7 +877,23 @@ pub fn footer(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabI
     });
     let can_next = page.is_some_and(|page| page.has_more) && !object.rows.is_loading();
     let can_prev = object.query.offset > 0 && !object.rows.is_loading();
-    let timing = page.map(|page| format::elapsed(page.elapsed));
+    // What the footer's end says: how long the page took, or what the last
+    // save wrote, until the next edit or page.
+    let written = object
+        .edits
+        .saved
+        .as_ref()
+        .filter(|_| !object.edits.holds())
+        .map(|saved| super::pending_bar::written_text(saved, locale));
+    let timing = written.or_else(|| {
+        page.map(|page| {
+            format!(
+                "{} {}",
+                gettext(locale, "Query"),
+                format::elapsed(page.elapsed)
+            )
+        })
+    });
     let unordered = page.is_some_and(|page| !page.ordered_by_key) && object.query.sort.is_empty();
     let selected = object.selection.is_some();
     let read_only = app
@@ -949,17 +969,14 @@ pub fn footer(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabI
                         let width = |text: &str| {
                             widgets::secondary(&look).width(ui.ctx(), look.faces, text)
                         };
-                        let query = timing
-                            .as_ref()
-                            .map(|timing| format!("{} {timing}", gettext(locale, "Query")));
+                        let query = timing.as_ref();
                         // A state with nothing to say takes no room.
                         let state_width = if state.is_empty() {
                             0.0
                         } else {
                             width(&state) + 16.0
                         };
-                        let taken =
-                            state_width + query.as_deref().map_or(0.0, |query| 16.0 + width(query));
+                        let taken = state_width + query.map_or(0.0, |query| 16.0 + width(query));
                         if ui.available_width() >= width(columns) + 16.0 + taken {
                             note(ui, columns, status, &look);
                         }
@@ -1014,12 +1031,7 @@ pub fn footer(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabI
                         }
                         ui.spinner();
                     } else if let Some(timing) = &timing {
-                        note(
-                            ui,
-                            &format!("{} {timing}", gettext(locale, "Query")),
-                            status,
-                            &look,
-                        );
+                        note(ui, timing, status, &look);
                     }
                     if !state.is_empty() {
                         note(ui, &state, status, &look);
@@ -1089,15 +1101,105 @@ pub fn type_line(
     (line, key)
 }
 
+/// The terminal look's line under the grid for the first cell that is to
+/// fix or that a save failed on: `! 4:publisher_id  int8 expects a whole
+/// number` (the row's number, the column, what was said). A bottom panel:
+/// called before the grid is drawn, it stands under it.
+fn error_line(app: &App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId) {
+    let (locale, palette, look) = (app.locale, app.palette, app.look);
+    let said = app
+        .workspace(tab)
+        .and_then(|workspace| workspace.object_tab(object_tab))
+        .and_then(|object| {
+            let page = object.page()?;
+            // The set is in the page's order: by row, then by column.
+            let (&(row, col), pending) = object
+                .edits
+                .cells
+                .iter()
+                .find(|(_, pending)| pending.state != State::Ready)?;
+            let column = page.columns.get(col)?;
+            let message = match &pending.state {
+                State::Ready => return None,
+                State::ToFix(problem) => {
+                    let typed = match &pending.new {
+                        NewValue::Text(text) => Some(text.as_str()),
+                        NewValue::Null => None,
+                    };
+                    let type_name = format::type_label(&column.type_name, column.kind);
+                    let type_name = format::display_safe(&type_name);
+                    cell_editor::problem_text(problem, &type_name, typed, locale)
+                }
+                State::Failed(error) => failure_text(error),
+            };
+            // The database's words and the column's values as they are:
+            // the look's lower case is for the app's own.
+            Some(format!(
+                "! {}:{}  {message}",
+                object.query.offset + row as u64 + 1,
+                format::display_safe(&column.name)
+            ))
+        });
+    let Some(said) = said else {
+        // A panel takes one of its parent's ids: passed over while there
+        // is no line, so the grid under it is the same widget with the
+        // line and without.
+        ui.skip_ahead_auto_ids(1);
+        return;
+    };
+    let role = TextRole::OBody;
+    let height = role.row_height(ui.ctx(), look.faces) + 10.0;
+    egui::Panel::bottom(Id::new(("error-line", tab.0, object_tab.0)))
+        .exact_size(height)
+        .resizable(false)
+        .show_separator_line(false)
+        .frame(Frame::new().fill(palette.window))
+        .show(ui, |ui| {
+            let rect = ui.max_rect();
+            widgets::hline(ui, rect.x_range(), rect.top() + 0.5, palette.outline);
+            let left = rect.left() + grid::cell_pad(&look);
+            let y = rect.top() + 1.0 + (height - 1.0) / 2.0;
+            let room = (rect.right() - grid::cell_pad(&look) - left).max(0.0);
+            let shown = grid::ellipsize(&said, room, false, |text| {
+                role.width(ui.ctx(), look.faces, text)
+            });
+            let text = Text::one(&look, role, &shown, palette.danger);
+            let width = widgets::paint_text(ui, left, y, text);
+            // The whole of it for a screen reader, cut or not.
+            let place = Rect::from_min_size(pos2(left, rect.top()), vec2(width.max(1.0), height));
+            widgets::announce(ui, place, &said);
+        });
+}
+
 pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId) {
     let locale = app.locale;
     let palette = app.palette;
     let look = app.look;
+    // An editor that is open has the keyboard, unless a dialog has it.
+    let hold = app.dialog.is_none();
+    if look.terminal {
+        error_line(app, ui, tab, object_tab);
+    }
     let Some(workspace) = app.workspace(tab) else {
         return;
     };
     let fit = Fit::of(workspace, &app.settings);
+    // The arrows are the grid's once the user worked in it.
+    let keys = workspace.pane == crate::model::Pane::Grid;
     let Some(object) = workspace.object_tab(object_tab) else {
+        return;
+    };
+    // What editing asks of the workspace and the tab together, read before
+    // the tab is taken for its editor's text.
+    let computed = computed_columns(workspace, object);
+    let target = editor_target(workspace, object, tab, hold);
+    // The tab itself from here on: the field on a cell edits the text its
+    // editor holds, beside the page the grid reads. Nothing else of it is
+    // changed.
+    let Some(object) = app
+        .workspace_mut(tab)
+        .and_then(|workspace| workspace.object_tab_mut(object_tab))
+    else {
         return;
     };
     let mut actions = Vec::new();
@@ -1112,7 +1214,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
                 actions.push(Action::RetryRows { tab, object_tab })
             });
         });
-    } else if let Some(page) = object.page() {
+    } else if let Some(page) = object.rows.value.as_ref() {
         let structure = object.structure.value.as_ref();
         let columns: Vec<Column<'_>> = page
             .columns
@@ -1150,6 +1252,41 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
                 grouped: fit.grouped && !is_key(&column.name, structure),
             })
             .collect();
+        // What is pending, and what else of editing the cells show: read
+        // field by field, beside the editor whose text the field edits.
+        let mut changes = Changes::of(
+            &object.edits.cells,
+            object.edits.saving.is_some(),
+            object.edits.saved.as_ref(),
+            &object.edits.gone,
+            computed,
+            &ctx,
+        );
+        // Why the cell last asked for cannot be edited, at that cell. The
+        // terminal says it in its mode line. Not under a dialog: the note
+        // is drawn over everything, and would stand on it.
+        changes.why = object
+            .edits
+            .why
+            .filter(|_| !look.terminal && hold)
+            .map(|(cell, lock)| {
+                let table = format::display_safe(&object.object.name);
+                (cell, cell_editor::lock_text(lock, &table, locale))
+            });
+        let mut editor = object.edits.editor.as_mut();
+        let editing = editor.as_ref().map(|editor| editor.cell);
+        // A value of several lines, a long one or a document is edited in
+        // a popover at the cell, not on it.
+        let large = editor.as_ref().is_some_and(|editor| editor.large);
+        // What the field says of this frame, once the grid has drawn it on
+        // its cell.
+        let mut outcome = cell_editor::Outcome::default();
+        let mut field = |ui: &mut egui::Ui, rect: Rect| {
+            if let (Some(editor), Some(target)) = (editor.as_deref_mut(), &target) {
+                let skin = (&look, &palette, locale);
+                outcome = cell_editor::field(ui, rect, editor, target, skin);
+            }
+        };
         // A fit come back to is fitted to the rows now on screen: what the
         // grid of the fit before kept goes when this one is drawn.
         let id = grid_id(tab, object_tab, fit);
@@ -1161,26 +1298,64 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
             page.rows.len(),
             object.query.offset,
             object.selection,
-            // The arrows are the grid's once the user worked in it.
-            workspace.pane == crate::model::Pane::Grid,
+            keys,
             &palette,
             &look,
+            &|row| crate::edit::row_mark(changes.cells, row),
+            editing,
+            if large { None } else { Some(&mut field) },
             |row, col| {
-                cell(
-                    &ctx,
-                    &page.rows[row][col],
-                    &page.columns[col],
-                    &tags[col],
-                    &look,
-                    shown[col],
-                )
+                let loaded = &page.rows[row][col];
+                let column = &page.columns[col];
+                // A pending cell shows its new value, drawn as any value.
+                // The value is made here, for a cell the grid asks for:
+                // a set can hold thousands of texts of a quarter of a
+                // megabyte each, and a frame draws the rows in view.
+                let mut cell = match changes.cells.get(&(row, col)) {
+                    Some(pending) => {
+                        let value = drawn(&pending.new);
+                        kept(cell(&ctx, &value, column, &tags[col], &look, shown[col]))
+                    }
+                    None => cell(&ctx, loaded, column, &tags[col], &look, shown[col]),
+                };
+                changes.mark(&mut cell, (row, col), loaded, column, &look, locale);
+                cell
             },
         );
+        if large
+            && let (Some(editor), Some(target)) = (editor, &target)
+            && let Some(anchor) = output.editing_rect
+        {
+            let skin = (&look, &palette, locale);
+            outcome = cell_editor::large(ui.ctx(), anchor, editor, target, skin);
+        }
+        let id = object_tab;
+        // The text is noted as typed before anything ends the edit: an
+        // editor that was not typed into closes without a change, and a
+        // first keystroke may share its frame with Enter or a click away.
+        if outcome.changed {
+            actions.push(Action::EditorTyped { tab, id });
+        }
+        if outcome.large {
+            actions.push(Action::EditorBreak { tab, id });
+        } else if let Some(then) = outcome.commit {
+            actions.push(Action::CommitEdit { tab, id, then });
+        } else if outcome.cancel {
+            actions.push(Action::CancelEdit { tab, id });
+        } else if outcome.left {
+            actions.push(Action::LeaveEdit { tab, id });
+        }
         if let Some(cell) = output.clicked {
-            actions.push(Action::SelectCell {
+            actions.push(Action::SelectCell { tab, id, cell });
+        }
+        // A second click edits the cell.
+        if let Some(cell) = output.double_clicked {
+            let start = EditStart::Value;
+            actions.push(Action::EditCell {
                 tab,
-                id: object_tab,
+                id,
                 cell,
+                start,
             });
         }
         // The Tab key came to the grid: the arrows are its own now.
@@ -1238,6 +1413,219 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
         }
     }
     app.actions.extend(actions);
+}
+
+/// What editing shows in a table's grid: the pending cells, the ones a save
+/// just wrote, and the columns no edit reaches.
+struct Changes<'a> {
+    cells: &'a BTreeMap<(usize, usize), Pending>,
+    /// The columns the database computes, in a table that can be edited.
+    computed: Vec<bool>,
+    /// A save is running.
+    saving: bool,
+    /// The cells the last save wrote, while they show it.
+    saved: &'a [CellPos],
+    /// The page's rows a save found gone from the server.
+    gone: &'a BTreeSet<usize>,
+    /// The cell that was asked for and cannot be edited, and why.
+    why: Option<(CellPos, String)>,
+}
+
+/// The page's columns that the database computes, in a table that can be
+/// edited: none in any other. Decided once for each column, and not by
+/// asking why each cell is locked: a save and a fetch lock every cell for a
+/// while, and a computed column is drawn as one through both.
+fn computed_columns(workspace: &crate::model::Workspace, object: &ObjectTab) -> Vec<bool> {
+    let computes = |structure: &tabletist_db::Structure| {
+        structure.columns.iter().any(|column| column.generated)
+    };
+    let table = Table::of(workspace, object)
+        .filter(|table| table.structure.is_some_and(computes))
+        .filter(|table| table.never().is_none());
+    let Some(table) = table else {
+        return Vec::new();
+    };
+    (0..table.page.columns.len())
+        .map(|col| table.column(col).is_some_and(|column| column.generated))
+        .collect()
+}
+
+/// The cell the tab's open editor is on, as its field needs it.
+fn editor_target(
+    workspace: &crate::model::Workspace,
+    object: &ObjectTab,
+    tab: ConnTabId,
+    hold: bool,
+) -> Option<cell_editor::Target> {
+    let editor = object.edits.editor.as_ref()?;
+    let table = Table::of(workspace, object)?;
+    let column = table.page.columns.get(editor.cell.col)?;
+    let max_chars = match table.class(editor.cell.col) {
+        Some(tabletist_db::ColumnClass::Text { max_chars }) => max_chars,
+        _ => None,
+    };
+    // The type as the header names it, not as the structure does.
+    let type_name = format::type_label(&column.type_name, column.kind);
+    Some(cell_editor::Target {
+        id: cell_editor::field_id(tab, object.id),
+        name: column.name.clone(),
+        type_name: format::display_safe(&type_name).into_owned(),
+        max_chars,
+        hold,
+    })
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How many pending values this thread made into values to draw.
+    pub static DRAWN: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// A pending cell's new value, as a value a cell draws.
+fn drawn(new: &NewValue) -> Value {
+    #[cfg(test)]
+    DRAWN.with(|count| count.set(count.get() + 1));
+    match new {
+        NewValue::Text(text) => Value::Text(text.as_str().into()),
+        NewValue::Null => Value::Null,
+    }
+}
+
+/// `cell` with its text its own: what is drawn of a value that does not
+/// outlive the call that asked for the cell.
+fn kept<'a>(cell: Cell<'_>) -> Cell<'a> {
+    Cell {
+        text: cell.text.into_owned().into(),
+        null: cell.null,
+        style: cell.style,
+        mark: cell.mark,
+        hint: cell.hint,
+        note: cell.note,
+    }
+}
+
+impl<'a> Changes<'a> {
+    fn of(
+        cells: &'a BTreeMap<(usize, usize), Pending>,
+        saving: bool,
+        saved: Option<&'a crate::edit::Saved>,
+        gone: &'a BTreeSet<usize>,
+        computed: Vec<bool>,
+        ctx: &egui::Context,
+    ) -> Self {
+        let saved = saved.and_then(|saved| {
+            let left = crate::edit::SAVED_FOR.checked_sub(saved.at.elapsed())?;
+            // Come back when the moment is over, to draw them as they are.
+            ctx.request_repaint_after(left);
+            Some(saved.cells.as_slice())
+        });
+        Self {
+            cells,
+            computed,
+            saving,
+            saved: saved.unwrap_or_default(),
+            gone,
+            why: None,
+        }
+    }
+
+    /// Whether the last save wrote the cell `at` (row, column) and it still
+    /// shows it. Asked for every cell a frame draws, of a list that can
+    /// hold a whole page's cells: found by halving, never by reading it
+    /// through. The list is in the order of the set it came from, by row
+    /// and then by column (`Saved::cells`).
+    fn wrote(&self, at: (usize, usize)) -> bool {
+        self.saved
+            .binary_search_by_key(&at, |cell| (cell.row, cell.col))
+            .is_ok()
+    }
+
+    /// Marks `cell`, the page's cell `at` (row, column) that loaded as
+    /// `loaded`, and says what it tells the pointer.
+    fn mark(
+        &self,
+        cell: &mut Cell<'_>,
+        at: (usize, usize),
+        loaded: &Value,
+        column: &tabletist_db::ColumnMeta,
+        look: &Look,
+        locale: crate::i18n::Locale,
+    ) {
+        let (row, col) = at;
+        // A cell that is not there has no reason to give.
+        if let Some((asked, why)) = &self.why
+            && *asked == (CellPos { row, col })
+            && !why.is_empty()
+        {
+            cell.note = Some(why.clone());
+        }
+        // A row a save found gone is that and nothing else, whatever its
+        // column is. It has no hint: why a cell is locked is said only
+        // when it is asked for. Asked of the set for the one cell drawn:
+        // nothing here walks it.
+        if self.gone.contains(&row) {
+            cell.mark = Mark::Gone;
+            return;
+        }
+        let Some(pending) = self.cells.get(&at) else {
+            cell.mark = if self.wrote(at) {
+                Mark::Saved
+            } else if self.computed.get(col).copied().unwrap_or(false) {
+                Mark::Locked
+            } else {
+                Mark::None
+            };
+            return;
+        };
+        let saving = self.saving;
+        match &pending.state {
+            State::Ready => {
+                cell.mark = if saving { Mark::Saving } else { Mark::Pending };
+                let was = format::cell_text(loaded);
+                cell.hint = Some(format!("{} {was}", gettext(locale, "was")));
+            }
+            State::ToFix(problem) => {
+                cell.mark = Mark::Trouble;
+                let typed = match &pending.new {
+                    NewValue::Text(text) => Some(text.as_str()),
+                    NewValue::Null => None,
+                };
+                let type_name = format::type_label(&column.type_name, column.kind);
+                let type_name = format::display_safe(&type_name);
+                let message = cell_editor::problem_text(problem, &type_name, typed, locale);
+                // The terminal has its own key for it, said in its own
+                // place.
+                cell.hint = Some(if look.terminal {
+                    message
+                } else {
+                    format!(
+                        "{message}\n{} · {}Z {}",
+                        gettext(locale, "Checked before saving"),
+                        look.command_key(),
+                        gettext(locale, "reverts")
+                    )
+                });
+            }
+            State::Failed(error) => {
+                // It is sent again by the save that is running.
+                cell.mark = if saving { Mark::Saving } else { Mark::Trouble };
+                cell.hint = Some(failure_text(error));
+            }
+        }
+    }
+}
+
+/// What the database said of a statement that failed, with its code: a
+/// failed cell's words.
+fn failure_text(error: &tabletist_db::Error) -> String {
+    match error {
+        tabletist_db::Error::Query {
+            code: Some(code),
+            message,
+            ..
+        } => format!("{code} {}", format::capped(message)),
+        other => format::capped(&other.to_string()).into_owned(),
+    }
 }
 
 /// The keys that cancel a query, as the look writes them: `⌘.`, `Ctrl+.`
@@ -1398,8 +1786,8 @@ pub fn cell<'a>(
     {
         return Cell {
             text: format::cell_text(value),
-            null: false,
             style,
+            ..Default::default()
         };
     }
     plain_cell(ctx, value, column, look, shown)
@@ -1419,14 +1807,14 @@ pub fn plain_cell<'a>(
     let kind = column.kind;
     let styled = |text: std::borrow::Cow<'a, str>, style| Cell {
         text,
-        null: false,
         style,
+        ..Default::default()
     };
     if value.is_null() {
         return Cell {
             text: "NULL".into(),
             null: true,
-            style: Style::Plain,
+            ..Default::default()
         };
     }
     if let tabletist_db::Value::Bytes(bytes) = value {

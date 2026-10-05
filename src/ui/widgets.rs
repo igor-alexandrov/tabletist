@@ -694,6 +694,16 @@ pub fn primary_fill(hovered: bool, focused: bool, pressed: bool, palette: &Palet
     }
 }
 
+/// The colour of text on `fill`: whichever of the window's two tones reads
+/// on it. A dark theme's danger colour is a light one.
+pub fn ink_on(fill: Color32, palette: &Palette) -> Color32 {
+    if crate::theme::contrast(palette.window, fill) >= crate::theme::contrast(palette.text, fill) {
+        palette.window
+    } else {
+        palette.text
+    }
+}
+
 /// The one accent-filled button in a dialog or view. Its own fill replaces
 /// egui's state visuals, so it draws hover and press itself; its focus ring
 /// is the one every control gets (see [`crate::ui::focus`]).
@@ -719,37 +729,82 @@ pub fn primary_button(ui: &mut Ui, text: &str, look: &Look, palette: &Palette) -
     ui.add(button)
 }
 
-/// A dialog: a soft shadow over a dimmed window, or Omarchy's accent border
-/// over a scrim.
-pub fn modal(id: egui::Id, look: &Look, palette: &Palette) -> egui::Modal {
+/// A dialog's frame: a soft shadow round it, or Omarchy's accent border.
+/// A dialog whose parts fill it edge to edge takes the margin off.
+pub fn modal_frame(look: &Look, palette: &Palette) -> egui::Frame {
     let frame = egui::Frame::new()
         .fill(palette.overlay)
         .corner_radius(CornerRadius::same(look.dialog_radius))
         .inner_margin(egui::Margin::same(20));
     match look.dialog {
         DialogStyle::Shadow => {
-            egui::Modal::new(id)
-                .frame(frame.stroke(Stroke::new(1.0, palette.outline)).shadow(
-                    egui::epaint::Shadow {
-                        offset: [0, 10],
-                        blur: 36,
-                        spread: 0,
-                        color: palette.shadow,
-                    },
-                ))
-                .backdrop_color(Color32::from_black_alpha(if palette.dark {
-                    120
-                } else {
-                    70
-                }))
+            frame
+                .stroke(Stroke::new(1.0, palette.outline))
+                .shadow(egui::epaint::Shadow {
+                    offset: [0, 10],
+                    blur: 36,
+                    spread: 0,
+                    color: palette.shadow,
+                })
         }
+        DialogStyle::AccentBorder => frame.stroke(Stroke::new(2.0, palette.accent)),
+    }
+}
+
+/// A dialog: a soft shadow over a dimmed window, or Omarchy's accent border
+/// over a scrim.
+pub fn modal(id: egui::Id, look: &Look, palette: &Palette) -> egui::Modal {
+    let modal = egui::Modal::new(id).frame(modal_frame(look, palette));
+    match look.dialog {
+        DialogStyle::Shadow => modal.backdrop_color(Color32::from_black_alpha(if palette.dark {
+            120
+        } else {
+            70
+        })),
         DialogStyle::AccentBorder => {
             let [r, g, b, _] = palette.window.to_array();
-            egui::Modal::new(id)
-                .frame(frame.stroke(Stroke::new(2.0, palette.accent)))
-                .backdrop_color(Color32::from_rgba_unmultiplied(r, g, b, 128))
+            modal.backdrop_color(Color32::from_rgba_unmultiplied(r, g, b, 128))
         }
     }
+}
+
+/// The top `height` points of `rect` with its top corners rounded at
+/// `radius`: a stripe that follows the dialog's corners, which a rounded
+/// rectangle that thin cannot.
+pub fn top_cap(rect: Rect, radius: f32, height: f32) -> Vec<egui::Pos2> {
+    let bottom = rect.top() + height;
+    let radius = radius.max(0.0);
+    let from = if radius > 0.0 {
+        ((radius - height).max(0.0) / radius).asin()
+    } else {
+        std::f32::consts::FRAC_PI_2
+    };
+    // From the stripe's lower edge up to the top: how far in from the
+    // side, how far down from the top.
+    const STEPS: usize = 8;
+    let arc: Vec<(f32, f32)> = (0..=STEPS)
+        .map(|step| {
+            let angle = from + (std::f32::consts::FRAC_PI_2 - from) * step as f32 / STEPS as f32;
+            (radius - radius * angle.cos(), radius - radius * angle.sin())
+        })
+        .collect();
+    let mut points = Vec::with_capacity(2 * arc.len() + 2);
+    if height > radius {
+        points.push(egui::pos2(rect.left(), bottom));
+    }
+    points.extend(
+        arc.iter()
+            .map(|(dx, dy)| egui::pos2(rect.left() + dx, rect.top() + dy)),
+    );
+    points.extend(
+        arc.iter()
+            .rev()
+            .map(|(dx, dy)| egui::pos2(rect.right() - dx, rect.top() + dy)),
+    );
+    if height > radius {
+        points.push(egui::pos2(rect.right(), bottom));
+    }
+    points
 }
 
 /// One physical pixel, in points: the width of hairlines, which the
@@ -1143,18 +1198,25 @@ pub fn segmented(
 enum ButtonKind {
     Secondary,
     Primary,
+    /// The one button of a dialog that writes where a write is asked
+    /// about first: filled with the danger colour.
+    Danger,
     /// Shown but not yet possible; the text says why.
     Disabled,
 }
 
 /// A button in the designs' style: secondary (bordered), primary (ink on
-/// macOS, accent outline in the terminal look) or disabled with a reason,
-/// with an optional icon and shortcut.
+/// macOS, accent outline in the terminal look), danger (primary, in the
+/// danger colour) or disabled with a reason, with an optional icon and
+/// shortcut.
 pub struct ButtonSpec<'a> {
     text: &'a str,
     /// The accessible name, when it says more than the text.
     label: Option<&'a str>,
     salt: Option<&'a str>,
+    /// What the button is, where its name does not say (see
+    /// [`Self::keyed`]).
+    key: Option<&'a str>,
     icon: Option<Icon>,
     shortcut: Option<&'a str>,
     kind: ButtonKind,
@@ -1175,6 +1237,8 @@ pub struct ButtonSpec<'a> {
     hint: bool,
     /// No border, and the text in the secondary colour.
     quiet: bool,
+    /// No border, and the text in the accent colour.
+    link: bool,
 }
 
 impl<'a> ButtonSpec<'a> {
@@ -1183,6 +1247,7 @@ impl<'a> ButtonSpec<'a> {
             text,
             label: None,
             salt: None,
+            key: None,
             icon: None,
             shortcut: None,
             kind: ButtonKind::Secondary,
@@ -1196,6 +1261,7 @@ impl<'a> ButtonSpec<'a> {
             justified: false,
             hint: false,
             quiet: false,
+            link: false,
         }
     }
 
@@ -1218,6 +1284,13 @@ impl<'a> ButtonSpec<'a> {
     /// colour.
     pub fn quiet(mut self) -> Self {
         self.quiet = true;
+        self
+    }
+
+    /// A secondary button that reads as a link: no border, a fill only
+    /// under the pointer, the text in the accent colour.
+    pub fn link(mut self) -> Self {
+        self.link = true;
         self
     }
 
@@ -1267,9 +1340,24 @@ impl<'a> ButtonSpec<'a> {
         self
     }
 
+    /// The button's identity, where its name changes with what it would
+    /// do next (Review SQL, Hide SQL): the keyboard stays on it through
+    /// the change.
+    pub fn keyed(mut self, key: &'a str) -> Self {
+        self.key = Some(key);
+        self
+    }
+
     fn id(&self, ui: &Ui) -> egui::Id {
-        ui.id()
-            .with(("button", self.label.unwrap_or(self.text), self.salt))
+        let name = self.key.or(self.label).unwrap_or(self.text);
+        ui.id().with(("button", name, self.salt))
+    }
+
+    /// Whether the keyboard is on this button as `ui` draws it. For what
+    /// reads a key before the button is drawn: a button that has the
+    /// keyboard would take Enter as a press of itself.
+    pub fn has_keyboard(&self, ui: &Ui) -> bool {
+        ui.memory(|memory| memory.has_focus(self.id(ui)))
     }
 
     /// The name screen readers announce ("Connect to Bookshop").
@@ -1293,8 +1381,21 @@ impl<'a> ButtonSpec<'a> {
 
     fn hidden_sensing(self, ui: &mut Ui, rect: Rect, sense: Sense) -> Response {
         let name = self.label.unwrap_or(self.text);
+        let enabled = self.kind != ButtonKind::Disabled;
+        // As a drawn one: a button that cannot be pressed still takes the
+        // Tab key where it took it, so the keyboard can read why.
+        let sense = match (enabled, sense.is_focusable()) {
+            (true, _) => sense,
+            (false, true) => Sense::focusable_noninteractive(),
+            (false, false) => Sense::hover(),
+        };
         let response = ui.interact(rect, self.id(ui), sense);
-        response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, name));
+        response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, enabled, name));
+        if let Some(reason) = self.reason {
+            ui.ctx().accesskit_node_builder(response.id, |node| {
+                node.set_description(reason);
+            });
+        }
         // Not drawn, so the ring is all that shows where the keyboard is.
         focus::hint(ui, &response, rect, Ring::Outer { radius: 0 });
         response
@@ -1310,6 +1411,13 @@ impl<'a> ButtonSpec<'a> {
         self
     }
 
+    /// The primary button of a question about a write that cannot be
+    /// taken back: filled with the danger colour.
+    pub fn danger(mut self) -> Self {
+        self.kind = ButtonKind::Danger;
+        self
+    }
+
     /// Shown, but not clickable; `reason` is its tooltip.
     pub fn disabled(mut self, reason: &'a str) -> Self {
         self.kind = ButtonKind::Disabled;
@@ -1318,7 +1426,8 @@ impl<'a> ButtonSpec<'a> {
     }
 
     fn text_role(&self, look: &Look) -> TextRole {
-        self.role.unwrap_or(if self.kind == ButtonKind::Primary {
+        let leads = matches!(self.kind, ButtonKind::Primary | ButtonKind::Danger);
+        self.role.unwrap_or(if leads {
             TextRole::pick(look, TextRole::UiBodyStrong, TextRole::OGroup)
         } else {
             body(look)
@@ -1406,6 +1515,25 @@ impl<'a> ButtonSpec<'a> {
                 palette.accent,
                 palette.dim,
             ),
+            (ButtonKind::Danger, false) => {
+                let fill = if pressed {
+                    palette.danger.lerp_to_gamma(palette.window, 0.25)
+                } else if hovered {
+                    palette.danger.lerp_to_gamma(palette.window, 0.15)
+                } else {
+                    palette.danger
+                };
+                let ink = ink_on(fill, palette);
+                (fill, None, ink, ink.gamma_multiply(0.72))
+            }
+            (ButtonKind::Danger, true) => (
+                palette
+                    .panel
+                    .lerp_to_gamma(palette.danger, if hovered { 0.24 } else { 0.15 }),
+                Some(Stroke::new(1.0, palette.danger)),
+                palette.danger,
+                palette.dim,
+            ),
             (ButtonKind::Secondary, false) => (
                 if hovered {
                     palette.panel
@@ -1441,13 +1569,20 @@ impl<'a> ButtonSpec<'a> {
         } else {
             (text, shortcut)
         };
-        let (fill, border, text) = if self.quiet && self.kind == ButtonKind::Secondary {
-            // Under the pointer, the fill its look gives a secondary button.
-            let fill = if hovered { fill } else { Color32::TRANSPARENT };
-            (fill, None, palette.secondary)
-        } else {
-            (fill, border, text)
-        };
+        let (fill, border, text) =
+            if (self.quiet || self.link) && self.kind == ButtonKind::Secondary {
+                // Under the pointer, the fill its look gives a secondary button.
+                let fill = if hovered { fill } else { Color32::TRANSPARENT };
+                // A link is told from a quiet button by its colour alone.
+                let text = if self.link {
+                    palette.accent
+                } else {
+                    palette.secondary
+                };
+                (fill, None, text)
+            } else {
+                (fill, border, text)
+            };
         // With the keyboard on it the terminal's button is reversed, as a
         // terminal marks its cursor; the other looks ring it.
         let reversed = look.terminal && focus::shown(&response);
@@ -1949,6 +2084,100 @@ mod tests {
                 clicked = toggle(ui, on, "Value tags", &palette).clicked();
             });
             assert!(clicked);
+        }
+    }
+
+    #[test]
+    fn a_keyed_button_keeps_the_keyboard_when_its_name_changes() {
+        use crate::testing::Harness;
+        let look = crate::theme::Look::standard();
+        let place = Rect::from_min_size(pos2(40.0, 40.0), vec2(120.0, 32.0));
+        // Two frames of a button whose name changes between them: whether
+        // the second finds the keyboard on it, and keeps it there.
+        let renamed = |key: Option<&str>| {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            let palette = harness.app.palette;
+            let named = |name| match key {
+                Some(key) => ButtonSpec::new(name).keyed(key),
+                None => ButtonSpec::new(name),
+            };
+            harness.frame_with(|ui| {
+                let button = named("Review SQL");
+                button.show_at(ui, place, &look, &palette).request_focus();
+            });
+            let (mut found, mut kept) = (false, false);
+            harness.frame_with(|ui| {
+                let button = named("Hide SQL");
+                found = button.has_keyboard(ui);
+                button.show_at(ui, place, &look, &palette);
+            });
+            harness.frame_with(|ui| {
+                let button = named("Hide SQL");
+                kept = button.show_at(ui, place, &look, &palette).has_focus();
+            });
+            (found, kept)
+        };
+        assert_eq!(renamed(Some("review")), (true, true));
+        // By its name alone it is another button, and the keyboard is on
+        // none.
+        assert_eq!(renamed(None), (false, false));
+    }
+
+    #[test]
+    fn a_link_button_is_written_in_the_accent_colour_and_has_no_border() {
+        use crate::testing::Harness;
+        for look in crate::theme::Look::ALL {
+            let said = look.name;
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            let palette = harness.app.palette;
+            let (link, plain) = (
+                Rect::from_min_size(pos2(40.0, 40.0), vec2(160.0, 32.0)),
+                Rect::from_min_size(pos2(40.0, 100.0), vec2(160.0, 32.0)),
+            );
+            let draw = |harness: &mut Harness, events: Vec<egui::Event>| {
+                let mut clicked = false;
+                harness.frame_with_events(events, |ui| {
+                    let button = ButtonSpec::new("Keep mine").link();
+                    clicked = button.show_at(ui, link, &look, &palette).clicked();
+                    ButtonSpec::new("Use theirs").show_at(ui, plain, &look, &palette);
+                });
+                clicked
+            };
+            draw(&mut harness, Vec::new());
+            let color = |harness: &Harness, text: &str| harness.painted_color(text);
+            assert_eq!(color(&harness, "Keep mine"), Some(palette.accent), "{said}");
+            assert_eq!(color(&harness, "Use theirs"), Some(palette.text), "{said}");
+            // The bordered one beside it has its line; the link has none,
+            // and nothing behind its words.
+            let outlined = |harness: &Harness, place: Rect| {
+                let mut outlines = harness.outlines.iter();
+                outlines.any(|(rect, _)| *rect == place)
+            };
+            let filled = |harness: &Harness, place: Rect| {
+                let mut fills = harness.fills.iter();
+                fills.any(|(rect, _)| *rect == place)
+            };
+            assert!(outlined(&harness, plain), "{said}");
+            assert!(!outlined(&harness, link), "{said}");
+            assert!(!filled(&harness, link), "{said}");
+            // Under the pointer it is filled as its look fills a button
+            // there, still without a line, and a click presses it.
+            let over = egui::Event::PointerMoved(link.center());
+            draw(&mut harness, vec![over]);
+            draw(&mut harness, Vec::new());
+            assert!(filled(&harness, link), "{said}");
+            assert!(!outlined(&harness, link), "{said}");
+            assert_eq!(color(&harness, "Keep mine"), Some(palette.accent), "{said}");
+            let button = |pressed| egui::Event::PointerButton {
+                pos: link.center(),
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            };
+            draw(&mut harness, vec![button(true)]);
+            assert!(draw(&mut harness, vec![button(false)]), "{said}");
         }
     }
 

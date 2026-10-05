@@ -13,12 +13,13 @@ use rusqlite::types::{FromSql, FromSqlError, FromSqlResult, ValueRef};
 use rusqlite::{ErrorCode, OpenFlags};
 
 use crate::{
-    Access, ColumnInfo, ColumnMeta, Dialect, Error, ForeignKeyInfo, IndexInfo, MAX_LISTED,
-    ObjectInfo, ObjectKind, ObjectRef, Result, RowPage, RowQuery, ScriptOutcome, StatementOutcome,
-    StatementResult, StopFlag, Structure, Value, ValueKind,
+    Access, ChangeSet, ColumnInfo, ColumnMeta, Dialect, Error, ForeignKeyInfo, IndexInfo,
+    MAX_LISTED, ObjectInfo, ObjectKind, ObjectRef, Result, RowPage, RowQuery, ScriptOutcome,
+    StatementOutcome, StatementResult, StopFlag, Structure, Value, ValueKind, WriteOutcome,
 };
 
 mod fence;
+mod write;
 
 use fence::{Fence, Fences, authorize};
 
@@ -27,6 +28,9 @@ pub struct Conn {
     inner: Arc<Mutex<rusqlite::Connection>>,
     interrupt: Arc<rusqlite::InterruptHandle>,
     fences: Fences,
+    /// `main`'s journal mode as the session found it, which a save puts
+    /// back.
+    journal_mode: String,
 }
 
 /// Maps rusqlite's errors onto ours.
@@ -378,13 +382,21 @@ fn declared_columns(
 }
 
 /// The settings every session has from the start: read-only, an untrusted
-/// schema, a busy timeout and LIKE ignoring case (the filters rely on it).
-/// `open` sets them, and a script run sets them again afterwards, since a
-/// script may have changed any of them.
+/// schema, a busy timeout, LIKE ignoring case (the filters rely on it) and
+/// result columns named by the column alone (a page shows the names, and a
+/// save finds its columns by them; the other way a table's are
+/// `users.id`). `open` sets them, and a script run sets them again
+/// afterwards, since a script may have changed any of them. Foreign keys
+/// are enforced: the bundled SQLite has them on, and a script cannot turn
+/// them off (the pragma does nothing inside a transaction, which is where
+/// a script runs), but a save's refusal of a child with no parent should
+/// not rest on how the library was built.
 fn set_session_pragmas(connection: &rusqlite::Connection) -> rusqlite::Result<()> {
     connection.busy_timeout(std::time::Duration::from_secs(5))?;
     connection.execute_batch(
-        "PRAGMA query_only = ON; PRAGMA trusted_schema = OFF; PRAGMA case_sensitive_like = OFF;",
+        "PRAGMA query_only = ON; PRAGMA trusted_schema = OFF; PRAGMA case_sensitive_like = OFF; \
+         PRAGMA full_column_names = OFF; PRAGMA short_column_names = ON; \
+         PRAGMA foreign_keys = ON;",
     )
 }
 
@@ -505,7 +517,7 @@ impl Conn {
     /// (`PRAGMA query_only`, see `set_session_pragmas`).
     pub async fn open(path: &Path, access: Access) -> Result<Self> {
         let path = path.to_path_buf();
-        let opened = move || -> Result<(rusqlite::Connection, Fences)> {
+        let opened = move || -> Result<(rusqlite::Connection, Fences, String)> {
             if !path.is_file() {
                 return Err(Error::Connect(format!("{} does not exist", path.display())));
             }
@@ -539,6 +551,11 @@ impl Conn {
                     Error::Query { message, .. } => Error::Connect(message),
                     other => other,
                 })?;
+            let journal_mode = connection
+                .query_row("PRAGMA main.journal_mode", [], |row| {
+                    row.get::<_, String>(0)
+                })
+                .map_err(map_error)?;
             // From here on SQLite asks before it prepares anything: what
             // it may do depends on whose text it is (see `Fence`).
             let fences = Fences::default();
@@ -547,9 +564,9 @@ impl Conn {
                 authorize(asked.current(), action)
             })
             .map_err(map_error)?;
-            Ok((connection, fences))
+            Ok((connection, fences, journal_mode))
         };
-        let (connection, fences) = tokio::task::spawn_blocking(opened)
+        let (connection, fences, journal_mode) = tokio::task::spawn_blocking(opened)
             .await
             .map_err(|error| Error::Io(error.to_string()))??;
         let interrupt = Arc::new(connection.get_interrupt_handle());
@@ -557,6 +574,7 @@ impl Conn {
             inner: Arc::new(Mutex::new(connection)),
             interrupt,
             fences,
+            journal_mode,
         })
     }
 
@@ -640,6 +658,22 @@ impl Conn {
             .await;
         guard.disarm();
         outcome
+    }
+
+    /// See [`crate::Connection::write`]. One blocking job. An interrupt
+    /// reaches only the statement that is running and is not kept for the
+    /// next, so `stop` is what ends the save between two of them.
+    pub async fn write(&self, changes: &ChangeSet, stop: &StopFlag) -> Result<WriteOutcome> {
+        if changes.object.schema != "main" {
+            return Err(Error::Unsupported(
+                "saving to an attached database is not built yet",
+            ));
+        }
+        let changes = changes.clone();
+        let journal_mode = self.journal_mode.clone();
+        let stop = stop.clone();
+        self.run(move |connection| write::write(connection, &changes, &journal_mode, &stop))
+            .await
     }
 
     /// The server's name and version for the footer, like `SQLite 3.46.0`.
@@ -808,7 +842,7 @@ impl Conn {
 fn columns(connection: &rusqlite::Connection, object: &ObjectRef) -> Result<Vec<ColumnInfo>> {
     let mut statement = connection
         .prepare(
-            "SELECT name, type, \"notnull\", dflt_value FROM pragma_table_xinfo(?1, ?2) \
+            "SELECT name, type, \"notnull\", dflt_value, hidden FROM pragma_table_xinfo(?1, ?2) \
              WHERE hidden <> 1 ORDER BY cid",
         )
         .map_err(map_error)?;
@@ -821,6 +855,8 @@ fn columns(connection: &rusqlite::Connection, object: &ObjectRef) -> Result<Vec<
                 default: optional_text(row, 3)?,
                 comment: None,
                 allowed_values: None,
+                // 2 is a virtual generated column, 3 a stored one.
+                generated: matches!(row.get::<_, i64>(4)?, 2 | 3),
             })
         })
         .map_err(map_error)?
@@ -879,7 +915,10 @@ fn key_names(connection: &rusqlite::Connection, object: &ObjectRef) -> Result<Ve
 
 fn indexes(connection: &rusqlite::Connection, object: &ObjectRef) -> Result<Vec<IndexInfo>> {
     let mut list = connection
-        .prepare("SELECT name, \"unique\", origin FROM pragma_index_list(?1, ?2) ORDER BY name")
+        .prepare(
+            "SELECT name, \"unique\", origin, partial FROM pragma_index_list(?1, ?2) \
+             ORDER BY name",
+        )
         .map_err(map_error)?;
     let entries = list
         .query_map([&object.name, &object.schema], |row| {
@@ -887,32 +926,56 @@ fn indexes(connection: &rusqlite::Connection, object: &ObjectRef) -> Result<Vec<
                 row.get_ref(0)?.as_bytes()?.to_vec(),
                 row.get::<_, i64>(1)? != 0,
                 row.get::<_, String>(2)?,
+                row.get::<_, i64>(3)? != 0,
             ))
         })
         .map_err(map_error)?
         .collect::<std::result::Result<Vec<_>, _>>()
         .map_err(map_error)?;
+    // The key's entries: `key` is 0 for what an index only carries along,
+    // the rowid or the rest of a WITHOUT ROWID table's key.
     let mut info = connection
-        .prepare("SELECT name FROM pragma_index_info(?1, ?2) ORDER BY seqno")
+        .prepare(
+            "SELECT name, cid FROM pragma_index_xinfo(?1, ?2) WHERE \"key\" = 1 ORDER BY seqno",
+        )
         .map_err(map_error)?;
     let mut indexes = Vec::new();
-    for (name, unique, origin) in entries {
+    for (name, unique, origin, partial) in entries {
         // The name goes back to SQLite as the bytes it gave: one that is not
         // UTF-8 would find no index once its bytes were replaced.
-        let columns = info
+        let entries = info
             .query_map(rusqlite::params![name, object.schema], |row| {
-                optional_text(row, 0)
+                Ok((row.get::<_, Option<Lossy>>(0)?, row.get::<_, i64>(1)?))
             })
             .map_err(map_error)?
-            .map(|column| column.map(|c| c.unwrap_or_else(|| "<expression>".into())))
             .collect::<std::result::Result<Vec<_>, _>>()
             .map_err(map_error)?;
+        // A whole column has its place in the table as `cid` (an expression
+        // has -2, the rowid -1) and a name SQL can spell. The entry's
+        // collation is not compared with the column's: no pragma gives the
+        // one a column was declared with. So a unique index, or a primary
+        // key, that compares otherwise than its column is not detected
+        // here. What stops it is a save's own check: it reads the row by
+        // its key and refuses more than one.
+        let key_columns = entries
+            .iter()
+            .map(|(name, cid)| {
+                let name = name.as_ref().filter(|name| *cid >= 0 && name.exact)?;
+                Some(name.text.clone())
+            })
+            .collect();
+        let columns = entries
+            .into_iter()
+            .map(|(name, _)| name.map_or_else(|| "<expression>".into(), |name| name.text))
+            .collect();
         indexes.push(IndexInfo {
             name: String::from_utf8_lossy(&name).into_owned(),
+            key_columns,
             columns,
             unique,
             primary: origin == "pk",
             method: None,
+            partial,
         });
     }
     Ok(indexes)
@@ -1398,6 +1461,117 @@ mod tests {
         assert!(matches!(ran, Err(Error::LeftReadOnly)), "{ran:?}");
     }
 
+    #[tokio::test]
+    async fn a_save_that_cannot_take_the_file_leaves_the_session_as_it_was() {
+        let (conn, dir) = fixture_as(Access::Writable).await;
+        // Another program is in the middle of a write.
+        let other = rusqlite::Connection::open(dir.path().join("fixture.db")).unwrap();
+        other
+            .execute_batch("BEGIN IMMEDIATE; UPDATE users SET name = 'Theirs' WHERE id = 2")
+            .unwrap();
+        // The session waits five seconds for a busy file, and a save does
+        // not set that wait. The test shortens it here, where it can reach
+        // it, rather than sit it out.
+        conn.run(|connection| {
+            connection
+                .busy_timeout(std::time::Duration::ZERO)
+                .map_err(map_error)
+        })
+        .await
+        .unwrap();
+        let changes = ChangeSet {
+            object: ObjectRef::new("main", "users"),
+            rows: vec![crate::RowChange {
+                key: vec![("id".into(), Value::Int(1))],
+                set: vec![crate::CellChange {
+                    column: "name".into(),
+                    type_name: "TEXT".into(),
+                    loaded: Value::Text("Ada Lovelace".into()),
+                    new: crate::NewValue::Text("Mine".into()),
+                }],
+            }],
+        };
+        // The save's own error, at its BEGIN, which asks for the file. A
+        // transaction that asked only at its first write would have read
+        // the row and failed at the UPDATE, as that row's failure.
+        let refused = conn.write(&changes, &StopFlag::new()).await;
+        assert!(
+            matches!(
+                &refused,
+                Err(Error::Query { code: Some(code), message, .. })
+                    if code == "5" && message.contains("locked")
+            ),
+            "{refused:?}"
+        );
+        // The session refuses writes as before, the usual way.
+        assert_eq!(standing(&conn).await, (1, true));
+        let ran = run_unrefused(&conn, &["UPDATE users SET email = 'x'"])
+            .await
+            .unwrap();
+        assert!(
+            matches!(
+                &ran.results[0].outcome,
+                StatementOutcome::Error {
+                    error: Error::Query { code: Some(code), .. },
+                    ..
+                } if code == "8"
+            ),
+            "{ran:?}"
+        );
+        // Once the other program lets go, the same save is written.
+        other.execute_batch("ROLLBACK").unwrap();
+        let outcome = conn.write(&changes, &StopFlag::new()).await;
+        assert!(
+            matches!(outcome, Ok(WriteOutcome::Written { .. })),
+            "{outcome:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_save_does_not_commit_what_a_transaction_left_open_wrote() {
+        let (conn, dir) = fixture_as(Access::Writable).await;
+        // Nothing in the app leaves a transaction open; this one is planted,
+        // with a write of its own in it.
+        conn.run(|connection| {
+            connection
+                .execute_batch(
+                    "PRAGMA query_only = OFF; BEGIN; \
+                     UPDATE users SET name = 'Planted' WHERE id = 2",
+                )
+                .map_err(map_error)
+        })
+        .await
+        .unwrap();
+        let changes = ChangeSet {
+            object: ObjectRef::new("main", "users"),
+            rows: vec![crate::RowChange {
+                key: vec![("id".into(), Value::Int(1))],
+                set: vec![crate::CellChange {
+                    column: "name".into(),
+                    type_name: "TEXT".into(),
+                    loaded: Value::Text("Ada Lovelace".into()),
+                    new: crate::NewValue::Text("Mine".into()),
+                }],
+            }],
+        };
+        // The save goes through, and only its own row is written.
+        let outcome = conn.write(&changes, &StopFlag::new()).await;
+        assert!(
+            matches!(outcome, Ok(WriteOutcome::Written { .. })),
+            "{outcome:?}"
+        );
+        let other = rusqlite::Connection::open(dir.path().join("fixture.db")).unwrap();
+        let name = |id: i64| -> String {
+            other
+                .query_row("SELECT name FROM users WHERE id = ?1", [id], |row| {
+                    row.get(0)
+                })
+                .unwrap()
+        };
+        assert_eq!((name(1), name(2)), ("Mine".to_owned(), "Bob".to_owned()));
+        assert_eq!(standing(&conn).await, (1, true));
+    }
+
     #[test]
     fn only_a_name_sqlite_would_read_as_a_uri_is_rewritten() {
         let dot = |name: &str| Path::new(".").join(name);
@@ -1570,6 +1744,141 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    #[tokio::test]
+    async fn a_generated_column_says_so() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("generated.db");
+        rusqlite::Connection::open(&path)
+            .unwrap()
+            .execute_batch(
+                "CREATE TABLE books (
+                     id INTEGER PRIMARY KEY,
+                     title TEXT NOT NULL,
+                     slug TEXT GENERATED ALWAYS AS (lower(title)) VIRTUAL,
+                     shout TEXT GENERATED ALWAYS AS (upper(title)) STORED
+                 )",
+            )
+            .unwrap();
+        let conn = Conn::open(&path, Access::ReadOnly).await.unwrap();
+        let structure = conn
+            .describe(&ObjectRef::new("main", "books"))
+            .await
+            .unwrap();
+        let generated: Vec<(&str, bool)> = structure
+            .columns
+            .iter()
+            .map(|column| (column.name.as_str(), column.generated))
+            .collect();
+        assert_eq!(
+            generated,
+            [
+                ("id", false),
+                ("title", false),
+                ("slug", true),
+                ("shout", true)
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_partial_index_says_so_and_is_not_the_row_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("partial.db");
+        rusqlite::Connection::open(&path)
+            .unwrap()
+            .execute_batch(
+                "CREATE TABLE t (a INTEGER NOT NULL, b INTEGER NOT NULL);
+                 CREATE UNIQUE INDEX whole ON t (a);
+                 CREATE UNIQUE INDEX part ON t (b) WHERE b > 0;",
+            )
+            .unwrap();
+        let conn = Conn::open(&path, Access::ReadOnly).await.unwrap();
+        let structure = conn.describe(&ObjectRef::new("main", "t")).await.unwrap();
+        let partial: Vec<(&str, bool)> = structure
+            .indexes
+            .iter()
+            .map(|index| (index.name.as_str(), index.partial))
+            .collect();
+        assert_eq!(partial, [("part", true), ("whole", false)]);
+        // `part` comes first by name and its column cannot be NULL: only
+        // its condition keeps it from being the key.
+        assert_eq!(structure.row_key(), Some(vec!["a".to_owned()]));
+    }
+
+    #[tokio::test]
+    async fn only_an_index_over_whole_columns_is_the_row_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("keys.db");
+        rusqlite::Connection::open(&path)
+            .unwrap()
+            .execute_batch(
+                r#"CREATE TABLE t (
+                       a INTEGER NOT NULL,
+                       b TEXT NOT NULL,
+                       c INTEGER NOT NULL,
+                       "<expression>" INTEGER NOT NULL
+                   );
+                   CREATE UNIQUE INDEX i1_expression ON t (a + 1);
+                   CREATE UNIQUE INDEX i2_mixed ON t (c, lower(b));
+                   CREATE UNIQUE INDEX i3_plain ON t (c, b DESC);"#,
+            )
+            .unwrap();
+        let conn = Conn::open(&path, Access::ReadOnly).await.unwrap();
+        let structure = conn.describe(&ObjectRef::new("main", "t")).await.unwrap();
+        let list = |names: &[&str]| -> Vec<String> {
+            names.iter().map(|name| (*name).to_owned()).collect()
+        };
+        let indexes: Vec<_> = structure
+            .indexes
+            .iter()
+            .map(|index| {
+                (
+                    index.name.as_str(),
+                    index.columns.clone(),
+                    index.key_columns.clone(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            indexes,
+            [
+                ("i1_expression", list(&["<expression>"]), None),
+                ("i2_mixed", list(&["c", "<expression>"]), None),
+                ("i3_plain", list(&["c", "b"]), Some(list(&["c", "b"]))),
+            ]
+        );
+        // Not the column that is called what an expression shows as.
+        assert_eq!(structure.row_key(), Some(list(&["c", "b"])));
+    }
+
+    #[tokio::test]
+    async fn a_primary_key_of_any_kind_is_the_row_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("primary.db");
+        rusqlite::Connection::open(&path)
+            .unwrap()
+            .execute_batch(
+                "CREATE TABLE alias (id INTEGER PRIMARY KEY, n INTEGER);
+                 CREATE TABLE named (code TEXT PRIMARY KEY, n INTEGER);
+                 CREATE TABLE pair (a INTEGER, b TEXT, n INTEGER, PRIMARY KEY (b, a));
+                 CREATE TABLE clustered (a INTEGER, b TEXT, n INTEGER, PRIMARY KEY (b, a))
+                     WITHOUT ROWID;",
+            )
+            .unwrap();
+        let conn = Conn::open(&path, Access::ReadOnly).await.unwrap();
+        for (table, key) in [
+            // The rowid's alias has no index of its own.
+            ("alias", vec!["id"]),
+            ("named", vec!["code"]),
+            ("pair", vec!["b", "a"]),
+            ("clustered", vec!["b", "a"]),
+        ] {
+            let structure = conn.describe(&ObjectRef::new("main", table)).await.unwrap();
+            let key: Vec<String> = key.into_iter().map(str::to_owned).collect();
+            assert_eq!(structure.row_key(), Some(key), "{table}");
+        }
     }
 
     #[tokio::test]

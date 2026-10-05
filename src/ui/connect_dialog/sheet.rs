@@ -35,45 +35,6 @@ fn tls_label(mode: TlsMode) -> &'static str {
         .map_or("", |(_, label)| label)
 }
 
-/// The top `height` points of `rect` with its top corners rounded at
-/// `radius`: a stripe that follows the dialog's corners, which a rounded
-/// rectangle that thin cannot.
-fn top_cap(rect: Rect, radius: f32, height: f32) -> Vec<egui::Pos2> {
-    let bottom = rect.top() + height;
-    let radius = radius.max(0.0);
-    let from = if radius > 0.0 {
-        ((radius - height).max(0.0) / radius).asin()
-    } else {
-        std::f32::consts::FRAC_PI_2
-    };
-    // From the stripe's lower edge up to the top: how far in from the
-    // side, how far down from the top.
-    const STEPS: usize = 8;
-    let arc: Vec<(f32, f32)> = (0..=STEPS)
-        .map(|step| {
-            let angle = from + (std::f32::consts::FRAC_PI_2 - from) * step as f32 / STEPS as f32;
-            (radius - radius * angle.cos(), radius - radius * angle.sin())
-        })
-        .collect();
-    let mut points = Vec::with_capacity(2 * arc.len() + 2);
-    if height > radius {
-        points.push(pos2(rect.left(), bottom));
-    }
-    points.extend(
-        arc.iter()
-            .map(|(dx, dy)| pos2(rect.left() + dx, rect.top() + dy)),
-    );
-    points.extend(
-        arc.iter()
-            .rev()
-            .map(|(dx, dy)| pos2(rect.right() - dx, rect.top() + dy)),
-    );
-    if height > radius {
-        points.push(pos2(rect.right(), bottom));
-    }
-    points
-}
-
 /// macOS: the environment's stripe (when there is one), the title over the
 /// connection's name, the Parameters and URL tabs, and Close.
 pub(super) fn header(
@@ -102,7 +63,7 @@ pub(super) fn header(
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::hover());
     if skin.environment != Environment::None {
         ui.painter().add(egui::Shape::convex_polygon(
-            top_cap(rect, f32::from(skin.inner_radius()), STRIPE),
+            widgets::top_cap(rect, f32::from(skin.inner_radius()), STRIPE),
             skin.env.base(),
             Stroke::NONE,
         ));
