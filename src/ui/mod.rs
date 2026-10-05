@@ -17514,4 +17514,248 @@ mod tests {
             assert!(!edits(&harness, tab, id).reviewing, "{}", look.name);
         }
     }
+
+    /// Runs `line` in the terminal's `:` prompt.
+    fn run_line(harness: &mut Harness, line: &str) {
+        type_key(harness, Key::Colon, ":");
+        type_text(harness, line);
+        harness.press(Key::Enter, Modifiers::NONE);
+    }
+
+    #[test]
+    fn diff_opens_the_panel_from_the_prompt() {
+        let (mut harness, tab, id) = normal_mode((1, 1));
+        // The row panel strikes its own keys through: the status line's
+        // alone are looked at.
+        harness.app.workspace_mut(tab).unwrap().row_panel = false;
+        make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
+        harness.settle();
+        assert!(!painted_from(&harness, PANEL));
+        // The prompt's key for it is offered while something is pending.
+        assert!(painted(&harness, ":diff review"), "{:?}", harness.painted);
+        run_line(&mut harness, "diff");
+        assert!(edits(&harness, tab, id).reviewing);
+        assert_eq!(command(&harness, tab), None);
+        assert!(!harness.ctx.text_edit_focused());
+        assert!(painted(&harness, "pending · 1 change · 1 row"));
+        for line in BOB {
+            assert!(painted(&harness, line), "{line}: {:?}", harness.painted);
+        }
+        assert_eq!(writes(&harness), 0);
+        assert_eq!(edits(&harness, tab, id).cells.len(), 1);
+        // The line under the panel says nothing of a mistake, and still
+        // offers the key.
+        assert!(!painted_from(&harness, "not a command"));
+        assert!(!painted(&harness, "nothing pending"));
+        assert!(painted(&harness, ":diff review"));
+        // The panel does not take the keyboard: the grid has its keys.
+        type_key(&mut harness, Key::J, "j");
+        assert_eq!(selected(&harness, tab, id), Some((2, 1)));
+        assert!(edits(&harness, tab, id).reviewing);
+        // Run again it changes nothing: only Esc closes the panel.
+        run_line(&mut harness, "diff");
+        assert!(edits(&harness, tab, id).reviewing);
+        assert!(painted(&harness, BOB[2]));
+        // With nothing pending the key is not offered.
+        harness.app.apply(Action::DiscardEdits { tab, id });
+        harness.settle();
+        assert!(!painted(&harness, ":diff review"));
+        assert!(painted(&harness, ":w write"));
+    }
+
+    #[test]
+    fn diff_with_nothing_pending_says_so_until_the_next_key() {
+        let (mut harness, tab, id) = normal_mode((1, 1));
+        let palette = harness.app.palette;
+        let said = "nothing pending";
+        run_line(&mut harness, "diff");
+        // No mistake of the typing: the line says it as it says its keys.
+        assert!(
+            painted_in(&harness, said, palette.text),
+            "{:?}",
+            harness.painted
+        );
+        assert!(harness.has(said));
+        assert!(!painted_from(&harness, "not a command"));
+        assert_eq!(command(&harness, tab), None);
+        assert!(!edits(&harness, tab, id).reviewing);
+        assert!(!painted_from(&harness, PANEL));
+        assert_eq!(drawn(&harness), None);
+        // Until the next key, which does what it does.
+        for _ in 0..30 {
+            harness.frame(Vec::new());
+        }
+        assert!(painted(&harness, said));
+        type_key(&mut harness, Key::J, "j");
+        assert!(!painted(&harness, said));
+        assert_eq!(selected(&harness, tab, id), Some((2, 1)));
+        // The Enter that ran the line may be held: its repeats are no next
+        // key.
+        type_key(&mut harness, Key::Colon, ":");
+        type_text(&mut harness, "diff");
+        hold(&mut harness, Key::Enter);
+        assert!(painted(&harness, said));
+        assert!(edits(&harness, tab, id).editor.is_none());
+        // An edit begun without a key takes it away as well: a
+        // double-click on a cell.
+        let at = cell_of(&harness, "user4@example.com");
+        click_at(&mut harness, at);
+        assert!(painted(&harness, said), "a click is no key");
+        click_at(&mut harness, at);
+        assert!(edits(&harness, tab, id).editor.is_some());
+        harness.press(Key::Escape, Modifiers::NONE);
+        assert!(edits(&harness, tab, id).editor.is_none());
+        assert!(!painted(&harness, said));
+        // It is said of the table that was asked about: never over one
+        // that has something pending, shown without a key.
+        run_line(&mut harness, "diff");
+        assert!(painted(&harness, said));
+        make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
+        harness.app.workspace_mut(tab).unwrap().review_refused = true;
+        harness.settle();
+        assert!(!painted(&harness, said));
+        assert!(painted(&harness, "1 pending · 1 row"));
+    }
+
+    #[test]
+    fn escape_closes_the_panel_before_the_row_panel() {
+        let (mut harness, tab, id) = normal_mode((1, 1));
+        let row_panel = |harness: &Harness| harness.app.workspace(tab).unwrap().row_panel;
+        assert!(row_panel(&harness));
+        make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
+        review(&mut harness, tab, id);
+        assert!(painted_from(&harness, PANEL));
+        // An Esc that left insert mode did only that.
+        type_key(&mut harness, Key::I, "i");
+        assert!(edits(&harness, tab, id).editor.is_some());
+        harness.press(Key::Escape, Modifiers::NONE);
+        assert!(edits(&harness, tab, id).editor.is_none());
+        assert!(edits(&harness, tab, id).reviewing);
+        assert!(row_panel(&harness));
+        // The first Esc closes the review, and only that.
+        harness.press(Key::Escape, Modifiers::NONE);
+        assert!(!edits(&harness, tab, id).reviewing);
+        assert!(!painted_from(&harness, PANEL));
+        assert_eq!(drawn(&harness), None);
+        assert!(row_panel(&harness));
+        assert_eq!(edits(&harness, tab, id).cells.len(), 1);
+        // The second closes the row panel.
+        harness.press(Key::Escape, Modifiers::NONE);
+        assert!(!row_panel(&harness));
+        // Held, it closes the review and does no more.
+        harness.app.apply(Action::ToggleRowPanel(tab));
+        review(&mut harness, tab, id);
+        assert!(row_panel(&harness) && edits(&harness, tab, id).reviewing);
+        hold(&mut harness, Key::Escape);
+        assert!(!edits(&harness, tab, id).reviewing);
+        assert!(row_panel(&harness));
+        // So with the Esc held since it left insert mode: neither closes.
+        review(&mut harness, tab, id);
+        type_key(&mut harness, Key::I, "i");
+        hold(&mut harness, Key::Escape);
+        assert!(edits(&harness, tab, id).editor.is_none());
+        assert!(edits(&harness, tab, id).reviewing);
+        assert!(row_panel(&harness));
+        // An Esc that left another field, the WHERE line, did only that:
+        // egui takes the keyboard from it before the keys are read.
+        type_key(&mut harness, Key::Slash, "/");
+        assert!(
+            harness.ctx.text_edit_focused(),
+            "the WHERE line has the keys"
+        );
+        harness.press(Key::Escape, Modifiers::NONE);
+        assert!(!harness.ctx.text_edit_focused());
+        assert!(edits(&harness, tab, id).reviewing);
+        assert!(row_panel(&harness));
+        // With the arrows on the tree it closes the review as well.
+        harness.app.workspace_mut(tab).unwrap().pane = crate::model::Pane::Tree;
+        harness.press(Key::Escape, Modifiers::NONE);
+        assert!(!edits(&harness, tab, id).reviewing);
+        assert!(row_panel(&harness));
+    }
+
+    #[test]
+    fn the_panel_follows_the_grids_keys() {
+        let (mut harness, tab, id) = normal_mode((1, 1));
+        make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
+        review(&mut harness, tab, id);
+        assert!(painted(&harness, BOB[3]));
+        // `u` on the only pending cell: the panel is gone with the set.
+        type_key(&mut harness, Key::U, "u");
+        assert!(edits(&harness, tab, id).cells.is_empty());
+        assert!(!edits(&harness, tab, id).reviewing);
+        assert!(!painted_from(&harness, PANEL));
+        assert_eq!(drawn(&harness), None);
+        // With two cells pending, `u` on one leaves the other's statement.
+        make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
+        make_pending(&mut harness, tab, id, (3, 1), "dan@example.com");
+        review(&mut harness, tab, id);
+        assert!(painted(&harness, "pending · 2 changes · 2 rows"));
+        assert!(painted(&harness, BOB[4]));
+        assert!(painted(&harness, r#" WHERE "id" = 4;"#));
+        select(&mut harness, tab, id, (1, 1));
+        type_key(&mut harness, Key::U, "u");
+        assert!(edits(&harness, tab, id).reviewing);
+        assert!(painted(&harness, "pending · 1 change · 1 row"));
+        assert!(!painted(&harness, BOB[4]));
+        assert!(!painted(&harness, BOB[3]));
+        assert!(painted(&harness, r#" WHERE "id" = 4;"#));
+        // And `x` on a cell adds its statement.
+        select(&mut harness, tab, id, (0, 2));
+        type_key(&mut harness, Key::X, "x");
+        assert!(painted(&harness, "pending · 2 changes · 2 rows"));
+        assert!(painted(&harness, r#" WHERE "id" = 1;"#));
+    }
+
+    #[test]
+    fn capital_y_copies_the_sql_and_y_still_copies_the_cell() {
+        let (mut harness, tab, id) = normal_mode((1, 1));
+        let long = "x".repeat(100);
+        make_pending(&mut harness, tab, id, (1, 1), &long);
+        // With the panel closed `Y` is the cell's key, as `y` is.
+        harness.copied = None;
+        type_key(&mut harness, Key::Y, "Y");
+        assert_eq!(harness.copied.as_deref(), Some(long.as_str()));
+        review(&mut harness, tab, id);
+        // What is shown is cut.
+        let cut = format!("   SET \"email\" = '{}…'", "x".repeat(57));
+        assert!(painted(&harness, &cut), "{:?}", harness.painted);
+        // `Y` takes the whole statements, never the lines as they show.
+        harness.copied = None;
+        type_key(&mut harness, Key::Y, "Y");
+        let copied = harness.copied.clone().expect("the SQL was copied");
+        let whole = format!(
+            "-- What Tabletist runs to save these changes, in one transaction. \
+             Each statement runs only while its row is still as the comment above it says.\n\
+             -- row id 2\n\
+             -- only if email is still 'user2@example.com'\n\
+             UPDATE \"main\".\"users\"\n   \
+             SET \"email\" = '{long}'\n \
+             WHERE \"id\" = 2;\n"
+        );
+        assert_eq!(copied, whole);
+        assert!(!copied.contains('…'));
+        // As a keyboard sends it: the key with Shift held.
+        harness.copied = None;
+        harness.frame(vec![
+            crate::testing::key(Key::Y, Modifiers::SHIFT),
+            egui::Event::Text("Y".into()),
+        ]);
+        harness.frame(vec![crate::testing::release(Key::Y, Modifiers::SHIFT)]);
+        assert_eq!(harness.copied.as_deref(), Some(whole.as_str()));
+        // Copying closes nothing and changes nothing.
+        assert!(edits(&harness, tab, id).reviewing);
+        assert_eq!(edits(&harness, tab, id).cells.len(), 1);
+        assert_eq!(writes(&harness), 0);
+        // `y` is the cell's still, with the panel open.
+        harness.copied = None;
+        type_key(&mut harness, Key::Y, "y");
+        assert_eq!(harness.copied.as_deref(), Some(long.as_str()));
+        // Closed again, `Y` is the cell's again.
+        harness.press(Key::Escape, Modifiers::NONE);
+        assert!(!edits(&harness, tab, id).reviewing);
+        harness.copied = None;
+        type_key(&mut harness, Key::Y, "Y");
+        assert_eq!(harness.copied.as_deref(), Some(long.as_str()));
+    }
 }

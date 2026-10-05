@@ -97,8 +97,11 @@ pub const SHORTCUTS: &[(&str, &str, Holds)] = &[
         "Show or hide the SQL of the pending changes",
         ALL,
     ),
+    (":diff", "Show the SQL of the pending changes", TERMINAL),
+    ("Esc", "Close the SQL of the pending changes", TERMINAL),
+    ("Y", "Copy the SQL of the pending changes", TERMINAL),
     (
-        "j/k, h/l, Ctrl+H/L, [ ], i, Enter, cc, x, u, Mod+S, :w, :e!, Space, Esc, /, y, s, d, gd, za, t, 1…9",
+        "j/k, h/l, Ctrl+H/L, [ ], i, Enter, cc, x, u, Mod+S, :w, :e!, :diff, Y, Space, Esc, /, y, s, d, gd, za, t, 1…9",
         "Omarchy: vim keys (shown in the status line)",
         ALL,
     ),
@@ -179,17 +182,18 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
             workspace.opened() && (workspace.focus_where || bar)
         });
     // The terminal's `:` prompt is open, and what it last refused is still
-    // said, or why a save was not made. The prompt's field is in the status
-    // line, which is drawn as long as the workspace is. A save refused
-    // under the open prompt (Mod+S) leaves it open: the keys typed into it
-    // next close nothing.
+    // said, or that `:diff` found nothing pending, or why a save was not
+    // made. The prompt's field is in the status line, which is drawn as
+    // long as the workspace is. A save refused under the open prompt
+    // (Mod+S) leaves it open: the keys typed into it next close nothing.
     let (prompt, refused) = app
         .workspace(active)
         .filter(|workspace| terminal && workspace.opened())
         .map_or((false, false), |workspace| {
             let prompt = workspace.command.is_some();
             let save = workspace.save_refused && !prompt;
-            (prompt, workspace.command_error.is_some() || save)
+            let said = workspace.command_error.is_some() || workspace.review_refused;
+            (prompt, said || save)
         });
     // An editor that just opened takes the keyboard when its field is
     // first drawn, later in this frame: the keys are its own already, and
@@ -849,7 +853,7 @@ fn editing_keys(app: &App, ctx: &egui::Context, keyboard: bool, actions: &mut Ve
 /// The terminal look's normal mode on the grid of the table `id`: `i` and
 /// Enter edit the selected cell from its value, `cc` from nothing, `x` sets
 /// it NULL, `u` puts back what was loaded, and `:` opens the prompt that
-/// writes and discards. The letters are read as the
+/// writes, discards and shows the SQL. The letters are read as the
 /// text they type, in the order they came, and taken: a letter that opens
 /// an editor or the prompt is no part of its text, and what follows it in
 /// its frame does nothing (the field is not there yet to be typed into).
@@ -1105,6 +1109,22 @@ fn letters(app: &mut App, ctx: &egui::Context, actions: &mut Vec<Action>) {
         .active_sql_tab()
         .filter(|sql| sql.selected_row().is_some())
         .map(|sql| sql.id);
+    // The table on screen while its Review SQL is open, in either of its
+    // views: the panel stands under both.
+    let reviewing = workspace
+        .active_object_tab()
+        .filter(|object| object.edits.reviewing)
+        .map(|object| object.id);
+    // Esc closes that panel, as its foot says. Before the row panel's Esc,
+    // and in its place: the key does no more. Nor does an Esc that left a
+    // text field, or the repeats of one held since.
+    if let Some(id) = reviewing
+        && !left_field
+        && fresh(Key::Escape)
+    {
+        let show = false;
+        actions.push(Action::ReviewEdits { tab, id, show });
+    }
     // What the last save came to, with nothing pending any more: Esc takes
     // it off the status line, as Dismiss does in the other looks. Before
     // the row panel's Esc, and in its place: the key does no more.
@@ -1238,10 +1258,18 @@ fn letters(app: &mut App, ctx: &egui::Context, actions: &mut Vec<Action>) {
             view: crate::model::ObjectView::Structure,
         });
     }
-    if pressed(Key::Y)
-        && let Some(text) = app.copy_text(false)
-    {
-        ctx.copy_text(text);
+    // `Y` with the review open is its SQL: the cell's `y` is the same key.
+    // The typed text is read first, so the one press does one thing.
+    let sql = reviewing.filter(|_| typed(ctx, "Y"));
+    if pressed(Key::Y) || sql.is_some() {
+        // The whole statements, never the lines as the panel shows them.
+        let text = match sql {
+            Some(id) => crate::ui::review::copy_text(app, tab, id),
+            None => app.copy_text(false),
+        };
+        if let Some(text) = text {
+            ctx.copy_text(text);
+        }
     }
     if pressed(Key::G) {
         next_pending = Some('g');
@@ -1279,6 +1307,15 @@ mod tests {
             let listed = shortcuts(&look)
                 .any(|row| row == ("Mod+Shift+D", "Show or hide the SQL of the pending changes"));
             assert!(listed, "{}", look.name);
+            // Omarchy's prompt, its Esc and its `Y`: no other look's.
+            for row in [
+                (":diff", "Show the SQL of the pending changes"),
+                ("Esc", "Close the SQL of the pending changes"),
+                ("Y", "Copy the SQL of the pending changes"),
+            ] {
+                let listed = shortcuts(&look).any(|listed| listed == row);
+                assert_eq!(listed, look.terminal, "{}: {row:?}", look.name);
+            }
         }
     }
 
@@ -1419,7 +1456,9 @@ mod tests {
             .find(|(_, what, _)| what.starts_with("Omarchy:"))
             .expect("Omarchy's row");
         let keys: Vec<&str> = keys.split(", ").collect();
-        for key in ["i", "Enter", "cc", "x", "u", "Mod+S", ":w", ":e!", "Space"] {
+        for key in [
+            "i", "Enter", "cc", "x", "u", "Mod+S", ":w", ":e!", ":diff", "Y", "Space",
+        ] {
             assert!(keys.contains(&key), "{key}: {keys:?}");
         }
         // Saving is Mod+S, as the row of the terminal's own keys has it:

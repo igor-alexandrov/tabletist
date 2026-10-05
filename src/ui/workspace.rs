@@ -1666,6 +1666,16 @@ fn editing_status(app: &App, tab: ConnTabId) -> Editing {
             tail: None,
             color: states::Tone::Danger.color(palette),
         })
+    } else if workspace.review_refused && counts.changes == 0 {
+        // `:diff` found nothing to show. No mistake of the typing: it
+        // reads as the keys do, until the next key. Never over a table
+        // that has something pending: another tab's, shown by a click.
+        Some(Said {
+            mark: None,
+            text: look.label(&say("nothing pending")),
+            tail: None,
+            color: palette.text,
+        })
     } else if workspace.save_refused && blocked.is_some() {
         // A save was just asked for: why it was not made comes first,
         // until the next key.
@@ -1903,6 +1913,12 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
             let write = gettext(locale, "write");
             if !read_only {
                 table_hints.push((":w", &*write, true));
+            }
+            // And the one that shows what a save would run, while there is
+            // anything to show.
+            let review = gettext(locale, "review");
+            if editing.pending.is_some() {
+                table_hints.push((":diff", &*review, true));
             }
             // An editor's keys: a table's do nothing on it.
             let words = [
