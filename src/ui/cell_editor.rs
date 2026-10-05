@@ -668,9 +668,13 @@ pub fn problem_text(
             counted(*whole, "digit", "digits"),
             say("before the point")
         ),
-        Problem::Under { limit } => {
-            format!("{type_name} {} {limit}", say("holds values under"))
-        }
+        // Both ways from zero, so it reads right of a value below it.
+        // Neither end is a value the type holds.
+        Problem::Under { limit } => format!(
+            "{type_name} {} -{limit} {} {limit}",
+            say("holds values between"),
+            say("and")
+        ),
         Problem::Inexact { stored } => stored_as(stored),
         Problem::Boolean => format!("{type_name} {}", say("expects true or false")),
         Problem::NotOneOf(allowed) => {
@@ -858,7 +862,12 @@ mod tests {
                 },
                 Some("0.01234")
             ),
-            "int8 holds values under 0.01"
+            "int8 holds values between -0.01 and 0.01"
+        );
+        // As true of a value below zero as of one above it.
+        assert_eq!(
+            say(&Problem::Under { limit: "1".into() }, Some("-1.5")),
+            "int8 holds values between -1 and 1"
         );
         assert_eq!(
             say(&Problem::Digits { whole: 8 }, None),
