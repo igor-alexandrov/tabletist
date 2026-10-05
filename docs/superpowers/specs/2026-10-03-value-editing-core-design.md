@@ -1,13 +1,13 @@
 # Editing values, slice 1: the core and its safety surfaces
 
-Date: 2026-10-03. Status: steps 1 (writable connections), 2 (the save in
-`tabletist-db` and the backend), 3 (editing in the grid) and 4 (Review SQL)
-are built, see `docs/superpowers/plans/2026-10-03-writable-connections.md`,
+Date: 2026-10-03. Status: all five steps are built: 1 (writable
+connections), 2 (the save in `tabletist-db` and the backend), 3 (editing in
+the grid), 4 (Review SQL) and 5 (the conflict question), see
+`docs/superpowers/plans/2026-10-03-writable-connections.md`,
 `docs/superpowers/plans/2026-10-03-connection-write.md`,
-`docs/superpowers/plans/2026-10-04-grid-editing.md` and
-`docs/superpowers/plans/2026-10-04-review-sql.md`; step 5 (the conflict
-dialog) is planned in `docs/superpowers/plans/2026-10-04-conflict-dialog.md`
-and not built.
+`docs/superpowers/plans/2026-10-04-grid-editing.md`,
+`docs/superpowers/plans/2026-10-04-review-sql.md` and
+`docs/superpowers/plans/2026-10-04-conflict-dialog.md`.
 
 ## Intent
 
@@ -274,6 +274,12 @@ of such a table says the same. The view words the reason
   the old page on screen, and what a describe brings may have another key)
   and while a save runs ("A save is running"). Nothing is edited on a page
   about to be replaced.
+- **A row that is gone:** every cell of a row a save found gone from the
+  server and whose changes the user discarded (see "Conflicts") is locked
+  until the page is loaded again: "This row no longer exists on the
+  server". The reasons that hold for the whole table or for a while come
+  before it, and what the row's values say after it. Its cells are written
+  in the dim colour in every look, with no tint and no mark in the gutter.
 - **Locked cells** in an editable table:
   - identity-always and generated columns. The catalog gains
     `ColumnInfo.generated: bool` (PostgreSQL `attgenerated` and
@@ -433,12 +439,16 @@ again.
 - Omarchy has no bar. Its status line shows the same counts ("3 pending · 2
   rows", "1 error") whenever the set is not empty, and why a save cannot be
   made, in the same words.
-- The tab carries the unsaved mark: on macOS and Windows a dot in the close
-  button's place while the tab is not hovered, and the tab reads "<name>
-  tab, unsaved" to a screen reader; `[+]` after the name on Omarchy. A
-  changed row carries its mark (see "The cell lifecycle"): amber, or red
-  when one of its cells is to fix or failed, which is `~` and `!` in the
-  Omarchy gutter.
+- The tab carries the unsaved mark while a cell is pending or its editor
+  holds typed text: on macOS and Windows a dot in the close button's place
+  while the tab is not hovered, and the tab reads "<name> tab, unsaved" to
+  a screen reader; `[+]` after the name on Omarchy. An editor that was
+  typed into and left behind another tab keeps its text, which is not yet a
+  pending cell, and the mark is all that says the tab holds it; an editor
+  that was only opened holds nothing and marks nothing. A changed row
+  carries its mark (see "The cell lifecycle"): amber, or red when one of
+  its cells is to fix or failed, which is `~` and `!` in the Omarchy
+  gutter.
 - **Revert one cell:** `Mod+Z` on a pending cell that is active puts back
   the loaded value. The undo and redo stack is slice 4.
 - The row panel shows a pending cell's new value with the pending mark and
@@ -465,6 +475,8 @@ again.
 | Copy the SQL | Copy SQL, in the drawer's head | `Y`, while the panel is open |
 | Save all | `Mod+S` | `:w`, Ctrl+S |
 | Discard all | `Mod+Alt+Backspace` | `:e!` |
+| Answer a conflict | its buttons; Esc keeps mine | `o`, `s`, `k`; `d` for a row that is gone; Esc keeps mine |
+| Read a conflict's lines | Page Up, Page Down | Page Up, Page Down |
 
 - Typing opens the editor on macOS and Windows except for Space (the row
   panel) and `?` (the shortcuts), which keep their meaning. A chord types
@@ -505,11 +517,15 @@ again.
   closes it; with nothing pending it opens nothing, and the line says
   `nothing pending` until the next key or the next edit. With a SQL editor
   in front it does nothing, as `w` does.
-- All of it is handled in `ui/keys.rs`. The shortcuts screen lists each
-  look's own editing keys (`keys::shortcuts(look)`): chords on macOS and
-  Windows, letters and the prompt on Omarchy. `Mod+Shift+D` is listed in
-  every look, and `:diff`, the Esc that closes the panel and `Y` on
-  Omarchy.
+- All of it but a conflict's keys is handled in `ui/keys.rs`. The
+  shortcuts screen lists each look's own editing keys
+  (`keys::shortcuts(look)`): chords on macOS and Windows, letters and the
+  prompt on Omarchy. `Mod+Shift+D` is listed in every look, and `:diff`,
+  the Esc that closes the panel and `Y` on Omarchy.
+- The conflict question reads its own keys (`ui/conflict_prompt.rs`) and
+  names them itself, as the Leave box names `[w]` and `[d]`: the shortcuts
+  screen lists none of them, and cannot be opened while the question is
+  up. See "Conflicts".
 
 ### Leaving with pending changes
 
@@ -546,11 +562,11 @@ again.
   opens is text, not an answer.
 - **What a prompt asks about cannot change while it is up.** Mod chords
   still reach the reducer under a dialog, and a click can be a frame behind
-  it. So while the Leave prompt or the production confirmation is up the
-  reducer drops the editing actions, the moves of the selection, and the
-  actions that would put another dialog in its place
-  (`dropped_under_a_prompt`), and the confirmation sends only the set it
-  showed.
+  it. So while the Leave prompt, the production confirmation or the
+  conflict question is up the reducer drops the editing actions, the moves
+  of the selection, and the actions that would put another dialog in its
+  place (`dropped_under_a_prompt`), and the confirmation sends only the set
+  it showed.
 - A guarded action that arrives while another dialog is open is refused
   with the notice "Save or discard the pending changes first.": a dialog
   the user is in is never replaced. While a tab's save runs, guarded
@@ -759,8 +775,11 @@ status line:
   saving. Reload to see what was written." A session swapped under a save
   (a reconnect) abandons the save and says the same: its answer, if one
   comes, finds no tab saving.
-- A production confirmation answered after the session went: "Not
-  connected. Nothing was sent."
+- A production confirmation answered after the session went, or a
+  conflict's Overwrite: "Not connected. Nothing was sent."
+- Rows that changed on the server or are gone: the user is asked about
+  each, and the tab says nothing while the question is up. Where it is not
+  asked, the conflict is a line (see "Conflicts").
 - A statement that failed: its row's cells turn red, and the line is the
   database's code and message, then "Nothing was written."
 - Any other error on a session that lives (a lock timeout, a refused
@@ -936,42 +955,255 @@ its answers stay on screen with them.
   the save is sent only if the tab's pending set still makes exactly that
   set (floats compared by their bits, so a NaN is the same value as
   itself), no editor is open and Save is not disabled.
+- **Brought up by the answer to another dialog, it takes no answer in its
+  first 500 ms** (`edit::ANSWER_AFTER`, `WritePrompt::after_answer`). Save
+  in the Leave prompt and Overwrite in the conflict question open it in the
+  place of the dialog that was just answered, under the hand that answered:
+  the click or the key that gave that answer, given twice, is none to this
+  question. In that moment no click on **Save to production** or
+  **Cancel** is taken, no Enter and no Esc, and **Copy SQL** copies
+  nothing: a click meant for the dialog before does not replace what is on
+  the clipboard. What is typed into Omarchy's field then stays typed, and
+  Page Up and Page Down still move the statements, since reading them
+  answers nothing. Nothing is kept for later, and nothing on screen shows
+  that the moment runs. Opened by Save itself (the bar, `Mod+S`, Ctrl+S,
+  `:w`) the confirmation answers at once.
+- **A key that is held confirms nothing.** The key that answered the
+  dialog before may still be down: what a held Enter repeats is no press,
+  and what a held Space repeats presses no button, whichever has the
+  keyboard.
 
 ## Conflicts
 
-In step 3 a conflict is a plain line. The pending bar reads "Row id 2
-changed on the server. Nothing was written." (or "Row id 2 no longer exists
-on the server. Nothing was written."), with "1 more row too." after it
-when other rows conflict as well; the Omarchy status line says the same
-after `≠ conflict`. The row is named by its key. The set stays as it was,
-with no rebase: the user refreshes, which discards it, and edits again.
+A save reads every row it would change by its key, locked, and compares
+the changed columns with what the page loaded (see "Saving"). A row that
+holds another value in one of them, or that is no longer there, is a
+conflict. The save then writes nothing, for any row of the set, and
+answers with every conflicting row as the server holds it now
+(`WriteOutcome::Conflicts`). What was held for the save (a tab or a window
+to close) is dropped by its conflict, for good: a question comes between
+the wish and the save, and the user closes again.
 
-The dialog is step 5. `Conflicts` then opens it for the first conflicting
-row:
+The user is asked about each of those rows, one after another: the
+conflict question (`Dialog::Conflict`, drawn by `src/ui/conflict_prompt.rs`
+in both of its forms). It holds the save's conflicts as rows of the page
+(`edit::conflicting`), the one being asked about and that row's lines
+ready to draw. Every answer is applied when it is given, to the page and
+to the pending set, so each row is whole whatever comes of the rows after
+it. Of the answers only two things are kept until the last: whether a row
+was overwritten and whether one was kept.
 
-- "Row id 2 changed on the server", "Someone saved it after you loaded it.
-  Nothing was written.", and a table of the columns the user changed:
-  loaded, now on server, yours.
-- Three choices (Omarchy `[k]`, `[s]`, `[o]`):
-  - **Keep mine, reload row.** The server's row replaces the loaded row in
-    the page and the pending cells stay on top of it. A pending cell whose
-    new value now equals the server's leaves the set.
-  - **Use server values.** The server's row replaces the loaded row and the
-    row's pending cells are dropped.
-  - **Overwrite.** As Keep mine, and the save may run again once every
-    conflict is answered (see below). A row that changed once more
-    conflicts once more.
-- With `server: None`: "Row id 2 no longer exists on the server", and one
-  choice, **Discard my changes**, which drops the row's pending cells and
-  marks the row as gone until the page is reloaded.
-- Several conflicts are asked one after another ("1 of 2"). A save writes
-  the whole pending set, so it runs again after the last answer only when
-  some row was answered Overwrite and none Keep mine: a row the user kept
-  to look at again is never written by another row's Overwrite. Otherwise
-  what is left stays pending until the user saves. On production that
-  second save asks its confirmation again. When the answers left nothing
-  pending, no save runs.
-- Esc is Keep mine for the row shown.
+### The question
+
+A sheet on macOS and Windows, 520 points wide; a box on Omarchy, 560 wide;
+each narrower in a narrow window.
+
+- **The title** names the row by its key, as the pending bar does: "Row id
+  2 changed on the server", "Row org 7, id 2 changed on the server" for a
+  key of two columns, the row's number where the key is not known. Only
+  the name gives way to a narrow question: it is cut with "…", and the
+  whole title is what a screen reader reads and what the pointer shows
+  over it. On Omarchy the line starts with `≠ conflict` in the warning
+  colour (the word alone where the look's font has no such mark), and the
+  title follows in lower case, the key as the database has it.
+- **Where the row is** has a line of its own under the title: the
+  connection's name and the table's, and which of the save's rows this is
+  when there are several: "Bookshop · book_covers · 1 of 2". The question
+  can come up while another tab or another connection is in front, a table
+  of one name can be open on two connections, and the question switches
+  nothing.
+- **What happened:** "Someone saved it after you loaded it. Nothing was
+  written." On Omarchy too, where the design's panel has no such sentence.
+- **The table** has a line for each column the user changed in that row,
+  which are the row's pending cells, in the page's column order: the
+  column's name, the value the page loaded, the value the server holds
+  now, and the user's. The sheet's is a bordered table whose header reads
+  "loaded", "now on server" and "yours"; the box's has no rules and its
+  header reads `loaded`, `server` and `yours`.
+- **What is marked.** The server's value is marked where it is another
+  value than the loaded one, compared as the save compared them (a float
+  by its bits), and plain where it is the same: on a red tint in red in
+  the sheet, in the danger colour in the box. A conflict has at least one
+  such column. The user's value is always marked as a pending cell is in
+  the grid: on the amber tint in the sheet, in the warning colour in the
+  box. A screen reader is told every value whole, and of a marked server
+  value that it "changed on the server", after the value: the tint or the
+  colour is all that says so on screen.
+- **A value reads as a grid cell shows it:** on one line, with the mark
+  for a line break, `''` for the empty text, a mark for each character of
+  an all-white one, and a cell's 256 characters at the most, cut with "…"
+  to its place. The whole reading is under the pointer over a value that
+  is cut. NULL is the grid's NULL: the grey chip, or Omarchy's faint word.
+  A value that became NULL on the server is the chip on the red tint, and
+  on Omarchy the word `NULL` in the danger colour.
+- **Two values of a line that differ never read alike for want of room.**
+  A value's cell holds about sixteen characters, and fewer in a narrow
+  window. What decides is what fits where it is drawn: where two cells of
+  a line would paint the same and their values do not read the same, each
+  is painted from inside itself, behind a "…", so that the first place the
+  two differ is in its cell. Up to twelve characters stand before that
+  place to find it by; a cell too narrow for them gives them up first, one
+  by one, and the end is cut only when the value is too long from that
+  place on. It is settled pair by pair: of three values, two that are
+  still alike from the first difference are painted from before their own.
+  Two values that are the same are painted the same. The view works this
+  out from what a cell reads of each value, never from the whole values.
+  For values that differ only past a cell's 256 characters the reducer
+  keeps, once, when the row's question comes up, the part of each that
+  starts twelve characters before the difference (`edit::shown_lines`),
+  pair by pair in the same way: a value can be megabytes, too much to
+  compare in every frame.
+- **The lines scroll** where there are more than 220 points hold (seven
+  in the sheet), under a header that stays. Page Up and Page Down move
+  them by the whole lines in view, and the box's foot then says `pgup/pgdn
+  scroll` before the keys that answer. When a row's question comes up the
+  lines start with the first line the server changed in view, moved by as
+  few whole lines as bring it in and by none where it shows from the top:
+  the lines are in the page's column order, and the one that is marked can
+  stand below what shows at once. From then on they are where the user
+  moves them.
+- **A row that is gone** has its own words, "Row id 2 no longer exists on
+  the server" and "Someone deleted it after you loaded it. Nothing was
+  written.", no column for the server, whose width the two others share,
+  and one answer.
+
+### The answers
+
+- **Keep mine, reload row.** The server's row replaces the loaded row in
+  the page, in place, also where the sort or the filters would now move or
+  hide it. The row's pending cells stay on top of it, except one whose new
+  value is no change against what the server holds now, which leaves the
+  set (`edit::is_change`, the rule that takes a cell out of the set when
+  the loaded text is typed back).
+- **Use server values.** The server's row replaces the loaded row and
+  every pending cell of the row is dropped.
+- **Overwrite.** As Keep mine, and the save may run again once every row
+  is answered. A row that changed once more conflicts once more.
+- **Discard my changes,** the one answer of a row that is gone: its
+  pending cells are dropped, and the row is marked gone (see "A row that
+  is gone, in the grid").
+- A cell that stays keeps its state: a failed cell's message is about its
+  new value, which did not change. The row panel's text and the tab's
+  Review SQL are made again from the row as it is now.
+- **In the sheet** Keep mine reads as a link at the left, without a border
+  and in the accent colour; "Use server values" is a bordered button and
+  "Overwrite" the primary one, filled with the ink, at the right. Discard
+  my changes is a plain button.
+- **In the box** the answers are keys in its foot, as every terminal
+  dialog of the app has them: `[o] overwrite`, `[s] use server`, `[k] keep
+  mine, reload`, and `[d] discard my changes` for a row that is gone, each
+  letter in the accent colour and each hint its button too. The letters
+  are read as typed text, and not while a text field has the keyboard. A
+  letter the row does not offer does nothing.
+- **Esc is Keep mine** for the row shown, in both forms. For a row that is
+  gone, Esc, and `k` on Omarchy, keep the row's changes pending, mark and
+  lock nothing, and leave the line "Row id 2 no longer exists on the
+  server. Nothing was written." in the bar or in Omarchy's status line:
+  the row is not left looking like any other with pending changes, and
+  the next save says once more that it is gone.
+- **Return never presses Overwrite,** as it never presses "Save to
+  production". Enter answers only as Keep mine, with the keyboard on that
+  button or, in the box, on that hint's button; on every other button and
+  with the keyboard on none it does nothing. Space presses the button that
+  has the keyboard, as everywhere. The Tab key comes to Keep mine first in
+  the sheet, then to Use server values and Overwrite. In the box it takes
+  the hints as they stand, `[o]` first.
+- **An answer names the row it answers** (`Action::AnswerConflict { at,
+  answer }`), and the reducer drops one for any other row, or one the row
+  does not offer: a click or a key a frame behind is no answer to the next
+  row.
+
+### When an answer is taken
+
+- **No answer in a question's first 500 ms** (`edit::ANSWER_AFTER`), for
+  every row of the save. The question comes up when the database answers,
+  not when the user asks: a key or a click on its way to the grid can land
+  on it, and on Omarchy `k`, `s` and `d` are keys of the grid. And the next
+  row's question takes the place of the last, button for button: the
+  second click of a double click would answer a row the user never saw. A
+  click, a key or Esc in that moment is dropped with no sign: the buttons
+  look as they always do, and nothing is kept for later. A click counts
+  only when its press, too, came after that moment.
+- **A key that is held never answers,** however long the question has been
+  up: what Space, Enter, Esc or a letter repeats is no press. The next
+  row's question has the keyboard on the button that was just pressed, and
+  a held key would answer row after row of the save.
+- Page Up and Page Down move the lines in that moment too: reading answers
+  nothing.
+- The production confirmation that Overwrite opens has the same first
+  moment (see "Saving to production").
+
+### After the last answer
+
+- **The save runs again when some row was answered Overwrite and none
+  Keep mine.** A save writes the whole pending set, so a row the user kept
+  to look at again is never written by another row's Overwrite. Use server
+  values and Discard count neither way. Keep mine counts whatever its
+  rebase left, and for a row that is gone too. An Overwrite counts even
+  when every one of its cells left the set: then the rest of the set is
+  what is saved.
+- **That save is an ordinary save.** With nothing pending nothing is sent
+  and nothing is said. Where a save cannot be made the bar's Save and
+  Omarchy's line say why. On production the confirmation asks again, with
+  the statements of the set as it is now, in which the server's values are
+  the loaded ones. When the session went while the question was up and
+  something is pending, the tab says "Not connected. Nothing was sent."
+  Nothing is held for it: after it wrote, the tab the user wanted to close
+  is still open.
+- Otherwise the tab says nothing more: the bar shows what is still
+  pending, or goes when nothing is.
+
+### Where the question is not asked
+
+The conflict is then a line, and the set stays as it was, with no row
+rebased: "Row id 2 changed on the server. Nothing was written." (or "Row id
+2 no longer exists on the server. Nothing was written."), with "1 more row
+too." after it when other rows conflict as well, in the pending bar or,
+after `≠ conflict`, in Omarchy's status line. The next save asks.
+
+- **Another dialog is up** when the save is answered (the question before
+  the window closes under a running save, the shortcuts, Settings): a
+  dialog the user is in is never replaced.
+- **The conflicts cannot be asked about:** one names a row the save did
+  not send or the page does not hold, a row comes twice, or a server row
+  is not as wide as the page (the table is no longer the one the page was
+  read from). The line names the first of them, with the count of the
+  others; where that first one is a row the save did not send, it is "The
+  connection was lost while saving. Reload to see what was written."
+  instead, since an answer about such a row is not one to tell the save's
+  end by.
+- **The question is closed without an answer** (`Action::CloseDialog`).
+  Rows already answered stay settled; the row shown and the rows after it
+  stay as they were loaded, with their cells pending, no save runs (the
+  Overwrite of an earlier row waits for a last answer that never came),
+  and the line names the row that was shown and counts the rows after it.
+  The one sender of that action under this dialog is its own view, when
+  the tab it asks about is no longer there to draw: then there is no tab
+  to say anything.
+
+### While the question is up
+
+- Nothing changes the set or the page: the reducer drops what
+  `dropped_under_a_prompt` names, as under the two other prompts. A
+  guarded action is refused with the notice, and a request to close the
+  window is cancelled the same way: every row still to be asked about has
+  pending cells, so the tab holds edits until the last answer.
+- What the backend says still arrives. A tab that holds edits is never
+  fetched, so no page arrives for it; one that does ends the question. A
+  lost connection changes the status and nothing else, since the answers
+  need no session: the second save is where it shows.
+
+### A row that is gone, in the grid
+
+- Discard my changes marks the row (`Edits::gone`) and locks its cells
+  (`Lock::Gone`, see "What can be edited"). It is drawn dim, and is
+  selected, copied and shown in the row panel as it was loaded.
+- The mark is about the page, so it goes when a page arrives, and it stays
+  through what only drops pending changes: Discard all, the Leave prompt's
+  Discard and a save that wrote. A fetch that fails leaves the old page on
+  screen, and its gone rows gone.
+- It does not hold the tab's page: a refresh is how the row leaves the
+  screen, nothing of the user's would be lost by it, and nothing is asked.
 
 ## Steps
 
@@ -986,23 +1218,23 @@ Each step ends compiling, tested and shippable, and gets its own plan run:
 3. Editing in the grid: the lifecycle, the editors, the checks, the pending
    bar without Review SQL, the keys but `:diff`, Save, the leaving guard,
    and the production confirmation with its statements in both looks.
-   A conflict here is a plain message: "Row id 2 changed on the server.
-   Nothing was written." (or "Row id 2 no longer exists on the server.").
-   The pending set stays as it was, with no rebase: the user refreshes,
-   which discards it, and edits again.
+   A conflict in this step is the plain line of "Where the question is not
+   asked", with no rebase.
 4. Review SQL: the drawer and `:diff`; the Omarchy PROD box opens the
    panel and points to it.
-5. The conflict dialog.
+5. The conflict question: a row that is gone, what a conflict shows and
+   what an answer settles, the question in its two forms, the save that
+   runs again, and the first moment of the question and of a confirmation
+   an answer opened.
 
 No step ships a production save without its confirmation and its
 statements.
 
-Steps 1 to 4 are built. Step 5 is planned in
-`docs/superpowers/plans/2026-10-04-conflict-dialog.md` and not built.
+All five steps are built.
 
 ## What step 3 leaves for steps 4 and 5
 
-Step 4 is built. Left as found in Review SQL:
+Steps 4 and 5 are built. Left as found in Review SQL:
 
 - Omarchy's letters and its `:` are matched by the character typed, so on
   a keyboard layout without Latin letters `i`, `x`, `u`, `cc`, `Y` and `:`
@@ -1022,18 +1254,58 @@ Step 4 is built. Left as found in Review SQL:
 - The Omarchy panel has no cursor of its own: the design's `]c next
   change` and `u revert under cursor` in its foot are not built.
 
-For step 5, the conflict dialog:
+Left as found in the conflict question:
 
-- The reducer keeps of a `Conflicts` answer only the first row, whether it
-  is gone, and how many others there are (`Note::Conflict`). The rows the
-  server now holds are dropped; the dialog needs them.
-- A conflict writes nothing and changes nothing in the set: no row is
-  rebased yet.
-- A MySQL `TIMESTAMP` as a changed column can miss a conflict in a repeated
-  daylight-saving hour. The key case is locked; the cell case is not.
+- A line break reads as one mark whether it is CR, LF or CRLF, as in a
+  grid cell. Two values that differ only in that read alike in the
+  question, as do a tab against a space and the number 1 against the text
+  `1`: the tint, and what a screen reader is told, are all that part them.
+- Of three values that differ in two places, a cell shows one place. Where
+  two of them differ only past a cell's 256 characters and the third
+  differs from both early, the two are read from inside themselves and the
+  third from its start: it is told from them, and its cell need not reach
+  the place it differs.
+- The server's row is put into the page on a check of its width alone
+  (`edit::conflicting`), as a save that wrote puts its rows there. A table
+  whose columns were put in another order, their number unchanged, between
+  the page and the save is not noticed. The saves after it end in a
+  conflict again and again, never in a silent write.
+- In a window lower than about 430 points the question overflows the
+  window.
+- The question about a row that is gone shows one answer. Nothing on
+  screen says that Esc (and `k` on Omarchy) keeps the row's changes.
+- Every row is asked about by itself: there is no answer for all of them.
+  Twenty conflicts are twenty questions, each with its first moment.
+- A conflict that cannot be asked about is a line, and the user saves
+  again to be asked: the rows are not kept for a question to open once the
+  other dialog closes.
+- A row that was answered Keep mine is written by the next save without a
+  question, when it did not change again. Nothing marks it apart from any
+  other pending row.
+- After a rebase a pending cell can sit on a cell that is now locked (the
+  server's value there is bytes, or over 256 KiB). It stays pending and
+  cannot be opened; Revert and Discard all take it out, and a save of it
+  fails its row with the builder's reason.
+- A row that is gone is drawn dim until slice 5 (rows) draws a deleted
+  row; the two should then agree.
+- On a keyboard layout without Latin letters `o`, `s`, `k` and `d` do
+  nothing, as Omarchy's other letters: the hints are buttons, and Esc
+  keeps.
+- Enter with Ctrl or Cmd held presses the button that has the keyboard,
+  Overwrite among them, as it does in the Leave prompt (Discard) and in
+  the production sheet (Save to production). Only a plain Enter is held
+  back.
+- A click pressed in a production confirmation's first moment and let go
+  after it is taken: the question's own check of the press is not made
+  there.
+- The notice of a refused guarded action, "Save or discard the pending
+  changes first.", is also what a close request under the question says.
 
 Open in the save as the grid shows it:
 
+- A MySQL `TIMESTAMP` as a changed column can miss a conflict in a repeated
+  daylight-saving hour. The key case is locked; the cell case is not. The
+  question is then not asked and the save writes.
 - A cancel is honoured until `COMMIT` is sent: between two of a save's
   statements through the save's stop flag, and on the `COMMIT` itself when
   it reaches it before it takes hold. After that it is too late: the save
@@ -1083,12 +1355,19 @@ Open in the save as the grid shows it:
     still changes no file from a script: `ATTACH` of a missing file,
     `VACUUM INTO`, `PRAGMA journal_mode`, `PRAGMA wal_checkpoint`;
   - the statement builder's two forms agree for every fixture type.
+- `src/edit.rs`: the lock of a row that is gone, a save's conflicts as
+  rows of the page and where there is nothing to ask from them, what a
+  conflict's lines hold and mark, which cells an answer settles, and what
+  is kept of values that read alike for a cell's worth, pair by pair.
 - Reducer tests: the pending set, the checks, the leaving guard and its
   held action, rows replaced after a save, the review made when the set or
   the structure changes and closed with the set, a row the builder refuses
   failing in place of a confirmation, rebasing after each conflict choice,
-  mixed conflict answers, and a tab with pending changes keeping its page
-  across a reconnect and saving afterwards.
+  mixed conflict answers and when the save runs again, the next row's
+  question coming up with the answer before it, a conflict under another
+  dialog and a question closed unanswered leaving the line, nothing
+  changing under the question, and a tab with pending changes keeping its
+  page across a reconnect and saving afterwards.
 - `src/review.rs`: the lines against the builder's statement for every
   dialect, whatever names and values hold; the cut; that no value ends a
   comment.
@@ -1096,11 +1375,20 @@ Open in the save as the grid shows it:
   the bar, the drawer and the panel, the three dialogs, where the Omarchy
   box points and where it lists, locked cells saying why, the shipped
   screens' new texts.
+- Of the conflict question, in every look: what it says and marks, and
+  where; each answer by its button, its key and Esc; Enter and the Tab
+  order; the first moment of every row's question, for a click, its press,
+  a key and a letter, and the confirmation's; a key held from one row's
+  answer through the rows after it, and through the confirmation; values
+  that differ where a cell does not reach, at four window widths; the
+  lines that scroll, their keys, and the first changed line in view; what
+  a screen reader is told; a small window; a row that is gone, in the
+  question and in the grid.
 - `src/shots.rs` has a scene for review of each editing state, on its
   Bookshop data and in every look: `edit-pending`, `edit-review`,
-  `edit-field`, `edit-large`, `edit-saved`, `edit-failed`, `edit-leave` and
-  `edit-production`. They need a GPU and are run by hand. No test compares
-  a screen with the design.
+  `edit-field`, `edit-large`, `edit-saved`, `edit-failed`, `edit-conflict`,
+  `edit-conflict-gone`, `edit-leave` and `edit-production`. They need a GPU
+  and are run by hand. No test compares a screen with the design.
 
 ## Documents this changes
 

@@ -356,13 +356,15 @@ const DELETED: &str = "2026-10-04 09:30:00";
 /// user reaches it, through the model, so it is the same state in every
 /// look: the bar, the tints and the dialogs on macOS and Windows; the mode
 /// line, the gutter and the error line on Omarchy.
-const EDITING: [(&str, Scene); 8] = [
+const EDITING: [(&str, Scene); 10] = [
     ("edit-pending", edit_pending),
     ("edit-review", edit_review),
     ("edit-field", edit_field),
     ("edit-large", edit_large),
     ("edit-saved", edit_saved),
     ("edit-failed", edit_failed),
+    ("edit-conflict", edit_conflict),
+    ("edit-conflict-gone", edit_conflict_gone),
     ("edit-leave", edit_leave),
     ("edit-production", edit_to_production),
 ];
@@ -461,6 +463,48 @@ fn edit_failed(harness: &mut Harness) {
             hint: None,
         },
     }));
+}
+
+/// Image 3 goes to the first image's book, as its cover: two pending
+/// cells in one row, saved and not answered yet. Both are in columns whose
+/// names the conflict sheet's first column holds whole.
+fn rebook_image(harness: &mut Harness) -> (ConnTabId, TabId) {
+    let (tab, id) = editable(harness);
+    retype(harness, tab, id, (1, BOOK_ID), "1048576");
+    retype(harness, tab, id, (1, KIND), "cover");
+    step_aside(harness, tab, id);
+    harness.app.apply(Action::WriteEdits { tab, id });
+    (tab, id)
+}
+
+/// A save that found its row changed: someone gave image 3 to another
+/// book in the meantime. The question shows the two columns the user
+/// changed, what was loaded, what the server holds now and the user's:
+/// `book_id` marked, `kind` as it was loaded.
+fn edit_conflict(harness: &mut Harness) {
+    rebook_image(harness);
+    // The row as the database holds it now: with the third image's book.
+    let mut row = page().rows.swap_remove(1);
+    row[BOOK_ID] = Value::Int(1_048_576 + 2 * 7_919);
+    harness.answer_written(Ok(tabletist_db::WriteOutcome::Conflicts(vec![
+        tabletist_db::Conflict {
+            row: 0,
+            server: Some(row),
+        },
+    ])));
+}
+
+/// A save that found its row gone: someone deleted image 3 in the
+/// meantime. The question shows what was loaded and the user's, and the
+/// one answer it has.
+fn edit_conflict_gone(harness: &mut Harness) {
+    rebook_image(harness);
+    harness.answer_written(Ok(tabletist_db::WriteOutcome::Conflicts(vec![
+        tabletist_db::Conflict {
+            row: 0,
+            server: None,
+        },
+    ])));
 }
 
 /// Closing the tab with three changes pending: save, discard or stay.
@@ -916,8 +960,9 @@ fn shots() {
         });
     });
     // Editing a table's values: what is pending and the statements a save
-    // of it would run, the two editors, a save that wrote and one that did
-    // not, and the two questions.
+    // of it would run, the two editors, a save that wrote, one that failed
+    // and one that found its row changed or gone, and the two questions
+    // before leaving and before a save to production.
     for (name, scene) in EDITING {
         both(name, scene);
     }

@@ -32,8 +32,8 @@ PostgreSQL, MySQL, SQLite. No others in v1.
    connected database. On a writable one the app edits the values of
    existing rows in a table's grid, and only Save writes: every pending
    change of the tab in one transaction, which never overwrites a row
-   someone else changed, and on production only after its statements were
-   shown and confirmed. Browsing, a raw WHERE and the SQL editor still
+   someone else changed unless the user, asked about that row, chooses to,
+   and on production only after its statements were shown and confirmed. Browsing, a raw WHERE and the SQL editor still
    cannot write (see `2026-10-03-value-editing-core-design.md`).
 7. The UI thread never blocks on the database, network, or disk; any running
    query can be cancelled.
@@ -119,7 +119,7 @@ tabletist/
     entrypoint.rs            CLI (clap), demo flags, logging, native window
     app.rs                   App state, apply(Action) reducer
     app/editing.rs           the reducer's part in editing: the guard, the editor, the save
-    edit.rs                  editing a table's values: locks, checks, the pending set
+    edit.rs                  editing a table's values: locks, checks, the pending set, a save's conflicts
     review.rs                Review SQL: a pending set as the lines of the statements a save runs
     model.rs                 Action, ConnTab, Workspace, Tree, ObjectTab, Fetch, Dialog
     backend.rs               runtime thread, Command/Event, sessions
@@ -149,6 +149,7 @@ tabletist/
     ui/pending_bar.rs        pending changes above the footer, with Review SQL, Save and Discard all
     ui/review.rs             Review SQL as it is read: its drawer or panel, its lines, the copied text
     ui/write_prompts.rs      asks before pending changes are dropped or saved to production
+    ui/conflict_prompt.rs    asks about each row a save found changed on the server, or gone
     ui/terminal_dialog.rs    the head, foot and key hints of an Omarchy dialog
     ui/structure.rs          columns, indexes, foreign keys
     ui/row_panel.rs          every field of the selected row
@@ -438,7 +439,7 @@ ObjectTab { id: ObjectTabId, object: ObjectRef, kind: ObjectKind, pinned: bool,
 
 enum SessionStatus { Connecting { request }, Connected, Disconnected(Error), Cancelled }
 enum Dialog { Connection(..), Password(..), HostKey(..), QuickOpen(..), Help,
-              Leave(..), ConfirmWrite(..), .. }
+              Leave(..), ConfirmWrite(..), Conflict(..), .. }
 
 // Loadable state is `Fetch<T> { value, pending: Option<RequestId>, error }`:
 // only the pending request's result is accepted, which drops stale results.
@@ -539,7 +540,12 @@ enum Dialog { Connection(..), Password(..), HostKey(..), QuickOpen(..), Help,
   (on Omarchy the `:diff` panel above the status line); Copy SQL takes
   them whole. An action that would drop a page with pending changes asks
   first, and a save to production is confirmed with its statements on
-  screen. Copying takes the pending value a cell shows. A SQL result's
+  screen. A save that finds a row changed on the server, or gone, writes
+  nothing and asks about each such row, with what was loaded, what the
+  server holds now and the user's side by side: keep mine, use the
+  server's values or overwrite, and for a row that is gone, discard. The
+  save runs again only where the answers call for it. Copying takes the
+  pending value a cell shows. A SQL result's
   grid is not edited. The whole of it is in
   `2026-10-03-value-editing-core-design.md`.
 - Footer: Data/Structure switch, row range, estimated (`~`) or exact total,
@@ -623,13 +629,16 @@ read-only table (structure data is small; the data grid is not needed).
 | Cmd/Ctrl+Z (Omarchy: `u`) | Revert the cell |
 | Cmd/Ctrl+Shift+D (Omarchy: also `:diff`) | Show or hide the SQL of the pending changes |
 | Omarchy: Esc, `Y` | Close the SQL of the pending changes, copy it |
-| Page Up/Down | In the confirmation of a save to production: scroll its statements |
+| Page Up/Down | In the confirmation of a save to production: scroll its statements. In the question about a row a save found changed: scroll its lines |
 | Cmd/Ctrl+S (Omarchy: Ctrl+S, `:w`) | Save all pending changes |
 | Cmd/Ctrl+Alt+Backspace (Omarchy: `:e!`) | Discard all pending changes |
 | ? | Shortcuts dialog |
 
 All handled in `ui/keys.rs`, apart from the connection dialog's own keys,
-which the dialog takes while it is open (no other shortcut acts behind it).
+which the dialog takes while it is open (no other shortcut acts behind it),
+and the keys that answer a question about pending changes, which the
+question names itself: Omarchy's `[w]` and `[d]` before leaving, and its
+`[o]`, `[s]`, `[k]` and `[d]` about a row a save found changed.
 Plain keys (arrows, Space, `?`) and copy are
 suppressed while a text field has focus; Cmd/Ctrl shortcuts are not.
 The keys that edit are each look's own, chords on macOS and Windows,

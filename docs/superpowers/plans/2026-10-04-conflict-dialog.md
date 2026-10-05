@@ -12,6 +12,7 @@
 
 ## Before you start
 
+- **All nine tasks are built,** on `claude/connection-write`, with what their reviews changed: see "As built", before "What this plan leaves for later". The tasks below are the draft they were built from.
 - Cargo is `~/.cargo/bin/cargo`. Never a cargo target dir under `/tmp`. Export both test server URLs when you run the whole suite:
 
       export TABLETIST_TEST_PG_URL=postgres://tabletist:tabletist@localhost:55432/tabletist
@@ -3006,9 +3007,40 @@ Commit: "Describe the conflict dialog as built".
 
 ---
 
+## As built
+
+The nine tasks as above, on `claude/connection-write` and after step 4, with these differences from the draft. The value-editing spec says the whole of it in the present tense ("Conflicts", "Saving to production", "What can be edited").
+
+- **It ran after Review SQL,** on the same branch and not on one of its own. So `answer_conflict` leaves the tab's review stale (`object.edits.review = None`, where it drops `object.fields`), for every answer, and the review is made again in that round of actions: the check's comment says what was loaded, and a row without cells has no statement.
+- **Copy SQL is withheld in the confirmation's first moment** (decision 17 named the answers alone): a click meant for the dialog before does not replace what is on the clipboard. Page Up and Page Down still move the statements then.
+- **A key that is held never answers** (decision 16 held back what came in the first moment, and decision 19 a held letter; a held Space or Esc answered once that moment was over). With the keyboard on a button, a fresh Space answers a row, the next row's question has the keyboard on the same button, and a button reads what a held Space repeats as a press of itself: held on Overwrite it overwrote every row of the save, one each half second, and a held Esc kept row after row. The question takes what a held Space repeats out of the frame before its buttons are drawn (`keys::drop_repeats`) and reads Esc as a fresh press, as it reads Enter (`keys::consume_press`). The confirmation drops a held Space the same way.
+- **A click counts only when its press, too, came after the first moment** (decision 16 asked only when the click arrived): the question remembers, for the press that is down, whether it took answers when the pointer went down.
+- **"Alike" is decided by what fits** (decision 23 had two values alike only where their 256 characters read the same). A value's cell holds about sixteen characters, so emails that differ in their last letters, timestamps in their seconds and long texts in their middle painted the same string. The view settles what the cells of a line paint together (`conflict_prompt::told_apart`), on what a cell reads of each value: two that would be painted alike and do not read alike are each painted from before the first place they differ. The reducer still keeps the part of each value that differs past a cell's worth (`edit::shown_lines`), and `edit::Shown::Text` says how far into the value its text starts (`from`) where the draft had a flag.
+- **Pair by pair** (decision 23 took one place for the whole line): of three values, two that are still alike from the first difference are shown from before their own, in the reducer and in the view. Two values that are the same are painted the same.
+- **The lead gives way** (decision 23 had a fixed twelve characters before the difference): they did not fit a cell of 130 points, so a cell gives them up first, one by one, and cuts the end only when the value is too long from the difference on.
+- **Page Up and Page Down move the lines** that do not all show, by the whole lines in view, and the box's foot then says `pgup/pgdn scroll` before the keys that answer. The draft had the lines scroll under the pointer alone.
+- **The first line the server changed is in view when a row's question comes up** (`ConflictPrompt::fresh`, which the view takes down once it has placed the lines): lines are in the page's column order, and the marked one stood below the fold with nothing marked in view. Said for the top too, since the lines of an earlier save's question stay where they were left.
+- **`k` keeps a row that is gone,** as Esc does (decision 19 gave such a row `d` alone): Keep mine is an answer every row has. The foot shows `[d]` only.
+- **A screen reader is told which server value changed:** the marked cell's name ends ", changed on the server".
+- **The primary button is the ink fill** (`palette.text`), as the Leave prompt's Save is; the draft's test named `widgets::primary_fill`.
+- **The tests find the question's own paint by order,** not by place: a dialog is painted over everything else, and the first thing it paints is what dims the window (`own_fills`); its title, or the word `conflict`, is the first text of its own (`pieces`). The grid behind paints the same values, and may stand where the question does.
+- **What `write_prompts.rs` lends** (decision 27) is `ROW`, `Skin`, `fitted` and `buttons_in`; the box asks `terminal_dialog::keyboard_on`.
+- **The scenes** are not of `retire_image` (task 9): `kind` takes `cover` and `preview` and no third value, and `deleted_at` is cut in the sheet's first column. `rebook_image` changes `book_id` and `kind` of the row at place 1; in `edit-conflict` the server holds another `book_id`, in `edit-conflict-gone` the row is gone. They are the seventh and eighth of `EDITING`, which holds ten.
+
+Left as found (the value-editing spec lists them under "What step 3 leaves for steps 4 and 5"):
+
+- CR, LF and CRLF all read as one line-break mark, so two values that differ only in that read alike, as a tab does against a space.
+- A table whose columns were put in another order, their number unchanged, between the page and the save is not noticed by `edit::conflicting`. The saves after it end in a conflict again and again, never in a silent write.
+- In a window lower than about 430 points the question overflows.
+- A gone row's question shows only Discard, and nothing on screen says that Esc keeps.
+- A save's many rows are answered one by one.
+- Where two of three values differ only past a cell's worth and the third differs early, the third is read from its start, and its cell need not reach the place it differs.
+- Enter with Ctrl or Cmd held presses the button that has the keyboard, Overwrite among them, as in the two prompts of step 3: only a plain Enter is held back.
+- The production confirmation takes a click that was pressed in its first moment and let go after it.
+
 ## What this plan leaves for later
 
-- **Step 4, Review SQL, is planned beside this one (`docs/superpowers/plans/2026-10-04-review-sql.md`) and touches the same files.** The two can be built in either order; whoever comes second rebases these places. What of this plan lands in the files both touch:
+- **Step 4, Review SQL (`docs/superpowers/plans/2026-10-04-review-sql.md`), touches the same files,** and was built first. What of this plan lands in the files both touch:
   - `src/edit.rs`: tasks 1 and 2 add `Lock::Gone`, `Table::gone`, `Edits::gone`, `Edits::discard`, change the `Debug` of `Edits` (its format string gains the gone rows), and add the conflict's types and functions between `Note` and `change_set`. Step 4 adds `Edits::{reviewing, review}` and the methods `put` and `revert` there.
   - `src/model.rs`: one action, one dialog variant, `ConflictPrompt`, and one field of `WritePrompt` (`after_answer`, task 5). **Both plans add to `WritePrompt`:** step 4 replaces `statements` by `review`. Neither removes the other's, and the struct's one literal, in `write_edits`, gets both.
   - `src/app.rs`: tasks 1, 3 and 5 change the first check of `apply`, the `DiscardEdits`, `LeaveDiscard` and `LeaveSave` arms (one line each), the `CloseDialog` arm, add one arm, and change `Event::Rows`.
@@ -3027,7 +3059,7 @@ Commit: "Describe the conflict dialog as built".
 - **A row that was answered Keep mine is written by the next save without a question,** when it did not change again: that is what Keep mine followed by Save means. Nothing marks such a row apart from any other pending row.
 - **The server's row is put into the page on a check of its width alone,** as a save that wrote already puts its rows there: a table whose columns were swapped for others of the same number since the page was read is not noticed.
 - **After a rebase a pending cell can sit on a cell that is now locked:** the server's value there is bytes, or over 256 KiB. The cell stays pending and cannot be opened; Revert and Discard all still take it out, and a save of it fails its row with the builder's reason.
-- **Two values that still read alike** after decision 23 (a tab against a space, the number 1 against the text `1`, a difference more than a cell's width past the first one) are told apart by the tint alone.
+- **Two values that still read alike** after decision 23 (a tab against a space, the number 1 against the text `1`, one kind of line break against another) are told apart by the tint alone.
 - **The gone row's look** is the dim text of this plan until slice 5 (rows: add, duplicate, delete) draws a deleted row; the two should then agree.
 - **A MySQL `TIMESTAMP` as a changed column** can miss a conflict in a repeated daylight-saving hour (step 3 found it). The question is then not asked and the save writes.
 - **On a keyboard layout without Latin letters** `k`, `s`, `o` and `d` do nothing, as Omarchy's other letters: the hints are buttons, and Esc keeps.
