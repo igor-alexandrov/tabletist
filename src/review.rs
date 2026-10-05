@@ -16,7 +16,7 @@ use crate::ui::format;
 pub const VALUE_MAX_CHARS: usize = 60;
 
 /// How a piece of a statement reads, for the colour it is drawn in.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Ink {
     /// Names, `=`, commas, the semicolon.
     Plain,
@@ -28,7 +28,7 @@ pub enum Ink {
 }
 
 /// A stretch of a statement's line in one colour.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Piece {
     pub ink: Ink,
     pub text: String,
@@ -36,7 +36,7 @@ pub struct Piece {
 
 /// One line of the review. Every text in it is on one line and holds no
 /// hidden character, but a whole value in a [`Line::Sql`] (see [`Values`]).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Line {
     /// `-- row id 2`: the row the statement under it is of, by its key.
     Row(String),

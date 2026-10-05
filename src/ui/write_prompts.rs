@@ -4,7 +4,8 @@
 //! look. The confirmation lists every statement it would send, in every
 //! look, as Review SQL draws them: no save to production is offered
 //! without them on screen. The terminal's box leaves them to its panel
-//! only where that panel is on screen for it, and stands clear of it.
+//! only where that panel is on screen for it and shows the whole of every
+//! line, and stands clear of it.
 
 use egui::{
     Align2, Color32, CornerRadius, Frame, Id, Key, Margin, Modifiers, Rect, Sense, Stroke, pos2,
@@ -14,7 +15,7 @@ use egui::{
 use crate::app::App;
 use crate::i18n::{Locale, gettext, ngettext};
 use crate::model::{Action, Dialog, Held, LeavePrompt};
-use crate::review::{Line, Values};
+use crate::review::{Line, Review, Values};
 use crate::theme::{Look, Palette};
 use crate::typography::{Text, TextRole};
 use crate::ui::focus::{self, Ring};
@@ -467,6 +468,15 @@ fn confirm_write(app: &mut App, ctx: &egui::Context) {
         tag: workspace.environment.label(crate::env::Platform::of(&look)),
     };
     let dialect = workspace.driver.dialect();
+    // What the tab's own panel shows: the box leaves its statements to no
+    // other lines than its own.
+    let shown = workspace
+        .object_tab(prompt.id)
+        .and_then(|object| object.edits.review.as_ref());
+    let panel = look
+        .terminal
+        .then(|| pointed_at(ctx, prompt, shown, skin))
+        .flatten();
     // Taken before anything is drawn, as the other prompt takes it: the
     // button that sends is pressed, never reached by a stray Enter.
     let enter = ctx.input_mut(|input| consume_press(input, Modifiers::NONE, Key::Enter));
@@ -476,7 +486,7 @@ fn confirm_write(app: &mut App, ctx: &egui::Context) {
     };
     let mut copy = false;
     let top = if look.terminal {
-        confirm_box(ctx, prompt, &facts, skin, enter, &mut actions)
+        confirm_box(ctx, prompt, panel, &facts, skin, enter, &mut actions)
     } else {
         let lines = &prompt.review.lines;
         let sheet = confirm_sheet(ctx, lines, &facts, skin, enter, &mut actions);
@@ -659,23 +669,40 @@ fn confirm_sheet(
 /// Where the Review SQL panel of the prompt's own tab stands, when the
 /// box may leave the statements to it: the panel was drawn in this very
 /// frame (it is drawn before the dialogs), it is that tab's and no
-/// other's, it shows its lines (all of them, or as many at once as the box
-/// itself would at the least), and above it the window has the room the
-/// box needs to stand clear of it. `None` everywhere else, and the box
-/// then lists the statements itself: its tab is not the one in front (a
-/// save asked for by the question about leaving a tab, a connection or the
-/// window), another tab's panel is on screen, or the window is too low.
+/// other's, the review it draws (`shown`) is the prompt's own, it shows
+/// its lines (all of them, or as many at once as the box itself would at
+/// the least, and the whole width of the widest), and above it the window
+/// has the room the box needs to stand clear of it. `None` everywhere
+/// else, and the box then lists the statements itself: its tab is not the
+/// one in front (a save asked for by the question about leaving a tab, a
+/// connection or the window), another tab's panel is on screen, or the
+/// window is too low or too narrow. Too narrow counts as much as too low:
+/// under the box neither the pointer nor a key moves the panel's lines
+/// sideways, and what is past its edge of a statement would be confirmed
+/// unread; in the box the lines scroll both ways under the pointer.
 fn pointed_at(
     ctx: &egui::Context,
     prompt: &crate::model::WritePrompt,
-    look: &Look,
+    shown: Option<&Review>,
+    skin: Skin<'_>,
 ) -> Option<Rect> {
+    let Skin {
+        look,
+        palette,
+        locale,
+    } = skin;
     let placed = review::placed_now(ctx)?;
     let own = (placed.tab, placed.id) == (prompt.tab, prompt.id);
     let room = placed.rect.top() - ctx.content_rect().top();
     let lines = prompt.review.lines.len() as f32;
     let fewest = lines.min(FEWEST_ROWS) * review::row_height(ctx, look);
-    (own && room >= POINTING_ROOM && placed.lines >= fewest).then_some(placed.rect)
+    let stands = own && room >= POINTING_ROOM && placed.lines >= fewest;
+    // Asked last: the lines are compared, and measured, only for a panel
+    // that would be pointed at.
+    let whole = stands
+        && shown == Some(&prompt.review)
+        && review::widest(ctx, &prompt.review, look, palette, locale) <= placed.width;
+    whole.then_some(placed.rect)
 }
 
 /// One row of `text` across the width `ui` has left, cut with `…` where it
@@ -697,15 +724,16 @@ fn one_row(ui: &mut egui::Ui, role: TextRole, text: &str, color: Color32, look: 
 /// The terminal look: the box in the danger colour, its head with the
 /// environment's tag and the question, what is saved and where, the
 /// statements, and the field that takes the word. Where the panel of its
-/// own tab is on screen with room above it (see [`pointed_at`]), the box
-/// stands in that room, says the panel shows the statements, and draws no
-/// backdrop over them; everywhere else it lists them itself. `enter` says
-/// Enter was pressed: it confirms once the field holds the word, and
-/// cancels with the keyboard on Cancel. Returns whether the prompt is the
-/// dialog on top.
+/// own tab is on screen with room above it and shows its lines (`panel`,
+/// see [`pointed_at`]), the box stands in that room, says the panel shows
+/// the statements, and draws no backdrop over them; everywhere else it
+/// lists them itself. `enter` says Enter was pressed: it confirms once the
+/// field holds the word, and cancels with the keyboard on Cancel. Returns
+/// whether the prompt is the dialog on top.
 fn confirm_box(
     ctx: &egui::Context,
     prompt: &mut crate::model::WritePrompt,
+    panel: Option<Rect>,
     facts: &Facts,
     skin: Skin<'_>,
     enter: bool,
@@ -724,7 +752,6 @@ fn confirm_box(
     // What the field asks for, and why the button that sends cannot be
     // pressed before it has it.
     let ask = format!("{} {WORD} {}", skin.say("type"), skin.say("to confirm"));
-    let panel = pointed_at(ctx, prompt, look);
     let id = Id::new("write-prompt");
     let modal = widgets::modal(id, look, palette).frame(frame);
     let modal = match panel {

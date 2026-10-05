@@ -4,6 +4,8 @@
 //! itself is here too: the drawer above the pending bar on macOS and
 //! Windows, and the terminal look's panel above its status line.
 
+use std::hash::{Hash, Hasher};
+
 use egui::{Color32, Frame, Id, Key, Modifiers, Rect, Sense, WidgetInfo, WidgetType, pos2, vec2};
 use tabletist_db::Access;
 use tabletist_db::sql::TokenKind;
@@ -167,6 +169,44 @@ pub fn rows(
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    /// How many lines this thread laid out for [`widest`].
+    pub static MEASURED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// How wide the widest line of `review` is, laid out as [`rows`] draws it.
+/// Measured once for a review and kept until another is asked about: a
+/// frame lays out the lines in view and no more, and a large set has
+/// thousands. What is kept is told by the lines themselves and by what
+/// words and sizes them, so a review that changed is measured again.
+pub fn widest(
+    ctx: &egui::Context,
+    review: &Review,
+    look: &Look,
+    palette: &Palette,
+    locale: Locale,
+) -> f32 {
+    let mut hasher = std::hash::DefaultHasher::new();
+    review.lines.hash(&mut hasher);
+    look.name.hash(&mut hasher);
+    std::mem::discriminant(&locale).hash(&mut hasher);
+    ctx.pixels_per_point().to_bits().hash(&mut hasher);
+    let key = hasher.finish();
+    let id = Id::new("review-sql-widest");
+    let kept: Option<(u64, f32)> = ctx.data(|data| data.get_temp(id));
+    if let Some((_, width)) = kept.filter(|(of, _)| *of == key) {
+        return width;
+    }
+    let width = review.lines.iter().fold(0.0, |widest: f32, line| {
+        #[cfg(test)]
+        MEASURED.with(|count| count.set(count.get() + 1));
+        widest.max(line_text(line, look, palette, locale).layout(ctx).width())
+    });
+    ctx.data_mut(|data| data.insert_temp(id, (key, width)));
+    width
+}
+
 /// A review as the clipboard gets it: the line that says what it is, then
 /// one line of text for each of its lines, a line break after each.
 pub fn text(review: &Review, locale: Locale) -> String {
@@ -237,8 +277,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, id: TabId) {
     // status line's.
     let side = if look.terminal { 12.0 } else { 20.0 };
     let mut asked = Asked::default();
-    // How tall the lines stand: nothing in a panel too low for them.
-    let mut shown = 0.0;
+    // How tall the lines stand, and how wide: nothing in a panel too low
+    // for them.
+    let mut shown = egui::Vec2::ZERO;
     let panel = egui::Panel::bottom(Id::new(("review-sql", tab.0, id.0)))
         .exact_size(height)
         .resizable(false)
@@ -264,14 +305,13 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, id: TabId) {
             if !place.is_positive() {
                 return;
             }
-            shown = place.height();
             let mut body = ui.new_child(egui::UiBuilder::new().max_rect(place));
             // Before `show_rows`, which reads it from the `ui` it is given.
             body.spacing_mut().item_spacing = egui::Vec2::ZERO;
             // Both ways: a line is never wrapped into what could read as
             // two. As low as its place is: egui would keep 64 points of a
             // scroll area, over the bar under a drawer that has less.
-            egui::ScrollArea::both()
+            let lines_in = egui::ScrollArea::both()
                 .id_salt(("review-sql-lines", tab.0, id.0))
                 .auto_shrink([false, false])
                 .min_scrolled_width(0.0)
@@ -284,7 +324,11 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, id: TabId) {
                         ui.scroll_with_delta(vec2(0.0, -pages * page));
                     }
                     rows(ui, lines, range, &look, &palette, locale);
-                });
+                })
+                .inner_rect;
+            // As wide as the lines are seen: without what a scroll bar
+            // takes of the place, where a look gives its bars room.
+            shown = vec2(lines_in.width(), place.height());
         });
     // The whole statements, never the lines as they are shown: those are
     // cut.
@@ -297,7 +341,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, id: TabId) {
         tab,
         id,
         rect: panel.response.rect,
-        lines: shown,
+        lines: shown.y,
+        width: shown.x,
     };
     let now = ui.ctx().cumulative_frame_nr();
     ui.ctx()
@@ -455,6 +500,9 @@ pub struct Placed {
     pub rect: Rect,
     /// How tall its lines stand in it, between its head and its foot.
     pub lines: f32,
+    /// How wide they stand: what is past it of a longer line is not seen
+    /// until the lines are moved sideways.
+    pub width: f32,
 }
 
 /// Where the last panel drawn is kept, with the number of its frame.

@@ -18349,6 +18349,161 @@ mod tests {
         assert_lists_itself(&harness, &["-- row id 1"]);
     }
 
+    /// The fixture's table on a production connection in the terminal
+    /// look, in a window `wide` points wide, with `email` of the row `id 2`
+    /// pending as `value` and the save asked for: the box is up.
+    fn confirming_in_width(wide: f32, value: &str) -> (Harness, ConnTabId, TabId) {
+        let mut harness = Harness::with_size(egui::vec2(wide, 800.0));
+        harness.set_look(Look::omarchy());
+        let (tab, id) = harness.editable();
+        focus_grid(&mut harness, tab);
+        harness.app.workspace_mut(tab).unwrap().environment = crate::env::Environment::Production;
+        make_pending(&mut harness, tab, id, (1, 1), value);
+        harness.app.apply(Action::WriteEdits { tab, id });
+        harness.finish_animations();
+        assert!(matches!(
+            harness.app.dialog,
+            Some(crate::model::Dialog::ConfirmWrite(_))
+        ));
+        (harness, tab, id)
+    }
+
+    /// How wide the widest line of the confirmation's review is, as the
+    /// panel draws it.
+    fn widest_confirmed(harness: &Harness) -> f32 {
+        let Some(crate::model::Dialog::ConfirmWrite(prompt)) = &harness.app.dialog else {
+            panic!("expected the confirmation");
+        };
+        let (look, palette, locale) = (harness.app.look, harness.app.palette, harness.app.locale);
+        crate::ui::review::widest(&harness.ctx, &prompt.review, &look, &palette, locale)
+    }
+
+    #[test]
+    fn the_prod_box_lists_its_statements_over_a_panel_too_narrow_for_them() {
+        let look = Look::omarchy();
+        let room = crate::ui::write_prompts::POINTING_ROOM;
+        // Half a screen, as a tiling desktop gives a window, and a value
+        // long enough to be cut where it is shown: its line is 77
+        // characters.
+        let long = "x".repeat(100);
+        let cut = format!("   SET \"email\" = '{}…'", "x".repeat(57));
+        for wide in [900.0, 420.0] {
+            let (mut harness, tab, id) = confirming_in_width(wide, &long);
+            // The case itself: the panel is on screen for the prompt's
+            // tab, with the room above it and its lines at their height,
+            // and the widest of them is wider than it shows. Under the box
+            // nothing moves the lines sideways.
+            let placed = drawn(&harness).expect("the panel is drawn");
+            assert_eq!((placed.tab, placed.id), (tab, id), "{wide}");
+            assert!(placed.rect.top() >= room, "{wide}: {:?}", placed.rect);
+            let row = crate::ui::review::row_height(&harness.ctx, &look);
+            assert!(placed.lines >= 3.0 * row, "{wide}: {}", placed.lines);
+            let widest = widest_confirmed(&harness);
+            assert!(
+                widest > placed.width,
+                "{wide}: {widest} in {}",
+                placed.width
+            );
+            assert_lists_itself(&harness, &[BOB[0]]);
+            // The long line is in the box, where the pointer moves it.
+            let outer = prod_box(&harness);
+            let places = painted_at(&harness, &cut);
+            assert!(
+                places.iter().any(|rect| outer.intersects(*rect)),
+                "{wide}: {places:?}"
+            );
+            type_text(&mut harness, "write");
+            harness.press(Key::Enter, Modifiers::NONE);
+            assert_eq!(writes(&harness), 1, "{wide}");
+        }
+        // In a window that shows the whole of every line, the box points.
+        let (harness, ..) = confirming_in_width(1280.0, "bob@example.com");
+        let placed = drawn(&harness).expect("the panel is drawn");
+        assert!(widest_confirmed(&harness) <= placed.width);
+        assert!(painted(&harness, POINTS), "{:?}", harness.painted);
+        // By the lines and the panel as they stand, not by the window:
+        // beside the row panel the long line is cut here too, and with
+        // that panel closed the whole of it shows.
+        let (mut harness, tab, _) = confirming_in_width(1280.0, &long);
+        let placed = drawn(&harness).expect("the panel is drawn");
+        assert!(widest_confirmed(&harness) > placed.width);
+        assert_lists_itself(&harness, &[BOB[0]]);
+        harness.app.workspace_mut(tab).unwrap().row_panel = false;
+        harness.finish_animations();
+        let placed = drawn(&harness).expect("the panel is drawn");
+        assert!(widest_confirmed(&harness) <= placed.width);
+        assert!(painted(&harness, POINTS), "{:?}", harness.painted);
+        assert_eq!(painted_at(&harness, &cut).len(), 1);
+    }
+
+    #[test]
+    fn the_prod_box_lists_its_statements_when_its_panel_shows_another_review() {
+        let (mut harness, tab, id, _) = confirming(Look::omarchy());
+        assert!(painted(&harness, POINTS));
+        // The panel of the prompt's tab holds other lines than the box
+        // asks about. Nothing the user does makes it so; were it to
+        // happen, the box would not send a reader to them.
+        let object = harness.app.workspace_mut(tab).unwrap();
+        let review = object.object_tab_mut(id).unwrap().edits.review.as_mut();
+        review.expect("the panel's review").lines.truncate(5);
+        harness.finish_animations();
+        let placed = drawn(&harness).expect("the panel is drawn");
+        assert_eq!((placed.tab, placed.id), (tab, id));
+        assert_lists_itself(&harness, &[r#" WHERE "id" = 4;"#]);
+    }
+
+    #[test]
+    fn the_prod_box_measures_a_reviews_lines_once_not_every_frame() {
+        use crate::ui::review::MEASURED;
+        let measured = || MEASURED.with(std::cell::Cell::get);
+        // A page of 500 rows with `email` changed in every one: 2500
+        // lines of review.
+        let mut harness = Harness::new();
+        harness.set_look(Look::omarchy());
+        let tab = harness.connect_fake_as(false);
+        harness.app.apply(Action::OpenObject {
+            tab,
+            object: tabletist_db::ObjectRef::new("main", "users"),
+            kind: tabletist_db::ObjectKind::Table,
+            pin: true,
+        });
+        harness.answer_structure(crate::testing::fixture_structure());
+        harness.answer_rows(crate::testing::page(500, false));
+        let id = harness.app.workspace(tab).unwrap().active_tab.unwrap();
+        focus_grid(&mut harness, tab);
+        harness.app.workspace_mut(tab).unwrap().environment = crate::env::Environment::Production;
+        for row in 0..500 {
+            let email = format!("new{row}@example.com");
+            make_pending(&mut harness, tab, id, (row, 1), &email);
+        }
+        let before = measured();
+        harness.app.apply(Action::WriteEdits { tab, id });
+        harness.finish_animations();
+        assert_eq!(confirmed_lines(&harness).len(), 2500);
+        assert!(painted(&harness, POINTS), "{:?}", harness.painted);
+        // Every line once, for all the frames the box has been up.
+        assert_eq!(measured() - before, 2500);
+        for step in 0..5 {
+            let at = egui::pos2(600.0 + step as f32 * 10.0, 300.0);
+            harness.frame(vec![egui::Event::PointerMoved(at)]);
+        }
+        type_text(&mut harness, "wri");
+        assert_eq!(measured() - before, 2500);
+        // Another review is measured, once: the box is cancelled, a row
+        // reverted, and the save asked for again.
+        harness.press(Key::Escape, Modifiers::NONE);
+        assert!(harness.app.dialog.is_none());
+        select(&mut harness, tab, id, (0, 1));
+        harness.app.apply(Action::RevertCell { tab, id });
+        harness.app.apply(Action::WriteEdits { tab, id });
+        harness.finish_animations();
+        assert_eq!(confirmed_lines(&harness).len(), 2495);
+        assert!(painted(&harness, POINTS));
+        assert_eq!(measured() - before, 2500 + 2495);
+        harness.frame(Vec::new());
+        assert_eq!(measured() - before, 2500 + 2495);
+    }
+
     #[test]
     fn the_sheet_is_whole_in_a_low_window() {
         for look in desktop_looks() {
