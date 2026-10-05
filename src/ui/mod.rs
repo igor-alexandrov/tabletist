@@ -18740,6 +18740,332 @@ mod tests {
         assert!(painted(&harness, last));
     }
 
+    /// The rows of the fixture whose first line, or last, the last frame
+    /// painted with its left edge at `left`, each by its place among the
+    /// ten: what tells how far a list of all five rows' statements is
+    /// scrolled. By the edge, since a prompt can lie over the panel behind
+    /// it, and both paint the same lines.
+    fn rows_painted(harness: &Harness, left: f32) -> Vec<usize> {
+        (1..=5)
+            .flat_map(|row| {
+                [
+                    (2 * row - 2, format!("-- row id {row}")),
+                    (2 * row - 1, format!(" WHERE \"id\" = {row};")),
+                ]
+            })
+            .filter(|(_, line)| {
+                let places = painted_at(harness, line);
+                places.iter().any(|rect| (rect.left() - left).abs() < 0.5)
+            })
+            .map(|(place, _)| place)
+            .collect()
+    }
+
+    /// Where the lines of the panel `placed` begin, and where those of
+    /// the prompt over it do: the left edges of the first line, which both
+    /// show before anything is scrolled.
+    fn line_edges(harness: &Harness, placed: &crate::ui::review::Placed) -> (f32, f32) {
+        let firsts = painted_at(harness, "-- row id 1");
+        assert_eq!(firsts.len(), 2, "{firsts:?}");
+        let within = |rect: &&egui::Rect| placed.rect.contains_rect(**rect);
+        let panel = firsts.iter().find(within).expect("the panel's first line");
+        let prompt = firsts
+            .iter()
+            .find(|rect| rect.left() != panel.left())
+            .expect("the prompt's first line");
+        (panel.left(), prompt.left())
+    }
+
+    #[test]
+    fn page_down_scrolls_the_sheets_statements_and_not_the_drawer_behind_it() {
+        for look in desktop_looks() {
+            // All five rows changed, the drawer open, and the save asked
+            // for: the sheet lists the 25 lines itself, over the drawer.
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            let (tab, id) = harness.editable();
+            focus_grid(&mut harness, tab);
+            harness.app.workspace_mut(tab).unwrap().environment =
+                crate::env::Environment::Production;
+            for row in 0..5 {
+                let email = format!("new{row}@example.com");
+                make_pending(&mut harness, tab, id, (row, 1), &email);
+            }
+            review(&mut harness, tab, id);
+            harness.app.apply(Action::WriteEdits { tab, id });
+            harness.finish_animations();
+            assert_eq!(confirmed_lines(&harness).len(), 25, "{}", look.name);
+            let drawer = drawn(&harness).expect("the drawer is drawn");
+            let (drawer, sheet) = line_edges(&harness, &drawer);
+            let behind = rows_painted(&harness, drawer);
+            let listed = rows_painted(&harness, sheet);
+            assert_eq!(behind.first(), Some(&0), "{}", look.name);
+            assert_eq!(listed.first(), Some(&0), "{}", look.name);
+            assert!(!listed.contains(&9), "{}: {listed:?}", look.name);
+            // The keys move the list that is asked about. The drawer is
+            // dimmed behind it, and stays where it is.
+            harness.press(Key::PageDown, Modifiers::NONE);
+            harness.finish_animations();
+            let after = rows_painted(&harness, sheet);
+            assert!(!after.contains(&0), "{}: {after:?}", look.name);
+            // A page is what was in view: nothing is passed over unseen.
+            assert!(
+                after.first().unwrap() <= &(listed.last().unwrap() + 1),
+                "{}: {listed:?} then {after:?}",
+                look.name
+            );
+            assert_eq!(rows_painted(&harness, drawer), behind, "{}", look.name);
+            for _ in 0..3 {
+                harness.press(Key::PageDown, Modifiers::NONE);
+                harness.finish_animations();
+            }
+            let end = rows_painted(&harness, sheet);
+            assert!(end.contains(&9), "{}: {end:?}", look.name);
+            assert_eq!(rows_painted(&harness, drawer), behind, "{}", look.name);
+            // Nothing was answered by them, and Page Up goes back.
+            assert!(harness.app.dialog.is_some(), "{}", look.name);
+            assert_eq!(writes(&harness), 0, "{}", look.name);
+            for _ in 0..4 {
+                harness.press(Key::PageUp, Modifiers::NONE);
+                harness.finish_animations();
+            }
+            assert_eq!(rows_painted(&harness, sheet), listed, "{}", look.name);
+            assert_eq!(rows_painted(&harness, drawer), behind, "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn page_down_scrolls_the_statements_the_box_lists_itself() {
+        // A window too low for the box to point: its panel is on screen
+        // under the backdrop, and the box lists the 25 lines itself.
+        let (mut harness, tab, id) = confirming_five_rows(egui::vec2(1280.0, 440.0));
+        let placed = drawn(&harness).expect("the panel is drawn");
+        assert_eq!((placed.tab, placed.id), (tab, id));
+        assert_lists_itself(&harness, &["-- row id 1"]);
+        let (panel, listing) = line_edges(&harness, &placed);
+        let behind = rows_painted(&harness, panel);
+        let listed = rows_painted(&harness, listing);
+        assert_eq!(listed.first(), Some(&0));
+        assert!(!listed.contains(&9), "{listed:?}");
+        // The keys are the list's that is asked about, and every line of
+        // it comes into view on the way down. The panel is not moved.
+        let mut seen = listed.clone();
+        for _ in 0..25 {
+            harness.press(Key::PageDown, Modifiers::NONE);
+            harness.finish_animations();
+            let now = rows_painted(&harness, listing);
+            if let (Some(next), Some(last)) = (now.first(), seen.last()) {
+                assert!(next <= &(last + 1), "{seen:?} then {now:?}");
+            }
+            seen.extend(now);
+            assert_eq!(rows_painted(&harness, panel), behind);
+        }
+        seen.sort_unstable();
+        seen.dedup();
+        assert_eq!(seen, (0..10).collect::<Vec<_>>());
+        assert!(!rows_painted(&harness, listing).contains(&0));
+        // The field keeps the keyboard and holds nothing of them.
+        match &harness.app.dialog {
+            Some(crate::model::Dialog::ConfirmWrite(prompt)) => assert_eq!(prompt.typed, ""),
+            other => panic!("expected the confirmation, got {other:?}"),
+        }
+        assert!(harness.ctx.text_edit_focused());
+        assert_eq!(writes(&harness), 0);
+        for _ in 0..25 {
+            harness.press(Key::PageUp, Modifiers::NONE);
+            harness.finish_animations();
+        }
+        assert_eq!(rows_painted(&harness, listing), listed);
+    }
+
+    #[test]
+    fn the_confirmation_of_another_tab_does_not_scroll_this_panel() {
+        // `orders` is in front with all five of its rows changed and its
+        // panel open; `users` beside it has as many.
+        let mut harness = Harness::with_size(egui::vec2(1280.0, 560.0));
+        harness.set_look(Look::omarchy());
+        let (tab, id) = harness.editable();
+        focus_grid(&mut harness, tab);
+        harness.app.workspace_mut(tab).unwrap().environment = crate::env::Environment::Production;
+        for row in 0..5 {
+            let email = format!("new{row}@example.com");
+            make_pending(&mut harness, tab, id, (row, 1), &email);
+        }
+        harness.app.apply(Action::OpenObject {
+            tab,
+            object: tabletist_db::ObjectRef::new("main", "orders"),
+            kind: tabletist_db::ObjectKind::Table,
+            pin: true,
+        });
+        harness.answer_structure(crate::testing::fixture_structure());
+        harness.answer_rows(crate::testing::page(5, false));
+        harness.settle();
+        let orders = harness.app.workspace(tab).unwrap().active_tab.unwrap();
+        assert_ne!(orders, id);
+        for row in 0..5 {
+            let email = format!("other{row}@example.com");
+            make_pending(&mut harness, tab, orders, (row, 1), &email);
+        }
+        review(&mut harness, tab, orders);
+        // A save of `users` is asked for (a press that arrived late): its
+        // box lists its own statements over the panel of `orders`.
+        harness.app.apply(Action::WriteEdits { tab, id });
+        harness.finish_animations();
+        match &harness.app.dialog {
+            Some(crate::model::Dialog::ConfirmWrite(prompt)) => {
+                assert_eq!((prompt.tab, prompt.id), (tab, id));
+            }
+            other => panic!("expected the confirmation, got {other:?}"),
+        }
+        let placed = drawn(&harness).expect("the panel of orders");
+        assert_eq!((placed.tab, placed.id), (tab, orders));
+        assert_lists_itself(&harness, &["-- row id 1"]);
+        let (panel, listing) = line_edges(&harness, &placed);
+        // The panel shows less than it holds: it could be moved.
+        let behind = rows_painted(&harness, panel);
+        assert_eq!(behind.first(), Some(&0));
+        assert!(!behind.contains(&9), "{behind:?}");
+        let listed = rows_painted(&harness, listing);
+        for _ in 0..3 {
+            harness.press(Key::PageDown, Modifiers::NONE);
+            harness.finish_animations();
+        }
+        // The keys did not move the other tab's panel, and did move the
+        // box's own list.
+        assert_eq!(rows_painted(&harness, panel), behind);
+        assert_ne!(rows_painted(&harness, listing), listed);
+    }
+
+    #[test]
+    fn a_turn_of_the_pages_the_panel_was_not_drawn_for_is_not_kept() {
+        // The box points at the panel of `users`, all five rows changed;
+        // `orders` is open beside it.
+        let (mut harness, tab, id) = editable_in(Look::omarchy());
+        harness.app.workspace_mut(tab).unwrap().environment = crate::env::Environment::Production;
+        for row in 0..5 {
+            let email = format!("new{row}@example.com");
+            make_pending(&mut harness, tab, id, (row, 1), &email);
+        }
+        harness.app.apply(Action::OpenObject {
+            tab,
+            object: tabletist_db::ObjectRef::new("main", "orders"),
+            kind: tabletist_db::ObjectKind::Table,
+            pin: true,
+        });
+        harness.answer_structure(crate::testing::fixture_structure());
+        harness.answer_rows(crate::testing::page(3, false));
+        let orders = harness.app.workspace(tab).unwrap().active_tab.unwrap();
+        harness.app.apply(Action::ActivateTab { tab, id });
+        harness.app.apply(Action::WriteEdits { tab, id });
+        harness.finish_animations();
+        assert!(painted(&harness, POINTS));
+        let edge = harness.painted_rect("-- row id 1").unwrap().left();
+        let shown = rows_painted(&harness, edge);
+        assert!(!shown.contains(&9), "{shown:?}");
+        // Page Down, and by the next frame the other tab is in front: the
+        // panel is not drawn to turn its pages.
+        harness.frame(vec![crate::testing::key(Key::PageDown, Modifiers::NONE)]);
+        harness.app.apply(Action::ActivateTab { tab, id: orders });
+        harness.finish_animations();
+        assert_eq!(drawn(&harness), None);
+        // Back in front much later, it is where it was: a key pressed
+        // then moves nothing now.
+        harness.app.apply(Action::ActivateTab { tab, id });
+        harness.finish_animations();
+        assert!(painted(&harness, POINTS));
+        assert_eq!(rows_painted(&harness, edge), shown);
+        // And a key pressed now does.
+        harness.press(Key::PageDown, Modifiers::NONE);
+        harness.finish_animations();
+        assert_ne!(rows_painted(&harness, edge), shown);
+    }
+
+    #[test]
+    fn clicks_outside_the_box_that_points_change_nothing() {
+        // `orders` is open beside `users`, so there is a tab to click.
+        let (mut harness, tab, id) = editable_in(Look::omarchy());
+        harness.app.workspace_mut(tab).unwrap().environment = crate::env::Environment::Production;
+        harness.app.apply(Action::OpenObject {
+            tab,
+            object: tabletist_db::ObjectRef::new("main", "orders"),
+            kind: tabletist_db::ObjectKind::Table,
+            pin: true,
+        });
+        harness.answer_structure(crate::testing::fixture_structure());
+        harness.answer_rows(crate::testing::page(3, false));
+        harness.app.apply(Action::ActivateTab { tab, id });
+        make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
+        select(&mut harness, tab, id, (0, 1));
+        harness.app.apply(Action::WriteEdits { tab, id });
+        let tree = harness.finish_animations();
+        // The box points: no backdrop is drawn, and what is under and
+        // around it looks as live as ever.
+        assert!(painted(&harness, POINTS));
+        assert!(!dimmed(&harness));
+        let outer = prod_box(&harness);
+        // What a click must leave as it is.
+        let state = |harness: &Harness| {
+            let workspace = harness.app.workspace(tab).unwrap();
+            let edits = edits(harness, tab, id);
+            (
+                matches!(
+                    &harness.app.dialog,
+                    Some(crate::model::Dialog::ConfirmWrite(prompt)) if prompt.typed.is_empty()
+                ),
+                workspace.active_tab,
+                workspace.tabs.len(),
+                workspace.pane,
+                selected(harness, tab, id),
+                edits.cells.len(),
+                edits.editor.is_some(),
+                edits.reviewing,
+                writes(harness),
+                harness.copied.clone(),
+            )
+        };
+        harness.copied = None;
+        let before = state(&harness);
+        assert!(before.0 && before.7);
+        // Wherever the other table is named: its tab in the strip, and
+        // its row in the tree.
+        let named = painted_at(&harness, "orders");
+        assert!(named.len() >= 2, "{named:?}");
+        // A cell that is not under the box, and the panel's two buttons,
+        // which are not drawn.
+        let cell = [
+            "user1@example.com",
+            "user3@example.com",
+            "user5@example.com",
+        ]
+        .iter()
+        .filter_map(|text| harness.painted_rect(text))
+        .map(|rect| rect.center())
+        .find(|at| !outer.expand(4.0).contains(*at))
+        .expect("a cell beside the box");
+        let button = |name: &str| {
+            crate::testing::bounds(&tree, name, egui::accesskit::Role::Button)
+                .unwrap_or_else(|| panic!("no button {name}"))
+                .center()
+        };
+        let mut targets: Vec<egui::Pos2> = named.iter().map(|rect| rect.center()).collect();
+        targets.extend([cell, button("Hide SQL"), button("Copy SQL")]);
+        for at in targets {
+            assert!(!outer.contains(at), "{at:?} is under the box");
+            click_at(&mut harness, at);
+            assert_eq!(state(&harness), before, "a click at {at:?}");
+        }
+        // Twice on the cell, as opens an editor: none opens.
+        click_at(&mut harness, cell);
+        click_at(&mut harness, cell);
+        assert_eq!(state(&harness), before);
+        assert!(edits(&harness, tab, id).editor.is_none());
+        // And Esc still cancels it, with nothing sent.
+        harness.press(Key::Escape, Modifiers::NONE);
+        assert!(harness.app.dialog.is_none());
+        assert_eq!(writes(&harness), 0);
+        assert_eq!(edits(&harness, tab, id).cells.len(), 1);
+    }
+
     #[test]
     fn the_panel_the_box_opened_stays_after_cancel_and_closes_with_esc() {
         let (mut harness, tab, id, lines) = confirming(Look::omarchy());

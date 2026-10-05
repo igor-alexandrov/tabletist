@@ -324,14 +324,74 @@ fn value(literal: &str, values: Values) -> Piece {
     Piece { ink, text }
 }
 
+/// What joins two strings in SQLite's text around a NUL, as the builder
+/// writes it.
+const JOINED: &str = " || char(0) || ";
+
+/// SQLite's text around a NUL (`('a' || char(0) || 'b')`), which is longer
+/// than is shown, cut so that it still reads as one value: in a string, to
+/// `…')`, the string closed and then the bracket; between two strings, to
+/// `…)`, and never inside what joins them, where half a `char(0)` would
+/// read as nothing at all. `None` for a literal that is not of that form.
+/// The form is the builder's own, and is walked as it writes it: a string
+/// in quotes, a quote inside it written twice.
+fn shortened_joined(literal: &str) -> Option<String> {
+    let strings = literal.strip_prefix('(')?.strip_suffix(')')?;
+    if !strings.starts_with('\'') {
+        return None;
+    }
+    // What the longer of the two endings leaves.
+    let (kept, _) = head(literal, VALUE_MAX_CHARS - 1 - "')".len());
+    let cut = kept.len();
+    // Each string in turn: where its text begins, after its quote, and
+    // where the string ends, after the quote that closes it.
+    let mut begins = "('".len();
+    loop {
+        let mut ends = begins;
+        loop {
+            let rest = literal.get(ends..)?;
+            if rest.starts_with("''") {
+                ends += 2;
+            } else if rest.starts_with('\'') {
+                ends += 1;
+                break;
+            } else {
+                ends += rest.chars().next()?.len_utf8();
+            }
+        }
+        if cut < ends {
+            // In the string. A quote in it is written twice: half of one
+            // before the `…` would close the string there.
+            let text = literal.get(begins..cut)?;
+            let quotes = text.chars().rev().take_while(|&last| last == '\'').count();
+            let kept = literal.get(..cut - quotes % 2)?;
+            return Some(format!("{}…')", format::escape_hidden(kept)));
+        }
+        let joined = ends + JOINED.len();
+        if cut <= joined || !literal.get(ends..)?.starts_with(JOINED) {
+            // After the string: all of what joins it to the next, or
+            // none of it.
+            let kept = literal.get(..if cut == joined { joined } else { ends })?;
+            return Some(format!("{}…)", format::escape_hidden(kept)));
+        }
+        begins = joined + 1;
+        if !literal.get(joined..)?.starts_with('\'') {
+            return None;
+        }
+    }
+}
+
 /// A literal as it is shown, its hidden characters written out: one that
 /// would take more than `VALUE_MAX_CHARS` characters keeps its beginning,
-/// then `…`, then what closes it (`'`, or `')` for SQLite's text around a
-/// NUL), so it still reads as one value.
+/// then `…`, then what closes it (`'`, or the bracket of SQLite's text
+/// around a NUL, see [`shortened_joined`]), so it still reads as one value.
 fn shortened(literal: &str) -> String {
     let (kept, whole) = head(literal, VALUE_MAX_CHARS);
     if whole {
         return format::escape_hidden(kept).into_owned();
+    }
+    if let Some(shown) = shortened_joined(literal) {
+        return shown;
     }
     let open = ["E'", "x'", "('", "'"]
         .into_iter()
@@ -618,6 +678,102 @@ mod tests {
         assert_eq!(loaded(&fits), format!("'{}'", "o".repeat(60)));
         let breaks = Value::Text("\n".repeat(58).into());
         assert_eq!(loaded(&breaks), format!("'{}…'", "<U+000A>".repeat(7)));
+    }
+
+    #[test]
+    fn sqlite_text_around_a_nul_is_cut_where_it_still_balances() {
+        let count = |text: &str| text.chars().count();
+        // Whether what is shown reads as one value: every string closed,
+        // and the bracket with them.
+        let balanced = |shown: &str| {
+            let (mut inside, mut depth) = (false, 0);
+            for character in shown.chars() {
+                match character {
+                    '\'' => inside = !inside,
+                    '(' if !inside => depth += 1,
+                    ')' if !inside => depth -= 1,
+                    _ => {}
+                }
+            }
+            !inside && depth == 0
+        };
+        let long = "y".repeat(100);
+        let around = |first: &str| format!("('{first}' || char(0) || '{long}')");
+        let cut = |first: &str| shortened(&around(first));
+        let x = |times: usize| "x".repeat(times);
+        // In the first string: closed by its quote, then the bracket.
+        assert_eq!(cut(&x(55)), format!("('{}…')", x(55)));
+        // Anywhere in what joins the two, the cut goes back to the end of
+        // the string before it: half a `char(0)` reads as nothing.
+        for kept in 40..54 {
+            assert_eq!(cut(&x(kept)), format!("('{}'…)", x(kept)), "{kept}");
+        }
+        // Where the first string ends, the string is closed already.
+        assert_eq!(cut(&x(54)), format!("('{}'…)", x(54)));
+        // After the whole of it, it stays.
+        assert_eq!(cut(&x(39)), format!("('{}' || char(0) || …)", x(39)));
+        // In the second string: from its own quote on, and that quote is
+        // no half of a pair.
+        assert_eq!(cut(&x(38)), format!("('{}' || char(0) || '…')", x(38)));
+        assert_eq!(cut(&x(37)), format!("('{}' || char(0) || 'y…')", x(37)));
+        // A quote in a string is written twice, and is kept or dropped
+        // whole.
+        let quoted = format!("('{}' || char(0) || '''{long}')", x(37));
+        assert_eq!(
+            shortened(&quoted),
+            format!("('{}' || char(0) || '…')", x(37))
+        );
+        let quoted = format!("('{}' || char(0) || '''{long}')", x(36));
+        assert_eq!(
+            shortened(&quoted),
+            format!("('{}' || char(0) || '''…')", x(36))
+        );
+        // What joins two strings is no such thing inside one: there it is
+        // the value's own text, quotes doubled, and is cut as text.
+        let inside = format!("{}' || char(0) || '", x(45));
+        let literal = Dialect::Sqlite
+            .update_row(
+                &users(),
+                &RowChange {
+                    key: vec![("id".into(), Value::Int(1))],
+                    set: vec![CellChange {
+                        column: "t".into(),
+                        type_name: "TEXT".into(),
+                        loaded: Value::Null,
+                        new: NewValue::Text(format!("{inside}\0{long}")),
+                    }],
+                },
+            )
+            .unwrap();
+        let shown = &literal.shown[literal.parts.values[0].clone()];
+        assert_eq!(shortened(shown), format!("('{}'' || char…')", x(45)));
+        // Wherever the cut lands, what is shown is one value of sixty
+        // characters at most, and its end says there is more.
+        for first in 0..70 {
+            for literal in [
+                around(&x(first)),
+                around(&format!("{}''", x(first))),
+                format!("('{}' || char(0) || '' || char(0) || '{long}')", x(first)),
+                format!(
+                    "('{}' || char(0) || '<\n>' || char(0) || '{long}')",
+                    x(first)
+                ),
+            ] {
+                let shown = shortened(&literal);
+                assert!(balanced(&shown), "{first}: {shown}");
+                assert!(count(&shown) <= VALUE_MAX_CHARS, "{first}: {shown}");
+                assert!(
+                    shown.ends_with("…')") || shown.ends_with("…)"),
+                    "{first}: {shown}"
+                );
+                assert!(!shown.contains('\n'), "{first}: {shown}");
+            }
+        }
+        // The other forms are cut as they were.
+        assert_eq!(
+            shortened(&format!("'{long}'")),
+            format!("'{}…'", "y".repeat(57))
+        );
     }
 
     #[test]

@@ -2249,6 +2249,9 @@ impl App {
                     let columns = columns.map(|structure| structure.columns.clone());
                     let named = object.object.clone();
                     object.structure.finish(request, result);
+                    // The review was made of the structure before this
+                    // one, its key and its types: it is made again.
+                    object.edits.review = None;
                     if let Some(columns) = columns {
                         let kept = workspace.columns.entry(named).or_default();
                         // One being fetched gets its own answer.
@@ -11300,6 +11303,46 @@ mod tests {
             let edits = &object(&harness, tab, id).edits;
             assert!(!edits.reviewing && edits.review.is_none());
             assert_eq!(reviewed(&mut harness, tab, id), None);
+        }
+
+        #[test]
+        fn a_structure_that_arrives_makes_the_review_again() {
+            let mut harness = Harness::new();
+            let (tab, id) = harness.editable();
+            type_into(&mut harness, tab, id, at(1, 1), "bob@example.com");
+            show_review(&mut harness, tab, id, true);
+            assert_eq!(reviewed(&mut harness, tab, id).unwrap().len(), 3);
+            // Nothing describes a table under pending cells: the guard
+            // holds what would. Were a structure to arrive all the same,
+            // the review is of the one before it: it is forced here, and
+            // comes without the key the statements find their rows by.
+            harness.app.describe(tab, id);
+            let Some(Command::Describe {
+                session, request, ..
+            }) = harness.app.backend.sent.last()
+            else {
+                panic!("a describe was sent");
+            };
+            let keyless = tabletist_db::Structure {
+                primary_key: Vec::new(),
+                ..crate::testing::fixture_structure()
+            };
+            harness.app.actions.push(Action::Backend(Event::Structure {
+                session: *session,
+                request: *request,
+                result: Ok(keyless),
+            }));
+            // In the round of actions that brought it, as a frame runs
+            // them: no frame draws statements the structure no longer
+            // makes.
+            harness.app.apply_actions();
+            let edits = &object(&harness, tab, id).edits;
+            assert!(edits.reviewing);
+            assert_eq!(
+                edits.review.as_ref().map(|review| review.lines.as_slice()),
+                Some([crate::review::Line::Unsendable].as_slice())
+            );
+            assert_eq!(edits.cells.len(), 1);
         }
 
         #[test]

@@ -6,13 +6,13 @@
 
 use std::hash::{Hash, Hasher};
 
-use egui::{Color32, Frame, Id, Key, Modifiers, Rect, Sense, WidgetInfo, WidgetType, pos2, vec2};
+use egui::{Color32, Frame, Id, Rect, Sense, WidgetInfo, WidgetType, pos2, vec2};
 use tabletist_db::Access;
 use tabletist_db::sql::TokenKind;
 
 use crate::app::App;
 use crate::i18n::{Locale, gettext};
-use crate::model::{Action, ConnTabId, Dialog, TabId};
+use crate::model::{Action, ConnTabId, TabId};
 use crate::review::{Ink, Line, Review};
 use crate::theme::{Look, Palette};
 use crate::typography::{Text, TextRole};
@@ -223,9 +223,9 @@ pub fn text(review: &Review, locale: Locale) -> String {
 /// The Review SQL of the table tab `id`, while it is open: a bottom panel.
 /// Called after the pending bar it stands on it; in the terminal look it
 /// stands on the status line, under the grid's error line. Under the
-/// confirmation of this tab's save to production, which points at it there,
-/// Page Up and Page Down scroll it: the pointer cannot reach it under a
-/// dialog.
+/// confirmation of this tab's save to production, where that points at it,
+/// Page Up and Page Down scroll it (see [`turn`]): the pointer cannot reach
+/// it under a dialog.
 pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, id: TabId) {
     let (locale, palette, look) = (app.locale, app.palette, app.look);
     let workspace = app.workspace(tab);
@@ -249,21 +249,11 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, id: TabId) {
     let typing = edits
         .and_then(|edits| edits.editor.as_ref())
         .is_some_and(|editor| editor.touched);
-    // Only under that confirmation: with no dialog up the two keys are the
-    // grid's, and under any other they are not this panel's. Read before
-    // the lines are drawn, and before the dialog's field sees them.
-    let confirming = matches!(
-        &app.dialog,
-        Some(Dialog::ConfirmWrite(prompt)) if (prompt.tab, prompt.id) == (tab, id)
-    );
-    let pages = if confirming {
-        ui.ctx().input_mut(|input| {
-            let mut pressed = |key: Key| input.count_and_consume_key(Modifiers::NONE, key) as f32;
-            pressed(Key::PageDown) - pressed(Key::PageUp)
-        })
-    } else {
-        0.0
-    };
+    // Only what the confirmation that points at this panel asked for: with
+    // no dialog up Page Up and Page Down are the grid's, and under any
+    // other dialog, or one that lists its statements itself, they are not
+    // this panel's.
+    let pages = turned(ui.ctx(), tab, id);
     let skin = Skin {
         look: &look,
         palette: &palette,
@@ -529,6 +519,55 @@ pub struct Placed {
     /// How wide they stand: what is past it of a longer line is not seen
     /// until the lines are moved sideways.
     pub width: f32,
+}
+
+/// Pages a panel was asked to turn, and the number of the frame it was
+/// asked in.
+#[derive(Clone, Copy)]
+struct Turn {
+    tab: ConnTabId,
+    id: TabId,
+    pages: f32,
+    when: u64,
+}
+
+/// Where a turn of the panel's pages is kept until the panel is drawn.
+fn turned_id() -> Id {
+    Id::new("review-sql-turned")
+}
+
+/// Asks the panel of the tab `id` to move its lines by `pages` of what it
+/// shows, down for more than none. What points at the panel asks: under a
+/// dialog neither the pointer nor the wheel reaches it. The panel is
+/// drawn before the dialogs, so it moves in the frame after this one.
+pub fn turn(ctx: &egui::Context, tab: ConnTabId, id: TabId, pages: f32) {
+    if pages == 0.0 {
+        return;
+    }
+    let when = ctx.cumulative_frame_nr();
+    let turn = Turn {
+        tab,
+        id,
+        pages,
+        when,
+    };
+    ctx.data_mut(|data| data.insert_temp(turned_id(), turn));
+    ctx.request_repaint();
+}
+
+/// The pages the panel of the tab `id` was asked to turn in the frame
+/// before this one, taken: they are turned once. Nothing for a turn asked
+/// of another panel, or one this panel was not drawn in time for.
+fn turned(ctx: &egui::Context, tab: ConnTabId, id: TabId) -> f32 {
+    let asked: Option<Turn> = ctx.data_mut(|data| {
+        let asked = data.get_temp(turned_id());
+        data.remove::<Turn>(turned_id());
+        asked
+    });
+    let now = ctx.cumulative_frame_nr();
+    asked
+        .filter(|turn| (turn.tab, turn.id) == (tab, id) && turn.when + 1 == now)
+        .map_or(0.0, |turn| turn.pages)
 }
 
 /// Where the last panel drawn is kept, with the number of its frame.

@@ -413,6 +413,16 @@ fn leave_box(
     modal.is_top_modal
 }
 
+/// The keys a confirmation was given in a frame, taken before it is drawn.
+#[derive(Clone, Copy)]
+struct Asked {
+    /// Enter was pressed.
+    enter: bool,
+    /// Page Down less Page Up, as often as each was pressed: how far the
+    /// list of statements moves, in pages of what it shows.
+    pages: f32,
+}
+
 /// What the confirmation says its save is of.
 struct Facts {
     /// The connection's name and where it points.
@@ -480,16 +490,31 @@ fn confirm_write(app: &mut App, ctx: &egui::Context) {
     // Taken before anything is drawn, as the other prompt takes it: the
     // button that sends is pressed, never reached by a stray Enter.
     let enter = ctx.input_mut(|input| consume_press(input, Modifiers::NONE, Key::Enter));
+    // Page Up and Page Down move the statements that are asked about,
+    // wherever they stand: the panel's where the box points at it, and
+    // the prompt's own list everywhere else. Never a list behind the
+    // prompt, which is not what is confirmed. Taken before the field sees
+    // them.
+    let mut pages = ctx.input_mut(|input| {
+        let mut pressed = |key: Key| input.count_and_consume_key(Modifiers::NONE, key) as f32;
+        pressed(Key::PageDown) - pressed(Key::PageUp)
+    });
+    if panel.is_some() {
+        review::turn(ctx, prompt.tab, prompt.id, pages);
+        pages = 0.0;
+    }
     let mut actions = Vec::new();
     let Some(Dialog::ConfirmWrite(prompt)) = &mut app.dialog else {
         return;
     };
     let mut copy = false;
     let top = if look.terminal {
-        confirm_box(ctx, prompt, panel, &facts, skin, enter, &mut actions)
+        let asked = Asked { enter, pages };
+        confirm_box(ctx, prompt, panel, &facts, skin, asked, &mut actions)
     } else {
         let lines = &prompt.review.lines;
-        let sheet = confirm_sheet(ctx, lines, &facts, skin, enter, &mut actions);
+        let asked = Asked { enter, pages };
+        let sheet = confirm_sheet(ctx, lines, &facts, skin, asked, &mut actions);
         copy = sheet.copy;
         sheet.top
     };
@@ -515,7 +540,9 @@ fn confirm_write(app: &mut App, ctx: &egui::Context) {
 /// cut, and a copy of it would be pasted as it is. `rest` is what the
 /// prompt takes of the window besides them: in a low window they stand
 /// lower, so the question and its answers stay on screen with them.
-fn statements(ui: &mut egui::Ui, lines: &[Line], rest: f32, skin: Skin<'_>) {
+/// `pages` moves them, by as many pages of the rows in view: Page Down and
+/// Page Up, for a hand that is on the keyboard.
+fn statements(ui: &mut egui::Ui, lines: &[Line], rest: f32, pages: f32, skin: Skin<'_>) {
     let Skin {
         look,
         palette,
@@ -544,6 +571,13 @@ fn statements(ui: &mut egui::Ui, lines: &[Line], rest: f32, skin: Skin<'_>) {
                 .auto_shrink([false, true])
                 .min_scrolled_height(0.0)
                 .show_rows(ui, row, lines.len(), |ui, range| {
+                    // A page is the whole rows in view, so no line is
+                    // passed over unseen. The lines move up for Page Down.
+                    if pages != 0.0 {
+                        let shown = most.min(lines.len() as f32 * row);
+                        let page = (shown / row).floor().max(1.0) * row;
+                        ui.scroll_with_delta(vec2(0.0, -pages * page));
+                    }
                     review::rows(ui, lines, range, look, palette, locale);
                 });
         });
@@ -559,17 +593,18 @@ struct Sheet {
 
 /// macOS and Windows: a band of the production red along the top, what is
 /// saved and where, the statements, and a foot with what the save is, Copy
-/// SQL, Cancel and the button that sends. `enter` says Enter was pressed:
-/// it cancels with the keyboard on Cancel, copies with it on Copy SQL, and
-/// never confirms.
+/// SQL, Cancel and the button that sends. Of the keys `asked`, Enter
+/// cancels with the keyboard on Cancel, copies with it on Copy SQL, and
+/// never confirms; Page Up and Page Down move the statements.
 fn confirm_sheet(
     ctx: &egui::Context,
     lines: &[Line],
     facts: &Facts,
     skin: Skin<'_>,
-    enter: bool,
+    asked: Asked,
     actions: &mut Vec<Action>,
 ) -> Sheet {
+    let Asked { enter, pages } = asked;
     let Skin {
         look,
         palette,
@@ -613,7 +648,7 @@ fn confirm_sheet(
                         .layout(ui.ctx())
                         .label(ui);
                     ui.add_space(12.0);
-                    statements(ui, lines, SHEET_REST, skin);
+                    statements(ui, lines, SHEET_REST, pages, skin);
                     ui.add_space(14.0);
                     let (cancel, save, copy_sql) = (
                         gettext(locale, "Cancel"),
@@ -727,18 +762,21 @@ fn one_row(ui: &mut egui::Ui, role: TextRole, text: &str, color: Color32, look: 
 /// own tab is on screen with room above it and shows its lines (`panel`,
 /// see [`pointed_at`]), the box stands in that room, says the panel shows
 /// the statements, and draws no backdrop over them; everywhere else it
-/// lists them itself. `enter` says Enter was pressed: it confirms once the
-/// field holds the word, and cancels with the keyboard on Cancel. Returns
-/// whether the prompt is the dialog on top.
+/// lists them itself. Of the keys `asked`, Enter confirms once the field
+/// holds the word, and cancels with the keyboard on Cancel; Page Up and
+/// Page Down move the statements the box lists (the panel's are moved by
+/// whoever read the keys). Returns whether the prompt is the dialog on
+/// top.
 fn confirm_box(
     ctx: &egui::Context,
     prompt: &mut crate::model::WritePrompt,
     panel: Option<Rect>,
     facts: &Facts,
     skin: Skin<'_>,
-    enter: bool,
+    asked: Asked,
     actions: &mut Vec<Action>,
 ) -> bool {
+    let Asked { enter, pages } = asked;
     let Skin {
         look,
         palette,
@@ -820,7 +858,7 @@ fn confirm_box(
                     // The box that lists is the box that points with
                     // the statements in place of one line: what that one
                     // needs of the window is what these may not have.
-                    statements(ui, &prompt.review.lines, POINTING_ROOM, skin);
+                    statements(ui, &prompt.review.lines, POINTING_ROOM, pages, skin);
                 }
                 ui.add_space(12.0);
                 let ask = widgets::label(ui, role, &ask, palette.dim, look);
