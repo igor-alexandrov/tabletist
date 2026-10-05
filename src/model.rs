@@ -837,17 +837,19 @@ impl ConnectionForm {
     /// off or does not check the server's certificate (PostgreSQL's
     /// `require` with a CA file does, like libpq).
     pub fn password_can_be_intercepted(&self) -> bool {
-        let checked_by_ca = self.driver == Driver::Postgres
-            && self.tls == TlsMode::Require
-            && !self.ca_file.trim().is_empty();
-        self.driver != Driver::Sqlite
-            && !self.ssh
-            && matches!(
-                self.tls,
-                TlsMode::Disable | TlsMode::Prefer | TlsMode::Require
-            )
-            && !checked_by_ca
-            && !is_local_host(&self.host)
+        let unchecked = match self.driver {
+            Driver::Sqlite => false,
+            Driver::Postgres => match self.tls {
+                TlsMode::Disable | TlsMode::Prefer => true,
+                TlsMode::Require => self.ca_file.trim().is_empty(),
+                TlsMode::VerifyCa | TlsMode::VerifyFull => false,
+            },
+            Driver::MySql => match self.tls {
+                TlsMode::Disable | TlsMode::Prefer | TlsMode::Require => true,
+                TlsMode::VerifyCa | TlsMode::VerifyFull => false,
+            },
+        };
+        unchecked && !self.ssh && !is_local_host(&self.host)
     }
 
     /// The environment the connection is saved with: the chosen one, else
@@ -1085,17 +1087,18 @@ impl ConnectionForm {
             return Err("Give the connection a name.".into());
         }
         let spec = self.to_spec()?;
-        let password = if spec.driver == Driver::Sqlite {
-            PasswordMode::None
-        } else if self.password_mode == PasswordMode::Keyring
-            && self.password.is_empty()
-            && !self.has_saved_password
-        {
+        let password = match spec.driver {
+            Driver::Sqlite => PasswordMode::None,
             // Nothing typed and nothing saved: a server that needs no
             // password (trust or peer authentication).
-            PasswordMode::None
-        } else {
-            self.password_mode
+            Driver::Postgres | Driver::MySql
+                if self.password_mode == PasswordMode::Keyring
+                    && self.password.is_empty()
+                    && !self.has_saved_password =>
+            {
+                PasswordMode::None
+            }
+            Driver::Postgres | Driver::MySql => self.password_mode,
         };
         let ssh_secret = match (&spec.ssh, self.ssh_auth) {
             (None, _) | (Some(_), SshAuthKind::Agent) => PasswordMode::None,

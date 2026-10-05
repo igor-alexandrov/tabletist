@@ -161,11 +161,13 @@ impl Table<'_> {
         if key.iter().any(|col| held(col).is_none_or(Value::is_null)) {
             return Some(Lock::KeyIsNull);
         }
-        if self.dialect == Dialect::Sqlite
-            && key.iter().any(
+        let inexact = match self.dialect {
+            Dialect::Sqlite => key.iter().any(
                 |col| matches!(held(col), Some(Value::Text(text)) if text.contains('\u{FFFD}')),
-            )
-        {
+            ),
+            Dialect::Postgres | Dialect::MySql => false,
+        };
+        if inexact {
             return Some(Lock::KeyInexact);
         }
         let Some(column) = self.column(cell.col) else {
@@ -215,8 +217,8 @@ impl Table<'_> {
     /// bound as bytes as a number, and misses a FLOAT bound as a double; the
     /// save refuses such a key (`tabletist-db`, `mysql/write.rs`).
     fn unmatched(&self, col: usize) -> bool {
-        self.dialect == Dialect::MySql
-            && self.column(col).is_some_and(|column| {
+        match self.dialect {
+            Dialect::MySql => self.column(col).is_some_and(|column| {
                 let word: String = column
                     .type_name
                     .chars()
@@ -224,7 +226,9 @@ impl Table<'_> {
                     .collect::<String>()
                     .to_ascii_lowercase();
                 matches!(word.as_str(), "timestamp" | "bit" | "float")
-            })
+            }),
+            Dialect::Postgres | Dialect::Sqlite => false,
+        }
     }
 }
 
@@ -300,7 +304,10 @@ pub fn check(dialect: Dialect, column: &ColumnInfo, text: &str) -> Option<Proble
             })
         }
         ColumnClass::Float => {
-            let word = dialect == Dialect::Postgres && float_word(typed);
+            let word = match dialect {
+                Dialect::Postgres => float_word(typed),
+                Dialect::MySql | Dialect::Sqlite => false,
+            };
             let number = typed.parse::<f64>().is_ok_and(f64::is_finite);
             (!word && !number).then_some(Problem::Number)
         }

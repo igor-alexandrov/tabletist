@@ -38,9 +38,6 @@ fn sources() -> Vec<(String, String)> {
 /// Files whose comparisons are still to become matches. Each task of the
 /// plan takes its own out; the last one removes the list.
 const PENDING: &[&str] = &[
-    "src/app.rs",
-    "src/edit.rs",
-    "src/model.rs",
     "src/ui/connect_dialog/sheet.rs",
     "src/ui/connect_dialog/terminal.rs",
     "src/ui/picker.rs",
