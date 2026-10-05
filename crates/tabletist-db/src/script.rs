@@ -218,6 +218,24 @@ pub(crate) fn cannot_start(mode: ScriptMode, error: &Error) -> Error {
     Error::ConnectionLost(format!("could not start {}: {error}", mode.transaction()))
 }
 
+/// What a `COMMIT` answered with a cancel means for a run that writes,
+/// from whether the session is still inside the run's transaction. Inside
+/// it, nothing was committed, and the rollback that follows undoes the
+/// run: `Ok`. Outside it, the database does not say which way the commit
+/// went, and neither does the run: its error, which closes the session. So
+/// does not knowing where the session stands.
+pub(crate) fn cancelled_commit(inside: Result<bool>) -> Result<()> {
+    match inside {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(Error::ConnectionLost(
+            "a cancel landed on the commit, and the database does not say whether it went through"
+                .into(),
+        )),
+        Err(error) if error.is_connection_lost() => Err(error),
+        Err(error) => Err(cleanup_failed(ScriptMode::Write, &error)),
+    }
+}
+
 /// Runs a cleanup step again once when a cancel meant for a statement
 /// landed on it instead: `retry_cancelled!(rollback(&client))` evaluates
 /// the expression (a future of `Result<T>`) a second time. A macro, not a
@@ -301,6 +319,31 @@ mod tests {
         assert!(!of(vec![done.clone(), StatementOutcome::Cancelled], true).succeeded());
         // Stopped after its last statement.
         assert!(!of(vec![done], true).succeeded());
+    }
+
+    #[test]
+    fn a_cancelled_commit_is_rolled_back_only_while_its_transaction_is_open() {
+        // Still inside: nothing was committed, and the rollback undoes it.
+        assert_eq!(cancelled_commit(Ok(true)), Ok(()));
+        // Outside: committed or not, the database does not say. The run
+        // must not say either, so it ends as an error that closes the
+        // session.
+        let unknown = cancelled_commit(Ok(false)).unwrap_err();
+        assert!(unknown.is_connection_lost());
+        assert_eq!(
+            unknown.to_string(),
+            "the connection was lost: a cancel landed on the commit, and the database does not \
+             say whether it went through"
+        );
+        // Not knowing where the session stands is no better.
+        let unasked = cancelled_commit(Err(Error::query("no"))).unwrap_err();
+        assert!(unasked.is_connection_lost());
+        assert_eq!(
+            unasked.to_string(),
+            "the connection was lost: could not end the transaction: no"
+        );
+        let lost = Error::ConnectionLost("reset".into());
+        assert_eq!(cancelled_commit(Err(lost.clone())), Err(lost));
     }
 
     #[test]

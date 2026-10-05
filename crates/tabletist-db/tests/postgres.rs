@@ -1829,6 +1829,77 @@ async fn every_row_is_written_whatever_the_limit_keeps() {
         .unwrap();
 }
 
+/// A deferred trigger runs inside the COMMIT, which makes the commit long
+/// enough for a cancel to land on it. The server then fails the commit and
+/// rolls the transaction back: the run was stopped, and nothing of it is
+/// written.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_cancel_that_lands_on_the_commit_rolls_the_run_back() {
+    let Some(connection) = connect_as(Access::Writable).await else {
+        return;
+    };
+    let connection = std::sync::Arc::new(connection);
+    let admin = admin().await;
+    scratch(&admin, "write_commit_cancelled").await;
+    admin
+        .batch_execute(
+            "CREATE OR REPLACE FUNCTION write_commit_cancelled_waits() RETURNS trigger
+                 LANGUAGE plpgsql AS $$ BEGIN PERFORM pg_sleep(30); RETURN NULL; END $$;
+             CREATE CONSTRAINT TRIGGER write_commit_cancelled_slow
+                 AFTER INSERT ON write_commit_cancelled
+                 DEFERRABLE INITIALLY DEFERRED
+                 FOR EACH ROW EXECUTE FUNCTION write_commit_cancelled_waits()",
+        )
+        .await
+        .unwrap();
+    let cancel = connection.cancel_handle();
+    let running = {
+        let connection = std::sync::Arc::clone(&connection);
+        tokio::spawn(async move {
+            let text = "INSERT INTO write_commit_cancelled VALUES (1)";
+            connection
+                .run_script(&script(text), 10, ScriptMode::Write, &StopFlag::new())
+                .await
+        })
+    };
+    // No other test sleeps inside a COMMIT.
+    within(async {
+        loop {
+            let committing = counted(
+                &admin,
+                "SELECT count(*) FROM pg_stat_activity \
+                 WHERE state = 'active' AND query = 'COMMIT' AND wait_event = 'PgSleep'",
+            )
+            .await;
+            if committing > 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    // No stop: the run had chosen to commit. This is the cancel that was
+    // already on its way.
+    cancel.cancel().await.unwrap();
+    let outcome = within(running).await.unwrap().unwrap();
+    assert!(outcome.stopped);
+    assert_eq!(outcome.end, ScriptEnd::RolledBack);
+    assert_eq!(outcome.broken, None);
+    assert_eq!(affected(&outcome), [Some(1)]);
+    assert_eq!(
+        counted(&admin, "SELECT count(*) FROM write_commit_cancelled").await,
+        0
+    );
+    // The session survives, and is fenced.
+    assert!(is_fenced(&connection, "write_commit_cancelled").await);
+    admin
+        .batch_execute(
+            "DROP TABLE write_commit_cancelled; DROP FUNCTION write_commit_cancelled_waits()",
+        )
+        .await
+        .unwrap();
+}
+
 #[tokio::test]
 async fn a_commit_that_fails_writes_nothing_and_the_next_run_can_begin() {
     let Some(connection) = connect_as(Access::Writable).await else {

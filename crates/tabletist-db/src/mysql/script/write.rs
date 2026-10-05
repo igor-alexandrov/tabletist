@@ -9,7 +9,7 @@ use mysql_async::prelude::Queryable;
 
 use super::super::{execute, prepare_session, query_error, status};
 use super::{reset, run_statement};
-use crate::script::{cannot_start, cleanup_failed, retry_cancelled};
+use crate::script::{cancelled_commit, cannot_start, cleanup_failed, retry_cancelled};
 use crate::{
     Access, Dialect, Error, Result, ScriptEnd, ScriptMode, ScriptOutcome, StatementOutcome,
     StatementResult, StopFlag,
@@ -252,17 +252,9 @@ async fn close(
             // inside the transaction, nothing was committed, and the
             // rollback below undoes it. Outside one, the server does not
             // say which way the commit went.
-            Err(Error::Cancelled) => match retry_cancelled!(inside(conn)) {
-                Ok(true) => outcome.stopped = true,
-                Ok(false) => {
-                    run.broken = Some(Error::ConnectionLost(
-                        "a cancel landed on the commit, and the server does not say whether it \
-                         went through"
-                            .into(),
-                    ));
-                }
-                Err(error) if error.is_connection_lost() => return Err(error),
-                Err(error) => run.broken = Some(cleanup_failed(ScriptMode::Write, &error)),
+            Err(Error::Cancelled) => match cancelled_commit(retry_cancelled!(inside(conn))) {
+                Ok(()) => outcome.stopped = true,
+                Err(error) => run.broken = Some(error),
             },
             // Whether it went through cannot be known.
             Err(error) if error.is_connection_lost() => return Err(error),

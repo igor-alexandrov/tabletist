@@ -183,9 +183,9 @@ same answer. No run is read-write without having passed them.
 `StatementOutcome::Done` gains `warnings: u16`, which only MySQL fills.
 
 `ScriptMode::Write` on a `ReadOnly` connection returns `Error::ReadOnly`
-without contacting the server (the variant comes with
-`Connection::write`; this slice adds it if it lands first). An empty list
-of statements is `Ok` with no results, as today.
+without contacting the server, whatever the script holds, an empty one
+included (the variant comes with `Connection::write`). On any other call
+an empty list of statements is `Ok` with no results, as today.
 
 ### What holds in both modes
 

@@ -12,7 +12,7 @@ use rusqlite::config::DbConfig;
 use rusqlite::types::{FromSql, FromSqlError, FromSqlResult, ValueRef};
 use rusqlite::{ErrorCode, OpenFlags};
 
-use crate::script::cleanup_failed;
+use crate::script::{cancelled_commit, cleanup_failed};
 use crate::{
     Access, ChangeSet, ColumnInfo, ColumnMeta, Dialect, Error, ForeignKeyInfo, IndexInfo,
     MAX_LISTED, ObjectInfo, ObjectKind, ObjectRef, Result, RowPage, RowQuery, ScriptEnd,
@@ -196,14 +196,13 @@ fn end_write(
     } else if succeeded {
         match connection.execute_batch("COMMIT").map_err(map_error) {
             Ok(()) => outcome.end = ScriptEnd::Committed,
-            // An interrupt that was on its way landed on the commit, which
-            // SQLite then leaves open for the rollback below.
-            Err(Error::Cancelled) if !connection.is_autocommit() => outcome.stopped = true,
-            // Interrupted, and the transaction is gone: which way it went
-            // is not known.
-            Err(Error::Cancelled) => {
-                failed = Some(cleanup_failed(ScriptMode::Write, &Error::Cancelled));
-            }
+            // An interrupt that was on its way landed on the commit.
+            // SQLite then leaves the transaction open for the rollback
+            // below; one that is gone went a way that is not known.
+            Err(Error::Cancelled) => match cancelled_commit(Ok(!connection.is_autocommit())) {
+                Ok(()) => outcome.stopped = true,
+                Err(error) => failed = Some(error),
+            },
             // SQLite keeps the transaction open when a COMMIT fails (a
             // deferred foreign key, a reader holding the file): the
             // rollback below is what makes "nothing is written" true.
