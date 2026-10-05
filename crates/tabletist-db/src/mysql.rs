@@ -39,7 +39,7 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 mod script;
 mod write;
 
-pub struct Conn {
+pub(crate) struct Conn {
     pub(crate) conn: tokio::sync::Mutex<mysql_async::Conn>,
     /// For KILL QUERY from a second connection.
     pub(crate) opts: Opts,

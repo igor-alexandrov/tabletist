@@ -35,7 +35,7 @@ mod write;
 /// either goes with its rollback.
 const PRINTS_EXACTLY: &str = "SET extra_float_digits = 3; SET DateStyle = 'ISO'";
 
-pub struct Conn {
+pub(crate) struct Conn {
     pub(crate) client: tokio::sync::Mutex<tokio_postgres::Client>,
     pub(crate) cancel: tokio_postgres::CancelToken,
     pub(crate) tls: MakeRustlsConnect,

@@ -27,7 +27,7 @@ mod write;
 use fence::{Fence, Fences, authorize};
 
 /// An open SQLite database.
-pub struct Conn {
+pub(crate) struct Conn {
     inner: Arc<Mutex<rusqlite::Connection>>,
     interrupt: Arc<rusqlite::InterruptHandle>,
     fences: Fences,
