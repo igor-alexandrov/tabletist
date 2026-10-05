@@ -166,6 +166,19 @@ pub(crate) fn connect_error(error: tokio_postgres::Error) -> Error {
     Error::Connect(text)
 }
 
+/// The settings a session has from the start. A writable session keeps
+/// the server's default: row fetches, counts and a script that only reads
+/// open read-only transactions of their own, and none of the script
+/// guard's checks read the session's default. A script that writes sends
+/// these again after its run, which resets every setting.
+fn session_setup(access: Access) -> String {
+    let read_only = match access {
+        Access::ReadOnly => "SET default_transaction_read_only = on; ",
+        Access::Writable => "",
+    };
+    format!("{read_only}SET standard_conforming_strings = on; {PRINTS_EXACTLY}")
+}
+
 pub(crate) fn query_error(error: tokio_postgres::Error) -> Error {
     if error.is_closed() {
         return Error::ConnectionLost(describe(&error));
@@ -280,16 +293,10 @@ impl Conn {
                 log::info!("PostgreSQL connection ended: {error}");
             }
         });
-        // A writable session keeps the server's default. Row fetches,
-        // counts and the script runner open read-only transactions of
-        // their own, and none of the script guard's checks read the
-        // session's default.
-        let read_only = match access {
-            Access::ReadOnly => "SET default_transaction_read_only = on; ",
-            Access::Writable => "",
-        };
-        let setup = format!("{read_only}SET standard_conforming_strings = on; {PRINTS_EXACTLY}");
-        client.batch_execute(&setup).await.map_err(query_error)?;
+        client
+            .batch_execute(&session_setup(access))
+            .await
+            .map_err(query_error)?;
         let cancel = client.cancel_token();
         Ok(Self {
             client: tokio::sync::Mutex::new(client),
