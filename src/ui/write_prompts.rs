@@ -562,6 +562,7 @@ fn confirm_write(app: &mut App, ctx: &egui::Context) {
         // one in front, nor, were it to change, the one that was read.
         let whole = crate::review::of(dialect, &prompt.changeset, &[], Values::Whole);
         ctx.copy_text(review::text(&whole, locale));
+        crate::ui::toast::say(ctx, &gettext(locale, review::COPIED_SQL));
     }
     if ripe && !early {
         app.actions.extend(actions);

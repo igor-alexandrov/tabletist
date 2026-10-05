@@ -1311,6 +1311,12 @@ fn letters(app: &mut App, ctx: &egui::Context, actions: &mut Vec<Action>) {
         };
         if let Some(text) = text {
             ctx.copy_text(text);
+            // The cell's `y` shows in the grid; the review's `Y` shows
+            // nowhere, so the status line says it.
+            if sql.is_some() {
+                let said = crate::i18n::gettext(app.locale, crate::ui::review::COPIED_SQL);
+                crate::ui::toast::say(ctx, &said);
+            }
         }
     }
     if pressed(Key::G) {

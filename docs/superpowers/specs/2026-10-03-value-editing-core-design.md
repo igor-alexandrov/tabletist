@@ -866,6 +866,13 @@ confirmation.
   named by its place in the review, so a selection stays on its line while
   the lines scroll; one whose ends scroll out of view is dropped. The lines
   take no Tab stop.
+- **Copy SQL says that it copied.** On macOS and Windows a toast, "Copied
+  SQL", floats over the bottom of the window, centred, for four seconds:
+  the window's colour on the text colour, over a dialog too. Omarchy's
+  status line says `copied sql` for as long, where it has nothing of a
+  lock or of a save to say. A second copy starts the four seconds again.
+  The toast is the frame's own (`src/ui/toast.rs`): it takes neither the
+  pointer nor the keyboard, and nothing of the app's state knows of it.
 - **The review is the tab's, and goes with the set.** Each table tab has
   its own (`Edits::reviewing`, `Edits::review`). It stays open while
   another tab shows, through a save that runs, fails or conflicts, and

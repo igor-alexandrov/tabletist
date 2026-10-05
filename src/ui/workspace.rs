@@ -1883,7 +1883,17 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
             })
         })
         .unwrap_or_default();
-    let editing = editing_status(app, tab);
+    let mut editing = editing_status(app, tab);
+    // What was just done (a copy of the review's SQL), where the line has
+    // nothing of a lock or of a save to say: this look floats no toast.
+    if editing.said.is_none() {
+        editing.said = super::toast::said(ui.ctx()).map(|text| Said {
+            mark: None,
+            text: look.label(&text),
+            tail: None,
+            color: palette.text,
+        });
+    }
     egui::Panel::bottom(egui::Id::new(("status-line", tab.0)))
         .exact_size(31.0)
         .resizable(false)

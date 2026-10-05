@@ -19,6 +19,7 @@ use crate::typography::{Text, TextRole};
 use crate::ui::pending_bar::counted;
 use crate::ui::sql_text;
 use crate::ui::states::Tone;
+use crate::ui::toast;
 use crate::ui::widgets::{self, ButtonSpec};
 
 /// The most lines a place shows before it scrolls.
@@ -43,6 +44,9 @@ const FOOT: f32 = 28.0;
 /// The room between two things on the terminal look's head or foot, as
 /// its status line keeps it.
 const GAP: f32 = 18.0;
+
+/// What the app says once a review is on the clipboard.
+pub const COPIED_SQL: &str = "Copied SQL";
 
 /// What a copied review opens with, after the comment's dashes: pasted
 /// elsewhere, nothing checks a row and nothing wraps a transaction.
@@ -347,6 +351,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, id: TabId) {
         && let Some(text) = copy_text(app, tab, id)
     {
         ui.ctx().copy_text(text);
+        toast::say(ui.ctx(), &gettext(locale, COPIED_SQL));
     }
     let placed = Placed {
         tab,
