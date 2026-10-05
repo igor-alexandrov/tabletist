@@ -1,6 +1,8 @@
-//! Running a SQL editor script on PostgreSQL: one read-only transaction
-//! managed by hand, the guard's savepoint around every statement, and the
-//! close that asks the server where the session stands.
+//! Running a SQL editor script on PostgreSQL: one transaction managed by
+//! hand, the guard's savepoint around every statement, and the close that
+//! asks the server where the session stands. This file is the run that
+//! only reads, in a read-only transaction that is rolled back; `write` is
+//! the run that commits.
 
 use std::time::{Duration, Instant};
 
@@ -8,10 +10,13 @@ use tokio_postgres::SimpleQueryMessage;
 use tokio_postgres::error::SqlState;
 
 use super::{Conn, column_metas, first_text, query_error, row_values};
-use crate::script::{cleanup_failed, retry_cancelled, statement_failed};
+use crate::script::{cannot_start, cleanup_failed, retry_cancelled, statement_failed};
 use crate::{
-    ColumnMeta, Dialect, Error, Result, ScriptOutcome, StatementOutcome, StatementResult, StopFlag,
+    ColumnMeta, Dialect, Error, Result, ScriptMode, ScriptOutcome, StatementOutcome,
+    StatementResult, StopFlag,
 };
+
+mod write;
 
 impl Conn {
     /// See [`crate::Connection::run_script`]. The transaction is managed by
@@ -24,13 +29,19 @@ impl Conn {
         &self,
         texts: &[String],
         limit: u32,
+        mode: ScriptMode,
         stop: &StopFlag,
     ) -> Result<ScriptOutcome> {
         let client = self.client.lock().await;
+        if mode == ScriptMode::Write {
+            return write::run(&client, texts, limit as usize, stop).await;
+        }
         let mut outcome = ScriptOutcome::default();
         let tx = match open(&client).await {
             // A lost session ends the run here: nothing to close.
-            Ok(Tx::Open) => statements(&client, texts, limit as usize, stop, &mut outcome).await?,
+            Ok(Tx::Open) => {
+                statements(&client, texts, limit as usize, mode, stop, &mut outcome).await?
+            }
             // A cancel landed on the opening queries: no results.
             Ok(tx) => {
                 outcome.stopped = true;
@@ -44,9 +55,7 @@ impl Conn {
             Err(error) => {
                 stop.finish();
                 close(&client, Tx::Aborted).await.ok();
-                return Err(Error::ConnectionLost(format!(
-                    "could not start the read-only transaction: {error}"
-                )));
+                return Err(cannot_start(ScriptMode::ReadOnly, &error));
             }
         };
         // From here on a cancel would land on the cleanup: tell the
@@ -100,6 +109,7 @@ async fn statements(
     client: &tokio_postgres::Client,
     texts: &[String],
     limit: usize,
+    mode: ScriptMode,
     stop: &StopFlag,
     outcome: &mut ScriptOutcome,
 ) -> Result<Tx> {
@@ -140,7 +150,7 @@ async fn statements(
             return Ok(tx);
         }
         let started = Instant::now();
-        let (result, tx) = run_statement(client, text, limit, stop).await?;
+        let (result, tx) = run_statement(client, text, limit, mode, stop).await?;
         outcome.stopped |= result == StatementOutcome::Cancelled;
         let last = !matches!(
             result,
@@ -172,7 +182,7 @@ async fn close(client: &tokio_postgres::Client, tx: Tx) -> Result<()> {
     let rolled_back = retry_cancelled!(rollback(client));
     match (tx, rolled_back) {
         (Ok(Tx::Left), _) => Err(Error::LeftReadOnly),
-        (Err(error), _) | (_, Err(error)) => Err(cleanup_failed(&error)),
+        (Err(error), _) | (_, Err(error)) => Err(cleanup_failed(ScriptMode::ReadOnly, &error)),
         (Ok(_), Ok(())) => unlocked(retry_cancelled!(unlock(client))),
     }
 }
@@ -375,6 +385,7 @@ async fn run_statement(
     client: &tokio_postgres::Client,
     text: &str,
     limit: usize,
+    mode: ScriptMode,
     stop: &StopFlag,
 ) -> Result<(StatementOutcome, Tx)> {
     // The driver cannot put a NUL in a message, and fails in a way that
@@ -407,13 +418,24 @@ async fn run_statement(
                         _ => None,
                     })
                     .filter(|_| counts_rows(text));
-                Ok((StatementOutcome::Done { affected }, Tx::Open))
+                Ok((
+                    StatementOutcome::Done {
+                        affected,
+                        warnings: 0,
+                    },
+                    Tx::Open,
+                ))
             }
             Err(error) => failed(error, Some(0)),
         };
     }
     let mut kept = Vec::new();
-    if cursor_statement(text) {
+    // Only in a run that reads: a cursor runs its query as far as it is
+    // fetched and no further, so in a run that commits, `SELECT
+    // refill(id) FROM shelves` would do its work for `limit + 1` rows and
+    // keep that. There every statement runs to its end, and `DECLARE`
+    // would refuse a data-modifying `WITH` anyway.
+    if mode == ScriptMode::ReadOnly && cursor_statement(text) {
         // Its own call, and a newline, so a trailing -- comment ends there.
         let declare = format!("{CURSOR_PREFIX}{text}\n");
         if let Err(error) = client.batch_execute(&declare).await {
@@ -436,7 +458,8 @@ async fn run_statement(
             _ => None,
         }));
     } else {
-        // SHOW, EXPLAIN and the like: stream, keep limit + 1, drop the rest.
+        // SHOW, EXPLAIN and the like, and every statement with rows of a
+        // run that writes: stream, keep limit + 1, drop the rest.
         use futures_util::StreamExt;
         let stream = match client.simple_query_raw(text).await {
             Ok(stream) => stream,
@@ -465,7 +488,7 @@ mod tests {
     fn a_script_run_can_be_spawned() {
         fn send<T: Send>(_: &T) {}
         let _check = |conn: &Conn, texts: &[String], stop: &StopFlag| {
-            send(&conn.run_script(texts, 10, stop));
+            send(&conn.run_script(texts, 10, ScriptMode::ReadOnly, stop));
             send(&conn.server_version());
         };
     }
@@ -528,11 +551,13 @@ mod tests {
 
     /// One test at a time uses the `probe` table: creating it twice at once
     /// can fail, and one test's TRUNCATE would hide another's stray row.
-    static PROBE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    pub(super) static PROBE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
     /// A writable session with an empty `probe` table, and the table's
     /// lock, held until the test ends.
-    async fn probe(url: &str) -> (tokio_postgres::Client, tokio::sync::MutexGuard<'static, ()>) {
+    pub(super) async fn probe(
+        url: &str,
+    ) -> (tokio_postgres::Client, tokio::sync::MutexGuard<'static, ()>) {
         let turn = PROBE.lock().await;
         let mut config: tokio_postgres::Config = url.parse().unwrap();
         config.ssl_mode(tokio_postgres::config::SslMode::Disable);
@@ -546,7 +571,7 @@ mod tests {
     }
 
     /// The rows in the `probe` table.
-    async fn probe_rows(admin: &tokio_postgres::Client) -> i64 {
+    pub(super) async fn probe_rows(admin: &tokio_postgres::Client) -> i64 {
         admin
             .query_one("SELECT count(*) FROM probe", &[])
             .await
@@ -569,9 +594,12 @@ mod tests {
         stop: &StopFlag,
     ) -> Result<ScriptOutcome> {
         let texts: Vec<String> = script.iter().map(|&text| text.to_owned()).collect();
-        tokio::time::timeout(Duration::from_secs(10), conn.run_script(&texts, 10, stop))
-            .await
-            .expect("the run hung")
+        tokio::time::timeout(
+            Duration::from_secs(10),
+            conn.run_script(&texts, 10, ScriptMode::ReadOnly, stop),
+        )
+        .await
+        .expect("the run hung")
     }
 
     /// Statements the refusal stops long before they get here. Run past
@@ -726,7 +754,15 @@ mod tests {
         let stop = StopFlag::new();
         stop.stop();
         let mut outcome = ScriptOutcome::default();
-        let tx = statements(&client, &["SELECT 1".to_owned()], 10, &stop, &mut outcome).await;
+        let tx = statements(
+            &client,
+            &["SELECT 1".to_owned()],
+            10,
+            ScriptMode::ReadOnly,
+            &stop,
+            &mut outcome,
+        )
+        .await;
         assert_eq!(tx, Ok(Tx::Open));
         assert_eq!(outcome.results.len(), 1);
         assert_eq!(outcome.results[0].outcome, StatementOutcome::Cancelled);

@@ -2,6 +2,8 @@
 
 use std::fmt;
 
+use crate::script::{ScriptMode, refusal_sentence};
+
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// Everything that can go wrong talking to a database. Messages are shown to
@@ -26,19 +28,25 @@ pub enum Error {
     },
     #[error("the query was cancelled")]
     Cancelled,
-    /// A script holds a statement that could end or change the read-only
-    /// transaction; nothing ran.
-    #[error(
-        "line {line}: Tabletist runs every query in a read-only transaction, so {what} is not allowed"
-    )]
-    Refused { line: usize, what: String },
-    /// A save was asked of a connection that opens read-only. Nothing was
-    /// sent.
+    /// A script holds a statement that could end or change its
+    /// transaction; nothing ran. `mode` is the run's, for the sentence.
+    #[error("line {line}: {}", refusal_sentence(.mode, .what))]
+    Refused {
+        line: usize,
+        what: String,
+        mode: ScriptMode,
+    },
+    /// A save, or a script's run that writes, was asked of a connection
+    /// that opens read-only. Nothing was sent.
     #[error("this connection opens read-only")]
     ReadOnly,
     /// A script left the session read-write. The session is closed.
     #[error("the script left the read-only transaction, so the session was closed")]
     LeftReadOnly,
+    /// A script that writes ended the transaction its run commits. The
+    /// session is closed.
+    #[error("the script ended its transaction, so the session was closed")]
+    LeftTransaction,
     #[error("the operation timed out")]
     Timeout,
     #[error("the connection was lost: {0}")]
@@ -64,7 +72,10 @@ impl Error {
 
     /// Whether the session is unusable and must be reconnected.
     pub fn is_connection_lost(&self) -> bool {
-        matches!(self, Self::ConnectionLost(_) | Self::LeftReadOnly)
+        matches!(
+            self,
+            Self::ConnectionLost(_) | Self::LeftReadOnly | Self::LeftTransaction
+        )
     }
 }
 
@@ -145,11 +156,36 @@ mod tests {
         let refused = Error::Refused {
             line: 4,
             what: "COMMIT".into(),
+            mode: ScriptMode::ReadOnly,
         };
         assert!(!refused.is_connection_lost());
         assert_eq!(
             refused.to_string(),
             "line 4: Tabletist runs every query in a read-only transaction, so COMMIT is not allowed"
+        );
+    }
+
+    #[test]
+    fn a_refusal_in_a_run_that_writes_names_its_own_transaction() {
+        let refused = Error::Refused {
+            line: 2,
+            what: "COMMIT".into(),
+            mode: ScriptMode::Write,
+        };
+        assert_eq!(
+            refused.to_string(),
+            "line 2: Tabletist runs and commits the script in one transaction of its own, so \
+             COMMIT is not allowed"
+        );
+    }
+
+    #[test]
+    fn leaving_the_transaction_counts_as_a_lost_connection() {
+        assert!(Error::LeftTransaction.is_connection_lost());
+        assert!(!Error::ReadOnly.is_connection_lost());
+        assert_eq!(
+            Error::ReadOnly.to_string(),
+            "this connection opens read-only"
         );
     }
 }

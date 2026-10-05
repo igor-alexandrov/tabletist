@@ -777,6 +777,7 @@ fn statement_message(run: &SqlRun, index: usize, words: Words) -> Message {
         }
         StatementOutcome::Done {
             affected: Some(count),
+            ..
         } => {
             let noun = if *count == 1 {
                 "row affected"
@@ -787,7 +788,7 @@ fn statement_message(run: &SqlRun, index: usize, words: Words) -> Message {
             let text = format!("{count} {} · {time}", words.say(noun));
             Message::new(at, text, Tone::Plain)
         }
-        StatementOutcome::Done { affected: None } => {
+        StatementOutcome::Done { affected: None, .. } => {
             let text = format!("{} · {time}", words.say("Statement ran"));
             Message::new(at, text, Tone::Plain)
         }
@@ -1243,7 +1244,10 @@ mod tests {
 
     /// A statement that ran and gave no result set.
     fn done(affected: Option<u64>) -> StatementOutcome {
-        StatementOutcome::Done { affected }
+        StatementOutcome::Done {
+            affected,
+            warnings: 0,
+        }
     }
 
     #[test]
@@ -1703,6 +1707,7 @@ mod tests {
             Error::Refused {
                 line: 1,
                 what: "COMMIT".into(),
+                mode: tabletist_db::ScriptMode::ReadOnly,
             },
             Error::Unsupported("SQL editor on MySQL before 5.7"),
             Error::LeftReadOnly,
@@ -1803,6 +1808,7 @@ mod tests {
             let refused = Error::Refused {
                 line: 1,
                 what: "COMMIT".into(),
+                mode: tabletist_db::ScriptMode::ReadOnly,
             };
             harness.answer_sql(Err(refused.clone()), None);
             show_pane(&mut harness, tab, ResultPane::Results);

@@ -6284,6 +6284,7 @@ mod tests {
         let refused = Error::Refused {
             line: 2,
             what: "COMMIT".into(),
+            mode: tabletist_db::ScriptMode::ReadOnly,
         };
         harness.answer_sql(Err(refused.clone()), None);
         let editor = sql(&harness, tab, id);
@@ -6425,7 +6426,10 @@ mod tests {
             run(&mut harness, tab, id, true);
             harness.answer_sql(
                 Ok(script_outcome(vec![
-                    tabletist_db::StatementOutcome::Done { affected: None },
+                    tabletist_db::StatementOutcome::Done {
+                        affected: None,
+                        warnings: 0,
+                    },
                     tabletist_db::StatementOutcome::Cancelled,
                 ])),
                 cancel,
@@ -6807,6 +6811,7 @@ mod tests {
         harness.answer_sql(
             Ok(script_outcome(vec![tabletist_db::StatementOutcome::Done {
                 affected: None,
+                warnings: 0,
             }])),
             None,
         );

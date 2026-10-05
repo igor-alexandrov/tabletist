@@ -3219,7 +3219,10 @@ mod tests {
             vec![
                 rows_outcome(5),
                 rows_outcome(2),
-                tabletist_db::StatementOutcome::Done { affected: None },
+                tabletist_db::StatementOutcome::Done {
+                    affected: None,
+                    warnings: 0,
+                },
             ],
         );
         let (index, result) = sql.shown().unwrap();
@@ -3233,7 +3236,10 @@ mod tests {
         run_script(
             &mut sql,
             "SET x = 1",
-            vec![tabletist_db::StatementOutcome::Done { affected: None }],
+            vec![tabletist_db::StatementOutcome::Done {
+                affected: None,
+                warnings: 0,
+            }],
         );
         assert!(sql.shown().is_none());
         assert_eq!(sql.dims(), (0, 0));
@@ -3415,6 +3421,7 @@ mod tests {
         let refused = Error::Refused {
             line: 2,
             what: "COMMIT".into(),
+            mode: tabletist_db::ScriptMode::ReadOnly,
         };
         assert!(sql.finish_run(RequestId(30), Err(refused), None));
         assert_eq!(readings(&sql), (None, false, (0, 0), Some(2)));
@@ -3435,6 +3442,7 @@ mod tests {
         let refused = Error::Refused {
             line: 4,
             what: "COMMIT".into(),
+            mode: tabletist_db::ScriptMode::ReadOnly,
         };
         assert!(sql.finish_run(RequestId(20), Err(refused), None));
         assert_eq!(sql.error_mark(), Some((4, None)));
@@ -3471,6 +3479,7 @@ mod tests {
         let refused = Error::Refused {
             line: 2,
             what: "COMMIT".into(),
+            mode: tabletist_db::ScriptMode::ReadOnly,
         };
         assert!(sql.finish_run(RequestId(30), Err(refused), None));
         assert_eq!(sql.error_mark(), Some((2, None)));

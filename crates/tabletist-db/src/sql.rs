@@ -1,7 +1,8 @@
 //! SQL text as tokens, for highlighting, for splitting a script into
-//! statements, and for the read-only guard. Tokenizing never fails; it only
-//! has to agree with the database on where strings, comments and statements
-//! end.
+//! statements, for the guard that keeps a script inside its transaction,
+//! and for telling a statement that writes from one that reads. Tokenizing
+//! never fails; it only has to agree with the database on where strings,
+//! comments and statements end.
 
 use std::ops::Range;
 
@@ -586,9 +587,10 @@ fn word_of(text: &str, token: &Token) -> Option<String> {
     }
 }
 
-/// Why `statement` must not run in Tabletist's read-only transaction: the
-/// statement kind it is, for the message. `None` when it may run. Matched
-/// on tokens, so `SELECT 'COMMIT'` and a column named `end_date` pass.
+/// Why `statement` must not run in a script's transaction, which
+/// Tabletist begins and ends itself, read-only or not: the statement kind
+/// it is, for the message. `None` when it may run. Matched on tokens, so
+/// `SELECT 'COMMIT'` and a column named `end_date` pass.
 pub fn refusal(dialect: Dialect, statement: &str) -> Option<String> {
     let tokens = tokenize(dialect, statement);
     if dialect == Dialect::MySql
@@ -919,6 +921,141 @@ fn unicode_name(statement: &str, tokens: &[Token]) -> bool {
             && &statement[three[1].range.clone()] == "&"
             && three[2].kind == TokenKind::QuotedIdentifier
     })
+}
+
+/// What a statement looks like to the SQL editor, which runs a script that
+/// only reads in a read-only transaction and commits no other.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StatementKind {
+    /// A query by its first word, with no word in it that changes data.
+    Read,
+    /// Anything else.
+    Write,
+}
+
+/// The words a statement that reads starts with.
+const READS: [&str; 8] = [
+    "SELECT", "VALUES", "TABLE", "WITH", "SHOW", "EXPLAIN", "DESCRIBE", "DESC",
+];
+
+/// The words that explain the statement after them. MySQL takes all three.
+const EXPLAINS: [&str; 3] = ["EXPLAIN", "DESCRIBE", "DESC"];
+
+/// The word that makes an `EXPLAIN` run its statement. PostgreSQL takes
+/// both spellings.
+const ANALYZES: [&str; 2] = ["ANALYZE", "ANALYSE"];
+
+/// The words that change data wherever they stand in a query: in a `WITH`,
+/// after `FOR`.
+const CHANGES: [&str; 4] = ["INSERT", "UPDATE", "DELETE", "MERGE"];
+
+/// The word a token spells when it is not quoted, upper-cased: a keyword
+/// or a bare name.
+fn bare_word(text: &str, token: &Token) -> Option<String> {
+    matches!(token.kind, TokenKind::Keyword | TokenKind::Identifier)
+        .then(|| text[token.range.clone()].to_ascii_uppercase())
+}
+
+/// Whether `statement` only reads, as far as its words say. It errs toward
+/// `Write`: a bare name spelled like a data-changing word counts. Taking a
+/// write for a read is safe, since a read runs in a read-only transaction
+/// where the database refuses the write; taking a read for a write only
+/// commits nothing.
+///
+/// An `EXPLAIN` without `ANALYZE` runs nothing, so it is a read whatever
+/// it explains. With `ANALYZE` it runs its statement, and is what that is.
+pub fn kind(dialect: Dialect, statement: &str) -> StatementKind {
+    let tokens = tokenize(dialect, statement);
+    // MySQL runs what an executable comment holds, and it can hold anything.
+    if tokens
+        .iter()
+        .any(|token| token.kind == TokenKind::ExecutableComment)
+    {
+        return StatementKind::Write;
+    }
+    let first = tokens
+        .iter()
+        .find(|token| !matches!(token.kind, TokenKind::Whitespace | TokenKind::Comment));
+    // Only comments: nothing runs.
+    let Some(first) = first else {
+        return StatementKind::Read;
+    };
+    let words: Vec<String> = tokens
+        .iter()
+        .filter_map(|token| bare_word(statement, token))
+        .collect();
+    let has = |wanted: &str| words.iter().any(|word| word == wanted);
+    let first_word = bare_word(statement, first);
+    let first_word = first_word.as_deref();
+    let explains = first_word.is_some_and(|word| EXPLAINS.contains(&word));
+    if explains && !ANALYZES.iter().any(|word| has(word)) {
+        return StatementKind::Read;
+    }
+    let reads = match first_word {
+        Some(word) => READS.contains(&word) || (dialect == Dialect::Sqlite && word == "PRAGMA"),
+        None => &statement[first.range.clone()] == "(",
+    };
+    if reads && !CHANGES.iter().any(|word| has(word)) {
+        StatementKind::Read
+    } else {
+        StatementKind::Write
+    }
+}
+
+/// A statement that changes or removes rows, for [`unbounded`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Verb {
+    Update,
+    Delete,
+}
+
+/// The words a statement's own verb can be, once a `WITH` list and an
+/// `EXPLAIN` in front of it are passed.
+const VERBS: [&str; 8] = [
+    "SELECT", "INSERT", "UPDATE", "DELETE", "MERGE", "VALUES", "TABLE", "REPLACE",
+];
+
+/// `UPDATE` or `DELETE` when `statement` is one with no `WHERE` of its
+/// own: it reaches every row of its table. A `WHERE` inside parentheses
+/// belongs to a subquery and does not count. A `WITH` in front is passed,
+/// and so is an `EXPLAIN` that has `ANALYZE`, which runs the statement
+/// behind it. An `INSERT` that updates on a conflict and a `MERGE` are
+/// bounded by their rows, and are never named.
+pub fn unbounded(dialect: Dialect, statement: &str) -> Option<Verb> {
+    let tokens = tokenize(dialect, statement);
+    // The words outside parentheses, in order.
+    let mut top = Vec::new();
+    let mut depth = 0_usize;
+    let mut analyzed = false;
+    for token in &tokens {
+        match (token.kind, &statement[token.range.clone()]) {
+            (TokenKind::Punctuation, "(") => depth += 1,
+            (TokenKind::Punctuation, ")") => depth = depth.saturating_sub(1),
+            _ => {
+                if let Some(word) = bare_word(statement, token) {
+                    // Also as an option: EXPLAIN (ANALYZE).
+                    analyzed |= ANALYZES.contains(&word.as_str());
+                    if depth == 0 {
+                        top.push(word);
+                    }
+                }
+            }
+        }
+    }
+    let leads = match top.first()?.as_str() {
+        "UPDATE" | "DELETE" | "WITH" => true,
+        word => EXPLAINS.contains(&word) && analyzed,
+    };
+    if !leads {
+        return None;
+    }
+    let at = top.iter().position(|word| VERBS.contains(&word.as_str()))?;
+    let verb = match top[at].as_str() {
+        "UPDATE" => Verb::Update,
+        "DELETE" => Verb::Delete,
+        _ => return None,
+    };
+    (!top[at + 1..].iter().any(|word| word == "WHERE")).then_some(verb)
 }
 
 #[cfg(test)]
@@ -2020,5 +2157,276 @@ mod tests {
                 (Identifier, "rows_read"),
             ]
         );
+    }
+
+    const DIALECTS: [Dialect; 3] = [Dialect::Postgres, Dialect::MySql, Dialect::Sqlite];
+
+    #[test]
+    fn a_statement_that_only_reads_is_a_read() {
+        for dialect in DIALECTS {
+            for text in [
+                "SELECT * FROM books",
+                "select 1",
+                "-- a note\nSELECT 1",
+                "VALUES (1), (2)",
+                "TABLE books",
+                "WITH recent AS (SELECT 1) SELECT * FROM recent",
+                "(SELECT 1) UNION (SELECT 2)",
+                "SHOW search_path",
+                "EXPLAIN SELECT * FROM books",
+                "DESCRIBE books",
+                "DESC books",
+                // Nothing to run.
+                "",
+                "-- only a comment",
+            ] {
+                assert_eq!(
+                    kind(dialect, text),
+                    StatementKind::Read,
+                    "{dialect:?} {text}"
+                );
+            }
+        }
+        // A statement in SQLite only.
+        let pragma = "PRAGMA table_info(books)";
+        assert_eq!(kind(Dialect::Sqlite, pragma), StatementKind::Read);
+        assert_eq!(kind(Dialect::Postgres, pragma), StatementKind::Write);
+        assert_eq!(kind(Dialect::MySql, pragma), StatementKind::Write);
+    }
+
+    #[test]
+    fn everything_else_is_a_write() {
+        for dialect in DIALECTS {
+            for text in [
+                "INSERT INTO books VALUES (1)",
+                "update books set title = 'x'",
+                "DELETE FROM books",
+                "MERGE INTO books USING drafts ON books.id = drafts.id WHEN MATCHED THEN DELETE",
+                "REPLACE INTO books VALUES (1)",
+                "CREATE TABLE notes (id int)",
+                "DROP TABLE books",
+                "TRUNCATE books",
+                "CALL refill()",
+                "SET search_path = shop",
+                "VACUUM",
+                "ANALYZE books",
+                "GRANT SELECT ON books TO reader",
+                "/* first */ DELETE FROM books",
+            ] {
+                assert_eq!(
+                    kind(dialect, text),
+                    StatementKind::Write,
+                    "{dialect:?} {text}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_query_that_holds_a_data_changing_word_is_a_write() {
+        for dialect in DIALECTS {
+            for text in [
+                "WITH gone AS (DELETE FROM books RETURNING *) SELECT * FROM gone",
+                "WITH s AS (SELECT 1) INSERT INTO books SELECT * FROM s",
+                "SELECT * FROM books FOR UPDATE",
+                // Erring toward a write: a bare name, a function.
+                "SELECT * FROM books WHERE update = 1",
+                "SELECT insert('abc', 1, 1, 'x')",
+                "select merge from books",
+            ] {
+                assert_eq!(
+                    kind(dialect, text),
+                    StatementKind::Write,
+                    "{dialect:?} {text}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn data_changing_words_in_strings_comments_and_quoted_names_do_not_count() {
+        for dialect in DIALECTS {
+            for text in [
+                "SELECT 'DELETE FROM books'",
+                "SELECT 1 -- then UPDATE it",
+                "SELECT /* INSERT */ 1",
+                "SELECT replace(title, 'a', 'b') FROM books",
+                "SELECT deleted_at, updated_by FROM books",
+            ] {
+                assert_eq!(
+                    kind(dialect, text),
+                    StatementKind::Read,
+                    "{dialect:?} {text}"
+                );
+            }
+        }
+        for (dialect, text) in [
+            (Dialect::Postgres, "SELECT \"update\" FROM books"),
+            (
+                Dialect::Sqlite,
+                "SELECT \"update\", [delete], `insert` FROM books",
+            ),
+            (Dialect::MySql, "SELECT `delete` FROM books"),
+            (Dialect::MySql, "SELECT \"MERGE\""),
+            (Dialect::Postgres, "SELECT $$ MERGE INTO books $$"),
+        ] {
+            assert_eq!(
+                kind(dialect, text),
+                StatementKind::Read,
+                "{dialect:?} {text}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_explain_is_a_write_only_when_it_runs_a_data_change() {
+        for dialect in DIALECTS {
+            for text in [
+                "EXPLAIN DELETE FROM books",
+                "EXPLAIN UPDATE books SET title = 'x'",
+                "explain insert into books values (1)",
+                "EXPLAIN ANALYZE SELECT * FROM books",
+                "EXPLAIN (ANALYZE, BUFFERS) SELECT 1",
+                "EXPLAIN QUERY PLAN DELETE FROM books",
+                "DESCRIBE UPDATE books SET title = 'x'",
+                "DESC DELETE FROM books",
+            ] {
+                assert_eq!(
+                    kind(dialect, text),
+                    StatementKind::Read,
+                    "{dialect:?} {text}"
+                );
+            }
+            for text in [
+                "EXPLAIN ANALYZE DELETE FROM books",
+                "EXPLAIN (ANALYZE) DELETE FROM books",
+                "EXPLAIN ANALYSE DELETE FROM books",
+                "explain analyze verbose update books set title = 'x'",
+                "EXPLAIN (ANALYZE, BUFFERS) INSERT INTO books VALUES (1)",
+                "DESC ANALYZE DELETE FROM books",
+            ] {
+                assert_eq!(
+                    kind(dialect, text),
+                    StatementKind::Write,
+                    "{dialect:?} {text}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_mysql_executable_comment_makes_a_write() {
+        let text = "SELECT 1 /*! , sleep(1) */";
+        assert_eq!(kind(Dialect::MySql, text), StatementKind::Write);
+        // Elsewhere it is a comment like any other.
+        assert_eq!(kind(Dialect::Postgres, text), StatementKind::Read);
+        assert_eq!(kind(Dialect::Sqlite, text), StatementKind::Read);
+    }
+
+    #[test]
+    fn odd_text_never_panics_the_kind() {
+        for dialect in DIALECTS {
+            for text in [
+                "(", ")", "'", "\"", "/*", "é", ";", "((((", "EXPLAIN", "WITH",
+            ] {
+                let _ = kind(dialect, text);
+            }
+        }
+    }
+
+    #[test]
+    fn an_update_or_delete_without_a_where_is_unbounded() {
+        for dialect in DIALECTS {
+            for (text, verb) in [
+                ("UPDATE books SET title = 'x'", Verb::Update),
+                ("delete from books", Verb::Delete),
+                ("DELETE FROM books -- WHERE id = 1", Verb::Delete),
+                ("UPDATE books SET title = 'WHERE id = 1'", Verb::Update),
+                // A WHERE of a subquery bounds the subquery.
+                (
+                    "UPDATE books SET title = (SELECT name FROM drafts WHERE drafts.id = books.id)",
+                    Verb::Update,
+                ),
+                ("DELETE FROM books ORDER BY id LIMIT 5", Verb::Delete),
+                (
+                    "WITH old AS (SELECT id FROM books WHERE id < 5) DELETE FROM books",
+                    Verb::Delete,
+                ),
+                (
+                    "WITH old AS (SELECT 1) UPDATE books SET title = 'x'",
+                    Verb::Update,
+                ),
+                // It runs the statement behind it.
+                ("EXPLAIN ANALYZE DELETE FROM books", Verb::Delete),
+                ("EXPLAIN ANALYSE DELETE FROM books", Verb::Delete),
+                (
+                    "EXPLAIN (ANALYZE, BUFFERS) UPDATE books SET title = 'x'",
+                    Verb::Update,
+                ),
+            ] {
+                assert_eq!(unbounded(dialect, text), Some(verb), "{dialect:?} {text}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_where_outside_parentheses_bounds_the_statement() {
+        for dialect in DIALECTS {
+            for text in [
+                "UPDATE books SET title = 'x' WHERE id = 1",
+                "delete from books where id = 1",
+                "DELETE FROM books WHERE id IN (SELECT book_id FROM drafts)",
+                "UPDATE books SET title = 'x' WHERE CURRENT OF pick",
+                "WITH old AS (SELECT 1) DELETE FROM books WHERE id = 1",
+                "EXPLAIN ANALYZE DELETE FROM books WHERE id = 1",
+            ] {
+                assert_eq!(unbounded(dialect, text), None, "{dialect:?} {text}");
+            }
+        }
+    }
+
+    #[test]
+    fn only_an_update_or_a_delete_is_ever_unbounded() {
+        for dialect in DIALECTS {
+            for text in [
+                "SELECT * FROM books",
+                "SELECT * FROM books FOR UPDATE",
+                "WITH x AS (SELECT 1) SELECT * FROM x FOR UPDATE",
+                "INSERT INTO books VALUES (1)",
+                "INSERT INTO books VALUES (1) ON CONFLICT (id) DO UPDATE SET title = 'x'",
+                "INSERT INTO books VALUES (1) ON DUPLICATE KEY UPDATE title = 'x'",
+                "WITH s AS (SELECT 1) INSERT INTO books SELECT * FROM s ON CONFLICT (id) DO UPDATE SET title = 'x'",
+                "MERGE INTO books USING drafts ON books.id = drafts.id WHEN MATCHED THEN UPDATE SET title = 'x'",
+                "TRUNCATE books",
+                "DROP TABLE books",
+                // Nothing runs.
+                "EXPLAIN DELETE FROM books",
+                "",
+                "-- DELETE FROM books",
+            ] {
+                assert_eq!(unbounded(dialect, text), None, "{dialect:?} {text}");
+            }
+        }
+    }
+
+    #[test]
+    fn odd_text_never_panics_the_unbounded_check() {
+        for dialect in DIALECTS {
+            for text in [
+                "(",
+                ")",
+                ")))",
+                "'",
+                "/*",
+                "é",
+                "UPDATE",
+                "DELETE (",
+                "WITH",
+                "EXPLAIN ANALYZE",
+            ] {
+                let _ = unbounded(dialect, text);
+            }
+        }
+        assert_eq!(unbounded(Dialect::Postgres, "UPDATE"), Some(Verb::Update));
     }
 }

@@ -10,7 +10,8 @@ use std::time::Duration;
 
 use tabletist_db::{
     Access, CancelHandle, ChangeSet, ConnectSpec, Connection, Driver, Error, HostKeys, ObjectInfo,
-    ObjectRef, RowPage, RowQuery, ScriptOutcome, Secrets, StopFlag, Structure, WriteOutcome,
+    ObjectRef, RowPage, RowQuery, ScriptMode, ScriptOutcome, Secrets, StopFlag, Structure,
+    WriteOutcome,
 };
 use tokio::sync::mpsc as tokio_mpsc;
 
@@ -1982,8 +1983,8 @@ fn skip(outbox: &Outbox, command: Command) {
             session,
             request,
             result: Ok(ScriptOutcome {
-                results: Vec::new(),
                 stopped: true,
+                ..ScriptOutcome::default()
             }),
             cancel: Some(CancelReason::User),
         }),
@@ -2193,7 +2194,9 @@ async fn run_session(
                 });
                 // Awaited to its end whatever stops it: the script rolls
                 // back and leaves the session as it found it.
-                let result = connection.run_script(statements, *limit, &run_stop).await;
+                let result = connection
+                    .run_script(statements, *limit, ScriptMode::ReadOnly, &run_stop)
+                    .await;
                 let timed_out = match timer {
                     Some(timer) => timer.end().await,
                     None => None,
@@ -2724,6 +2727,7 @@ mod tests {
         ScriptOutcome {
             results: Vec::new(),
             stopped: true,
+            ..Default::default()
         }
     }
 
@@ -3843,6 +3847,7 @@ mod tests {
                 outcome: tabletist_db::StatementOutcome::Cancelled,
             }],
             stopped: true,
+            ..Default::default()
         }
     }
 
@@ -3926,6 +3931,7 @@ mod tests {
             Error::Refused {
                 line: 1,
                 what: "COMMIT".into(),
+                mode: tabletist_db::ScriptMode::ReadOnly,
             },
         ] {
             assert_eq!(lost_error(&Err::<ScriptOutcome, _>(kept)), None);

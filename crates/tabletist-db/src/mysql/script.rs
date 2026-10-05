@@ -1,5 +1,7 @@
-//! Running a SQL editor script on MySQL: one read-only transaction, the
-//! checks around every statement, and the session reset that ends it.
+//! Running a SQL editor script on MySQL: one transaction, the checks
+//! around every statement, and the session reset that ends it. This file
+//! is the run that only reads, in a read-only transaction that is rolled
+//! back; `write` is the run that commits.
 
 use std::time::{Duration, Instant};
 
@@ -12,10 +14,13 @@ use super::{
     Conn, READ_ONLY, UNKNOWN_SYSTEM_VARIABLE, column_metas, execute, from_row, prepare_session,
     query_error, row_values, status,
 };
-use crate::script::{cleanup_failed, retry_cancelled, statement_failed};
+use crate::script::{cannot_start, cleanup_failed, retry_cancelled, statement_failed};
 use crate::{
-    Access, Dialect, Error, Result, ScriptOutcome, StatementOutcome, StatementResult, StopFlag,
+    Access, Dialect, Error, Result, ScriptMode, ScriptOutcome, StatementOutcome, StatementResult,
+    StopFlag,
 };
+
+mod write;
 
 impl Conn {
     /// See [`crate::Connection::run_script`]. Statements run through the
@@ -32,6 +37,7 @@ impl Conn {
         &self,
         texts: &[String],
         limit: u32,
+        mode: ScriptMode,
         stop: &StopFlag,
     ) -> Result<ScriptOutcome> {
         let mut conn = self.conn.lock().await;
@@ -41,6 +47,9 @@ impl Conn {
             return Err(Error::Unsupported(
                 "the SQL editor needs MySQL 5.7.3 or MariaDB 10.2.4 or later",
             ));
+        }
+        if mode == ScriptMode::Write {
+            return write::run(&mut conn, texts, limit as usize, stop).await;
         }
         let mut outcome = ScriptOutcome::default();
         let ended = match open(&mut conn, limit, self.access).await {
@@ -55,7 +64,7 @@ impl Conn {
             // The transaction could not start. The next run would fail the
             // same way, so the session is closed, after an attempt to end
             // what is open.
-            Err(error) => Ended::Broken(cannot_start(&error)),
+            Err(error) => Ended::Broken(cannot_start(ScriptMode::ReadOnly, &error)),
         };
         // From here on a cancel would land on the cleanup: tell the
         // backend to stop repeating its cancel.
@@ -100,14 +109,6 @@ enum Ended {
 /// The session's read-only setting. MariaDB before 11.1 knows it only
 /// under its older name.
 const READ_ONLY_SETTINGS: [&str; 2] = ["transaction_read_only", "tx_read_only"];
-
-/// A transaction that could not start closes the session: the next run
-/// would fail the same way.
-fn cannot_start(error: &Error) -> Error {
-    Error::ConnectionLost(format!(
-        "could not start the read-only transaction: {error}"
-    ))
-}
 
 /// Whether the server knows `COM_RESET_CONNECTION`, which the close needs:
 /// MySQL from 5.7.3, MariaDB from 10.2.4. The driver's own rule for
@@ -306,7 +307,7 @@ async fn close(conn: &mut mysql_async::Conn, ended: Ended, access: Access) -> Re
         Ended::Unconfirmed => match retry_cancelled!(standing(conn)) {
             Ok(Standing::Left) => Ended::Left,
             Ok(Standing::Inside | Standing::Outside) => Ended::Unconfirmed,
-            Err(error) => Ended::Broken(cleanup_failed(&error)),
+            Err(error) => Ended::Broken(cleanup_failed(ScriptMode::ReadOnly, &error)),
         },
         known => known,
     };
@@ -328,7 +329,7 @@ async fn close(conn: &mut mysql_async::Conn, ended: Ended, access: Access) -> Re
         Ended::Unconfirmed | Ended::Unopened => rolled_back
             .and(reset)
             .and(prepared)
-            .map_err(|error| cleanup_failed(&error)),
+            .map_err(|error| cleanup_failed(ScriptMode::ReadOnly, &error)),
     }
 }
 
@@ -455,11 +456,13 @@ async fn run_statement(
     let columns = column_metas(result.columns_ref());
     if columns.is_empty() {
         let affected = result.affected_rows();
+        let warnings = result.warnings();
         if let Err(error) = result.drop_result().await {
             return failed(error);
         }
         return Ok(StatementOutcome::Done {
             affected: counts_rows(text).then_some(affected),
+            warnings,
         });
     }
     // sql_select_limit does not bound every statement (SHOW, a SELECT with
@@ -500,7 +503,7 @@ mod tests {
     fn a_script_run_can_be_spawned() {
         fn send<T: Send>(_: &T) {}
         let _check = |conn: &Conn, texts: &[String], stop: &StopFlag| {
-            send(&conn.run_script(texts, 10, stop));
+            send(&conn.run_script(texts, 10, ScriptMode::ReadOnly, stop));
             send(&conn.server_version());
         };
     }
@@ -655,7 +658,7 @@ mod tests {
                 Err(Error::query("the server did not start a transaction"))
             );
         }
-        let closed = cannot_start(&started(in_transaction).unwrap_err());
+        let closed = cannot_start(ScriptMode::ReadOnly, &started(in_transaction).unwrap_err());
         assert!(closed.is_connection_lost());
         assert_eq!(
             closed.to_string(),
@@ -666,17 +669,19 @@ mod tests {
 
     /// One test at a time uses the `probe` table: creating it twice at once
     /// can fail, and one test's TRUNCATE would hide another's stray row.
-    static PROBE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    pub(super) static PROBE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
     /// A writable connection, outside the adapter.
-    async fn admin(url: &str) -> mysql_async::Conn {
+    pub(super) async fn admin(url: &str) -> mysql_async::Conn {
         let opts = Opts::from_url(&format!("{url}?prefer_socket=false")).unwrap();
         mysql_async::Conn::new(opts).await.unwrap()
     }
 
     /// A writable connection with an empty `probe` table, and the table's
     /// lock, held until the test ends.
-    async fn probe(url: &str) -> (mysql_async::Conn, tokio::sync::MutexGuard<'static, ()>) {
+    pub(super) async fn probe(
+        url: &str,
+    ) -> (mysql_async::Conn, tokio::sync::MutexGuard<'static, ()>) {
         let turn = PROBE.lock().await;
         let mut admin = admin(url).await;
         admin
@@ -688,7 +693,7 @@ mod tests {
     }
 
     /// The rows in the `probe` table.
-    async fn probe_rows(admin: &mut mysql_async::Conn) -> i64 {
+    pub(super) async fn probe_rows(admin: &mut mysql_async::Conn) -> i64 {
         admin
             .query_first("SELECT count(*) FROM probe")
             .await
@@ -781,9 +786,12 @@ mod tests {
         stop: &StopFlag,
     ) -> Result<ScriptOutcome> {
         let texts: Vec<String> = script.iter().map(|&text| text.to_owned()).collect();
-        tokio::time::timeout(Duration::from_secs(10), conn.run_script(&texts, 10, stop))
-            .await
-            .expect("the run hung")
+        tokio::time::timeout(
+            Duration::from_secs(10),
+            conn.run_script(&texts, 10, ScriptMode::ReadOnly, stop),
+        )
+        .await
+        .expect("the run hung")
     }
 
     /// The SQLSTATE a statement failed with.
@@ -1028,12 +1036,11 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(outcome.results.len(), SETS.len());
-        assert!(
-            outcome
-                .results
-                .iter()
-                .all(|result| result.outcome == StatementOutcome::Done { affected: None })
-        );
+        assert!(outcome.results.iter().all(|result| result.outcome
+            == StatementOutcome::Done {
+                affected: None,
+                warnings: 0,
+            }));
         assert_eq!(settings(&conn).await, connected);
         // The last statement fails.
         let mut script = SETS.to_vec();

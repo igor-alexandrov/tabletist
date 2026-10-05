@@ -995,7 +995,7 @@ async fn a_cancelled_query_leaves_no_transaction_holding_locks() {
     );
 }
 
-use tabletist_db::{Dialect, ScriptOutcome, StatementOutcome, StopFlag};
+use tabletist_db::{Dialect, ScriptEnd, ScriptMode, ScriptOutcome, StatementOutcome, StopFlag};
 
 fn script(text: &str) -> Vec<tabletist_db::sql::Statement> {
     tabletist_db::sql::statements(Dialect::MySql, text)
@@ -1014,7 +1014,8 @@ async fn run(
     text: &str,
     limit: u32,
 ) -> tabletist_db::Result<ScriptOutcome> {
-    within(connection.run_script(&script(text), limit, &StopFlag::new())).await
+    within(connection.run_script(&script(text), limit, ScriptMode::ReadOnly, &StopFlag::new()))
+        .await
 }
 
 /// The rows of a script's only statement.
@@ -1211,7 +1212,10 @@ async fn statements_without_rows_and_explain() {
     // SET has no row count; the server's 0 for it is not one.
     assert_eq!(
         outcome.results[0].outcome,
-        StatementOutcome::Done { affected: None }
+        StatementOutcome::Done {
+            affected: None,
+            warnings: 0,
+        }
     );
     assert!(matches!(
         &outcome.results[1].outcome,
@@ -1224,7 +1228,10 @@ async fn statements_without_rows_and_explain() {
     ));
     assert_eq!(
         outcome.results[3].outcome,
-        StatementOutcome::Done { affected: None }
+        StatementOutcome::Done {
+            affected: None,
+            warnings: 0,
+        }
     );
 }
 
@@ -1278,9 +1285,10 @@ async fn what_the_prepared_protocol_refuses_is_the_statements_error() {
     // The splitter would never hand over such a piece.
     let mut statements = script("SELECT 1");
     statements[0].text = "SELECT 1; SELECT 2".into();
-    let outcome = within(connection.run_script(&statements, 10, &StopFlag::new()))
-        .await
-        .unwrap();
+    let outcome =
+        within(connection.run_script(&statements, 10, ScriptMode::ReadOnly, &StopFlag::new()))
+            .await
+            .unwrap();
     assert_eq!(outcome.results.len(), 1);
     assert!(matches!(
         &outcome.results[0].outcome,
@@ -1530,7 +1538,13 @@ async fn bypasses_cannot_write() {
                     ),
                 "{attempt}"
             );
-            let ran = within(connection.run_script(&statements, 10, &StopFlag::new())).await;
+            let ran = within(connection.run_script(
+                &statements,
+                10,
+                ScriptMode::ReadOnly,
+                &StopFlag::new(),
+            ))
+            .await;
             assert!(
                 matches!(ran, Err(Error::Refused { .. })),
                 "{attempt}: {ran:?}"
@@ -1668,7 +1682,9 @@ async fn a_cancelled_script_keeps_earlier_results_and_the_session() {
             // A sleep of its own length, for `runs_on_the_server`. With a
             // table the interrupted SLEEP is an error; alone it answers 1.
             let text = "SELECT 1; SELECT count(*) FROM users WHERE SLEEP(31) = 0; SELECT 3";
-            connection.run_script(&script(text), 10, &stop).await
+            connection
+                .run_script(&script(text), 10, ScriptMode::ReadOnly, &stop)
+                .await
         })
     };
     runs_on_the_server(&mut admin, "SLEEP(31)").await;
@@ -1716,7 +1732,9 @@ async fn a_cancel_reaches_a_session_an_earlier_run_reset() {
             let stop = stop.clone();
             tokio::spawn(async move {
                 let text = format!("SELECT 1; SELECT count(*) FROM users WHERE {sleep} = 0");
-                connection.run_script(&script(&text), 10, &stop).await
+                connection
+                    .run_script(&script(&text), 10, ScriptMode::ReadOnly, &stop)
+                    .await
             })
         };
         runs_on_the_server(&mut admin, sleep).await;
@@ -1752,7 +1770,9 @@ async fn cancels_that_land_on_the_cleanup_leave_the_session_read_only_or_closed(
         let stop = stop.clone();
         tokio::spawn(async move {
             let text = "SELECT 1; SELECT count(*) FROM users WHERE SLEEP(32) = 0";
-            connection.run_script(&script(text), 10, &stop).await
+            connection
+                .run_script(&script(text), 10, ScriptMode::ReadOnly, &stop)
+                .await
         })
     };
     runs_on_the_server(&mut admin, "SLEEP(32)").await;
@@ -1797,7 +1817,9 @@ async fn a_stop_between_statements_lets_the_running_one_finish() {
         let stop = stop.clone();
         tokio::spawn(async move {
             let text = "SELECT SLEEP(1.5); SELECT 2";
-            connection.run_script(&script(text), 10, &stop).await
+            connection
+                .run_script(&script(text), 10, ScriptMode::ReadOnly, &stop)
+                .await
         })
     };
     // A stop without a cancel: the first statement runs to its end, the
@@ -1824,9 +1846,14 @@ async fn a_script_stopped_before_it_starts_runs_nothing() {
     };
     let stop = StopFlag::new();
     stop.stop();
-    let outcome = within(connection.run_script(&script("SELECT 1; SELECT 2"), 10, &stop))
-        .await
-        .unwrap();
+    let outcome = within(connection.run_script(
+        &script("SELECT 1; SELECT 2"),
+        10,
+        ScriptMode::ReadOnly,
+        &stop,
+    ))
+    .await
+    .unwrap();
     assert_eq!(outcome.results.len(), 1);
     assert_eq!(outcome.results[0].outcome, StatementOutcome::Cancelled);
     assert!(outcome.stopped && outcome.was_cancelled());
@@ -1897,6 +1924,684 @@ async fn the_words_format_uppercases_cannot_be_table_aliases() {
     let value: Option<i64> = conn.query_first(&formatted.text).await.unwrap();
     assert_eq!(value, Some(1));
     conn.disconnect().await.unwrap();
+}
+
+/// Runs `text` as a script that writes, with a fresh stop flag.
+async fn write(
+    connection: &Connection,
+    text: &str,
+    limit: u32,
+) -> tabletist_db::Result<ScriptOutcome> {
+    within(connection.run_script(&script(text), limit, ScriptMode::Write, &StopFlag::new())).await
+}
+
+/// An empty table of this name with a key `id` and a column `n`, made
+/// from outside the session under test. Each test has a table of its own:
+/// they run at once.
+async fn scratch(admin: &mut mysql_async::Conn, table: &str) {
+    admin
+        .query_drop(format!("DROP TABLE IF EXISTS {table}"))
+        .await
+        .unwrap();
+    admin
+        .query_drop(format!(
+            "CREATE TABLE {table} (id int PRIMARY KEY, n int NOT NULL DEFAULT 0)"
+        ))
+        .await
+        .unwrap();
+}
+
+/// A count, asked from outside the session under test.
+async fn counted(admin: &mut mysql_async::Conn, sql: &str) -> i64 {
+    admin.query_first(sql).await.unwrap().unwrap()
+}
+
+/// What each statement of a run did, as its row count, or `None` for one
+/// that has none or did not end well.
+fn affected(outcome: &ScriptOutcome) -> Vec<Option<u64>> {
+    outcome
+        .results
+        .iter()
+        .map(|result| match result.outcome {
+            StatementOutcome::Done { affected, .. } => affected,
+            _ => None,
+        })
+        .collect()
+}
+
+/// Whether the session refuses a write in a read-only run, as it must
+/// after every run that writes.
+async fn is_fenced(connection: &Connection, table: &str) -> bool {
+    let outcome = run(connection, &format!("DELETE FROM {table}"), 1)
+        .await
+        .unwrap();
+    matches!(
+        &outcome.results[0].outcome,
+        StatementOutcome::Error {
+            error: Error::Query { code: Some(code), .. },
+            ..
+        } if code == "25006"
+    )
+}
+
+#[tokio::test]
+async fn a_run_that_writes_is_refused_on_a_read_only_connection() {
+    let Some(connection) = connect_as(Access::ReadOnly).await else {
+        return;
+    };
+    for text in ["DELETE FROM users", "SELECT 1", "COMMIT"] {
+        assert_eq!(
+            write(&connection, text, 10).await,
+            Err(Error::ReadOnly),
+            "{text}"
+        );
+    }
+}
+
+/// A procedure can commit the run's transaction and open one of its own,
+/// which the run could not tell from its own.
+#[tokio::test]
+async fn a_procedure_is_refused_in_a_run_that_writes_too() {
+    let Some(connection) = connect_as(Access::Writable).await else {
+        return;
+    };
+    assert_eq!(
+        write(&connection, "SELECT 1;\nCALL refill()", 10).await,
+        Err(Error::Refused {
+            line: 2,
+            what: "CALL".into(),
+            mode: ScriptMode::Write,
+        })
+    );
+}
+
+#[tokio::test]
+async fn a_run_that_writes_is_committed_and_counts_its_rows() {
+    let Some(connection) = connect_as(Access::Writable).await else {
+        return;
+    };
+    let mut admin = admin().await;
+    scratch(&mut admin, "script_counts").await;
+    let outcome = write(
+        &connection,
+        "INSERT INTO script_counts (id) VALUES (1), (2), (3), (4), (5);
+         UPDATE script_counts SET n = 10 WHERE id > 2;
+         DELETE FROM script_counts WHERE id = 1",
+        10,
+    )
+    .await
+    .unwrap();
+    assert_eq!(outcome.end, ScriptEnd::Committed);
+    assert!(!outcome.was_cancelled());
+    assert_eq!(outcome.broken, None);
+    assert_eq!(outcome.rollback_warning, None);
+    assert_eq!(affected(&outcome), [Some(5), Some(3), Some(1)]);
+    assert_eq!(
+        counted(&mut admin, "SELECT count(*) FROM script_counts").await,
+        4
+    );
+    // Read-write between scripts, as it connected, and fenced in a run
+    // that only reads.
+    assert!(writes_between_scripts(&connection).await);
+    assert!(is_fenced(&connection, "script_counts").await);
+    assert!(writes_between_scripts(&connection).await);
+    admin.query_drop("DROP TABLE script_counts").await.unwrap();
+}
+
+#[tokio::test]
+async fn a_statement_that_fails_rolls_the_run_back() {
+    let Some(connection) = connect_as(Access::Writable).await else {
+        return;
+    };
+    let mut admin = admin().await;
+    scratch(&mut admin, "script_fails").await;
+    let outcome = write(
+        &connection,
+        "INSERT INTO script_fails (id) VALUES (1);
+         INSERT INTO script_fails_missing VALUES (1);
+         INSERT INTO script_fails (id) VALUES (2)",
+        10,
+    )
+    .await
+    .unwrap();
+    // Nothing made the server commit, so nothing is written: not `Partly`.
+    assert_eq!(outcome.end, ScriptEnd::RolledBack);
+    assert_eq!(outcome.rollback_warning, None);
+    assert_eq!(outcome.results.len(), 2);
+    assert_eq!(
+        counted(&mut admin, "SELECT count(*) FROM script_fails").await,
+        0
+    );
+    assert!(writes_between_scripts(&connection).await);
+    admin.query_drop("DROP TABLE script_fails").await.unwrap();
+}
+
+#[tokio::test]
+async fn what_the_server_committed_by_itself_is_said_to_be_written() {
+    let Some(connection) = connect_as(Access::Writable).await else {
+        return;
+    };
+    let mut admin = admin().await;
+    scratch(&mut admin, "script_partly").await;
+    admin
+        .query_drop("DROP TABLE IF EXISTS script_partly_made")
+        .await
+        .unwrap();
+    // CREATE TABLE commits the first insert. The second is rolled back
+    // with the statement that failed.
+    let outcome = write(
+        &connection,
+        "INSERT INTO script_partly (id) VALUES (1);
+         CREATE TABLE script_partly_made (id int);
+         INSERT INTO script_partly (id) VALUES (2);
+         INSERT INTO script_partly_missing VALUES (1)",
+        10,
+    )
+    .await
+    .unwrap();
+    assert_eq!(outcome.end, ScriptEnd::Partly { committed: 2 });
+    assert_eq!(
+        counted(&mut admin, "SELECT count(*) FROM script_partly").await,
+        1
+    );
+    assert_eq!(
+        counted(&mut admin, "SELECT count(*) FROM script_partly_made").await,
+        0
+    );
+    // A CREATE TABLE that fails has still committed what came before it.
+    let outcome = write(
+        &connection,
+        "INSERT INTO script_partly (id) VALUES (3);
+         CREATE TABLE script_partly_made (id int)",
+        10,
+    )
+    .await
+    .unwrap();
+    assert_eq!(outcome.end, ScriptEnd::Partly { committed: 1 });
+    assert_eq!(
+        counted(&mut admin, "SELECT count(*) FROM script_partly").await,
+        2
+    );
+    // With every statement done, all of it is committed, whoever did it.
+    let outcome = write(
+        &connection,
+        "INSERT INTO script_partly (id) VALUES (4);
+         DROP TABLE script_partly_made;
+         INSERT INTO script_partly (id) VALUES (5)",
+        10,
+    )
+    .await
+    .unwrap();
+    assert_eq!(outcome.end, ScriptEnd::Committed);
+    assert_eq!(
+        counted(&mut admin, "SELECT count(*) FROM script_partly").await,
+        4
+    );
+    assert!(writes_between_scripts(&connection).await);
+    admin.query_drop("DROP TABLE script_partly").await.unwrap();
+}
+
+#[tokio::test]
+async fn a_failed_statement_no_transaction_holds_is_not_said_to_be_undone() {
+    let Some(connection) = connect_as(Access::Writable).await else {
+        return;
+    };
+    let mut admin = admin().await;
+    scratch(&mut admin, "script_ddl").await;
+    admin
+        .query_drop("DROP TABLE IF EXISTS script_ddl_here, script_ddl_missing")
+        .await
+        .unwrap();
+    admin
+        .query_drop("CREATE TABLE script_ddl_here (id int)")
+        .await
+        .unwrap();
+    // The server commits the insert, then fails the DROP on the table
+    // that is missing. Whether the table that is there went with it is
+    // the server's to decide: MySQL 8 drops all or none, MariaDB and older
+    // MySQL drop what they find. The run cannot know, and says so.
+    let outcome = write(
+        &connection,
+        "INSERT INTO script_ddl (id) VALUES (1);
+         DROP TABLE script_ddl_here, script_ddl_missing",
+        10,
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        outcome.results[1].outcome,
+        StatementOutcome::Error { .. }
+    ));
+    assert_eq!(outcome.end, ScriptEnd::Partly { committed: 1 });
+    let warning = outcome
+        .rollback_warning
+        .expect("the run says it cannot know");
+    assert!(warning.contains("may have been applied"), "{warning}");
+    assert_eq!(
+        counted(&mut admin, "SELECT count(*) FROM script_ddl").await,
+        1
+    );
+    assert!(writes_between_scripts(&connection).await);
+    admin
+        .query_drop("DROP TABLE IF EXISTS script_ddl, script_ddl_here")
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn the_limit_cuts_what_is_shown_and_nothing_that_is_written() {
+    let Some(connection) = connect_as(Access::Writable).await else {
+        return;
+    };
+    let mut admin = admin().await;
+    scratch(&mut admin, "script_limit").await;
+    admin
+        .query_drop("DROP TABLE IF EXISTS script_limit_copy")
+        .await
+        .unwrap();
+    let outcome = write(
+        &connection,
+        "INSERT INTO script_limit (id) VALUES (1), (2), (3), (4), (5), (6), (7), (8);
+         INSERT INTO script_limit (id) SELECT id + 100 FROM script_limit;
+         CREATE TABLE script_limit_copy AS SELECT * FROM script_limit;
+         SELECT id FROM script_limit",
+        3,
+    )
+    .await
+    .unwrap();
+    assert_eq!(outcome.end, ScriptEnd::Committed);
+    assert_eq!(affected(&outcome)[..2], [Some(8), Some(8)]);
+    assert!(matches!(
+        &outcome.results[3].outcome,
+        StatementOutcome::Rows { rows, truncated: true, .. } if rows.len() == 3
+    ));
+    assert_eq!(
+        counted(&mut admin, "SELECT count(*) FROM script_limit").await,
+        16
+    );
+    assert_eq!(
+        counted(&mut admin, "SELECT count(*) FROM script_limit_copy").await,
+        16
+    );
+    admin
+        .query_drop("DROP TABLE script_limit, script_limit_copy")
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn a_change_the_server_cannot_roll_back_is_said() {
+    let Some(connection) = connect_as(Access::Writable).await else {
+        return;
+    };
+    let mut admin = admin().await;
+    admin
+        .query_drop("DROP TABLE IF EXISTS script_myisam")
+        .await
+        .unwrap();
+    admin
+        .query_drop("CREATE TABLE script_myisam (id int PRIMARY KEY) ENGINE = MyISAM")
+        .await
+        .unwrap();
+    let outcome = write(
+        &connection,
+        "INSERT INTO script_myisam VALUES (1); INSERT INTO script_myisam_missing VALUES (1)",
+        10,
+    )
+    .await
+    .unwrap();
+    assert_eq!(outcome.end, ScriptEnd::RolledBack);
+    let warning = outcome.rollback_warning.expect("the server warns");
+    assert!(warning.contains("non-transactional"), "{warning}");
+    // And it is true: the row stayed.
+    assert_eq!(
+        counted(&mut admin, "SELECT count(*) FROM script_myisam").await,
+        1
+    );
+    assert!(writes_between_scripts(&connection).await);
+    admin.query_drop("DROP TABLE script_myisam").await.unwrap();
+}
+
+#[tokio::test]
+async fn a_statement_says_how_many_warnings_it_raised() {
+    let Some(connection) = connect_as(Access::Writable).await else {
+        return;
+    };
+    let mut admin = admin().await;
+    admin
+        .query_drop("DROP TABLE IF EXISTS script_warns")
+        .await
+        .unwrap();
+    admin
+        .query_drop("CREATE TABLE script_warns (s varchar(3))")
+        .await
+        .unwrap();
+    // IGNORE makes a warning of what strict mode would refuse.
+    let outcome = write(
+        &connection,
+        "INSERT INTO script_warns VALUES ('abc'); INSERT IGNORE INTO script_warns VALUES ('abcdef')",
+        10,
+    )
+    .await
+    .unwrap();
+    assert_eq!(outcome.end, ScriptEnd::Committed);
+    assert_eq!(
+        outcome.results[0].outcome,
+        StatementOutcome::Done {
+            affected: Some(1),
+            warnings: 0,
+        }
+    );
+    assert_eq!(
+        outcome.results[1].outcome,
+        StatementOutcome::Done {
+            affected: Some(1),
+            warnings: 1,
+        }
+    );
+    admin.query_drop("DROP TABLE script_warns").await.unwrap();
+}
+
+/// Runs `text` as a script that writes and makes it lose a deadlock on
+/// the statement holding `marker`: that statement must wait for the row
+/// with id 1 of `table`, after the script has changed the row with id 2.
+/// The other side has changed far more rows, so the server picks the
+/// script as the one to roll back.
+async fn deadlocked(table: &str, text: String, marker: &str) -> Option<ScriptOutcome> {
+    let connection = std::sync::Arc::new(connect_as(Access::Writable).await?);
+    let mut other = admin().await;
+    other.query_drop("START TRANSACTION").await.unwrap();
+    other
+        .query_drop(format!(
+            "INSERT INTO {table} (id) VALUES (10), (11), (12), (13), (14), (15), (16), (17), \
+             (18), (19), (20), (21), (22), (23), (24), (25), (26), (27), (28), (29)"
+        ))
+        .await
+        .unwrap();
+    other
+        .query_drop(format!("UPDATE {table} SET n = 1 WHERE id = 1"))
+        .await
+        .unwrap();
+    let running = {
+        let connection = std::sync::Arc::clone(&connection);
+        tokio::spawn(async move {
+            connection
+                .run_script(&script(&text), 10, ScriptMode::Write, &StopFlag::new())
+                .await
+        })
+    };
+    let mut watcher = admin().await;
+    runs_on_the_server(&mut watcher, marker).await;
+    // Closes the circle: this waits for the script's row, the script waits
+    // for this one's. The script loses, and this goes through.
+    other
+        .query_drop(format!("UPDATE {table} SET n = 1 WHERE id = 2"))
+        .await
+        .unwrap();
+    let outcome = within(running).await.unwrap().unwrap();
+    other.query_drop("ROLLBACK").await.unwrap();
+    assert!(
+        matches!(
+            &outcome.results.last().unwrap().outcome,
+            StatementOutcome::Error {
+                error: Error::Query { code: Some(code), .. },
+                ..
+            } if code == "40001"
+        ),
+        "{:?}",
+        outcome.results.last()
+    );
+    // The session survives, read-write between scripts.
+    assert!(writes_between_scripts(&connection).await);
+    Some(outcome)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_deadlock_rolls_the_run_back_and_is_not_taken_for_a_commit() {
+    if url().is_none() {
+        eprintln!("skipped: TABLETIST_TEST_MYSQL_URL is not set");
+        return;
+    }
+    let mut admin = admin().await;
+    scratch(&mut admin, "script_deadlock").await;
+    admin
+        .query_drop("INSERT INTO script_deadlock (id) VALUES (1), (2), (3)")
+        .await
+        .unwrap();
+    // The server rolls the whole transaction back and leaves the session
+    // outside one, as a commit would. Nothing of the run is written.
+    let text = "UPDATE script_deadlock SET n = 7 WHERE id = 3; \
+                UPDATE script_deadlock SET n = 7 WHERE id = 2; \
+                UPDATE script_deadlock SET n = 7 /* tabletist deadlock one */ WHERE id = 1";
+    let Some(outcome) =
+        deadlocked("script_deadlock", text.to_owned(), "tabletist deadlock one").await
+    else {
+        return;
+    };
+    assert_eq!(outcome.end, ScriptEnd::RolledBack);
+    assert_eq!(
+        counted(
+            &mut admin,
+            "SELECT count(*) FROM script_deadlock WHERE n = 7"
+        )
+        .await,
+        0
+    );
+    // After a commit the server made earlier in the run, only what came
+    // before that commit is written.
+    admin
+        .query_drop("DROP TABLE IF EXISTS script_deadlock_made")
+        .await
+        .unwrap();
+    let text = "UPDATE script_deadlock SET n = 7 WHERE id = 3; \
+                CREATE TABLE script_deadlock_made (id int); \
+                UPDATE script_deadlock SET n = 8 WHERE id = 2; \
+                UPDATE script_deadlock SET n = 8 /* tabletist deadlock two */ WHERE id = 1";
+    let Some(outcome) =
+        deadlocked("script_deadlock", text.to_owned(), "tabletist deadlock two").await
+    else {
+        return;
+    };
+    assert_eq!(outcome.end, ScriptEnd::Partly { committed: 2 });
+    assert_eq!(
+        counted(
+            &mut admin,
+            "SELECT count(*) FROM script_deadlock WHERE n = 7"
+        )
+        .await,
+        1
+    );
+    assert_eq!(
+        counted(
+            &mut admin,
+            "SELECT count(*) FROM script_deadlock WHERE n = 8"
+        )
+        .await,
+        0
+    );
+    admin
+        .query_drop("DROP TABLE script_deadlock, script_deadlock_made")
+        .await
+        .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_run_that_writes_and_is_cancelled_is_rolled_back() {
+    let Some(connection) = connect_as(Access::Writable).await else {
+        return;
+    };
+    let connection = std::sync::Arc::new(connection);
+    let mut admin = admin().await;
+    scratch(&mut admin, "script_cancelled").await;
+    let cancel = connection.cancel_handle();
+    let stop = StopFlag::new();
+    let running = {
+        let connection = std::sync::Arc::clone(&connection);
+        let stop = stop.clone();
+        tokio::spawn(async move {
+            let text = "INSERT INTO script_cancelled (id) VALUES (1); \
+                        SELECT count(*) FROM users WHERE SLEEP(35) = 0";
+            connection
+                .run_script(&script(text), 10, ScriptMode::Write, &stop)
+                .await
+        })
+    };
+    // A sleep of its own length: `runs_on_the_server` sees every session.
+    runs_on_the_server(&mut admin, "SLEEP(35)").await;
+    stop.stop();
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    // As the backend does: repeat the cancel until the cleanup begins.
+    while !stop.is_finishing() && !running.is_finished() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "cancel must stop the script"
+        );
+        cancel.cancel().await.unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let outcome = within(running).await.unwrap().unwrap();
+    assert!(outcome.was_cancelled());
+    assert_eq!(outcome.end, ScriptEnd::RolledBack);
+    // The insert ran, and is undone.
+    assert_eq!(affected(&outcome), [Some(1), None]);
+    assert_eq!(
+        counted(&mut admin, "SELECT count(*) FROM script_cancelled").await,
+        0
+    );
+    // The session survives, read-write between scripts as it connected.
+    assert!(writes_between_scripts(&connection).await);
+    assert_connect_time_settings(&connection).await;
+    admin
+        .query_drop("DROP TABLE script_cancelled")
+        .await
+        .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_stop_after_a_statement_that_committed_still_says_what_is_written() {
+    let Some(connection) = connect_as(Access::Writable).await else {
+        return;
+    };
+    let connection = std::sync::Arc::new(connection);
+    let mut admin = admin().await;
+    scratch(&mut admin, "script_stopped").await;
+    admin
+        .query_drop("DROP TABLE IF EXISTS script_stopped_made")
+        .await
+        .unwrap();
+    let stop = StopFlag::new();
+    let running = {
+        let connection = std::sync::Arc::clone(&connection);
+        let stop = stop.clone();
+        tokio::spawn(async move {
+            let text = "INSERT INTO script_stopped (id) VALUES (1); \
+                        CREATE TABLE script_stopped_made AS SELECT SLEEP(1) AS slept; \
+                        INSERT INTO script_stopped (id) VALUES (2)";
+            connection
+                .run_script(&script(text), 10, ScriptMode::Write, &stop)
+                .await
+        })
+    };
+    // A stop without a cancel: the CREATE TABLE ends by itself, having
+    // committed the insert before it, and the statement after it never
+    // starts. The check that would have seen the commit never ran either.
+    runs_on_the_server(&mut admin, "script_stopped_made").await;
+    stop.stop();
+    let outcome = within(running).await.unwrap().unwrap();
+    assert_eq!(outcome.results.len(), 3);
+    assert_eq!(outcome.results[2].outcome, StatementOutcome::Cancelled);
+    assert_eq!(outcome.end, ScriptEnd::Partly { committed: 2 });
+    assert_eq!(
+        counted(&mut admin, "SELECT count(*) FROM script_stopped").await,
+        1
+    );
+    assert!(writes_between_scripts(&connection).await);
+    admin
+        .query_drop("DROP TABLE script_stopped, script_stopped_made")
+        .await
+        .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_stop_during_a_last_statement_that_committed_is_not_said_to_be_rolled_back() {
+    let Some(connection) = connect_as(Access::Writable).await else {
+        return;
+    };
+    let connection = std::sync::Arc::new(connection);
+    let mut admin = admin().await;
+    scratch(&mut admin, "script_stopped_last").await;
+    admin
+        .query_drop("DROP TABLE IF EXISTS script_stopped_last_made")
+        .await
+        .unwrap();
+    let stop = StopFlag::new();
+    let running = {
+        let connection = std::sync::Arc::clone(&connection);
+        let stop = stop.clone();
+        tokio::spawn(async move {
+            let text = "INSERT INTO script_stopped_last (id) VALUES (1); \
+                        CREATE TABLE script_stopped_last_made AS SELECT SLEEP(1) AS slept";
+            connection
+                .run_script(&script(text), 10, ScriptMode::Write, &stop)
+                .await
+        })
+    };
+    // A stop without a cancel, while the last statement runs: it ends by
+    // itself, having committed the insert before it. Nothing is left to
+    // roll back, so the run must not say that it was.
+    runs_on_the_server(&mut admin, "script_stopped_last_made").await;
+    stop.stop();
+    let outcome = within(running).await.unwrap().unwrap();
+    assert_eq!(outcome.results.len(), 2);
+    assert!(outcome.stopped);
+    assert_eq!(outcome.end, ScriptEnd::Committed);
+    assert_eq!(
+        counted(&mut admin, "SELECT count(*) FROM script_stopped_last").await,
+        1
+    );
+    assert_eq!(
+        counted(&mut admin, "SELECT count(*) FROM script_stopped_last_made").await,
+        1
+    );
+    assert!(writes_between_scripts(&connection).await);
+    admin
+        .query_drop("DROP TABLE script_stopped_last, script_stopped_last_made")
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn a_run_that_writes_leaves_the_session_as_it_connected() {
+    let Some(connection) = connect_as(Access::Writable).await else {
+        return;
+    };
+    let mut admin = admin().await;
+    scratch(&mut admin, "script_session").await;
+    let leaves = |id: u32| {
+        format!(
+            "SET time_zone = '+05:00'; SET @tabletist_left_over = 1; \
+             SET sql_select_limit = 1; INSERT INTO script_session (id) VALUES ({id})"
+        )
+    };
+    let outcome = write(&connection, &leaves(1), 10).await.unwrap();
+    assert_eq!(outcome.end, ScriptEnd::Committed);
+    assert_eq!(outcome.broken, None);
+    assert_connect_time_settings(&connection).await;
+    assert!(writes_between_scripts(&connection).await);
+    // After a run that failed, and so was rolled back.
+    let failing = format!(
+        "{}; INSERT INTO script_session_missing VALUES (1)",
+        leaves(2)
+    );
+    let outcome = write(&connection, &failing, 10).await.unwrap();
+    assert!(matches!(
+        outcome.results.last().unwrap().outcome,
+        StatementOutcome::Error { .. }
+    ));
+    assert_connect_time_settings(&connection).await;
+    assert!(writes_between_scripts(&connection).await);
+    assert!(is_fenced(&connection, "script_session").await);
+    admin.query_drop("DROP TABLE script_session").await.unwrap();
 }
 
 use std::future::Future;

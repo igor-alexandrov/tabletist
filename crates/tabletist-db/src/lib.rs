@@ -1,11 +1,12 @@
 //! Access to PostgreSQL, MySQL and SQLite for Tabletist.
 //!
-//! The crate writes to a connected database in exactly one place,
-//! [`Connection::write`], and only on a session opened
-//! [`Access::Writable`]. Everything else stays fenced there as on a
-//! read-only session: row fetches and counts run in read-only transactions
-//! (on SQLite under `query_only`), and a SQL editor script still cannot
-//! write.
+//! The crate writes to a connected database in two places:
+//! [`Connection::write`], which saves edited rows, and
+//! [`Connection::run_script`] in [`ScriptMode::Write`]. Both only on a
+//! session opened [`Access::Writable`]. Everything else stays fenced there
+//! as on a read-only session: row fetches and counts run in read-only
+//! transactions (on SQLite under `query_only`), and a script run in
+//! [`ScriptMode::ReadOnly`] cannot write.
 
 mod catalog;
 mod check;
@@ -38,21 +39,24 @@ pub use class::{ColumnClass, column_class};
 pub use dialect::{Dialect, RowUpdate, Sql, UpdateParts, escape_like, quote_literal};
 pub use error::{Error, Result, SshStage};
 pub use query::{Filter, FilterOp, RowPage, RowQuery, Sort, SortDir};
-pub use script::{ScriptOutcome, StatementOutcome, StatementResult, StopFlag};
+pub use script::{
+    ScriptEnd, ScriptMode, ScriptOutcome, StatementOutcome, StatementResult, StopFlag,
+};
 pub use spec::{ConnectSpec, Driver, ParsedUrl, Secrets, SshAuth, SshSpec, TlsMode};
 pub use ssh::HostKeys;
 pub use value::{ColumnMeta, Value, ValueKind, value_from_pg_text};
 pub use write::{CellChange, ChangeSet, Conflict, NewValue, RowChange, WriteOutcome};
 
-/// Whether a session may write. [`Connection::write`] is the one call
-/// that does, and it is refused on a read-only session.
+/// Whether a session may write. [`Connection::write`] and a script run in
+/// [`ScriptMode::Write`] are the calls that do, and both are refused on a
+/// read-only session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Access {
     /// Nothing can write: the session itself is read-only.
     #[default]
     ReadOnly,
     /// The session is read-write. Browsing still reads in read-only
-    /// transactions, and a script still cannot write.
+    /// transactions, and a script writes only when it is run to.
     Writable,
 }
 
@@ -163,8 +167,14 @@ impl Connection {
         self.driver().dialect()
     }
 
-    /// Runs `statements` in order in one read-only transaction that is
-    /// always rolled back, keeping at most `limit` rows per statement.
+    /// Runs `statements` in order in one transaction, keeping at most
+    /// `limit` rows per statement. In [`ScriptMode::ReadOnly`] the
+    /// transaction is read-only and always rolled back. In
+    /// [`ScriptMode::Write`] it is read-write, committed when every
+    /// statement succeeded and rolled back otherwise; the outcome's `end`
+    /// says which. A `Write` run on a session opened
+    /// [`Access::ReadOnly`] is [`Error::ReadOnly`], with nothing sent.
+    ///
     /// Refuses the whole script, running nothing, when a statement could
     /// leave the transaction (see [`sql::refusal`]). `stop` ends the run
     /// between statements (and, on SQLite, inside one); the caller also
@@ -173,14 +183,19 @@ impl Connection {
         &self,
         statements: &[sql::Statement],
         limit: u32,
+        mode: ScriptMode,
         stop: &StopFlag,
     ) -> Result<ScriptOutcome> {
+        if mode == ScriptMode::Write && self.access == Access::ReadOnly {
+            return Err(Error::ReadOnly);
+        }
         let dialect = self.dialect();
         for statement in statements {
             if let Some(what) = sql::refusal(dialect, &statement.text) {
                 return Err(Error::Refused {
                     line: statement.first_line,
                     what,
+                    mode,
                 });
             }
         }
@@ -189,9 +204,9 @@ impl Connection {
         }
         let texts: Vec<String> = statements.iter().map(|s| s.text.clone()).collect();
         match &self.inner {
-            Inner::Sqlite(conn) => conn.run_script(texts, limit, stop).await,
-            Inner::Postgres(conn) => conn.run_script(&texts, limit, stop).await,
-            Inner::MySql(conn) => conn.run_script(&texts, limit, stop).await,
+            Inner::Sqlite(conn) => conn.run_script(texts, limit, mode, stop).await,
+            Inner::Postgres(conn) => conn.run_script(&texts, limit, mode, stop).await,
+            Inner::MySql(conn) => conn.run_script(&texts, limit, mode, stop).await,
         }
     }
 

@@ -12,10 +12,12 @@ use rusqlite::config::DbConfig;
 use rusqlite::types::{FromSql, FromSqlError, FromSqlResult, ValueRef};
 use rusqlite::{ErrorCode, OpenFlags};
 
+use crate::script::{cancelled_commit, cleanup_failed};
 use crate::{
     Access, ChangeSet, ColumnInfo, ColumnMeta, Dialect, Error, ForeignKeyInfo, IndexInfo,
-    MAX_LISTED, ObjectInfo, ObjectKind, ObjectRef, Result, RowPage, RowQuery, ScriptOutcome,
-    StatementOutcome, StatementResult, StopFlag, Structure, Value, ValueKind, WriteOutcome,
+    MAX_LISTED, ObjectInfo, ObjectKind, ObjectRef, Result, RowPage, RowQuery, ScriptEnd,
+    ScriptMode, ScriptOutcome, StatementOutcome, StatementResult, StopFlag, Structure, Value,
+    ValueKind, WriteOutcome,
 };
 
 mod fence;
@@ -82,16 +84,36 @@ fn still_query_only(connection: &rusqlite::Connection) -> Result<bool> {
         .map_err(map_error)
 }
 
-/// Runs `texts` between `BEGIN` and a `ROLLBACK` that always happens, each
-/// behind `Fence::Script`, which denies it leaving the transaction or
-/// turning `query_only` off. Behind the fence, a run that finds `query_only`
-/// off, before a statement or at its end, or its transaction gone before a
-/// statement, ends with `LeftReadOnly` after that rollback.
+/// Starts a script's transaction. A run that writes lifts `query_only`
+/// for its length and takes the write lock at once, so a database another
+/// program holds is found before any statement ran. Both are the app's own
+/// statements, outside the fence.
+fn begin(connection: &rusqlite::Connection, mode: ScriptMode) -> Result<()> {
+    let sql = match mode {
+        ScriptMode::ReadOnly => "BEGIN DEFERRED",
+        ScriptMode::Write => "PRAGMA query_only = OFF; BEGIN IMMEDIATE",
+    };
+    connection.execute_batch(sql).map_err(map_error)
+}
+
+/// Runs `texts` in one transaction, each behind `Fence::Script`, which
+/// denies it leaving the transaction or setting `query_only`.
+///
+/// A read-only run sits between `BEGIN` and a `ROLLBACK` that always
+/// happens. Behind the fence, a run that finds `query_only` off, before a
+/// statement or at its end, or its transaction gone before a statement,
+/// ends with `LeftReadOnly` after that rollback.
+///
+/// A run that writes has `query_only` off from `BEGIN` to its end, which
+/// is a `COMMIT` when every statement succeeded (see `end_write`). One
+/// that finds its transaction gone before a statement ends with
+/// `LeftTransaction`.
 fn script(
     connection: &rusqlite::Connection,
     fences: &Fences,
     texts: &[String],
     limit: usize,
+    mode: ScriptMode,
     stop: &StopFlag,
 ) -> Result<ScriptOutcome> {
     let mut outcome = ScriptOutcome::default();
@@ -101,16 +123,21 @@ fn script(
     }
     // A cancel (the session's interrupt) can land while BEGIN runs; that
     // ends the run with no results.
-    match connection
-        .execute_batch("BEGIN DEFERRED")
-        .map_err(map_error)
-    {
+    match begin(connection, mode) {
         Err(Error::Cancelled) => {
             outcome.stopped = true;
             // The interrupt may have left a transaction open.
             stop.finish();
-            end_transaction(connection).map_err(|error| crate::script::cleanup_failed(&error))?;
+            end_transaction(connection).map_err(|error| cleanup_failed(mode, &error))?;
             return Ok(outcome);
+        }
+        // A database that is locked: the run's error, in SQLite's words.
+        // `query_only` was lifted before the lock was asked for, so the
+        // session's settings are put back; then it is as it was.
+        Err(error) if mode == ScriptMode::Write => {
+            stop.finish();
+            end_transaction(connection).map_err(|error| cleanup_failed(mode, &error))?;
+            return Err(error);
         }
         Err(error) => return Err(error),
         Ok(()) => {}
@@ -119,9 +146,12 @@ fn script(
     // the running statement, which fails with SQLITE_INTERRUPT (Cancelled).
     let watching = stop.clone();
     connection.progress_handler(1_000, Some(move || watching.is_stopped()));
-    let ran = statements(connection, fences, texts, limit, stop, &mut outcome);
+    let ran = statements(connection, fences, texts, limit, mode, stop, &mut outcome);
     // Removed before the cleanup, so a stop cannot interrupt it.
     connection.progress_handler(0, None::<fn() -> bool>);
+    if mode == ScriptMode::Write {
+        return end_write(connection, stop, ran, outcome);
+    }
     stop.finish();
     // Asked before the rollback, which puts the setting back: a last
     // statement that turned it off must not pass unseen. A cancel can land
@@ -132,11 +162,70 @@ fn script(
             .unwrap_or(false);
     let ended = end_transaction(connection);
     ran?;
-    ended.map_err(|error| crate::script::cleanup_failed(&error))?;
+    ended.map_err(|error| cleanup_failed(ScriptMode::ReadOnly, &error))?;
     if left {
         return Err(Error::LeftReadOnly);
     }
     Ok(outcome)
+}
+
+/// Ends a run that writes. Its transaction is committed when every
+/// statement succeeded and no stop came before this point, and rolled back
+/// otherwise; the session's settings are put back either way, `query_only`
+/// first. From `finish` on the backend sends no cancel, so the run ends as
+/// its commit ends.
+fn end_write(
+    connection: &rusqlite::Connection,
+    stop: &StopFlag,
+    ran: Result<()>,
+    mut outcome: ScriptOutcome,
+) -> Result<ScriptOutcome> {
+    let succeeded = ran.is_ok() && outcome.succeeded();
+    // The backend is told first, so a stop it sets from here on sends no
+    // cancel. One set before this line still wins over the commit.
+    stop.finish();
+    let stopped = stop.is_stopped();
+    // What ends the run with an error once the session is put back.
+    let mut failed = None;
+    if succeeded && stopped {
+        outcome.stopped = true;
+    } else if succeeded && connection.is_autocommit() {
+        // The last statement ended the transaction. No statement followed
+        // it, so the check before a statement never saw it.
+        failed = Some(Error::LeftTransaction);
+    } else if succeeded {
+        match connection.execute_batch("COMMIT").map_err(map_error) {
+            Ok(()) => outcome.end = ScriptEnd::Committed,
+            // An interrupt that was on its way landed on the commit.
+            // SQLite then leaves the transaction open for the rollback
+            // below; one that is gone went a way that is not known.
+            Err(Error::Cancelled) => match cancelled_commit(Ok(!connection.is_autocommit())) {
+                Ok(()) => outcome.stopped = true,
+                Err(error) => failed = Some(error),
+            },
+            // SQLite keeps the transaction open when a COMMIT fails (a
+            // deferred foreign key, a reader holding the file): the
+            // rollback below is what makes "nothing is written" true.
+            Err(error) => {
+                outcome.end = ScriptEnd::CommitFailed {
+                    error,
+                    committed: 0,
+                };
+            }
+        }
+    }
+    let ended = end_transaction(connection);
+    ran?;
+    if let Some(error) = failed {
+        return Err(error);
+    }
+    // A rollback that did not happen leaves the end unknown.
+    if let Err(error) = &ended
+        && !connection.is_autocommit()
+    {
+        return Err(cleanup_failed(ScriptMode::Write, error));
+    }
+    Ok(outcome.put_back(ended))
 }
 
 /// Rolls back what is still open and puts the connect-time settings back
@@ -159,6 +248,7 @@ fn statements(
     fences: &Fences,
     texts: &[String],
     limit: usize,
+    mode: ScriptMode,
     stop: &StopFlag,
     outcome: &mut ScriptOutcome,
 ) -> Result<()> {
@@ -173,25 +263,32 @@ fn statements(
         }
         // The open transaction is what stops what `query_only` lets
         // through (a change of journal mode, the empty file a VACUUM INTO
-        // leaves). The statement before this one succeeded, so SQLite did
-        // not end it over an error: the script did.
+        // leaves), and in a run that writes it is what the run commits.
+        // The statement before this one succeeded, so SQLite did not end
+        // it over an error: the script did.
         if connection.is_autocommit() {
-            return Err(Error::LeftReadOnly);
+            return Err(match mode {
+                ScriptMode::ReadOnly => Error::LeftReadOnly,
+                ScriptMode::Write => Error::LeftTransaction,
+            });
         }
-        match still_query_only(connection) {
-            Ok(true) => {}
-            // A stop that landed on the check: this statement is the
-            // cancelled one.
-            Err(Error::Cancelled) => {
-                outcome.stopped = true;
-                outcome.results.push(StatementResult {
-                    elapsed: std::time::Duration::ZERO,
-                    outcome: StatementOutcome::Cancelled,
-                });
-                break;
+        // A run that writes has `query_only` off itself.
+        if mode == ScriptMode::ReadOnly {
+            match still_query_only(connection) {
+                Ok(true) => {}
+                // A stop that landed on the check: this statement is the
+                // cancelled one.
+                Err(Error::Cancelled) => {
+                    outcome.stopped = true;
+                    outcome.results.push(StatementResult {
+                        elapsed: std::time::Duration::ZERO,
+                        outcome: StatementOutcome::Cancelled,
+                    });
+                    break;
+                }
+                // No answer counts as left, as at the end of the run.
+                Ok(false) | Err(_) => return Err(Error::LeftReadOnly),
             }
-            // No answer counts as left, as at the end of the run.
-            Ok(false) | Err(_) => return Err(Error::LeftReadOnly),
         }
         let started = Instant::now();
         // Only the script's own text is fenced: the checks above and the
@@ -251,7 +348,10 @@ fn statement(
     let text = code_only(text);
     // Only comments: SQLite prepares nothing, and there is nothing to run.
     if text.is_empty() {
-        return Ok(StatementOutcome::Done { affected: None });
+        return Ok(StatementOutcome::Done {
+            affected: None,
+            warnings: 0,
+        });
     }
     // A second statement in the text is refused (MultipleStatement), but
     // only after rusqlite prepared it. SQLite asks the authorizer for it as
@@ -263,6 +363,7 @@ fn statement(
         let changed = statement.raw_execute().map_err(map_error)?;
         return Ok(StatementOutcome::Done {
             affected: counts_changes(text).then_some(changed as u64),
+            warnings: 0,
         });
     }
     let mut rows = statement.raw_query();
@@ -645,6 +746,7 @@ impl Conn {
         &self,
         texts: Vec<String>,
         limit: u32,
+        mode: ScriptMode,
         stop: &StopFlag,
     ) -> Result<ScriptOutcome> {
         let stop = stop.clone();
@@ -654,7 +756,7 @@ impl Conn {
         let guard = StopOnDrop(Some(stop.clone()));
         let fences = self.fences.clone();
         let outcome = self
-            .run(move |connection| script(connection, &fences, &texts, limit, &stop))
+            .run(move |connection| script(connection, &fences, &texts, limit, mode, &stop))
             .await;
         guard.disarm();
         outcome
@@ -1143,7 +1245,9 @@ mod tests {
                 let (conn, _dir) = fixture_as(access).await;
                 without_the_authorizer(&conn).await;
                 let script = texts.iter().map(|text| (*text).to_owned()).collect();
-                let ran = conn.run_script(script, 10, &StopFlag::new()).await;
+                let ran = conn
+                    .run_script(script, 10, ScriptMode::ReadOnly, &StopFlag::new())
+                    .await;
                 assert!(
                     matches!(ran, Err(Error::LeftReadOnly)),
                     "{access:?} {texts:?}: {ran:?}"
@@ -1171,7 +1275,147 @@ mod tests {
     /// `Connection::run_script` applies.
     async fn run_unrefused(conn: &Conn, texts: &[&str]) -> Result<ScriptOutcome> {
         let script = texts.iter().map(|text| (*text).to_owned()).collect();
-        conn.run_script(script, 10, &StopFlag::new()).await
+        conn.run_script(script, 10, ScriptMode::ReadOnly, &StopFlag::new())
+            .await
+    }
+
+    /// Runs `texts` as a script that writes, past the refusal list.
+    async fn write_unrefused(conn: &Conn, texts: &[&str]) -> Result<ScriptOutcome> {
+        let script = texts.iter().map(|text| (*text).to_owned()).collect();
+        conn.run_script(script, 10, ScriptMode::Write, &StopFlag::new())
+            .await
+    }
+
+    /// How many rows of `events` have this kind.
+    async fn events_of(conn: &Conn, kind: &'static str) -> i64 {
+        conn.run(move |connection| {
+            connection
+                .query_row(
+                    "SELECT count(*) FROM events WHERE kind = ?1",
+                    [kind],
+                    |row| row.get(0),
+                )
+                .map_err(map_error)
+        })
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn the_fence_denies_a_run_that_writes_what_would_end_its_transaction() {
+        for text in [
+            "COMMIT",
+            "END",
+            "ROLLBACK",
+            "SAVEPOINT mine",
+            "PRAGMA query_only = ON",
+            "PRAGMA writable_schema = ON",
+            "PRAGMA wal_checkpoint",
+        ] {
+            let (conn, _dir) = fixture_as(Access::Writable).await;
+            let probe = "INSERT INTO events (kind) VALUES ('probe')";
+            let outcome = write_unrefused(&conn, &[probe, text, probe]).await.unwrap();
+            // Denied as that statement's error; the run stops and is undone.
+            assert_eq!(outcome.results.len(), 2, "{text}");
+            assert!(
+                matches!(outcome.results[1].outcome, StatementOutcome::Error { .. }),
+                "{text}: {:?}",
+                outcome.results[1].outcome
+            );
+            assert_eq!(outcome.end, ScriptEnd::RolledBack, "{text}");
+            assert_eq!(events_of(&conn, "probe").await, 0, "{text}");
+            assert_eq!(standing(&conn).await, (1, true), "{text}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_run_that_writes_and_lost_its_transaction_runs_nothing_after_it() {
+        let (conn, _dir) = fixture_as(Access::Writable).await;
+        // What the refusal list and the authorizer both stop; this is the
+        // check behind them.
+        without_the_authorizer(&conn).await;
+        let ran = write_unrefused(
+            &conn,
+            &[
+                "INSERT INTO events (kind) VALUES ('before')",
+                "COMMIT",
+                "INSERT INTO events (kind) VALUES ('after')",
+            ],
+        )
+        .await;
+        assert_eq!(ran, Err(Error::LeftTransaction));
+        // The script's own commit stands; nothing ran outside a transaction.
+        assert_eq!(events_of(&conn, "before").await, 1);
+        assert_eq!(events_of(&conn, "after").await, 0);
+        assert_eq!(standing(&conn).await, (1, true));
+    }
+
+    #[tokio::test]
+    async fn a_run_whose_last_statement_ended_its_transaction_fails_too() {
+        let (conn, _dir) = fixture_as(Access::Writable).await;
+        without_the_authorizer(&conn).await;
+        // Nothing follows the COMMIT, so no check before a statement sees
+        // it: the end of the run has to.
+        let ran = write_unrefused(
+            &conn,
+            &["INSERT INTO events (kind) VALUES ('before')", "COMMIT"],
+        )
+        .await;
+        assert_eq!(ran, Err(Error::LeftTransaction));
+        assert_eq!(standing(&conn).await, (1, true));
+    }
+
+    #[tokio::test]
+    async fn a_stop_before_the_commit_rolls_a_run_that_writes_back() {
+        let (conn, _dir) = fixture_as(Access::Writable).await;
+        let stop = StopFlag::new();
+        let outcome = {
+            let stop = stop.clone();
+            conn.run(move |connection| {
+                begin(connection, ScriptMode::Write)?;
+                connection
+                    .execute_batch("INSERT INTO events (kind) VALUES ('probe')")
+                    .map_err(map_error)?;
+                // Every statement is done, and then the stop comes.
+                stop.stop();
+                end_write(connection, &stop, Ok(()), ScriptOutcome::default())
+            })
+            .await
+            .unwrap()
+        };
+        assert!(outcome.stopped);
+        assert_eq!(outcome.end, ScriptEnd::RolledBack);
+        assert!(stop.is_finishing());
+        assert_eq!(events_of(&conn, "probe").await, 0);
+        assert_eq!(standing(&conn).await, (1, true));
+    }
+
+    #[tokio::test]
+    async fn a_locked_database_fails_a_run_that_writes_before_it_begins() {
+        let (conn, dir) = fixture_as(Access::Writable).await;
+        let other = rusqlite::Connection::open(dir.path().join("fixture.db")).unwrap();
+        other.execute_batch("BEGIN IMMEDIATE").unwrap();
+        // Not the session's five seconds, for the test's sake. The run
+        // puts the session's own timeout back.
+        conn.run(|connection| {
+            connection
+                .busy_timeout(std::time::Duration::from_millis(50))
+                .map_err(map_error)
+        })
+        .await
+        .unwrap();
+        let probe = "INSERT INTO events (kind) VALUES ('probe')";
+        let ran = write_unrefused(&conn, &[probe]).await;
+        assert!(
+            matches!(&ran, Err(Error::Query { message, .. }) if message.contains("locked")),
+            "{ran:?}"
+        );
+        // The session is as it was: fenced, in no transaction, and usable.
+        assert_eq!(standing(&conn).await, (1, true));
+        other.execute_batch("ROLLBACK").unwrap();
+        let outcome = write_unrefused(&conn, &[probe]).await.unwrap();
+        assert_eq!(outcome.end, ScriptEnd::Committed);
+        assert_eq!(events_of(&conn, "probe").await, 1);
     }
 
     /// The session's `query_only` and whether it is out of a transaction.

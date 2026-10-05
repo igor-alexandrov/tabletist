@@ -921,7 +921,7 @@ mod tests {
             assert_eq!(stored(&url, table).await.1, "1.00");
             // And after a script, whose reset undoes what the connect set.
             let script = ["SET sql_notes = 0".to_owned()];
-            conn.run_script(&script, 10, &StopFlag::new())
+            conn.run_script(&script, 10, crate::ScriptMode::ReadOnly, &StopFlag::new())
                 .await
                 .unwrap();
             assert_eq!(notes(&conn).await, Some(1));
@@ -1127,7 +1127,7 @@ mod tests {
         let connected = settings(&conn).await;
         let script: Vec<String> = SETS.iter().map(|&set| set.to_owned()).collect();
         let outcome = conn
-            .run_script(&script, 10, &StopFlag::new())
+            .run_script(&script, 10, crate::ScriptMode::ReadOnly, &StopFlag::new())
             .await
             .unwrap();
         // Every one of them took, inside the script.

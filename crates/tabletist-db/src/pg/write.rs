@@ -639,7 +639,7 @@ mod tests {
         script.push("SELECT set_config('standard_conforming_strings', 'off', false)".into());
         script.push("SHOW standard_conforming_strings".into());
         let outcome = conn
-            .run_script(&script, 10, &StopFlag::new())
+            .run_script(&script, 10, crate::ScriptMode::ReadOnly, &StopFlag::new())
             .await
             .unwrap();
         // Every one of them took, inside the script.
