@@ -1214,6 +1214,9 @@ pub struct ButtonSpec<'a> {
     /// The accessible name, when it says more than the text.
     label: Option<&'a str>,
     salt: Option<&'a str>,
+    /// What the button is, where its name does not say (see
+    /// [`Self::keyed`]).
+    key: Option<&'a str>,
     icon: Option<Icon>,
     shortcut: Option<&'a str>,
     kind: ButtonKind,
@@ -1242,6 +1245,7 @@ impl<'a> ButtonSpec<'a> {
             text,
             label: None,
             salt: None,
+            key: None,
             icon: None,
             shortcut: None,
             kind: ButtonKind::Secondary,
@@ -1326,9 +1330,17 @@ impl<'a> ButtonSpec<'a> {
         self
     }
 
+    /// The button's identity, where its name changes with what it would
+    /// do next (Review SQL, Hide SQL): the keyboard stays on it through
+    /// the change.
+    pub fn keyed(mut self, key: &'a str) -> Self {
+        self.key = Some(key);
+        self
+    }
+
     fn id(&self, ui: &Ui) -> egui::Id {
-        ui.id()
-            .with(("button", self.label.unwrap_or(self.text), self.salt))
+        let name = self.key.or(self.label).unwrap_or(self.text);
+        ui.id().with(("button", name, self.salt))
     }
 
     /// Whether the keyboard is on this button as `ui` draws it. For what
@@ -2056,6 +2068,43 @@ mod tests {
             });
             assert!(clicked);
         }
+    }
+
+    #[test]
+    fn a_keyed_button_keeps_the_keyboard_when_its_name_changes() {
+        use crate::testing::Harness;
+        let look = crate::theme::Look::standard();
+        let place = Rect::from_min_size(pos2(40.0, 40.0), vec2(120.0, 32.0));
+        // Two frames of a button whose name changes between them: whether
+        // the second finds the keyboard on it, and keeps it there.
+        let renamed = |key: Option<&str>| {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            let palette = harness.app.palette;
+            let named = |name| match key {
+                Some(key) => ButtonSpec::new(name).keyed(key),
+                None => ButtonSpec::new(name),
+            };
+            harness.frame_with(|ui| {
+                let button = named("Review SQL");
+                button.show_at(ui, place, &look, &palette).request_focus();
+            });
+            let (mut found, mut kept) = (false, false);
+            harness.frame_with(|ui| {
+                let button = named("Hide SQL");
+                found = button.has_keyboard(ui);
+                button.show_at(ui, place, &look, &palette);
+            });
+            harness.frame_with(|ui| {
+                let button = named("Hide SQL");
+                kept = button.show_at(ui, place, &look, &palette).has_focus();
+            });
+            (found, kept)
+        };
+        assert_eq!(renamed(Some("review")), (true, true));
+        // By its name alone it is another button, and the keyboard is on
+        // none.
+        assert_eq!(renamed(None), (false, false));
     }
 
     #[test]
