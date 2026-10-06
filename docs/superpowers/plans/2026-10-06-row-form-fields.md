@@ -4770,3 +4770,27 @@ The window cannot open where this plan runs, so these were not done and are your
 - `cell_editor::in_panel` forces `Advance::Stay`. Step 3's walk replaces that with `Advance::NextField` and `PrevField`, which the reducer performs only when the commit closed the editor.
 - `edit_cell` sends a tall value to the grid (`if large { EditorPlace::Grid }`) and `EditorBreak` moves a panel's editor there. Step 2 removes both and draws the tall field in `Form::editing`.
 - `SetNull` and `RevertCell` still act on the selected cell and do nothing while an editor is open. Step 3's checkbox and `revert` need them to name a cell.
+
+## After the plan ran
+
+Run inline on 2026-10-06, on Linux, in the session that wrote it. All seven tasks were applied from their blocks, tests first, each followed by the four checks (and the shots lint for tasks 2 and 7) and one signed commit:
+
+| Task | Commit | Tests in the main crate |
+|---|---|---|
+| 1 | `3b142af` | 1,742 |
+| 2 | `f25021d` | 1,749 |
+| 3 | `3d040c3` | 1,752 |
+| 4 | `12a1e07` | 1,764 |
+| 5 | `0aa2dc8` | 1,766 |
+| 6 | `4a60583` | 1,771 |
+| 7 | see `git log` | 1,771 |
+
+The tree after task 7 is the draft's tree, file for file.
+
+What the run found against the plan's own words:
+
+- **Task 2, step 2.** The compiler's first errors were not the three the step names. They were `error[E0599]: no variant named `EditField` found for enum `model::Action``, `error[E0609]: no field `focus_field` on type `&model::ObjectTab`` and `error[E0609]: no field `place` on type `&edit::Editor``. The step was right that it does not compile for want of what the task adds.
+- **Task 4, step 5** (a throwaway scene) was not repeated: the same code was looked at that way when the draft was made, and task 7's scenes were rendered and read at the end, in every look.
+- Everything else was as the steps say: each "run it to see it fail" failed as written (11 of 12 in task 4, all five in tasks 5 and 6), and each "run the tests" passed.
+
+Not done here, and listed under "By hand, for the user": anything that needs the real window. No PostgreSQL or MySQL server was reachable; nothing in this run touches what a save sends, and CI runs those suites on the pull request.
