@@ -22,8 +22,9 @@ A table opens on its data. The grid marks primary keys and foreign keys,
 shows JSON at a glance, and draws enum, CHECK and boolean values as colored
 tags.
 
-- **Pages.** The grid loads 300 rows at a time. Cmd/Ctrl+Alt+Left and
-  Right move between pages.
+- **Pages.** The grid loads 300 rows at a time unless you change
+  [Rows per page]({% link _reference/settings-and-files.md %}#the-settings-window)
+  in Settings. Cmd/Ctrl+Alt+Left and Right move between pages.
 - **Sorting.** Click a column's header to sort by it: ascending, then
   descending, then not at all. The server does the sorting.
 - **Counts.** The footer shows the range you are looking at and the

@@ -51,7 +51,8 @@ TLS, SSH tunnels and where passwords are kept are covered in
 - **The row panel** on the right shows the selected row in full. Space
   shows or hides it.
 
-Press `?` at any time for the full list of keys.
+Press `?` at any time for a list of the keys. Every key is in
+[Keyboard Shortcuts]({% link _reference/keyboard-shortcuts.md %}).
 
 ## Next
 

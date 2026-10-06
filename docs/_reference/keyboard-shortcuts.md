@@ -4,8 +4,9 @@ description: Every key of the macOS and Windows looks, and where the Omarchy loo
 nav_order: 1
 ---
 
-Press `?` in the app for this list. It shows the keys of the look you are
-using.
+Press `?` in the app for a shorter version of this list, with the keys of
+the look you are using. It leaves out the keys of the dialogs and of the
+lists that open in an editor, which are here.
 
 In this page, **Mod** is Cmd on macOS and Ctrl on Windows and Linux. Keys
 written with Ctrl are Ctrl on every system.
@@ -41,6 +42,7 @@ In the connection dialog:
 | Mod+S | Save |
 | Mod+T | Test |
 | Mod+Enter | Save and connect |
+| Esc | Cancel |
 
 ## The window
 
@@ -75,9 +77,10 @@ These are the keys of the macOS and Windows looks. The Omarchy look has
 
 | Keys | Do |
 | --- | --- |
-| Enter, F2 | Edit the cell |
+| Enter, F2 | Edit the cell. Typing on a selected cell starts an edit too, and so does a double-click |
 | Mod+I | Edit the row in the row panel |
-| Tab, Shift+Tab | Keep the edit and move right or left |
+| Enter, Tab, Shift+Tab | Keep the edit and move down, right or left |
+| Alt+Enter | Open the large editor. In it, Mod+Enter applies and Esc cancels |
 | Esc | Cancel the edit |
 | Mod+Backspace | Set NULL |
 | Mod+Z | Revert the cell |
@@ -96,6 +99,9 @@ These are the keys of the macOS and Windows looks. The Omarchy look has
 | Mod+Shift+F | Format |
 | Mod+Shift+M | Switch between read-only and read-write runs |
 | Ctrl+Space, Mod+I | Complete |
+| Up, Down | Move in the completion list |
+| Tab, Enter | Accept the completion |
+| Esc | Close the completion list |
 
 ## The Omarchy look
 

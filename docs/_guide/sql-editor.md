@@ -53,8 +53,8 @@ press Space to read it in full in the row panel. When the limit cut a
 result short, the result says so.
 
 **Messages** has a line for every statement: how many rows it returned or
-changed and how long it took, or the database's error with its line and
-column. A read-write run ends with whether it was committed or rolled
+changed and how long it took, or the database's error with the
+statement's line, and the column too when the database names the place. A read-write run ends with whether it was committed or rolled
 back.
 
 ## Format
