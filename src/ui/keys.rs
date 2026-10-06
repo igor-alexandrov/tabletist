@@ -56,6 +56,11 @@ pub const SHORTCUTS: &[(&str, &str, Holds)] = &[
         ALL,
     ),
     ("Mod+Shift+F", "Format SQL", ALL),
+    (
+        "Mod+Shift+M",
+        "Read-only or read-write runs in the SQL editor",
+        ALL,
+    ),
     ("Ctrl+Space, Mod+I", "Complete in the SQL editor", ALL),
     ("Mod+W", "Close tab", ALL),
     ("Mod+Shift+[ / ]", "Previous / next tab", ALL),
@@ -288,6 +293,13 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
         let format = consume_press(input, Modifiers::COMMAND | Modifiers::SHIFT, Key::F);
         if format && let Some((tab, sql_tab)) = sql {
             actions.push(Action::FormatSql { tab, sql_tab });
+        }
+        // The other mode of the editor's runs. Not Mod+W, as its design
+        // has it: that closes the tab.
+        if let Some((tab, sql_tab)) = sql
+            && consume_press(input, Modifiers::COMMAND | Modifiers::SHIFT, Key::M)
+        {
+            actions.push(Action::ToggleSqlMode { tab, sql_tab });
         }
         // A fresh press only: an Esc held to close a dialog over the tab
         // repeats after the dialog is gone.

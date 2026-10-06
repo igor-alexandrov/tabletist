@@ -105,6 +105,7 @@ pub struct Item<'a> {
     current: Option<bool>,
     role: Option<TextRole>,
     detail: Option<&'a str>,
+    disabled: Option<&'a str>,
 }
 
 impl<'a> Item<'a> {
@@ -116,6 +117,7 @@ impl<'a> Item<'a> {
             current: None,
             role: None,
             detail: None,
+            disabled: None,
         }
     }
 
@@ -145,6 +147,14 @@ impl<'a> Item<'a> {
         self
     }
 
+    /// Shown, and not to be picked: `reason` says why on hover. A row that
+    /// cannot be picked stays in its menu, so the menu says what there is
+    /// to choose.
+    pub fn disabled(mut self, reason: &'a str) -> Self {
+        self.disabled = Some(reason);
+        self
+    }
+
     /// Draws the row across the menu. A click on it closes the menu by
     /// itself only when a pointer made it: see [`choices`].
     pub fn show(self, ui: &mut Ui, look: &Look, palette: &Palette) -> Response {
@@ -170,11 +180,18 @@ impl<'a> Item<'a> {
             .detail
             .map_or(0.0, |detail| DETAIL_GAP + measure(note, detail));
         let wanted = lead + measure(role, self.text) + noted + shape.inset;
-        let (rect, response) = ui.allocate_at_least(vec2(wanted, shape.height), Sense::click());
+        // A row that cannot be picked answers no press.
+        let enabled = self.disabled.is_none();
+        let sense = if enabled {
+            Sense::click()
+        } else {
+            Sense::hover()
+        };
+        let (rect, response) = ui.allocate_at_least(vec2(wanted, shape.height), sense);
         let name = self.name.unwrap_or(self.text);
         response.widget_info(|| match self.current {
-            Some(current) => WidgetInfo::selected(WidgetType::Button, true, current, name),
-            None => WidgetInfo::labeled(WidgetType::Button, true, name),
+            Some(current) => WidgetInfo::selected(WidgetType::Button, enabled, current, name),
+            None => WidgetInfo::labeled(WidgetType::Button, enabled, name),
         });
         // The note is drawn apart from the words: a screen reader hears it
         // as what the row is described by.
@@ -183,8 +200,9 @@ impl<'a> Item<'a> {
                 node.set_description(detail);
             });
         }
-        // The pointer and the keyboard light a row the same way.
-        let lit = response.hovered() || focus::shown(&response);
+        // The pointer and the keyboard light a row the same way, and
+        // neither one that cannot be picked.
+        let lit = enabled && (response.hovered() || focus::shown(&response));
         focus::hint(ui, &response, rect, Ring::Own);
         // A long menu scrolls: the row the keyboard came to is brought
         // into view. Jump, not animate: the next key may come at once.
@@ -199,7 +217,9 @@ impl<'a> Item<'a> {
         if lit {
             painter.rect_filled(rect, CornerRadius::same(shape.corner), palette.selection);
         }
-        let ink = if lit && !look.terminal {
+        let ink = if !enabled {
+            palette.dim
+        } else if lit && !look.terminal {
             palette.accent_hover
         } else {
             palette.text
@@ -232,7 +252,10 @@ impl<'a> Item<'a> {
                 .layout(ui.ctx())
                 .paint_right(painter, rect.right() - shape.inset, center);
         }
-        response
+        match self.disabled {
+            Some(reason) => response.on_hover_text(reason),
+            None => response,
+        }
     }
 }
 
@@ -287,6 +310,9 @@ pub struct Choice {
     pub name: Option<String>,
     /// The choice in use.
     pub selected: bool,
+    /// Why the choice cannot be picked, said on hover: it is shown all the
+    /// same, so the menu says what there is to choose.
+    pub disabled: Option<String>,
 }
 
 /// The menu that `button` opens when clicked: `choices` under it, at least
@@ -309,6 +335,10 @@ pub fn choices(
             let item = Item::choice(&choice.text, choice.selected);
             let item = match &choice.name {
                 Some(name) => item.name(name),
+                None => item,
+            };
+            let item = match &choice.disabled {
+                Some(reason) => item.disabled(reason),
                 None => item,
             };
             if item.show(ui, look, palette).clicked() {
