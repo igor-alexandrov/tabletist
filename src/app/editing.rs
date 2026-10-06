@@ -599,11 +599,19 @@ impl App {
                 return Err(lock);
             }
             let class = table.class(cell.col).unwrap_or(ColumnClass::Other);
+            // Whether the editor opens on a text the user typed before:
+            // the cell's pending one. It is typed text still, whatever it
+            // holds: its check holds for it, empty or not, and Enter does
+            // not close on it while its column refuses it.
+            let mut kept = false;
             let text = match start {
                 EditStart::Replace(text) | EditStart::Typed(text) => text,
                 EditStart::Value => match object.edits.cells.get(&(cell.row, cell.col)) {
                     Some(pending) => match &pending.new {
-                        NewValue::Text(text) => text.clone(),
+                        NewValue::Text(text) => {
+                            kept = true;
+                            text.clone()
+                        }
                         NewValue::Null => String::new(),
                     },
                     None => start_text(&table.page.rows[cell.row][cell.col], class),
@@ -615,11 +623,12 @@ impl App {
             let large = opens_large(&text, class);
             // What the text it opens with fails, so the editor says so
             // from its first frame: a cell left to fix opened again, a
-            // character typed on a cell that does not take it. Not an
-            // empty text, which a NULL opens with and nobody typed.
+            // character typed on a cell that does not take it. Not the
+            // empty text a NULL opens with, or an edit from nothing: that
+            // one nobody typed.
             let problem = table
                 .column(cell.col)
-                .filter(|_| !text.is_empty())
+                .filter(|_| kept || !text.is_empty())
                 .and_then(|column| check(table.dialect, column, &text));
             Ok(Editor {
                 cell,
@@ -630,7 +639,7 @@ impl App {
                 // A value of several lines is read from its top: its end
                 // may be far below what its editor shows.
                 top: large && from_value,
-                touched,
+                touched: touched || kept,
                 problem,
             })
         });

@@ -1439,6 +1439,10 @@ fn field(
                     Some(tone) if look.terminal => Some(tone.color(palette)),
                     _ => locked.as_ref().map(|_| palette.secondary),
                 },
+                // A document's frame wears what its cell holds, as the
+                // box of a plain value does: the design's pending
+                // document has the amber line round it.
+                edge: tone.map(|tone| tone.edge(look, palette)),
             };
             value_of(
                 ui, tab, tab_id, row, col, column, value, info, tag, skin, read, actions,
@@ -1694,6 +1698,9 @@ struct Reading<'a> {
     /// The colour its text is written in, where it is not the text's own:
     /// a value that cannot be changed, the terminal look's pending one.
     color: Option<egui::Color32>,
+    /// The line round a document's frame, where its cell is pending or in
+    /// trouble.
+    edge: Option<egui::Color32>,
 }
 
 /// What a field's value came to on screen.
@@ -1737,6 +1744,7 @@ fn value_of(
         whole,
         pad,
         color,
+        edge,
     } = read;
     let request = texts.and_then(|texts| texts.request);
     let column_name = format::display_safe(&column.name);
@@ -1771,7 +1779,7 @@ fn value_of(
                 .fill(palette.window)
                 // The design's 1 pt border outside 12 and 10 of padding
                 // (egui counts the stroke into the margin).
-                .stroke(Stroke::new(1.0, palette.surface_hover))
+                .stroke(Stroke::new(1.0, edge.unwrap_or(palette.surface_hover)))
                 .corner_radius(CornerRadius::same(look.radius))
                 .inner_margin(egui::Margin::symmetric(12, 10))
                 .show(ui, |ui| {

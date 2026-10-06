@@ -14642,6 +14642,50 @@ mod tests {
         }
 
         #[test]
+        fn an_empty_text_left_to_fix_is_typed_text_when_it_is_opened_again() {
+            let mut harness = Harness::new();
+            let (tab, id) = harness.editable();
+            let open = |cell, start| Action::EditField {
+                tab,
+                id,
+                cell,
+                start,
+            };
+            let state = |harness: &Harness| {
+                let editor = object(harness, tab, id).edits.editor.as_ref();
+                editor.map(|editor| (editor.text.clone(), editor.problem.is_some()))
+            };
+            let then = Advance::Stay;
+            // A document's cell edited from nothing and left: the empty
+            // text is kept, to fix (it is no document).
+            harness
+                .app
+                .apply(open(at(1, 2), EditStart::Replace(String::new())));
+            let left = crate::testing::leave_edit(&harness.app, tab, id);
+            harness.app.apply(left);
+            let kept = object(&harness, tab, id).edits.cells.get(&(1, 2));
+            assert!(matches!(
+                kept.map(|cell| &cell.state),
+                Some(State::ToFix(_))
+            ));
+            // Opened again it is that text, with what it fails, and a
+            // commit does not close on it.
+            harness.app.apply(open(at(1, 2), EditStart::Value));
+            assert_eq!(state(&harness), Some((String::new(), true)));
+            harness.app.apply(Action::CommitEdit { tab, id, then });
+            assert_eq!(state(&harness), Some((String::new(), true)));
+            harness.app.apply(Action::CancelEdit { tab, id });
+            assert_eq!(object(&harness, tab, id).edits.cells.len(), 1);
+            // A NULL that nobody touched opens empty too, fails nothing,
+            // and a commit closes it with nothing changed.
+            harness.app.apply(open(at(2, 2), EditStart::Value));
+            assert_eq!(state(&harness), Some((String::new(), false)));
+            harness.app.apply(Action::CommitEdit { tab, id, then });
+            assert_eq!(state(&harness), None);
+            assert_eq!(object(&harness, tab, id).edits.cells.len(), 1);
+        }
+
+        #[test]
         fn the_field_the_keyboard_is_sent_to_is_the_selected_cell_at_once() {
             let mut harness = Harness::new();
             let (tab, id) = harness.editable();
