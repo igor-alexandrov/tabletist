@@ -9,6 +9,7 @@ use crate::i18n::gettext;
 use crate::model::{Action, ConnTabContent};
 use crate::theme::{self, Icon, Look, Palette};
 use crate::typography::{Text, TextRole};
+use crate::ui::menu;
 use crate::ui::states;
 use crate::ui::widgets::{self, ButtonSpec};
 
@@ -637,7 +638,7 @@ fn row_response(
     rect: Rect,
     connection: &SavedConnection,
     opening: Opening,
-    look: &Look,
+    (look, palette): (&Look, &Palette),
     actions: &mut Vec<Action>,
 ) -> egui::Response {
     let tab = opening.tab;
@@ -667,10 +668,12 @@ fn row_response(
         });
     }
     let id = connection.id.clone();
-    response.context_menu(|ui| {
+    menu::context(&response, look, palette, |ui| {
         let locale = crate::i18n::Locale::default();
         let item = |ui: &mut egui::Ui, text: &'static str| {
-            widgets::button(ui, &gettext(locale, text), look).clicked()
+            menu::Item::action(&gettext(locale, text))
+                .show(ui, look, palette)
+                .clicked()
         };
         // An open connection shows, and can be opened once more.
         if opening.open.is_some() {
@@ -741,7 +744,7 @@ fn mac_row(
         pos2(card.left(), rect.top()),
         pos2(card.right(), rect.bottom()),
     );
-    let response = row_response(ui, rect, connection, opening, look, actions);
+    let response = row_response(ui, rect, connection, opening, (look, palette), actions);
     let is_selected = selected == Some(&connection.id);
     let rows = (card.height() / height).round() as usize;
     // The card's inner corners: its 10 less its border.
@@ -967,13 +970,17 @@ fn mac_row(
         more.hidden_at(ui, more_place)
     };
     let id = connection.id.clone();
-    egui::Popup::menu(&response).show(|ui| {
+    menu::under(&response, 0.0, look, palette, |ui| {
         let duplicate = gettext(locale, "Duplicate");
-        if widgets::button(ui, &duplicate, look).clicked() {
+        if menu::Item::action(&duplicate)
+            .show(ui, look, palette)
+            .clicked()
+        {
             actions.push(Action::DuplicateConnection(id.clone()));
         }
         let delete = format!("{} {}", gettext(locale, "Delete"), connection.name);
-        if widgets::button(ui, &gettext(locale, "Delete"), look)
+        if menu::Item::action(&gettext(locale, "Delete"))
+            .show(ui, look, palette)
             .on_hover_text(&delete)
             .clicked()
         {
@@ -1003,7 +1010,7 @@ fn terminal_row(
     } = skin;
     let (rect, _) =
         ui.allocate_exact_size(vec2(ui.available_width(), row_height(look)), Sense::hover());
-    let response = row_response(ui, rect, connection, opening, look, actions);
+    let response = row_response(ui, rect, connection, opening, (look, palette), actions);
     let is_selected = selected == Some(&connection.id);
     let center = rect.center().y;
     if is_selected {

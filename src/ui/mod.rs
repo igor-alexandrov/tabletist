@@ -18,6 +18,7 @@ pub mod help;
 pub mod host_key_prompt;
 pub mod json_view;
 pub mod keys;
+pub mod menu;
 pub mod object_tabs;
 pub mod password_prompt;
 pub mod pending_bar;

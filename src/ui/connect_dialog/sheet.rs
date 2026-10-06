@@ -12,6 +12,7 @@ use crate::i18n::gettext;
 use crate::model::{Action, ConnectionForm, SshAuthKind};
 use crate::theme::{self, Icon};
 use crate::typography::{Text, TextRole};
+use crate::ui::menu;
 use crate::ui::widgets::{self, ButtonSpec};
 
 use super::choice::{Choice, Group, choose, driver_choice, environment_choice};
@@ -181,40 +182,19 @@ fn keyring_box(
     );
 }
 
-/// macOS: a list of choices drawn as the designs draw one, a field with a
-/// mark at its right: the look's own up and down chevrons, or one pointing
-/// down. It relies on [`super::style_controls`] having set the fields'
-/// fill, border and height on `ui`: it takes them as they are.
-fn select<R>(
-    ui: &mut Ui,
-    combo: egui::ComboBox,
+/// macOS: a dropdown `width` wide that reads `text`, as tall as the
+/// dialog's fields and filled as they are. It relies on
+/// [`super::style_controls`] having set that fill on `ui`.
+fn select<'a>(
+    ui: &Ui,
+    salt: &'static str,
+    text: &'a str,
+    width: f32,
     skin: &Skin,
-    contents: impl FnOnce(&mut Ui) -> R,
-) -> egui::InnerResponse<Option<R>> {
-    let icon = if skin.look.raised_popups {
-        Icon::ChevronsUpDown
-    } else {
-        Icon::ChevronDown
-    };
-    ui.scope(|ui| {
-        // The fields' fill while it rests. Under the pointer, and with
-        // the keyboard on it, it keeps the look's own, which its menu's
-        // rows share.
-        let fill = ui.visuals().extreme_bg_color;
-        let states = &mut ui.visuals_mut().widgets;
-        states.inactive.weak_bg_fill = fill;
-        states.open.weak_bg_fill = fill;
-        // Its text starts where a field's does.
-        ui.spacing_mut().button_padding.x = f32::from(skin.text_inset());
-        combo
-            .icon(move |ui, rect, visuals, _open| {
-                let place = Rect::from_center_size(rect.center(), vec2(14.0, 14.0));
-                icon.image(visuals.fg_stroke.color, 14.0)
-                    .paint_at(ui, place);
-            })
-            .show_ui(ui, contents)
-    })
-    .inner
+) -> menu::Dropdown<'a> {
+    menu::Dropdown::new(salt, text, width)
+        .height(skin.field_height())
+        .fill(ui.visuals().extreme_bg_color)
 }
 
 /// macOS: a group of fields in a hairline box, its heading set into the
@@ -414,19 +394,13 @@ fn security(ui: &mut Ui, form: &mut ConnectionForm, skin: &Skin, actions: &mut V
             if column == 0 {
                 let width = ui.available_width();
                 labelled(ui, &skin.say("SSL mode"), small, skin, |ui| {
-                    select(
-                        ui,
-                        egui::ComboBox::from_id_salt("tls-mode")
-                            .width(width)
-                            .selected_text(tls_label(form.tls)),
-                        skin,
-                        |ui| {
+                    select(ui, "tls-mode", tls_label(form.tls), width, skin)
+                        .show(ui, look, palette, |ui| {
                             for (mode, label) in TLS_MODES {
-                                ui.selectable_value(&mut form.tls, mode, label);
+                                menu::value(ui, &mut form.tls, mode, label, look, palette);
                             }
-                        },
-                    )
-                    .response
+                        })
+                        .response
                 });
             } else {
                 let label = widgets::label(
@@ -513,23 +487,21 @@ fn ssh_fields(ui: &mut Ui, form: &mut ConnectionForm, skin: &Skin, actions: &mut
             let width = ui.available_width();
             let name = gettext(skin.locale, "Authentication");
             let value = gettext(skin.locale, form.ssh_auth.label());
-            let response = select(
-                ui,
-                egui::ComboBox::from_id_salt("ssh-auth")
-                    .width(width)
-                    .selected_text(&*value),
-                skin,
-                |ui| {
+            let response = select(ui, "ssh-auth", &value, width, skin)
+                .show(ui, skin.look, skin.palette, |ui| {
                     for kind in SshAuthKind::ALL {
-                        ui.selectable_value(
+                        let label = gettext(skin.locale, kind.label());
+                        menu::value(
+                            ui,
                             &mut form.ssh_auth,
                             kind,
-                            gettext(skin.locale, kind.label()),
+                            &label,
+                            skin.look,
+                            skin.palette,
                         );
                     }
-                },
-            )
-            .response;
+                })
+                .response;
             response.widget_info(|| {
                 let mut info = WidgetInfo::labeled(WidgetType::ComboBox, true, &*name);
                 info.current_text_value = Some(value.to_string());

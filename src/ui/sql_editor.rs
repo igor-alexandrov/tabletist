@@ -14,7 +14,8 @@ use crate::settings::Settings;
 use crate::theme::{Icon, Look, Palette};
 use crate::typography::{Text, TextRole};
 use crate::ui::format;
-use crate::ui::widgets::{self, ButtonSpec, MenuChoice};
+use crate::ui::menu;
+use crate::ui::widgets::{self, ButtonSpec};
 
 /// Left and right padding of the toolbar.
 const SIDE: f32 = 16.0;
@@ -381,7 +382,7 @@ fn menus(
         || {
             Settings::SQL_LIMITS
                 .iter()
-                .map(|choice| MenuChoice {
+                .map(|choice| menu::Choice {
                     text: limit_text(*choice, false, look, locale),
                     name: Some(limit_name(*choice, locale)),
                     selected: *choice == bar.limit,
@@ -407,7 +408,7 @@ fn menus(
         || {
             Settings::SQL_TIMEOUTS
                 .iter()
-                .map(|choice| MenuChoice {
+                .map(|choice| menu::Choice {
                     text: timeout_text(*choice, false, look, locale),
                     name: Some(timeout_name(*choice, locale)),
                     selected: *choice == bar.secs,
@@ -752,7 +753,7 @@ fn menu(
     label: &MenuLabel,
     shape: MenuShape,
     (look, palette): (&Look, &Palette),
-    choices: impl FnOnce() -> Vec<MenuChoice>,
+    choices: impl FnOnce() -> Vec<menu::Choice>,
 ) -> Option<usize> {
     let response = ui.interact(rect, ui.id().with(("menu", &label.name)), Sense::click());
     response.widget_info(|| {
@@ -812,7 +813,7 @@ fn menu(
     } else {
         response
     };
-    widgets::popup_menu(&response, rect.width(), look, choices)
+    menu::choices(&response, rect.width(), look, palette, choices)
 }
 
 /// Whether the last run ended and ran something. A run that failed as a

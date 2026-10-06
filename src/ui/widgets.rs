@@ -374,9 +374,9 @@ pub fn track_fill(palette: &Palette) -> Color32 {
     palette.surface
 }
 
-/// The fill of something raised off its bar (a raised tab, a pop-up
-/// button): the window colour, which is lighter than the bar in a light
-/// palette. In a dark palette the window is darker than the bar and would
+/// The fill of something raised off its bar (a raised tab, the list of
+/// completions): the window colour, which is lighter than the bar in a
+/// light palette. In a dark palette the window is darker than the bar and would
 /// read as a slot, so it takes the lightest surface instead.
 pub fn raised_fill(palette: &Palette) -> Color32 {
     if palette.dark {
@@ -403,124 +403,6 @@ pub fn active_tab_fill(look: &Look, palette: &Palette) -> Color32 {
         raised_fill(palette)
     } else {
         palette.window
-    }
-}
-
-/// A pop-up button: `combo` with `contents` as its menu. With
-/// `look.raised_popups` it is drawn as macOS draws one: raised off its
-/// background with a soft shadow and a hairline, and marked with up and
-/// down chevrons. Other looks keep egui's combo box.
-pub fn popup_button<R>(
-    ui: &mut Ui,
-    combo: egui::ComboBox,
-    look: &Look,
-    palette: &Palette,
-    contents: impl FnOnce(&mut Ui) -> R,
-) -> egui::InnerResponse<Option<R>> {
-    if !look.raised_popups {
-        return combo.show_ui(ui, contents);
-    }
-    let shadow = ui.painter().add(egui::Shape::Noop);
-    let fill = raised_fill(palette);
-    let rim = Stroke::new(1.0, palette.text.gamma_multiply(0.1));
-    let inner = ui.scope(|ui| {
-        let widgets = &mut ui.visuals_mut().widgets;
-        for widget in [
-            &mut widgets.inactive,
-            &mut widgets.hovered,
-            &mut widgets.open,
-        ] {
-            widget.weak_bg_fill = fill;
-            widget.bg_stroke = rim;
-        }
-        widgets.active.bg_stroke = rim;
-        combo
-            .icon(|ui, rect, visuals, _open| {
-                paint_chevrons(ui.painter(), rect, visuals.fg_stroke.color);
-            })
-            .show_ui(ui, contents)
-    });
-    let rect = inner.inner.response.rect;
-    if ui.is_rect_visible(rect) {
-        let corner = ui.visuals().widgets.inactive.corner_radius;
-        ui.painter()
-            .set(shadow, raised_shadow(palette).as_shape(rect, corner));
-    }
-    inner.inner
-}
-
-/// One choice of a [`popup_menu`].
-pub struct MenuChoice {
-    /// What the choice reads.
-    pub text: String,
-    /// Its name for screen readers, when it is not what it reads (the
-    /// terminal look's lower case).
-    pub name: Option<String>,
-    /// The choice in use.
-    pub selected: bool,
-}
-
-/// The menu that `button` opens when clicked: `choices` under it, at least
-/// `min_width` wide. Returns the index of the choice picked this frame.
-/// `choices` is asked for only while the menu is open.
-///
-/// egui closes a menu on a pointer's click; a pick by key or by a screen
-/// reader closes it here. After a pick or Escape the keyboard is back on
-/// `button`, where it was before the menu opened.
-pub fn popup_menu(
-    button: &Response,
-    min_width: f32,
-    look: &Look,
-    choices: impl FnOnce() -> Vec<MenuChoice>,
-) -> Option<usize> {
-    let mut picked = None;
-    let open = egui::Popup::menu(button).show(|ui| {
-        ui.set_min_width(min_width);
-        for (index, choice) in choices().into_iter().enumerate() {
-            let text = galley(ui, &choice.text, Color32::PLACEHOLDER, look);
-            let response = ui.add(egui::Button::selectable(choice.selected, text));
-            if let Some(name) = &choice.name {
-                response.widget_info(|| {
-                    WidgetInfo::selected(WidgetType::Button, true, choice.selected, name)
-                });
-            }
-            if response.clicked() {
-                picked = Some(index);
-                ui.close();
-            }
-        }
-    });
-    let escaped = || {
-        button
-            .ctx
-            .input(|input| input.key_pressed(egui::Key::Escape))
-    };
-    if open.is_some() && (picked.is_some() || escaped()) {
-        button.request_focus();
-    }
-    picked
-}
-
-/// Up and down chevrons, centred in `rect`: the mark of a macOS pop-up
-/// button.
-fn paint_chevrons(painter: &egui::Painter, rect: Rect, color: Color32) {
-    let center = rect.center();
-    let half_width = rect.width() * 0.25;
-    let rise = half_width * 0.75;
-    let gap = rect.height() * 0.1;
-    let stroke = Stroke::new(1.5, color);
-    // Up, then down: the wings sit `gap` off the centre, the tip `rise`
-    // further out.
-    for direction in [-1.0, 1.0] {
-        let wings = center.y + direction * gap;
-        painter.line(
-            vec![
-                egui::pos2(center.x - half_width, wings),
-                egui::pos2(center.x, wings + direction * rise),
-                egui::pos2(center.x + half_width, wings),
-            ],
-            stroke,
-        );
     }
 }
 
@@ -2022,32 +1904,6 @@ mod tests {
                     look.name
                 );
             });
-        }
-    }
-
-    #[test]
-    fn pop_up_buttons_keep_their_name_and_value_in_every_look() {
-        for look in crate::theme::Look::ALL {
-            let mut harness = crate::testing::Harness::new();
-            harness.set_look(look);
-            let palette = harness.app.palette;
-            let tree = harness.frame_with(|ui| {
-                let mut chosen = "bookshop_test".to_owned();
-                let combo = egui::ComboBox::from_id_salt("database").selected_text(&chosen);
-                let response = super::popup_button(ui, combo, &look, &palette, |ui| {
-                    ui.selectable_value(&mut chosen, "postgres".into(), "postgres");
-                })
-                .response;
-                response.widget_info(|| {
-                    let mut info = WidgetInfo::labeled(WidgetType::ComboBox, true, "Database");
-                    info.current_text_value = Some("bookshop_test".into());
-                    info
-                });
-            });
-            let id = crate::testing::node(&tree, "Database", egui::accesskit::Role::ComboBox)
-                .unwrap_or_else(|| panic!("{}", look.name));
-            let (_, node) = tree.nodes.iter().find(|(n, _)| *n == id).unwrap();
-            assert_eq!(node.value(), Some("bookshop_test"), "{}", look.name);
         }
     }
 
