@@ -248,6 +248,13 @@ pub enum Action {
         id: TabId,
         cell: CellPos,
     },
+    /// Edit the selected row in the row panel: show the panel, and open
+    /// the editor there on the selected cell's field, or on the row's
+    /// first field that can be edited where that one cannot.
+    EditRow {
+        tab: ConnTabId,
+        id: TabId,
+    },
     /// The editor's text changed: check it again.
     EditorTyped {
         tab: ConnTabId,

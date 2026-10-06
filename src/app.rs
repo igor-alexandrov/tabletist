@@ -811,6 +811,7 @@ impl App {
             Action::EditField { tab, id, cell } => {
                 self.edit_cell(tab, id, cell, EditStart::Value, EditorPlace::Panel);
             }
+            Action::EditRow { tab, id } => self.edit_row(tab, id),
             Action::EditorTyped { tab, id } => {
                 let problem = self.editor_problem(tab, id);
                 if let Some(editor) = self.editor_mut(tab, id) {
@@ -14599,6 +14600,138 @@ mod tests {
                 Some((at(2, 1), EditorPlace::Panel, false))
             );
             assert_eq!(object(&harness, tab, id).edits.cells.len(), 1);
+        }
+
+        #[test]
+        fn editing_the_row_takes_the_selected_cells_field_or_the_first_that_can_be_edited() {
+            let mut harness = Harness::new();
+            let (tab, id) = harness.editable();
+            let panel = |harness: &Harness| harness.app.workspace(tab).unwrap().row_panel;
+            // With no row selected there is nothing to edit.
+            harness.app.apply(Action::EditRow { tab, id });
+            assert!(editor(&harness, tab, id).is_none());
+            // The selected cell's field, in the panel, which is shown.
+            harness.app.apply(Action::ToggleRowPanel(tab));
+            assert!(!panel(&harness));
+            harness.app.apply(Action::SelectCell {
+                tab,
+                id,
+                cell: at(1, 1),
+            });
+            harness.app.apply(Action::EditRow { tab, id });
+            assert!(panel(&harness));
+            assert_eq!(
+                editor(&harness, tab, id),
+                Some((at(1, 1), EditorPlace::Panel, false))
+            );
+            harness.app.apply(Action::CancelEdit { tab, id });
+            // On the key's cell, which is locked: the row's first field
+            // that can be edited.
+            harness.app.apply(Action::SelectCell {
+                tab,
+                id,
+                cell: at(2, 0),
+            });
+            harness.app.apply(Action::EditRow { tab, id });
+            assert_eq!(
+                editor(&harness, tab, id),
+                Some((at(2, 1), EditorPlace::Panel, false))
+            );
+            assert_eq!(object(&harness, tab, id).edits.why, None);
+            // An editor open in the grid gives way, its text kept.
+            harness.app.apply(Action::EditCell {
+                tab,
+                id,
+                cell: at(3, 1),
+                start: EditStart::Value,
+            });
+            type_text(&mut harness, tab, id, "dan@example.com");
+            harness.app.apply(Action::EditRow { tab, id });
+            assert_eq!(
+                editor(&harness, tab, id),
+                Some((at(3, 1), EditorPlace::Panel, false))
+            );
+            let text = &object(&harness, tab, id)
+                .edits
+                .editor
+                .as_ref()
+                .unwrap()
+                .text;
+            assert_eq!(text, "dan@example.com");
+        }
+
+        #[test]
+        fn editing_a_row_that_cannot_be_edited_shows_the_panel_and_says_why() {
+            let mut harness = Harness::new();
+            let (tab, id) = harness.editable();
+            let why = |harness: &Harness| {
+                let edits = &object(harness, tab, id).edits;
+                edits.why.map(|(cell, lock)| (cell, lock, edits.why_place))
+            };
+            harness.app.apply(Action::ToggleRowPanel(tab));
+            harness.app.apply(Action::SelectCell {
+                tab,
+                id,
+                cell: at(1, 1),
+            });
+            // No cell of the row can be edited: the reason is the row's,
+            // kept for the selected cell.
+            harness.app.workspace_mut(tab).unwrap().access = tabletist_db::Access::ReadOnly;
+            harness.app.apply(Action::EditRow { tab, id });
+            assert!(harness.app.workspace(tab).unwrap().row_panel);
+            assert!(editor(&harness, tab, id).is_none());
+            assert_eq!(
+                why(&harness),
+                Some((at(1, 1), Lock::ReadOnly, EditorPlace::Panel))
+            );
+            // Each cell is locked for a reason of its own: the selected
+            // cell's is the one said.
+            harness.app.workspace_mut(tab).unwrap().access = tabletist_db::Access::Writable;
+            let mut structure = crate::testing::fixture_structure();
+            for column in &mut structure.columns[1..] {
+                column.generated = true;
+            }
+            harness
+                .app
+                .workspace_mut(tab)
+                .unwrap()
+                .object_tab_mut(id)
+                .unwrap()
+                .structure
+                .value = Some(structure);
+            harness.app.apply(Action::EditRow { tab, id });
+            assert!(editor(&harness, tab, id).is_none());
+            assert_eq!(
+                why(&harness),
+                Some((at(1, 1), Lock::Generated, EditorPlace::Panel))
+            );
+            // In the Structure view there is no panel to edit in.
+            harness.app.apply(Action::SetView {
+                tab,
+                object_tab: id,
+                view: crate::model::ObjectView::Structure,
+            });
+            harness
+                .app
+                .workspace_mut(tab)
+                .unwrap()
+                .object_tab_mut(id)
+                .unwrap()
+                .edits
+                .why = None;
+            harness.app.apply(Action::EditRow { tab, id });
+            assert_eq!(why(&harness), None);
+        }
+
+        #[test]
+        fn editing_the_row_is_dropped_under_a_prompt_about_the_changes() {
+            let mut harness = Harness::new();
+            let (tab, id) = harness.editable();
+            type_into(&mut harness, tab, id, at(1, 1), "bob@example.com");
+            harness.app.apply(Action::CloseTab { tab, id });
+            assert!(leave_prompt(&harness).is_some());
+            harness.app.apply(Action::EditRow { tab, id });
+            assert!(editor(&harness, tab, id).is_none());
         }
     }
 }

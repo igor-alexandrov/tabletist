@@ -32,6 +32,7 @@ pub(super) fn dropped_under_a_prompt(action: &Action) -> bool {
         action,
         Action::EditCell { .. }
             | Action::EditField { .. }
+            | Action::EditRow { .. }
             | Action::EditorBreak { .. }
             | Action::CommitEdit { .. }
             | Action::LeaveEdit { .. }
@@ -618,6 +619,36 @@ impl App {
         if let Some(workspace) = self.workspace_mut(tab) {
             workspace.pane = Pane::Grid;
         }
+    }
+
+    /// Edits the selected row in the row panel: the selected cell's field
+    /// where it can be edited, and otherwise the row's first field that
+    /// can, in the page's column order. The panel is shown for it. A row
+    /// with no such field says why, for the selected cell: no cell of it
+    /// can be edited (a read-only connection, a view, a save that runs),
+    /// or each is locked for a reason of its own.
+    pub(super) fn edit_row(&mut self, tab: ConnTabId, id: TabId) {
+        let field = self.table(tab, id, |table, object| {
+            let cell = object.selection?;
+            // The panel shows a row of the Data view only.
+            if object.view != crate::model::ObjectView::Data {
+                return None;
+            }
+            if table.lock(cell).is_none() || table.row_lock(cell.row).is_some() {
+                return Some(cell);
+            }
+            let first = (0..table.page.columns.len())
+                .map(|col| CellPos { row: cell.row, col })
+                .find(|other| table.lock(*other).is_none());
+            Some(first.unwrap_or(cell))
+        });
+        let Some(Some(cell)) = field else {
+            return;
+        };
+        if let Some(workspace) = self.workspace_mut(tab) {
+            workspace.row_panel = true;
+        }
+        self.edit_cell(tab, id, cell, EditStart::Value, EditorPlace::Panel);
     }
 
     /// Takes the open editor's text as its cell's new value and closes it.
