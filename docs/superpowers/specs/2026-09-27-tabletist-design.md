@@ -33,8 +33,13 @@ PostgreSQL, MySQL, SQLite. No others in v1.
    existing rows in a table's grid, and only Save writes: every pending
    change of the tab in one transaction, which never overwrites a row
    someone else changed unless the user, asked about that row, chooses to,
-   and on production only after its statements were shown and confirmed. Browsing, a raw WHERE and the SQL editor still
-   cannot write (see `2026-10-03-value-editing-core-design.md`).
+   and on production only after its statements were shown and confirmed.
+   A SQL tab the user switched to Read-write writes too: a run that
+   changes data is one transaction, committed when every statement
+   succeeded, and not yet on a production connection. Browsing, a raw
+   WHERE and every other run still cannot write (see
+   `2026-10-03-value-editing-core-design.md` and
+   `2026-10-05-sql-editor-writes-design.md`).
 7. The UI thread never blocks on the database, network, or disk; any running
    query can be cancelled.
 8. The app follows the Omarchy theme live, and the OS light/dark setting
@@ -278,16 +283,20 @@ A writable session, for a connection whose "Open read-only" box is off, is
 read-write: PostgreSQL keeps the server's default, MySQL gets `SET SESSION
 TRANSACTION READ WRITE`, and SQLite is opened `SQLITE_OPEN_READ_WRITE`
 (never creating the file) with `PRAGMA query_only = ON` as its standing
-state. Browsing, a raw WHERE and the SQL editor still cannot write there:
-row fetches and counts run in read-only transactions on PostgreSQL and
-MySQL, and on SQLite under `query_only` with an authorizer fencing the raw
-WHERE; a script runs behind the SQL editor's guard, which makes a MySQL
-session read-only for the run. The crate writes in exactly one place,
-`Connection::write`, which a read-only session refuses. The app calls it
-from one place as well: the Save of a table tab's pending changes
-(`Command::Write`, sent by the reducer in `src/app/editing.rs`). The detail
-is in `2026-10-03-value-editing-core-design.md`, "Sessions", "Editing in
-the grid" and "Saving".
+state. Browsing, a raw WHERE and a read-only run of the SQL editor still
+cannot write there: row fetches and counts run in read-only transactions
+on PostgreSQL and MySQL, and on SQLite under `query_only` with an
+authorizer fencing the raw WHERE; a read-only script runs behind the SQL
+editor's guard, which makes a MySQL session read-only for the run. The
+crate writes in exactly two places, both of which a read-only session
+refuses: `Connection::write`, and `Connection::run_script` in
+`ScriptMode::Write`. The app calls each from one place: the Save of a
+table tab's pending changes (`Command::Write`, sent by the reducer in
+`src/app/editing.rs`), and the run of a SQL tab in Read-write that holds
+a write (`Command::RunSql` with that mode, sent by `App::send_run`). The
+detail is in `2026-10-03-value-editing-core-design.md`, "Sessions",
+"Editing in the grid" and "Saving", and in
+`2026-10-05-sql-editor-writes-design.md`.
 
 Every session also fixes how values print, since a save sends back what a
 page showed: PostgreSQL sets `extra_float_digits = 3` and `DateStyle =
@@ -607,6 +616,7 @@ read-only table (structure data is small; the data grid is not needed).
 |---|---|
 | Cmd/Ctrl+O | Connections (the picker) |
 | Cmd/Ctrl+T | New SQL editor (added after v1, see `2026-09-30-sql-editor-core-design.md`) |
+| Cmd/Ctrl+Shift+M | Read-only or read-write runs in the SQL editor (see `2026-10-05-sql-editor-writes-design.md`) |
 | Cmd/Ctrl+Shift+W | Close connection |
 | Cmd/Ctrl+1..9, Ctrl+Tab, Ctrl+Shift+Tab | Switch connection (the digits count the open ones) |
 | Cmd/Ctrl+N | New connection |

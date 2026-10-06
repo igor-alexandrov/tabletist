@@ -701,29 +701,111 @@ fn shots() {
         workspace.object_tab_mut(id).unwrap().rows.started =
             std::time::Instant::now().checked_sub(Duration::from_millis(4200));
     });
-    // A write the editor refused: it only reads, on any connection.
+    // A write a database refused in a read-only run, as each of its
+    // cards: in a tab that is in Read-only, in a tab in Read-write whose
+    // run was taken for one of reads, and on a connection that opens
+    // read-only. The Messages lead with it.
     both("sql-blocked", |harness| {
-        let tab = sql_script(
-            harness,
-            "UPDATE book_images\n   SET kind = 'ebook'\n WHERE id = 2;",
-        );
+        let tab = sql_script(harness, UPDATE);
+        run_sql(harness, tab, true);
+        let refused = crate::testing::refused_write();
+        harness.answer_sql(Ok(crate::testing::script_outcome(vec![refused])), None);
+    });
+    both("sql-blocked-run", |harness| {
+        let tab = sql_script(harness, "SELECT setval('book_images_id_seq', 1);");
+        read_write(harness, tab);
         run_sql(harness, tab, true);
         let refused = tabletist_db::StatementOutcome::Error {
             error: tabletist_db::Error::Query {
                 code: Some("25006".into()),
-                message: "cannot execute UPDATE in a read-only transaction".into(),
+                message: "cannot execute setval() in a read-only transaction".into(),
                 detail: None,
                 hint: None,
             },
             position: None,
         };
         harness.answer_sql(Ok(crate::testing::script_outcome(vec![refused])), None);
-        let sql_tab = harness.app.workspace(tab).unwrap().active_tab.unwrap();
-        harness.app.apply(Action::SetResultPane {
-            tab,
-            sql_tab,
-            pane: crate::model::ResultPane::Results,
-        });
+    });
+    both("sql-blocked-connection", |harness| {
+        let tab = sql_script(harness, UPDATE);
+        let workspace = harness.app.workspace_mut(tab).unwrap();
+        workspace.access = tabletist_db::Access::ReadOnly;
+        run_sql(harness, tab, true);
+        let refused = crate::testing::refused_write();
+        harness.answer_sql(Ok(crate::testing::script_outcome(vec![refused])), None);
+    });
+    // A tab switched to Read-write: the badge's menu, a run that writes on
+    // its way (Run and Run all wait for it), and how such a run ends.
+    both("sql-write-menu", |harness| {
+        let tab = sql_editor(harness);
+        read_write(harness, tab);
+        harness.click("Transaction");
+    });
+    both("sql-write-running", |harness| {
+        writing(harness, WRITES);
+    });
+    both("sql-write-committed", |harness| {
+        let tab = writing(harness, WRITES);
+        let done = vec![
+            crate::testing::done_outcome(Some(12)),
+            crate::testing::done_outcome(Some(3)),
+        ];
+        let end = tabletist_db::ScriptEnd::Committed;
+        harness.answer_sql(Ok(crate::testing::write_outcome(done, end)), None);
+        show_messages(harness, tab);
+    });
+    both("sql-write-rolled-back", |harness| {
+        writing(harness, WRITES);
+        let message = "update or delete on table \"book_images\" violates foreign key \
+                       constraint \"book_covers_image_id_fkey\" on table \"book_covers\"";
+        let outcomes = vec![
+            crate::testing::done_outcome(Some(12)),
+            crate::testing::error_outcome(message, None),
+        ];
+        let end = tabletist_db::ScriptEnd::RolledBack;
+        harness.answer_sql(Ok(crate::testing::write_outcome(outcomes, end)), None);
+    });
+    both("sql-write-commit-failed", |harness| {
+        writing(harness, WRITES);
+        let done = vec![
+            crate::testing::done_outcome(Some(12)),
+            crate::testing::done_outcome(Some(3)),
+        ];
+        let end = tabletist_db::ScriptEnd::CommitFailed {
+            error: tabletist_db::Error::Query {
+                code: Some("23503".into()),
+                message: "update or delete on table \"book_images\" violates foreign key \
+                          constraint \"book_covers_image_id_fkey\" on table \"book_covers\""
+                    .into(),
+                detail: Some("Key (id)=(7) is still referenced from table \"book_covers\".".into()),
+                hint: None,
+            },
+            committed: 0,
+        };
+        harness.answer_sql(Ok(crate::testing::write_outcome(done, end)), None);
+    });
+    // MySQL commits at a CREATE TABLE: what came before it is written
+    // though the script failed after it.
+    both("sql-write-partly", |harness| {
+        let script = "UPDATE book_images SET kind = 'ebook' WHERE kind = 'epub';\n\
+                      CREATE TABLE book_formats (kind varchar(16) PRIMARY KEY);\n\
+                      INSERT INTO book_formats SELECT DISTINCT kind FROM book_images;\n\
+                      INSERT INTO book_formats VALUES ('ebook');";
+        let tab = sql_script(harness, script);
+        harness.app.workspace_mut(tab).unwrap().driver = Driver::MySql;
+        read_write(harness, tab);
+        run_sql(harness, tab, true);
+        let outcomes = vec![
+            crate::testing::done_outcome(Some(12)),
+            crate::testing::done_outcome(None),
+            crate::testing::done_outcome(Some(2)),
+            crate::testing::error_outcome(
+                "Duplicate entry 'ebook' for key 'book_formats.PRIMARY'",
+                None,
+            ),
+        ];
+        let end = tabletist_db::ScriptEnd::Partly { committed: 2 };
+        harness.answer_sql(Ok(crate::testing::write_outcome(outcomes, end)), None);
     });
     both("state-no-schemas", |harness| {
         let tab = workspace(harness);
@@ -973,6 +1055,41 @@ fn shots() {
 fn run_sql(harness: &mut Harness, tab: ConnTabId, all: bool) {
     let sql_tab = harness.app.workspace(tab).unwrap().active_tab.unwrap();
     harness.app.apply(Action::RunSql { tab, sql_tab, all });
+}
+
+/// One statement that changes rows.
+const UPDATE: &str = "UPDATE book_images\n   SET kind = 'ebook'\n WHERE id = 2;";
+
+/// The script the scenes of a run that writes show.
+const WRITES: &str = "UPDATE book_images\n   SET kind = 'ebook'\n WHERE kind = 'epub';\n\n\
+                      DELETE FROM book_images\n WHERE book_id IS NULL;";
+
+/// Switches the SQL editor on screen to Read-write, as its badge does.
+fn read_write(harness: &mut Harness, tab: ConnTabId) {
+    let sql_tab = harness.app.workspace(tab).unwrap().active_tab.unwrap();
+    harness.app.apply(Action::SetSqlMode {
+        tab,
+        sql_tab,
+        mode: crate::model::RunMode::ReadWrite,
+    });
+}
+
+/// A SQL editor in Read-write holding `script`, all of it sent as its run.
+fn writing(harness: &mut Harness, script: &str) -> ConnTabId {
+    let tab = sql_script(harness, script);
+    read_write(harness, tab);
+    run_sql(harness, tab, true);
+    tab
+}
+
+/// Shows the Messages of the SQL editor on screen.
+fn show_messages(harness: &mut Harness, tab: ConnTabId) {
+    let sql_tab = harness.app.workspace(tab).unwrap().active_tab.unwrap();
+    harness.app.apply(Action::SetResultPane {
+        tab,
+        sql_tab,
+        pane: crate::model::ResultPane::Messages,
+    });
 }
 
 /// The script the SQL scenes show: two statements over `book_images`.
