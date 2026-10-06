@@ -6,9 +6,10 @@ nav_order: 3
 
 ## The sidebar
 
-The sidebar shows one schema at a time: the objects you opened recently,
-then the schema's tables and views. Tables that share a prefix, such as
-`book_`, fold into a group. You can also list them flat.
+The sidebar shows the tables and views of one schema at a time. Tables
+that share a prefix, such as `book_`, fold into a group. You can also
+list them flat. On macOS and Windows, the objects you opened recently
+are listed above them.
 
 Quick open (Cmd/Ctrl+P) finds any object by name without the sidebar.
 

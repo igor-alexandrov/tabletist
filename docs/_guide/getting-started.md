@@ -44,14 +44,16 @@ TLS, SSH tunnels and where passwords are kept are covered in
 
 - **The header** holds a chip for each open connection. Click one to
   switch, or press Cmd/Ctrl+1 to 9.
-- **The sidebar** lists the tables and views of one schema, with the ones
-  you opened recently on top. Cmd/Ctrl+B shows or hides it.
+- **The sidebar** lists the tables and views of one schema. On macOS and
+  Windows the ones you opened recently are on top. Cmd/Ctrl+B shows or
+  hides it.
 - **Quick open** (Cmd/Ctrl+P) finds any table or view by name.
 - **Tabs** hold the tables and SQL editors you have open.
 - **The row panel** on the right shows every field of the selected row.
   Space shows or hides it.
 
-Press `?` at any time for a list of the keys. They are described in
+Press `?` for a list of the keys, when no text field has the keyboard and
+no dialog is open. They are described in
 [Keyboard Shortcuts]({% link _reference/keyboard-shortcuts.md %}).
 
 ## Next
