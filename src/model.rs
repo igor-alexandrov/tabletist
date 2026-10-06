@@ -255,6 +255,13 @@ pub enum Action {
         tab: ConnTabId,
         id: TabId,
     },
+    /// The row panel gave the field of the column `col` the keyboard it
+    /// was owed after an edit there ended: the request is met.
+    FieldFocused {
+        tab: ConnTabId,
+        id: TabId,
+        col: usize,
+    },
     /// The editor's text changed: check it again.
     EditorTyped {
         tab: ConnTabId,
@@ -1826,8 +1833,9 @@ pub struct ObjectTab {
     /// The row panel's text for the selected row (see `App::format_rows`).
     pub fields: Option<RowFields>,
     /// The column whose field of the row panel gets the keyboard back: an
-    /// edit made there was committed or dropped. Taken by the panel when
-    /// it draws that field.
+    /// edit made there was committed or dropped. The panel gives it the
+    /// keyboard when it draws that field, and says so
+    /// (`Action::FieldFocused`), which is what forgets it.
     pub focus_field: Option<usize>,
     /// What is pending, while the tab's values are edited. A tab that holds
     /// edits keeps its page.

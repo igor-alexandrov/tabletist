@@ -4794,3 +4794,9 @@ What the run found against the plan's own words:
 - Everything else was as the steps say: each "run it to see it fail" failed as written (11 of 12 in task 4, all five in tasks 5 and 6), and each "run the tests" passed.
 
 Not done here, and listed under "By hand, for the user": anything that needs the real window. No PostgreSQL or MySQL server was reachable; nothing in this run touches what a save sends, and CI runs those suites on the pull request.
+
+After the pull request's review (#89), in one commit:
+
+- **A row's field locks in one pass.** `Form::of` asked `Table::lock` for every column, and each call found the row's lock and the table's key again. `Table::own_lock(cell, key)` is the column's part alone: the form finds the row's lock and the key once, keeps the lock for the footer (`Form::locked`, in place of `row_form::row_lock`), and asks each field only for its own.
+- **The keyboard a field is owed is the reducer's to forget.** `row_panel::show` took `ObjectTab::focus_field` while drawing. It reads it now, and `Action::FieldFocused` says the field has the keyboard, which clears the request; one whose field was not drawn stays owed, until the selection moves or the panel closes. The task 4 block's `focus_field.take()` and the task 5 block's `row_form::row_lock` are therefore not what the tree holds.
+

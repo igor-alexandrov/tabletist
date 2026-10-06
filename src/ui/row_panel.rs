@@ -260,11 +260,12 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, id: TabId) {
     // The editor the panel draws is out of its tab while the panel is
     // drawn: the field edits its text, and everything else is read.
     let mut editor = row_form::take_editor(app, tab, id);
-    // The field an edit ended in gets the keyboard back, once.
+    // The field an edit ended in is owed the keyboard. The request is
+    // the reducer's: the panel reads it, and says when it is met.
     let focus = app
-        .workspace_mut(tab)
-        .and_then(|workspace| workspace.object_tab_mut(id))
-        .and_then(|object| object.focus_field.take());
+        .workspace(tab)
+        .and_then(|workspace| workspace.object_tab(id))
+        .and_then(|object| object.focus_field);
     draw(app, ui, (tab, id), editor.as_mut(), focus);
     row_form::put_editor(app, tab, id, editor);
 }
@@ -386,14 +387,13 @@ fn draw(
             form.focus = focus;
             // Why no field of the row can be edited, as the footer says it:
             // in the grid's own words, the terminal's in its lower case.
-            let locked = object.and_then(|object| {
-                let lock = row_form::row_lock(workspace, object, cell.row)?;
+            let locked = object.zip(form.locked).map(|(object, lock)| {
                 let table = format::display_safe(&object.object.name);
-                Some(if look.terminal {
+                if look.terminal {
                     crate::ui::workspace::lock_line(lock, &table, &look, locale)
                 } else {
                     crate::ui::cell_editor::lock_text(lock, &table, locale)
-                })
+                }
             });
             let structure = source.structure;
             let info = |name: &str| {
@@ -867,6 +867,12 @@ fn draw(
                     }
                 });
             ending.append(&mut form.ending);
+            // The field that was owed the keyboard was drawn and has it:
+            // the reducer forgets the request. A field that was not drawn
+            // (its row gone from the panel) is still owed it.
+            if let (Some(col), None) = (focus, form.focus) {
+                actions.push(Action::FieldFocused { tab, id, col });
+            }
         });
     // The edge was dragged: that is the width wanted from now on. egui
     // stores a width only when the drag is over, so a width that did not

@@ -151,10 +151,12 @@ Rejected:
     `CancelEdit`) ahead of everything else it asks for in the frame.
   - *After a commit or a cancel.* For an editor in the panel, on macOS
     and Windows, the reducer notes the field the keyboard goes back to
-    (`ObjectTab::focus_field`, the column), which the panel takes when it
-    draws, as a field takes `Editor::focus`. Not after an edit that was
-    left: the keyboard is already where the user put it. Not on Omarchy,
-    where the keys are the grid's again.
+    (`ObjectTab::focus_field`, the column). The panel reads it, gives
+    that field the keyboard when it draws it, and says so
+    (`Action::FieldFocused`), which is what forgets it: the request is
+    the reducer's, and one whose field was not drawn stays owed. Not
+    after an edit that was left: the keyboard is already where the user
+    put it. Not on Omarchy, where the keys are the grid's again.
 - **The field is one field.** The panel's field has the id the grid's has
   (`cell_editor::field_id`): `ui/keys.rs` asks that id whether an editor
   has the keyboard, and goes on asking it.

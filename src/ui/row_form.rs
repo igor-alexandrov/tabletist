@@ -40,6 +40,9 @@ pub struct Form<'a> {
     /// One per column of the page. Empty where the form has no part in
     /// the panel.
     parts: Vec<Part>,
+    /// Why no field of the row can be edited: what the panel's footer
+    /// says, once, for a row whose fields the form leaves as they are.
+    pub locked: Option<Lock>,
     /// The column whose edit was asked for in the panel and refused: its
     /// field says why under its value. The terminal look says it in its
     /// mode line.
@@ -76,12 +79,6 @@ pub fn put_editor(app: &mut App, tab: ConnTabId, id: TabId, editor: Option<Edito
     }
 }
 
-/// Why no field of the page's row `row` can be edited: what the panel's
-/// footer says, once, for a row whose fields the form leaves as they are.
-pub fn row_lock(workspace: &Workspace, object: &ObjectTab, row: usize) -> Option<Lock> {
-    Table::of(workspace, object)?.row_lock(row)
-}
-
 impl<'a> Form<'a> {
     /// A panel the form has no part in: a SQL editor's result.
     pub fn none() -> Self {
@@ -89,6 +86,7 @@ impl<'a> Form<'a> {
             editor: None,
             target: None,
             parts: Vec::new(),
+            locked: None,
             refused: None,
             focus: None,
             ending: Vec::new(),
@@ -114,9 +112,15 @@ impl<'a> Form<'a> {
         };
         // No cell of the row can be edited: the fields are read as ever,
         // and the footer says why, once.
-        if table.row_lock(row).is_some() {
-            return Self::none();
+        if let Some(lock) = table.row_lock(row) {
+            return Self {
+                locked: Some(lock),
+                ..Self::none()
+            };
         }
+        // The row's lock and the table's key are found once for the row:
+        // each field is then asked only for what is its own.
+        let key = table.key().unwrap_or_default();
         // What an edit asked for in the panel was refused for, where it
         // is one of this row's cells.
         let refused = object
@@ -140,7 +144,7 @@ impl<'a> Form<'a> {
                 } else if in_grid == Some(col) {
                     Part::InGrid
                 } else {
-                    match table.lock(CellPos { row, col }) {
+                    match table.own_lock(CellPos { row, col }, &key) {
                         Some(lock) => Part::Locked(lock),
                         None => Part::Editable,
                     }
@@ -154,6 +158,7 @@ impl<'a> Form<'a> {
             editor,
             target,
             parts,
+            locked: None,
             refused,
             focus: None,
             ending: Vec::new(),

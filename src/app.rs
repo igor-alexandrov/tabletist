@@ -812,6 +812,15 @@ impl App {
                 self.edit_cell(tab, id, cell, EditStart::Value, EditorPlace::Panel);
             }
             Action::EditRow { tab, id } => self.edit_row(tab, id),
+            Action::FieldFocused { tab, id, col } => {
+                // Only the request that was met: another edit may have
+                // ended since the frame that drew the field.
+                if let Some(object) = self.object_tab_mut(tab, id)
+                    && object.focus_field == Some(col)
+                {
+                    object.focus_field = None;
+                }
+            }
             Action::EditorTyped { tab, id } => {
                 let problem = self.editor_problem(tab, id);
                 if let Some(editor) = self.editor_mut(tab, id) {
@@ -14363,6 +14372,16 @@ mod tests {
                 // Dropped, and committed: on the terminal's look the keys
                 // are the grid's again, and nothing is asked of the panel.
                 let back = (!look.terminal).then_some(1);
+                harness.app.apply(Action::EditField { tab, id, cell });
+                harness.app.apply(Action::CancelEdit { tab, id });
+                assert_eq!(field(&harness), back, "{}", look.name);
+                // It is owed until the panel says that field has it: what
+                // the panel says of another column forgets nothing.
+                let focused = |col| Action::FieldFocused { tab, id, col };
+                harness.app.apply(focused(2));
+                assert_eq!(field(&harness), back, "{}", look.name);
+                harness.app.apply(focused(1));
+                assert_eq!(field(&harness), None, "{}", look.name);
                 harness.app.apply(Action::EditField { tab, id, cell });
                 harness.app.apply(Action::CancelEdit { tab, id });
                 assert_eq!(field(&harness), back, "{}", look.name);

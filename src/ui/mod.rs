@@ -19951,6 +19951,10 @@ mod tests {
                 look.name
             );
             assert!(harness.ctx.text_edit_focused(), "{}", look.name);
+            // The panel said so, and the reducer owes the field no more.
+            let workspace = harness.app.workspace(tab).unwrap();
+            let owed = workspace.object_tab(id).unwrap().focus_field;
+            assert_eq!(owed, None, "{}", look.name);
             harness.press(Key::F2, Modifiers::NONE);
             assert_eq!(
                 form_editor(&harness, tab, id),

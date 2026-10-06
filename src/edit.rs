@@ -179,6 +179,15 @@ impl Table<'_> {
         if let Some(lock) = self.row_lock(cell.row) {
             return Some(lock);
         }
+        // A row with no lock of its own is a row of a table with a key.
+        self.own_lock(cell, &self.key().unwrap_or_default())
+    }
+
+    /// Why `cell` cannot be edited for a reason of its own, in a row that
+    /// has no [`Table::row_lock`]. `key` is the table's ([`Table::key`]):
+    /// who asks for every cell of a row finds the row's lock and the key
+    /// once, and asks this for each cell.
+    pub fn own_lock(&self, cell: CellPos, key: &[usize]) -> Option<Lock> {
         let row = self.page.rows.get(cell.row);
         let Some(value) = row.and_then(|row| row.get(cell.col)) else {
             return Some(Lock::NoSuchCell);
@@ -189,7 +198,7 @@ impl Table<'_> {
         if column.generated {
             return Some(Lock::Generated);
         }
-        if self.key().is_some_and(|key| key.contains(&cell.col)) {
+        if key.contains(&cell.col) {
             return Some(Lock::KeyColumn);
         }
         if column_class(self.dialect, &column.type_name) == ColumnClass::Binary
@@ -1507,14 +1516,20 @@ mod tests {
         assert_eq!(with_gone.lock(at(1, 9)), Some(Lock::Gone));
         assert_eq!(with_gone.lock(at(0, 9)), Some(Lock::NoSuchCell));
         // And every cell of a row answers its row's reason, where it has
-        // one, and never another.
+        // one, and never another. Where the row has none, a cell's own
+        // lock, asked with the key found once, is its whole answer.
+        let key = with_gone.key().unwrap();
         for row in 0..2 {
             for col in 0..3 {
-                if let Some(lock) = with_gone.row_lock(row) {
-                    assert_eq!(with_gone.lock(at(row, col)), Some(lock));
+                let cell = at(row, col);
+                match with_gone.row_lock(row) {
+                    Some(lock) => assert_eq!(with_gone.lock(cell), Some(lock)),
+                    None => assert_eq!(with_gone.lock(cell), with_gone.own_lock(cell, &key)),
                 }
             }
         }
+        assert_eq!(with_gone.own_lock(at(0, 0), &key), Some(Lock::KeyColumn));
+        assert_eq!(with_gone.own_lock(at(0, 1), &key), None);
     }
 
     #[test]
