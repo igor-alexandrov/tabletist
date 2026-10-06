@@ -6070,6 +6070,8 @@ After the pull request was opened (#87), where CI passed on Linux, macOS and Win
 - **A choice that cannot be picked said why only under the pointer** (Copilot's review). The menu drew it as a row that takes no keyboard and gives a screen reader no reason. It is now what the app's disabled buttons are: it takes the keyboard, carries its reason as the node's description, and shows it while the keyboard is on it (`menu::Item::disabled`). The scene `sql-write-menu-production` shows it.
 - **Rebased a second time**, onto pull requests #85 and #86. #86 replaced `widgets::popup_menu` and `MenuChoice`, which task 5 of this plan extends, with the shared `src/ui/menu.rs` (`menu::choices`, `menu::Choice`, `menu::Item`). So task 5's diff of `src/ui/widgets.rs` in this plan no longer applies as written: in the branch the badge opens `menu::choices`, `menu::Choice` carries `disabled`, and `menu::Item::disabled` draws the row muted, as the Components sheet's menu rule has it ("Disabled items stay visible"). The four checks pass on every commit of the rebased branch.
 
+- **The card's letters, asked about a second time** (Copilot's third review took them to work in every look). They did not: `keys::letters` returns for every look but the terminal's before it reaches them. Nothing tested that, and `card_key` left it to its one caller. `the_cards_letters_are_the_terminal_looks_alone` pins it now, and `card_key` itself answers only in the terminal look.
+
 Noted and not acted on:
 
 - "Some or all of it may be written" is also said of a run sent to write that was still queued when another request lost the session: it never started. The backend answers a queued script with the same error as a running one. It errs on the safe side.

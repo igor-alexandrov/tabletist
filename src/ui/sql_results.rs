@@ -1432,10 +1432,15 @@ impl Blocked<'_> {
 }
 
 /// The action the card of a refused write offers in the SQL editor on
-/// screen, and the letter that takes it in the terminal look. Only while
-/// the Messages show the card: not under the opening screen a switch of
-/// database puts over the editor, which keeps the tab and its last run.
+/// screen, and the letter that takes it. Only in the terminal look, whose
+/// button names the letter: in the others none presses it, whoever asks.
+/// And only while the Messages show the card: not under the opening
+/// screen a switch of database puts over the editor, which keeps the tab
+/// and its last run.
 pub(crate) fn card_key(app: &App, tab: ConnTabId) -> Option<(egui::Key, Action)> {
+    if !app.look.terminal {
+        return None;
+    }
     let workspace = app.workspace(tab)?;
     let sql = workspace.active_sql_tab()?;
     if !workspace.opened() || sql.pane != ResultPane::Messages || sql.run.error.is_some() {
@@ -2654,6 +2659,47 @@ mod tests {
             crate::ui::tests::click_at(&mut harness, at);
             assert_eq!(runs_sent(&harness), sent + 1, "{}", look.name);
         }
+    }
+
+    #[test]
+    fn the_cards_letters_are_the_terminal_looks_alone() {
+        use crate::model::RunMode;
+        // Where the button shows no letter, no letter presses it: a `w`
+        // typed with the keyboard out of the editor is no answer to a card.
+        for look in [Look::standard(), Look::macos()] {
+            let (mut harness, tab) = refused_in_a_read_only_tab(look);
+            assert!(harness.has("Allow writes in this tab"), "{}", look.name);
+            assert!(card_key(&harness.app, tab).is_none(), "{}", look.name);
+            harness.press(Key::Escape, Modifiers::NONE);
+            harness.press(Key::W, Modifiers::NONE);
+            assert_eq!(sql(&harness, tab).mode, RunMode::ReadOnly, "{}", look.name);
+            // Nor does it send again the run of a tab that may write.
+            set_mode(&mut harness, tab, RunMode::ReadWrite);
+            assert!(
+                harness.has("Run in a read-write transaction"),
+                "{}",
+                look.name
+            );
+            let sent = runs_sent(&harness);
+            harness.press(Key::W, Modifiers::NONE);
+            assert_eq!(runs_sent(&harness), sent, "{}", look.name);
+            // Nor does `e` open the dialog of a connection that opens
+            // read-only.
+            let (mut harness, tab) = editor(look, "UPDATE users SET email = 'x'");
+            harness.app.workspace_mut(tab).unwrap().driver = Driver::Postgres;
+            run(&mut harness);
+            harness.answer_sql(Ok(script_outcome(vec![refused_write()])), None);
+            assert!(harness.has("Edit connection"), "{}", look.name);
+            harness.press(Key::Escape, Modifiers::NONE);
+            harness.press(Key::E, Modifiers::NONE);
+            assert!(harness.app.dialog.is_none(), "{}", look.name);
+        }
+        // The terminal look, whose button names the letter, takes it.
+        let (harness, tab) = refused_in_a_read_only_tab(Look::omarchy());
+        assert!(matches!(
+            card_key(&harness.app, tab),
+            Some((Key::W, Action::SetSqlMode { .. }))
+        ));
     }
 
     #[test]
