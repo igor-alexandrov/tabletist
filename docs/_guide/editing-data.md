@@ -26,7 +26,7 @@ double-click the value there.
 | Leave the editor without the change | Esc |
 
 The Omarchy look uses vim keys for these. They are in
-[Keyboard Shortcuts]({% link _reference/keyboard-shortcuts.md %}).
+[The Omarchy Look]({% link _guide/omarchy.md %}#editing).
 
 What you type is checked against the column's type before anything is
 sent: numbers and their ranges, booleans, enum values, the maximum length,
