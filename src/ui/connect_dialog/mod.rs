@@ -20,6 +20,7 @@ use crate::i18n::{Locale, gettext};
 use crate::model::{Action, ConnectionForm, Dialog, SshAuthKind, SshHints, TestState};
 use crate::theme::{self, Faces, Icon, Look, Palette};
 use crate::typography::{Text, TextRole};
+use crate::ui::menu;
 use crate::ui::widgets::{self, ButtonSpec};
 
 use sheet::{body, footer, header};
@@ -797,20 +798,20 @@ fn ssh_host_field(
                 return;
             }
             let button = spec().show(ui, height, look, palette).on_hover_text(&*name);
-            egui::Popup::menu(&button).show(|ui| {
+            menu::under(&button, 0.0, look, palette, |ui| {
                 for host in hosts {
-                    ui.horizontal(|ui| {
-                        if widgets::button(ui, &host.alias, look).clicked() {
-                            actions.push(Action::PickSshHost(host.alias.clone()));
-                            // A menu closes by itself on a pointer's click
-                            // only: the keyboard and a screen reader pick
-                            // too.
-                            ui.close();
-                        }
-                        if let Some(name) = &host.config.host_name {
-                            widgets::label(ui, widgets::secondary(look), name, palette.dim, look);
-                        }
-                    });
+                    let item = menu::Item::action(&host.alias);
+                    let item = match &host.config.host_name {
+                        Some(name) => item.detail(name),
+                        None => item,
+                    };
+                    if item.show(ui, look, palette).clicked() {
+                        actions.push(Action::PickSshHost(host.alias.clone()));
+                        // A menu closes by itself on a pointer's click
+                        // only: the keyboard and a screen reader pick
+                        // too.
+                        ui.close();
+                    }
                 }
             });
         },

@@ -11,6 +11,7 @@ use crate::theme::{Icon, Look, Palette};
 use crate::typography::{Text, TextRole};
 use crate::ui::focus::{self, Region};
 use crate::ui::format::display_safe;
+use crate::ui::menu;
 use crate::ui::states;
 use crate::ui::widgets::{self, ButtonSpec};
 
@@ -826,29 +827,16 @@ fn database_menu(
     response: &egui::Response,
     tab: ConnTabId,
     info: &BarInfo,
-    look: &Look,
+    (look, palette): (&Look, &Palette),
     actions: &mut Vec<Action>,
 ) {
     let role = TextRole::pick(look, TextRole::MonoSecondary, TextRole::OSecondary);
-    egui::Popup::menu(response).show(|ui| {
-        ui.set_min_width(response.rect.width());
+    menu::under(response, response.rect.width(), look, palette, |ui| {
         for database in &info.databases {
             // Database names come from the server: nothing hidden.
-            let text = Text::one(
-                look,
-                role,
-                &display_safe(database),
-                egui::Color32::PLACEHOLDER,
-            )
-            .layout(ui.ctx());
-            if ui
-                .add(egui::Button::selectable(
-                    *database == info.database,
-                    text.galley,
-                ))
-                .clicked()
-                && *database != info.database
-            {
+            let name = display_safe(database);
+            let item = menu::Item::choice(&name, *database == info.database).role(role);
+            if item.show(ui, look, palette).clicked() && *database != info.database {
                 actions.push(Action::SwitchDatabase {
                     tab,
                     database: database.clone(),
@@ -1163,7 +1151,7 @@ fn mac_bar(
                     ui,
                     Rect::from_center_size(pos2(rect.right() - 16.0, center), vec2(12.0, 12.0)),
                 );
-                database_menu(&response, tab, info, look, actions);
+                database_menu(&response, tab, info, (look, palette), actions);
             }
         } else if response.clicked() {
             actions.push(Action::ActivateConnTab(chip.tab));
@@ -1430,7 +1418,7 @@ fn terminal_bar(
                     center,
                     Text::one(look, TextRole::OBody, "▾", palette.dim),
                 );
-                database_menu(&response, tab, info, look, actions);
+                database_menu(&response, tab, info, (look, palette), actions);
             }
         } else if response.clicked() {
             actions.push(Action::ActivateConnTab(chip.tab));

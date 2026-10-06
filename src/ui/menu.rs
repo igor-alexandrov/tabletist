@@ -603,6 +603,25 @@ mod tests {
     }
 
     #[test]
+    fn the_database_menus_rows_touch() {
+        for look in Look::ALL {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            let tab = harness.connect_fake();
+            let workspace = harness.app.workspace_mut(tab).unwrap();
+            workspace.spec.database = "tabletist".into();
+            workspace.databases.value = Some(vec!["tabletist".into(), "postgres".into()]);
+            harness.click("Database");
+            let rows = ["tabletist", "postgres"].map(|name| row(&mut harness, name));
+            assert!(
+                (rows[0].bottom() - rows[1].top()).abs() < 0.5,
+                "{rows:?} in {}",
+                look.name
+            );
+        }
+    }
+
+    #[test]
     fn a_dropdown_keeps_its_name_and_value_in_every_look() {
         for look in Look::ALL {
             let mut harness = Harness::new();
