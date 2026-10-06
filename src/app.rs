@@ -813,12 +813,23 @@ impl App {
             }
             Action::EditRow { tab, id } => self.edit_row(tab, id),
             Action::FieldFocused { tab, id, col } => {
-                // Only the request that was met: another edit may have
-                // ended since the frame that drew the field.
-                if let Some(object) = self.object_tab_mut(tab, id)
-                    && object.focus_field == Some(col)
-                {
-                    object.focus_field = None;
+                if let Some(object) = self.object_tab_mut(tab, id) {
+                    // Only the request that was met is forgotten: another
+                    // edit may have ended since the frame that drew the
+                    // field.
+                    if object.focus_field == Some(col) {
+                        object.focus_field = None;
+                    }
+                    // The field that has the keyboard is the grid's
+                    // selected cell. The row's texts are the row's: none
+                    // is formatted again. What a locked field said was
+                    // said of the field the keyboard left.
+                    if let Some(cell) = object.selection.as_mut()
+                        && cell.col != col
+                    {
+                        cell.col = col;
+                        object.edits.why = None;
+                    }
                 }
             }
             Action::EditorTyped { tab, id } => {

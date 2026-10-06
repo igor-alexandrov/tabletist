@@ -29,6 +29,27 @@ fn width(look: &Look) -> f32 {
 
 /// The least width the panel's edge can be dragged to, with room to spare.
 const NARROWEST: f32 = 260.0;
+
+/// The id of the control a field of the row panel is: its value, or its
+/// pencil where the value has clicks of its own (a tree, a list), or its
+/// label where it has neither. The keyboard is on the field while it is
+/// on this. One per column, whatever row the panel shows: the keyboard
+/// stays on a column's field when the selection steps to another row.
+pub fn field_stop(tab: ConnTabId, id: TabId, col: usize) -> Id {
+    Id::new(("row-panel-field", tab, id, col))
+}
+
+/// The column of the panel's field that has the keyboard, of the tab's
+/// `columns`: what `ui/keys.rs` asks before it gives a key to the grid.
+pub fn focused_field(
+    ctx: &egui::Context,
+    tab: ConnTabId,
+    id: TabId,
+    columns: usize,
+) -> Option<usize> {
+    let focused = ctx.memory(|memory| memory.focused())?;
+    (0..columns).find(|col| field_stop(tab, id, *col) == focused)
+}
 /// The most it can be dragged to.
 const WIDEST: f32 = 560.0;
 
@@ -763,7 +784,7 @@ fn draw(
                                                 ui,
                                                 tab,
                                                 id,
-                                                cell.row,
+                                                cell,
                                                 *col,
                                                 column,
                                                 value,
@@ -801,7 +822,7 @@ fn draw(
                                         ui,
                                         tab,
                                         id,
-                                        cell.row,
+                                        cell,
                                         *col,
                                         column,
                                         value,
@@ -833,7 +854,7 @@ fn draw(
                                         ui,
                                         tab,
                                         id,
-                                        cell.row,
+                                        cell,
                                         *col,
                                         column,
                                         value,
@@ -931,16 +952,18 @@ fn was(ui: &mut egui::Ui, col: usize, skin: FieldSkin<'_>) {
 /// and the pending bar wear, or the terminal's `~`.
 const MARK: f32 = 6.0;
 
-/// One field: its label (with a copy button, or a document's controls, and
-/// the pending mark when its cell is pending), then its value. Where the
-/// row's form lets the value be edited, the label line has a pencil too,
-/// and the value's place holds the editor while it is open.
+/// One field of the row of the `selected` cell: its label (with a copy
+/// button, or a document's controls, and the pending mark when its cell is
+/// pending), then its value. Where the row's form lets the value be edited
+/// the value is one control: a click on it opens the editor in its place.
+/// A value with clicks of its own (a tree, a list) has a pencil in its
+/// label line instead.
 #[allow(clippy::too_many_arguments)] // one call site per layout
 fn field(
     ui: &mut egui::Ui,
     tab: ConnTabId,
     tab_id: TabId,
-    row: usize,
+    selected: CellPos,
     col: usize,
     column: &tabletist_db::ColumnMeta,
     value: &Value,
@@ -958,6 +981,7 @@ fn field(
         copy_key,
         ..
     } = skin;
+    let row = selected.row;
     // The request whose answer holds the row: the same row of another
     // page or another result keeps no folds and nothing expanded.
     let request = texts.and_then(|texts| texts.request);
@@ -1006,12 +1030,38 @@ fn field(
         }
         Part::Read | Part::Editable | Part::InGrid | Part::Editing => None,
     };
+    // What a screen reader hears of the field's control: its column, its
+    // type and its value, then what a pending one was and why a locked
+    // one cannot be edited.
+    let mut said = format!(
+        "{}, {}, {}",
+        format::display_safe(&column.name),
+        column.type_name,
+        match formatted {
+            Some(text) if !value.is_null() => text.short.as_str(),
+            _ => "NULL",
+        },
+    );
+    if let Some(pending) = pending_field(texts, col) {
+        let from = gettext(locale, "changed from");
+        said = format!("{said}, {from} {}", pending.was);
+    }
+    if let Some(reason) = &locked {
+        said = format!("{said}, {}: {reason}", gettext(locale, "read-only"));
+    }
+    // A value read as a tree or as a list has clicks of its own: its
+    // pencil, in the label line, is what edits it.
+    let lists = matches!(value, Value::Text(text) if listed(text, column));
     // Cut at the column's edge, as the field's own width allows, before
     // the mark of a pending one, the lock of one that cannot be edited and
-    // the pencil of one that can.
+    // the pencil of one that has one.
     let mark = if pending { 6.0 + MARK } else { 0.0 };
     let lock_room = if locked.is_some() { 6.0 + LOCK } else { 0.0 };
-    let pencil_room = if editable { PENCIL + 2.0 } else { 0.0 };
+    let pencil_room = if editable && (doc.is_some() || lists) {
+        PENCIL + 2.0
+    } else {
+        0.0
+    };
     let room = line.width() - 30.0 - mark - lock_room - pencil_room;
     let shown = crate::ui::grid::ellipsize(&text, room, false, |text| {
         label_role.width(ui.ctx(), look.faces, text)
@@ -1055,15 +1105,17 @@ fn field(
     let copy_label = format!("{} {column_name}", gettext(locale, "Copy"));
     let edit_label = format!("{} {column_name}", gettext(locale, "Edit"));
     let hovered = ui.rect_contains_pointer(line.expand2(vec2(16.0, 30.0)));
-    // The pencil of a value that can be edited, at `right`: beside Copy,
-    // and shown as Copy is.
+    let stop = field_stop(tab, tab_id, col);
+    // The pencil of a value that has clicks of its own, at `right`: beside
+    // Copy, and shown as Copy is. It is the field's stop.
     let pencil_at = |ui: &mut egui::Ui, right: f32, size: f32, shown: bool| {
         let place = Rect::from_min_size(
             pos2(right - size, line.center().y - size / 2.0),
             vec2(size, size),
         );
-        let mut child = ui.new_child(egui::UiBuilder::new().max_rect(place));
-        caption_button(&mut child, Icon::Pencil, &edit_label, shown, look, palette)
+        let response = ui.interact(place, stop, Sense::click());
+        let face = (Icon::Pencil, edit_label.as_str(), shown);
+        caption_face(ui, place, response, face, look, palette)
     };
     let mut pencil = None;
     if let Some(doc) = &doc {
@@ -1133,9 +1185,6 @@ fn field(
         if caption_button(&mut child, Icon::Copy, &copy_label, hovered, look, palette).clicked() {
             ui.ctx().copy_text(format::plain_text(value));
         }
-        if editable {
-            pencil = Some(pencil_at(ui, copy.left() - 2.0, PENCIL, hovered));
-        }
     }
     ui.add_space(if doc.is_some() {
         if look.terminal { 8.0 } else { 6.0 }
@@ -1152,25 +1201,34 @@ fn field(
     } else {
         TextRole::pick(look, TextRole::InspectorValue, TextRole::OBody)
     };
-    match part {
+    // The row's form makes one control of a value that can be edited, and
+    // of one locked for a reason of its own: its text takes no caret.
+    let whole = editable || locked.is_some();
+    // The control's states are painted behind the value.
+    let behind = ui.painter().add(egui::Shape::Noop);
+    let shown = match part {
         // The editor, in the value's place.
         Part::Editing if form.editing(ui, (tab, tab_id), role, (look, palette, locale)) => return,
         Part::InGrid => {
             row_form::in_grid(ui, look, palette, locale);
-            return;
+            Shown::default()
         }
-        Part::Editing | Part::Read | Part::Editable | Part::Locked(_) => {}
-    }
-    let read = Reading {
-        doc,
-        formatted,
-        name_id,
-        role,
-        editable,
+        Part::Editing | Part::Read | Part::Editable | Part::Locked(_) => {
+            let read = Reading {
+                doc,
+                formatted,
+                name_id,
+                role,
+                whole,
+                // A locked value reads as one that is not the user's to
+                // change.
+                dim: locked.is_some(),
+            };
+            value_of(
+                ui, tab, tab_id, row, col, column, value, info, tag, skin, read, actions,
+            )
+        }
     };
-    let shown = value_of(
-        ui, tab, tab_id, row, col, column, value, info, tag, skin, read, actions,
-    );
     // An edit of a locked field was asked for here: it says why, under
     // its value, until the selection moves. Brought into view once.
     if let (Some(reason), true) = (&locked, form.refused(col)) {
@@ -1188,73 +1246,125 @@ fn field(
             ui.data_mut(|data| data.insert_temp(asked, at));
         }
     }
-    if !editable && locked.is_none() {
+    // A row the form has no part in: its values are read, as ever.
+    if part == Part::Read {
         return;
     }
-    // What starts an edit of the value: its pencil, a double-click on it,
-    // and Enter or F2 while its text has the keyboard (the terminal look
-    // edits with its own letters). Asked of a locked field, the same
-    // things say why it is locked.
-    let mut edit = pencil.as_ref().is_some_and(egui::Response::clicked);
-    // Enter on the pencil is the button's press. F2 edits from it too: a
-    // value with no text of its own (a NULL, a document) has the keyboard
-    // there.
-    if let Some(pencil) = &pencil
-        && !look.terminal
-        && pencil.has_focus()
-    {
-        edit |= ui.input_mut(|input| consume_press(input, egui::Modifiers::NONE, egui::Key::F2));
+    // A list is edited by a pencil beside Copy, as a document is.
+    if editable && shown.place.is_none() && pencil.is_none() {
+        pencil = Some(pencil_at(ui, line.right() - 22.0 - 2.0, PENCIL, hovered));
     }
-    if let Some(place) = shown.place {
-        let over = ui.rect_contains_pointer(place);
-        if over && editable {
-            // A field's border: the value can be edited.
-            let color = if look.terminal {
-                palette.accent
+    // The value as one control: a click edits it, or says why it cannot
+    // be edited.
+    let control = shown.place.filter(|_| whole).map(|place| {
+        let frame = outline(line.left(), place, look);
+        // The box reaches up to the label line's Copy and down over "Show
+        // all": only the value's own lines take the pointer, or it would
+        // take their clicks.
+        let hit = Rect::from_x_y_ranges(frame.x_range(), place.y_range());
+        let response = ui.interact(hit, stop, Sense::click());
+        response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, &said));
+        let corner = CornerRadius::same(look.radius);
+        if editable && response.hovered() {
+            if look.terminal {
+                let stroke = Stroke::new(1.0, palette.accent);
+                ui.painter()
+                    .rect_stroke(frame, corner, stroke, StrokeKind::Inside);
             } else {
-                palette.border
-            };
-            ui.painter().rect_stroke(
-                outline(place),
-                CornerRadius::same(look.radius),
-                Stroke::new(1.0, color),
-                StrokeKind::Inside,
-            );
+                // The design's hover: the fill of a grid's row under the
+                // pointer and a border inside it, a pencil at its right,
+                // and the text cursor.
+                ui.ctx().set_cursor_icon(egui::CursorIcon::Text);
+                let tint = crate::ui::grid::row_fill(false, true, false, look, palette)
+                    .unwrap_or(palette.surface);
+                let fill = egui::epaint::RectShape::filled(frame, corner, tint);
+                ui.painter().set(behind, fill);
+                let stroke = Stroke::new(1.0, palette.border);
+                ui.painter()
+                    .rect_stroke(frame, corner, stroke, StrokeKind::Inside);
+                let pencil = Rect::from_center_size(
+                    pos2(frame.right() - 8.0 - 6.0, frame.center().y),
+                    vec2(12.0, 12.0),
+                );
+                // A value that reaches the box's end runs under the
+                // pencil, not through it.
+                ui.painter()
+                    .rect_filled(pencil.expand2(vec2(4.0, 2.0)), CornerRadius::ZERO, tint);
+                Icon::Pencil
+                    .image(palette.secondary, 12.0)
+                    .paint_at(ui, pencil);
+            }
         }
-        let twice = ui.input(|input| {
-            input
-                .pointer
-                .button_double_clicked(egui::PointerButton::Primary)
-        });
-        edit |= over && twice;
+        let ring = focus::Ring::Inset {
+            radius: look.radius,
+        };
+        focus::hint(ui, &response, frame, ring);
+        response
+    });
+    // Every field of a row that can be edited has a stop, so the keyboard
+    // can stand on each: one with neither a control nor a pencil (a
+    // binary value, a locked document, a field the grid is editing) has
+    // its label.
+    let bare = (control.is_none() && pencil.is_none()).then(|| {
+        let place = Rect::from_min_size(line.min, vec2(label_width.max(1.0), line.height()));
+        let response = ui.interact(place, stop, Sense::click());
+        response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, &said));
+        response
+    });
+    let Some(stop) = control.as_ref().or(pencil.as_ref()).or(bare.as_ref()) else {
+        return;
+    };
+    // What starts an edit of the value: a click on it, and Enter, which
+    // presses whatever has the keyboard, or F2 (the terminal look edits
+    // with its own letters). Asked of a locked field, the same things say
+    // why it is locked.
+    let mut edit = stop.clicked();
+    if stop.has_focus() {
+        // The field that takes the keyboard becomes the grid's selected
+        // cell. Said once, as it takes it: a selection moved since (a
+        // click in the grid, a key of the grid's) is not pulled back.
+        if stop.gained_focus() && selected.col != col {
+            actions.push(Action::FieldFocused {
+                tab,
+                id: tab_id,
+                col,
+            });
+        }
+        // Up and Down are the panel's, to step its fields with, and Esc
+        // its way back to the grid: egui neither moves the keyboard off
+        // the stop with them nor drops it.
+        let keys = egui::EventFilter {
+            vertical_arrows: true,
+            escape: true,
+            ..Default::default()
+        };
+        ui.memory_mut(|memory| memory.set_focus_lock_filter(stop.id, keys));
+        if !look.terminal {
+            edit |=
+                ui.input_mut(|input| consume_press(input, egui::Modifiers::NONE, egui::Key::F2));
+        }
     }
-    if let Some(text) = &shown.text
-        && !look.terminal
-        && text.has_focus()
-    {
-        edit |= ui.input_mut(|input| {
-            consume_press(input, egui::Modifiers::NONE, egui::Key::Enter)
-                || consume_press(input, egui::Modifiers::NONE, egui::Key::F2)
-        });
-    }
-    if edit {
+    if edit && part != Part::InGrid {
+        // A click gives a control no keyboard of itself. An editor that
+        // opens takes it; a locked field, which opens none, is given it,
+        // so the keys go on from the field that was asked.
+        if locked.is_some() {
+            stop.request_focus();
+        }
         actions.push(Action::EditField {
             tab,
             id: tab_id,
             cell: CellPos { row, col },
         });
     }
-    // An edit of this field ended: the keyboard is on it again, on its
-    // text, or on its pencil where the value has none (a NULL, a document).
+    // An edit ended and this field is owed the keyboard: on its stop.
     if form.focus == Some(col) {
         form.focus = None;
-        if let Some(back) = shown.text.as_ref().or(pencil.as_ref()) {
-            back.request_focus();
-            back.scroll_to_me(None);
-            // What shows that it has the keyboard (the pencil, a caret)
-            // was drawn before it had it: the next frame draws it.
-            ui.ctx().request_repaint();
-        }
+        stop.request_focus();
+        stop.scroll_to_me(None);
+        // What shows that it has the keyboard was drawn before it had
+        // it: the next frame draws it.
+        ui.ctx().request_repaint();
     }
 }
 
@@ -1264,10 +1374,21 @@ const PENCIL: f32 = 22.0;
 /// The lock after the label of a field that cannot be edited.
 const LOCK: f32 = 11.0;
 
-/// Where a field's outline is, round the place of its value: the value is
-/// flush with its label, and a field's border stands clear of its text.
-fn outline(place: Rect) -> Rect {
-    place.expand2(vec2(6.0, 3.0))
+/// Where a field's box is, round the place of its value, in a field whose
+/// label starts at `left`: the value is flush with its label, and the box
+/// stands clear of its text, 8 at its sides, about as tall as the field
+/// the editor opens (the terminal look's is closer round it). It reaches
+/// less far up than down: the label's line is 3 above the value.
+fn outline(left: f32, place: Rect, look: &Look) -> Rect {
+    let (side, above, below) = if look.terminal {
+        (6.0, 3.0, 3.0)
+    } else {
+        (8.0, 4.0, 6.0)
+    };
+    Rect::from_min_max(
+        pos2(left - side, place.top() - above),
+        pos2(place.right() + side, place.bottom() + below),
+    )
 }
 
 /// What a field's value is read from, besides the value itself.
@@ -1280,19 +1401,20 @@ struct Reading<'a> {
     name_id: Id,
     /// The role its text is drawn in.
     role: TextRole,
-    /// Whether the row's form lets it be edited.
-    editable: bool,
+    /// Whether the row's form makes one control of the whole value: its
+    /// text is drawn, and takes neither the pointer nor a caret.
+    whole: bool,
+    /// Whether it is drawn as a value that cannot be changed.
+    dim: bool,
 }
 
 /// What a field's value came to on screen.
 #[derive(Default)]
 struct Shown {
-    /// Where a double-click edits it: its text, the NULL mark, the stand-in
-    /// of an empty or a blank text. None for what has its own clicks (a
-    /// tree, a list) or cannot be edited at all.
+    /// Where a click edits it: its text, or the line of the NULL mark or
+    /// of the stand-in of an empty or a blank text. None for what has its
+    /// own clicks (a tree, a list).
     place: Option<Rect>,
-    /// Its text, which takes a caret and the keyboard.
-    text: Option<egui::Response>,
 }
 
 /// A field's value, under its label: read, selected and copied from.
@@ -1324,13 +1446,19 @@ fn value_of(
         formatted,
         name_id,
         role,
-        editable,
+        whole,
+        dim,
     } = read;
     let request = texts.and_then(|texts| texts.request);
     let column_name = format::display_safe(&column.name);
     let mut shown = Shown::default();
+    // A value with nothing to select is its whole line, to the pointer.
+    let line_of_it = |ui: &egui::Ui, rect: Rect| {
+        Rect::from_min_max(rect.min, pos2(ui.max_rect().right(), rect.bottom()))
+    };
     if value.is_null() {
-        shown.place = Some(crate::ui::grid::null_label(ui, look, palette).rect);
+        let mark = crate::ui::grid::null_label(ui, look, palette).rect;
+        shown.place = Some(line_of_it(ui, mark));
         return shown;
     }
     if let Some(doc) = doc {
@@ -1388,7 +1516,8 @@ fn value_of(
                 } else {
                     say("whitespace only")
                 };
-                shown.place = Some(stand_in(ui, &blank, &note, look, palette));
+                let stood = stand_in(ui, &blank, &note, look, palette);
+                shown.place = Some(line_of_it(ui, stood));
                 return shown;
             }
             if listed(text, column)
@@ -1430,9 +1559,13 @@ fn value_of(
         }
     });
     // A tag's value in its text colour: the grid's chips stay in the grid.
-    let color = tag.map_or(palette.text, |style| {
-        crate::ui::value_tags::style_colors(style, look, palette).0
-    });
+    let color = if dim {
+        palette.secondary
+    } else {
+        tag.map_or(palette.text, |style| {
+            crate::ui::value_tags::style_colors(style, look, palette).0
+        })
+    };
     let small = widgets::secondary(look);
     ui.horizontal_top(|ui| {
         // A colour (`#3a7bd5`) leads with a swatch of it, on the first line.
@@ -1467,22 +1600,19 @@ fn value_of(
                             .margin(egui::Margin::ZERO)
                             .desired_width(room)
                             .desired_rows(1)
+                            // The whole value of a row's form is one
+                            // control, drawn over this: the text is not
+                            // the pointer's, and takes no caret.
+                            .interactive(!whole)
                             .layouter(&mut layouter),
                     )
                     .labelled_by(name_id);
                 // A value to read and select, not a field: its caret says
-                // where the keyboard is. One that can be edited wears a
-                // field's ring, where its outline is.
-                let ring = if editable {
-                    focus::Ring::Field {
-                        radius: look.radius,
-                    }
-                } else {
-                    focus::Ring::Own
-                };
-                focus::hint(ui, &value, outline(value.rect), ring);
+                // where the keyboard is.
+                if !whole {
+                    focus::hint(ui, &value, value.rect, focus::Ring::Own);
+                }
                 shown.place = Some(value.rect);
-                shown.text = Some(value);
             };
             if tall && !expanded {
                 // The first lines, the last of them fading out (macOS):
@@ -1720,6 +1850,21 @@ fn caption_button(
 ) -> egui::Response {
     let size = ui.max_rect().size();
     let (rect, response) = ui.allocate_exact_size(size, Sense::click());
+    caption_face(ui, rect, response, (icon, label, shown), look, palette)
+}
+
+/// Draws a button of a field's label line at `rect`, for the `response`
+/// its place gave: its icon, its name, and whether it shows with the
+/// pointer away.
+fn caption_face(
+    ui: &egui::Ui,
+    rect: Rect,
+    response: egui::Response,
+    (icon, label, shown): (Icon, &str, bool),
+    look: &Look,
+    palette: &Palette,
+) -> egui::Response {
+    let size = rect.size();
     response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, label));
     if shown || response.hovered() || response.has_focus() {
         let corner = CornerRadius::same(look.radius.saturating_sub(2));

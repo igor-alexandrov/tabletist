@@ -255,8 +255,9 @@ pub enum Action {
         tab: ConnTabId,
         id: TabId,
     },
-    /// The row panel gave the field of the column `col` the keyboard it
-    /// was owed after an edit there ended: the request is met.
+    /// The row panel's field of the column `col` has the keyboard: it
+    /// took it, or was given the keyboard it was owed after an edit ended
+    /// (that request is met). Its cell is the selected one from now on.
     FieldFocused {
         tab: ConnTabId,
         id: TabId,
