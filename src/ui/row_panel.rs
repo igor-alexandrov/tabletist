@@ -1265,19 +1265,18 @@ fn field(
         }
     }
     if let Some(reason) = &locked {
-        // A small lock after the label, always there: under the pointer
-        // it says why, and a screen reader hears it after the label.
+        // A small lock at the end of the label's line, always there, as
+        // the design draws it: under the pointer it says why, and a screen
+        // reader hears it after the label. Copy stands before it.
         let place = Rect::from_center_size(
-            pos2(
-                line.left() + label_width + mark + 6.0 + LOCK / 2.0,
-                line.center().y,
-            ),
+            pos2(line.right() - LOCK / 2.0, line.center().y),
             vec2(LOCK, LOCK),
         );
+        copy_right = place.left() - 6.0;
         let lock = ui.interact(place.expand(3.0), name_id.with("lock"), Sense::hover());
         let said = format!("{}: {reason}", gettext(locale, "Locked"));
         lock.widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, &said));
-        Icon::Lock.image(palette.dim, LOCK).paint_at(ui, place);
+        Icon::Lock.image(palette.faint, LOCK).paint_at(ui, place);
         lock.on_hover_text(reason.as_str());
     }
     let copy_label = format!("{} {column_name}", gettext(locale, "Copy"));
@@ -1465,9 +1464,9 @@ fn field(
                     .rect_stroke(frame, corner, stroke, StrokeKind::Inside);
             }
         } else {
-            // What the cell holds, as its cell of the grid says it: a
-            // pending one on the warning's tint with a 2 pt bar at its
-            // left, one in trouble on the failure's with a line round it.
+            // What the cell holds: a pending one on the warning's tint
+            // with an amber line round it, as the "Editing a row" artboard
+            // draws it, one in trouble on the failure's with a red one.
             // Under the pointer a value that can be edited shows the
             // design's hover: the fill of a grid's row there and a border
             // inside it, a pencil at its right, and the text cursor.
@@ -1477,32 +1476,15 @@ fn field(
                 Some(tone) => Some(tone.fill(look, palette)),
                 None => hovering.then_some(hover),
             };
-            let filled = |rect, corner, color| {
-                egui::Shape::from(egui::epaint::RectShape::filled(rect, corner, color))
-            };
             if let Some(fill) = fill {
-                let shapes = if tone == Some(Tone::Warning) {
-                    // The bar is the box in the warning's colour, and the
-                    // tint over all of it but 2 at its left: a bar of its
-                    // own would stand out of the box's round corners.
-                    let rest = Rect::from_min_max(pos2(frame.left() + 2.0, frame.top()), frame.max);
-                    let right = CornerRadius {
-                        nw: 0,
-                        sw: 0,
-                        ..corner
-                    };
-                    vec![
-                        filled(frame, corner, palette.warning),
-                        filled(rest, right, fill),
-                    ]
-                } else {
-                    vec![filled(frame, corner, fill)]
-                };
-                ui.painter().set(behind, egui::Shape::Vec(shapes));
+                let fill = egui::epaint::RectShape::filled(frame, corner, fill);
+                ui.painter().set(behind, fill);
             }
+            // The line round it: the amber of the board's pending field,
+            // the failure's red, or a field's border under the pointer.
             let line = match tone {
-                Some(Tone::Danger) => Some(palette.danger),
-                _ => hovering.then_some(palette.border),
+                Some(tone) => Some(tone.edge(look, palette)),
+                None => hovering.then_some(palette.border),
             };
             if let Some(color) = line {
                 let stroke = Stroke::new(1.0, color);
@@ -1836,11 +1818,18 @@ fn value_of(
         }
     });
     // A tag's value in its text colour: the grid's chips stay in the grid.
-    let color = color.unwrap_or_else(|| {
-        tag.map_or(palette.text, |style| {
-            crate::ui::value_tags::style_colors(style, look, palette).0
-        })
-    });
+    // A tag's value in its colours. In a field that is one control it is
+    // the grid's chip, as the design draws it there; a value that is read,
+    // and the terminal look's, is its text in the tag's colour.
+    let tagged = tag.map(|style| crate::ui::value_tags::style_colors(style, look, palette));
+    if let (Some((ink, Some(fill))), true, None) = (tagged, whole && !long, color) {
+        ui.add_space(pad);
+        let place = tag_chip(ui, read, (ink, fill), role, look);
+        ui.add_space(pad);
+        shown.place = Some(place);
+        return shown;
+    }
+    let color = color.unwrap_or_else(|| tagged.map_or(palette.text, |(ink, _)| ink));
     let small = widgets::secondary(look);
     ui.add_space(pad);
     ui.horizontal_top(|ui| {
@@ -1948,6 +1937,37 @@ fn value_of(
         }
     }
     shown
+}
+
+/// A tagged value as the chip its cell of the grid wears, flush with the
+/// field's label, on a line as tall as the value's own text would be.
+/// Returns that line, which is the value's place.
+fn tag_chip(
+    ui: &mut egui::Ui,
+    text: &str,
+    (ink, fill): (egui::Color32, egui::Color32),
+    role: TextRole,
+    look: &Look,
+) -> Rect {
+    let tag_role = TextRole::ValueTag;
+    let size = vec2(ui.available_width(), line_of(ui, role, look));
+    let (line, _) = ui.allocate_exact_size(size, Sense::hover());
+    let measure = |text: &str| tag_role.width(ui.ctx(), look.faces, text);
+    // 6 at its sides and 2 above and below, as in the grid.
+    let shown = crate::ui::grid::ellipsize(text, line.width() - 12.0, false, measure);
+    let height = line_of(ui, tag_role, look) + 4.0;
+    let chip = Rect::from_min_size(
+        pos2(line.left(), line.center().y - height / 2.0),
+        vec2(measure(&shown) + 12.0, height),
+    );
+    ui.painter().rect_filled(chip, CornerRadius::same(4), fill);
+    widgets::paint_text(
+        ui,
+        chip.left() + 6.0,
+        line.center().y,
+        Text::one(look, tag_role, &shown, ink),
+    );
+    line
 }
 
 /// The lines of a long value the panel shows before "Show all".
@@ -2355,16 +2375,8 @@ fn editing_footer(
     let edit = gettext(locale, "to edit");
     let said = format!("{click} {key} {edit}");
     // Cut at the panel's side, as a field's label is.
-    let hint = if measure(&said) <= inner.width() {
-        Text::one(look, note_role, &click, palette.dim)
-            .space(note_role, " ")
-            .add(note_role, &key, palette.secondary)
-            .space(note_role, " ")
-            .add(note_role, &edit, palette.dim)
-    } else {
-        let shown = crate::ui::grid::ellipsize(&said, inner.width(), false, measure);
-        Text::one(look, note_role, &shown, palette.dim)
-    };
+    let shown = crate::ui::grid::ellipsize(&said, inner.width(), false, measure);
+    let hint = Text::one(look, note_role, &shown, palette.dim);
     widgets::paint_text(ui, inner.left(), y, hint);
     // The whole of it for a screen reader, cut or not.
     let place = Rect::from_min_size(

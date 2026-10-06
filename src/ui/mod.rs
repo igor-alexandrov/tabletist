@@ -20879,6 +20879,14 @@ mod tests {
                 .unwrap();
             let value = panel_text(&harness, "bob@example.com");
             assert!(was.bottom() <= value.top(), "{}", look.name);
+            // Its box has the warning's line all round it, as the
+            // design's pending field has.
+            let palette = harness.app.palette;
+            let edge = crate::ui::states::Tone::Warning.edge(&look, &palette);
+            let boxed = harness.outlines.iter().any(|(rect, stroke)| {
+                *stroke == egui::Stroke::new(1.0, edge) && rect.contains_rect(value)
+            });
+            assert!(boxed, "{}", look.name);
             harness.click("Revert email");
             assert_eq!(
                 pending_text(&harness, tab, id, (1, 1)),

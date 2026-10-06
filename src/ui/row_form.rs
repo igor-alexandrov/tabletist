@@ -234,7 +234,10 @@ pub fn in_grid(ui: &mut egui::Ui, look: &Look, palette: &Palette, locale: Locale
     let (rect, response) = ui.allocate_exact_size(size, Sense::hover());
     let text = look.label(&gettext(locale, "Editing in the grid…"));
     response.widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, &text));
-    super::row_panel::dashed(ui, rect, palette.accent);
+    // The design's dashes are the accent drawn towards the panel: the
+    // words are what is read, not the box.
+    let dashes = palette.window.lerp_to_gamma(palette.accent, 0.45);
+    super::row_panel::dashed(ui, rect, dashes);
     widgets::paint_text(
         ui,
         rect.left() + 10.0,
