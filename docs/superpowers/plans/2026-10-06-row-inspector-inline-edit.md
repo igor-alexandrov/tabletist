@@ -1198,6 +1198,23 @@ git add -A && git commit -S -m "Show in a field of the row panel what its cell h
 git add -A && git commit -S -m "Add scenes of the row panel's fields, and say in the documents how they edit" -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```
 
+## What the run found
+
+Run on 2026-10-06, inline, one signed commit per task, the four checks and the shots lint passing after each (1,791 tests in the main crate at the end). The run stopped after task 5 for the user to try the panel in the real window, and went on from what they said of it.
+
+Where the code differs from this plan's blocks:
+
+- **A field's box has room of its own** (after task 5, from the user's first look: the box under the pointer ran into the label's line). A value that is one control keeps the box's room above and below its lines at rest too, so the box stands 3 under the label and 12 above the field's rule, as the "Table view, editable" artboard draws it, and nothing moves when the pointer comes over a value. The editor opens in that same box (`row_panel::field_box`, 30 tall and 8 out at each side; 26 and 6 in the terminal look), on the panel's tone, so the text stays where it was read. A field of one line is 12 taller than #89's for it.
+- **Plain at rest.** Asked which board the fields follow at rest, the user chose "Table view, editable" and the spec's table (plain, the box under the pointer, with the keyboard and while editing) over the always-boxed form of "Editing a row". That board gives the pending look, "was x · revert" and the header's count.
+- **Task 2.** The control takes the pointer over its whole box, not the value's lines alone: with room of its own the box reaches neither Copy nor "Show all". The fill under the pointer is the grid's hovered row's (`grid::row_fill`). A field with neither a control nor a pencil stops on its label's text.
+- **Task 3.** Left and Right do nothing on a focused field (egui would move the keyboard off it). A key that comes in the frame the field took the keyboard says `FieldFocused` first, so `Mod+Backspace` and `Mod+Z` never reach the cell the selection is leaving.
+- **Task 4.** `focus_fields` says the selected cell's own reason where every field of the row is locked for a reason of its own.
+- **Task 5.** The mode line reads "tab next field" while a field of the panel is edited.
+- **Task 6.** `PendingField` carries the cell's `State`, and the panel words it with the functions the grid's cell uses (`cell_editor::problem_text`, `data_view::failure_text`). What a pending document was stays under its value, with `revert` there, since its label's line is its controls'. The terminal look's footer lost its empty line.
+- **Tests.** The reviewer's list of #89's tests to rewrite was right; `the_terminal_footer_fits_a_narrow_row_panel` and `only_a_read_only_connection_carries_the_mark` also read the footer's note and follow it to the panel's first line.
+
+Not done here: anything that needs the real window (below), and the databases' suites, which nothing here touches.
+
 ## By hand, for the user
 
 The app's window does not open where this runs. After the run, in the real window:

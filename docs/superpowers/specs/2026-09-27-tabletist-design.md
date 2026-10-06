@@ -589,16 +589,22 @@ enum Dialog { Connection(..), Password(..), HostKey(..), QuickOpen(..), Help,
   one is selected (see the SQL editor spec).
 - What is folded or expanded belongs to a row of one page or one result:
   another page, a refresh or a new result starts fresh.
-- A pending cell's field shows its new value with the pending mark and
-  "was <loaded value>" under it, so the panel never disagrees with the
-  grid.
-- On a table's row that can be edited, a field's value is edited in the
-  panel, in its place: by a double-click on it, the pencil in its label
-  line, Enter or F2 on it, the footer's Edit, or Cmd/Ctrl+I (Omarchy: also
-  `e`). The text becomes the pending cell an edit in the grid makes. A
-  field that cannot be edited wears a lock and says why when asked, and
-  the footer says why a whole row cannot. Duplicate and Delete are
-  disabled. See `2026-10-06-row-form-design.md`.
+- A pending cell's field shows its new value on the pending cell's tint,
+  and its label's line ends in "was <loaded value> · revert", so the panel
+  never disagrees with the grid. A cell to fix, or one whose row's
+  statement failed, shows the failure's tint and what stands against it
+  under the value. The header counts the row's unsaved changes.
+- On a table's row that can be edited, each field is one control that
+  edits as a grid's cell does, in its place: a click on its value opens
+  the editor. Cmd/Ctrl+I (Omarchy: `ctrl+l`) puts the keyboard on the
+  row's first field that can be edited; there Enter, F2 or typing edits,
+  Up and Down (`j`/`k`) step the fields, and Esc (`ctrl+h`) goes back to
+  the grid's cell of that column. Enter and Tab commit and walk to the
+  next field that can be edited. The text becomes the pending cell an
+  edit in the grid makes. A field that cannot be edited wears a lock and
+  says why when asked, and the panel's first line says why a whole row
+  cannot ("Read-only connection"). Duplicate and Delete are disabled. See
+  `2026-10-06-row-inspector-inline-edit-design.md`.
 - On Omarchy `i` and Enter edit the cell on a table's grid, and Space and
   Cmd/Ctrl+Shift+R open the panel there. On a SQL result `i` and Enter
   still open it, Enter only when no widget has the keyboard. An Esc that
@@ -636,7 +642,7 @@ read-only table (structure data is small; the data grid is not needed).
 | Cmd/Ctrl+Alt+Left / Right | Previous / next page |
 | Cmd/Ctrl+. | Cancel running query |
 | Space, Cmd/Ctrl+Shift+R | Toggle row panel |
-| Cmd/Ctrl+I (Omarchy: also `e`) | Edit the row in the row panel |
+| Cmd/Ctrl+I (Omarchy: also `ctrl+l`) | Focus the row panel's fields |
 | Cmd/Ctrl+C, Cmd/Ctrl+Shift+C | Copy cell / copy row |
 | Arrows, Home/End, Enter | Move in the tree |
 | Arrows, Page Up/Down, Home/End | Move in the grid |

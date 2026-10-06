@@ -1,7 +1,10 @@
 # Edit values in place in the row inspector
 
-Date: 2026-10-06. Status: not built. Step 1 is planned in
-`docs/superpowers/plans/2026-10-06-row-inspector-inline-edit.md`.
+Date: 2026-10-06. Status: step 1 is built, see
+`docs/superpowers/plans/2026-10-06-row-inspector-inline-edit.md`, whose
+"What was decided" says what of the text below waits for the grid to have
+it (editors by type, the undo stack, rows). Step 2, a tall value edited in
+the panel, is not built.
 
 This replaces `2026-10-06-row-form-design.md` (pull request #89), which kept
 the row panel's fields as text to read and added a pencil, a double-click
