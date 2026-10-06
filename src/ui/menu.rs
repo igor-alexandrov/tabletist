@@ -691,6 +691,54 @@ mod tests {
         }
     }
 
+    /// The filter bar of an open table, its operator's menu open. The
+    /// operator is `=`, the first of the menu's rows.
+    fn operator_menu(look: Look) -> (Harness, crate::model::ConnTabId, crate::model::TabId) {
+        let mut harness = Harness::new();
+        harness.set_look(look);
+        let (tab, id) = harness.editable();
+        harness.press(Key::F, Modifiers::COMMAND);
+        harness.click("Filter operator");
+        (harness, tab, id)
+    }
+
+    fn operator(
+        harness: &Harness,
+        tab: crate::model::ConnTabId,
+        id: crate::model::TabId,
+    ) -> tabletist_db::FilterOp {
+        let workspace = harness.app.workspace(tab).unwrap();
+        workspace.object_tab(id).unwrap().filter.rows[0].op
+    }
+
+    #[test]
+    fn enter_picks_the_row_the_arrows_came_to_and_the_keyboard_is_back_on_the_dropdown() {
+        for look in Look::ALL {
+            let (mut harness, tab, id) = operator_menu(look);
+            give_keyboard(&mut harness, "=");
+            harness.press(Key::ArrowDown, Modifiers::NONE);
+            assert_eq!(focused_name(&harness.settle()), "≠", "{}", look.name);
+            harness.press(Key::Enter, Modifiers::NONE);
+            assert_eq!(
+                operator(&harness, tab, id),
+                tabletist_db::FilterOp::Ne,
+                "{}",
+                look.name
+            );
+            assert!(
+                !harness.has("contains"),
+                "the menu stays open in {}",
+                look.name
+            );
+            assert_eq!(
+                focused_name(&harness.settle()),
+                "Filter operator",
+                "{}",
+                look.name
+            );
+        }
+    }
+
     #[test]
     fn a_rows_note_is_its_description_for_screen_readers() {
         for look in Look::ALL {
