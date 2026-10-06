@@ -712,6 +712,41 @@ mod tests {
     }
 
     #[test]
+    fn enter_and_space_open_a_dropdown_that_has_the_keyboard() {
+        for look in Look::ALL {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            harness.editable();
+            harness.press(Key::F, Modifiers::COMMAND);
+            // The keyboard on the closed dropdown, as a screen reader
+            // puts it there.
+            let tree = harness.settle();
+            let target = node(&tree, "Filter operator", Role::ComboBox).unwrap();
+            harness.frame(vec![egui::Event::AccessKitActionRequest(
+                egui::accesskit::ActionRequest {
+                    target_tree: egui::accesskit::TreeId::ROOT,
+                    target_node: target,
+                    action: egui::accesskit::Action::Focus,
+                    data: None,
+                },
+            )]);
+            assert!(!harness.has("contains"), "{}", look.name);
+            for key in [Key::Enter, Key::Space] {
+                harness.press(key, Modifiers::NONE);
+                assert!(
+                    harness.has("contains"),
+                    "{key:?} does not open the menu in {}",
+                    look.name
+                );
+                // Escape closes it, and the keyboard is on the dropdown
+                // for the next key.
+                harness.press(Key::Escape, Modifiers::NONE);
+                assert!(!harness.has("contains"), "{}", look.name);
+            }
+        }
+    }
+
+    #[test]
     fn enter_picks_the_row_the_arrows_came_to_and_the_keyboard_is_back_on_the_dropdown() {
         for look in Look::ALL {
             let (mut harness, tab, id) = operator_menu(look);
