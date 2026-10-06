@@ -186,6 +186,11 @@ impl<'a> Item<'a> {
         // The pointer and the keyboard light a row the same way.
         let lit = response.hovered() || focus::shown(&response);
         focus::hint(ui, &response, rect, Ring::Own);
+        // A long menu scrolls: the row the keyboard came to is brought
+        // into view. Jump, not animate: the next key may come at once.
+        if response.gained_focus() {
+            response.scroll_to_me_animation(None, egui::style::ScrollAnimation::none());
+        }
         if !ui.is_rect_visible(rect) {
             return response;
         }
@@ -710,6 +715,29 @@ mod tests {
                 look.name
             );
             assert_eq!(described("plain"), None, "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn the_keyboard_brings_a_row_that_is_scrolled_away_into_view() {
+        for look in Look::ALL {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            harness.editable();
+            harness.press(Key::F, Modifiers::COMMAND);
+            harness.click("Filter operator");
+            // The last of eleven: under the menu's edge where the rows
+            // are taller than a menu grows, and so not drawn.
+            let last = "is not NULL";
+            if !look.terminal {
+                assert_eq!(harness.painted_rect(last), None, "{}", look.name);
+            }
+            give_keyboard(&mut harness, last);
+            assert!(
+                harness.painted_rect(last).is_some(),
+                "the row with the keyboard is not drawn in {}",
+                look.name
+            );
         }
     }
 }
