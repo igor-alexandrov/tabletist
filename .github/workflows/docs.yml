@@ -1,8 +1,8 @@
 name: Docs
 
-# Builds the website from docs/ and publishes it to GitHub Pages. A pull
-# request only builds and checks it. The paths are listed twice: change them
-# together.
+# Builds the website from docs/ and publishes it to GitHub Pages from main.
+# A pull request, and a manual run on another branch, only build and check
+# it. The paths are listed twice: change them together.
 on:
   push:
     branches: [main]
@@ -43,12 +43,12 @@ jobs:
         working-directory: docs
         run: bin/check
       - uses: actions/upload-pages-artifact@v5
-        if: github.event_name != 'pull_request'
+        if: github.ref == 'refs/heads/main'
         with:
           path: docs/_site
 
   deploy:
-    if: github.event_name != 'pull_request'
+    if: github.ref == 'refs/heads/main'
     needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 10

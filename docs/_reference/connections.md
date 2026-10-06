@@ -124,8 +124,10 @@ has a keyring checkbox:
 - **Not ticked:** Tabletist asks for the password when you connect, and
   remembers it only for that connection tab.
 
-A password is saved only after the server accepted it. The same goes for
-an SSH password and a key's passphrase.
+A password typed in the connection dialog goes to the keyring when you
+save the connection. One typed when Tabletist asks for it is saved only
+after the server accepted it. The same goes for an SSH password and a
+key's passphrase.
 
 ## Open read-only
 
