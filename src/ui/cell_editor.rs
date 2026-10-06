@@ -536,104 +536,188 @@ pub fn large(
             } else if std::mem::take(&mut editor.focus) {
                 take_keyboard(ui.ctx(), id, &editor.text);
             }
-            let has = ui.memory(|memory| memory.has_focus(id));
-            let had = had_keyboard(ui.ctx(), id);
-            if has {
-                keep_keyboard(ui.ctx());
-            }
-            // Read before the field is added, which would take Esc as the
-            // keyboard given up. No popup is open for the other owners of
-            // Esc to see: the key is taken here, so none of them acts on
-            // it.
-            ui.input_mut(|input| {
-                if has && consume_press(input, Modifiers::COMMAND, Key::Enter) {
-                    outcome.commit = Some(Advance::Stay);
-                }
-                leaving_keys(input, has || had, look.terminal, &mut outcome);
-            });
+            let had = large_keys(ui, id, look.terminal, &mut outcome);
             let (rect, _) = ui.allocate_exact_size(LARGE, egui::Sense::hover());
-            // A press beside the text (the band, the padding) is the
-            // editor's: it is no click on the row under the popover, and
-            // the text keeps the keyboard.
-            let whole = ui.interact(rect, area.with("panel"), egui::Sense::CLICK);
-            let clicked_over =
-                ui.input(|input| input.pointer.any_click()) && ui.rect_contains_pointer(rect);
-            let pressed = whole.is_pointer_button_down_on() || whole.clicked() || clicked_over;
             let corner = if look.terminal { 3 } else { 8 };
             // The panel's own border gives way to the editor's line.
             let _ = sql_complete::panel(ui, rect, corner, look, palette);
-            let role = grid::data_role(look);
-            let text_rect = Rect::from_min_max(
-                rect.min + vec2(LARGE_PAD, LARGE_PAD),
-                pos2(
-                    rect.right() - LARGE_PAD,
-                    rect.bottom() - BAND - LARGE_PAD / 2.0,
-                ),
-            );
-            let line = role.row_height(ui.ctx(), look.faces);
-            let rows = (text_rect.height() / line).floor().max(1.0) as usize;
-            let mut child = ui.new_child(egui::UiBuilder::new().max_rect(text_rect));
-            let mut layouter = crate::typography::layouter(look, role, palette.text);
-            let response = egui::ScrollArea::vertical()
-                .id_salt(area.with("text"))
-                .auto_shrink([false, false])
-                .show(&mut child, |ui| {
-                    ui.add(
-                        egui::TextEdit::multiline(&mut editor.text)
-                            .id(id)
-                            .font(role.font_id(look.faces))
-                            .frame(egui::Frame::NONE)
-                            .margin(Margin::ZERO)
-                            .desired_width(f32::INFINITY)
-                            .desired_rows(rows)
-                            // Tab is the text's own.
-                            .lock_focus(true)
-                            // As the field on the cell: what is laid
-                            // out is bounded, and a text that was cut
-                            // is over the limit.
-                            .char_limit(MAX_EDIT_BYTES + 1)
-                            .layouter(&mut layouter),
-                    )
-                })
-                .inner;
-            bound(&mut editor.text);
-            // The name only: the field keeps the role and the value egui
-            // gave it.
-            let name = format!("{} {}", gettext(locale, "Edit"), display_safe(&target.name));
-            ui.ctx().accesskit_node_builder(id, |node| {
-                node.set_label(name);
-            });
-            let mut has = response.has_focus();
-            if !has && had && pressed {
-                // The press landed outside the field, which gave the keys
-                // up: they stay the editor's.
-                ui.memory_mut(|memory| memory.request_focus(id));
-                has = true;
-            }
-            if has {
-                hold_keys(ui.ctx(), id);
-            }
-            // The popover's line: the accent of a field being typed in,
-            // red while the text fails its check.
-            let (color, ring) = if editor.problem.is_some() {
-                (palette.danger, Ring::Failing { radius: corner })
-            } else {
-                (palette.accent, Ring::Field { radius: corner })
-            };
-            ui.painter().rect_stroke(
-                rect,
-                CornerRadius::same(corner),
-                Stroke::new(1.0, color),
-                StrokeKind::Inside,
-            );
-            focus::hint(ui, &response, rect, ring);
-            band(ui, rect, editor, target, (look, palette, locale));
+            let skin = (look, palette, locale);
+            let (response, has) = large_body(ui, rect, area, editor, target, had, skin);
             outcome.changed = response.changed();
             if !sizing {
                 keyboard_after(ui.ctx(), target, has, had, &mut outcome);
             }
         });
     outcome
+}
+
+/// The large editor in the row panel: the popover's body in the place of
+/// its field's value, `outset` wider at each side than the room it is
+/// given, as the panel's one-line field is, and as tall as its text from
+/// three lines to twelve (it scrolls past that). Its keys are the
+/// popover's: Enter and Tab are the text's own, Mod+Enter applies, and Esc
+/// drops the edit (the terminal look's keeps it, and Ctrl+C drops it).
+pub fn tall(
+    ui: &mut Ui,
+    editor: &mut Editor,
+    target: &Target,
+    outset: f32,
+    (look, palette, locale): (&Look, &Palette, Locale),
+) -> Outcome {
+    let mut outcome = Outcome::default();
+    let id = target.id;
+    let opened = std::mem::take(&mut editor.focus);
+    if opened {
+        take_keyboard(ui.ctx(), id, &editor.text);
+    }
+    let had = large_keys(ui, id, look.terminal, &mut outcome);
+    // As tall as the text is at the width it gets, within its bounds.
+    let role = grid::data_role(look);
+    let line = role.row_height(ui.ctx(), look.faces);
+    let width = ui.available_width();
+    let wrap = (width + 2.0 * outset - 2.0 * LARGE_PAD).max(1.0);
+    let mut layouter = crate::typography::layouter(look, role, palette.text);
+    let rows = layouter(ui, &editor.text.as_str(), wrap).rows.len();
+    let rows = rows.clamp(TALL_ROWS.0, TALL_ROWS.1) as f32;
+    let height = LARGE_PAD + rows * line + LARGE_PAD / 2.0 + BAND;
+    // Its line is the room's; the box stands out of it at both sides, as
+    // the box of a value under the pointer does.
+    let (place, _) = ui.allocate_exact_size(vec2(width, height), egui::Sense::hover());
+    let rect = place.expand2(vec2(outset, 0.0));
+    let corner = if look.terminal { 3 } else { 8 };
+    // On the panel's own tone, as the one-line field is.
+    let fill = if look.terminal {
+        ui.visuals().extreme_bg_color
+    } else {
+        palette.window
+    };
+    ui.painter()
+        .rect_filled(rect, CornerRadius::same(corner), fill);
+    let mut within = ui.new_child(egui::UiBuilder::new().max_rect(rect));
+    let salt = Id::new("row-panel-tall");
+    let skin = (look, palette, locale);
+    let (response, has) = large_body(&mut within, rect, salt, editor, target, had, skin);
+    // The field can open far down a long row: it is brought into view
+    // once, when it takes the keyboard.
+    if opened {
+        ui.scroll_to_rect(rect, None);
+    }
+    outcome.changed = response.changed();
+    keyboard_after(ui.ctx(), target, has, had, &mut outcome);
+    outcome
+}
+
+/// The fewest and the most lines of its text the row panel's tall field
+/// shows.
+const TALL_ROWS: (usize, usize) = (3, 12);
+
+/// The large editor's keys, read before its text is added, which would
+/// take Esc as the keyboard given up: Mod+Enter applies, and Esc and the
+/// terminal look's Ctrl+C leave. No popup is open for the other owners of
+/// Esc to see: the key is taken here, so none of them acts on it. Returns
+/// whether the text had the keyboard when it was last drawn.
+fn large_keys(ui: &Ui, id: Id, terminal: bool, outcome: &mut Outcome) -> bool {
+    let has = ui.memory(|memory| memory.has_focus(id));
+    let had = had_keyboard(ui.ctx(), id);
+    if has {
+        keep_keyboard(ui.ctx());
+    }
+    ui.input_mut(|input| {
+        if has && consume_press(input, Modifiers::COMMAND, Key::Enter) {
+            outcome.commit = Some(Advance::Stay);
+        }
+        leaving_keys(input, has || had, terminal, outcome);
+    });
+    had
+}
+
+/// The large editor's body, in `rect`: a text of several lines, the
+/// editor's line round it, and the band under it. The popover at a cell
+/// and the row panel's tall field both draw it, under ids told apart by
+/// `salt`. `had` says its text had the keyboard when it was last drawn;
+/// returns the text's response and whether it has the keyboard now.
+fn large_body(
+    ui: &mut Ui,
+    rect: Rect,
+    salt: Id,
+    editor: &mut Editor,
+    target: &Target,
+    had: bool,
+    (look, palette, locale): (&Look, &Palette, Locale),
+) -> (egui::Response, bool) {
+    let id = target.id;
+    // A press beside the text (the band, the padding) is the editor's: it
+    // is no click on what is under it, and the text keeps the keyboard.
+    let whole = ui.interact(rect, salt.with("panel"), egui::Sense::CLICK);
+    let clicked_over =
+        ui.input(|input| input.pointer.any_click()) && ui.rect_contains_pointer(rect);
+    let pressed = whole.is_pointer_button_down_on() || whole.clicked() || clicked_over;
+    let corner = if look.terminal { 3 } else { 8 };
+    let role = grid::data_role(look);
+    let text_rect = Rect::from_min_max(
+        rect.min + vec2(LARGE_PAD, LARGE_PAD),
+        pos2(
+            rect.right() - LARGE_PAD,
+            rect.bottom() - BAND - LARGE_PAD / 2.0,
+        ),
+    );
+    let line = role.row_height(ui.ctx(), look.faces);
+    let rows = (text_rect.height() / line).floor().max(1.0) as usize;
+    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(text_rect));
+    let mut layouter = crate::typography::layouter(look, role, palette.text);
+    let response = egui::ScrollArea::vertical()
+        .id_salt(salt.with("text"))
+        .auto_shrink([false, false])
+        .show(&mut child, |ui| {
+            ui.add(
+                egui::TextEdit::multiline(&mut editor.text)
+                    .id(id)
+                    .font(role.font_id(look.faces))
+                    .frame(egui::Frame::NONE)
+                    .margin(Margin::ZERO)
+                    .desired_width(f32::INFINITY)
+                    .desired_rows(rows)
+                    // Tab is the text's own.
+                    .lock_focus(true)
+                    // As the field on the cell: what is laid out is
+                    // bounded, and a text that was cut is over the limit.
+                    .char_limit(MAX_EDIT_BYTES + 1)
+                    .layouter(&mut layouter),
+            )
+        })
+        .inner;
+    bound(&mut editor.text);
+    // The name only: the field keeps the role and the value egui gave it.
+    let name = format!("{} {}", gettext(locale, "Edit"), display_safe(&target.name));
+    ui.ctx().accesskit_node_builder(id, |node| {
+        node.set_label(name);
+    });
+    let mut has = response.has_focus();
+    if !has && had && pressed {
+        // The press landed outside the field, which gave the keys up:
+        // they stay the editor's.
+        ui.memory_mut(|memory| memory.request_focus(id));
+        has = true;
+    }
+    if has {
+        hold_keys(ui.ctx(), id);
+    }
+    // The editor's line: the accent of a field being typed in, red while
+    // the text fails its check.
+    let (color, ring) = if editor.problem.is_some() {
+        (palette.danger, Ring::Failing { radius: corner })
+    } else {
+        (palette.accent, Ring::Field { radius: corner })
+    };
+    ui.painter().rect_stroke(
+        rect,
+        CornerRadius::same(corner),
+        Stroke::new(1.0, color),
+        StrokeKind::Inside,
+    );
+    focus::hint(ui, &response, rect, ring);
+    band(ui, rect, editor, target, (look, palette, locale));
+    (response, has)
 }
 
 /// The band under the large editor's text: how much it holds, or what it

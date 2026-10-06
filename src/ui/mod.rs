@@ -20560,7 +20560,7 @@ mod tests {
     }
 
     #[test]
-    fn a_tall_values_pencil_opens_the_popover_at_its_cell() {
+    fn a_tall_value_is_edited_in_the_row_panel() {
         for look in Look::ALL {
             let (mut harness, tab, id) = editable_in(look);
             select(&mut harness, tab, id, (0, 0));
@@ -20568,13 +20568,62 @@ mod tests {
             harness.click("Edit meta");
             let editor = edits(&harness, tab, id).editor.as_ref().expect("an editor");
             assert!(editor.large, "{}", look.name);
-            assert_eq!(form_editor(&harness, tab, id), Some(((0, 2), false)));
-            assert!(harness.ctx.text_edit_focused(), "{}", look.name);
-            assert!(
-                painted(&harness, &look.label("Editing in the grid…")),
+            assert_eq!(form_editor(&harness, tab, id), Some(((0, 2), true)));
+            assert_eq!(
+                editor_text(&harness, tab, id).as_deref(),
+                Some(r#"{"plan":"pro"}"#),
                 "{}",
                 look.name
             );
+            assert!(harness.ctx.text_edit_focused(), "{}", look.name);
+            // In the panel, in its field's place: nothing says the grid
+            // has it, and its tree is not drawn beside it.
+            let in_grid = look.label("Editing in the grid…");
+            assert!(!painted(&harness, &in_grid), "{}", look.name);
+            assert!(!harness.has("Collapse all"), "{}", look.name);
+            let tree = harness.settle();
+            let role = egui::accesskit::Role::MultilineTextInput;
+            let field = crate::testing::bounds(&tree, "Edit meta", role).expect("the field");
+            let cell = cell_of(&harness, "user2@example.com");
+            assert!(field.left() > cell.x, "{}", look.name);
+            // The band under it names the keys that end the edit.
+            let mut pieces = harness.painted.iter();
+            assert!(
+                pieces.any(|(text, _)| text.contains("apply")),
+                "{}",
+                look.name
+            );
+            // Enter is the text's own.
+            harness.press(Key::Enter, Modifiers::NONE);
+            assert!(edits(&harness, tab, id).editor.is_some(), "{}", look.name);
+            harness.press(Key::Backspace, Modifiers::NONE);
+            // A text that is no JSON is not applied.
+            type_text(&mut harness, "x");
+            harness.press(Key::Enter, Modifiers::COMMAND);
+            assert!(edits(&harness, tab, id).editor.is_some(), "{}", look.name);
+            assert!(edits(&harness, tab, id).cells.is_empty(), "{}", look.name);
+            // Mended and changed, Mod+Enter applies it.
+            harness.press(Key::Backspace, Modifiers::NONE);
+            harness.press(Key::Backspace, Modifiers::NONE);
+            type_text(&mut harness, r#","n":1}"#);
+            harness.press(Key::Enter, Modifiers::COMMAND);
+            assert!(edits(&harness, tab, id).editor.is_none(), "{}", look.name);
+            assert_eq!(
+                pending_text(&harness, tab, id, (0, 2)).as_deref(),
+                Some(r#"{"plan":"pro","n":1}"#),
+                "{}",
+                look.name
+            );
+            // The keyboard is on the field it was on.
+            harness.settle();
+            assert!(field_focused(&harness, tab, id, 2), "{}", look.name);
+            // Asked for on its cell of the grid, the same value opens the
+            // popover there, and the panel says so.
+            open_editor(&mut harness, tab, id, (0, 2));
+            assert_eq!(form_editor(&harness, tab, id), Some(((0, 2), false)));
+            harness.settle();
+            assert!(painted(&harness, &in_grid), "{}", look.name);
+            harness.app.apply(Action::CancelEdit { tab, id });
             // A NULL has no text to click: its mark is its way in.
             let (mut harness, tab, id) = form_row(look, 1);
             let null = tabletist_db::Value::Null;
@@ -20591,6 +20640,41 @@ mod tests {
                 look.name
             );
             assert_eq!(editor_text(&harness, tab, id).as_deref(), Some(""));
+        }
+    }
+
+    #[test]
+    fn alt_enter_makes_a_field_of_the_panel_tall_in_its_place() {
+        for look in Look::ALL {
+            let (mut harness, tab, id) = form_row(look, 1);
+            click_value(&mut harness, "user2@example.com");
+            assert!(!is_large(&harness, tab, id), "{}", look.name);
+            harness.press(Key::Enter, Modifiers::ALT);
+            assert!(is_large(&harness, tab, id), "{}", look.name);
+            assert_eq!(
+                form_editor(&harness, tab, id),
+                Some(((1, 1), true)),
+                "{}",
+                look.name
+            );
+            assert_eq!(
+                editor_text(&harness, tab, id).as_deref(),
+                Some("user2@example.com\n"),
+                "{}",
+                look.name
+            );
+            // The keyboard went with it, and what is typed is its text.
+            assert!(harness.ctx.text_edit_focused(), "{}", look.name);
+            type_text(&mut harness, "second line");
+            harness.press(Key::Enter, Modifiers::COMMAND);
+            assert_eq!(
+                pending_text(&harness, tab, id, (1, 1)).as_deref(),
+                Some("user2@example.com\nsecond line"),
+                "{}",
+                look.name
+            );
+            harness.settle();
+            assert!(field_focused(&harness, tab, id, 1), "{}", look.name);
         }
     }
 

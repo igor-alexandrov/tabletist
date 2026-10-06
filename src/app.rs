@@ -906,11 +906,10 @@ impl App {
                 if let Some(editor) = self.editor_mut(tab, id) {
                     // At the end of the text, where the cursor of a field
                     // that just opened is. A break elsewhere is typed in
-                    // the large editor, which is the grid's: an edit begun
-                    // in the row panel goes on at its cell.
+                    // the large editor, which opens where the field was:
+                    // at the cell, or in the row panel.
                     editor.text.push('\n');
                     editor.large = true;
-                    editor.place = EditorPlace::Grid;
                     editor.focus = true;
                     editor.touched = true;
                 }
@@ -14599,11 +14598,26 @@ mod tests {
         }
 
         #[test]
-        fn a_tall_value_asked_for_in_the_row_panel_is_edited_at_its_cell() {
+        fn a_tall_value_asked_for_in_the_row_panel_is_edited_there() {
             let mut harness = Harness::new();
             let (tab, id) = harness.editable();
-            // A document: the popover at the cell is its only editor yet.
+            // A document: the large editor, in the panel, where its edit
+            // was asked for.
             harness.app.apply(Action::EditField {
+                tab,
+                id,
+                cell: at(0, 2),
+                start: EditStart::Value,
+            });
+            assert_eq!(
+                editor(&harness, tab, id),
+                Some((at(0, 2), EditorPlace::Panel, true))
+            );
+            // Dropped, the keyboard is its field's again.
+            harness.app.apply(Action::CancelEdit { tab, id });
+            assert_eq!(object(&harness, tab, id).focus_field, Some(2));
+            // Asked for in the grid, it is the popover at the cell.
+            harness.app.apply(Action::EditCell {
                 tab,
                 id,
                 cell: at(0, 2),
@@ -14614,9 +14628,8 @@ mod tests {
                 Some((at(0, 2), EditorPlace::Grid, true))
             );
             harness.app.apply(Action::CancelEdit { tab, id });
-            assert_eq!(object(&harness, tab, id).focus_field, None);
-            // A line break typed into a field of the panel moves the edit
-            // there too.
+            // A line break typed into a one-line field of the panel makes
+            // it tall where it is.
             harness.app.apply(Action::EditField {
                 tab,
                 id,
@@ -14626,7 +14639,7 @@ mod tests {
             harness.app.apply(Action::EditorBreak { tab, id });
             assert_eq!(
                 editor(&harness, tab, id),
-                Some((at(1, 1), EditorPlace::Grid, true))
+                Some((at(1, 1), EditorPlace::Panel, true))
             );
             let text = &object(&harness, tab, id)
                 .edits

@@ -605,12 +605,12 @@ impl App {
                 },
             };
             // A value of several lines, a long one or a document is edited
-            // in the popover at its cell, wherever the edit was asked for:
-            // the row panel has no editor for it yet.
+            // in the large editor, where its edit was asked for: a popover
+            // at its cell, or the tall field in the row panel.
             let large = opens_large(&text, class);
             Ok(Editor {
                 cell,
-                place: if large { EditorPlace::Grid } else { place },
+                place,
                 large,
                 text,
                 focus: true,

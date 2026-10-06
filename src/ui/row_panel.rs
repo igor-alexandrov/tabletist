@@ -1342,16 +1342,20 @@ fn field(
             // "Collapse all": a 24 pt button 6 at its sides, 4 before the
             // buttons.
             let link_right = left - 4.0 - 6.0;
-            json_view::fold_all_link(
-                ui,
-                id,
-                doc,
-                link_right,
-                line.center().y,
-                locale,
-                look,
-                palette,
-            );
+            // Its tree is not drawn while the document is edited: there
+            // is nothing to fold.
+            if part != Part::Editing {
+                json_view::fold_all_link(
+                    ui,
+                    id,
+                    doc,
+                    link_right,
+                    line.center().y,
+                    locale,
+                    look,
+                    palette,
+                );
+            }
         }
     } else {
         let copy = Rect::from_min_size(
