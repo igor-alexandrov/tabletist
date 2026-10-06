@@ -241,12 +241,23 @@ pub enum Action {
     },
     /// Open the editor on a field of the row panel: the selected row's
     /// value in the column of `cell`, edited in the panel instead of on the
-    /// cell. From the value, as `EditStart::Value` is. On a field that
-    /// cannot be edited it says why.
+    /// cell. From `start`, as `EditCell` is. On a field that cannot be
+    /// edited it says why.
     EditField {
         tab: ConnTabId,
         id: TabId,
         cell: CellPos,
+        start: EditStart,
+    },
+    /// Put the keyboard on the row panel's field `by` fields after the one
+    /// of the column `from` (before it, below zero), in the page's column
+    /// order, locked ones too. At the row's ends it stays, and `by` zero
+    /// asks for the field of `from` itself.
+    MoveField {
+        tab: ConnTabId,
+        id: TabId,
+        from: usize,
+        by: isize,
     },
     /// Edit the selected row in the row panel: show the panel, and open
     /// the editor there on the selected cell's field, or on the row's

@@ -15,10 +15,10 @@ use crate::edit::EditorPlace;
 use crate::i18n::Locale;
 use crate::model::{Action, ConnTab, ConnTabContent, ConnTabId, PickerState};
 use crate::model::{
-    Advance, CellPos, Completion, ConnectionForm, Dialog, EditStart, Fetch, FilterBar, FilterRow,
-    Held, HostKeyPrompt, LeavePrompt, ObjectTab, ObjectView, Pane, PasswordPrompt, PickTarget,
-    QuickOpen, ResultPane, RunMode, SecretKind, SessionStatus, SqlTab, Tab, TabId, TestState,
-    TextPrint, Tree, TreeKey, TreeNode, Wanted, Workspace,
+    Advance, CellPos, Completion, ConnectionForm, Dialog, Fetch, FilterBar, FilterRow, Held,
+    HostKeyPrompt, LeavePrompt, ObjectTab, ObjectView, Pane, PasswordPrompt, PickTarget, QuickOpen,
+    ResultPane, RunMode, SecretKind, SessionStatus, SqlTab, Tab, TabId, TestState, TextPrint, Tree,
+    TreeKey, TreeNode, Wanted, Workspace,
 };
 use crate::paths::AppDirs;
 use crate::secrets::{SecretString, password_account, ssh_account};
@@ -808,8 +808,21 @@ impl App {
                 cell,
                 start,
             } => self.edit_cell(tab, id, cell, start, EditorPlace::Grid),
-            Action::EditField { tab, id, cell } => {
-                self.edit_cell(tab, id, cell, EditStart::Value, EditorPlace::Panel);
+            Action::EditField {
+                tab,
+                id,
+                cell,
+                start,
+            } => self.edit_cell(tab, id, cell, start, EditorPlace::Panel),
+            Action::MoveField { tab, id, from, by } => {
+                if let Some(object) = self.object_tab_mut(tab, id)
+                    && let Some(columns) = object.rows.value.as_ref().map(|page| page.columns.len())
+                {
+                    let last = columns.saturating_sub(1);
+                    object.focus_field = Some(from.saturating_add_signed(by).min(last));
+                    // What a locked field said was said of the one left.
+                    object.edits.why = None;
+                }
             }
             Action::EditRow { tab, id } => self.edit_row(tab, id),
             Action::FieldFocused { tab, id, col } => {
@@ -14357,6 +14370,7 @@ mod tests {
                 tab,
                 id,
                 cell: at(2, 1),
+                start: EditStart::Value,
             });
             assert_eq!(
                 editor(&harness, tab, id),
@@ -14392,6 +14406,7 @@ mod tests {
                 tab,
                 id,
                 cell: at(2, 1),
+                start: EditStart::Value,
             });
             let text = &object(&harness, tab, id)
                 .edits
@@ -14413,7 +14428,12 @@ mod tests {
                 // Dropped, and committed: on the terminal's look the keys
                 // are the grid's again, and nothing is asked of the panel.
                 let back = (!look.terminal).then_some(1);
-                harness.app.apply(Action::EditField { tab, id, cell });
+                harness.app.apply(Action::EditField {
+                    tab,
+                    id,
+                    cell,
+                    start: EditStart::Value,
+                });
                 harness.app.apply(Action::CancelEdit { tab, id });
                 assert_eq!(field(&harness), back, "{}", look.name);
                 // It is owed until the panel says that field has it: what
@@ -14423,14 +14443,24 @@ mod tests {
                 assert_eq!(field(&harness), back, "{}", look.name);
                 harness.app.apply(focused(1));
                 assert_eq!(field(&harness), None, "{}", look.name);
-                harness.app.apply(Action::EditField { tab, id, cell });
+                harness.app.apply(Action::EditField {
+                    tab,
+                    id,
+                    cell,
+                    start: EditStart::Value,
+                });
                 harness.app.apply(Action::CancelEdit { tab, id });
                 assert_eq!(field(&harness), back, "{}", look.name);
                 // The field is the selected row's: once the selection
                 // moves, by a click or a key, no field is owed the keyboard.
                 harness.app.apply(Action::SelectCell { tab, id, cell });
                 assert_eq!(field(&harness), None, "{}", look.name);
-                harness.app.apply(Action::EditField { tab, id, cell });
+                harness.app.apply(Action::EditField {
+                    tab,
+                    id,
+                    cell,
+                    start: EditStart::Value,
+                });
                 harness.app.apply(Action::CommitEdit {
                     tab,
                     id,
@@ -14446,13 +14476,23 @@ mod tests {
                 assert_eq!(field(&harness), None, "{}", look.name);
                 // Nor once the panel closes: opened again, it starts as
                 // any panel does.
-                harness.app.apply(Action::EditField { tab, id, cell });
+                harness.app.apply(Action::EditField {
+                    tab,
+                    id,
+                    cell,
+                    start: EditStart::Value,
+                });
                 harness.app.apply(Action::CancelEdit { tab, id });
                 harness.app.apply(Action::ToggleRowPanel(tab));
                 assert_eq!(field(&harness), None, "{}", look.name);
                 harness.app.apply(Action::ToggleRowPanel(tab));
                 // Left, the keyboard is where the user put it.
-                harness.app.apply(Action::EditField { tab, id, cell });
+                harness.app.apply(Action::EditField {
+                    tab,
+                    id,
+                    cell,
+                    start: EditStart::Value,
+                });
                 let left = crate::testing::leave_edit(&harness.app, tab, id);
                 harness.app.apply(left);
                 assert!(editor(&harness, tab, id).is_none());
@@ -14504,7 +14544,12 @@ mod tests {
             let field = |harness: &Harness| object(harness, tab, id).focus_field;
             let walk = |harness: &mut Harness, col, then| {
                 let cell = at(1, col);
-                harness.app.apply(Action::EditField { tab, id, cell });
+                harness.app.apply(Action::EditField {
+                    tab,
+                    id,
+                    cell,
+                    start: EditStart::Value,
+                });
                 harness.app.apply(Action::CommitEdit { tab, id, then });
                 assert!(editor(harness, tab, id).is_none());
             };
@@ -14532,6 +14577,7 @@ mod tests {
                 tab,
                 id,
                 cell: at(0, 2),
+                start: EditStart::Value,
             });
             assert_eq!(
                 editor(&harness, tab, id),
@@ -14545,6 +14591,7 @@ mod tests {
                 tab,
                 id,
                 cell: at(1, 1),
+                start: EditStart::Value,
             });
             harness.app.apply(Action::EditorBreak { tab, id });
             assert_eq!(
@@ -14584,6 +14631,7 @@ mod tests {
                 tab,
                 id,
                 cell: at(2, 1),
+                start: EditStart::Value,
             });
             harness.app.apply(leave(at(1, 1), EditorPlace::Grid));
             // The new editor is open, and the old one's text was kept.
@@ -14616,6 +14664,7 @@ mod tests {
                 tab,
                 id,
                 cell: at(0, 0),
+                start: EditStart::Value,
             });
             assert!(editor(&harness, tab, id).is_none());
             assert_eq!(
@@ -14657,6 +14706,7 @@ mod tests {
                 tab,
                 id,
                 cell: at(1, 1),
+                start: EditStart::Value,
             });
             type_text(&mut harness, tab, id, "bob@example.com");
             // Closed from another tab, where the editor waits: the panel
@@ -14680,6 +14730,7 @@ mod tests {
                 tab,
                 id,
                 cell: at(2, 1),
+                start: EditStart::Value,
             });
             type_text(&mut harness, tab, id, "cy@example.com");
             harness.app.apply(Action::SetView {
@@ -14704,6 +14755,7 @@ mod tests {
                 tab,
                 id,
                 cell: at(2, 1),
+                start: EditStart::Value,
             });
             type_text(&mut harness, tab, id, "cy@example.com");
             harness.app.apply(Action::CloseTab { tab, id });
@@ -14717,6 +14769,7 @@ mod tests {
                 tab,
                 id,
                 cell: at(3, 1),
+                start: EditStart::Value,
             });
             assert_eq!(
                 editor(&harness, tab, id),

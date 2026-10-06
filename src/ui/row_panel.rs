@@ -17,7 +17,6 @@ use crate::typography::{Text, TextRole};
 use crate::ui::focus::{self, Region};
 use crate::ui::format;
 use crate::ui::json_view;
-use crate::ui::keys::consume_press;
 use crate::ui::row_form::{self, Form, Part};
 use crate::ui::widgets;
 
@@ -1314,11 +1313,10 @@ fn field(
     let Some(stop) = control.as_ref().or(pencil.as_ref()).or(bare.as_ref()) else {
         return;
     };
-    // What starts an edit of the value: a click on it, and Enter, which
-    // presses whatever has the keyboard, or F2 (the terminal look edits
-    // with its own letters). Asked of a locked field, the same things say
-    // why it is locked.
-    let mut edit = stop.clicked();
+    // What starts an edit of the value here: a click on it. (Its keys are
+    // read in `ui/keys.rs`.) Asked of a locked field, a click says why it
+    // is locked.
+    let edit = stop.clicked();
     if stop.has_focus() {
         // The field that takes the keyboard becomes the grid's selected
         // cell. Said once, as it takes it: a selection moved since (a
@@ -1332,17 +1330,16 @@ fn field(
         }
         // Up and Down are the panel's, to step its fields with, and Esc
         // its way back to the grid: egui neither moves the keyboard off
-        // the stop with them nor drops it.
+        // the stop with the arrows nor drops it. The field's keys are
+        // read with the grid's (`ui/keys.rs`), before the panel is drawn:
+        // Enter and F2 never reach the stop, which Space still presses.
         let keys = egui::EventFilter {
             vertical_arrows: true,
+            horizontal_arrows: true,
             escape: true,
             ..Default::default()
         };
         ui.memory_mut(|memory| memory.set_focus_lock_filter(stop.id, keys));
-        if !look.terminal {
-            edit |=
-                ui.input_mut(|input| consume_press(input, egui::Modifiers::NONE, egui::Key::F2));
-        }
     }
     if edit && part != Part::InGrid {
         // A click gives a control no keyboard of itself. An editor that
@@ -1355,6 +1352,7 @@ fn field(
             tab,
             id: tab_id,
             cell: CellPos { row, col },
+            start: crate::model::EditStart::Value,
         });
     }
     // An edit ended and this field is owed the keyboard: on its stop.

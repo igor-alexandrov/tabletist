@@ -20024,6 +20024,193 @@ mod tests {
         }
     }
 
+    /// Puts the keyboard on the row panel's field of the column `col`, as
+    /// the reducer asks the panel to.
+    fn focus_field(harness: &mut Harness, tab: ConnTabId, id: TabId, col: usize) {
+        let workspace = harness.app.workspace_mut(tab).unwrap();
+        workspace.object_tab_mut(id).unwrap().focus_field = Some(col);
+        harness.settle();
+        assert!(field_focused(harness, tab, id, col), "field {col}");
+    }
+
+    #[test]
+    fn typing_on_a_focused_field_edits_it_from_what_was_typed() {
+        for look in desktop_looks() {
+            let (mut harness, tab, id) = form_row(look, 1);
+            focus_field(&mut harness, tab, id, 1);
+            type_text(&mut harness, "z");
+            assert_eq!(
+                form_editor(&harness, tab, id),
+                Some(((1, 1), true)),
+                "{}",
+                look.name
+            );
+            assert_eq!(
+                editor_text(&harness, tab, id).as_deref(),
+                Some("z"),
+                "{}",
+                look.name
+            );
+            // One editor, the panel's: Esc drops it and none is left on
+            // the grid's cell.
+            harness.press(Key::Escape, Modifiers::NONE);
+            assert!(edits(&harness, tab, id).editor.is_none(), "{}", look.name);
+            // Typing on the key's field, which is locked, does nothing.
+            focus_field(&mut harness, tab, id, 0);
+            type_text(&mut harness, "9");
+            let now = edits(&harness, tab, id);
+            assert!(now.editor.is_none() && now.why.is_none(), "{}", look.name);
+            // Enter there says why.
+            harness.press(Key::Enter, Modifiers::NONE);
+            let now = edits(&harness, tab, id);
+            assert!(now.editor.is_none() && now.why.is_some(), "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn up_and_down_step_the_fields_and_escape_gives_the_keys_to_the_grid() {
+        for look in desktop_looks() {
+            let (mut harness, tab, id) = form_row(look, 1);
+            focus_field(&mut harness, tab, id, 1);
+            harness.press(Key::ArrowDown, Modifiers::NONE);
+            harness.settle();
+            assert!(field_focused(&harness, tab, id, 2), "{}", look.name);
+            assert_eq!(selected(&harness, tab, id), Some((1, 2)), "{}", look.name);
+            // Past the last there is nothing: the keyboard stays.
+            harness.press(Key::ArrowDown, Modifiers::NONE);
+            harness.settle();
+            assert!(field_focused(&harness, tab, id, 2), "{}", look.name);
+            // Up, over email to the key, which is locked and still a field
+            // to stand on. Past the first there is nothing.
+            for _ in 0..3 {
+                harness.press(Key::ArrowUp, Modifiers::NONE);
+                harness.settle();
+            }
+            assert!(field_focused(&harness, tab, id, 0), "{}", look.name);
+            assert_eq!(selected(&harness, tab, id), Some((1, 0)), "{}", look.name);
+            harness.press(Key::ArrowDown, Modifiers::NONE);
+            harness.settle();
+            harness.press(Key::Escape, Modifiers::NONE);
+            // The keys are the grid's, on the cell of the field's column:
+            // Down moves a row there.
+            assert!(!field_focused(&harness, tab, id, 1), "{}", look.name);
+            assert_eq!(selected(&harness, tab, id), Some((1, 1)), "{}", look.name);
+            harness.press(Key::ArrowDown, Modifiers::NONE);
+            assert_eq!(selected(&harness, tab, id), Some((2, 1)), "{}", look.name);
+            // And Enter edits the cell in the grid.
+            harness.press(Key::Enter, Modifiers::NONE);
+            assert_eq!(
+                form_editor(&harness, tab, id),
+                Some(((2, 1), false)),
+                "{}",
+                look.name
+            );
+        }
+    }
+
+    #[test]
+    fn escape_drops_one_fields_edit_and_keeps_the_others() {
+        for look in desktop_looks() {
+            let (mut harness, tab, id) = form_row(look, 1);
+            make_pending(&mut harness, tab, id, (1, 2), "7");
+            focus_field(&mut harness, tab, id, 1);
+            harness.press(Key::Enter, Modifiers::NONE);
+            assert_eq!(
+                form_editor(&harness, tab, id),
+                Some(((1, 1), true)),
+                "{}",
+                look.name
+            );
+            type_text(&mut harness, "x");
+            harness.press(Key::Escape, Modifiers::NONE);
+            assert!(edits(&harness, tab, id).editor.is_none(), "{}", look.name);
+            assert_eq!(
+                pending_text(&harness, tab, id, (1, 1)),
+                None,
+                "{}",
+                look.name
+            );
+            assert_eq!(
+                pending_text(&harness, tab, id, (1, 2)).as_deref(),
+                Some("7"),
+                "{}",
+                look.name
+            );
+        }
+    }
+
+    #[test]
+    fn mod_z_on_the_grid_puts_back_what_a_field_changed() {
+        for look in desktop_looks() {
+            let (mut harness, tab, id) = form_row(look, 1);
+            focus_field(&mut harness, tab, id, 1);
+            harness.press(Key::Enter, Modifiers::NONE);
+            type_text(&mut harness, "x");
+            harness.press(Key::Enter, Modifiers::NONE);
+            assert!(
+                pending_text(&harness, tab, id, (1, 1)).is_some(),
+                "{}",
+                look.name
+            );
+            // The commit left the keyboard on qty's field, and Mod+Z there
+            // is qty's: email stays pending.
+            harness.settle();
+            assert!(field_focused(&harness, tab, id, 2), "{}", look.name);
+            harness.press(Key::Z, Modifiers::COMMAND);
+            assert!(
+                pending_text(&harness, tab, id, (1, 1)).is_some(),
+                "{}",
+                look.name
+            );
+            // Back to the grid, and on email's cell: Mod+Z puts back what
+            // the field changed.
+            harness.press(Key::Escape, Modifiers::NONE);
+            select(&mut harness, tab, id, (1, 1));
+            harness.press(Key::Z, Modifiers::COMMAND);
+            assert_eq!(
+                pending_text(&harness, tab, id, (1, 1)),
+                None,
+                "{}",
+                look.name
+            );
+        }
+    }
+
+    #[test]
+    fn clearing_a_field_is_the_empty_string_and_mod_backspace_is_null() {
+        for look in desktop_looks() {
+            let (mut harness, tab, id) = form_row(look, 1);
+            let null = |harness: &Harness, at: (usize, usize)| {
+                let cell = edits(harness, tab, id).cells.get(&at);
+                cell.map(|cell| matches!(cell.new, tabletist_db::NewValue::Null))
+            };
+            // email is NOT NULL: Mod+Backspace on its field does nothing.
+            focus_field(&mut harness, tab, id, 1);
+            harness.press(Key::Backspace, Modifiers::COMMAND);
+            assert_eq!(null(&harness, (1, 1)), None, "{}", look.name);
+            // Where the column takes NULL, it makes the field NULL.
+            let object = harness.app.workspace_mut(tab).unwrap();
+            let object = object.object_tab_mut(id).unwrap();
+            object.structure.value.as_mut().unwrap().columns[1].nullable = true;
+            harness.press(Key::Backspace, Modifiers::COMMAND);
+            assert_eq!(null(&harness, (1, 1)), Some(true), "{}", look.name);
+            harness.press(Key::Z, Modifiers::COMMAND);
+            assert_eq!(null(&harness, (1, 1)), None, "{}", look.name);
+            // Cleared in its editor, a text is the empty string, not NULL.
+            harness.press(Key::Enter, Modifiers::NONE);
+            harness.press(Key::A, Modifiers::COMMAND);
+            harness.press(Key::Backspace, Modifiers::NONE);
+            harness.press(Key::Enter, Modifiers::NONE);
+            assert_eq!(null(&harness, (1, 1)), Some(false), "{}", look.name);
+            assert_eq!(
+                pending_text(&harness, tab, id, (1, 1)).as_deref(),
+                Some(""),
+                "{}",
+                look.name
+            );
+        }
+    }
+
     #[test]
     fn enter_and_f2_on_a_field_edit_it_and_the_keyboard_comes_back_to_it() {
         for look in desktop_looks() {

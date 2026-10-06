@@ -390,6 +390,7 @@ fn row_form_field(harness: &mut Harness) {
             row: 4,
             col: BOOK_ID,
         },
+        start: EditStart::Value,
     });
     let workspace = harness.app.workspace_mut(tab).unwrap();
     let editor = workspace.object_tab_mut(id).unwrap().edits.editor.as_mut();
@@ -406,6 +407,7 @@ fn row_form_locked(harness: &mut Harness) {
         tab,
         id,
         cell: CellPos { row: 4, col: 0 },
+        start: EditStart::Value,
     });
 }
 

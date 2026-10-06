@@ -174,6 +174,13 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
             .is_some_and(|object| object.view == crate::model::ObjectView::Data)
     });
     let terminal = app.look.terminal;
+    // The row panel's field that has the keyboard, of the table on screen:
+    // its keys are read here with the grid's, so one key is never both's.
+    let field = object.filter(|_| grid).and_then(|(tab, id)| {
+        let object = app.workspace(tab)?.object_tab(id)?;
+        let columns = object.rows.value.as_ref()?.columns.len();
+        crate::ui::row_panel::focused_field(ctx, tab, id, columns)
+    });
     // The terminal's WHERE line was asked for, and takes the keyboard when
     // it is drawn, later in this frame (it is drawn with the grid, and
     // nowhere else). What is typed until then is no letter of the grid's:
@@ -512,7 +519,8 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
     // terminal look saves with the same chord, and edits with its letters.
     if app.dialog.is_none() {
         let keyboard = !terminal && !editing && grid && !tree_arrows && !focused;
-        editing_keys(app, ctx, keyboard, &mut actions);
+        let on_field = field.filter(|_| !terminal && !editing);
+        editing_keys(app, ctx, keyboard, on_field, &mut actions);
     }
     if !editing && app.dialog.is_none() {
         // A click ends a first key's wait: what is typed after it is typed
@@ -788,7 +796,18 @@ fn take_press(input: &mut egui::InputState, modifiers: Modifiers, key: Key) -> u
 /// that, in any look: it saves from wherever the table's tab shows, and
 /// Mod+Shift+D shows and hides Review SQL there. A SQL editor's result
 /// takes none of them.
-fn editing_keys(app: &App, ctx: &egui::Context, keyboard: bool, actions: &mut Vec<Action>) {
+///
+/// `field` is the column of the row panel's field that has the keyboard,
+/// in those looks: the same keys then act on its cell, and open its editor
+/// in the panel. Up and Down step the fields, and Esc gives the keys back
+/// to the grid.
+fn editing_keys(
+    app: &App,
+    ctx: &egui::Context,
+    keyboard: bool,
+    field: Option<usize>,
+    actions: &mut Vec<Action>,
+) {
     let Some((tab, id)) = app.active_object() else {
         return;
     };
@@ -800,8 +819,8 @@ fn editing_keys(app: &App, ctx: &egui::Context, keyboard: bool, actions: &mut Ve
     };
     let save = |input: &mut egui::InputState| take_press(input, Modifiers::COMMAND, Key::S) > 0;
     let open = object.edits.editor.is_some();
-    let field = crate::ui::cell_editor::field_id(tab, id);
-    let typing = open && ctx.memory(|memory| memory.has_focus(field));
+    let editor = crate::ui::cell_editor::field_id(tab, id);
+    let typing = open && ctx.memory(|memory| memory.has_focus(editor));
     // Mod+S saves wherever the pending bar offers it with that key: there
     // is something to save, whatever has the keyboard (the grid, the tree,
     // a button, the filter's field) and in the Structure view as well. The
@@ -852,9 +871,12 @@ fn editing_keys(app: &App, ctx: &egui::Context, keyboard: bool, actions: &mut Ve
     // An open editor has the keyboard or is about to take it, and takes
     // the keys below with it: none of them opens another, and what is typed
     // is its text.
-    if !keyboard || open {
+    if !(keyboard || field.is_some()) || open {
         return;
     }
+    // The field the keys were given back from: it gives up the keyboard
+    // once the input is read.
+    let mut left = None;
     ctx.input_mut(|input| {
         // Each chord with exactly its modifiers: Mod+Alt+Backspace drops
         // every change and Mod+Backspace touches one cell, and Mod+Shift+Z
@@ -872,27 +894,67 @@ fn editing_keys(app: &App, ctx: &egui::Context, keyboard: bool, actions: &mut Ve
         if clicked {
             return;
         }
+        // On a field of the row panel the keys act on its cell, and open
+        // its editor in the panel. Its cell is the selected one from the
+        // frame after the field took the keyboard: a key that comes before
+        // that says so first.
+        let on_cell = |actions: &mut Vec<Action>| {
+            let selected = object.selection.map(|cell| cell.col);
+            if let Some(col) = field.filter(|col| Some(*col) != selected) {
+                actions.push(Action::FieldFocused { tab, id, col });
+            }
+        };
         if take_press(input, Modifiers::COMMAND, Key::Backspace) > 0 {
+            on_cell(actions);
             actions.push(Action::SetNull { tab, id });
         }
         if take_press(input, Modifiers::COMMAND, Key::Z) > 0 {
+            on_cell(actions);
             actions.push(Action::RevertCell { tab, id });
         }
-        let Some(cell) = object.selection else {
+        let Some(selected) = object.selection else {
             return;
+        };
+        let cell = crate::model::CellPos {
+            row: selected.row,
+            col: field.unwrap_or(selected.col),
+        };
+        let edit = |start| match field {
+            Some(_) => Action::EditField {
+                tab,
+                id,
+                cell,
+                start,
+            },
+            None => Action::EditCell {
+                tab,
+                id,
+                cell,
+                start,
+            },
         };
         // A fresh press only: a held Enter would open, commit and move
         // down the whole column.
         let enter = consume_press(input, Modifiers::NONE, Key::Enter);
         if enter || consume_press(input, Modifiers::NONE, Key::F2) {
-            let start = crate::model::EditStart::Value;
-            actions.push(Action::EditCell {
-                tab,
-                id,
-                cell,
-                start,
-            });
+            actions.push(edit(crate::model::EditStart::Value));
             return;
+        }
+        if let Some(col) = field {
+            // Up and Down step the fields; Esc gives the keys back to the
+            // grid, on the cell of this field's column.
+            for (key, by) in [(Key::ArrowUp, -1), (Key::ArrowDown, 1)] {
+                if input.consume_key(Modifiers::NONE, key) {
+                    let from = col;
+                    actions.push(Action::MoveField { tab, id, from, by });
+                }
+            }
+            if consume_press(input, Modifiers::NONE, Key::Escape) {
+                left = Some(crate::ui::row_panel::field_stop(tab, id, col));
+                on_cell(actions);
+                actions.push(Action::GridKeys(tab));
+                return;
+            }
         }
         // Typing starts the edit with what was typed. The text is taken,
         // or the field that opens would get it again. Space and `?` keep
@@ -913,15 +975,12 @@ fn editing_keys(app: &App, ctx: &egui::Context, keyboard: bool, actions: &mut Ve
             _ => true,
         });
         if !typed.is_empty() {
-            let start = crate::model::EditStart::Typed(typed);
-            actions.push(Action::EditCell {
-                tab,
-                id,
-                cell,
-                start,
-            });
+            actions.push(edit(crate::model::EditStart::Typed(typed)));
         }
     });
+    if let Some(stop) = left {
+        ctx.memory_mut(|memory| memory.surrender_focus(stop));
+    }
 }
 
 /// The terminal look's normal mode on the grid of the table `id`: `i` and
