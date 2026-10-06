@@ -5,6 +5,10 @@
 <h1 align="center">Tabletist</h1>
 
 <p align="center">
+  <a href="https://igor.works/tabletist/">igor.works/tabletist</a>
+</p>
+
+<p align="center">
   <a href="https://github.com/igor-alexandrov/tabletist/actions/workflows/ci.yml"><img src="https://github.com/igor-alexandrov/tabletist/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="License: MIT"></a>
   <a href="rust-toolchain.toml"><img src="https://img.shields.io/badge/dynamic/toml?url=https%3A%2F%2Fraw.githubusercontent.com%2Figor-alexandrov%2Ftabletist%2Fmain%2FCargo.toml&query=%24.workspace.package.rust-version&label=rust&logo=rust&color=orange" alt="Rust version"></a>
