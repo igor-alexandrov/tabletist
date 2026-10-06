@@ -1585,8 +1585,9 @@ impl<'a> ButtonSpec<'a> {
         };
         let (fill, border, text) =
             if (self.quiet || self.link) && self.kind == ButtonKind::Secondary {
-                // Under the pointer and held down, the fills its look gives
-                // a secondary button.
+                // Under the pointer or held down, it has the fill its look
+                // gives a secondary button in that state. At rest it has
+                // none.
                 let fill = if hovered || pressed {
                     fill
                 } else {
