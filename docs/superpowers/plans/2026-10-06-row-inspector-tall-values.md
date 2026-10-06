@@ -14,7 +14,7 @@
 
 - Cargo is `~/.cargo/bin/cargo`. Never point `CARGO_TARGET_DIR` at `/tmp`.
 - The four checks of `AGENTS.md` pass after every task, and the shots lint (`~/.cargo/bin/cargo clippy --locked --features shots --lib --tests -- -D warnings`) where `src/shots.rs` is touched.
-- **The branch.** `claude/row-inspector-tall-values`, cut from `claude/row-inspector-inline-edit-9297c4` at `170ab7e` (step 1, pull request #91, not merged yet). Its pull request waits for #91.
+- **The branch.** Planned as `claude/row-inspector-tall-values`, cut from `claude/row-inspector-inline-edit-9297c4` at `170ab7e` (step 1, pull request #91), with a pull request of its own. At the user's word the run's commits went to #91 instead, on its branch: the two steps are one pull request.
 - Written from reading the tree, as step 1's plan was: no block here was compiled. The tests say what must hold.
 - House rules as in step 1's plan: no em dashes; a view pushes `Action`s; text through `TextRole`s; focus drawn by `ui/focus.rs`; what a user typed reaches no log; no design or pixel conformance in a test, and no design material in the repository; scenes on the Bookshop data, compared by eye.
 - Commits are signed, one per task.
