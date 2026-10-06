@@ -36,9 +36,6 @@ This page lists the keys of the macOS look, grouped by where they work.
 The app's own list (`?`) is shorter: it leaves out the keys of the
 dialogs and of the lists that open in an editor.
 
-A dialog that is not named below takes the usual keys: Return for its
-main button and Esc to close it.
-
 Keys written with Ctrl are the Control key, not Cmd. Backspace is the key
 a Mac keyboard labels Delete.
 
