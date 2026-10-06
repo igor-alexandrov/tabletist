@@ -16,8 +16,8 @@ use crate::model::{Action, ConnTab, ConnTabContent, ConnTabId, PickerState};
 use crate::model::{
     Advance, CellPos, Completion, ConnectionForm, Dialog, Fetch, FilterBar, FilterRow, Held,
     HostKeyPrompt, LeavePrompt, ObjectTab, ObjectView, Pane, PasswordPrompt, PickTarget, QuickOpen,
-    ResultPane, SecretKind, SessionStatus, SqlTab, Tab, TabId, TestState, TextPrint, Tree, TreeKey,
-    TreeNode, Wanted, Workspace,
+    ResultPane, RunMode, SecretKind, SessionStatus, SqlTab, Tab, TabId, TestState, TextPrint, Tree,
+    TreeKey, TreeNode, Wanted, Workspace,
 };
 use crate::paths::AppDirs;
 use crate::secrets::{SecretString, password_account, ssh_account};
@@ -1100,6 +1100,10 @@ impl App {
                 }
                 self.change_settings(|settings| settings.sql_timeout_secs = secs);
             }
+            Action::SetSqlMode { tab, sql_tab, mode } => {
+                self.set_sql_mode(tab, sql_tab, Some(mode))
+            }
+            Action::ToggleSqlMode { tab, sql_tab } => self.set_sql_mode(tab, sql_tab, None),
             Action::SetResultPane { tab, sql_tab, pane } => {
                 if let Some(sql) = self.sql_tab_mut(tab, sql_tab) {
                     sql.pane = pane;
@@ -3174,6 +3178,22 @@ impl App {
         let opens = !empty && (manual || !listed.only_repeats(&typed));
         sql.completion = opens.then(|| Completion::new(manual, of, site, typed, listed, loading));
         changed | was_open | sql.completion.is_some()
+    }
+
+    /// Sets how an editor's runs end: to `mode`, or to the other one. Only
+    /// where an editor can run read-write: everywhere else the badge and
+    /// the key do nothing, and a mode the tab was given before stays as it
+    /// is for a session that can write again.
+    fn set_sql_mode(&mut self, tab: ConnTabId, id: TabId, mode: Option<RunMode>) {
+        let Some(workspace) = self.workspace_mut(tab) else {
+            return;
+        };
+        if workspace.sql_writes().is_err() {
+            return;
+        }
+        if let Some(sql) = workspace.sql_tab_mut(id) {
+            sql.mode = mode.unwrap_or_else(|| sql.mode.other());
+        }
     }
 
     /// Runs the statement at the editor's cursor, or every statement. An
@@ -6564,6 +6584,108 @@ mod tests {
         let sent = harness.app.backend.sent.len();
         harness.app.apply(Action::CancelQuery(tab));
         assert_eq!(cancels_since(&harness, sent), loading);
+    }
+
+    /// A SQL editor on a connection that takes writes.
+    fn writable_sql(harness: &mut Harness) -> (ConnTabId, TabId) {
+        let tab = harness.connect_fake_as(false);
+        harness.app.apply(Action::NewSqlTab(tab));
+        let id = harness.app.workspace(tab).unwrap().active_tab.unwrap();
+        (tab, id)
+    }
+
+    /// The mode a run of the editor would have now.
+    fn run_mode(harness: &Harness, tab: ConnTabId, id: TabId) -> RunMode {
+        let workspace = harness.app.workspace(tab).unwrap();
+        workspace.run_mode(workspace.sql_tab(id).unwrap())
+    }
+
+    fn set_mode(harness: &mut Harness, tab: ConnTabId, id: TabId, mode: RunMode) {
+        harness.app.apply(Action::SetSqlMode {
+            tab,
+            sql_tab: id,
+            mode,
+        });
+    }
+
+    fn toggle_mode(harness: &mut Harness, tab: ConnTabId, id: TabId) {
+        harness
+            .app
+            .apply(Action::ToggleSqlMode { tab, sql_tab: id });
+    }
+
+    #[test]
+    fn a_new_editor_reads_only_until_it_is_switched() {
+        let mut harness = Harness::new();
+        let (tab, id) = writable_sql(&mut harness);
+        assert_eq!(sql(&harness, tab, id).mode, RunMode::ReadOnly);
+        assert_eq!(run_mode(&harness, tab, id), RunMode::ReadOnly);
+        set_mode(&mut harness, tab, id, RunMode::ReadWrite);
+        assert_eq!(run_mode(&harness, tab, id), RunMode::ReadWrite);
+        // The key switches to the other mode, and back.
+        toggle_mode(&mut harness, tab, id);
+        assert_eq!(run_mode(&harness, tab, id), RunMode::ReadOnly);
+        toggle_mode(&mut harness, tab, id);
+        assert_eq!(run_mode(&harness, tab, id), RunMode::ReadWrite);
+        // The mode is the tab's own: another editor of the connection
+        // starts read-only all the same.
+        harness.app.apply(Action::NewSqlTab(tab));
+        let other = harness.app.workspace(tab).unwrap().active_tab.unwrap();
+        assert_eq!(run_mode(&harness, tab, other), RunMode::ReadOnly);
+        assert_eq!(run_mode(&harness, tab, id), RunMode::ReadWrite);
+    }
+
+    #[test]
+    fn the_badge_and_the_key_do_nothing_where_an_editor_cannot_write() {
+        use crate::model::NoWrites;
+        // A connection that opens read-only.
+        let mut harness = Harness::new();
+        let (tab, id) = new_sql(&mut harness);
+        let workspace = harness.app.workspace(tab).unwrap();
+        assert_eq!(workspace.sql_writes(), Err(NoWrites::ReadOnlyConnection));
+        set_mode(&mut harness, tab, id, RunMode::ReadWrite);
+        toggle_mode(&mut harness, tab, id);
+        assert_eq!(sql(&harness, tab, id).mode, RunMode::ReadOnly);
+        // A writable connection to production: a write there is asked about
+        // first, and nothing asks about a script yet.
+        let mut harness = Harness::new();
+        let (tab, id) = writable_sql(&mut harness);
+        harness.app.workspace_mut(tab).unwrap().environment = crate::env::Environment::Production;
+        let workspace = harness.app.workspace(tab).unwrap();
+        assert_eq!(workspace.sql_writes(), Err(NoWrites::Unconfirmed));
+        set_mode(&mut harness, tab, id, RunMode::ReadWrite);
+        toggle_mode(&mut harness, tab, id);
+        assert_eq!(sql(&harness, tab, id).mode, RunMode::ReadOnly);
+        // Every other environment writes without a question.
+        for environment in crate::env::Environment::ALL {
+            let mut harness = Harness::new();
+            let (tab, _) = writable_sql(&mut harness);
+            harness.app.workspace_mut(tab).unwrap().environment = environment;
+            let writes = harness.app.workspace(tab).unwrap().sql_writes();
+            assert_eq!(
+                writes.is_ok(),
+                !environment.confirms_writes(),
+                "{environment:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_session_that_came_back_read_only_runs_read_only_and_keeps_the_tabs_mode() {
+        let mut harness = Harness::new();
+        let (tab, id) = writable_sql(&mut harness);
+        set_mode(&mut harness, tab, id, RunMode::ReadWrite);
+        // The box was turned on meanwhile.
+        harness.reconnect_fake_as(tab, true);
+        assert_eq!(run_mode(&harness, tab, id), RunMode::ReadOnly);
+        assert_eq!(sql(&harness, tab, id).mode, RunMode::ReadWrite);
+        // Neither the badge nor the key changes what the tab was set to.
+        toggle_mode(&mut harness, tab, id);
+        set_mode(&mut harness, tab, id, RunMode::ReadOnly);
+        assert_eq!(sql(&harness, tab, id).mode, RunMode::ReadWrite);
+        // Writable once more, the tab's own mode counts again.
+        harness.reconnect_fake_as(tab, false);
+        assert_eq!(run_mode(&harness, tab, id), RunMode::ReadWrite);
     }
 
     #[test]

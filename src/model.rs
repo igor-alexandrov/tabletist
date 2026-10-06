@@ -361,6 +361,18 @@ pub enum Action {
         sql_tab: TabId,
         secs: Option<u32>,
     },
+    /// The badge's menu: how this editor's runs end. Nothing on a
+    /// connection whose editors cannot write (see `Workspace::sql_writes`).
+    SetSqlMode {
+        tab: ConnTabId,
+        sql_tab: TabId,
+        mode: RunMode,
+    },
+    /// `Mod+Shift+M`: the editor's other mode.
+    ToggleSqlMode {
+        tab: ConnTabId,
+        sql_tab: TabId,
+    },
     /// Show a SQL editor's Results or its Messages.
     SetResultPane {
         tab: ConnTabId,
@@ -2034,6 +2046,38 @@ pub type ShownRows<'a> = (
     bool,
 );
 
+/// How a SQL editor's runs are meant to end: what its toolbar's badge
+/// says and switches.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RunMode {
+    /// Every run is a read-only transaction that is rolled back.
+    #[default]
+    ReadOnly,
+    /// A run that changes data is one read-write transaction, committed
+    /// when every statement succeeded. A run of reads is still read-only.
+    ReadWrite,
+}
+
+impl RunMode {
+    pub fn other(self) -> Self {
+        match self {
+            Self::ReadOnly => Self::ReadWrite,
+            Self::ReadWrite => Self::ReadOnly,
+        }
+    }
+}
+
+/// Why no SQL editor of a workspace runs read-write, whatever its mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NoWrites {
+    /// The session was opened read-only.
+    ReadOnlyConnection,
+    /// The connection's environment asks before a write, and the question
+    /// for a script is not built yet: no read-write run goes to production
+    /// without it.
+    Unconfirmed,
+}
+
 /// A finished SQL editor run.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SqlRun {
@@ -2317,6 +2361,9 @@ pub struct SqlTab {
     pub cursor: usize,
     pub limit: u32,
     pub timeout: Option<Duration>,
+    /// What the user set the badge to. It counts only while the session
+    /// can write: ask `Workspace::run_mode` for the mode a run has.
+    pub mode: RunMode,
     /// The last run, or the one running (a whole-run failure is its error).
     /// Change it through `start_run`, `finish_run` and `abandon_run`.
     pub run: Fetch<SqlRun>,
@@ -2354,6 +2401,7 @@ impl std::fmt::Debug for SqlTab {
             .field("cursor", &self.cursor)
             .field("limit", &self.limit)
             .field("timeout", &self.timeout)
+            .field("mode", &self.mode)
             .field("run", &self.run)
             .field("in_flight", &self.in_flight)
             .field("pane", &self.pane)
@@ -2377,6 +2425,7 @@ impl SqlTab {
             cursor: 0,
             limit,
             timeout,
+            mode: RunMode::default(),
             run: Fetch::default(),
             in_flight: None,
             pane: ResultPane::default(),
@@ -2548,6 +2597,29 @@ impl SqlTab {
 }
 
 impl Workspace {
+    /// Whether a SQL editor of this workspace can run read-write, or why
+    /// none can.
+    pub fn sql_writes(&self) -> Result<(), NoWrites> {
+        if self.access != tabletist_db::Access::Writable {
+            return Err(NoWrites::ReadOnlyConnection);
+        }
+        if self.environment.confirms_writes() {
+            return Err(NoWrites::Unconfirmed);
+        }
+        Ok(())
+    }
+
+    /// The mode a run of `sql` has: its own while the session can write,
+    /// and read-only everywhere else. A tab's own mode is kept through a
+    /// session that came back read-only, and counts again once one is
+    /// writable.
+    pub fn run_mode(&self, sql: &SqlTab) -> RunMode {
+        match self.sql_writes() {
+            Ok(()) => sql.mode,
+            Err(_) => RunMode::ReadOnly,
+        }
+    }
+
     /// Whether the tab has content to show now: its schemas are listed, or
     /// could not be. Until then the tab shows how connecting goes. A switch
     /// of database starts the tree over, so a tab in use can go back to

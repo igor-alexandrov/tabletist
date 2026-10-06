@@ -527,6 +527,45 @@ impl Harness {
     }
 }
 
+impl Harness {
+    /// Sets the "Open read-only" box of `tab`'s saved connection and
+    /// reconnects, as a user who changed the box and pressed Reconnect: the
+    /// session comes back as the box says. The tree's requests are left
+    /// unanswered.
+    pub fn reconnect_fake_as(&mut self, tab: ConnTabId, read_only: bool) {
+        let conn = self
+            .app
+            .workspace(tab)
+            .expect("a workspace")
+            .conn_id
+            .clone();
+        let mut saved = self.app.connections.get(&conn).expect("saved").clone();
+        saved.read_only = Some(read_only);
+        self.app.connections.upsert(saved);
+        self.app.apply(Action::Reconnect(tab));
+        let (session, request) = self
+            .app
+            .backend
+            .sent
+            .iter()
+            .rev()
+            .find_map(|command| match command {
+                Command::Connect {
+                    session, request, ..
+                } => Some((*session, *request)),
+                _ => None,
+            })
+            .expect("a Connect was sent");
+        self.app.apply(Action::Backend(Event::Connected {
+            session,
+            request,
+            driver: Driver::Sqlite,
+            encrypted: false,
+            access: asked_access(&self.app),
+        }));
+    }
+}
+
 use tabletist_db::{ColumnMeta, RowPage, Value, ValueKind};
 
 /// A page shaped like the fixture's users table.
