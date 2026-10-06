@@ -343,10 +343,38 @@ pub fn choices(
     palette: &Palette,
     choices: impl FnOnce() -> Vec<Choice>,
 ) -> Option<usize> {
+    pick(button, min_width, look, palette, choices, true)
+}
+
+/// [`choices`] for rows that each do something: none is in use, so none is
+/// marked, and `selected` is not read.
+pub fn actions(
+    button: &Response,
+    min_width: f32,
+    look: &Look,
+    palette: &Palette,
+    rows: impl FnOnce() -> Vec<Choice>,
+) -> Option<usize> {
+    pick(button, min_width, look, palette, rows, false)
+}
+
+/// The menu of [`choices`] (`marked`) and of [`actions`].
+fn pick(
+    button: &Response,
+    min_width: f32,
+    look: &Look,
+    palette: &Palette,
+    choices: impl FnOnce() -> Vec<Choice>,
+    marked: bool,
+) -> Option<usize> {
     let mut picked = None;
     let open = under(button, min_width, look, palette, |ui| {
         for (index, choice) in choices().into_iter().enumerate() {
-            let item = Item::choice(&choice.text, choice.selected);
+            let item = if marked {
+                Item::choice(&choice.text, choice.selected)
+            } else {
+                Item::action(&choice.text)
+            };
             let item = match &choice.name {
                 Some(name) => item.name(name),
                 None => item,
