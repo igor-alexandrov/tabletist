@@ -34,6 +34,7 @@ pub mod sql_text;
 pub mod states;
 pub mod structure;
 pub mod terminal_dialog;
+pub mod toast;
 pub mod value_tags;
 pub mod widgets;
 pub mod workspace;
@@ -66,6 +67,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     settings::show(app, &ui.ctx().clone());
     write_prompts::show(app, &ui.ctx().clone());
     conflict_prompt::show(app, &ui.ctx().clone());
+    // Last: it says what was done, whatever is on screen by now.
+    toast::show(app, ui.ctx());
 }
 
 /// A problem worth the user's attention that belongs to no one tab (a
@@ -16880,6 +16883,150 @@ mod tests {
             assert_eq!(drawn(&harness), None, "{}", look.name);
             assert_eq!(pressable(&mut harness, "Review SQL").len(), 1);
             assert!(pressable(&mut harness, "Hide SQL").is_empty());
+        }
+    }
+
+    #[test]
+    fn the_reviews_lines_are_selected_and_copied_as_they_read() {
+        for look in Look::ALL {
+            let (mut harness, tab, id) = editable_in(look);
+            select(&mut harness, tab, id, (0, 1));
+            make_pending(&mut harness, tab, id, (1, 1), &"x".repeat(100));
+            review(&mut harness, tab, id);
+            // The statement's three lines: the one with the cut value is
+            // the second, and in a narrow panel runs past its edge.
+            let mut texts = harness.painted.iter().map(|(text, _)| text);
+            let set = texts
+                .find(|text| text.starts_with("   SET"))
+                .cloned()
+                .expect("the line that sets");
+            assert!(set.ends_with("x…'"), "{}: {set}", look.name);
+            let from = harness.painted_rect(BOB[2]).expect(BOB[2]).left_center();
+            let to = harness.painted_rect(BOB[4]).expect(BOB[4]).right_center();
+            harness.copied = None;
+            drag(&mut harness, from, to + egui::vec2(2.0, 0.0));
+            assert_eq!(
+                harness.copied, None,
+                "{}: selecting copies nothing",
+                look.name
+            );
+            harness.frame(vec![egui::Event::Copy]);
+            // The selection, not the grid's cell, though the grid has the
+            // keyboard; and a cut value as it is shown, with its `…`.
+            assert_eq!(
+                harness.copied.as_deref(),
+                Some(format!("{}\n{set}\n{}", BOB[2], BOB[4]).as_str()),
+                "{}",
+                look.name
+            );
+            assert!(painted(&harness, &set), "{}: the lines stay", look.name);
+        }
+    }
+
+    #[test]
+    fn copy_sql_says_so_in_a_toast_for_four_seconds() {
+        for look in desktop_looks() {
+            let (mut harness, tab, id) = editable_in(look);
+            let palette = harness.app.palette;
+            make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
+            review(&mut harness, tab, id);
+            assert!(!painted(&harness, "Copied SQL"), "{}", look.name);
+            harness.copied = None;
+            harness.click("Copy SQL");
+            assert!(harness.copied.is_some(), "{}", look.name);
+            // The toast, once it has faded in: the window's colour on the
+            // text colour, centred over the bottom of the window, clear of
+            // its edge.
+            harness.finish_animations();
+            assert!(
+                painted_in(&harness, "Copied SQL", palette.window),
+                "{}",
+                look.name
+            );
+            let said = harness.painted_rect("Copied SQL").unwrap();
+            let window = harness.ctx.content_rect();
+            assert!(
+                (said.center().x - window.center().x).abs() <= 1.0,
+                "{}",
+                look.name
+            );
+            assert!(said.bottom() < window.bottom(), "{}", look.name);
+            assert!(said.top() > window.bottom() - 60.0, "{}", look.name);
+            let behind = harness.fills.iter().any(|(rect, fill)| {
+                *fill == palette.text && rect.contains_rect(said) && rect.width() < 200.0
+            });
+            assert!(behind, "{}: {:?}", look.name, harness.fills);
+            // The button is as it was, and still copies.
+            assert_eq!(pressable(&mut harness, "Copy SQL").len(), 1);
+            // It asks for the frame that takes it away, and four seconds
+            // later, at sixty frames a second, it is gone.
+            assert!(
+                harness.repaint_after <= std::time::Duration::from_secs(4),
+                "{}: {:?}",
+                look.name,
+                harness.repaint_after
+            );
+            for _ in 0..170 {
+                harness.frame(Vec::new());
+            }
+            assert!(painted(&harness, "Copied SQL"), "{}", look.name);
+            for _ in 0..80 {
+                harness.frame(Vec::new());
+            }
+            assert!(!painted(&harness, "Copied SQL"), "{}", look.name);
+            assert!(painted(&harness, DRAWER), "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn copy_sql_in_the_confirmation_says_so_over_the_sheet() {
+        for look in desktop_looks() {
+            let (mut harness, _tab, _id, _lines) = confirming(look);
+            harness.copied = None;
+            click_dialog(&mut harness, "Copy SQL");
+            assert!(harness.copied.is_some(), "{}", look.name);
+            harness.finish_animations();
+            assert!(
+                painted_in(&harness, "Copied SQL", harness.app.palette.window),
+                "{}",
+                look.name
+            );
+            // The sheet is still up, and still asks.
+            assert_eq!(pressable(&mut harness, "Save to production").len(), 1);
+        }
+    }
+
+    #[test]
+    fn the_terminals_status_line_says_that_the_sql_was_copied() {
+        for with_key in [false, true] {
+            let (mut harness, tab, id) = normal_mode((0, 1));
+            make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
+            review(&mut harness, tab, id);
+            assert!(!painted(&harness, "copied sql"), "{with_key}");
+            harness.copied = None;
+            if with_key {
+                type_key(&mut harness, Key::Y, "Y");
+            } else {
+                harness.click("Copy SQL");
+            }
+            let copied = harness.copied.clone().expect("the text was copied");
+            assert!(copied.starts_with("-- What Tabletist runs"), "{with_key}");
+            // In the status line, under the panel: no toast floats here.
+            let said = harness.painted_rect("copied sql").expect("copied sql");
+            let panel = drawn(&harness).expect("the panel");
+            assert!(panel.rect.bottom() <= said.top(), "{with_key}");
+            let texts = harness
+                .painted
+                .iter()
+                .filter(|(text, _)| text == "copied sql");
+            assert_eq!(texts.count(), 1, "{with_key}");
+            // What is pending stays on the line beside it.
+            assert!(painted(&harness, "1 pending · 1 row"), "{with_key}");
+            assert!(painted(&harness, "Y copy sql"), "{with_key}");
+            for _ in 0..260 {
+                harness.frame(Vec::new());
+            }
+            assert!(!painted(&harness, "copied sql"), "{with_key}");
         }
     }
 

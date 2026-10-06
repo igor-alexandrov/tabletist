@@ -1535,7 +1535,11 @@ impl<'a> ButtonSpec<'a> {
                 palette.dim,
             ),
             (ButtonKind::Secondary, false) => (
-                if hovered {
+                // A step further from the window while it is held down
+                // than under the pointer.
+                if pressed {
+                    palette.surface
+                } else if hovered {
                     palette.panel
                 } else {
                     palette.window
@@ -1545,12 +1549,22 @@ impl<'a> ButtonSpec<'a> {
                 palette.dim,
             ),
             (ButtonKind::Secondary, true) => (
-                if hovered {
+                // Held down, the selection's fill inside the accent's line.
+                if pressed {
+                    palette.selection
+                } else if hovered {
                     palette.text.gamma_multiply(0.08)
                 } else {
                     Color32::TRANSPARENT
                 },
-                Some(Stroke::new(1.0, palette.outline)),
+                Some(Stroke::new(
+                    1.0,
+                    if pressed {
+                        palette.accent
+                    } else {
+                        palette.outline
+                    },
+                )),
                 palette.text,
                 palette.dim,
             ),
@@ -1571,8 +1585,14 @@ impl<'a> ButtonSpec<'a> {
         };
         let (fill, border, text) =
             if (self.quiet || self.link) && self.kind == ButtonKind::Secondary {
-                // Under the pointer, the fill its look gives a secondary button.
-                let fill = if hovered { fill } else { Color32::TRANSPARENT };
+                // Under the pointer or held down, it has the fill its look
+                // gives a secondary button in that state. At rest it has
+                // none.
+                let fill = if hovered || pressed {
+                    fill
+                } else {
+                    Color32::TRANSPARENT
+                };
                 // A link is told from a quiet button by its colour alone.
                 let text = if self.link {
                     palette.accent
@@ -2178,6 +2198,80 @@ mod tests {
             };
             draw(&mut harness, vec![button(true)]);
             assert!(draw(&mut harness, vec![button(false)]), "{said}");
+        }
+    }
+
+    #[test]
+    fn a_button_held_down_is_filled_a_step_past_its_hover() {
+        use crate::testing::Harness;
+        for look in crate::theme::Look::ALL {
+            let said = look.name;
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            let palette = harness.app.palette;
+            let (quiet, plain) = (
+                Rect::from_min_size(pos2(40.0, 40.0), vec2(160.0, 32.0)),
+                Rect::from_min_size(pos2(40.0, 100.0), vec2(160.0, 32.0)),
+            );
+            let draw = |harness: &mut Harness, events: Vec<egui::Event>| {
+                harness.frame_with_events(events, |ui| {
+                    let button = ButtonSpec::new("Copy SQL").quiet();
+                    button.show_at(ui, quiet, &look, &palette);
+                    ButtonSpec::new("Open in SQL").show_at(ui, plain, &look, &palette);
+                });
+            };
+            let fill = |harness: &Harness, place: Rect| {
+                let mut fills = harness.fills.iter();
+                fills
+                    .find(|(rect, _)| *rect == place)
+                    .map(|(_, fill)| *fill)
+            };
+            let line = |harness: &Harness, place: Rect| {
+                let mut outlines = harness.outlines.iter();
+                let found = outlines.find(|(rect, _)| *rect == place);
+                found.map(|(_, stroke)| stroke.color)
+            };
+            // What a press does to each: the bordered one, and the quiet
+            // one, which has no fill at rest and never a line.
+            let held = if look.terminal {
+                palette.selection
+            } else {
+                palette.surface
+            };
+            for (place, at_rest) in [(plain, true), (quiet, false)] {
+                let button = |pressed| egui::Event::PointerButton {
+                    pos: place.center(),
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                };
+                draw(
+                    &mut harness,
+                    vec![egui::Event::PointerMoved(place.center())],
+                );
+                draw(&mut harness, Vec::new());
+                let hovered = fill(&harness, place).expect("a fill under the pointer");
+                assert_ne!(hovered, held, "{said}");
+                draw(&mut harness, vec![button(true)]);
+                draw(&mut harness, Vec::new());
+                assert_eq!(fill(&harness, place), Some(held), "{said}");
+                assert_eq!(line(&harness, quiet), None, "{said}");
+                if look.terminal && at_rest {
+                    assert_eq!(line(&harness, plain), Some(palette.accent), "{said}");
+                }
+                // Let go, it is under the pointer again; and with the
+                // pointer away, as it was.
+                draw(&mut harness, vec![button(false)]);
+                draw(&mut harness, Vec::new());
+                assert_eq!(fill(&harness, place), Some(hovered), "{said}");
+                draw(
+                    &mut harness,
+                    vec![egui::Event::PointerMoved(pos2(600.0, 400.0))],
+                );
+                draw(&mut harness, Vec::new());
+                let rest = fill(&harness, place).filter(|fill| *fill != Color32::TRANSPARENT);
+                assert_eq!(rest.is_some(), at_rest && !look.terminal, "{said}");
+            }
         }
     }
 

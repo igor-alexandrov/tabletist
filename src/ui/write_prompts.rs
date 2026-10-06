@@ -562,6 +562,7 @@ fn confirm_write(app: &mut App, ctx: &egui::Context) {
         // one in front, nor, were it to change, the one that was read.
         let whole = crate::review::of(dialect, &prompt.changeset, &[], Values::Whole);
         ctx.copy_text(review::text(&whole, locale));
+        crate::ui::toast::say(ctx, &gettext(locale, review::COPIED_SQL));
     }
     if ripe && !early {
         app.actions.extend(actions);
@@ -572,8 +573,8 @@ fn confirm_write(app: &mut App, ctx: &egui::Context) {
 /// one to a row in the code face, in a bordered box as tall as they are, to
 /// at most [`review::MAX_ROWS`] of them. It scrolls both ways: a line
 /// longer than the box is cut by it, never wrapped into what could read as
-/// another. The lines are painted and cannot be selected: a value is shown
-/// cut, and a copy of it would be pasted as it is. `rest` is what the
+/// another. The lines can be selected, and a selection is copied as it
+/// reads: a value that is shown cut is copied cut. `rest` is what the
 /// prompt takes of the window besides them: in a low window they stand
 /// lower, so the question and its answers stay on screen with them.
 /// `pages` moves them, by as many pages of the rows in view: Page Down and
