@@ -48,8 +48,9 @@ screen.
 
 ## When someone else changed the row
 
-A save never overwrites a row that changed after you loaded it. If it
-finds one, it writes nothing and asks about each such row. You see three
+A save does not overwrite a row that changed after you loaded it unless
+you say so. If it finds one, it writes nothing and asks about each such
+row. You see three
 versions side by side: what you loaded, what the server holds now, and
 yours. Then you choose:
 

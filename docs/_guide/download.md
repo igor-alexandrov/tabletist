@@ -4,9 +4,9 @@ description: Download Tabletist for macOS, Windows or Linux, with the install st
 nav_order: 1
 ---
 
-The newest version is on the
+The newest stable version is on the
 [latest release](https://github.com/igor-alexandrov/tabletist/releases/latest)
-page, and older ones are on the
+page. Every version, pre-releases included, is on the
 [releases page](https://github.com/igor-alexandrov/tabletist/releases).
 Each release lists its files with a `checksums.txt`, which you can use to
 check that a download was not damaged or changed.

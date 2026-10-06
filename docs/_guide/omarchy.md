@@ -1,6 +1,6 @@
 ---
 title: The Omarchy Look
-description: How Tabletist looks and works on Linux, every key of the Omarchy look, how it follows the Omarchy theme, and how to use your own colors.
+description: How Tabletist looks and works on Linux, the keys of the Omarchy look, how it follows the Omarchy theme, and how to use your own colors.
 nav_order: 6
 ---
 
@@ -13,10 +13,10 @@ and there is no setting that switches between them.
 
 ## The keyboard
 
-Every key of the Omarchy look is on this page. The status line along the
-bottom shows the ones that work where you are. The app's own list (`?`)
-is shorter: it leaves out the keys of the dialogs and of the lists that
-open in an editor.
+This page lists the keys of the Omarchy look, grouped by where they
+work. The status line along the bottom shows the ones that work where you
+are. The app's own list (`?`) is shorter: it leaves out the keys of the
+dialogs and of the lists that open in an editor.
 
 A letter does its job when no text field has the keyboard. While a field
 has it, letters are typed into the field, and Esc gives the keyboard
@@ -40,6 +40,15 @@ back.
 | F6, Shift+F6 | Next and previous part of the window |
 | Ctrl+, | Settings |
 | `?` | The list of keys |
+
+### Quick open
+
+| Keys | Do |
+| --- | --- |
+| Ctrl+P | Open it, then type to find a table or view |
+| Up, Down | Move in the list |
+| Enter | Open the one selected |
+| Esc | Close |
 
 ### The picker
 

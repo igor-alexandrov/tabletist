@@ -1,6 +1,6 @@
 ---
 title: Keyboard Shortcuts
-description: Every key of the macOS and Windows looks, and where the Omarchy look's keys are.
+description: The keys of the macOS and Windows looks, and where the Omarchy look's keys are.
 nav_order: 1
 ---
 
@@ -48,7 +48,7 @@ In the connection dialog:
 
 | Keys | Do |
 | --- | --- |
-| Mod+P | Quick open |
+| Mod+P | Quick open. In it, Up and Down move, Enter opens and Esc closes |
 | Mod+B | Show or hide the sidebar |
 | Mod+W | Close the tab |
 | Mod+Shift+[ and ] | Previous and next tab |

@@ -27,7 +27,8 @@ Windows.
   that shows every field in full, and a Structure view.
   [Browse a table]({% link _guide/browsing-data.md %}).
 - **Edits values safely.** Changes stay pending until you save. A save is
-  one transaction, and it never overwrites a row that someone else changed.
+  one transaction. When someone else changed the same row, the save
+  writes nothing and asks you what to do.
   [See how editing works]({% link _guide/editing-data.md %}).
 - **Runs SQL.** An editor per connection with completion, a formatter, a
   row limit and a timeout.

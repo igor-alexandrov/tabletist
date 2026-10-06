@@ -1,6 +1,6 @@
 ---
 title: Tabletist on macOS
-description: How Tabletist looks and works on a Mac, every key of the macOS look, the Keychain, and where its files are.
+description: How Tabletist looks and works on a Mac, the keys of the macOS look, the Keychain, and where its files are.
 nav_order: 7
 ---
 
@@ -32,9 +32,12 @@ launch, are on the
 
 ## The keyboard
 
-Every key of the macOS look is on this page. The app's own list (`?`) is
-shorter: it leaves out the keys of the dialogs and of the lists that open
-in an editor.
+This page lists the keys of the macOS look, grouped by where they work.
+The app's own list (`?`) is shorter: it leaves out the keys of the
+dialogs and of the lists that open in an editor.
+
+A dialog that is not named below takes the usual keys: Return for its
+main button and Esc to close it.
 
 Keys written with Ctrl are the Control key, not Cmd. Backspace is the key
 a Mac keyboard labels Delete.
@@ -55,6 +58,15 @@ a Mac keyboard labels Delete.
 | F6, Shift+F6 | Next and previous part of the window |
 | Cmd+, | Settings |
 | `?` | The list of keys |
+
+### Quick open
+
+| Keys | Do |
+| --- | --- |
+| Cmd+P | Open it, then type to find a table or view |
+| Up, Down | Move in the list |
+| Return | Open the one selected |
+| Esc | Close |
 
 ### The picker
 

@@ -40,7 +40,7 @@ features:
     details: A production connection opens read-only unless you say otherwise, and a save to production asks first, with its SQL on screen.
   - icon: ✏️
     title: Edit in the grid
-    details: Changes wait until you save, go in as one transaction, and never overwrite a row that someone else changed.
+    details: Changes wait until you save and go in as one transaction. When someone else changed the same row, the save stops and asks you.
     link: /editing-data/
     link_text: How editing works
   - icon: 🧭
