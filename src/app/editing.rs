@@ -528,14 +528,11 @@ impl App {
         (editor.place == EditorPlace::Panel).then_some(editor.cell.col)
     }
 
-    /// An edit made in the row panel's field of the column `col` ended, by
-    /// a commit or a cancel: the keyboard goes back to that field, so
-    /// Enter edits it again and Tab goes on from it. Not in the terminal
-    /// look, where the keys are the grid's again, in normal mode.
+    /// An edit made in the row panel ended, by a commit or a cancel: the
+    /// keyboard goes to the panel's field of the column `col`, the one that
+    /// was edited or the one the commit walks to, so Enter edits it and
+    /// the keys go on from it.
     pub(super) fn back_to_field(&mut self, tab: ConnTabId, id: TabId, col: usize) {
-        if self.look.terminal {
-            return;
-        }
         if let Some(object) = self.object_tab_mut(tab, id) {
             object.focus_field = Some(col);
         }

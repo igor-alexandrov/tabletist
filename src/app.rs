@@ -14425,9 +14425,9 @@ mod tests {
                 let (tab, id) = harness.editable();
                 let field = |harness: &Harness| object(harness, tab, id).focus_field;
                 let cell = at(1, 1);
-                // Dropped, and committed: on the terminal's look the keys
-                // are the grid's again, and nothing is asked of the panel.
-                let back = (!look.terminal).then_some(1);
+                // Dropped, and committed: the keyboard is the field's
+                // again, in every look.
+                let back = Some(1);
                 harness.app.apply(Action::EditField {
                     tab,
                     id,

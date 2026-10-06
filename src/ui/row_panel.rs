@@ -497,18 +497,27 @@ fn draw(
                     None => number.to_string(),
                 };
                 let measure = |text: &str| role.width(ui.ctx(), look.faces, text);
-                // The hint gives way before the name does: the words of
-                // its keys go when the whole name does not fit before
-                // them. The name is cut where the hint begins, 10 before
-                // it.
-                let hints: [&[widgets::Hint<'_>]; 2] =
-                    [&[("[ ]", "prev/next", true)], &[("[ ]", "", true)]];
+                // The hint gives way before the name does: first the keys
+                // that reach and edit a field, which a row that can be
+                // edited offers, then the words of its own keys, when the
+                // whole name does not fit before them. The name is cut
+                // where the hint begins, 10 before it.
+                let steps: widgets::Hint<'_> = ("[ ]", "prev/next", true);
+                let focus: widgets::Hint<'_> = ("ctrl+l", "focus", true);
+                let editable = source.table && locked.is_none();
+                let hints: [&[widgets::Hint<'_>]; 4] = [
+                    &[steps, focus, ("i", "edit field", true)],
+                    &[steps, focus],
+                    &[steps],
+                    &[("[ ]", "", true)],
+                ];
                 let fit = |hint: &[widgets::Hint<'_>]| {
                     let width = widgets::key_hints_width(ui, hint, HINT_GAP, &look, &palette);
                     (width, esc.left() - 10.0 - width - 10.0 - x)
                 };
-                let fitting = hints.iter().find(|hint| measure(&whole) <= fit(hint).1);
-                let hint = *fitting.unwrap_or(&hints[1]);
+                let offered = &hints[if editable { 0 } else { 2 }..];
+                let fitting = offered.iter().find(|hint| measure(&whole) <= fit(hint).1);
+                let hint = *fitting.unwrap_or(&hints[3]);
                 let (width, room) = fit(hint);
                 // A number keeps its last digits.
                 let shown = crate::ui::grid::ellipsize(&whole, room, keyed.is_none(), measure);
@@ -1287,8 +1296,31 @@ fn field(
                     .paint_at(ui, pencil);
             }
         }
-        let ring = focus::Ring::Inset {
-            radius: look.radius,
+        let ring = if look.terminal {
+            // The terminal look's cursor on a field: the selection's tone
+            // behind the value, and a 2 pt bar in the accent at its left.
+            // It is there whenever the field has the keyboard, as the
+            // grid's is, and is all that marks it.
+            if response.has_focus() {
+                let bar = Rect::from_min_size(frame.min, vec2(2.0, frame.height()));
+                let filled = |rect, color| {
+                    egui::Shape::from(egui::epaint::RectShape::filled(
+                        rect,
+                        CornerRadius::ZERO,
+                        color,
+                    ))
+                };
+                let cursor = vec![
+                    filled(frame, palette.selection),
+                    filled(bar, palette.accent),
+                ];
+                ui.painter().set(behind, egui::Shape::Vec(cursor));
+            }
+            focus::Ring::Own
+        } else {
+            focus::Ring::Inset {
+                radius: look.radius,
+            }
         };
         focus::hint(ui, &response, frame, ring);
         response

@@ -211,6 +211,13 @@ impl<'a> Form<'a> {
                 cell,
                 place,
             });
+            // The terminal look's Esc left insert mode: the keyboard is
+            // on the field again, as after a commit.
+            if outcome.kept {
+                let from = cell.col;
+                let by = 0;
+                self.ending.push(Action::MoveField { tab, id, from, by });
+            }
         }
         true
     }

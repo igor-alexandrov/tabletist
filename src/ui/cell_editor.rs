@@ -28,6 +28,9 @@ pub struct Outcome {
     /// The keyboard went elsewhere, or the terminal look's Esc left insert
     /// mode: the text is kept.
     pub left: bool,
+    /// It was that Esc: the keys go back to where the edit was asked for,
+    /// which a keyboard that went elsewhere of itself does not.
+    pub kept: bool,
     /// Alt+Enter.
     pub large: bool,
 }
@@ -142,6 +145,7 @@ fn leaving_keys(input: &mut egui::InputState, mine: bool, terminal: bool, outcom
                     return false;
                 }
                 outcome.left = true;
+                outcome.kept = true;
             }
             _ => return true,
         }

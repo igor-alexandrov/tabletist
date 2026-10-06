@@ -84,7 +84,13 @@ pub const SHORTCUTS: &[(&str, &str, Holds)] = &[
     // Editing a table's cells: each look's own keys for the same things.
     ("Enter, F2", "Edit the cell", DESKTOP),
     ("i, Enter", "Edit the cell", TERMINAL),
-    ("Mod+I", "Focus inspector fields", ALL),
+    ("Mod+I", "Focus inspector fields", DESKTOP),
+    ("Ctrl+L, Mod+I", "Focus inspector fields", TERMINAL),
+    (
+        "j/k, Ctrl+H",
+        "Step the inspector's fields, back to the grid",
+        TERMINAL,
+    ),
     (
         "Up, Down, Esc",
         "Step the inspector's fields, back to the grid",
@@ -489,7 +495,29 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
             None if app.look.terminal && !editing => {
                 if let Some(index) = pressed([(Modifiers::CTRL, Key::H), (Modifiers::CTRL, Key::L)])
                 {
-                    focus::step(ctx, index == 1, Some(&Region::PANES), Some(from));
+                    // A row of the table on screen is selected, and no
+                    // control has the keyboard: the keys are the grid's.
+                    let on_grid = grid && !focused && from == Region::Grid;
+                    let row = object.filter(|(tab, id)| {
+                        let object = app.workspace(*tab).and_then(|w| w.object_tab(*id));
+                        on_grid && object.is_some_and(|object| object.selection.is_some())
+                    });
+                    match (index, field, object, row) {
+                        // From a field of the row panel, back to the grid,
+                        // on the cell of that column.
+                        (0, Some(col), Some((tab, id)), _) => {
+                            let stop = crate::ui::row_panel::field_stop(tab, id, col);
+                            ctx.memory_mut(|memory| memory.surrender_focus(stop));
+                            actions.push(Action::FieldFocused { tab, id, col });
+                            actions.push(Action::GridKeys(tab));
+                        }
+                        // From the grid, to the row's fields: the panel is
+                        // shown for it.
+                        (1, None, _, Some((tab, id))) => {
+                            actions.push(Action::FocusFields { tab, id });
+                        }
+                        _ => focus::step(ctx, index == 1, Some(&Region::PANES), Some(from)),
+                    }
                 }
             }
             None => {}
@@ -532,7 +560,7 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
         if ctx.input(|input| input.pointer.any_pressed()) {
             forget_pending(ctx);
         }
-        letters(app, ctx, &mut actions);
+        letters(app, ctx, field, &mut actions);
     } else {
         // The keys are a field's: a first key that waited is not the
         // first of what is typed once they are the grid's again.
@@ -1009,18 +1037,40 @@ fn editing_keys(
 fn editing_letters(
     ctx: &egui::Context,
     (tab, id): (ConnTabId, TabId),
-    selection: Option<crate::model::CellPos>,
+    (selection, field): (Option<crate::model::CellPos>, Option<usize>),
     waiting: bool,
     actions: &mut Vec<Action>,
 ) -> bool {
-    use crate::model::EditStart;
+    use crate::model::{CellPos, EditStart};
+    // On a field of the row panel the letters act on its cell, and edit
+    // it in the panel.
     let edit = |start: EditStart| {
-        selection.map(|cell| Action::EditCell {
-            tab,
-            id,
-            cell,
-            start,
+        let selected = selection?;
+        Some(match field {
+            Some(col) => Action::EditField {
+                tab,
+                id,
+                cell: CellPos {
+                    row: selected.row,
+                    col,
+                },
+                start,
+            },
+            None => Action::EditCell {
+                tab,
+                id,
+                cell: selected,
+                start,
+            },
         })
+    };
+    // The field's cell is the selected one from the frame after the field
+    // took the keyboard: a letter that comes before that says so first.
+    let on_cell = |actions: &mut Vec<Action>| {
+        let selected = selection.map(|cell| cell.col);
+        if let Some(col) = field.filter(|col| Some(*col) != selected) {
+            actions.push(Action::FieldFocused { tab, id, col });
+        }
     };
     let alone = actions.is_empty();
     let mine = |text: &str| matches!(text, "i" | "c" | "x" | "u" | ":");
@@ -1084,8 +1134,14 @@ fn editing_letters(
                     first = true;
                     waits = true;
                 }
-                "x" => actions.push(Action::SetNull { tab, id }),
-                "u" => actions.push(Action::RevertCell { tab, id }),
+                "x" => {
+                    on_cell(actions);
+                    actions.push(Action::SetNull { tab, id });
+                }
+                "u" => {
+                    on_cell(actions);
+                    actions.push(Action::RevertCell { tab, id });
+                }
                 ":" => {
                     opened = true;
                     actions.push(Action::OpenCommand(tab));
@@ -1144,8 +1200,10 @@ fn typed(ctx: &egui::Context, text: &str) -> bool {
 }
 
 /// Single letters: the picker's keys, and in the terminal look the
-/// workspace's vim keys. Only when no text field has the keyboard.
-fn letters(app: &mut App, ctx: &egui::Context, actions: &mut Vec<Action>) {
+/// workspace's vim keys. Only when no text field has the keyboard. `field`
+/// is the column of the row panel's field that has it: `j` and `k` step
+/// the fields then, and the letters that edit a cell edit that field.
+fn letters(app: &mut App, ctx: &egui::Context, field: Option<usize>, actions: &mut Vec<Action>) {
     // A frame without keys keeps a waiting first key (`d` of `dd`).
     let keys = ctx.input(|input| {
         input
@@ -1305,8 +1363,19 @@ fn letters(app: &mut App, ctx: &egui::Context, actions: &mut Vec<Action>) {
             });
         }
     }
+    // On a field of the row panel `j` and `k` step the fields.
+    if let (Some(from), Some(id)) = (field, active) {
+        for (key, by) in [(Key::J, 1), (Key::K, -1)] {
+            if pressed(key) {
+                actions.push(Action::MoveField { tab, id, from, by });
+            }
+        }
+    }
     // What `j/k/h/l` move in: the object's grid, or a SQL result.
-    if !tree && let Some(id) = active.or(sql_grid) {
+    if !tree
+        && field.is_none()
+        && let Some(id) = active.or(sql_grid)
+    {
         for (key, rows, cols) in [
             (Key::J, 1, 0),
             (Key::K, -1, 0),
@@ -1336,18 +1405,18 @@ fn letters(app: &mut App, ctx: &egui::Context, actions: &mut Vec<Action>) {
             }
         }
     }
-    // The letters that edit a table's cells, where its grid has the keys:
-    // not with the arrows on the tree, in the Structure view, or on a
-    // button, whose key Enter is.
+    // The letters that edit a table's cells, where its grid has the keys
+    // or a field of its row panel has: not with the arrows on the tree, in
+    // the Structure view, or on a button, whose key Enter is.
     let table = workspace
         .active_object_tab()
         .filter(|object| !tree && object.view == crate::model::ObjectView::Data)
         .map(|object| (object.id, object.selection));
     if let Some((id, selection)) = table
-        && !crate::ui::focus::on_control(ctx)
+        && (field.is_some() || !crate::ui::focus::on_control(ctx))
     {
         let waiting = pending == Some('c');
-        if editing_letters(ctx, (tab, id), selection, waiting, actions) {
+        if editing_letters(ctx, (tab, id), (selection, field), waiting, actions) {
             next_pending = Some('c');
         }
     }

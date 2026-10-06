@@ -20362,9 +20362,12 @@ mod tests {
             pending_text(&harness, tab, id, (1, 1)).as_deref(),
             Some("user2@example.com!")
         );
-        // The key left insert mode and did no more: the panel is open.
+        // The key left insert mode and did no more: the panel is open,
+        // and the keyboard is on the field that was edited.
         assert!(panel(&harness));
         assert!(!painted(&harness, "-- INSERT --"));
+        harness.settle();
+        assert!(field_focused(&harness, tab, id, 1));
         click_value(&mut harness, "user2@example.com!");
         type_text(&mut harness, "?");
         harness.press(Key::C, Modifiers::CTRL);
@@ -20374,6 +20377,8 @@ mod tests {
             Some("user2@example.com!")
         );
         assert!(panel(&harness));
+        harness.settle();
+        assert!(field_focused(&harness, tab, id, 1));
     }
 
     #[test]
@@ -20739,6 +20744,76 @@ mod tests {
             let said = if look.terminal { 2 } else { 1 };
             assert_eq!(times_painted(&harness, &why), said, "{}", look.name);
         }
+    }
+
+    #[test]
+    fn ctrl_l_focuses_the_rows_fields_in_the_terminal_look() {
+        let (mut harness, tab, id) = form_row(Look::omarchy(), 1);
+        focus_grid(&mut harness, tab);
+        harness.app.apply(Action::ToggleRowPanel(tab));
+        harness.settle();
+        assert!(!harness.app.workspace(tab).unwrap().row_panel);
+        harness.press(Key::L, Modifiers::CTRL);
+        harness.settle();
+        // The panel is shown, and the keyboard is on the row's first
+        // field that can be edited.
+        assert!(harness.app.workspace(tab).unwrap().row_panel);
+        assert!(field_focused(&harness, tab, id, 1));
+        assert_eq!(selected(&harness, tab, id), Some((1, 1)));
+        // `j` and `k` step the fields, not the grid's rows.
+        type_key(&mut harness, Key::J, "j");
+        harness.settle();
+        assert!(field_focused(&harness, tab, id, 2));
+        assert_eq!(selected(&harness, tab, id), Some((1, 2)));
+        type_key(&mut harness, Key::K, "k");
+        harness.settle();
+        assert!(field_focused(&harness, tab, id, 1));
+        assert_eq!(selected(&harness, tab, id), Some((1, 1)));
+        // `i` edits in the panel, in insert mode: Tab walks the fields
+        // from there, and the line says so.
+        type_key(&mut harness, Key::I, "i");
+        assert_eq!(form_editor(&harness, tab, id), Some(((1, 1), true)));
+        assert!(painted(&harness, "-- INSERT --"), "{:?}", harness.painted);
+        assert!(painted(&harness, "esc normal · tab next field"));
+        // The letter was the key, and is no part of the text. Esc keeps
+        // what was typed, and the keyboard is on the field again.
+        type_text(&mut harness, "x");
+        harness.press(Key::Escape, Modifiers::NONE);
+        assert_eq!(
+            pending_text(&harness, tab, id, (1, 1)).as_deref(),
+            Some("user2@example.comx")
+        );
+        harness.settle();
+        assert!(field_focused(&harness, tab, id, 1));
+        // `u` puts it back, on the field as on its cell.
+        type_key(&mut harness, Key::U, "u");
+        assert_eq!(pending_text(&harness, tab, id, (1, 1)), None);
+        // `cc` edits from nothing, and ctrl+c drops that.
+        type_key(&mut harness, Key::C, "c");
+        type_key(&mut harness, Key::C, "c");
+        assert_eq!(form_editor(&harness, tab, id), Some(((1, 1), true)));
+        assert_eq!(editor_text(&harness, tab, id).as_deref(), Some(""));
+        harness.press(Key::C, Modifiers::CTRL);
+        assert!(edits(&harness, tab, id).editor.is_none());
+        assert!(edits(&harness, tab, id).cells.is_empty());
+        harness.settle();
+        assert!(field_focused(&harness, tab, id, 1));
+        // Enter edits too, and commits: the keyboard walks to qty.
+        harness.press(Key::Enter, Modifiers::NONE);
+        assert_eq!(form_editor(&harness, tab, id), Some(((1, 1), true)));
+        harness.press(Key::Enter, Modifiers::NONE);
+        harness.settle();
+        assert!(field_focused(&harness, tab, id, 2));
+        // ctrl+h: the keys are the grid's again, on that column's cell.
+        harness.press(Key::H, Modifiers::CTRL);
+        harness.settle();
+        assert!(!field_focused(&harness, tab, id, 2));
+        assert!(harness.app.workspace(tab).unwrap().row_panel);
+        type_key(&mut harness, Key::J, "j");
+        assert_eq!(selected(&harness, tab, id), Some((2, 2)));
+        // The panel's head names the keys.
+        assert!(painted(&harness, "ctrl+l focus"), "{:?}", harness.painted);
+        assert!(painted(&harness, "i edit field"));
     }
 
     #[test]
