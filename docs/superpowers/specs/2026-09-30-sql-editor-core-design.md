@@ -4,10 +4,10 @@ Date: 2026-09-30. Status: implemented. This spec describes the slice as
 built; where the code and the first draft differed, the text follows the
 code. Since 2026-10-01 the row panel shows a selected result row (see Results
 and Shortcuts on a SQL tab). Since 2026-10-05 a SQL tab of a writable
-connection can be switched to Read-write
+connection can run in Read-write, and since 2026-10-06 it opens in it
 (`2026-10-05-sql-editor-writes-design.md`): what this spec says of every
-run holds for the read-only run, which every tab starts with and every run
-of reads still is.
+run holds for the read-only run, which every tab of a read-only connection
+has and every run of reads still is.
 
 ## Intent
 
@@ -18,9 +18,10 @@ table data: every run happens in a read-only transaction that is rolled back,
 and scripts that would leave that transaction are refused before anything
 runs. That holds on a writable connection too, whose session is read-write
 between runs: the editor is fenced there as on a read-only one (see
-`2026-10-03-value-editing-core-design.md`, "Writable connections"), until
-the user switches the tab to Read-write. Then a run that holds a write is
-one read-write transaction, committed when every statement succeeded.
+`2026-10-03-value-editing-core-design.md`, "Writable connections"), while
+the tab is in Read-only. A tab there opens in Read-write, and the user
+switches it. In Read-write a run that holds a write is one read-write
+transaction, committed when every statement succeeded.
 
 Success: on each driver, a user opens a SQL tab, runs a query, sees its rows
 with column types, sees the database's error when a statement fails, and can
@@ -56,7 +57,7 @@ each with its own spec, plan and pull request:
 |---|---|
 | Scope | Core editor only; slices 2 to 5 follow separately. |
 | Query text | In memory only. Closing a SQL tab never asks; no unsaved dot. |
-| Run all | One read-only transaction, statements in order, stop at the first error. Results shows the last statement that returned rows; Messages lists every statement. In a tab switched to Read-write a run that holds a write is one read-write transaction instead. |
+| Run all | One read-only transaction, statements in order, stop at the first error. Results shows the last statement that returned rows; Messages lists every statement. In a tab in Read-write a run that holds a write is one read-write transaction instead. |
 | Read-only guard | Refuse transaction and session-mode statements before running; on PostgreSQL take the snapshot first; check the transaction is still read-only before rolling back; reset the MySQL session after every script. |
 | Editor widget | egui `TextEdit` in code mode with our own layouter and a gutter; the SQL tokenizer lives in `tabletist-db`. |
 | Tab model | `Workspace.objects` becomes `tabs: Vec<Tab>`, `enum Tab { Object(Box<ObjectTab>), Sql(Box<SqlTab>) }`. |
@@ -634,17 +635,19 @@ tab's result grid as on a table's.
 ### Toolbar
 
 - macOS: Run (with `Cmd+Return`), Run all (`Shift+Cmd+Return`); on the right
-  a "Read-only transaction" badge whose tooltip explains it, then
-  "Limit 1,000" and "Timeout 30 s" menus. On a connection that takes
-  writes the badge is a menu too, with "Read-only transaction" and
-  "Read-write transaction", and in Read-write it reads in the warning
-  tone.
-- Omarchy: the tab title, a muted `read-only transaction · limit 1000 ·
-  timeout 30s` whose limit and timeout parts open the same menus, then
-  `run ctrl+enter` and `run all ctrl+shift+enter`. On a connection that
-  takes writes the first part opens the badge's menu.
+  a segmented switch, "Read-only" and "Read-write", whose segments say on
+  hover what each mode does, then "Limit 1,000" and "Timeout 30 s" menus.
+  The chosen Read-only stands behind a lock, and the chosen Read-write
+  reads in the warning tone. Where no editor of the connection can write
+  the switch is drawn as a control that is off, and its Read-write segment
+  says why (see `2026-10-05-sql-editor-writes-design.md`, "Toolbar and
+  keys").
+- Omarchy: the tab title, the same switch as `read-only` and `read-write`
+  with the chosen one in a box and the other muted, then a muted `· limit
+  1000 · timeout 30s` whose parts open the menus, then `run ctrl+enter`
+  and `run all ctrl+shift+enter`.
 - Where the toolbar is too narrow, pieces give way in this order: the run
-  buttons' keys, the read-only note, on Omarchy the tab title, then the
+  buttons' keys, the switch, on Omarchy the tab title, then the
   menus' words (leaving "1,000" and "30 s"), on macOS the menus' chevrons,
   and last the menus. The run buttons stay.
 - Explain is absent until its slice, not disabled. Format, its button

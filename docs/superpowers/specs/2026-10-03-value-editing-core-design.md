@@ -227,7 +227,7 @@ pending changes never outlive their page.
 
 The promise, restated: on a read-only connection no action in the app can
 modify data. On a writable connection only Save can, and since slice 6 a
-run in a SQL tab the user switched to Read-write; browsing, a raw WHERE
+run in a SQL tab in Read-write, as a new one there is; browsing, a raw WHERE
 and every other run still cannot.
 
 ## What can be edited

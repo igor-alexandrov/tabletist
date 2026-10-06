@@ -34,9 +34,10 @@ PostgreSQL, MySQL, SQLite. No others in v1.
    change of the tab in one transaction, which never overwrites a row
    someone else changed unless the user, asked about that row, chooses to,
    and on production only after its statements were shown and confirmed.
-   A SQL tab the user switched to Read-write writes too: a run that
-   changes data is one transaction, committed when every statement
-   succeeded, and not yet on a production connection. Browsing, a raw
+   A SQL tab in Read-write, as one of a writable connection opens,
+   writes too: a run that changes data is one transaction, committed when
+   every statement succeeded, and not yet on a production connection.
+   Browsing, a raw
    WHERE and every other run still cannot write (see
    `2026-10-03-value-editing-core-design.md` and
    `2026-10-05-sql-editor-writes-design.md`).

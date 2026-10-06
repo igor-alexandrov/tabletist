@@ -4589,15 +4589,18 @@ mod tests {
                     look.name
                 );
             }
-            assert!(
-                harness.has("Read-only transaction"),
-                "the transaction note in {}",
-                look.name
-            );
+            // The switch's two segments.
+            for name in ["Read-only", "Read-write"] {
+                assert!(
+                    crate::testing::node(&tree, name, egui::accesskit::Role::Button).is_some(),
+                    "{name} in {}",
+                    look.name
+                );
+            }
             let reads = if look.terminal {
-                ["limit 1000", "timeout 30s", "read-only transaction"]
+                ["limit 1000", "timeout 30s", "read-write"]
             } else {
-                ["Limit 1,000", "Timeout 30 s", "Read-only transaction"]
+                ["Limit 1,000", "Timeout 30 s", "Read-write"]
             };
             for text in reads {
                 assert!(painted(&harness, text), "{text} in {}", look.name);
@@ -4750,11 +4753,13 @@ mod tests {
         for look in crate::theme::Look::ALL {
             let (mut harness, _tab) = sql_harness(look);
             // The terminal's toolbar leads with its menus, the others'
-            // with Run.
+            // with Run. On this connection, which opens read-only, the
+            // switch's Read-write segment cannot be picked: the keyboard
+            // stops on it to read why.
             let order: &[&str] = if look.terminal {
                 &["Limit", "Timeout", "Run", "Run all"]
             } else {
-                &["Run", "Run all", "Format", "Limit", "Timeout"]
+                &["Run", "Run all", "Format", "Read-write", "Limit", "Timeout"]
             };
             let role = if look.terminal {
                 egui::accesskit::Role::ComboBox
@@ -4762,6 +4767,31 @@ mod tests {
                 egui::accesskit::Role::Button
             };
             focus(&mut harness, order[0], role);
+            let mut reached = vec![focused_name(&harness.settle())];
+            for _ in 1..order.len() {
+                harness.press(Key::Tab, Modifiers::NONE);
+                reached.push(focused_name(&harness.settle()));
+            }
+            assert_eq!(reached, order, "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn tab_stops_once_on_the_switch_of_a_connection_that_takes_writes() {
+        for look in crate::theme::Look::ALL {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            let tab = harness.connect_fake_as(false);
+            harness.app.apply(crate::model::Action::NewSqlTab(tab));
+            // The switch is one stop, on the segment it has chosen: the
+            // arrows choose inside it. The terminal's toolbar leads with
+            // it, the others' meet it after Format.
+            let order: &[&str] = if look.terminal {
+                &["Read-write", "Limit", "Timeout", "Run"]
+            } else {
+                &["Format", "Read-write", "Limit", "Timeout"]
+            };
+            focus(&mut harness, order[0], egui::accesskit::Role::Button);
             let mut reached = vec![focused_name(&harness.settle())];
             for _ in 1..order.len() {
                 harness.press(Key::Tab, Modifiers::NONE);
@@ -6178,17 +6208,13 @@ mod tests {
         // left to give way.
         for look in crate::theme::Look::ALL {
             let (mut harness, _tab) = sql_harness(look);
+            // The note is the switch, read by the segment only it paints.
             let (keys, note, full, short) = if look.terminal {
-                ("ctrl+enter", "read-only transaction", "limit 1000", "1000")
+                ("ctrl+enter", "read-write", "limit 1000", "1000")
             } else if look == crate::theme::Look::macos() {
-                ("⌘↩", "Read-only transaction", "Limit 1,000", "1,000")
+                ("⌘↩", "Read-write", "Limit 1,000", "1,000")
             } else {
-                (
-                    "Ctrl+Enter",
-                    "Read-only transaction",
-                    "Limit 1,000",
-                    "1,000",
-                )
+                ("Ctrl+Enter", "Read-write", "Limit 1,000", "1,000")
             };
             // Format's key, which goes when the run buttons' keys do.
             let format_keys = if look == crate::theme::Look::macos() {

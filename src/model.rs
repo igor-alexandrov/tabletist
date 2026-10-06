@@ -367,7 +367,7 @@ pub enum Action {
         sql_tab: TabId,
         secs: Option<u32>,
     },
-    /// The badge's menu: how this editor's runs end. Nothing on a
+    /// The toolbar's switch: how this editor's runs end. Nothing on a
     /// connection whose editors cannot write (see `Workspace::sql_writes`).
     SetSqlMode {
         tab: ConnTabId,
@@ -2052,8 +2052,8 @@ pub type ShownRows<'a> = (
     bool,
 );
 
-/// How a SQL editor's runs are meant to end: what its toolbar's badge
-/// says and switches.
+/// How a SQL editor's runs are meant to end: what its toolbar's switch
+/// shows and sets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum RunMode {
     /// Every run is a read-only transaction that is rolled back.
@@ -2069,6 +2069,18 @@ impl RunMode {
         match self {
             Self::ReadOnly => Self::ReadWrite,
             Self::ReadWrite => Self::ReadOnly,
+        }
+    }
+
+    /// The mode a new editor opens in. It follows the connection:
+    /// read-write where an editor can write, and read-only everywhere
+    /// else. An environment whose connections open read-only by default
+    /// opens its editors read-only too, on a writable connection as well:
+    /// there the user switches a tab to write.
+    pub fn of_new_tab(writes: Result<(), NoWrites>, environment: crate::env::Environment) -> Self {
+        match writes {
+            Ok(()) if !environment.read_only_by_default() => Self::ReadWrite,
+            Ok(()) | Err(NoWrites::ReadOnlyConnection | NoWrites::Unconfirmed) => Self::ReadOnly,
         }
     }
 }
@@ -2372,7 +2384,8 @@ pub struct SqlTab {
     pub cursor: usize,
     pub limit: u32,
     pub timeout: Option<Duration>,
-    /// What the user set the badge to. It counts only while the session
+    /// What the switch was set to: by `Workspace::push_sql_tab` when the
+    /// tab opened, and by the user since. It counts only while the session
     /// can write: ask `Workspace::run_mode` for the mode a run has.
     pub mode: RunMode,
     /// The last run, or the one running (a whole-run failure is its error).
@@ -2834,7 +2847,8 @@ impl Workspace {
     }
 
     /// Adds an empty SQL editor at the end of the strip, numbered after the
-    /// last one, without showing it.
+    /// last one, without showing it, in the mode a new editor of this
+    /// workspace opens in now (see `RunMode::of_new_tab`).
     pub fn push_sql_tab(
         &mut self,
         id: TabId,
@@ -2843,8 +2857,9 @@ impl Workspace {
     ) -> &mut SqlTab {
         let number = self.next_query;
         self.next_query += 1;
-        self.tabs
-            .push(Tab::Sql(Box::new(SqlTab::new(id, number, limit, timeout))));
+        let mut sql = SqlTab::new(id, number, limit, timeout);
+        sql.mode = RunMode::of_new_tab(self.sql_writes(), self.environment);
+        self.tabs.push(Tab::Sql(Box::new(sql)));
         match self.tabs.last_mut() {
             Some(Tab::Sql(sql)) => sql,
             _ => unreachable!("a SQL tab was just pushed"),
@@ -3001,6 +3016,30 @@ mod tests {
         billing.objects.value = Some(vec![info("invoices", ObjectKind::Table)]);
         tree.nodes.insert("billing".into(), billing);
         tree
+    }
+
+    #[test]
+    fn a_new_editor_opens_read_only_wherever_connections_do_by_default() {
+        use crate::env::Environment;
+        for environment in Environment::ALL {
+            // Where an editor can write, and that will be so on production
+            // once its runs are confirmed first.
+            let writes = RunMode::of_new_tab(Ok(()), environment) == RunMode::ReadWrite;
+            assert_eq!(
+                writes,
+                !environment.read_only_by_default(),
+                "{environment:?}"
+            );
+            for no in [NoWrites::ReadOnlyConnection, NoWrites::Unconfirmed] {
+                assert_eq!(
+                    RunMode::of_new_tab(Err(no), environment),
+                    RunMode::ReadOnly,
+                    "{environment:?} {no:?}"
+                );
+            }
+        }
+        let production = RunMode::of_new_tab(Ok(()), Environment::Production);
+        assert_eq!(production, RunMode::ReadOnly);
     }
 
     fn sql_tab(id: u64) -> Tab {
