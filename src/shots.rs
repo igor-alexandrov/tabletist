@@ -379,7 +379,7 @@ const ROW_FORM: [(&str, Scene); 2] = [
 
 /// A field of the row panel being edited: the editor in the value's place,
 /// holding a text its column does not take, with why under it. Another
-/// field of the row is pending, and the footer's Edit can be pressed.
+/// field of the row is pending.
 fn row_form_field(harness: &mut Harness) {
     let (tab, id) = editable(harness);
     retype(harness, tab, id, (4, DELETED_AT), DELETED);

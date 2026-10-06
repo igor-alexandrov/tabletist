@@ -497,24 +497,18 @@ fn draw(
                     None => number.to_string(),
                 };
                 let measure = |text: &str| role.width(ui.ctx(), look.faces, text);
-                // The hint gives way before the name does: first `e edit`,
-                // which a row that can be edited offers, then the words of
-                // its keys, when the whole name does not fit before them.
-                // The name is cut where the hint begins, 10 before it.
-                let steps: widgets::Hint<'_> = ("[ ]", "prev/next", true);
-                let editable = source.table && locked.is_none();
-                let hints: [&[widgets::Hint<'_>]; 3] = [
-                    &[steps, ("e", "edit", true)],
-                    &[steps],
-                    &[("[ ]", "", true)],
-                ];
+                // The hint gives way before the name does: the words of
+                // its keys go when the whole name does not fit before
+                // them. The name is cut where the hint begins, 10 before
+                // it.
+                let hints: [&[widgets::Hint<'_>]; 2] =
+                    [&[("[ ]", "prev/next", true)], &[("[ ]", "", true)]];
                 let fit = |hint: &[widgets::Hint<'_>]| {
                     let width = widgets::key_hints_width(ui, hint, HINT_GAP, &look, &palette);
                     (width, esc.left() - 10.0 - width - 10.0 - x)
                 };
-                let offered = &hints[usize::from(!editable)..];
-                let fitting = offered.iter().find(|hint| measure(&whole) <= fit(hint).1);
-                let hint = *fitting.unwrap_or(&hints[2]);
+                let fitting = hints.iter().find(|hint| measure(&whole) <= fit(hint).1);
+                let hint = *fitting.unwrap_or(&hints[1]);
                 let (width, room) = fit(hint);
                 // A number keeps its last digits.
                 let shown = crate::ui::grid::ellipsize(&whole, room, keyed.is_none(), measure);
@@ -682,9 +676,8 @@ fn draw(
                 pos2(full.right(), full.bottom() - footer_height),
             );
             let foot = Rect::from_min_max(pos2(full.left(), body.bottom()), full.max);
-            if source.table && editing_footer(ui, foot, locked.as_deref(), &look, &palette, locale)
-            {
-                actions.push(Action::EditRow { tab, id });
+            if source.table {
+                editing_footer(ui, foot, locked.as_deref(), &look, &palette, locale);
             }
             let mut body_ui = ui.new_child(egui::UiBuilder::new().max_rect(body));
             let skin = FieldSkin {
@@ -1366,7 +1359,7 @@ fn field(
     }
 }
 
-/// The pencil of a field that can be edited: 22 pt, as Copy is.
+/// The pencil of a list that can be edited: 22 pt, as Copy is.
 const PENCIL: f32 = 22.0;
 
 /// The lock after the label of a field that cannot be edited.
@@ -1970,11 +1963,11 @@ fn attachment_card(
     );
 }
 
-/// The footer of a table's row: Edit, which edits the row in the panel,
-/// and Duplicate and Delete, which wait for a later version. `locked` is
-/// why no field of the row can be edited, in the look's words: Edit is
-/// disabled with it, and the note under the buttons says it. Returns
-/// whether Edit was pressed.
+/// The footer of a table's row: Duplicate and Delete, which wait for a
+/// later version, and under them how a value of the row is edited. `locked`
+/// is why no field of the row can be edited, in the look's words: the note
+/// under the buttons says that instead, and so do the buttons under the
+/// pointer.
 fn editing_footer(
     ui: &mut egui::Ui,
     rect: Rect,
@@ -1982,7 +1975,7 @@ fn editing_footer(
     look: &Look,
     palette: &Palette,
     locale: crate::i18n::Locale,
-) -> bool {
+) {
     let side = side(look);
     if !look.terminal {
         ui.painter()
@@ -2002,56 +1995,37 @@ fn editing_footer(
         locale,
         "Duplicating and deleting rows arrive in a later version",
     );
+    // Why neither can be pressed: the row's reason, where it has one.
+    let why = locked.unwrap_or(later.as_ref());
     let inner = rect.shrink2(vec2(side, 0.0));
     let gap = 6.0;
     let top = rect.top() + 1.0 + if look.terminal { 10.0 } else { 12.0 };
     let role = widgets::body(look);
     let measure = |text: &str| role.width(ui.ctx(), look.faces, text);
-    let mut edit = false;
     let height = if look.terminal {
-        // Three equal cells, the keys in the text colour. Edit is a
-        // button, in a solid line; what waits is dashed, at 55%.
-        let keys = [("e", "edit"), ("yy p", "duplicate"), ("dd", "delete")];
-        let width = (inner.width() - 2.0 * gap) / 3.0;
+        // Two equal cells, the keys in the text colour: what waits is
+        // dashed, at 55%.
+        let keys = [("yy p", "duplicate"), ("dd", "delete")];
+        let width = (inner.width() - gap) / 2.0;
         let faded = |color: egui::Color32| palette.panel.lerp_to_gamma(color, 0.55);
         for (index, (key, label)) in keys.iter().enumerate() {
             let place = Rect::from_min_size(
                 pos2(inner.left() + index as f32 * (width + gap), top),
                 vec2(width, 28.0),
             );
-            let enabled = index == 0 && locked.is_none();
-            let sense = if enabled {
-                Sense::click()
-            } else {
-                Sense::hover()
-            };
-            let response = ui.interact(place, ui.id().with(("edit", index)), sense);
+            let response = ui.interact(place, ui.id().with(("edit", index)), Sense::hover());
             let name = format!("{key} {label}");
-            response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, enabled, &name));
-            let tint = |color: egui::Color32| if enabled { color } else { faded(color) };
-            if enabled {
-                edit = response.clicked();
-                ui.painter().rect_stroke(
-                    place,
-                    CornerRadius::same(3),
-                    Stroke::new(1.0, palette.outline),
-                    StrokeKind::Inside,
-                );
-            } else {
-                // Why not, under the pointer: the row's reason for Edit,
-                // the later version for the others.
-                let reason = locked.filter(|_| index == 0).unwrap_or(later.as_ref());
-                let _ = response.on_hover_text(reason);
-                dashed(ui, place, faded(palette.outline));
-            }
+            response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, false, &name));
+            let _ = response.on_hover_text(why);
+            dashed(ui, place, faded(palette.outline));
             // A cell too narrow for both shows its key alone.
-            let text = Text::one(look, role, key, tint(palette.text));
+            let text = Text::one(look, role, key, faded(palette.text));
             let total = measure(&name);
             let (total, text) = if total > width {
                 (measure(key), text)
             } else {
                 let text = text.space(role, " ");
-                (total, text.add(role, label, tint(palette.dim)))
+                (total, text.add(role, label, faded(palette.dim)))
             };
             let x = place.center().x - total / 2.0;
             widgets::paint_text(ui, x, place.center().y, text);
@@ -2061,7 +2035,6 @@ fn editing_footer(
         // Content-wide buttons sharing what is left equally: a 13 pt icon,
         // 6, the word.
         let labels = [
-            (Icon::Pencil, gettext(locale, "Edit")),
             (Icon::Copy, gettext(locale, "Duplicate")),
             (Icon::Trash2, gettext(locale, "Delete")),
         ];
@@ -2069,45 +2042,52 @@ fn editing_footer(
             .iter()
             .map(|(_, text)| 13.0 + 6.0 + measure(text))
             .collect();
-        let extra = (inner.width() - 2.0 * gap - widths.iter().sum::<f32>()) / 3.0;
+        let extra = (inner.width() - gap - widths.iter().sum::<f32>()) / 2.0;
         let mut x = inner.left();
-        for (index, ((icon, text), width)) in labels.iter().zip(widths).enumerate() {
+        for ((icon, text), width) in labels.iter().zip(widths) {
             let place = Rect::from_min_size(pos2(x, top), vec2(width + extra, 32.0));
             x += width + extra + gap;
-            let button = widgets::ButtonSpec::new(text)
+            widgets::ButtonSpec::new(text)
                 .icon(*icon)
                 .icon_size(13.0)
-                .padding(0.0);
-            // Edit waits only for a row that can be edited.
-            let why = if index == 0 {
-                locked
-            } else {
-                Some(later.as_ref())
-            };
-            match why {
-                Some(reason) => {
-                    button.disabled(reason).show_at(ui, place, look, palette);
-                }
-                None => edit = button.show_at(ui, place, look, palette).clicked(),
-            }
+                .padding(0.0)
+                .disabled(why)
+                .show_at(ui, place, look, palette);
         }
         32.0
     };
     let note_role = caption(look);
     let y = top + height + 8.0 + line_of(ui, note_role, look) / 2.0;
+    let measure = |text: &str| note_role.width(ui.ctx(), look.faces, text);
     // The note: why the row cannot be edited, where it cannot. Where it
-    // can, the key that edits it; the terminal's cells name their keys.
+    // can, how a value is edited; the terminal's head names its keys.
     let Some(reason) = locked else {
         if !look.terminal {
             let key = format!("{}I", look.command_key());
-            let hint = Text::one(look, note_role, &key, palette.secondary)
-                .space(note_role, " ")
-                .add(note_role, &gettext(locale, "edit"), palette.dim);
+            let click = gettext(locale, "Click a value or press");
+            let edit = gettext(locale, "to edit");
+            let said = format!("{click} {key} {edit}");
+            // Cut at the panel's side, as a field's label is.
+            let hint = if measure(&said) <= inner.width() {
+                Text::one(look, note_role, &click, palette.dim)
+                    .space(note_role, " ")
+                    .add(note_role, &key, palette.secondary)
+                    .space(note_role, " ")
+                    .add(note_role, &edit, palette.dim)
+            } else {
+                let shown = crate::ui::grid::ellipsize(&said, inner.width(), false, measure);
+                Text::one(look, note_role, &shown, palette.dim)
+            };
             widgets::paint_text(ui, inner.left(), y, hint);
+            // The whole of it for a screen reader, cut or not.
+            let place = Rect::from_min_size(
+                pos2(inner.left(), y - 8.0),
+                vec2(inner.width().max(1.0), 16.0),
+            );
+            widgets::announce(ui, place, &said);
         }
-        return edit;
+        return;
     };
-    let measure = |text: &str| note_role.width(ui.ctx(), look.faces, text);
     if look.terminal {
         // Cut at the panel's side, as a field's label is.
         let shown = crate::ui::grid::ellipsize(reason, inner.width(), false, measure);
@@ -2136,7 +2116,6 @@ fn editing_footer(
         vec2(inner.width().max(1.0), 16.0),
     );
     widgets::announce(ui, place, reason);
-    edit
 }
 
 /// A dashed 1 pt outline round `rect`.

@@ -259,10 +259,10 @@ pub enum Action {
         from: usize,
         by: isize,
     },
-    /// Edit the selected row in the row panel: show the panel, and open
-    /// the editor there on the selected cell's field, or on the row's
-    /// first field that can be edited where that one cannot.
-    EditRow {
+    /// Put the keyboard on the selected row's fields in the row panel: show
+    /// the panel, and focus the row's first field that can be edited. No
+    /// editor opens. On a row no field of which can be, the panel says why.
+    FocusFields {
         tab: ConnTabId,
         id: TabId,
     },

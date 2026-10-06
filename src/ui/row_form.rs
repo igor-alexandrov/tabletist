@@ -21,7 +21,8 @@ pub enum Part {
     /// Nothing: the field is read, as in a panel that edits nothing. A SQL
     /// editor's result, and a row no cell of which can be edited.
     Read,
-    /// Its value can be edited: it has a pencil, and takes a double-click.
+    /// Its value can be edited: a click on it opens the editor, or on its
+    /// pencil where the value has clicks of its own.
     Editable,
     /// It cannot, for a reason of its own.
     Locked(Lock),

@@ -824,7 +824,7 @@ impl App {
                     object.edits.why = None;
                 }
             }
-            Action::EditRow { tab, id } => self.edit_row(tab, id),
+            Action::FocusFields { tab, id } => self.focus_fields(tab, id),
             Action::FieldFocused { tab, id, col } => {
                 if let Some(object) = self.object_tab_mut(tab, id) {
                     // Only the request that was met is forgotten: another
@@ -14779,41 +14779,34 @@ mod tests {
         }
 
         #[test]
-        fn editing_the_row_takes_the_selected_cells_field_or_the_first_that_can_be_edited() {
+        fn focusing_the_rows_fields_asks_for_the_first_that_can_be_edited() {
             let mut harness = Harness::new();
             let (tab, id) = harness.editable();
             let panel = |harness: &Harness| harness.app.workspace(tab).unwrap().row_panel;
-            // With no row selected there is nothing to edit.
-            harness.app.apply(Action::EditRow { tab, id });
-            assert!(editor(&harness, tab, id).is_none());
-            // The selected cell's field, in the panel, which is shown.
+            let field = |harness: &Harness| object(harness, tab, id).focus_field;
+            // With no row selected there is no field to focus.
+            harness.app.apply(Action::FocusFields { tab, id });
+            assert_eq!(field(&harness), None);
+            // The row's first field that can be edited, whatever cell of
+            // it is selected (the key's is locked), in the panel, which
+            // is shown. No editor opens.
             harness.app.apply(Action::ToggleRowPanel(tab));
             assert!(!panel(&harness));
-            harness.app.apply(Action::SelectCell {
-                tab,
-                id,
-                cell: at(1, 1),
-            });
-            harness.app.apply(Action::EditRow { tab, id });
-            assert!(panel(&harness));
+            for cell in [at(1, 2), at(2, 0)] {
+                harness.app.apply(Action::SelectCell { tab, id, cell });
+                harness.app.apply(Action::FocusFields { tab, id });
+                assert!(panel(&harness));
+                assert!(editor(&harness, tab, id).is_none());
+                assert_eq!(field(&harness), Some(1));
+                assert_eq!(object(&harness, tab, id).edits.why, None);
+            }
+            // The keys are the table's from then on, not the tree's.
+            harness.app.workspace_mut(tab).unwrap().pane = crate::model::Pane::Tree;
+            harness.app.apply(Action::FocusFields { tab, id });
             assert_eq!(
-                editor(&harness, tab, id),
-                Some((at(1, 1), EditorPlace::Panel, false))
+                harness.app.workspace(tab).unwrap().pane,
+                crate::model::Pane::Grid
             );
-            harness.app.apply(Action::CancelEdit { tab, id });
-            // On the key's cell, which is locked: the row's first field
-            // that can be edited.
-            harness.app.apply(Action::SelectCell {
-                tab,
-                id,
-                cell: at(2, 0),
-            });
-            harness.app.apply(Action::EditRow { tab, id });
-            assert_eq!(
-                editor(&harness, tab, id),
-                Some((at(2, 1), EditorPlace::Panel, false))
-            );
-            assert_eq!(object(&harness, tab, id).edits.why, None);
             // An editor open in the grid gives way, its text kept.
             harness.app.apply(Action::EditCell {
                 tab,
@@ -14822,22 +14815,15 @@ mod tests {
                 start: EditStart::Value,
             });
             type_text(&mut harness, tab, id, "dan@example.com");
-            harness.app.apply(Action::EditRow { tab, id });
-            assert_eq!(
-                editor(&harness, tab, id),
-                Some((at(3, 1), EditorPlace::Panel, false))
-            );
-            let text = &object(&harness, tab, id)
-                .edits
-                .editor
-                .as_ref()
-                .unwrap()
-                .text;
-            assert_eq!(text, "dan@example.com");
+            harness.app.apply(Action::FocusFields { tab, id });
+            assert!(editor(&harness, tab, id).is_none());
+            let kept = object(&harness, tab, id).edits.cells.contains_key(&(3, 1));
+            assert!(kept);
+            assert_eq!(field(&harness), Some(1));
         }
 
         #[test]
-        fn editing_a_row_that_cannot_be_edited_shows_the_panel_and_says_why() {
+        fn focusing_the_fields_of_a_row_that_cannot_be_edited_shows_the_panel_and_says_why() {
             let mut harness = Harness::new();
             let (tab, id) = harness.editable();
             let why = |harness: &Harness| {
@@ -14853,7 +14839,7 @@ mod tests {
             // No cell of the row can be edited: the reason is the row's,
             // kept for the selected cell.
             harness.app.workspace_mut(tab).unwrap().access = tabletist_db::Access::ReadOnly;
-            harness.app.apply(Action::EditRow { tab, id });
+            harness.app.apply(Action::FocusFields { tab, id });
             assert!(harness.app.workspace(tab).unwrap().row_panel);
             assert!(editor(&harness, tab, id).is_none());
             assert_eq!(
@@ -14875,7 +14861,7 @@ mod tests {
                 .unwrap()
                 .structure
                 .value = Some(structure);
-            harness.app.apply(Action::EditRow { tab, id });
+            harness.app.apply(Action::FocusFields { tab, id });
             assert!(editor(&harness, tab, id).is_none());
             assert_eq!(
                 why(&harness),
@@ -14895,19 +14881,20 @@ mod tests {
                 .unwrap()
                 .edits
                 .why = None;
-            harness.app.apply(Action::EditRow { tab, id });
+            harness.app.apply(Action::FocusFields { tab, id });
             assert_eq!(why(&harness), None);
         }
 
         #[test]
-        fn editing_the_row_is_dropped_under_a_prompt_about_the_changes() {
+        fn focusing_the_rows_fields_is_dropped_under_a_prompt_about_the_changes() {
             let mut harness = Harness::new();
             let (tab, id) = harness.editable();
             type_into(&mut harness, tab, id, at(1, 1), "bob@example.com");
             harness.app.apply(Action::CloseTab { tab, id });
             assert!(leave_prompt(&harness).is_some());
-            harness.app.apply(Action::EditRow { tab, id });
+            harness.app.apply(Action::FocusFields { tab, id });
             assert!(editor(&harness, tab, id).is_none());
+            assert_eq!(object(&harness, tab, id).focus_field, None);
         }
     }
 }
