@@ -19872,10 +19872,11 @@ mod tests {
             .1
     }
 
-    /// Clicks the row panel's value that reads `text`: what edits a field.
+    /// Clicks the row panel's value that reads `text`, at the end of its
+    /// text: what edits a field, with the cursor where it was clicked.
     fn click_value(harness: &mut Harness, text: &str) {
-        let at = panel_text(harness, text).center();
-        click_at(harness, at);
+        let written = panel_text(harness, text);
+        click_at(harness, written.right_center() - egui::vec2(0.5, 0.0));
     }
 
     /// Whether the row panel makes one control of the field of `column`:
@@ -19918,9 +19919,8 @@ mod tests {
             // The field stands where the value stood, in the panel: under
             // the field's label, and not on the grid's cell.
             let tree = harness.settle();
-            let field =
-                crate::testing::bounds(&tree, "Edit email", egui::accesskit::Role::TextInput)
-                    .expect("the field");
+            let role = egui::accesskit::Role::MultilineTextInput;
+            let field = crate::testing::bounds(&tree, "Edit email", role).expect("the field");
             assert!(field.contains(value.center()), "{}", look.name);
             let cell = harness
                 .text_rects
@@ -20462,8 +20462,8 @@ mod tests {
             );
             // Under the field, in the panel.
             let tree = harness.settle();
-            let field = crate::testing::bounds(&tree, "Edit qty", egui::accesskit::Role::TextInput)
-                .expect("the field");
+            let role = egui::accesskit::Role::MultilineTextInput;
+            let field = crate::testing::bounds(&tree, "Edit qty", role).expect("the field");
             // The field's border is red, whether or not a key was pressed.
             let red = egui::Stroke::new(1.0, palette.danger);
             assert!(
@@ -20839,6 +20839,113 @@ mod tests {
                 "{}",
                 look.name
             );
+        }
+    }
+
+    #[test]
+    fn a_click_on_a_values_text_opens_its_editor_with_the_caret_there() {
+        for look in Look::ALL {
+            // At the start of the text: what is typed goes before it.
+            let (mut harness, tab, id) = form_row(look, 1);
+            let written = panel_text(&harness, "user2@example.com");
+            click_at(&mut harness, written.left_center() + egui::vec2(0.5, 0.0));
+            assert_eq!(
+                form_editor(&harness, tab, id),
+                Some(((1, 1), true)),
+                "{}",
+                look.name
+            );
+            type_text(&mut harness, "z");
+            assert_eq!(
+                editor_text(&harness, tab, id).as_deref(),
+                Some("zuser2@example.com"),
+                "{}",
+                look.name
+            );
+            // In its middle: neither at its start nor at its end.
+            let (mut harness, tab, id) = form_row(look, 1);
+            let written = panel_text(&harness, "user2@example.com");
+            click_at(&mut harness, written.center());
+            type_text(&mut harness, "z");
+            let text = editor_text(&harness, tab, id).expect("the editor's text");
+            let at = text.find('z').expect("the typed letter");
+            assert!(at > 2 && at < text.len() - 3, "{}: {text}", look.name);
+            assert_eq!(text.replace('z', ""), "user2@example.com", "{}", look.name);
+            // Opened by the keyboard, it goes on from the text's end.
+            let (mut harness, tab, id) = form_row(look, 1);
+            harness.app.apply(Action::EditField {
+                tab,
+                id,
+                cell: CellPos { row: 1, col: 1 },
+                start: EditStart::Value,
+            });
+            harness.settle();
+            type_text(&mut harness, "z");
+            assert_eq!(
+                editor_text(&harness, tab, id).as_deref(),
+                Some("user2@example.comz"),
+                "{}",
+                look.name
+            );
+        }
+    }
+
+    #[test]
+    fn a_value_that_wraps_is_edited_in_a_field_that_wraps() {
+        for look in Look::ALL {
+            let (mut harness, tab, id) = form_row(look, 1);
+            // Longer than the panel is wide, and no value for the large
+            // editor: one line of text, under its limit.
+            let long = "the quick brown fox jumps over the lazy dog ".repeat(4);
+            let long = long.trim_end();
+            let object = harness.app.workspace_mut(tab).unwrap();
+            let object = object.object_tab_mut(id).unwrap();
+            object.rows.value.as_mut().unwrap().rows[1][1] = tabletist_db::Value::Text(long.into());
+            object.fields = None;
+            harness.settle();
+            harness.app.apply(Action::EditField {
+                tab,
+                id,
+                cell: CellPos { row: 1, col: 1 },
+                start: EditStart::Value,
+            });
+            let tree = harness.settle();
+            assert!(!is_large(&harness, tab, id), "{}", look.name);
+            // The field is as many lines tall as its text wraps to: none
+            // of it is out of sight.
+            let role = egui::accesskit::Role::MultilineTextInput;
+            let field = crate::testing::bounds(&tree, "Edit email", role).expect("the field");
+            let (one_line, _) = crate::ui::row_panel::field_box(&look);
+            assert!(field.height() > 2.0 * one_line, "{}: {field:?}", look.name);
+            // It is one line of text all the same: Enter commits it.
+            type_text(&mut harness, "!");
+            harness.press(Key::Enter, Modifiers::NONE);
+            assert!(edits(&harness, tab, id).editor.is_none(), "{}", look.name);
+            assert_eq!(
+                pending_text(&harness, tab, id, (1, 1)),
+                Some(format!("{long}!")),
+                "{}",
+                look.name
+            );
+            // A line break pasted into it makes it a text of several
+            // lines, edited as one: Enter is then the text's own.
+            harness.app.apply(Action::EditField {
+                tab,
+                id,
+                cell: CellPos { row: 1, col: 1 },
+                start: EditStart::Value,
+            });
+            harness.settle();
+            harness.frame(vec![egui::Event::Paste("\nmore".into())]);
+            harness.settle();
+            assert!(is_large(&harness, tab, id), "{}", look.name);
+            assert_eq!(
+                form_editor(&harness, tab, id),
+                Some(((1, 1), true)),
+                "{}",
+                look.name
+            );
+            assert!(harness.ctx.text_edit_focused(), "{}", look.name);
         }
     }
 

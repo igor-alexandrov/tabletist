@@ -850,6 +850,12 @@ impl App {
                 if let Some(editor) = self.editor_mut(tab, id) {
                     editor.problem = problem;
                     editor.touched = true;
+                    // The row panel's field wraps, and Enter commits it: a
+                    // line break can only be pasted into it. Its text is
+                    // one of several lines from then on, edited as one.
+                    if editor.place == EditorPlace::Panel && editor.text.contains('\n') {
+                        editor.large = true;
+                    }
                 }
             }
             Action::CommitEdit { tab, id, then } => {

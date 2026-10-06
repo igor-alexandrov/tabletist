@@ -230,6 +230,11 @@ After the user's first look at it ("formatting is missing", and the caret of a t
 - **A tall value opens with its cursor at its start** (`Editor::top`), in both places: its end may be far below what the editor shows, and the editor scrolled there. A line break typed into a one-line field goes on after it, as before. The one-line field still opens with its cursor at the end.
 - Tests of the large editor that typed at the end of a document type there by `Ctrl+End` first, and the ones that made a change with a space add a member instead.
 
+After the user's second look ("Caret goes to the end of the text after click"): the value they clicked wrapped over several lines in the panel but was no value for the large editor (one line, under 256 characters), so it opened as a one-line field scrolled to its end.
+
+- **The panel's field wraps** (`widgets::wrapping_field`): its text wraps where the value wrapped and the field is a line taller for each line, so nothing of it is out of sight. It is one line of text all the same: Enter commits it. A line break pasted into it makes the editor the large one (`Action::EditorTyped`), where Enter is the text's own. The field on a grid's cell is one line, as it was.
+- **A click on a value's text opens its editor with the cursor under the pointer** (`cell_editor::open_at`), in the one-line field and in the tall one. Opened by a key, the one-line field's cursor is at its text's end and the tall field's at its start, as before. The tests' `click_value` clicks at the end of a value's text.
+
 ## By hand, for the user
 
 - A click in the tall field puts the caret where it was clicked; the wheel scrolls the text when it is longer than twelve lines, and the panel when the pointer is elsewhere.

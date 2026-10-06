@@ -80,6 +80,45 @@ fn take_keyboard(ctx: &egui::Context, id: Id, text: &str) {
     ctx.request_repaint();
 }
 
+/// Where it is kept that a pointer asked for the editor of the field `id`
+/// at a point of its value's text.
+fn asked_at_id(id: Id) -> Id {
+    id.with("asked-at")
+}
+
+/// Says that the editor of the field `id` is about to be asked for by a
+/// click at `pos`, on its value's text: it opens with its cursor under
+/// the pointer, where the text is read, and not at its end.
+pub fn open_at(ctx: &egui::Context, id: Id, pos: egui::Pos2) {
+    let frame = ctx.cumulative_frame_nr();
+    ctx.data_mut(|data| data.insert_temp(asked_at_id(id), (pos, frame)));
+}
+
+/// Takes the point the editor of the field `id` was asked for at, if a
+/// click asked for it in the last frames: one that was refused (a locked
+/// field) is no point of a later editor's.
+fn asked_at(ctx: &egui::Context, id: Id) -> Option<egui::Pos2> {
+    let asked: Option<(egui::Pos2, u64)> = ctx.data_mut(|data| data.remove_temp(asked_at_id(id)));
+    let (pos, frame) = asked?;
+    (ctx.cumulative_frame_nr().saturating_sub(frame) <= 3).then_some(pos)
+}
+
+/// Puts the cursor of the field `id`, whose text `output` drew, at the
+/// character under `pos`.
+fn caret_at(
+    ctx: &egui::Context,
+    id: Id,
+    output: &egui::text_edit::TextEditOutput,
+    pos: egui::Pos2,
+) {
+    let cursor = output.galley.cursor_from_pos(pos - output.galley_pos);
+    let mut state = egui::text_edit::TextEditState::load(ctx, id).unwrap_or_default();
+    state.cursor.set_char_range(Some(CCursorRange::one(cursor)));
+    state.store(ctx, id);
+    // The cursor was drawn where the field opened it.
+    ctx.request_repaint();
+}
+
 /// The keys that end an edit, read before the field is added: it would
 /// take Enter as giving the keyboard up, and Alt+Enter with it. Tab and
 /// Esc are egui's to move and drop the keyboard with, unless the field
@@ -341,15 +380,18 @@ fn block_cursor(
         );
 }
 
-/// The editor in the row panel: a one-line field in the place of its
-/// field's value, `height` tall and `outset` wider at each side than the
-/// room it is given (the box the value shows under the pointer, so the
-/// text stays where it was read), its text in `role`, the role the value
-/// is read in. Its keys are the keys of the field on a cell,
-/// but a commit moves no selection: Enter and Tab take the text and ask
-/// for the row's next field, Shift+Tab for the one before. Under the field
-/// it says what the text fails, and how much of its column's length the
-/// text takes.
+/// The editor in the row panel: a field in the place of its field's
+/// value, `height` tall for one line of text and `outset` wider at each
+/// side than the room it is given (the box the value shows under the
+/// pointer, so the text stays where it was read), its text in `role`, the
+/// role the value is read in. Its text wraps where the value wrapped, and
+/// the field grows with it: it is one line of text all the same, which
+/// Enter commits. Its keys are the keys of the field on a cell, but a
+/// commit moves no selection: Enter and Tab take the text and ask for the
+/// row's next field, Shift+Tab for the one before. Where a click on the
+/// value's text asked for it, its cursor opens under the pointer. Under
+/// the field it says what the text fails, and how much of its column's
+/// length the text takes.
 pub fn in_panel(
     ui: &mut Ui,
     editor: &mut Editor,
@@ -375,11 +417,19 @@ pub fn in_panel(
         Advance::Left | Advance::PrevField => Advance::PrevField,
         Advance::Down | Advance::Right | Advance::NextField => Advance::NextField,
     });
+    // A click on the value's text asked for it: the cursor goes under the
+    // pointer, once the text is laid out.
+    let at = opened.then(|| asked_at(ui.ctx(), id)).flatten();
     let width = ui.available_width();
     let mut layouter = crate::typography::layouter(look, role, palette.text);
-    // The field's line is the room's; the field itself stands out of it
-    // at both sides, and its text is as far in as it stands out.
-    let (line, _) = ui.allocate_exact_size(vec2(width, height), egui::Sense::hover());
+    // The text wraps where its value wrapped, at the room's width, and
+    // the field is a line taller for each line it wraps to: nothing of
+    // it is out of sight, and it stands where it was read.
+    let wraps = layouter(ui, &editor.text.as_str(), width).rows.len().max(1);
+    let grown = height + (wraps - 1) as f32 * role.row_height(ui.ctx(), look.faces);
+    // The field's lines are the room's; the field itself stands out of
+    // them at both sides, and its text is as far in as it stands out.
+    let (line, _) = ui.allocate_exact_size(vec2(width, grown), egui::Sense::hover());
     let place = line.expand2(vec2(outset, 0.0));
     let mut within = ui.new_child(egui::UiBuilder::new().max_rect(place));
     // On the panel's own tone, as the design's field is: the panel is the
@@ -390,7 +440,8 @@ pub fn in_panel(
     } else {
         palette.window
     };
-    let output = widgets::field(&within, &mut editor.text, look, role, height, outset as i8)
+    let pad = outset as i8;
+    let output = widgets::wrapping_field(&within, &mut editor.text, look, role, height, pad)
         .id(id)
         .background_color(fill)
         .desired_width(place.width())
@@ -401,6 +452,9 @@ pub fn in_panel(
         .layouter(&mut layouter)
         .show(&mut within);
     bound(&mut editor.text);
+    if let Some(pos) = at {
+        caret_at(ui.ctx(), id, &output, pos);
+    }
     if look.terminal && output.response.has_focus() {
         block_cursor(ui, &output, role, look, palette);
     }
@@ -546,7 +600,7 @@ pub fn large(
             // The panel's own border gives way to the editor's line.
             let _ = sql_complete::panel(ui, rect, corner, look, palette);
             let skin = (look, palette, locale);
-            let (response, has) = large_body(ui, rect, area, editor, target, had, skin);
+            let (response, has) = large_body(ui, rect, area, editor, target, (had, None), skin);
             outcome.changed = response.changed();
             if !sizing {
                 keyboard_after(ui.ctx(), target, has, had, &mut outcome);
@@ -575,6 +629,9 @@ pub fn tall(
         let before = if editor.top { "" } else { &editor.text };
         take_keyboard(ui.ctx(), id, before);
     }
+    // A click on the value's text asked for it: the cursor goes under the
+    // pointer, once the text is laid out.
+    let at = opened.then(|| asked_at(ui.ctx(), id)).flatten();
     let had = large_keys(ui, id, look.terminal, &mut outcome);
     // As tall as the text is at the width it gets, within its bounds.
     let role = grid::data_role(look);
@@ -601,7 +658,7 @@ pub fn tall(
     let mut within = ui.new_child(egui::UiBuilder::new().max_rect(rect));
     let salt = Id::new("row-panel-tall");
     let skin = (look, palette, locale);
-    let (response, has) = large_body(&mut within, rect, salt, editor, target, had, skin);
+    let (response, has) = large_body(&mut within, rect, salt, editor, target, (had, at), skin);
     // The field can open far down a long row: it is brought into view
     // once, when it takes the keyboard.
     if opened {
@@ -651,15 +708,17 @@ pub fn press_is_the_editors(ctx: &egui::Context, id: Id) {
 /// The large editor's body, in `rect`: a text of several lines, the
 /// editor's line round it, and the band under it. The popover at a cell
 /// and the row panel's tall field both draw it, under ids told apart by
-/// `salt`. `had` says its text had the keyboard when it was last drawn;
-/// returns the text's response and whether it has the keyboard now.
+/// `salt`. `had` says its text had the keyboard when it was last drawn,
+/// and `at` is the point its cursor goes to, where a click on the value's
+/// text asked for it; returns the text's response and whether it has the
+/// keyboard now.
 fn large_body(
     ui: &mut Ui,
     rect: Rect,
     salt: Id,
     editor: &mut Editor,
     target: &Target,
-    had: bool,
+    (had, at): (bool, Option<egui::Pos2>),
     (look, palette, locale): (&Look, &Palette, Locale),
 ) -> (egui::Response, bool) {
     let id = target.id;
@@ -732,6 +791,9 @@ fn large_body(
                     .char_limit(MAX_EDIT_BYTES + 1)
                     .layouter(&mut layouter)
                     .show(ui);
+                if let Some(pos) = at {
+                    caret_at(ui.ctx(), id, &output, pos);
+                }
                 if target.json {
                     let column = Rect::from_min_max(
                         pos2(text_rect.left() - LARGE_PAD + 1.0, ui.clip_rect().top()),

@@ -1622,6 +1622,16 @@ fn field(
         };
         ui.memory_mut(|memory| memory.set_focus_lock_filter(stop.id, keys));
     }
+    // A click of the pointer on the value's text: its editor opens with
+    // the cursor under the pointer.
+    if let Some(control) = control.as_ref().filter(|control| control.clicked())
+        && editable
+        && ui.input(|input| input.pointer.primary_released())
+        && let Some(pos) = control.interact_pointer_pos()
+    {
+        let editor = crate::ui::cell_editor::field_id(tab, tab_id);
+        crate::ui::cell_editor::open_at(ui.ctx(), editor, pos);
+    }
     if edit && part != Part::InGrid {
         // A click gives a control no keyboard of itself. An editor that
         // opens takes it; a locked field, which opens none, is given it,
