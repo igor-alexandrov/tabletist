@@ -21,7 +21,8 @@ pub enum Part {
     /// Nothing: the field is read, as in a panel that edits nothing. A SQL
     /// editor's result, and a row no cell of which can be edited.
     Read,
-    /// Its value can be edited: it has a pencil, and takes a double-click.
+    /// Its value can be edited: a click on it opens the editor, or on its
+    /// pencil where the value has clicks of its own.
     Editable,
     /// It cannot, for a reason of its own.
     Locked(Lock),
@@ -170,6 +171,14 @@ impl<'a> Form<'a> {
         self.parts.get(col).copied().unwrap_or(Part::Read)
     }
 
+    /// Whether the panel's open editor is one whose text can be laid out:
+    /// the large editor of a JSON column. A text column that holds a
+    /// document is edited as the text it is.
+    pub fn formats(&self) -> bool {
+        let large = self.editor.as_ref().is_some_and(|editor| editor.large);
+        large && self.target.as_ref().is_some_and(|target| target.json)
+    }
+
     /// Whether an edit of the column `col` was asked for in the panel and
     /// refused: its field says why.
     pub fn refused(&self, col: usize) -> bool {
@@ -190,7 +199,16 @@ impl<'a> Form<'a> {
             return false;
         };
         let cell = editor.cell;
-        let outcome = cell_editor::in_panel(ui, editor, target, role, skin);
+        // In the box its value showed under the pointer: the text stays
+        // where it was read.
+        let place = super::row_panel::field_box(skin.0);
+        let outcome = if editor.large {
+            // A value of several lines, a long one or a document: the
+            // large editor, in the field's place.
+            cell_editor::tall(ui, editor, target, place.1, skin)
+        } else {
+            cell_editor::in_panel(ui, editor, target, (role, place), skin)
+        };
         // The text is noted as typed before anything ends the edit, as for
         // a cell's field.
         if outcome.changed {
@@ -210,6 +228,13 @@ impl<'a> Form<'a> {
                 cell,
                 place,
             });
+            // The terminal look's Esc left insert mode: the keyboard is
+            // on the field again, as after a commit.
+            if outcome.kept {
+                let from = cell.col;
+                let by = 0;
+                self.ending.push(Action::MoveField { tab, id, from, by });
+            }
         }
         true
     }
@@ -223,7 +248,10 @@ pub fn in_grid(ui: &mut egui::Ui, look: &Look, palette: &Palette, locale: Locale
     let (rect, response) = ui.allocate_exact_size(size, Sense::hover());
     let text = look.label(&gettext(locale, "Editing in the grid…"));
     response.widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, &text));
-    super::row_panel::dashed(ui, rect, palette.accent);
+    // The design's dashes are the accent drawn towards the panel: the
+    // words are what is read, not the box.
+    let dashes = palette.window.lerp_to_gamma(palette.accent, 0.45);
+    super::row_panel::dashed(ui, rect, dashes);
     widgets::paint_text(
         ui,
         rect.left() + 10.0,

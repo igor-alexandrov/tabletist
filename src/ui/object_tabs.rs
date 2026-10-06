@@ -567,7 +567,11 @@ mod tests {
             harness.settle();
             assert!(!marked(&harness, after), "{}", look.name);
             // Reverted, the tab is as it was.
-            harness.app.apply(Action::RevertCell { tab, id });
+            harness.app.apply(Action::RevertCell {
+                tab,
+                id,
+                cell: None,
+            });
             harness.frame(vec![egui::Event::PointerMoved(pos2(600.0, 500.0))]);
             let tree = harness.settle();
             assert!(crate::testing::node(&tree, "users tab", Role::Button).is_some());

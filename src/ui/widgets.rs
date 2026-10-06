@@ -49,6 +49,35 @@ pub fn field<'a>(
     padded(ui, text, height, role.font_id(look.faces), [pad, pad])
 }
 
+/// A field in `role` whose text wraps instead of scrolling sideways:
+/// `height` tall for one line and a line taller for each line its text
+/// wraps to, with `pad` points at each side of the text. For a value read
+/// over several lines where it stands, and edited there. Enter is its
+/// caller's to read: left to the field, it would break the line.
+pub fn wrapping_field<'a>(
+    ui: &Ui,
+    text: &'a mut String,
+    look: &Look,
+    role: TextRole,
+    height: f32,
+    pad: i8,
+) -> egui::TextEdit<'a> {
+    let font = role.font_id(look.faces);
+    let line = ui.fonts_mut(|fonts| fonts.row_height(&font)) + ui.spacing().extra_text_line_spacing;
+    let padding = (height - line).max(0.0);
+    let top = (padding / 2.0).floor() as i8;
+    let bottom = (padding - f32::from(top)).round() as i8;
+    egui::TextEdit::multiline(text)
+        .font(font)
+        .desired_rows(1)
+        .margin(egui::Margin {
+            left: pad,
+            right: pad,
+            top,
+            bottom,
+        })
+}
+
 /// A field `height` tall with `left` and `right` points of padding. egui
 /// ignores the height of `TextEdit::min_size`, so the height comes from
 /// padding the text above and below, measured for `font`.

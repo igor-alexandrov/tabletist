@@ -1480,7 +1480,8 @@ pub(super) fn editor_target(
 ) -> Option<cell_editor::Target> {
     let table = Table::of(workspace, object)?;
     let column = table.page.columns.get(cell.col)?;
-    let max_chars = match table.class(cell.col) {
+    let class = table.class(cell.col);
+    let max_chars = match class {
         Some(tabletist_db::ColumnClass::Text { max_chars }) => max_chars,
         _ => None,
     };
@@ -1491,6 +1492,7 @@ pub(super) fn editor_target(
         name: column.name.clone(),
         type_name: format::display_safe(&type_name).into_owned(),
         max_chars,
+        json: class == Some(tabletist_db::ColumnClass::Json),
         hold,
     })
 }
@@ -1636,8 +1638,8 @@ impl<'a> Changes<'a> {
 }
 
 /// What the database said of a statement that failed, with its code: a
-/// failed cell's words.
-fn failure_text(error: &tabletist_db::Error) -> String {
+/// failed cell's words, and its field's in the row panel.
+pub(crate) fn failure_text(error: &tabletist_db::Error) -> String {
     match error {
         tabletist_db::Error::Query {
             code: Some(code),

@@ -33,6 +33,11 @@ pub enum Ring {
     /// a write to production waits for: as [`Ring::Field`], in the danger
     /// colour.
     Failing { radius: u8 },
+    /// The terminal look's cursor on a field of a form: a bar in the accent
+    /// at the item's left edge. (The item stands on the selection's tone
+    /// while [`shown`] says it has the keyboard: a ground is painted
+    /// before its text, which this painter comes after.)
+    Bar,
     /// The widget shows it by itself (a caret in text that has no box, the
     /// terminal's reversed button).
     Own,
@@ -409,6 +414,12 @@ pub fn paint(ctx: &egui::Context, look: &Look, palette: &Palette) {
                 Stroke::new(BORDER, color),
                 StrokeKind::Inside,
             );
+        }
+        Ring::Bar => {
+            let bar = Rect::from_min_size(rect.min, egui::vec2(WIDTH, rect.height()));
+            painter
+                .with_clip_rect(clip)
+                .rect_filled(bar, CornerRadius::ZERO, palette.accent);
         }
         Ring::Own => {}
     }

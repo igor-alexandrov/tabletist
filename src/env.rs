@@ -171,6 +171,15 @@ pub fn warning_tint(platform: Platform, palette: &Palette) -> (Color32, Color32)
     bar_tint(Environment::Staging, platform, palette)
 }
 
+/// The line round something held back that stands on the warning's tint:
+/// the staging bar's own colour, drawn a little towards that tint. The
+/// design's amber round a pending field: a warning's text colour is too
+/// dark for a line, and a bar's rule too light.
+pub fn warning_edge(platform: Platform, palette: &Palette) -> Color32 {
+    let staging = env_colors(Environment::Staging, platform, palette);
+    staging.base().lerp_to_gamma(staging.bar_bg(), 0.2)
+}
+
 /// The tint of something that failed and the line over it: the production
 /// bar's. A state borrows them and colours no connection, so a failure and
 /// a production bar never disagree.

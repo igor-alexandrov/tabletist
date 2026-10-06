@@ -304,11 +304,7 @@ pub fn show(
 ) {
     let folding: Folding = ui.data(|data| data.get_temp(id)).unwrap_or_default();
     let role = TextRole::pick(look, TextRole::Json, TextRole::OJson);
-    let keys = if look.terminal {
-        palette.accent
-    } else {
-        palette.accent_hover
-    };
+    let keys = key_color(look, palette);
     let mut view = View {
         locale,
         palette,
@@ -431,6 +427,16 @@ struct View<'a> {
     rows: usize,
     /// Folded objects and arrays drawn, so Expand all has work to do.
     folded: usize,
+}
+
+/// The colour a member's name is written in: the tree's, and the editor's
+/// of a document.
+pub fn key_color(look: &theme::Look, palette: &Palette) -> egui::Color32 {
+    if look.terminal {
+        palette.accent
+    } else {
+        palette.accent_hover
+    }
 }
 
 impl View<'_> {

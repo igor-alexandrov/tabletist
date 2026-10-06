@@ -15,10 +15,10 @@ use crate::edit::EditorPlace;
 use crate::i18n::Locale;
 use crate::model::{Action, ConnTab, ConnTabContent, ConnTabId, PickerState};
 use crate::model::{
-    Advance, CellPos, Completion, ConnectionForm, Dialog, EditStart, Fetch, FilterBar, FilterRow,
-    Held, HostKeyPrompt, LeavePrompt, ObjectTab, ObjectView, Pane, PasswordPrompt, PickTarget,
-    QuickOpen, ResultPane, RunMode, SecretKind, SessionStatus, SqlTab, Tab, TabId, TestState,
-    TextPrint, Tree, TreeKey, TreeNode, Wanted, Workspace,
+    Advance, CellPos, Completion, ConnectionForm, Dialog, Fetch, FilterBar, FilterRow, Held,
+    HostKeyPrompt, LeavePrompt, ObjectTab, ObjectView, Pane, PasswordPrompt, PickTarget, QuickOpen,
+    ResultPane, RunMode, SecretKind, SessionStatus, SqlTab, Tab, TabId, TestState, TextPrint, Tree,
+    TreeKey, TreeNode, Wanted, Workspace,
 };
 use crate::paths::AppDirs;
 use crate::secrets::{SecretString, password_account, ssh_account};
@@ -808,17 +808,41 @@ impl App {
                 cell,
                 start,
             } => self.edit_cell(tab, id, cell, start, EditorPlace::Grid),
-            Action::EditField { tab, id, cell } => {
-                self.edit_cell(tab, id, cell, EditStart::Value, EditorPlace::Panel);
-            }
-            Action::EditRow { tab, id } => self.edit_row(tab, id),
-            Action::FieldFocused { tab, id, col } => {
-                // Only the request that was met: another edit may have
-                // ended since the frame that drew the field.
+            Action::EditField {
+                tab,
+                id,
+                cell,
+                start,
+            } => self.edit_cell(tab, id, cell, start, EditorPlace::Panel),
+            Action::MoveField { tab, id, from, by } => {
                 if let Some(object) = self.object_tab_mut(tab, id)
-                    && object.focus_field == Some(col)
+                    && let Some(columns) = object.rows.value.as_ref().map(|page| page.columns.len())
                 {
-                    object.focus_field = None;
+                    let last = columns.saturating_sub(1);
+                    object.focus_field(from.saturating_add_signed(by).min(last));
+                    // What a locked field said was said of the one left.
+                    object.edits.why = None;
+                }
+            }
+            Action::FocusFields { tab, id } => self.focus_fields(tab, id),
+            Action::FieldFocused { tab, id, col } => {
+                if let Some(object) = self.object_tab_mut(tab, id) {
+                    // Only the request that was met is forgotten: another
+                    // edit may have ended since the frame that drew the
+                    // field.
+                    if object.focus_field == Some(col) {
+                        object.focus_field = None;
+                    }
+                    // The field that has the keyboard is the grid's
+                    // selected cell. The row's texts are the row's: none
+                    // is formatted again. What a locked field said was
+                    // said of the field the keyboard left.
+                    if let Some(cell) = object.selection.as_mut()
+                        && cell.col != col
+                    {
+                        cell.col = col;
+                        object.edits.why = None;
+                    }
                 }
             }
             Action::EditorTyped { tab, id } => {
@@ -826,19 +850,26 @@ impl App {
                 if let Some(editor) = self.editor_mut(tab, id) {
                     editor.problem = problem;
                     editor.touched = true;
+                    // The row panel's field wraps, and Enter commits it: a
+                    // line break can only be pasted into it. Its text is
+                    // one of several lines from then on, edited as one.
+                    if editor.place == EditorPlace::Panel && editor.text.contains('\n') {
+                        editor.large = true;
+                    }
                 }
             }
             Action::CommitEdit { tab, id, then } => {
                 let field = self.panel_field(tab, id);
                 if self.close_editor(tab, id, false) {
-                    // In the panel nothing moves: the keyboard goes back
-                    // to the field that was edited.
+                    // In the panel the keyboard goes to the field the
+                    // commit walks to, or back to the one that was edited.
                     if let Some(col) = field {
-                        self.back_to_field(tab, id, col);
+                        let to = self.field_after(tab, id, col, then).unwrap_or(col);
+                        self.back_to_field(tab, id, to);
                         return;
                     }
                     let (rows, cols) = match then {
-                        Advance::Stay => (0, 0),
+                        Advance::Stay | Advance::NextField | Advance::PrevField => (0, 0),
                         Advance::Down => (1, 0),
                         Advance::Right => (0, 1),
                         Advance::Left => (0, -1),
@@ -881,20 +912,22 @@ impl App {
                 if let Some(editor) = self.editor_mut(tab, id) {
                     // At the end of the text, where the cursor of a field
                     // that just opened is. A break elsewhere is typed in
-                    // the large editor, which is the grid's: an edit begun
-                    // in the row panel goes on at its cell.
+                    // the large editor, which opens where the field was:
+                    // at the cell, or in the row panel.
                     editor.text.push('\n');
                     editor.large = true;
-                    editor.place = EditorPlace::Grid;
                     editor.focus = true;
+                    // After the break that was typed.
+                    editor.top = false;
                     editor.touched = true;
                 }
             }
+            Action::FormatEditor { tab, id } => self.format_editor(tab, id),
             Action::SetNull { tab, id } => self.set_null(tab, id),
-            Action::RevertCell { tab, id } => {
+            Action::RevertCell { tab, id, cell } => {
                 // Not under a save: its answer is put into this set.
                 if let Some(object) = self.object_tab_mut(tab, id)
-                    && let Some(cell) = object.selection
+                    && let Some(cell) = cell.or(object.selection)
                     && object.edits.editor.is_none()
                     && object.edits.saving.is_none()
                 {
@@ -3995,13 +4028,15 @@ fn row_fields(
         .iter()
         .enumerate()
         .map(|(col, loaded)| {
-            let new = match &cells.get(&(row, col))?.new {
+            let pending = cells.get(&(row, col))?;
+            let new = match &pending.new {
                 NewValue::Text(text) => Value::Text(text.as_str().into()),
                 NewValue::Null => Value::Null,
             };
             Some(crate::model::PendingField {
                 new,
                 was: cell_text(loaded).into_owned(),
+                state: pending.state.clone(),
             })
         })
         .collect();
@@ -10575,7 +10610,11 @@ mod tests {
                 id,
                 cell: at(0, 2),
             });
-            harness.app.apply(Action::RevertCell { tab, id });
+            harness.app.apply(Action::RevertCell {
+                tab,
+                id,
+                cell: None,
+            });
             assert!(object(&harness, tab, id).edits.cells.is_empty());
         }
 
@@ -10894,7 +10933,11 @@ mod tests {
             assert!(pending.new.is_null());
             assert_eq!(pending.was, r#"{"plan":"pro"}"#);
             // Taken back, the text is the page's again and nothing is kept.
-            harness.app.apply(Action::RevertCell { tab, id });
+            harness.app.apply(Action::RevertCell {
+                tab,
+                id,
+                cell: None,
+            });
             harness.app.apply_actions();
             let fields = object(&harness, tab, id).selected_fields();
             let fields = fields.expect("the selected row's text");
@@ -10989,7 +11032,11 @@ mod tests {
                 .request;
             // The pending cell is the active one, as a revert needs it.
             assert_eq!(object(&harness, tab, id).selection, Some(at(1, 1)));
-            harness.app.apply(Action::RevertCell { tab, id });
+            harness.app.apply(Action::RevertCell {
+                tab,
+                id,
+                cell: None,
+            });
             harness.app.apply(Action::DiscardEdits { tab, id });
             let edits = &object(&harness, tab, id).edits;
             assert_eq!(edits.cells.len(), 1);
@@ -11825,7 +11872,11 @@ mod tests {
             harness.app.apply(Action::SetNull { tab, id });
             let three = reviewed(&mut harness, tab, id).unwrap();
             assert_eq!(three[1], r#"   SET "meta" = NULL"#);
-            harness.app.apply(Action::RevertCell { tab, id });
+            harness.app.apply(Action::RevertCell {
+                tab,
+                id,
+                cell: None,
+            });
             assert_eq!(reviewed(&mut harness, tab, id).unwrap(), two);
             // A cell to fix blocks its row: the row has no statement.
             type_into(&mut harness, tab, id, at(3, 2), "{oops");
@@ -11942,7 +11993,11 @@ mod tests {
                 id,
                 cell: at(3, 1),
             });
-            harness.app.apply(Action::RevertCell { tab, id });
+            harness.app.apply(Action::RevertCell {
+                tab,
+                id,
+                cell: None,
+            });
             // Open until the frame ends, with nothing to show.
             assert_eq!(reviewed(&mut harness, tab, id), None);
             assert!(!object(&harness, tab, id).edits.reviewing);
@@ -12388,7 +12443,11 @@ mod tests {
             harness.app.apply(Action::WriteEdits { tab, id });
             let shown = confirming(&harness).expect("the confirmation").clone();
             // The pending cell is the active one, as a revert needs it.
-            harness.app.apply(Action::RevertCell { tab, id });
+            harness.app.apply(Action::RevertCell {
+                tab,
+                id,
+                cell: None,
+            });
             harness.app.apply(Action::DiscardEdits { tab, id });
             // Nor does a second save ask a second time.
             harness.app.apply(Action::WriteEdits { tab, id });
@@ -12645,6 +12704,7 @@ mod tests {
                         text: "dan@example.com".into(),
                         large: false,
                         focus: false,
+                        top: false,
                         touched: true,
                         problem: None,
                     });
@@ -13538,7 +13598,11 @@ mod tests {
                 id,
                 cell: at(1, 1),
             });
-            harness.app.apply(Action::RevertCell { tab, id });
+            harness.app.apply(Action::RevertCell {
+                tab,
+                id,
+                cell: None,
+            });
             harness.app.apply(Action::DiscardEdits { tab, id });
             harness.app.apply(Action::WriteEdits { tab, id });
             change(&mut harness, tab, id, at(0, 1), "ada@example.com");
@@ -14345,6 +14409,7 @@ mod tests {
                 tab,
                 id,
                 cell: at(2, 1),
+                start: EditStart::Value,
             });
             assert_eq!(
                 editor(&harness, tab, id),
@@ -14380,6 +14445,7 @@ mod tests {
                 tab,
                 id,
                 cell: at(2, 1),
+                start: EditStart::Value,
             });
             let text = &object(&harness, tab, id)
                 .edits
@@ -14398,10 +14464,15 @@ mod tests {
                 let (tab, id) = harness.editable();
                 let field = |harness: &Harness| object(harness, tab, id).focus_field;
                 let cell = at(1, 1);
-                // Dropped, and committed: on the terminal's look the keys
-                // are the grid's again, and nothing is asked of the panel.
-                let back = (!look.terminal).then_some(1);
-                harness.app.apply(Action::EditField { tab, id, cell });
+                // Dropped, and committed: the keyboard is the field's
+                // again, in every look.
+                let back = Some(1);
+                harness.app.apply(Action::EditField {
+                    tab,
+                    id,
+                    cell,
+                    start: EditStart::Value,
+                });
                 harness.app.apply(Action::CancelEdit { tab, id });
                 assert_eq!(field(&harness), back, "{}", look.name);
                 // It is owed until the panel says that field has it: what
@@ -14411,14 +14482,24 @@ mod tests {
                 assert_eq!(field(&harness), back, "{}", look.name);
                 harness.app.apply(focused(1));
                 assert_eq!(field(&harness), None, "{}", look.name);
-                harness.app.apply(Action::EditField { tab, id, cell });
+                harness.app.apply(Action::EditField {
+                    tab,
+                    id,
+                    cell,
+                    start: EditStart::Value,
+                });
                 harness.app.apply(Action::CancelEdit { tab, id });
                 assert_eq!(field(&harness), back, "{}", look.name);
                 // The field is the selected row's: once the selection
                 // moves, by a click or a key, no field is owed the keyboard.
                 harness.app.apply(Action::SelectCell { tab, id, cell });
                 assert_eq!(field(&harness), None, "{}", look.name);
-                harness.app.apply(Action::EditField { tab, id, cell });
+                harness.app.apply(Action::EditField {
+                    tab,
+                    id,
+                    cell,
+                    start: EditStart::Value,
+                });
                 harness.app.apply(Action::CommitEdit {
                     tab,
                     id,
@@ -14434,13 +14515,23 @@ mod tests {
                 assert_eq!(field(&harness), None, "{}", look.name);
                 // Nor once the panel closes: opened again, it starts as
                 // any panel does.
-                harness.app.apply(Action::EditField { tab, id, cell });
+                harness.app.apply(Action::EditField {
+                    tab,
+                    id,
+                    cell,
+                    start: EditStart::Value,
+                });
                 harness.app.apply(Action::CancelEdit { tab, id });
                 harness.app.apply(Action::ToggleRowPanel(tab));
                 assert_eq!(field(&harness), None, "{}", look.name);
                 harness.app.apply(Action::ToggleRowPanel(tab));
                 // Left, the keyboard is where the user put it.
-                harness.app.apply(Action::EditField { tab, id, cell });
+                harness.app.apply(Action::EditField {
+                    tab,
+                    id,
+                    cell,
+                    start: EditStart::Value,
+                });
                 let left = crate::testing::leave_edit(&harness.app, tab, id);
                 harness.app.apply(left);
                 assert!(editor(&harness, tab, id).is_none());
@@ -14449,32 +14540,269 @@ mod tests {
         }
 
         #[test]
-        fn a_tall_value_asked_for_in_the_row_panel_is_edited_at_its_cell() {
+        fn a_walk_passes_over_a_locked_field() {
+            // `id`, `email`, a generated `slug` and `note`: the walk goes
+            // from email to note and back, over the column in between.
+            let mut harness = Harness::new();
+            let tab = harness.connect_fake_as(false);
+            harness.app.apply(Action::OpenObject {
+                tab,
+                object: tabletist_db::ObjectRef::new("main", "users"),
+                kind: tabletist_db::ObjectKind::Table,
+                pin: true,
+            });
+            let mut structure = crate::testing::fixture_structure();
+            structure.columns[2].name = "slug".into();
+            structure.columns[2].type_name = "TEXT".into();
+            structure.columns[2].generated = true;
+            let mut note = structure.columns[1].clone();
+            note.name = "note".into();
+            structure.columns.push(note);
+            harness.answer_structure(structure);
+            let mut page = crate::testing::page(3, false);
+            page.columns[2] = tabletist_db::ColumnMeta {
+                name: "slug".into(),
+                type_name: "TEXT".into(),
+                kind: tabletist_db::ValueKind::Text,
+            };
+            page.columns.push(tabletist_db::ColumnMeta {
+                name: "note".into(),
+                type_name: "TEXT".into(),
+                kind: tabletist_db::ValueKind::Text,
+            });
+            for row in &mut page.rows {
+                row[2] = tabletist_db::Value::Text("user".into());
+                row.push(tabletist_db::Value::Text("none".into()));
+            }
+            harness.answer_rows(page);
+            let id = harness
+                .app
+                .workspace(tab)
+                .and_then(|workspace| workspace.active_tab)
+                .expect("the table's tab is open");
+            let field = |harness: &Harness| object(harness, tab, id).focus_field;
+            let walk = |harness: &mut Harness, col, then| {
+                let cell = at(1, col);
+                harness.app.apply(Action::EditField {
+                    tab,
+                    id,
+                    cell,
+                    start: EditStart::Value,
+                });
+                harness.app.apply(Action::CommitEdit { tab, id, then });
+                assert!(editor(harness, tab, id).is_none());
+            };
+            walk(&mut harness, 1, Advance::NextField);
+            assert_eq!(field(&harness), Some(3));
+            walk(&mut harness, 3, Advance::PrevField);
+            assert_eq!(field(&harness), Some(1));
+            // At the row's ends the keyboard stays on the field: before
+            // email stands only the key, and after note nothing.
+            walk(&mut harness, 1, Advance::PrevField);
+            assert_eq!(field(&harness), Some(1));
+            walk(&mut harness, 3, Advance::NextField);
+            assert_eq!(field(&harness), Some(3));
+            // A commit that stays, stays.
+            walk(&mut harness, 1, Advance::Stay);
+            assert_eq!(field(&harness), Some(1));
+        }
+
+        #[test]
+        fn an_editor_says_from_its_first_frame_what_its_opening_text_fails() {
             let mut harness = Harness::new();
             let (tab, id) = harness.editable();
-            // A document: the popover at the cell is its only editor yet.
+            let problem = |harness: &Harness| {
+                let editor = object(harness, tab, id).edits.editor.as_ref();
+                editor.expect("an editor").problem.clone()
+            };
+            let field = |cell, start| Action::EditField {
+                tab,
+                id,
+                cell,
+                start,
+            };
+            // A document left to fix, opened again: no document still.
+            type_into(&mut harness, tab, id, at(0, 2), "{");
+            harness.app.apply(field(at(0, 2), EditStart::Value));
+            assert!(problem(&harness).is_some());
+            harness.app.apply(Action::CancelEdit { tab, id });
+            // A value its column takes, and a NULL, which opens empty:
+            // nothing was typed, and nothing is said.
+            harness.app.apply(field(at(1, 1), EditStart::Value));
+            assert_eq!(problem(&harness), None);
+            harness.app.apply(Action::CancelEdit { tab, id });
+            harness.app.apply(field(at(1, 2), EditStart::Value));
+            assert_eq!(problem(&harness), None);
+            harness.app.apply(Action::CancelEdit { tab, id });
+            // A character typed on a document's cell that starts none.
+            harness
+                .app
+                .apply(field(at(1, 2), EditStart::Typed("x".into())));
+            assert!(problem(&harness).is_some());
+        }
+
+        #[test]
+        fn an_empty_text_left_to_fix_is_typed_text_when_it_is_opened_again() {
+            let mut harness = Harness::new();
+            let (tab, id) = harness.editable();
+            let open = |cell, start| Action::EditField {
+                tab,
+                id,
+                cell,
+                start,
+            };
+            let state = |harness: &Harness| {
+                let editor = object(harness, tab, id).edits.editor.as_ref();
+                editor.map(|editor| (editor.text.clone(), editor.problem.is_some()))
+            };
+            let then = Advance::Stay;
+            // A document's cell edited from nothing and left: the empty
+            // text is kept, to fix (it is no document).
+            harness
+                .app
+                .apply(open(at(1, 2), EditStart::Replace(String::new())));
+            let left = crate::testing::leave_edit(&harness.app, tab, id);
+            harness.app.apply(left);
+            let kept = object(&harness, tab, id).edits.cells.get(&(1, 2));
+            assert!(matches!(
+                kept.map(|cell| &cell.state),
+                Some(State::ToFix(_))
+            ));
+            // Opened again it is that text, with what it fails, and a
+            // commit does not close on it.
+            harness.app.apply(open(at(1, 2), EditStart::Value));
+            assert_eq!(state(&harness), Some((String::new(), true)));
+            harness.app.apply(Action::CommitEdit { tab, id, then });
+            assert_eq!(state(&harness), Some((String::new(), true)));
+            harness.app.apply(Action::CancelEdit { tab, id });
+            assert_eq!(object(&harness, tab, id).edits.cells.len(), 1);
+            // A NULL that nobody touched opens empty too, fails nothing,
+            // and a commit closes it with nothing changed.
+            harness.app.apply(open(at(2, 2), EditStart::Value));
+            assert_eq!(state(&harness), Some((String::new(), false)));
+            harness.app.apply(Action::CommitEdit { tab, id, then });
+            assert_eq!(state(&harness), None);
+            assert_eq!(object(&harness, tab, id).edits.cells.len(), 1);
+        }
+
+        #[test]
+        fn a_document_is_not_laid_out_past_what_its_editor_holds() {
+            let mut harness = Harness::new();
+            let (tab, id) = harness.editable();
             harness.app.apply(Action::EditField {
                 tab,
                 id,
                 cell: at(0, 2),
+                start: EditStart::Value,
+            });
+            let text = |harness: &Harness| {
+                let editor = object(harness, tab, id).edits.editor.as_ref();
+                editor.expect("an editor").text.clone()
+            };
+            // Typed over on one line, it is laid out when asked.
+            let set = |harness: &mut Harness, text: String| {
+                let workspace = harness.app.workspace_mut(tab).unwrap();
+                let editor = workspace.object_tab_mut(id).unwrap().edits.editor.as_mut();
+                editor.expect("an editor").text = text;
+                harness.app.apply(Action::EditorTyped { tab, id });
+            };
+            set(&mut harness, "[1,2]".into());
+            harness.app.apply(Action::FormatEditor { tab, id });
+            assert_eq!(text(&harness), "[\n  1,\n  2\n]");
+            // One that fits the editor on one line and would not laid
+            // out stays whole, as it was typed.
+            let compact = format!("[{}0]", "0,".repeat(99_999));
+            assert!(compact.len() <= crate::edit::MAX_EDIT_BYTES);
+            set(&mut harness, compact.clone());
+            harness.app.apply(Action::FormatEditor { tab, id });
+            assert_eq!(text(&harness), compact);
+        }
+
+        #[test]
+        fn the_field_the_keyboard_is_sent_to_is_the_selected_cell_at_once() {
+            let mut harness = Harness::new();
+            let (tab, id) = harness.editable();
+            let selected = |harness: &Harness| object(harness, tab, id).selection;
+            let owed = |harness: &Harness| object(harness, tab, id).focus_field;
+            harness.app.apply(Action::SelectCell {
+                tab,
+                id,
+                cell: at(1, 0),
+            });
+            // Mod+I, a step and a commit's walk: the selection is the
+            // field's cell before the panel has drawn it.
+            harness.app.apply(Action::FocusFields { tab, id });
+            assert_eq!(
+                (selected(&harness), owed(&harness)),
+                (Some(at(1, 1)), Some(1))
+            );
+            let (from, by) = (1, 1);
+            harness.app.apply(Action::MoveField { tab, id, from, by });
+            assert_eq!(
+                (selected(&harness), owed(&harness)),
+                (Some(at(1, 2)), Some(2))
+            );
+            // An editor that opens owes no field the keyboard: one owed it
+            // from an edit that ended in the same frame would take it
+            // from the editor.
+            harness.app.apply(Action::EditField {
+                tab,
+                id,
+                cell: at(1, 1),
+                start: EditStart::Value,
+            });
+            assert_eq!(owed(&harness), None);
+            let then = Advance::Stay;
+            harness.app.apply(Action::CommitEdit { tab, id, then });
+            assert_eq!(
+                (selected(&harness), owed(&harness)),
+                (Some(at(1, 1)), Some(1))
+            );
+        }
+
+        #[test]
+        fn a_tall_value_asked_for_in_the_row_panel_is_edited_there() {
+            let mut harness = Harness::new();
+            let (tab, id) = harness.editable();
+            // A document: the large editor, in the panel, where its edit
+            // was asked for.
+            harness.app.apply(Action::EditField {
+                tab,
+                id,
+                cell: at(0, 2),
+                start: EditStart::Value,
+            });
+            assert_eq!(
+                editor(&harness, tab, id),
+                Some((at(0, 2), EditorPlace::Panel, true))
+            );
+            // Dropped, the keyboard is its field's again.
+            harness.app.apply(Action::CancelEdit { tab, id });
+            assert_eq!(object(&harness, tab, id).focus_field, Some(2));
+            // Asked for in the grid, it is the popover at the cell.
+            harness.app.apply(Action::EditCell {
+                tab,
+                id,
+                cell: at(0, 2),
+                start: EditStart::Value,
             });
             assert_eq!(
                 editor(&harness, tab, id),
                 Some((at(0, 2), EditorPlace::Grid, true))
             );
             harness.app.apply(Action::CancelEdit { tab, id });
-            assert_eq!(object(&harness, tab, id).focus_field, None);
-            // A line break typed into a field of the panel moves the edit
-            // there too.
+            // A line break typed into a one-line field of the panel makes
+            // it tall where it is.
             harness.app.apply(Action::EditField {
                 tab,
                 id,
                 cell: at(1, 1),
+                start: EditStart::Value,
             });
             harness.app.apply(Action::EditorBreak { tab, id });
             assert_eq!(
                 editor(&harness, tab, id),
-                Some((at(1, 1), EditorPlace::Grid, true))
+                Some((at(1, 1), EditorPlace::Panel, true))
             );
             let text = &object(&harness, tab, id)
                 .edits
@@ -14509,6 +14837,7 @@ mod tests {
                 tab,
                 id,
                 cell: at(2, 1),
+                start: EditStart::Value,
             });
             harness.app.apply(leave(at(1, 1), EditorPlace::Grid));
             // The new editor is open, and the old one's text was kept.
@@ -14541,6 +14870,7 @@ mod tests {
                 tab,
                 id,
                 cell: at(0, 0),
+                start: EditStart::Value,
             });
             assert!(editor(&harness, tab, id).is_none());
             assert_eq!(
@@ -14582,6 +14912,7 @@ mod tests {
                 tab,
                 id,
                 cell: at(1, 1),
+                start: EditStart::Value,
             });
             type_text(&mut harness, tab, id, "bob@example.com");
             // Closed from another tab, where the editor waits: the panel
@@ -14605,6 +14936,7 @@ mod tests {
                 tab,
                 id,
                 cell: at(2, 1),
+                start: EditStart::Value,
             });
             type_text(&mut harness, tab, id, "cy@example.com");
             harness.app.apply(Action::SetView {
@@ -14629,6 +14961,7 @@ mod tests {
                 tab,
                 id,
                 cell: at(2, 1),
+                start: EditStart::Value,
             });
             type_text(&mut harness, tab, id, "cy@example.com");
             harness.app.apply(Action::CloseTab { tab, id });
@@ -14642,6 +14975,7 @@ mod tests {
                 tab,
                 id,
                 cell: at(3, 1),
+                start: EditStart::Value,
             });
             assert_eq!(
                 editor(&harness, tab, id),
@@ -14651,41 +14985,34 @@ mod tests {
         }
 
         #[test]
-        fn editing_the_row_takes_the_selected_cells_field_or_the_first_that_can_be_edited() {
+        fn focusing_the_rows_fields_asks_for_the_first_that_can_be_edited() {
             let mut harness = Harness::new();
             let (tab, id) = harness.editable();
             let panel = |harness: &Harness| harness.app.workspace(tab).unwrap().row_panel;
-            // With no row selected there is nothing to edit.
-            harness.app.apply(Action::EditRow { tab, id });
-            assert!(editor(&harness, tab, id).is_none());
-            // The selected cell's field, in the panel, which is shown.
+            let field = |harness: &Harness| object(harness, tab, id).focus_field;
+            // With no row selected there is no field to focus.
+            harness.app.apply(Action::FocusFields { tab, id });
+            assert_eq!(field(&harness), None);
+            // The row's first field that can be edited, whatever cell of
+            // it is selected (the key's is locked), in the panel, which
+            // is shown. No editor opens.
             harness.app.apply(Action::ToggleRowPanel(tab));
             assert!(!panel(&harness));
-            harness.app.apply(Action::SelectCell {
-                tab,
-                id,
-                cell: at(1, 1),
-            });
-            harness.app.apply(Action::EditRow { tab, id });
-            assert!(panel(&harness));
+            for cell in [at(1, 2), at(2, 0)] {
+                harness.app.apply(Action::SelectCell { tab, id, cell });
+                harness.app.apply(Action::FocusFields { tab, id });
+                assert!(panel(&harness));
+                assert!(editor(&harness, tab, id).is_none());
+                assert_eq!(field(&harness), Some(1));
+                assert_eq!(object(&harness, tab, id).edits.why, None);
+            }
+            // The keys are the table's from then on, not the tree's.
+            harness.app.workspace_mut(tab).unwrap().pane = crate::model::Pane::Tree;
+            harness.app.apply(Action::FocusFields { tab, id });
             assert_eq!(
-                editor(&harness, tab, id),
-                Some((at(1, 1), EditorPlace::Panel, false))
+                harness.app.workspace(tab).unwrap().pane,
+                crate::model::Pane::Grid
             );
-            harness.app.apply(Action::CancelEdit { tab, id });
-            // On the key's cell, which is locked: the row's first field
-            // that can be edited.
-            harness.app.apply(Action::SelectCell {
-                tab,
-                id,
-                cell: at(2, 0),
-            });
-            harness.app.apply(Action::EditRow { tab, id });
-            assert_eq!(
-                editor(&harness, tab, id),
-                Some((at(2, 1), EditorPlace::Panel, false))
-            );
-            assert_eq!(object(&harness, tab, id).edits.why, None);
             // An editor open in the grid gives way, its text kept.
             harness.app.apply(Action::EditCell {
                 tab,
@@ -14694,22 +15021,15 @@ mod tests {
                 start: EditStart::Value,
             });
             type_text(&mut harness, tab, id, "dan@example.com");
-            harness.app.apply(Action::EditRow { tab, id });
-            assert_eq!(
-                editor(&harness, tab, id),
-                Some((at(3, 1), EditorPlace::Panel, false))
-            );
-            let text = &object(&harness, tab, id)
-                .edits
-                .editor
-                .as_ref()
-                .unwrap()
-                .text;
-            assert_eq!(text, "dan@example.com");
+            harness.app.apply(Action::FocusFields { tab, id });
+            assert!(editor(&harness, tab, id).is_none());
+            let kept = object(&harness, tab, id).edits.cells.contains_key(&(3, 1));
+            assert!(kept);
+            assert_eq!(field(&harness), Some(1));
         }
 
         #[test]
-        fn editing_a_row_that_cannot_be_edited_shows_the_panel_and_says_why() {
+        fn focusing_the_fields_of_a_row_that_cannot_be_edited_shows_the_panel_and_says_why() {
             let mut harness = Harness::new();
             let (tab, id) = harness.editable();
             let why = |harness: &Harness| {
@@ -14725,7 +15045,7 @@ mod tests {
             // No cell of the row can be edited: the reason is the row's,
             // kept for the selected cell.
             harness.app.workspace_mut(tab).unwrap().access = tabletist_db::Access::ReadOnly;
-            harness.app.apply(Action::EditRow { tab, id });
+            harness.app.apply(Action::FocusFields { tab, id });
             assert!(harness.app.workspace(tab).unwrap().row_panel);
             assert!(editor(&harness, tab, id).is_none());
             assert_eq!(
@@ -14747,7 +15067,7 @@ mod tests {
                 .unwrap()
                 .structure
                 .value = Some(structure);
-            harness.app.apply(Action::EditRow { tab, id });
+            harness.app.apply(Action::FocusFields { tab, id });
             assert!(editor(&harness, tab, id).is_none());
             assert_eq!(
                 why(&harness),
@@ -14767,19 +15087,20 @@ mod tests {
                 .unwrap()
                 .edits
                 .why = None;
-            harness.app.apply(Action::EditRow { tab, id });
+            harness.app.apply(Action::FocusFields { tab, id });
             assert_eq!(why(&harness), None);
         }
 
         #[test]
-        fn editing_the_row_is_dropped_under_a_prompt_about_the_changes() {
+        fn focusing_the_rows_fields_is_dropped_under_a_prompt_about_the_changes() {
             let mut harness = Harness::new();
             let (tab, id) = harness.editable();
             type_into(&mut harness, tab, id, at(1, 1), "bob@example.com");
             harness.app.apply(Action::CloseTab { tab, id });
             assert!(leave_prompt(&harness).is_some());
-            harness.app.apply(Action::EditRow { tab, id });
+            harness.app.apply(Action::FocusFields { tab, id });
             assert!(editor(&harness, tab, id).is_none());
+            assert_eq!(object(&harness, tab, id).focus_field, None);
         }
     }
 }

@@ -271,6 +271,16 @@ impl Tone {
         self.tints(look, palette).0
     }
 
+    /// The line round a box that stands on this tone's fill inside a view,
+    /// where a bar's rule is too light to be seen: a pending field's amber,
+    /// and otherwise the tone's own colour.
+    pub fn edge(self, look: &Look, palette: &Palette) -> Color32 {
+        match self {
+            Self::Warning => crate::env::warning_edge(Platform::of(look), palette),
+            Self::Danger | Self::Success => self.color(palette),
+        }
+    }
+
     /// The line round a card or under a banner in this tone: the line a
     /// bar draws over its tint.
     pub fn line(self, look: &Look, palette: &Palette) -> Color32 {

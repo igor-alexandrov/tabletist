@@ -12,8 +12,8 @@ use crate::edit::{
     start_text,
 };
 use crate::model::{
-    Action, CellPos, ConflictPrompt, ConnTabId, Dialog, EditStart, Held, LeavePrompt, ObjectTab,
-    Pane, SaveBlock, SessionStatus, TabId, WritePrompt,
+    Action, Advance, CellPos, ConflictPrompt, ConnTabId, Dialog, EditStart, Held, LeavePrompt,
+    ObjectTab, Pane, SaveBlock, SessionStatus, TabId, WritePrompt,
 };
 use crate::review::Values;
 
@@ -32,8 +32,9 @@ pub(super) fn dropped_under_a_prompt(action: &Action) -> bool {
         action,
         Action::EditCell { .. }
             | Action::EditField { .. }
-            | Action::EditRow { .. }
+            | Action::FocusFields { .. }
             | Action::EditorBreak { .. }
+            | Action::FormatEditor { .. }
             | Action::CommitEdit { .. }
             | Action::LeaveEdit { .. }
             | Action::CancelEdit { .. }
@@ -394,6 +395,8 @@ impl App {
                 if let Some(object) = self.object_tab_mut(tab, id) {
                     object.edits.saved = None;
                     object.edits.fail(rows.get(index).copied(), error);
+                    // The row panel says what stands against a cell.
+                    object.fields = None;
                 }
                 return;
             }
@@ -528,17 +531,42 @@ impl App {
         (editor.place == EditorPlace::Panel).then_some(editor.cell.col)
     }
 
-    /// An edit made in the row panel's field of the column `col` ended, by
-    /// a commit or a cancel: the keyboard goes back to that field, so
-    /// Enter edits it again and Tab goes on from it. Not in the terminal
-    /// look, where the keys are the grid's again, in normal mode.
+    /// An edit made in the row panel ended, by a commit or a cancel: the
+    /// keyboard goes to the panel's field of the column `col`, the one that
+    /// was edited or the one the commit walks to, so Enter edits it and
+    /// the keys go on from it.
     pub(super) fn back_to_field(&mut self, tab: ConnTabId, id: TabId, col: usize) {
-        if self.look.terminal {
-            return;
-        }
         if let Some(object) = self.object_tab_mut(tab, id) {
-            object.focus_field = Some(col);
+            object.focus_field(col);
         }
+    }
+
+    /// The field a commit in the row panel's field of the column `col`
+    /// walks to: the selected row's next that can be edited, in the page's
+    /// column order, or the one before it. None at the row's end, and for
+    /// a commit that stays.
+    pub(super) fn field_after(
+        &self,
+        tab: ConnTabId,
+        id: TabId,
+        col: usize,
+        then: Advance,
+    ) -> Option<usize> {
+        let forward = match then {
+            Advance::NextField => true,
+            Advance::PrevField => false,
+            Advance::Stay | Advance::Down | Advance::Right | Advance::Left => return None,
+        };
+        self.table(tab, id, |table, object| {
+            let row = object.selection?.row;
+            let free = |col: &usize| table.lock(CellPos { row, col: *col }).is_none();
+            if forward {
+                (col + 1..table.page.columns.len()).find(free)
+            } else {
+                (0..col).rev().find(free)
+            }
+        })
+        .flatten()
     }
 
     /// Opens the editor on `cell`, drawn in `place`, or says there why the
@@ -564,33 +592,55 @@ impl App {
             EditStart::Replace(_) => (true, true),
             EditStart::Typed(_) => (false, true),
         };
+        // Opened from its value, to be read before it is changed.
+        let from_value = matches!(start, EditStart::Value);
         let opened = self.table(tab, id, |table, object| {
             if let Some(lock) = table.lock(cell) {
                 return Err(lock);
             }
             let class = table.class(cell.col).unwrap_or(ColumnClass::Other);
+            // Whether the editor opens on a text the user typed before:
+            // the cell's pending one. It is typed text still, whatever it
+            // holds: its check holds for it, empty or not, and Enter does
+            // not close on it while its column refuses it.
+            let mut kept = false;
             let text = match start {
                 EditStart::Replace(text) | EditStart::Typed(text) => text,
                 EditStart::Value => match object.edits.cells.get(&(cell.row, cell.col)) {
                     Some(pending) => match &pending.new {
-                        NewValue::Text(text) => text.clone(),
+                        NewValue::Text(text) => {
+                            kept = true;
+                            text.clone()
+                        }
                         NewValue::Null => String::new(),
                     },
                     None => start_text(&table.page.rows[cell.row][cell.col], class),
                 },
             };
             // A value of several lines, a long one or a document is edited
-            // in the popover at its cell, wherever the edit was asked for:
-            // the row panel has no editor for it yet.
+            // in the large editor, where its edit was asked for: a popover
+            // at its cell, or the tall field in the row panel.
             let large = opens_large(&text, class);
+            // What the text it opens with fails, so the editor says so
+            // from its first frame: a cell left to fix opened again, a
+            // character typed on a cell that does not take it. Not the
+            // empty text a NULL opens with, or an edit from nothing: that
+            // one nobody typed.
+            let problem = table
+                .column(cell.col)
+                .filter(|_| kept || !text.is_empty())
+                .and_then(|column| check(table.dialect, column, &text));
             Ok(Editor {
                 cell,
-                place: if large { EditorPlace::Grid } else { place },
+                place,
                 large,
                 text,
                 focus: true,
-                touched,
-                problem: None,
+                // A value of several lines is read from its top: its end
+                // may be far below what its editor shows.
+                top: large && from_value,
+                touched: touched || kept,
+                problem,
             })
         });
         let Some(opened) = opened else {
@@ -604,6 +654,10 @@ impl App {
                 object.selection = Some(cell);
                 object.edits.editor = Some(editor);
                 object.edits.why = None;
+                // The keyboard is the editor's: a field that was owed it
+                // (an edit ended in the frame that asked for this one)
+                // would take it from the editor, which would then be left.
+                object.focus_field = None;
                 // A tab being edited is no preview to replace.
                 object.pinned = true;
             }
@@ -621,34 +675,63 @@ impl App {
         }
     }
 
-    /// Edits the selected row in the row panel: the selected cell's field
-    /// where it can be edited, and otherwise the row's first field that
-    /// can, in the page's column order. The panel is shown for it. A row
-    /// with no such field says why, for the selected cell: no cell of it
-    /// can be edited (a read-only connection, a view, a save that runs),
-    /// or each is locked for a reason of its own.
-    pub(super) fn edit_row(&mut self, tab: ConnTabId, id: TabId) {
-        let field = self.table(tab, id, |table, object| {
+    /// Shows the row panel and asks it to give the keyboard to the selected
+    /// row's first field that can be edited, in the page's column order. No
+    /// editor opens. A row with no such field keeps the keyboard where it
+    /// is: the panel says why no cell of it can be edited, and the reason
+    /// is kept for the selected cell, for the terminal's mode line.
+    pub(super) fn focus_fields(&mut self, tab: ConnTabId, id: TabId) {
+        let found = self.table(tab, id, |table, object| {
             let cell = object.selection?;
             // The panel shows a row of the Data view only.
             if object.view != crate::model::ObjectView::Data {
                 return None;
             }
-            if table.lock(cell).is_none() || table.row_lock(cell.row).is_some() {
-                return Some(cell);
+            if let Some(lock) = table.row_lock(cell.row) {
+                return Some((cell, Err(lock)));
             }
-            let first = (0..table.page.columns.len())
-                .map(|col| CellPos { row: cell.row, col })
-                .find(|other| table.lock(*other).is_none());
-            Some(first.unwrap_or(cell))
+            let free = |col: &usize| {
+                table
+                    .lock(CellPos {
+                        row: cell.row,
+                        col: *col,
+                    })
+                    .is_none()
+            };
+            match (0..table.page.columns.len()).find(free) {
+                Some(col) => Some((cell, Ok(col))),
+                // Each cell is locked for a reason of its own: the
+                // selected cell's is the one said.
+                None => Some((cell, Err(table.lock(cell)?))),
+            }
         });
-        let Some(Some(cell)) = field else {
+        let Some(Some((cell, found))) = found else {
             return;
         };
+        // An editor open on a cell keeps its text.
+        self.close_editor(tab, id, true);
         if let Some(workspace) = self.workspace_mut(tab) {
             workspace.row_panel = true;
+            // As an edit asked for does: the keys are the table's, not the
+            // tree's, whose `j` and `k` the terminal look would otherwise
+            // go on reading.
+            workspace.pane = Pane::Grid;
+            workspace.save_refused = false;
+            workspace.review_refused = false;
         }
-        self.edit_cell(tab, id, cell, EditStart::Value, EditorPlace::Panel);
+        let Some(object) = self.object_tab_mut(tab, id) else {
+            return;
+        };
+        match found {
+            Ok(col) => {
+                object.focus_field(col);
+                object.edits.why = None;
+            }
+            Err(lock) => {
+                object.edits.why = Some((cell, lock));
+                object.edits.why_place = EditorPlace::Panel;
+            }
+        }
     }
 
     /// Takes the open editor's text as its cell's new value and closes it.
@@ -689,6 +772,33 @@ impl App {
         // The row panel shows the pending value.
         object.fields = None;
         true
+    }
+
+    /// Lays the document in the tab's large editor out a member to a line,
+    /// where the editor is on a JSON column and its text is a document: a
+    /// text its column does not take stays as it was typed. Only the white
+    /// space between its pieces changes (`ui::json_text::pretty`).
+    pub(super) fn format_editor(&mut self, tab: ConnTabId, id: TabId) {
+        let laid = self.table(tab, id, |table, object| {
+            let editor = object.edits.editor.as_ref().filter(|editor| editor.large)?;
+            let column = table.column(editor.cell.col)?;
+            if table.class(editor.cell.col) != Some(ColumnClass::Json) {
+                return None;
+            }
+            if check(table.dialect, column, &editor.text).is_some() {
+                return None;
+            }
+            // Not one that would not fit the editor laid out: the editor
+            // cuts what is over its limit, and the document's end with it.
+            let laid = crate::edit::laid_out_json(&editor.text)?;
+            (laid != editor.text).then_some(laid)
+        });
+        if let (Some(Some(laid)), Some(editor)) = (laid, self.editor_mut(tab, id)) {
+            editor.text = laid;
+            // It is typed text from here on: what was only opened and
+            // laid out is a change the user asked for.
+            editor.touched = true;
+        }
     }
 
     pub(super) fn set_null(&mut self, tab: ConnTabId, id: TabId) {
@@ -943,6 +1053,8 @@ impl App {
             }
             Ok(WriteOutcome::Failed { row, error }) => {
                 object.edits.fail(place(row), error);
+                // The row panel says what stands against a cell.
+                object.fields = None;
             }
             Err(error) => {
                 object.edits.note = Some(if error.is_connection_lost() {

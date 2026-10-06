@@ -241,22 +241,34 @@ pub enum Action {
     },
     /// Open the editor on a field of the row panel: the selected row's
     /// value in the column of `cell`, edited in the panel instead of on the
-    /// cell. From the value, as `EditStart::Value` is. On a field that
-    /// cannot be edited it says why.
+    /// cell. From `start`, as `EditCell` is. On a field that cannot be
+    /// edited it says why.
     EditField {
         tab: ConnTabId,
         id: TabId,
         cell: CellPos,
+        start: EditStart,
     },
-    /// Edit the selected row in the row panel: show the panel, and open
-    /// the editor there on the selected cell's field, or on the row's
-    /// first field that can be edited where that one cannot.
-    EditRow {
+    /// Put the keyboard on the row panel's field `by` fields after the one
+    /// of the column `from` (before it, below zero), in the page's column
+    /// order, locked ones too. At the row's ends it stays, and `by` zero
+    /// asks for the field of `from` itself.
+    MoveField {
+        tab: ConnTabId,
+        id: TabId,
+        from: usize,
+        by: isize,
+    },
+    /// Put the keyboard on the selected row's fields in the row panel: show
+    /// the panel, and focus the row's first field that can be edited. No
+    /// editor opens. On a row no field of which can be, the panel says why.
+    FocusFields {
         tab: ConnTabId,
         id: TabId,
     },
-    /// The row panel gave the field of the column `col` the keyboard it
-    /// was owed after an edit there ended: the request is met.
+    /// The row panel's field of the column `col` has the keyboard: it
+    /// took it, or was given the keyboard it was owed after an edit ended
+    /// (that request is met). Its cell is the selected one from now on.
     FieldFocused {
         tab: ConnTabId,
         id: TabId,
@@ -295,15 +307,23 @@ pub enum Action {
         tab: ConnTabId,
         id: TabId,
     },
+    /// Lay the document in the tab's large editor out a member to a line.
+    /// Only where its text is one: what is no JSON yet stays as typed.
+    FormatEditor {
+        tab: ConnTabId,
+        id: TabId,
+    },
     /// Make the active cell NULL, where its column allows it.
     SetNull {
         tab: ConnTabId,
         id: TabId,
     },
-    /// Put back the active cell's loaded value.
+    /// Put back a cell's loaded value: `cell`, or the active cell where
+    /// none is named, as the keys ask.
     RevertCell {
         tab: ConnTabId,
         id: TabId,
+        cell: Option<CellPos>,
     },
     /// Drop every pending change of the tab.
     DiscardEdits {
@@ -1795,6 +1815,11 @@ pub enum Advance {
     Down,
     Right,
     Left,
+    /// To the row panel's next field that can be edited, in the page's
+    /// column order: Enter and Tab in a field of the panel.
+    NextField,
+    /// To the one before it: Shift+Tab there.
+    PrevField,
 }
 
 /// Why a tab's pending changes cannot be saved now. The view words it.
@@ -1865,6 +1890,9 @@ pub struct PendingField {
     pub new: tabletist_db::Value,
     /// What the cell loaded as, short, as the grid shows it.
     pub was: String,
+    /// Whether the cell is ready to save, or what stands against it: the
+    /// check its text fails, or what the last save's statement came to.
+    pub state: crate::edit::State,
 }
 
 /// Without the texts: a pending cell's is what the user typed, which stays
@@ -1932,6 +1960,17 @@ impl FilterBar {
 }
 
 impl ObjectTab {
+    /// Asks the row panel to give the keyboard to its field of the column
+    /// `col`, and makes that field's cell the selected one at once: what
+    /// acts on the selection in the frame before the panel is drawn (a
+    /// copy) acts on the field the keyboard is going to.
+    pub fn focus_field(&mut self, col: usize) {
+        self.focus_field = Some(col);
+        if let Some(cell) = self.selection.as_mut() {
+            cell.col = col;
+        }
+    }
+
     pub fn new(
         id: TabId,
         object: ObjectRef,
