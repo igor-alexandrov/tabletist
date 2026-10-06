@@ -47,6 +47,10 @@ appears with what you can do with them.
 
 {% include shot.html file="macos-edit-review" alt="Review SQL open above the bar, showing the statement a save will run and the conditions it runs under" %}
 
+Where the window leaves the bar little room, it says less, and
+**Discard all** and **Review SQL** move into the **…** menu beside
+**Save**.
+
 A save to a production connection asks first, with every statement on
 screen.
 

@@ -15469,6 +15469,136 @@ mod tests {
         }
     }
 
+    /// The band the bar of pending changes fills.
+    fn bar_band(harness: &Harness) -> egui::Rect {
+        let fill = Tone::Warning.fill(&harness.app.look, &harness.app.palette);
+        let band = |(rect, color): &(egui::Rect, egui::Color32)| {
+            (*color == fill && (rect.height() - 48.0).abs() < 0.5).then_some(*rect)
+        };
+        harness.fills.iter().find_map(band).expect("the bar")
+    }
+
+    /// Fails where the bar draws words over one another or past its ends,
+    /// or a button past its ends.
+    fn assert_bar_fits(harness: &mut Harness, when: &str) {
+        use egui::accesskit::Role;
+        let tree = harness.settle();
+        let bar = bar_band(harness);
+        let mut words: Vec<_> = harness
+            .text_rects
+            .iter()
+            .filter(|(text, rect)| !text.is_empty() && bar.contains(rect.center()))
+            .collect();
+        words.sort_by(|a, b| a.1.left().total_cmp(&b.1.left()));
+        for (text, rect) in &words {
+            assert!(
+                bar.left() <= rect.left() && rect.right() <= bar.right(),
+                "{when}: {text:?} leaves the bar"
+            );
+        }
+        for pair in words.windows(2) {
+            assert!(
+                pair[0].1.right() <= pair[1].1.left(),
+                "{when}: {:?} is drawn over {:?}",
+                pair[0].0,
+                pair[1].0
+            );
+        }
+        for (_, node) in &tree.nodes {
+            let Some(bounds) = node.bounds().filter(|_| node.role() == Role::Button) else {
+                continue;
+            };
+            let center = egui::pos2(
+                ((bounds.x0 + bounds.x1) / 2.0) as f32,
+                ((bounds.y0 + bounds.y1) / 2.0) as f32,
+            );
+            assert!(
+                !bar.contains(center)
+                    || (bar.left() <= bounds.x0 as f32 && bounds.x1 as f32 <= bar.right()),
+                "{when}: the button {:?} leaves the bar",
+                node.label()
+            );
+        }
+    }
+
+    /// Presses `name` of the bar: its own button, or its row of the bar's
+    /// menu where the bar had no room for the button.
+    fn press_in_bar(harness: &mut Harness, name: &str) {
+        if !harness.has(name) {
+            harness.click("More actions");
+        }
+        harness.click(name);
+    }
+
+    /// The bar is as wide as the grid above it, which a small window and
+    /// the row panel leave little of: its words give way to its buttons,
+    /// and its buttons fold into a menu before they run into anything.
+    #[test]
+    fn the_bar_fits_the_room_it_has() {
+        for look in desktop_looks() {
+            for width in [1280.0, 1100.0, 1000.0, 800.0, 720.0] {
+                let when = format!("{} at {width}", look.name);
+                let mut harness = Harness::with_size(egui::vec2(width, 650.0));
+                harness.set_look(look);
+                let (tab, id) = harness.editable();
+                focus_grid(&mut harness, tab);
+                // The row panel is open beside the grid.
+                let workspace = harness.app.workspace(tab).unwrap();
+                assert_eq!(workspace.row_panel_tab(), Some(id), "{when}");
+                make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
+                make_pending(&mut harness, tab, id, (3, 1), "dan@example.com");
+                assert_bar_fits(&mut harness, &when);
+                // A small window has no room for the buttons beside Save:
+                // they are rows of a menu.
+                assert_eq!(harness.has("More actions"), width <= 800.0, "{when}");
+                // Cut or not, a screen reader hears the whole count.
+                assert!(harness.has("2 changes in 2 rows"), "{when}");
+                press_in_bar(&mut harness, "Review SQL");
+                assert!(edits(&harness, tab, id).reviewing, "{when}");
+                assert_bar_fits(&mut harness, &when);
+                press_in_bar(&mut harness, "Hide SQL");
+                assert!(!edits(&harness, tab, id).reviewing, "{when}");
+                // With a save running: its spinner and its cancel.
+                harness.click("Save");
+                assert_eq!(writes(&harness), 1, "{when}");
+                assert_bar_fits(&mut harness, &when);
+                press_in_bar(&mut harness, "Cancel save");
+                let sent = &harness.app.backend.sent;
+                let cancelled =
+                    |command| matches!(command, &crate::backend::Command::Cancel { .. });
+                assert!(sent.iter().any(cancelled), "{when}");
+                harness.answer_written(Err(tabletist_db::Error::Cancelled));
+                // With what the save came to beside the counts.
+                assert!(
+                    harness.has("Save cancelled. Nothing was written."),
+                    "{when}"
+                );
+                assert_bar_fits(&mut harness, &when);
+                // With a cell to fix.
+                leave_pending(&mut harness, tab, id, (1, 2), "{oops");
+                assert_bar_fits(&mut harness, &when);
+                press_in_bar(&mut harness, "Discard all");
+                assert!(edits(&harness, tab, id).cells.is_empty(), "{when}");
+            }
+        }
+        // With room for all of it, all of it is there.
+        let (mut harness, tab, id) = editable_in(Look::standard());
+        make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
+        leave_pending(&mut harness, tab, id, (1, 2), "{oops");
+        harness.settle();
+        let keys = format!("{}S", Look::standard().command_key());
+        for whole in [
+            "2 changes in 1 row",
+            "1 to fix",
+            "Review SQL",
+            "Discard all",
+            &keys,
+        ] {
+            assert!(painted(&harness, whole), "{whole}");
+        }
+        assert!(!harness.has("More actions"));
+    }
+
     /// A table can have its rows told apart by a unique index and no
     /// primary key. The row panel names such a row by that key, as the bar
     /// and a save's line do: one row, one name.

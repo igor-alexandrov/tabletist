@@ -13,6 +13,7 @@ use crate::model::{Action, ConnTabId, ObjectTab, SaveBlock, TabId};
 use crate::theme::Icon;
 use crate::typography::{Text, TextRole};
 use crate::ui::format;
+use crate::ui::menu;
 use crate::ui::states::{self, Tone};
 use crate::ui::widgets::{self, ButtonSpec};
 
@@ -24,6 +25,18 @@ const SIDE: f32 = 20.0;
 
 /// The dot that leads the bar.
 const DOT: f32 = 8.0;
+
+/// The mark before what is to fix, and the ring of a save that runs.
+const MARK: f32 = 13.0;
+const RING: f32 = 14.0;
+
+/// Room between two buttons, and after each thing the bar says.
+const BETWEEN: f32 = 8.0;
+const APART: f32 = 14.0;
+
+/// What the last save came to keeps this much room, or its own width,
+/// before the counts take theirs.
+const NOTE_LEAST: f32 = 120.0;
 
 /// `count` with its noun: "1 change", "3 changes".
 pub fn counted(locale: Locale, count: usize, one: &'static str, many: &'static str) -> String {
@@ -161,8 +174,23 @@ pub(crate) fn block_text(block: SaveBlock, to_fix: usize, locale: Locale) -> Str
     }
 }
 
+/// How many of its buttons the bar shows as they are, in the room it has.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Buttons {
+    /// Each one, Save with its key.
+    Whole,
+    /// Each one, Save without its key.
+    Plain,
+    /// Save, and the others in the menu under "…".
+    Folded,
+}
+
 /// The bar of the table tab `id`, while it has something to say. A bottom
 /// panel: called after the footer, it stands above it.
+///
+/// It is as wide as the grid, which a small window and the row panel leave
+/// little of. Save's key goes first, then what the bar says, and the
+/// buttons beside Save fold into a menu once they have no room themselves.
 pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, id: TabId) {
     let (locale, palette, look) = (app.locale, app.palette, app.look);
     let object = app
@@ -208,16 +236,6 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, id: TabId) {
             );
             let y = full.top() + 1.0 + (HEIGHT - 1.0) / 2.0;
             let height = states::button_height(&look);
-            // The buttons first, from the right: what the bar says is cut
-            // where they begin.
-            let mut right = full.right() - SIDE;
-            let mut place = |ui: &egui::Ui, button: &ButtonSpec<'_>| {
-                let width = button.width(ui, &look);
-                let rect =
-                    Rect::from_min_size(pos2(right - width, y - height / 2.0), vec2(width, height));
-                right -= width + 8.0;
-                rect
-            };
             let (save, discard, dismiss, cancel, busy) = (
                 gettext(locale, "Save"),
                 gettext(locale, "Discard all"),
@@ -228,9 +246,74 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, id: TabId) {
             let (review, hide) = (gettext(locale, "Review SQL"), gettext(locale, "Hide SQL"));
             // Told apart from a dialog's Cancel by a screen reader.
             let cancel_save = gettext(locale, "Cancel save");
+            let more = gettext(locale, "More actions");
+            let keys = format!("{}S", look.command_key());
+            let body = widgets::body(&look);
+            let ctx = ui.ctx().clone();
+            let width = move |role: TextRole, text: &str| role.width(&ctx, look.faces, text);
+
+            // What the bar says, and the room each part of it asks for.
+            let whole = pending.then(|| counts_text(counts.changes, counts.rows, locale));
+            let short = pending.then(|| counted(locale, counts.changes, "change", "changes"));
+            let fix = (counts.to_fix > 0)
+                .then(|| format!("{} {}", counts.to_fix, gettext(locale, "to fix")));
+            let fix_width = fix.as_ref().map(|fix| MARK + 5.0 + width(body, fix));
+            let busy_width = saving.then(|| RING + 6.0 + width(body, &busy));
+            let note_least = note.as_ref().map(|note| width(body, note).min(NOTE_LEAST));
+            let said_width = {
+                let counts = whole
+                    .as_ref()
+                    .map(|whole| width(TextRole::UiBodyStrong, whole));
+                let parts = [counts, fix_width, busy_width, note_least];
+                let gaps = parts.iter().flatten().count().saturating_sub(1);
+                parts.iter().flatten().sum::<f32>() + APART * gaps as f32
+            };
+
+            let save_button = |keyed: bool| {
+                let button = ButtonSpec::new(&save).primary();
+                if keyed {
+                    button.shortcut(&keys)
+                } else {
+                    button
+                }
+            };
+            // One button under two names, so the keyboard stays on it.
+            let review_name = if reviewing { &hide } else { &review };
+            let review_button = || ButtonSpec::new(review_name).quiet().keyed("review-sql");
+            let cancel_button = || ButtonSpec::new(&cancel).label(&cancel_save).quiet();
+            let room = full.width() - 2.0 * SIDE;
+            let lead = DOT + 10.0;
+            let buttons = {
+                let mut beside = BETWEEN + ButtonSpec::new(&discard).width(ui, &look);
+                if pending {
+                    beside += BETWEEN + review_button().width(ui, &look);
+                }
+                if saving {
+                    beside += BETWEEN + cancel_button().width(ui, &look);
+                }
+                let keyed = save_button(true).width(ui, &look) + beside;
+                let plain = save_button(false).width(ui, &look) + beside;
+                if !(pending || saving) || lead + said_width + 2.0 * BETWEEN + keyed <= room {
+                    Buttons::Whole
+                } else if lead + plain <= room {
+                    Buttons::Plain
+                } else {
+                    Buttons::Folded
+                }
+            };
+
+            // The buttons first, from the right: what the bar says is cut
+            // where they begin.
+            let mut right = full.right() - SIDE;
+            let mut place = |ui: &egui::Ui, button: &ButtonSpec<'_>| {
+                let width = button.width(ui, &look);
+                let rect =
+                    Rect::from_min_size(pos2(right - width, y - height / 2.0), vec2(width, height));
+                right -= width + BETWEEN;
+                rect
+            };
             if pending || saving {
-                let keys = format!("{}S", look.command_key());
-                let button = ButtonSpec::new(&save).primary().shortcut(&keys);
+                let button = save_button(buttons == Buttons::Whole);
                 let at = place(ui, &button);
                 let button = match &blocked {
                     Some(reason) => button.disabled(reason),
@@ -239,6 +322,48 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, id: TabId) {
                 if button.show_at(ui, at, &look, &palette).clicked() {
                     actions.push(Action::WriteEdits { tab, id });
                 }
+            } else {
+                // Only what the last save came to is left: the button takes
+                // the line away and nothing else. An editor may be open,
+                // and what is typed in it is not the line's to drop.
+                let button = ButtonSpec::new(&dismiss);
+                let at = place(ui, &button);
+                if button.show_at(ui, at, &look, &palette).clicked() {
+                    actions.push(Action::DismissNote { tab, id });
+                }
+            }
+            let show = !reviewing;
+            if buttons == Buttons::Folded {
+                // The same three, by their names, under one button.
+                let row = |text: &str, disabled: Option<&str>| menu::Choice {
+                    text: text.to_owned(),
+                    name: None,
+                    selected: false,
+                    disabled: disabled.map(str::to_owned),
+                };
+                let mut rows = Vec::new();
+                if pending {
+                    let action = Action::ReviewEdits { tab, id, show };
+                    rows.push((row(review_name, None), action));
+                }
+                // The reducer ignores it under a save: it is not offered.
+                let unoffered = saving.then_some(&*busy);
+                rows.push((row(&discard, unoffered), Action::DiscardEdits { tab, id }));
+                if saving {
+                    rows.push((row(&cancel_save, None), Action::CancelQuery(tab)));
+                }
+                let (rows, mut then): (Vec<_>, Vec<_>) = rows.into_iter().unzip();
+                let button = ButtonSpec::new("")
+                    .icon(Icon::Ellipsis)
+                    .gap(0.0)
+                    .padding(8.0)
+                    .label(&more);
+                let at = place(ui, &button);
+                let response = button.show_at(ui, at, &look, &palette);
+                if let Some(picked) = menu::actions(&response, 0.0, &look, &palette, || rows) {
+                    actions.push(then.swap_remove(picked));
+                }
+            } else if pending || saving {
                 // The reducer ignores it under a save: it is not offered.
                 let button = ButtonSpec::new(&discard);
                 let at = place(ui, &button);
@@ -251,82 +376,123 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, id: TabId) {
                     actions.push(Action::DiscardEdits { tab, id });
                 }
                 // What a save would run, to read before it. Under a save
-                // too: the drawer then shows what was sent. One button
-                // under two names, so the keyboard stays on it.
+                // too: the drawer then shows what was sent.
                 if pending {
-                    let name = if reviewing { &hide } else { &review };
-                    let button = ButtonSpec::new(name).quiet().keyed("review-sql");
+                    let button = review_button();
                     let at = place(ui, &button);
                     if button.show_at(ui, at, &look, &palette).clicked() {
-                        let show = !reviewing;
                         actions.push(Action::ReviewEdits { tab, id, show });
                     }
                 }
-            } else {
-                // Only what the last save came to is left: the button takes
-                // the line away and nothing else. An editor may be open,
-                // and what is typed in it is not the line's to drop.
-                let button = ButtonSpec::new(&dismiss);
-                let at = place(ui, &button);
-                if button.show_at(ui, at, &look, &palette).clicked() {
-                    actions.push(Action::DismissNote { tab, id });
+                if saving {
+                    // A save is one of the tab's requests: the query's
+                    // cancel stops it.
+                    let button = cancel_button();
+                    let at = place(ui, &button);
+                    if button.show_at(ui, at, &look, &palette).clicked() {
+                        actions.push(Action::CancelQuery(tab));
+                    }
                 }
             }
-            if saving {
-                // A save is one of the tab's requests: the query's cancel
-                // stops it.
-                let button = ButtonSpec::new(&cancel).label(&cancel_save).quiet();
-                let at = place(ui, &button);
-                if button.show_at(ui, at, &look, &palette).clicked() {
-                    actions.push(Action::CancelQuery(tab));
-                }
-            }
-            let limit = right - 8.0;
+
+            let limit = right - BETWEEN;
             let mut x = full.left() + SIDE;
-            ui.painter().circle_filled(
-                pos2(x + DOT / 2.0, y),
-                DOT / 2.0,
-                Tone::Warning.color(&palette),
-            );
-            x += DOT + 10.0;
-            let body = widgets::body(&look);
-            if pending {
-                let text = counts_text(counts.changes, counts.rows, locale);
-                let strong = Text::one(&look, TextRole::UiBodyStrong, &text, palette.text);
-                x += widgets::paint_label(ui, x, y, strong) + 14.0;
+            let dot = Rect::from_min_size(pos2(x, y - DOT / 2.0), vec2(DOT, DOT));
+            if dot.right() <= right {
+                ui.painter()
+                    .circle_filled(dot.center(), DOT / 2.0, Tone::Warning.color(&palette));
             }
-            if counts.to_fix > 0 {
-                let mark = Rect::from_center_size(pos2(x + 6.5, y), vec2(13.0, 13.0));
+            x += lead;
+            // The room is given out by what the bar alone says: that a
+            // save runs, then what is to fix, then some of what the last
+            // save came to. The counts take what those leave, down to the
+            // changes alone, and what the save came to takes the rest.
+            // Save says why it cannot be pressed whatever is left out here.
+            let mut left = (limit - x).max(0.0);
+            let busy_said = busy_width.is_some_and(|width| take(&mut left, width));
+            let spins = busy_said || (saving && take(&mut left, RING));
+            let fixes = fix_width.is_some_and(|width| take(&mut left, width));
+            let note_kept = note_least.map_or(0.0, |least| {
+                let kept = least.min(left);
+                take(&mut left, kept);
+                kept
+            });
+            let strong = |text: &str| width(TextRole::UiBodyStrong, text);
+            let counts_shown = match (&whole, &short) {
+                (Some(whole), _) if take(&mut left, strong(whole)) => Some(whole),
+                (_, Some(short)) if take(&mut left, strong(short)) => Some(short),
+                _ => None,
+            };
+            let note_room = note_kept + left;
+
+            if let Some(whole) = &whole {
+                let cut = counts_shown != Some(whole);
+                let place = match counts_shown {
+                    Some(text) => {
+                        let text = Text::one(&look, TextRole::UiBodyStrong, text, palette.text);
+                        let laid = text.layout(ui.ctx());
+                        let width = laid.paint_left(ui.painter(), x, y);
+                        let place = Rect::from_min_size(
+                            pos2(x, y - laid.height() / 2.0),
+                            vec2(width.max(1.0), laid.height()),
+                        );
+                        x += width + APART;
+                        place
+                    }
+                    // The dot stands for them.
+                    None => dot,
+                };
+                named(ui, place, "pending-counts", whole, cut);
+            }
+            if let Some(fix) = fix.as_ref().filter(|_| fixes) {
+                let mark = Rect::from_center_size(pos2(x + MARK / 2.0, y), vec2(MARK, MARK));
                 Icon::CircleAlert
-                    .image(palette.danger, 13.0)
+                    .image(palette.danger, MARK)
                     .paint_at(ui, mark);
-                x += 13.0 + 5.0;
-                let text = format!("{} {}", counts.to_fix, gettext(locale, "to fix"));
-                x += widgets::paint_label(ui, x, y, Text::one(&look, body, &text, palette.danger))
-                    + 14.0;
+                x += MARK + 5.0;
+                x += widgets::paint_label(ui, x, y, Text::one(&look, body, fix, palette.danger))
+                    + APART;
             }
-            if saving {
-                let ring = Rect::from_center_size(pos2(x + 7.0, y), vec2(14.0, 14.0));
+            if spins {
+                let ring = Rect::from_center_size(pos2(x + RING / 2.0, y), vec2(RING, RING));
                 states::spinner(ui, ring, Tone::Warning.color(&palette), &palette);
-                x += 14.0 + 6.0;
-                x += widgets::paint_label(
-                    ui,
-                    x,
-                    y,
-                    Text::one(&look, body, &busy, palette.secondary),
-                ) + 14.0;
+                x += RING + if busy_said { 6.0 } else { APART };
+            }
+            if busy_said {
+                let busy = Text::one(&look, body, &busy, palette.secondary);
+                x += widgets::paint_label(ui, x, y, busy) + APART;
             }
             if let Some(note) = &note {
-                said(ui, (x, y), (limit - x).max(0.0), note, &look, &palette);
+                said(ui, (x, y), note_room, note, &look, &palette);
             }
         });
     app.actions.extend(actions);
 }
 
+/// Takes `width` of the `left` room and the gap after it. Says whether
+/// there was that much.
+fn take(left: &mut f32, width: f32) -> bool {
+    let fits = width <= *left;
+    if fits {
+        *left = (*left - width - APART).max(0.0);
+    }
+    fits
+}
+
+/// Names `rect` as `whole` to a screen reader, and under the pointer too
+/// where the bar drew less than that there (`cut`).
+fn named(ui: &egui::Ui, rect: Rect, salt: &str, whole: &str, cut: bool) {
+    let response = ui.interact(rect, ui.id().with(salt), Sense::hover());
+    response.widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, whole));
+    if cut {
+        response.on_hover_text(whole);
+    }
+}
+
 /// What the last save came to, from `x` on the line centred at `y`: cut
 /// with "…" to `room`, whole under the pointer and to a screen reader.
 fn said(
-    ui: &mut egui::Ui,
+    ui: &egui::Ui,
     (x, y): (f32, f32),
     room: f32,
     text: &str,
@@ -334,18 +500,19 @@ fn said(
     palette: &crate::theme::Palette,
 ) {
     let role = widgets::body(look);
-    let shown = crate::ui::grid::ellipsize(text, room, false, |text| {
-        role.width(ui.ctx(), look.faces, text)
-    });
+    let width = |text: &str| role.width(ui.ctx(), look.faces, text);
+    let shown = crate::ui::grid::ellipsize(text, room, false, width);
     let laid = Text::one(look, role, &shown, palette.text).layout(ui.ctx());
-    let width = laid.paint_left(ui.painter(), x, y);
+    // With no room for "…" either, nothing is drawn: it is named all the
+    // same.
+    let drawn = if laid.width() <= room {
+        laid.paint_left(ui.painter(), x, y)
+    } else {
+        0.0
+    };
     let rect = Rect::from_min_size(
         pos2(x, y - laid.height() / 2.0),
-        vec2(width.max(1.0), laid.height()),
+        vec2(drawn.max(1.0), laid.height()),
     );
-    let response = ui.interact(rect, ui.id().with("pending-note"), Sense::hover());
-    response.widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, text));
-    if shown != text {
-        response.on_hover_text(text);
-    }
+    named(ui, rect, "pending-note", text, shown != text);
 }
