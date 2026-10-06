@@ -1396,9 +1396,23 @@ mod tests {
                 crate::env::Environment::Production;
             harness.click(TRANSACTION);
             let tree = harness.settle();
-            let choice = node(&tree, "Read-write transaction", Role::Button).expect("the choice");
-            let (_, choice) = tree.nodes.iter().find(|(node, _)| *node == choice).unwrap();
+            let off = node(&tree, "Read-write transaction", Role::Button).expect("the choice");
+            let (_, choice) = tree.nodes.iter().find(|(node, _)| *node == off).unwrap();
             assert!(choice.is_disabled(), "{}", look.name);
+            // A screen reader is told why, and so is the keyboard: the
+            // choice takes it, as a button that cannot be pressed does, and
+            // says its reason while it has it.
+            assert_eq!(choice.description(), Some(UNCONFIRMED), "{}", look.name);
+            assert!(!harness.has(UNCONFIRMED), "{}", look.name);
+            harness.frame(vec![egui::Event::AccessKitActionRequest(
+                egui::accesskit::ActionRequest {
+                    target_tree: egui::accesskit::TreeId::ROOT,
+                    target_node: off,
+                    action: egui::accesskit::Action::Focus,
+                    data: None,
+                },
+            )]);
+            assert!(harness.has(UNCONFIRMED), "{}", look.name);
             harness.click("Read-write transaction");
             assert_eq!(
                 own_mode(&harness, tab, id),

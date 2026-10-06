@@ -6065,6 +6065,11 @@ A review of the finished branch found three faults in the card of a refused writ
 
 In a second commit two tests of the badge read the tab's own mode where they read the effective one, which could not fail there (`on_a_read_only_connection_the_badge_is_a_note_and_the_key_does_nothing`, `on_production_the_read_write_choice_is_shown_and_cannot_be_picked`).
 
+After the pull request was opened (#87), where CI passed on Linux, macOS and Windows and against the PostgreSQL and MySQL servers:
+
+- **A choice that cannot be picked said why only under the pointer** (Copilot's review). The menu drew it as a row that takes no keyboard and gives a screen reader no reason. It is now what the app's disabled buttons are: it takes the keyboard, carries its reason as the node's description, and shows it while the keyboard is on it (`menu::Item::disabled`). The scene `sql-write-menu-production` shows it.
+- **Rebased a second time**, onto pull requests #85 and #86. #86 replaced `widgets::popup_menu` and `MenuChoice`, which task 5 of this plan extends, with the shared `src/ui/menu.rs` (`menu::choices`, `menu::Choice`, `menu::Item`). So task 5's diff of `src/ui/widgets.rs` in this plan no longer applies as written: in the branch the badge opens `menu::choices`, `menu::Choice` carries `disabled`, and `menu::Item::disabled` draws the row muted, as the Components sheet's menu rule has it ("Disabled items stay visible"). The four checks pass on every commit of the rebased branch.
+
 Noted and not acted on:
 
 - "Some or all of it may be written" is also said of a run sent to write that was still queued when another request lost the session: it never started. The backend answers a queued script with the same error as a running one. It errs on the safe side.

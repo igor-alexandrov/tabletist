@@ -741,6 +741,12 @@ fn shots() {
         read_write(harness, tab);
         harness.click("Transaction");
     });
+    // On production the choice is shown and cannot be picked yet.
+    both("sql-write-menu-production", |harness| {
+        let tab = sql_editor(harness);
+        harness.app.workspace_mut(tab).unwrap().environment = Environment::Production;
+        harness.click("Transaction");
+    });
     both("sql-write-running", |harness| {
         writing(harness, WRITES);
     });

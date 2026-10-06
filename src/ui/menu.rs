@@ -147,7 +147,8 @@ impl<'a> Item<'a> {
         self
     }
 
-    /// Shown, and not to be picked: `reason` says why on hover. A row that
+    /// Shown, and not to be picked: `reason` says why, to a screen reader,
+    /// under the pointer and while the keyboard is on the row. A row that
     /// cannot be picked stays in its menu, so the menu says what there is
     /// to choose.
     pub fn disabled(mut self, reason: &'a str) -> Self {
@@ -180,12 +181,14 @@ impl<'a> Item<'a> {
             .detail
             .map_or(0.0, |detail| DETAIL_GAP + measure(note, detail));
         let wanted = lead + measure(role, self.text) + noted + shape.inset;
-        // A row that cannot be picked answers no press.
+        // A row that cannot be picked answers no press, and still takes
+        // the keyboard, as a button that cannot be pressed does: the
+        // keyboard can then read why.
         let enabled = self.disabled.is_none();
         let sense = if enabled {
             Sense::click()
         } else {
-            Sense::hover()
+            Sense::focusable_noninteractive()
         };
         let (rect, response) = ui.allocate_at_least(vec2(wanted, shape.height), sense);
         let name = self.name.unwrap_or(self.text);
@@ -200,9 +203,15 @@ impl<'a> Item<'a> {
                 node.set_description(detail);
             });
         }
-        // The pointer and the keyboard light a row the same way, and
-        // neither one that cannot be picked.
-        let lit = enabled && (response.hovered() || focus::shown(&response));
+        if let Some(reason) = self.disabled {
+            ui.ctx().accesskit_node_builder(response.id, |node| {
+                node.set_description(reason);
+            });
+        }
+        // The pointer and the keyboard light a row the same way. One that
+        // cannot be picked is lit by the keyboard alone, which has to show
+        // where it is; its words stay muted.
+        let lit = focus::shown(&response) || (enabled && response.hovered());
         focus::hint(ui, &response, rect, Ring::Own);
         // A long menu scrolls: the row the keyboard came to is brought
         // into view. Jump, not animate: the next key may come at once.
@@ -253,7 +262,12 @@ impl<'a> Item<'a> {
                 .paint_right(painter, rect.right() - shape.inset, center);
         }
         match self.disabled {
-            Some(reason) => response.on_hover_text(reason),
+            Some(reason) => {
+                if focus::shown(&response) {
+                    response.show_tooltip_text(reason);
+                }
+                response.on_hover_text(reason)
+            }
             None => response,
         }
     }
@@ -310,8 +324,8 @@ pub struct Choice {
     pub name: Option<String>,
     /// The choice in use.
     pub selected: bool,
-    /// Why the choice cannot be picked, said on hover: it is shown all the
-    /// same, so the menu says what there is to choose.
+    /// Why the choice cannot be picked: it is shown all the same, so the
+    /// menu says what there is to choose (see [`Item::disabled`]).
     pub disabled: Option<String>,
 }
 
