@@ -537,7 +537,15 @@ read-only:
   would not be true of it.
 - Edit connection opens the connection dialog on the workspace's saved
   connection (`Action::EditConnection`).
-- The Omarchy keys work while the editor does not have the keyboard.
+- The Omarchy keys work while the editor does not have the keyboard, and
+  only while the card is on screen: not under the opening screen a switch
+  of database puts over the editor.
+- The card's button and its letter take a press of their own. "Allow
+  writes in this tab" gives way to "Run in a read-write transaction" in
+  the same place and under the same letter, so the repeats of a held key
+  and the second click of a double-click answer nothing.
+- "Run in a read-write transaction" is offered only on a connected
+  session.
 - Under the card stand the database's own words, then, for a read-only
   connection, the line "To write, turn off Open read-only ...", then the
   action. The terminal look writes the card in lower case throughout, the
@@ -656,8 +664,11 @@ Each step ends compiling, tested and shippable, and gets its own plan run:
    write: there the badge's menu shows "Read-write transaction" disabled,
    the key does nothing, and the menu, the badge's tooltip and the card of
    a tab in Read-only say "Read-write runs on a production connection are
-   not available yet." in place of the way on. The second run builds the
-   confirmation and takes that sentence out. Until step 3 of this spec,
+   not available yet." in place of the way on. So does the card of a
+   production connection that opens read-only, in place of "To write, turn
+   off Open read-only ..." and **Edit connection**: with the box off its
+   tabs still could not write. The second run builds the confirmation and
+   takes that sentence out. Until step 3 of this spec,
    closing a tab or a connection cancels a read-write run in flight
    without asking, as it cancels any run (rolled back unless its commit
    was already sent), and table tabs show what they loaded until they are

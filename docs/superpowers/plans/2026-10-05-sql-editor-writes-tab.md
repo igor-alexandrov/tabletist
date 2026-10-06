@@ -6052,3 +6052,22 @@ These need a window, a real server or eyes on the design, none of which the run 
 - `App::run_sql` and `App::run_sql_again`, the two places that decide a run is read-write: both hold the run and ask where the workspace's environment confirms writes.
 - `SqlTab::new`, which starts every tab in `RunMode::ReadOnly`: `editor.sql_new_tab` reaches it through `Workspace::push_sql_tab`, as `sql_limit` does.
 - The badge draws no production tone yet.
+
+## After the plan ran
+
+The seven tasks were built as written, inline: each task's tests failed alone as its step 2 says, the tree after each equals the plan's code, and the four checks passed after each. `main` moved by twelve commits while the plan was written (pull request #82, the database adapters' contract and `tests/engines.rs`), so the branch was rebased onto it; the rebase had no conflict, and the four checks pass on every commit of the rebased branch. Nothing in this run compares `Driver` or `Dialect` with `==` or `matches!`, which `tests/engines.rs` now looks for.
+
+A review of the finished branch found three faults in the card of a refused write, fixed in one commit after task 7 ("Have the refused write's card answer only a press that read it, and offer only what it can do"), each with a test that failed first:
+
+- **A held key, or a double-click, ran the statements.** "Allow writes in this tab" gives way to "Run in a read-write transaction" in the same place and under the same letter `w`. The repeats of a held `w`, or the second click of a double-click, answered the new offer: the mode was switched and the run committed in one gesture, against "sets the mode and runs nothing". The letter is now taken with `consume_press` (`fresh` in `keys::letters`), and the button ignores a click that is a double-click's second.
+- **The card's letter worked with the card off screen.** After a switch of database the editor gives way to the opening screen and the tab keeps its last run; `w` there could allow writes, or send the old run's statements to write on the database that came next. `card_key` now answers only while the workspace is opened, and "Run in a read-write transaction" is offered only on a connected session.
+- **A read-only production connection was told to turn its box off.** That would not let a tab write in this run. Its card now says "Read-write runs on a production connection are not available yet." and has no button (`Why::Connection { unconfirmed }`). The next run takes this out with `NoWrites::Unconfirmed`.
+
+In a second commit two tests of the badge read the tab's own mode where they read the effective one, which could not fail there (`on_a_read_only_connection_the_badge_is_a_note_and_the_key_does_nothing`, `on_production_the_read_write_choice_is_shown_and_cannot_be_picked`).
+
+Noted and not acted on:
+
+- "Some or all of it may be written" is also said of a run sent to write that was still queued when another request lost the session: it never started. The backend answers a queued script with the same error as a running one. It errs on the safe side.
+- In a narrow editor the badge is the second thing to give way, in Read-write too, as the spec has it for the note. The key still switches the mode there, unseen. Whether the badge should stay while the tab is in Read-write is the user's to decide.
+- Nothing tests that the backend closes a session after a run left it `broken`, beyond the helper that says why: no SQLite run can be made to leave one.
+- After "Allow writes in this tab" the keyboard's place is not carried to the button that takes its place, in the looks with a pointer. That is also what keeps a held Enter from answering it.
