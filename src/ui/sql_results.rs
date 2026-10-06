@@ -1225,8 +1225,10 @@ fn messages(
 /// its card says and offers follows from it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Why {
-    /// The connection opens read-only.
-    Connection,
+    /// The connection opens read-only. `unconfirmed`: and turning its box
+    /// off would not let a tab write here either (see
+    /// `NoWrites::Unconfirmed`).
+    Connection { unconfirmed: bool },
     /// The tab's runs are read-only. `unconfirmed`: and cannot be switched
     /// here (see `NoWrites::Unconfirmed`).
     Tab { unconfirmed: bool },
@@ -1268,7 +1270,7 @@ struct Blocked<'a> {
     statement: Option<&'a tabletist_db::sql::Statement>,
     why: Why,
     /// Whether the run can be sent again as it is: the editor still holds
-    /// its text.
+    /// its text, and the session is connected.
     again: bool,
     workspace: &'a Workspace,
 }
@@ -1295,7 +1297,9 @@ fn blocked<'a>(workspace: &'a Workspace, sql: &'a SqlTab) -> Option<Blocked<'a>>
         kind(driver.dialect(), &statement.text) == StatementKind::Write
     };
     let why = match workspace.sql_writes() {
-        Err(NoWrites::ReadOnlyConnection) => Why::Connection,
+        Err(NoWrites::ReadOnlyConnection) => Why::Connection {
+            unconfirmed: workspace.environment.confirms_writes(),
+        },
         Err(NoWrites::Unconfirmed) => Why::Tab { unconfirmed: true },
         Ok(()) if sql.mode == RunMode::ReadOnly => Why::Tab { unconfirmed: false },
         // In Read-write a run that holds a write is sent to write: this
@@ -1307,7 +1311,10 @@ fn blocked<'a>(workspace: &'a Workspace, sql: &'a SqlTab) -> Option<Blocked<'a>>
         error,
         statement: run.statements.get(index),
         why,
-        again: sql.ran_this_text(),
+        // On a session that would take it: a run is sent only to a
+        // connected one.
+        again: sql.ran_this_text()
+            && matches!(workspace.status, crate::model::SessionStatus::Connected),
         workspace,
     })
 }
@@ -1317,9 +1324,11 @@ impl Blocked<'_> {
     /// that would do nothing.
     fn offer(&self) -> Option<Offer> {
         match self.why {
-            Why::Connection => Some(Offer::EditConnection),
+            Why::Connection { unconfirmed: false } => Some(Offer::EditConnection),
             Why::Tab { unconfirmed: false } => Some(Offer::AllowWrites),
-            Why::Tab { unconfirmed: true } => None,
+            // Neither the connection's box nor the tab's switch is a way
+            // on here yet.
+            Why::Connection { unconfirmed: true } | Why::Tab { unconfirmed: true } => None,
             Why::TakenForRead | Why::SentBefore => self.again.then_some(Offer::RunAgain),
         }
     }
@@ -1357,17 +1366,21 @@ impl Blocked<'_> {
         let nothing = words.say("Nothing changed.");
         let refused = words.say("refused");
         match self.why {
-            Why::Connection => (
+            Why::Connection { unconfirmed } => (
                 words.say("This connection opens read-only"),
                 format!(
                     "{} {} {driver} {refused} {verb}. {nothing}",
                     self.who(words),
                     words.say("blocks writes, so")
                 ),
-                Some(words.say(
+                // Never a way on that is none: with the box off a tab of
+                // this connection still could not write.
+                Some(words.say(if unconfirmed {
+                    super::sql_editor::UNCONFIRMED
+                } else {
                     "To write, turn off Open read-only in the connection. It applies from the \
-                     next connect.",
-                )),
+                     next connect."
+                })),
             ),
             Why::Tab { unconfirmed } => {
                 let mut text = format!(
@@ -1420,11 +1433,12 @@ impl Blocked<'_> {
 
 /// The action the card of a refused write offers in the SQL editor on
 /// screen, and the letter that takes it in the terminal look. Only while
-/// the Messages show the card.
+/// the Messages show the card: not under the opening screen a switch of
+/// database puts over the editor, which keeps the tab and its last run.
 pub(crate) fn card_key(app: &App, tab: ConnTabId) -> Option<(egui::Key, Action)> {
     let workspace = app.workspace(tab)?;
     let sql = workspace.active_sql_tab()?;
-    if sql.pane != ResultPane::Messages || sql.run.error.is_some() {
+    if !workspace.opened() || sql.pane != ResultPane::Messages || sql.run.error.is_some() {
         return None;
     }
     let blocked = blocked(workspace, sql)?;
@@ -1501,11 +1515,13 @@ fn blocked_card(
                 states::button(&painted, look)
             };
             let height = states::button_height(look);
-            if button
-                .label(name)
-                .show(column, height, look, palette)
-                .clicked()
-            {
+            let pressed = button.label(name).show(column, height, look, palette);
+            // A click of its own. "Allow writes in this tab" gives way to
+            // "Run in a read-write transaction" in the same place, and the
+            // second click of a double-click must not answer an offer
+            // nobody has read.
+            let again = pressed.double_clicked() || pressed.triple_clicked();
+            if pressed.clicked() && !again {
                 actions.push(blocked.action(offer, place.tab, place.sql.id));
             }
         });
@@ -2568,6 +2584,151 @@ mod tests {
                 "{}",
                 look.name
             );
+        }
+    }
+
+    /// A refused `UPDATE` in a tab in Read-only of a writable connection,
+    /// drawn in `look`: the card offers to allow writes.
+    fn refused_in_a_read_only_tab(look: Look) -> (Harness, ConnTabId) {
+        let (mut harness, tab) = writable(look, "UPDATE users SET email = 'x'");
+        run(&mut harness);
+        harness.answer_sql(Ok(script_outcome(vec![refused_write()])), None);
+        (harness, tab)
+    }
+
+    #[test]
+    fn a_held_key_allows_writes_once_and_runs_nothing() {
+        use crate::model::RunMode;
+        let (mut harness, tab) = refused_in_a_read_only_tab(Look::omarchy());
+        let sent = runs_sent(&harness);
+        harness.press(Key::Escape, Modifiers::NONE);
+        // The key goes down and stays down. Its first event allows writes,
+        // and the card's letter then means "run again": the repeats of the
+        // same press must not take that for an answer.
+        let held = |repeat| egui::Event::Key {
+            key: Key::W,
+            physical_key: None,
+            pressed: true,
+            repeat,
+            modifiers: Modifiers::NONE,
+        };
+        harness.frame(vec![held(false)]);
+        for _ in 0..4 {
+            harness.frame(vec![held(true)]);
+        }
+        assert_eq!(sql(&harness, tab).mode, RunMode::ReadWrite);
+        assert_eq!(runs_sent(&harness), sent);
+        // Let go and pressed again, it is the answer to the new offer.
+        harness.frame(vec![crate::testing::release(Key::W, Modifiers::NONE)]);
+        harness.press(Key::W, Modifiers::NONE);
+        assert_eq!(runs_sent(&harness), sent + 1);
+        assert_eq!(sent_run(&harness).0, tabletist_db::ScriptMode::Write);
+    }
+
+    #[test]
+    fn a_double_click_on_allow_writes_runs_nothing() {
+        use crate::model::RunMode;
+        for look in [Look::standard(), Look::macos()] {
+            let (mut harness, tab) = refused_in_a_read_only_tab(look);
+            let sent = runs_sent(&harness);
+            let tree = harness.settle();
+            let at = bounds(&tree, "Allow writes in this tab", Role::Button)
+                .expect("the offer")
+                .left_center()
+                + egui::vec2(12.0, 0.0);
+            // The second click of a double-click lands where the next
+            // offer's button now stands.
+            crate::ui::tests::click_at(&mut harness, at);
+            crate::ui::tests::click_at(&mut harness, at);
+            assert_eq!(sql(&harness, tab).mode, RunMode::ReadWrite, "{}", look.name);
+            assert!(
+                harness.has("Run in a read-write transaction"),
+                "{}",
+                look.name
+            );
+            assert_eq!(runs_sent(&harness), sent, "{}", look.name);
+            // A click of its own, later, runs it.
+            for _ in 0..60 {
+                harness.frame(Vec::new());
+            }
+            crate::ui::tests::click_at(&mut harness, at);
+            assert_eq!(runs_sent(&harness), sent + 1, "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn the_cards_letter_does_nothing_while_the_card_is_not_on_screen() {
+        use crate::model::RunMode;
+        // The tree starts over, as on a switch of database: the editor and
+        // its card give way to the opening screen until the schemas are
+        // listed, and the tab keeps its last run meanwhile.
+        let unopened = |harness: &mut Harness, tab| {
+            let workspace = harness.app.workspace_mut(tab).unwrap();
+            workspace.tree = crate::model::Tree::default();
+            assert!(!workspace.opened());
+            harness.press(Key::Escape, Modifiers::NONE);
+        };
+        let (mut harness, tab) = refused_in_a_read_only_tab(Look::omarchy());
+        unopened(&mut harness, tab);
+        harness.press(Key::W, Modifiers::NONE);
+        assert_eq!(sql(&harness, tab).mode, RunMode::ReadOnly);
+        // Nor does it send the run again, to whatever database comes next.
+        let (mut harness, tab) = refused_in_a_read_only_tab(Look::omarchy());
+        set_mode(&mut harness, tab, RunMode::ReadWrite);
+        let sent = runs_sent(&harness);
+        unopened(&mut harness, tab);
+        harness.press(Key::W, Modifiers::NONE);
+        assert_eq!(runs_sent(&harness), sent);
+    }
+
+    #[test]
+    fn a_run_is_not_offered_again_on_a_session_that_is_not_connected() {
+        use crate::model::RunMode;
+        let (mut harness, tab) = refused_in_a_read_only_tab(Look::standard());
+        set_mode(&mut harness, tab, RunMode::ReadWrite);
+        assert!(harness.has("Run in a read-write transaction"));
+        let lost = Error::ConnectionLost("the server went away".into());
+        harness.app.workspace_mut(tab).unwrap().status =
+            crate::model::SessionStatus::Disconnected(lost);
+        // The card stays, and offers nothing that would do nothing.
+        assert!(card(&mut harness).is_some());
+        assert!(!harness.has("Run in a read-write transaction"));
+    }
+
+    #[test]
+    fn a_read_only_production_connection_is_not_told_to_turn_the_box_off() {
+        for look in Look::ALL {
+            // Production opens read-only unless its box says otherwise.
+            let (mut harness, tab) = editor(look, "UPDATE users SET email = 'x'");
+            let workspace = harness.app.workspace_mut(tab).unwrap();
+            workspace.driver = Driver::Postgres;
+            workspace.environment = crate::env::Environment::Production;
+            run(&mut harness);
+            harness.answer_sql(Ok(script_outcome(vec![refused_write()])), None);
+            let text = if look.terminal {
+                "PROD blocks writes, so PostgreSQL refused the UPDATE. Nothing changed."
+            } else {
+                "Fixture · production blocks writes, so PostgreSQL refused the UPDATE. Nothing \
+                 changed."
+            };
+            assert_eq!(
+                card(&mut harness),
+                reads(&look, CARDS[0], text),
+                "{}",
+                look.name
+            );
+            // Turning the box off would not let this tab write yet: the card
+            // says what is so, and offers no button that leads nowhere.
+            let lines = message_lines(&mut harness);
+            let unconfirmed = "Read-write runs on a production connection are not available yet.";
+            assert_eq!(lines[3], look.label(unconfirmed), "{}", look.name);
+            assert!(!harness.has("Edit connection"), "{}", look.name);
+            let turn_off = "To write, turn off Open read-only in the connection. It applies from \
+                            the next connect.";
+            assert!(!lines.contains(&look.label(turn_off)), "{}", look.name);
+            harness.press(Key::Escape, Modifiers::NONE);
+            harness.press(Key::E, Modifiers::NONE);
+            assert!(harness.app.dialog.is_none(), "{}", look.name);
         }
     }
 

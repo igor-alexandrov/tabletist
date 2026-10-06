@@ -1303,9 +1303,11 @@ fn letters(app: &mut App, ctx: &egui::Context, actions: &mut Vec<Action>) {
         }
     }
     // The card of a refused write, while a SQL editor's Messages show it:
-    // the letter its button names.
+    // the letter its button names. A press of its own: once writes are
+    // allowed the same letter runs the statements again, and the repeats
+    // of a key held since must not answer an offer nobody has read.
     if let Some((key, action)) = crate::ui::sql_results::card_key(app, tab)
-        && pressed(key)
+        && fresh(key)
     {
         actions.push(action);
     }
