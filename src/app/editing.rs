@@ -34,6 +34,7 @@ pub(super) fn dropped_under_a_prompt(action: &Action) -> bool {
             | Action::EditField { .. }
             | Action::FocusFields { .. }
             | Action::EditorBreak { .. }
+            | Action::FormatEditor { .. }
             | Action::CommitEdit { .. }
             | Action::LeaveEdit { .. }
             | Action::CancelEdit { .. }
@@ -743,6 +744,31 @@ impl App {
         // The row panel shows the pending value.
         object.fields = None;
         true
+    }
+
+    /// Lays the document in the tab's large editor out a member to a line,
+    /// where the editor is on a JSON column and its text is a document: a
+    /// text its column does not take stays as it was typed. Only the white
+    /// space between its pieces changes (`ui::json_text::pretty`).
+    pub(super) fn format_editor(&mut self, tab: ConnTabId, id: TabId) {
+        let laid = self.table(tab, id, |table, object| {
+            let editor = object.edits.editor.as_ref().filter(|editor| editor.large)?;
+            let column = table.column(editor.cell.col)?;
+            if table.class(editor.cell.col) != Some(ColumnClass::Json) {
+                return None;
+            }
+            if check(table.dialect, column, &editor.text).is_some() {
+                return None;
+            }
+            let laid = crate::ui::json_text::pretty(&editor.text);
+            (laid != editor.text).then_some(laid)
+        });
+        if let (Some(Some(laid)), Some(editor)) = (laid, self.editor_mut(tab, id)) {
+            editor.text = laid;
+            // It is typed text from here on: what was only opened and
+            // laid out is a change the user asked for.
+            editor.touched = true;
+        }
     }
 
     pub(super) fn set_null(&mut self, tab: ConnTabId, id: TabId) {

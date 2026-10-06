@@ -307,6 +307,12 @@ pub enum Action {
         tab: ConnTabId,
         id: TabId,
     },
+    /// Lay the document in the tab's large editor out a member to a line.
+    /// Only where its text is one: what is no JSON yet stays as typed.
+    FormatEditor {
+        tab: ConnTabId,
+        id: TabId,
+    },
     /// Make the active cell NULL, where its column allows it.
     SetNull {
         tab: ConnTabId,

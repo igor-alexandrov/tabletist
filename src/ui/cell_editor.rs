@@ -45,6 +45,9 @@ pub struct Target {
     pub type_name: String,
     /// The most characters the column holds, where its type says.
     pub max_chars: Option<u32>,
+    /// The column holds JSON: the large editor numbers its lines, colours
+    /// its syntax and says when it is valid.
+    pub json: bool,
     /// No dialog is up: an editor that is open has the keyboard.
     pub hold: bool,
 }
@@ -631,6 +634,18 @@ fn large_keys(ui: &Ui, id: Id, terminal: bool, outcome: &mut Outcome) -> bool {
     had
 }
 
+/// Where a press that is the open editor's own is noted, for the frame.
+fn own_press_id(id: Id) -> Id {
+    id.with("own-press")
+}
+
+/// Says that a press outside the large editor of the field `id` is the
+/// editor's all the same: a control that acts on its text (Format) stands
+/// beside it, and the text keeps the keyboard through the press.
+pub fn press_is_the_editors(ctx: &egui::Context, id: Id) {
+    ctx.data_mut(|data| data.insert_temp(own_press_id(id), true));
+}
+
 /// The large editor's body, in `rect`: a text of several lines, the
 /// editor's line round it, and the band under it. The popover at a cell
 /// and the row panel's tall field both draw it, under ids told apart by
@@ -651,7 +666,11 @@ fn large_body(
     let whole = ui.interact(rect, salt.with("panel"), egui::Sense::CLICK);
     let clicked_over =
         ui.input(|input| input.pointer.any_click()) && ui.rect_contains_pointer(rect);
-    let pressed = whole.is_pointer_button_down_on() || whole.clicked() || clicked_over;
+    // So is a press on a control beside it that says so.
+    let beside: bool = ui
+        .data_mut(|data| data.remove_temp(own_press_id(id)))
+        .unwrap_or(false);
+    let pressed = whole.is_pointer_button_down_on() || whole.clicked() || clicked_over || beside;
     let corner = if look.terminal { 3 } else { 8 };
     let role = grid::data_role(look);
     let text_rect = Rect::from_min_max(
@@ -664,15 +683,42 @@ fn large_body(
     let line = role.row_height(ui.ctx(), look.faces);
     let rows = (text_rect.height() / line).floor().max(1.0) as usize;
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(text_rect));
-    let mut layouter = crate::typography::layouter(look, role, palette.text);
+    let faces = look.faces;
+    // A document is written in its tree's colours, piece by piece; any
+    // other text in the text's.
+    let mut layouter = |ui: &Ui, buffer: &dyn egui::TextBuffer, wrap: f32| {
+        let text = buffer.as_str();
+        let mut job = if target.json {
+            let format = |color| role.format(faces, color);
+            crate::ui::json_text::job(text, format, look, palette)
+        } else {
+            let mut job = egui::text::LayoutJob::default();
+            job.append(text, 0.0, role.format(faces, palette.text));
+            job
+        };
+        job.wrap.max_width = wrap;
+        ui.fonts_mut(|fonts| fonts.layout_job(job))
+    };
+    // A document's lines are numbered, in a gutter at the text's left
+    // that scrolls with it.
+    let lines = editor.text.matches('\n').count() + 1;
+    let gutter = if target.json {
+        let digits = lines.to_string().len().max(2) as f32;
+        GUTTER_PAD + digits * role.width(ui.ctx(), faces, "0") + GUTTER_PAD
+    } else {
+        0.0
+    };
     let response = egui::ScrollArea::vertical()
         .id_salt(salt.with("text"))
         .auto_shrink([false, false])
         .show(&mut child, |ui| {
-            ui.add(
-                egui::TextEdit::multiline(&mut editor.text)
+            ui.horizontal_top(|ui| {
+                ui.spacing_mut().item_spacing.x = 0.0;
+                let numbers = ui.painter().add(egui::Shape::Noop);
+                ui.add_space(gutter);
+                let output = egui::TextEdit::multiline(&mut editor.text)
                     .id(id)
-                    .font(role.font_id(look.faces))
+                    .font(role.font_id(faces))
                     .frame(egui::Frame::NONE)
                     .margin(Margin::ZERO)
                     .desired_width(f32::INFINITY)
@@ -682,8 +728,22 @@ fn large_body(
                     // As the field on the cell: what is laid out is
                     // bounded, and a text that was cut is over the limit.
                     .char_limit(MAX_EDIT_BYTES + 1)
-                    .layouter(&mut layouter),
-            )
+                    .layouter(&mut layouter)
+                    .show(ui);
+                if target.json {
+                    let column = Rect::from_min_max(
+                        pos2(text_rect.left() - LARGE_PAD + 1.0, ui.clip_rect().top()),
+                        pos2(
+                            text_rect.left() + gutter - GUTTER_PAD,
+                            ui.clip_rect().bottom(),
+                        ),
+                    );
+                    let behind = gutter_numbers(ui, column, &output, role, look, palette);
+                    ui.painter().set(numbers, behind);
+                }
+                output.response.response
+            })
+            .inner
         })
         .inner;
     bound(&mut editor.text);
@@ -718,6 +778,44 @@ fn large_body(
     focus::hint(ui, &response, rect, ring);
     band(ui, rect, editor, target, (look, palette, locale));
     (response, has)
+}
+
+/// The room at each side of a document's line numbers.
+const GUTTER_PAD: f32 = 6.0;
+
+/// Paints the numbers of a document's lines in `column`, beside the rows
+/// of the text `output` drew: a line's number on its first row, none on
+/// the rows it wraps to. Returns the gutter's ground, to go behind them.
+fn gutter_numbers(
+    ui: &Ui,
+    column: Rect,
+    output: &egui::text_edit::TextEditOutput,
+    role: TextRole,
+    look: &Look,
+    palette: &Palette,
+) -> egui::Shape {
+    // The tone of a row under the pointer, as the design's gutter has.
+    let ground = grid::row_fill(false, true, false, look, palette).unwrap_or(palette.surface);
+    let clip = ui.clip_rect();
+    let middle = role.middle(ui.ctx(), look.faces);
+    let mut line = 1;
+    let mut starts = true;
+    for row in &output.galley.rows {
+        let top = output.galley_pos.y + row.min_y();
+        if starts && top <= clip.bottom() && top + row.height() >= clip.top() {
+            let number = Text::one(look, role, &line.to_string(), palette.faint);
+            widgets::paint_text_right(ui, column.right() - GUTTER_PAD, top + middle, number);
+        }
+        starts = row.ends_with_newline;
+        if starts {
+            line += 1;
+        }
+    }
+    egui::Shape::from(egui::epaint::RectShape::filled(
+        column,
+        CornerRadius::ZERO,
+        ground,
+    ))
 }
 
 /// The band under the large editor's text: how much it holds, or what it
@@ -782,8 +880,23 @@ fn band(
         }
     };
     let width = |text: &str| role.width(ui.ctx(), look.faces, text);
+    // A document that is one says so, before its counts.
+    let valid = gettext(locale, "Valid JSON");
+    let lead = if target.json && editor.problem.is_none() {
+        format!("{valid} · ")
+    } else {
+        String::new()
+    };
+    let said = format!("{lead}{said}");
     let shown = grid::ellipsize(&said, room, false, width);
-    let wide = widgets::paint_text(ui, left, y, Text::one(look, role, &shown, color));
+    let text = match shown
+        .strip_prefix(valid.as_ref())
+        .filter(|_| !lead.is_empty())
+    {
+        Some(rest) => Text::one(look, role, &valid, palette.success).add(role, rest, color),
+        None => Text::one(look, role, &shown, color),
+    };
+    let wide = widgets::paint_text(ui, left, y, text);
     // The whole of it for a screen reader, cut or not.
     let place = Rect::from_min_size(pos2(left, top), vec2(wide.max(1.0), BAND));
     widgets::announce(ui, place, &said);

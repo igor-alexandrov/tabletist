@@ -1480,7 +1480,8 @@ pub(super) fn editor_target(
 ) -> Option<cell_editor::Target> {
     let table = Table::of(workspace, object)?;
     let column = table.page.columns.get(cell.col)?;
-    let max_chars = match table.class(cell.col) {
+    let class = table.class(cell.col);
+    let max_chars = match class {
         Some(tabletist_db::ColumnClass::Text { max_chars }) => max_chars,
         _ => None,
     };
@@ -1491,6 +1492,7 @@ pub(super) fn editor_target(
         name: column.name.clone(),
         type_name: format::display_safe(&type_name).into_owned(),
         max_chars,
+        json: class == Some(tabletist_db::ColumnClass::Json),
         hold,
     })
 }

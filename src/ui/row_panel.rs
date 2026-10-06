@@ -1343,8 +1343,47 @@ fn field(
             // buttons.
             let link_right = left - 4.0 - 6.0;
             // Its tree is not drawn while the document is edited: there
-            // is nothing to fold.
-            if part != Part::Editing {
+            // is nothing to fold. What is typed can be laid out, a member
+            // to a line: "Format", and its key.
+            if part == Part::Editing {
+                let chord = if look.command_key() == "⌘" {
+                    "⇧⌘F"
+                } else {
+                    "Ctrl+Shift+F"
+                };
+                let label = format!("{} {chord}", gettext(locale, "Format"));
+                let role = TextRole::FieldLabel;
+                let size = vec2(
+                    role.width(ui.ctx(), look.faces, &label),
+                    line_of(ui, role, look),
+                );
+                let place = Rect::from_min_size(
+                    pos2(link_right - size.x, line.center().y - size.y / 2.0),
+                    size,
+                );
+                let link = ui.interact(place, name_id.with("format"), Sense::click());
+                link.widget_info(|| WidgetInfo::labeled(WidgetType::Link, true, &label));
+                let color = if link.hovered() {
+                    palette.accent_hover
+                } else {
+                    palette.accent
+                };
+                widgets::paint_text(
+                    ui,
+                    place.left(),
+                    place.center().y,
+                    Text::one(look, role, &label, color),
+                );
+                // The press is the editor's: its text keeps the keyboard,
+                // and is still open when it is laid out.
+                if link.is_pointer_button_down_on() || link.clicked() {
+                    let editor = crate::ui::cell_editor::field_id(tab, tab_id);
+                    crate::ui::cell_editor::press_is_the_editors(ui.ctx(), editor);
+                }
+                if link.clicked() {
+                    actions.push(Action::FormatEditor { tab, id: tab_id });
+                }
+            } else {
                 json_view::fold_all_link(
                     ui,
                     id,

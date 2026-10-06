@@ -914,6 +914,7 @@ impl App {
                     editor.touched = true;
                 }
             }
+            Action::FormatEditor { tab, id } => self.format_editor(tab, id),
             Action::SetNull { tab, id } => self.set_null(tab, id),
             Action::RevertCell { tab, id, cell } => {
                 // Not under a save: its answer is put into this set.

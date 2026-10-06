@@ -56,6 +56,7 @@ pub const SHORTCUTS: &[(&str, &str, Holds)] = &[
         ALL,
     ),
     ("Mod+Shift+F", "Format SQL", ALL),
+    ("Mod+Shift+F", "Format a document being edited", ALL),
     (
         "Mod+Shift+M",
         "Read-only or read-write runs in the SQL editor",
@@ -307,11 +308,18 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
                 }
             }
         }
-        // Format is a SQL editor's. The press is taken on every tab, or
+        // Format is a SQL editor's, and a table's while a document is
+        // edited in its large editor. The press is taken on every tab, or
         // Mod+F, below, would take it for its own.
         let format = consume_press(input, Modifiers::COMMAND | Modifiers::SHIFT, Key::F);
         if format && let Some((tab, sql_tab)) = sql {
             actions.push(Action::FormatSql { tab, sql_tab });
+        }
+        if format
+            && open
+            && let Some((tab, id)) = object
+        {
+            actions.push(Action::FormatEditor { tab, id });
         }
         // The other mode of the editor's runs. Not Mod+W, as its design
         // has it: that closes the tab.
