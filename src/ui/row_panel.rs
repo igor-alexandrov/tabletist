@@ -1292,7 +1292,15 @@ fn field(
         );
         let response = ui.interact(place, stop, Sense::click());
         let face = (Icon::Pencil, edit_label.as_str(), shown);
-        caption_face(ui, place, response, face, look, palette)
+        let response = caption_face(ui, place, response, face, look, palette);
+        // It is the field's stop: a screen reader hears what the field
+        // holds as the button's value, after its name.
+        response.widget_info(|| {
+            let mut info = WidgetInfo::labeled(WidgetType::Button, true, &edit_label);
+            info.current_text_value = Some(said.clone());
+            info
+        });
+        response
     };
     let mut pencil = None;
     if let Some(doc) = &doc {
@@ -1588,7 +1596,10 @@ fn field(
     let bare = (control.is_none() && pencil.is_none()).then(|| {
         let place = Rect::from_min_size(line.min, vec2(label_width.max(1.0), line.height()));
         let response = ui.interact(place, stop, Sense::click());
-        response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, &said));
+        // A field the grid is editing can be stood on and not pressed:
+        // its editor is at its cell.
+        let enabled = part != Part::InGrid;
+        response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, enabled, &said));
         response
     });
     let Some(stop) = control.as_ref().or(pencil.as_ref()).or(bare.as_ref()) else {

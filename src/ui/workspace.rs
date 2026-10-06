@@ -1562,8 +1562,9 @@ struct Editing {
     /// Insert mode: the column being edited and its type.
     insert: Option<String>,
     /// Where Tab moves on to: the next cell from an editor on a cell, the
-    /// next field from one in the row panel.
-    walks: &'static str,
+    /// next field from one in the row panel. Nowhere from the large
+    /// editor, in either place: Tab is its text's own.
+    walks: Option<&'static str>,
     /// How much is pending, while anything is: "3 pending · 2 rows".
     pending: Option<String>,
     /// The cells to fix and the ones a save failed on: "1 error".
@@ -1732,11 +1733,10 @@ fn editing_status(app: &App, tab: ConnTabId) -> Editing {
         });
         saved.or(blocked)
     };
-    let panel = edits
-        .editor
-        .as_ref()
-        .is_some_and(|editor| editor.place == crate::edit::EditorPlace::Panel);
-    let walks = if panel { "next field" } else { "next cell" };
+    let walks = edits.editor.as_ref().and_then(|editor| {
+        let panel = editor.place == crate::edit::EditorPlace::Panel;
+        (!editor.large).then_some(if panel { "next field" } else { "next cell" })
+    });
     Editing {
         can_edit,
         insert,
@@ -2017,16 +2017,21 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                 // the column: the mode and the counts stay.
                 let mode = gettext(locale, "-- INSERT --");
                 let mode = || Text::one(&look, TextRole::OModeLine, &mode, palette.success);
-                let words = ["normal", editing.walks].map(|word| gettext(locale, word));
+                let normal = gettext(locale, "normal");
+                let next = editing.walks.map(|next| gettext(locale, next));
                 let keys = || {
-                    Text::new(&look)
+                    let leave = Text::new(&look)
                         .add(role, "esc", palette.text)
                         .space(role, " ")
-                        .add(role, &words[0], palette.dim)
+                        .add(role, &normal, palette.dim);
+                    let Some(next) = &next else {
+                        return leave;
+                    };
+                    leave
                         .add(role, " · ", palette.dim)
                         .add(role, "tab", palette.text)
                         .space(role, " ")
-                        .add(role, &words[1], palette.dim)
+                        .add(role, next, palette.dim)
                 };
                 let right = rect.right() - 12.0;
                 let fixed = left + widgets::measure(ui, mode()) + pending_room + errors_room;

@@ -13082,7 +13082,7 @@ mod tests {
         // Mod+Enter applies, as in the other looks: the `x` goes, and a
         // member comes.
         harness.press(Key::Enter, Modifiers::NONE);
-        harness.press(Key::End, Modifiers::CTRL);
+        to_text_end(&mut harness);
         harness.press(Key::Backspace, Modifiers::NONE);
         add_a_member(&mut harness);
         harness.press(Key::Enter, Modifiers::COMMAND);
@@ -15029,10 +15029,17 @@ mod tests {
     /// The same with a member more, as `add_a_member` types it.
     const DOC_MORE: &str = "{\n  \"plan\": \"pro\"\n,\"n\":1}";
 
+    /// Moves the cursor of the open editor to its text's end, by the key
+    /// that does it on every platform: Mod+Down. (Ctrl+End is Windows' and
+    /// Linux's alone.)
+    fn to_text_end(harness: &mut Harness) {
+        harness.press(Key::ArrowDown, Modifiers::COMMAND);
+    }
+
     /// Types `text` at the end of the open editor's text: a value of
     /// several lines opens with its cursor at its start.
     fn type_at_end(harness: &mut Harness, text: &str) {
-        harness.press(Key::End, Modifiers::CTRL);
+        to_text_end(harness);
         type_text(harness, text);
     }
 
@@ -15040,7 +15047,7 @@ mod tests {
     /// member more, typed over its closing brace. (White space alone is no
     /// change of a document.)
     fn add_a_member(harness: &mut Harness) {
-        harness.press(Key::End, Modifiers::CTRL);
+        to_text_end(harness);
         harness.press(Key::Backspace, Modifiers::NONE);
         type_text(harness, ",\"n\":1}");
     }
@@ -20813,7 +20820,7 @@ mod tests {
             assert!(text.starts_with("a{"), "{}: {text:?}", look.name);
             // From its end, a click at the start of its first line puts
             // the caret there.
-            harness.press(Key::End, Modifiers::CTRL);
+            to_text_end(&mut harness);
             let tree = harness.settle();
             let role = egui::accesskit::Role::MultilineTextInput;
             let field = crate::testing::bounds(&tree, "Edit meta", role).expect("the field");
@@ -21301,6 +21308,82 @@ mod tests {
                 look.name
             );
         }
+    }
+
+    #[test]
+    fn a_save_that_fails_shows_in_the_open_row_panel() {
+        for look in desktop_looks() {
+            let (mut harness, tab, id) = editable_in(look);
+            let palette = harness.app.palette;
+            make_pending(&mut harness, tab, id, (1, 1), "b@x.io");
+            select(&mut harness, tab, id, (1, 0));
+            assert!(
+                harness.app.workspace(tab).unwrap().row_panel,
+                "{}",
+                look.name
+            );
+            harness.click("Save");
+            harness.answer_written(Ok(tabletist_db::WriteOutcome::Failed {
+                row: 0,
+                error: tabletist_db::Error::Query {
+                    code: Some("23514".into()),
+                    message: "new row violates check constraint".into(),
+                    detail: None,
+                    hint: None,
+                },
+            }));
+            harness.settle();
+            // The panel was open through the save: its field says what the
+            // database said, in the failure's colour, under its value.
+            let said = "23514 new row violates check constraint";
+            assert!(
+                painted_in(&harness, said, palette.danger),
+                "{}: {:?}",
+                look.name,
+                harness.painted
+            );
+            let value = panel_text(&harness, "b@x.io");
+            let message = harness.painted_rect(said).unwrap();
+            assert!(message.top() >= value.bottom(), "{}", look.name);
+            assert!(message.left() > cell_of(&harness, "user3@example.com").x);
+        }
+    }
+
+    #[test]
+    fn a_documents_pencil_says_what_its_field_holds() {
+        for look in Look::ALL {
+            let (mut harness, tab, id) = editable_in(look);
+            select(&mut harness, tab, id, (0, 0));
+            let tree = harness.settle();
+            // It is the field's stop: named for what it does, with the
+            // field's column, type and value as its value.
+            let mut nodes = tree.nodes.iter();
+            let (_, pencil) = nodes
+                .find(|(_, node)| node.label() == Some("Edit meta"))
+                .expect("the pencil");
+            let value = pencil.value().unwrap_or_default();
+            assert!(value.starts_with("meta, JSON, "), "{}: {value}", look.name);
+        }
+    }
+
+    #[test]
+    fn the_mode_line_offers_tab_only_where_it_walks() {
+        let look = Look::omarchy();
+        // A one-line field of the panel: Tab walks to the next field.
+        let (mut harness, tab, id) = form_row(look, 1);
+        click_value(&mut harness, "user2@example.com");
+        assert!(painted(&harness, "esc normal · tab next field"));
+        harness.app.apply(Action::CancelEdit { tab, id });
+        // Its tall field, and the grid's popover: Tab is the text's own,
+        // and the line does not offer it.
+        let (mut harness, tab, id) = editing_a_document(look);
+        assert!(painted(&harness, "esc normal"), "{:?}", harness.painted);
+        assert!(!painted(&harness, "esc normal · tab next field"));
+        harness.app.apply(Action::CancelEdit { tab, id });
+        open_editor(&mut harness, tab, id, (0, 2));
+        harness.settle();
+        assert!(painted(&harness, "esc normal"), "{:?}", harness.painted);
+        assert!(!painted(&harness, "esc normal · tab next cell"));
     }
 
     #[test]

@@ -14,6 +14,12 @@ below is the user's spec as given, but for its dashes, which the house
 style does not use. What of it the app can do today, and in
 which step, is in the plan's "What was decided".
 
+Where the build follows the canvas and not this text: a pending field has
+an amber line all round its tint, as the "Editing a row" artboard draws
+it, and not the 2 pt bar at its left that the table under "Fields" gives
+it (that is the grid's cell). The user asked for the artboard's look on
+seeing the bar.
+
 The designs are in the design canvas Artifact and are not copied into the
 repository.
 

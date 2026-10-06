@@ -819,7 +819,7 @@ impl App {
                     && let Some(columns) = object.rows.value.as_ref().map(|page| page.columns.len())
                 {
                     let last = columns.saturating_sub(1);
-                    object.focus_field = Some(from.saturating_add_signed(by).min(last));
+                    object.focus_field(from.saturating_add_signed(by).min(last));
                     // What a locked field said was said of the one left.
                     object.edits.why = None;
                 }
@@ -14605,6 +14605,82 @@ mod tests {
             // A commit that stays, stays.
             walk(&mut harness, 1, Advance::Stay);
             assert_eq!(field(&harness), Some(1));
+        }
+
+        #[test]
+        fn an_editor_says_from_its_first_frame_what_its_opening_text_fails() {
+            let mut harness = Harness::new();
+            let (tab, id) = harness.editable();
+            let problem = |harness: &Harness| {
+                let editor = object(harness, tab, id).edits.editor.as_ref();
+                editor.expect("an editor").problem.clone()
+            };
+            let field = |cell, start| Action::EditField {
+                tab,
+                id,
+                cell,
+                start,
+            };
+            // A document left to fix, opened again: no document still.
+            type_into(&mut harness, tab, id, at(0, 2), "{");
+            harness.app.apply(field(at(0, 2), EditStart::Value));
+            assert!(problem(&harness).is_some());
+            harness.app.apply(Action::CancelEdit { tab, id });
+            // A value its column takes, and a NULL, which opens empty:
+            // nothing was typed, and nothing is said.
+            harness.app.apply(field(at(1, 1), EditStart::Value));
+            assert_eq!(problem(&harness), None);
+            harness.app.apply(Action::CancelEdit { tab, id });
+            harness.app.apply(field(at(1, 2), EditStart::Value));
+            assert_eq!(problem(&harness), None);
+            harness.app.apply(Action::CancelEdit { tab, id });
+            // A character typed on a document's cell that starts none.
+            harness
+                .app
+                .apply(field(at(1, 2), EditStart::Typed("x".into())));
+            assert!(problem(&harness).is_some());
+        }
+
+        #[test]
+        fn the_field_the_keyboard_is_sent_to_is_the_selected_cell_at_once() {
+            let mut harness = Harness::new();
+            let (tab, id) = harness.editable();
+            let selected = |harness: &Harness| object(harness, tab, id).selection;
+            let owed = |harness: &Harness| object(harness, tab, id).focus_field;
+            harness.app.apply(Action::SelectCell {
+                tab,
+                id,
+                cell: at(1, 0),
+            });
+            // Mod+I, a step and a commit's walk: the selection is the
+            // field's cell before the panel has drawn it.
+            harness.app.apply(Action::FocusFields { tab, id });
+            assert_eq!(
+                (selected(&harness), owed(&harness)),
+                (Some(at(1, 1)), Some(1))
+            );
+            let (from, by) = (1, 1);
+            harness.app.apply(Action::MoveField { tab, id, from, by });
+            assert_eq!(
+                (selected(&harness), owed(&harness)),
+                (Some(at(1, 2)), Some(2))
+            );
+            // An editor that opens owes no field the keyboard: one owed it
+            // from an edit that ended in the same frame would take it
+            // from the editor.
+            harness.app.apply(Action::EditField {
+                tab,
+                id,
+                cell: at(1, 1),
+                start: EditStart::Value,
+            });
+            assert_eq!(owed(&harness), None);
+            let then = Advance::Stay;
+            harness.app.apply(Action::CommitEdit { tab, id, then });
+            assert_eq!(
+                (selected(&harness), owed(&harness)),
+                (Some(at(1, 1)), Some(1))
+            );
         }
 
         #[test]

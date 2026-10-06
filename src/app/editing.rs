@@ -395,6 +395,8 @@ impl App {
                 if let Some(object) = self.object_tab_mut(tab, id) {
                     object.edits.saved = None;
                     object.edits.fail(rows.get(index).copied(), error);
+                    // The row panel says what stands against a cell.
+                    object.fields = None;
                 }
                 return;
             }
@@ -535,7 +537,7 @@ impl App {
     /// the keys go on from it.
     pub(super) fn back_to_field(&mut self, tab: ConnTabId, id: TabId, col: usize) {
         if let Some(object) = self.object_tab_mut(tab, id) {
-            object.focus_field = Some(col);
+            object.focus_field(col);
         }
     }
 
@@ -611,6 +613,14 @@ impl App {
             // in the large editor, where its edit was asked for: a popover
             // at its cell, or the tall field in the row panel.
             let large = opens_large(&text, class);
+            // What the text it opens with fails, so the editor says so
+            // from its first frame: a cell left to fix opened again, a
+            // character typed on a cell that does not take it. Not an
+            // empty text, which a NULL opens with and nobody typed.
+            let problem = table
+                .column(cell.col)
+                .filter(|_| !text.is_empty())
+                .and_then(|column| check(table.dialect, column, &text));
             Ok(Editor {
                 cell,
                 place,
@@ -621,7 +631,7 @@ impl App {
                 // may be far below what its editor shows.
                 top: large && from_value,
                 touched,
-                problem: None,
+                problem,
             })
         });
         let Some(opened) = opened else {
@@ -635,6 +645,10 @@ impl App {
                 object.selection = Some(cell);
                 object.edits.editor = Some(editor);
                 object.edits.why = None;
+                // The keyboard is the editor's: a field that was owed it
+                // (an edit ended in the frame that asked for this one)
+                // would take it from the editor, which would then be left.
+                object.focus_field = None;
                 // A tab being edited is no preview to replace.
                 object.pinned = true;
             }
@@ -701,7 +715,7 @@ impl App {
         };
         match found {
             Ok(col) => {
-                object.focus_field = Some(col);
+                object.focus_field(col);
                 object.edits.why = None;
             }
             Err(lock) => {
@@ -1028,6 +1042,8 @@ impl App {
             }
             Ok(WriteOutcome::Failed { row, error }) => {
                 object.edits.fail(place(row), error);
+                // The row panel says what stands against a cell.
+                object.fields = None;
             }
             Err(error) => {
                 object.edits.note = Some(if error.is_connection_lost() {

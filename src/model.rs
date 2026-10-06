@@ -1960,6 +1960,17 @@ impl FilterBar {
 }
 
 impl ObjectTab {
+    /// Asks the row panel to give the keyboard to its field of the column
+    /// `col`, and makes that field's cell the selected one at once: what
+    /// acts on the selection in the frame before the panel is drawn (a
+    /// copy) acts on the field the keyboard is going to.
+    pub fn focus_field(&mut self, col: usize) {
+        self.focus_field = Some(col);
+        if let Some(cell) = self.selection.as_mut() {
+            cell.col = col;
+        }
+    }
+
     pub fn new(
         id: TabId,
         object: ObjectRef,

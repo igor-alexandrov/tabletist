@@ -53,7 +53,8 @@ Linux (Omarchy and Hyprland first), macOS and Windows.
   prefix groups (`book_`) or listed flat; each table opens with a data grid
   (keys, foreign keys, value tags, JSON at a glance), a row panel showing
   every field in full with a jump along foreign keys, where a value of a
-  writable table is edited in place (a click on it, or Cmd/Ctrl+I),
+  writable table is edited in place (a click on it, or Cmd/Ctrl+I to
+  reach the row's fields and Enter or typing to edit one),
   and a Structure view (columns, indexes, foreign keys).
 - Server-side sorting and paging, a filter bar with a raw WHERE option, exact
   counts on demand, and cancel for any running query. MySQL sessions run in
