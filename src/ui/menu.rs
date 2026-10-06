@@ -740,6 +740,35 @@ mod tests {
     }
 
     #[test]
+    fn escape_closes_a_dropdowns_menu_and_keeps_its_value() {
+        for look in Look::ALL {
+            let (mut harness, tab, id) = operator_menu(look);
+            give_keyboard(&mut harness, "=");
+            harness.press(Key::ArrowDown, Modifiers::NONE);
+            harness.press(Key::Escape, Modifiers::NONE);
+            assert!(
+                !harness.has("contains"),
+                "the menu stays open in {}",
+                look.name
+            );
+            assert_eq!(
+                operator(&harness, tab, id),
+                tabletist_db::FilterOp::Eq,
+                "{}",
+                look.name
+            );
+            // The filter bar is open still, and the keyboard is on the
+            // dropdown the menu hung under.
+            assert_eq!(
+                focused_name(&harness.settle()),
+                "Filter operator",
+                "{}",
+                look.name
+            );
+        }
+    }
+
+    #[test]
     fn a_rows_note_is_its_description_for_screen_readers() {
         for look in Look::ALL {
             let mut harness = Harness::new();

@@ -1066,6 +1066,9 @@ fn letters(app: &mut App, ctx: &egui::Context, actions: &mut Vec<Action>) {
     let left_field: bool = ctx
         .data(|data| data.get_temp(was_editing_id()))
         .unwrap_or(false);
+    // An open menu keeps its Esc: this runs before the menu is drawn, and
+    // the key closes the menu before it closes anything under it.
+    let menu_open = egui::Popup::is_any_open(ctx);
     let mut next_pending = None;
     let pressed = |key: Key| ctx.input_mut(|input| input.consume_key(Modifiers::NONE, key));
     // A press of its own: not the repeats of a key held since it did
@@ -1162,6 +1165,7 @@ fn letters(app: &mut App, ctx: &egui::Context, actions: &mut Vec<Action>) {
     // text field, or the repeats of one held since.
     if let Some(id) = reviewing
         && !left_field
+        && !menu_open
         && fresh(Key::Escape)
     {
         let show = false;
@@ -1176,6 +1180,7 @@ fn letters(app: &mut App, ctx: &egui::Context, actions: &mut Vec<Action>) {
         .map(|object| object.id);
     if let Some(id) = note
         && !left_field
+        && !menu_open
         && fresh(Key::Escape)
     {
         actions.push(Action::DismissNote { tab, id });
@@ -1274,7 +1279,7 @@ fn letters(app: &mut App, ctx: &egui::Context, actions: &mut Vec<Action>) {
         }
         // An Esc that left a text field did only that, and so do its
         // repeats while it is held.
-        if panel && !left_field && fresh(Key::Escape) {
+        if panel && !left_field && !menu_open && fresh(Key::Escape) {
             actions.push(Action::ToggleRowPanel(tab));
         }
         if pressed(Key::Z) {
