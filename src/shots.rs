@@ -321,7 +321,9 @@ fn retype(
         cell: CellPos { row, col },
         start: EditStart::Replace(text.into()),
     });
-    harness.app.apply(Action::LeaveEdit { tab, id });
+    harness
+        .app
+        .apply(crate::testing::leave_edit(&harness.app, tab, id));
 }
 
 /// Image 3 becomes a cover that was deleted this morning: two pending
@@ -368,6 +370,44 @@ const EDITING: [(&str, Scene); 10] = [
     ("edit-leave", edit_leave),
     ("edit-production", edit_to_production),
 ];
+
+/// The row panel as a row form, one scene per state, in every look.
+const ROW_FORM: [(&str, Scene); 2] = [
+    ("row-form-field", row_form_field),
+    ("row-form-locked", row_form_locked),
+];
+
+/// A field of the row panel being edited: the editor in the value's place,
+/// holding a text its column does not take, with why under it. Another
+/// field of the row is pending, and the footer's Edit can be pressed.
+fn row_form_field(harness: &mut Harness) {
+    let (tab, id) = editable(harness);
+    retype(harness, tab, id, (4, DELETED_AT), DELETED);
+    harness.app.apply(Action::EditField {
+        tab,
+        id,
+        cell: CellPos {
+            row: 4,
+            col: BOOK_ID,
+        },
+    });
+    let workspace = harness.app.workspace_mut(tab).unwrap();
+    let editor = workspace.object_tab_mut(id).unwrap().edits.editor.as_mut();
+    editor.expect("the panel's editor").text = "107233x".into();
+    // What the field says when its text changed: the check runs.
+    harness.app.apply(Action::EditorTyped { tab, id });
+}
+
+/// An edit asked for on the key's field: its lock, and why under its value
+/// (the terminal look says it in its mode line).
+fn row_form_locked(harness: &mut Harness) {
+    let (tab, id) = editable(harness);
+    harness.app.apply(Action::EditField {
+        tab,
+        id,
+        cell: CellPos { row: 4, col: 0 },
+    });
+}
 
 /// Three pending cells in two rows, one of them a book's id that is no
 /// number: the counts, and "1 to fix" where a save would be.
@@ -1058,6 +1098,11 @@ fn shots() {
     // and one that found its row changed or gone, and the two questions
     // before leaving and before a save to production.
     for (name, scene) in EDITING {
+        both(name, scene);
+    }
+    // The row panel as a row form: a field being edited, and a locked one
+    // saying why.
+    for (name, scene) in ROW_FORM {
         both(name, scene);
     }
 }

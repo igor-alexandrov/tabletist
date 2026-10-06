@@ -84,6 +84,8 @@ pub const SHORTCUTS: &[(&str, &str, Holds)] = &[
     // Editing a table's cells: each look's own keys for the same things.
     ("Enter, F2", "Edit the cell", DESKTOP),
     ("i, Enter", "Edit the cell", TERMINAL),
+    ("Mod+I", "Edit the row in the row panel", DESKTOP),
+    ("e, Mod+I", "Edit the row in the row panel", TERMINAL),
     ("cc", "Edit the cell from nothing", TERMINAL),
     ("Tab, Shift+Tab", "Commit and move right or left", ALL),
     ("Esc", "Cancel the edit", DESKTOP),
@@ -106,7 +108,7 @@ pub const SHORTCUTS: &[(&str, &str, Holds)] = &[
     ("Esc", "Close the SQL of the pending changes", TERMINAL),
     ("Y", "Copy the SQL of the pending changes", TERMINAL),
     (
-        "j/k, h/l, Ctrl+H/L, [ ], i, Enter, cc, x, u, Mod+S, :w, :e!, :diff, Y, Space, Esc, /, y, s, d, gd, za, t, 1…9",
+        "j/k, h/l, Ctrl+H/L, [ ], i, Enter, cc, e, x, u, Mod+S, :w, :e!, :diff, Y, Space, Esc, /, y, s, d, gd, za, t, 1…9",
         "Omarchy: vim keys (shown in the status line)",
         ALL,
     ),
@@ -829,6 +831,24 @@ fn editing_keys(app: &App, ctx: &egui::Context, keyboard: bool, actions: &mut Ve
         let show = !object.edits.reviewing;
         actions.push(Action::ReviewEdits { tab, id, show });
     }
+    // Mod+I edits the row in the row panel, which it shows: from wherever
+    // the table's rows show, whatever has the keyboard, in every look, and
+    // with nothing pending. Not while an editor is open, which is where
+    // the user is, and not in a frame that brings a click: the click
+    // selects its row once the frame is drawn, and the key would edit the
+    // row the selection leaves. A fresh press only. (In a SQL editor the
+    // chord asks for completions: no table is in front there.)
+    let edit_row = |input: &mut egui::InputState| {
+        let clicked = input
+            .events
+            .iter()
+            .any(|event| matches!(event, egui::Event::PointerButton { .. }));
+        consume_press(input, Modifiers::COMMAND, Key::I) && !clicked
+    };
+    let rows = object.view == crate::model::ObjectView::Data;
+    if !open && rows && ctx.input_mut(edit_row) {
+        actions.push(Action::EditRow { tab, id });
+    }
     // An open editor has the keyboard or is about to take it, and takes
     // the keys below with it: none of them opens another, and what is typed
     // is its text.
@@ -905,9 +925,10 @@ fn editing_keys(app: &App, ctx: &egui::Context, keyboard: bool, actions: &mut Ve
 }
 
 /// The terminal look's normal mode on the grid of the table `id`: `i` and
-/// Enter edit the selected cell from its value, `cc` from nothing, `x` sets
-/// it NULL, `u` puts back what was loaded, and `:` opens the prompt that
-/// writes, discards and shows the SQL. The letters are read as the
+/// Enter edit the selected cell from its value, `cc` from nothing, `e`
+/// edits its row in the row panel, `x` sets the cell NULL, `u` puts back
+/// what was loaded, and `:` opens the prompt that writes, discards and
+/// shows the SQL. The letters are read as the
 /// text they type, in the order they came, and taken: a letter that opens
 /// an editor or the prompt is no part of its text, and what follows it in
 /// its frame does nothing (the field is not there yet to be typed into).
@@ -939,7 +960,7 @@ fn editing_letters(
         })
     };
     let alone = actions.is_empty();
-    let mine = |text: &str| matches!(text, "i" | "c" | "x" | "u" | ":");
+    let mine = |text: &str| matches!(text, "i" | "c" | "e" | "x" | "u" | ":");
     let enter = |event: &egui::Event| is_press(event, Modifiers::NONE, Key::Enter);
     ctx.input_mut(|input| {
         // A chord types nothing, though some systems send its letter as
@@ -999,6 +1020,10 @@ fn editing_letters(
                 "c" => {
                     first = true;
                     waits = true;
+                }
+                "e" => {
+                    opened = true;
+                    actions.push(Action::EditRow { tab, id });
                 }
                 "x" => actions.push(Action::SetNull { tab, id }),
                 "u" => actions.push(Action::RevertCell { tab, id }),

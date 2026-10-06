@@ -25,6 +25,7 @@ pub mod pending_bar;
 pub mod picker;
 pub mod quick_open;
 pub mod review;
+pub mod row_form;
 pub mod row_panel;
 pub mod settings;
 pub mod sidebar;
@@ -5888,7 +5889,8 @@ mod tests {
         let tab = with_page(&mut harness);
         focus_grid(&mut harness, tab);
         harness.click("Row 1");
-        let note = "read-only connection · editing arrives in a later version";
+        // Why the row cannot be edited: the fixture connection is read-only.
+        let note = "this connection opens read-only";
         let pieces = |harness: &mut Harness| -> Vec<String> {
             harness.settle();
             let painted = harness.painted.iter();
@@ -5900,13 +5902,13 @@ mod tests {
         assert!(wide.iter().any(|piece| piece == note));
         assert!(wide.iter().any(|piece| piece == "yy p duplicate"));
         // A narrower window cuts the panel: the note is cut to fit it.
-        harness.size.x = 1000.0;
+        harness.size.x = 700.0;
         let narrow = pieces(&mut harness);
         assert!(!narrow.iter().any(|piece| piece == note), "{narrow:?}");
         assert!(
             narrow
                 .iter()
-                .any(|piece| piece.starts_with("read-only connection") && piece.ends_with('…')),
+                .any(|piece| piece.starts_with("this connection") && piece.ends_with('…')),
             "{narrow:?}"
         );
         // And a cell too narrow for its words keeps its key alone.
@@ -5939,34 +5941,35 @@ mod tests {
             // The fixture connection is read-only.
             let (named, painted) = marks(&mut harness);
             if look.terminal {
-                assert_eq!(named, ["read-only"], "{}", look.name);
-                // The bar's tag, the status line's, and the row panel's
-                // note.
+                // The row panel's note, which is why the row cannot be
+                // edited, and the bar's tag.
+                let marks = ["this connection opens read-only", "read-only"];
+                assert_eq!(named, marks, "{}", look.name);
+                // Those two, and the status line's tag.
                 assert_eq!(
                     painted,
-                    [
-                        "read-only",
-                        "read-only",
-                        "read-only connection · editing arrives in a later version"
-                    ],
+                    ["read-only", "read-only", "this connection opens read-only"],
                     "{}",
                     look.name
                 );
             } else {
-                // The bar's pill and the footer.
-                let marks = ["Read-only", "1 row selected · read-only"];
+                // The bar's pill, the row panel's note and the footer.
+                let marks = [
+                    "Read-only",
+                    "This connection opens read-only",
+                    "1 row selected · read-only",
+                ];
                 assert_eq!(named, marks, "{}", look.name);
             }
             harness.app.workspace_mut(tab).unwrap().access = tabletist_db::Access::Writable;
             let (named, painted) = marks(&mut harness);
             assert_eq!(named, Vec::<String>::new(), "{}", look.name);
             assert_eq!(painted, Vec::<String>::new(), "{}", look.name);
-            if look.terminal {
-                // The row panel's note says the rest of what it said.
-                let note = "editing arrives in a later version";
-                let mut pieces = harness.painted.iter();
-                assert!(pieces.any(|(text, _)| text == note), "{}", look.name);
-            }
+            // The row panel's note says what holds the row now: the
+            // fixture never answered the table's structure.
+            let note = look.label("The table's structure is still loading");
+            let mut pieces = harness.painted.iter();
+            assert!(pieces.any(|(text, _)| *text == note), "{}", look.name);
         }
     }
 
@@ -15060,7 +15063,9 @@ mod tests {
             harness.app.apply(Action::CommitEdit { tab, id, then });
             assert!(edits(&harness, tab, id).editor.is_some(), "large: {large}");
             assert!(edits(&harness, tab, id).cells.is_empty(), "large: {large}");
-            harness.app.apply(Action::LeaveEdit { tab, id });
+            harness
+                .app
+                .apply(crate::testing::leave_edit(&harness.app, tab, id));
             let pending = edits(&harness, tab, id).cells.get(&at).unwrap();
             assert_eq!(
                 pending.state,
@@ -15345,7 +15350,9 @@ mod tests {
             cell,
             start,
         });
-        harness.app.apply(Action::LeaveEdit { tab, id });
+        harness
+            .app
+            .apply(crate::testing::leave_edit(&harness.app, tab, id));
     }
 
     /// The row `id 2` of the fixture's page as a save reads it back.
@@ -16800,35 +16807,223 @@ mod tests {
         }
     }
 
+    /// The buttons under the row panel's row, as the look names them, with
+    /// whether each can be pressed.
+    fn footer_buttons(harness: &mut Harness, look: &Look) -> Vec<(&'static str, bool)> {
+        let controls = if look.terminal {
+            ["e edit", "yy p duplicate", "dd delete"]
+        } else {
+            ["Edit", "Duplicate", "Delete"]
+        };
+        let tree = harness.settle();
+        let enabled = |name: &str| {
+            let mut nodes = tree.nodes.iter();
+            let node = nodes.find(|(_, node)| node.label() == Some(name));
+            !node.unwrap_or_else(|| panic!("no {name}")).1.is_disabled()
+        };
+        controls.map(|name| (name, enabled(name))).to_vec()
+    }
+
     #[test]
-    fn the_row_panel_stays_read_only_with_a_pending_value() {
+    fn the_row_panels_edit_works_and_duplicate_and_delete_wait() {
         for look in Look::ALL {
             let (mut harness, tab, id) = editable_in(look);
             select(&mut harness, tab, id, (1, 1));
-            // The editing controls under the row, as the look names them.
-            let controls = if look.terminal {
-                ["e edit", "yy p duplicate", "dd delete"]
-            } else {
-                ["Edit", "Duplicate", "Delete"]
-            };
-            let footer = |harness: &mut Harness| {
-                let tree = harness.settle();
-                let mut names: Vec<String> = controls
+            let pressable = |harness: &mut Harness| {
+                let buttons = footer_buttons(harness, &look);
+                buttons
                     .into_iter()
-                    .filter(|name| {
-                        tree.nodes
-                            .iter()
-                            .any(|(_, node)| node.label() == Some(name) && node.is_disabled())
-                    })
-                    .map(str::to_owned)
-                    .collect();
-                names.sort();
-                names
+                    .map(|(_, enabled)| enabled)
+                    .collect::<Vec<_>>()
             };
-            let before = footer(&mut harness);
-            assert_eq!(before.len(), 3, "{}", look.name);
+            assert_eq!(
+                pressable(&mut harness),
+                [true, false, false],
+                "{}",
+                look.name
+            );
+            // With a value pending as without.
             make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
-            assert_eq!(footer(&mut harness), before, "{}", look.name);
+            assert_eq!(
+                pressable(&mut harness),
+                [true, false, false],
+                "{}",
+                look.name
+            );
+            // Edit edits the row in the panel: the selected cell's field.
+            let edit = footer_buttons(&mut harness, &look)[0].0;
+            harness.click(edit);
+            assert_eq!(
+                form_editor(&harness, tab, id),
+                Some(((1, 1), true)),
+                "{}",
+                look.name
+            );
+            assert_eq!(
+                editor_text(&harness, tab, id).as_deref(),
+                Some("bob@example.com"),
+                "{}",
+                look.name
+            );
+            // Pressed while a field is edited, it leaves that field open
+            // with its text: the field is left for the button, which asks
+            // for the same cell.
+            type_text(&mut harness, "!");
+            let tree = harness.settle();
+            let button = crate::testing::bounds(&tree, edit, egui::accesskit::Role::Button)
+                .expect("the button");
+            click_at(&mut harness, button.center());
+            assert_eq!(
+                form_editor(&harness, tab, id),
+                Some(((1, 1), true)),
+                "{}",
+                look.name
+            );
+            assert_eq!(
+                editor_text(&harness, tab, id).as_deref(),
+                Some("bob@example.com!"),
+                "{}",
+                look.name
+            );
+            // On the key's cell, which is locked, it takes the row's first
+            // field that can be edited.
+            harness.press(Key::Escape, Modifiers::NONE);
+            select(&mut harness, tab, id, (2, 0));
+            harness.click(edit);
+            assert_eq!(
+                form_editor(&harness, tab, id),
+                Some(((2, 1), true)),
+                "{}",
+                look.name
+            );
+        }
+    }
+
+    #[test]
+    fn the_footer_says_why_a_row_cannot_be_edited_and_edit_waits() {
+        for look in Look::ALL {
+            // A read-only connection: the reason is the grid's own.
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            harness.connect_fake_as(true);
+            harness.click("users");
+            harness.answer_structure(crate::testing::fixture_structure());
+            harness.answer_rows(crate::testing::page(5, false));
+            harness.click("Row 2");
+            let why = look.label("This connection opens read-only");
+            assert!(
+                painted(&harness, &why),
+                "{}: {:?}",
+                look.name,
+                harness.painted
+            );
+            assert!(harness.has(&why), "{}", look.name);
+            let buttons = footer_buttons(&mut harness, &look);
+            assert!(buttons.iter().all(|(_, enabled)| !enabled), "{}", look.name);
+            // A view, on a connection that can write: its own reason,
+            // and no field of it offers an edit.
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            let tab = harness.connect_fake_as(false);
+            harness.app.apply(Action::OpenObject {
+                tab,
+                object: tabletist_db::ObjectRef::new("main", "users"),
+                kind: tabletist_db::ObjectKind::View,
+                pin: true,
+            });
+            harness.answer_structure(crate::testing::fixture_structure());
+            harness.answer_rows(crate::testing::page(5, false));
+            let id = harness.app.workspace(tab).unwrap().active_tab.unwrap();
+            select(&mut harness, tab, id, (1, 1));
+            let why = look.label("Views cannot be edited");
+            assert!(
+                painted(&harness, &why),
+                "{}: {:?}",
+                look.name,
+                harness.painted
+            );
+            assert!(!has_button(&mut harness, "Edit email"), "{}", look.name);
+            assert!(!footer_buttons(&mut harness, &look)[0].1, "{}", look.name);
+            // A table that can be edited has no note, until a save locks
+            // every cell of it for a while.
+            let (mut harness, tab, id) = editable_in(look);
+            select(&mut harness, tab, id, (1, 1));
+            let saving = look.label("A save is running");
+            assert!(!painted(&harness, &saving), "{}", look.name);
+            make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
+            harness.app.apply(Action::WriteEdits { tab, id });
+            harness.settle();
+            assert!(
+                painted(&harness, &saving),
+                "{}: {:?}",
+                look.name,
+                harness.painted
+            );
+            let buttons = footer_buttons(&mut harness, &look);
+            assert!(buttons.iter().all(|(_, enabled)| !enabled), "{}", look.name);
+            // And no field of the row offers an edit meanwhile.
+            assert!(!has_button(&mut harness, "Edit email"), "{}", look.name);
+            harness.answer_written(Ok(written_row("bob@example.com")));
+            harness.settle();
+            assert!(!painted(&harness, &saving), "{}", look.name);
+            assert!(footer_buttons(&mut harness, &look)[0].1, "{}", look.name);
+            assert!(has_button(&mut harness, "Edit email"), "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn a_locked_field_wears_a_lock_and_says_why_when_its_edit_is_asked_for() {
+        for look in Look::ALL {
+            let (mut harness, tab, id) = form_row(look, 1);
+            let palette = harness.app.palette;
+            let why = "Part of the row's key";
+            // The lock is there for a screen reader, after the label; the
+            // fields that can be edited have none.
+            assert!(harness.has(&format!("Locked: {why}")), "{}", look.name);
+            let tree = harness.settle();
+            let locks = crate::testing::labels(&tree)
+                .into_iter()
+                .filter(|label| label.starts_with("Locked: "))
+                .count();
+            assert_eq!(locks, 1, "{}", look.name);
+            // Nothing says why until an edit of it is asked for.
+            let said = look.label(why);
+            assert!(!painted(&harness, &said), "{}", look.name);
+            let at = panel_text(&harness, "2").center();
+            click_at(&mut harness, at);
+            click_at(&mut harness, at);
+            let now = edits(&harness, tab, id);
+            assert!(now.editor.is_none(), "{}", look.name);
+            assert_eq!(
+                now.why,
+                Some((CellPos { row: 1, col: 0 }, crate::edit::Lock::KeyColumn)),
+                "{}",
+                look.name
+            );
+            assert_eq!(times_painted(&harness, &said), 1, "{}", look.name);
+            let note = harness.painted_rect(&said).unwrap();
+            if look.terminal {
+                // In the mode line, at the window's foot, as for a cell.
+                assert!(note.top() > harness.size.y - 40.0, "{note:?}");
+            } else {
+                // Under the field in the panel, and not at the grid's cell.
+                let value = panel_text(&harness, "2");
+                assert!(note.top() >= value.bottom() - 1.0, "{}", look.name);
+                assert!((note.left() - value.left()).abs() < 2.0, "{}", look.name);
+                assert!(painted_in(&harness, &said, palette.secondary));
+            }
+            // Until the selection moves.
+            select(&mut harness, tab, id, (2, 0));
+            assert!(!painted(&harness, &said), "{}", look.name);
+            // Asked for in the grid, it is said at the cell, and the panel
+            // does not repeat it.
+            if !look.terminal {
+                open_editor(&mut harness, tab, id, (2, 0));
+                assert_eq!(times_painted(&harness, &said), 1, "{}", look.name);
+                let note = harness.painted_rect(&said).unwrap();
+                let value = panel_text(&harness, "3");
+                assert!(note.right() < value.left(), "{}", look.name);
+            }
         }
     }
 
@@ -19636,6 +19831,753 @@ mod tests {
             assert!(!harness.has("Hide SQL"), "{}", look.name);
             click_dialog(&mut harness, "Cancel");
             assert!(!edits(&harness, tab, id).reviewing, "{}", look.name);
+        }
+    }
+
+    // The row panel as a row form.
+
+    /// The table of `with_quantities` (`id`, `email`, `qty`), its row `row`
+    /// selected: the panel shows it, with two fields that can be edited.
+    fn form_row(look: Look, row: usize) -> (Harness, ConnTabId, TabId) {
+        let (mut harness, tab, id) = with_quantities(look);
+        select(&mut harness, tab, id, (row, 0));
+        (harness, tab, id)
+    }
+
+    /// The tab's open editor: its cell (row, column) and whether the row
+    /// panel draws it.
+    fn form_editor(harness: &Harness, tab: ConnTabId, id: TabId) -> Option<((usize, usize), bool)> {
+        let editor = edits(harness, tab, id).editor.as_ref()?;
+        let panel = editor.place == crate::edit::EditorPlace::Panel;
+        Some(((editor.cell.row, editor.cell.col), panel))
+    }
+
+    /// Where the row panel wrote `text`: the grid writes a cell's value
+    /// too, left of the panel.
+    fn panel_text(harness: &Harness, text: &str) -> egui::Rect {
+        let written = harness.text_rects.iter().filter(|(piece, _)| piece == text);
+        let rightmost = written.max_by(|a, b| a.1.left().total_cmp(&b.1.left()));
+        rightmost
+            .unwrap_or_else(|| panic!("the panel does not show {text}"))
+            .1
+    }
+
+    /// Whether a button named `name` is on screen.
+    fn has_button(harness: &mut Harness, name: &str) -> bool {
+        let tree = harness.settle();
+        crate::testing::node(&tree, name, egui::accesskit::Role::Button).is_some()
+    }
+
+    #[test]
+    fn a_fields_pencil_edits_its_value_in_the_row_panel() {
+        for look in Look::ALL {
+            let (mut harness, tab, id) = form_row(look, 1);
+            // The key is locked: its field has no pencil.
+            assert!(has_button(&mut harness, "Edit email"), "{}", look.name);
+            assert!(has_button(&mut harness, "Edit qty"), "{}", look.name);
+            assert!(!has_button(&mut harness, "Edit id"), "{}", look.name);
+            let value = panel_text(&harness, "user2@example.com");
+            harness.click("Edit email");
+            assert_eq!(
+                form_editor(&harness, tab, id),
+                Some(((1, 1), true)),
+                "{}",
+                look.name
+            );
+            assert!(harness.ctx.text_edit_focused(), "{}", look.name);
+            // The field stands where the value stood, in the panel: under
+            // the field's label, and not on the grid's cell.
+            let tree = harness.settle();
+            let field =
+                crate::testing::bounds(&tree, "Edit email", egui::accesskit::Role::TextInput)
+                    .expect("the field");
+            assert!(field.contains(value.center()), "{}", look.name);
+            let cell = harness
+                .text_rects
+                .iter()
+                .find(|(text, _)| text == "user3@example.com")
+                .map(|(_, rect)| *rect)
+                .expect("the cell under the edited one");
+            assert!(field.left() > cell.right(), "{}", look.name);
+            // Its pencil is gone while it is edited; the other field's stays.
+            assert!(!has_button(&mut harness, "Edit email"), "{}", look.name);
+            assert!(has_button(&mut harness, "Edit qty"), "{}", look.name);
+            // Typed at the end of the value, and committed by Enter, which
+            // moves nothing: the same row is selected and shown.
+            type_text(&mut harness, "x");
+            harness.press(Key::Enter, Modifiers::NONE);
+            assert!(edits(&harness, tab, id).editor.is_none(), "{}", look.name);
+            assert_eq!(
+                pending_text(&harness, tab, id, (1, 1)).as_deref(),
+                Some("user2@example.comx"),
+                "{}",
+                look.name
+            );
+            assert_eq!(selected(&harness, tab, id), Some((1, 1)), "{}", look.name);
+            // The panel shows the new value, and what it was.
+            assert!(painted(&harness, "user2@example.comx"), "{}", look.name);
+            assert!(painted(&harness, "was user2@example.com"), "{}", look.name);
+            assert!(has_button(&mut harness, "Edit email"), "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn a_double_click_on_a_value_edits_it_in_the_row_panel_and_one_click_does_not() {
+        for look in Look::ALL {
+            let (mut harness, tab, id) = form_row(look, 2);
+            let at = panel_text(&harness, "user3@example.com").center();
+            click_at(&mut harness, at);
+            assert!(edits(&harness, tab, id).editor.is_none(), "{}", look.name);
+            click_at(&mut harness, at);
+            assert_eq!(
+                form_editor(&harness, tab, id),
+                Some(((2, 1), true)),
+                "{}",
+                look.name
+            );
+            assert_eq!(
+                editor_text(&harness, tab, id).as_deref(),
+                Some("user3@example.com"),
+                "{}",
+                look.name
+            );
+            // The key's value takes no edit, however it is clicked.
+            let (mut harness, tab, id) = form_row(look, 2);
+            let at = panel_text(&harness, "3").center();
+            click_at(&mut harness, at);
+            click_at(&mut harness, at);
+            assert!(edits(&harness, tab, id).editor.is_none(), "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn enter_and_f2_on_a_value_edit_it_and_the_keyboard_comes_back_to_it() {
+        for look in desktop_looks() {
+            let (mut harness, tab, id) = form_row(look, 1);
+            // A click puts a caret in the value, as it always did.
+            let at = panel_text(&harness, "user2@example.com").center();
+            click_at(&mut harness, at);
+            assert!(harness.ctx.text_edit_focused(), "{}", look.name);
+            assert!(edits(&harness, tab, id).editor.is_none(), "{}", look.name);
+            harness.press(Key::Enter, Modifiers::NONE);
+            assert_eq!(
+                form_editor(&harness, tab, id),
+                Some(((1, 1), true)),
+                "{}",
+                look.name
+            );
+            // Esc drops the edit, and the keyboard is on the value again:
+            // F2 edits it once more.
+            type_text(&mut harness, "x");
+            harness.press(Key::Escape, Modifiers::NONE);
+            let now = edits(&harness, tab, id);
+            assert!(
+                now.editor.is_none() && now.cells.is_empty(),
+                "{}",
+                look.name
+            );
+            assert!(harness.ctx.text_edit_focused(), "{}", look.name);
+            // The panel said so, and the reducer owes the field no more.
+            let workspace = harness.app.workspace(tab).unwrap();
+            let owed = workspace.object_tab(id).unwrap().focus_field;
+            assert_eq!(owed, None, "{}", look.name);
+            harness.press(Key::F2, Modifiers::NONE);
+            assert_eq!(
+                form_editor(&harness, tab, id),
+                Some(((1, 1), true)),
+                "{}",
+                look.name
+            );
+            assert_eq!(
+                editor_text(&harness, tab, id).as_deref(),
+                Some("user2@example.com"),
+                "{}",
+                look.name
+            );
+            // Tab commits as Enter does, and stays.
+            type_text(&mut harness, "y");
+            harness.press(Key::Tab, Modifiers::NONE);
+            assert_eq!(
+                pending_text(&harness, tab, id, (1, 1)).as_deref(),
+                Some("user2@example.comy"),
+                "{}",
+                look.name
+            );
+            assert_eq!(selected(&harness, tab, id), Some((1, 1)), "{}", look.name);
+            assert!(harness.ctx.text_edit_focused(), "{}", look.name);
+            harness.press(Key::Enter, Modifiers::NONE);
+            assert_eq!(
+                form_editor(&harness, tab, id),
+                Some(((1, 1), true)),
+                "{}",
+                look.name
+            );
+            assert_eq!(
+                editor_text(&harness, tab, id).as_deref(),
+                Some("user2@example.comy"),
+                "{}",
+                look.name
+            );
+        }
+    }
+
+    /// Gives the keyboard to the button named `name`, as the Tab key or a
+    /// screen reader does.
+    fn focus_button(harness: &mut Harness, name: &str) {
+        use egui::accesskit::{Action, ActionRequest, Role, TreeId};
+        let tree = harness.settle();
+        let target = crate::testing::node(&tree, name, Role::Button)
+            .unwrap_or_else(|| panic!("no button {name}"));
+        harness.frame(vec![egui::Event::AccessKitActionRequest(ActionRequest {
+            target_tree: TreeId::ROOT,
+            target_node: target,
+            action: Action::Focus,
+            data: None,
+        })]);
+        harness.settle();
+    }
+
+    /// Whether the button named `name` has the keyboard.
+    fn button_focused(harness: &mut Harness, name: &str) -> bool {
+        let tree = harness.settle();
+        let button = crate::testing::node(&tree, name, egui::accesskit::Role::Button);
+        button.is_some_and(|button| button == tree.focus)
+    }
+
+    #[test]
+    fn a_pencil_that_has_the_keyboard_edits_by_enter_and_f2_and_gets_it_back() {
+        for look in desktop_looks() {
+            let (mut harness, tab, id) = form_row(look, 1);
+            // A NULL has no text to put a caret in: its pencil is where
+            // the keyboard stands for the field.
+            let object = harness.app.workspace_mut(tab).unwrap();
+            let object = object.object_tab_mut(id).unwrap();
+            object.rows.value.as_mut().unwrap().rows[1][1] = tabletist_db::Value::Null;
+            object.fields = None;
+            focus_button(&mut harness, "Edit email");
+            assert!(button_focused(&mut harness, "Edit email"), "{}", look.name);
+            harness.press(Key::Enter, Modifiers::NONE);
+            assert_eq!(
+                form_editor(&harness, tab, id),
+                Some(((1, 1), true)),
+                "{}",
+                look.name
+            );
+            // Dropped: the value is NULL still, and the keyboard is on
+            // the pencil again. F2 edits from there too.
+            harness.press(Key::Escape, Modifiers::NONE);
+            assert!(edits(&harness, tab, id).editor.is_none(), "{}", look.name);
+            assert!(button_focused(&mut harness, "Edit email"), "{}", look.name);
+            harness.press(Key::F2, Modifiers::NONE);
+            assert_eq!(
+                form_editor(&harness, tab, id),
+                Some(((1, 1), true)),
+                "{}",
+                look.name
+            );
+        }
+    }
+
+    #[test]
+    fn mod_s_saves_from_the_panels_field_with_what_is_typed() {
+        for look in Look::ALL {
+            let (mut harness, tab, id) = form_row(look, 1);
+            harness.click("Edit email");
+            type_text(&mut harness, "x");
+            harness.press(Key::S, Modifiers::COMMAND);
+            assert!(edits(&harness, tab, id).editor.is_none(), "{}", look.name);
+            assert_eq!(writes(&harness), 1, "{}", look.name);
+            let Some(crate::backend::Command::Write { changes, .. }) =
+                harness.app.backend.sent.last()
+            else {
+                panic!("a save was sent");
+            };
+            assert_eq!(
+                changes.rows[0].set[0].new,
+                tabletist_db::NewValue::Text("user2@example.comx".into()),
+                "{}",
+                look.name
+            );
+        }
+    }
+
+    #[test]
+    fn the_terminals_escape_keeps_a_panel_edit_and_ctrl_c_drops_it() {
+        let (mut harness, tab, id) = form_row(Look::omarchy(), 1);
+        let panel = |harness: &Harness| harness.app.workspace(tab).unwrap().row_panel;
+        harness.click("Edit email");
+        type_text(&mut harness, "!");
+        assert!(painted(&harness, "-- INSERT --"), "{:?}", harness.painted);
+        harness.press(Key::Escape, Modifiers::NONE);
+        assert!(edits(&harness, tab, id).editor.is_none());
+        assert_eq!(
+            pending_text(&harness, tab, id, (1, 1)).as_deref(),
+            Some("user2@example.com!")
+        );
+        // The key left insert mode and did no more: the panel is open.
+        assert!(panel(&harness));
+        assert!(!painted(&harness, "-- INSERT --"));
+        harness.click("Edit email");
+        type_text(&mut harness, "?");
+        harness.press(Key::C, Modifiers::CTRL);
+        assert!(edits(&harness, tab, id).editor.is_none());
+        assert_eq!(
+            pending_text(&harness, tab, id, (1, 1)).as_deref(),
+            Some("user2@example.com!")
+        );
+        assert!(panel(&harness));
+    }
+
+    #[test]
+    fn a_text_the_column_refuses_keeps_the_panels_field_and_says_why_under_it() {
+        for look in Look::ALL {
+            let (mut harness, tab, id) = form_row(look, 1);
+            let palette = harness.app.palette;
+            harness.click("Edit qty");
+            assert_eq!(editor_text(&harness, tab, id).as_deref(), Some("71"));
+            type_text(&mut harness, "a");
+            let message = "INTEGER expects a whole number";
+            assert!(
+                painted_in(&harness, message, palette.danger),
+                "{}: {:?}",
+                look.name,
+                harness.painted
+            );
+            // Under the field, in the panel.
+            let tree = harness.settle();
+            let field = crate::testing::bounds(&tree, "Edit qty", egui::accesskit::Role::TextInput)
+                .expect("the field");
+            // The field's border is red, whether or not a key was pressed.
+            let red = egui::Stroke::new(1.0, palette.danger);
+            assert!(
+                harness.outlines.iter().any(|(rect, stroke)| *stroke == red
+                    && (rect.center() - field.center()).length() < 1.0),
+                "{}",
+                look.name
+            );
+            let said = harness.painted_rect(message).unwrap();
+            assert!(said.top() >= field.bottom() - 1.0, "{}", look.name);
+            assert!(said.left() >= field.left() - 1.0, "{}", look.name);
+            // Enter does not leave it.
+            harness.press(Key::Enter, Modifiers::NONE);
+            assert_eq!(
+                form_editor(&harness, tab, id),
+                Some(((1, 2), true)),
+                "{}",
+                look.name
+            );
+            assert!(edits(&harness, tab, id).cells.is_empty(), "{}", look.name);
+            // Left for another field, the text is kept as a cell to fix.
+            harness.click("Edit email");
+            assert_eq!(
+                form_editor(&harness, tab, id),
+                Some(((1, 1), true)),
+                "{}",
+                look.name
+            );
+            assert_eq!(
+                pending_text(&harness, tab, id, (1, 2)).as_deref(),
+                Some("71a"),
+                "{}",
+                look.name
+            );
+            assert_eq!(edits(&harness, tab, id).counts().to_fix, 1);
+        }
+    }
+
+    #[test]
+    fn a_pencil_clicked_while_another_field_is_edited_opens_its_own_and_keeps_the_text() {
+        for look in Look::ALL {
+            // The field below the one being edited, then the one above it:
+            // the panel draws a pencil above the open field before that
+            // field says it was left.
+            for (first, typed, then, kept) in [
+                (
+                    "Edit email",
+                    "x",
+                    "Edit qty",
+                    ((1, 1), "user2@example.comx"),
+                ),
+                ("Edit qty", "9", "Edit email", ((1, 2), "719")),
+            ] {
+                let (mut harness, tab, id) = form_row(look, 1);
+                harness.click(first);
+                type_text(&mut harness, typed);
+                let tree = harness.settle();
+                let pencil = crate::testing::bounds(&tree, then, egui::accesskit::Role::Button)
+                    .expect("the other field's pencil");
+                click_at(&mut harness, pencil.center());
+                let other = if kept.0 == (1, 1) { (1, 2) } else { (1, 1) };
+                assert_eq!(
+                    form_editor(&harness, tab, id),
+                    Some((other, true)),
+                    "{}: {first} then {then}",
+                    look.name
+                );
+                assert_eq!(
+                    pending_text(&harness, tab, id, kept.0).as_deref(),
+                    Some(kept.1),
+                    "{}: {first} then {then}",
+                    look.name
+                );
+                assert!(harness.ctx.text_edit_focused(), "{}", look.name);
+            }
+        }
+    }
+
+    #[test]
+    fn a_field_whose_cell_the_grid_is_editing_says_so() {
+        for look in Look::ALL {
+            let (mut harness, tab, id) = form_row(look, 1);
+            let palette = harness.app.palette;
+            let saying = look.label("Editing in the grid…");
+            assert!(!painted(&harness, &saying), "{}", look.name);
+            open_editor(&mut harness, tab, id, (1, 1));
+            assert_eq!(form_editor(&harness, tab, id), Some(((1, 1), false)));
+            assert!(
+                painted_in(&harness, &saying, palette.accent),
+                "{}: {:?}",
+                look.name,
+                harness.painted
+            );
+            assert!(harness.has(&saying), "{}", look.name);
+            // That field offers no second editor; the others still do.
+            assert!(!has_button(&mut harness, "Edit email"), "{}", look.name);
+            assert!(has_button(&mut harness, "Edit qty"), "{}", look.name);
+            // Another field's pencil takes the editor to the panel, and the
+            // grid's field, which lost the keyboard to it, closes nothing.
+            let tree = harness.settle();
+            let pencil = crate::testing::bounds(&tree, "Edit qty", egui::accesskit::Role::Button)
+                .expect("the pencil");
+            click_at(&mut harness, pencil.center());
+            assert_eq!(
+                form_editor(&harness, tab, id),
+                Some(((1, 2), true)),
+                "{}",
+                look.name
+            );
+            assert!(!painted(&harness, &saying), "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn a_tall_values_pencil_opens_the_popover_at_its_cell() {
+        for look in Look::ALL {
+            let (mut harness, tab, id) = editable_in(look);
+            select(&mut harness, tab, id, (0, 0));
+            // A document: its pencil stands with its other controls.
+            harness.click("Edit meta");
+            let editor = edits(&harness, tab, id).editor.as_ref().expect("an editor");
+            assert!(editor.large, "{}", look.name);
+            assert_eq!(form_editor(&harness, tab, id), Some(((0, 2), false)));
+            assert!(harness.ctx.text_edit_focused(), "{}", look.name);
+            assert!(
+                painted(&harness, &look.label("Editing in the grid…")),
+                "{}",
+                look.name
+            );
+            // A NULL has no text to click: its pencil is its way in, and a
+            // double-click on the mark is another.
+            let (mut harness, tab, id) = form_row(look, 1);
+            let null = tabletist_db::Value::Null;
+            let object = harness.app.workspace_mut(tab).unwrap();
+            let object = object.object_tab_mut(id).unwrap();
+            object.rows.value.as_mut().unwrap().rows[1][1] = null;
+            object.fields = None;
+            harness.settle();
+            let at = panel_text(&harness, "NULL").center();
+            click_at(&mut harness, at);
+            click_at(&mut harness, at);
+            assert_eq!(
+                form_editor(&harness, tab, id),
+                Some(((1, 1), true)),
+                "{}",
+                look.name
+            );
+            assert_eq!(editor_text(&harness, tab, id).as_deref(), Some(""));
+        }
+    }
+
+    #[test]
+    fn a_row_that_cannot_be_edited_has_no_pencils() {
+        for look in Look::ALL {
+            // A read-only connection.
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            let tab = harness.connect_fake_as(true);
+            harness.click("users");
+            harness.answer_structure(crate::testing::fixture_structure());
+            harness.answer_rows(crate::testing::page(5, false));
+            harness.click("Row 2");
+            assert!(harness.has("Copy email"), "{}", look.name);
+            assert!(!has_button(&mut harness, "Edit email"), "{}", look.name);
+            // No click starts an edit there.
+            let at = panel_text(&harness, "user2@example.com").center();
+            click_at(&mut harness, at);
+            click_at(&mut harness, at);
+            let id = harness.app.workspace(tab).unwrap().active_tab.unwrap();
+            let now = edits(&harness, tab, id);
+            assert!(now.editor.is_none() && now.why.is_none(), "{}", look.name);
+            // A SQL editor's result row.
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            let tab = harness.connect_fake_as(false);
+            with_sql_result(&mut harness, tab, 3);
+            assert!(harness.app.workspace(tab).unwrap().row_panel);
+            let tree = harness.settle();
+            let pencils = crate::testing::labels(&tree)
+                .into_iter()
+                .filter(|label| label.starts_with("Edit "))
+                .count();
+            assert_eq!(pencils, 0, "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn a_value_that_can_be_edited_shows_a_fields_outline_under_the_pointer() {
+        for look in Look::ALL {
+            let (mut harness, _, _) = form_row(look, 1);
+            let palette = harness.app.palette;
+            let color = if look.terminal {
+                palette.accent
+            } else {
+                palette.border
+            };
+            let outlined = |harness: &Harness, text: &str| {
+                let value = panel_text(harness, text);
+                harness.outlines.iter().any(|(rect, stroke)| {
+                    *stroke == egui::Stroke::new(1.0, color)
+                        && rect.contains_rect(value)
+                        && rect.height() < value.height() + 10.0
+                })
+            };
+            assert!(!outlined(&harness, "user2@example.com"), "{}", look.name);
+            let at = panel_text(&harness, "user2@example.com").center();
+            harness.frame(vec![egui::Event::PointerMoved(at)]);
+            harness.settle();
+            assert!(outlined(&harness, "user2@example.com"), "{}", look.name);
+            // The key's value shows none: it cannot be edited.
+            let at = panel_text(&harness, "2").center();
+            harness.frame(vec![egui::Event::PointerMoved(at)]);
+            harness.settle();
+            assert!(!outlined(&harness, "2"), "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn mod_i_edits_the_row_in_the_row_panel_in_every_look() {
+        for look in Look::ALL {
+            let (mut harness, tab, id) = form_row(look, 1);
+            let panel = |harness: &Harness| harness.app.workspace(tab).unwrap().row_panel;
+            // With the panel closed: it is shown for the edit. The selected
+            // cell is the key's, so the row's first field that can be
+            // edited is the one.
+            harness.app.apply(Action::ToggleRowPanel(tab));
+            harness.press(Key::I, Modifiers::COMMAND);
+            assert!(panel(&harness), "{}", look.name);
+            assert_eq!(
+                form_editor(&harness, tab, id),
+                Some(((1, 1), true)),
+                "{}",
+                look.name
+            );
+            assert!(harness.ctx.text_edit_focused(), "{}", look.name);
+            // The selected cell's own field where it can be edited.
+            harness.app.apply(Action::CancelEdit { tab, id });
+            select(&mut harness, tab, id, (1, 2));
+            harness.press(Key::I, Modifiers::COMMAND);
+            assert_eq!(
+                form_editor(&harness, tab, id),
+                Some(((1, 2), true)),
+                "{}",
+                look.name
+            );
+            // While an editor is open the chord is no second way in: the
+            // grid's editor stays the grid's.
+            harness.app.apply(Action::CancelEdit { tab, id });
+            open_editor(&mut harness, tab, id, (2, 1));
+            harness.press(Key::I, Modifiers::COMMAND);
+            assert_eq!(
+                form_editor(&harness, tab, id),
+                Some(((2, 1), false)),
+                "{}",
+                look.name
+            );
+            harness.app.apply(Action::CancelEdit { tab, id });
+            // Not in a frame that brings a click: the click's row is
+            // selected only once the frame is drawn.
+            let at = cell_of(&harness, "user4@example.com");
+            harness.frame(vec![
+                egui::Event::PointerButton {
+                    pos: at,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Modifiers::NONE,
+                },
+                crate::testing::key(Key::I, Modifiers::COMMAND),
+            ]);
+            harness.frame(vec![crate::testing::release(Key::I, Modifiers::COMMAND)]);
+            harness.settle();
+            assert!(edits(&harness, tab, id).editor.is_none(), "{}", look.name);
+            // Nor in the Structure view, which shows no rows.
+            select(&mut harness, tab, id, (1, 1));
+            harness.app.apply(Action::SetView {
+                tab,
+                object_tab: id,
+                view: crate::model::ObjectView::Structure,
+            });
+            harness.press(Key::I, Modifiers::COMMAND);
+            assert!(edits(&harness, tab, id).editor.is_none(), "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn mod_i_reaches_the_row_from_a_caret_in_a_value_and_leaves_a_sql_editor_alone() {
+        for look in desktop_looks() {
+            let (mut harness, tab, id) = form_row(look, 1);
+            // A caret in one of the panel's values is a text field to the
+            // grid's keys, and not to this chord. It edits the row as from
+            // anywhere: by the selected cell, which is the key's here, so
+            // the row's first field that can be edited. (Enter is the key
+            // of the value the caret is in.)
+            let at = panel_text(&harness, "71").center();
+            click_at(&mut harness, at);
+            assert!(harness.ctx.text_edit_focused(), "{}", look.name);
+            harness.press(Key::I, Modifiers::COMMAND);
+            assert_eq!(
+                form_editor(&harness, tab, id),
+                Some(((1, 1), true)),
+                "{}",
+                look.name
+            );
+            harness.app.apply(Action::CancelEdit { tab, id });
+            // With a SQL editor in front the chord is its own (it asks for
+            // completions): the table behind it gets no editor.
+            let sql = harness.add_sql_tab(tab);
+            harness.app.apply(Action::ActivateTab { tab, id: sql });
+            harness.settle();
+            harness.press(Key::I, Modifiers::COMMAND);
+            assert!(edits(&harness, tab, id).editor.is_none(), "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn mod_i_on_a_row_that_cannot_be_edited_shows_the_panel_and_its_reason() {
+        for look in Look::ALL {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            let tab = harness.connect_fake_as(true);
+            harness.click("users");
+            harness.answer_structure(crate::testing::fixture_structure());
+            harness.answer_rows(crate::testing::page(5, false));
+            harness.click("Row 2");
+            let id = harness.app.workspace(tab).unwrap().active_tab.unwrap();
+            focus_grid(&mut harness, tab);
+            harness.app.apply(Action::ToggleRowPanel(tab));
+            harness.press(Key::I, Modifiers::COMMAND);
+            assert!(harness.app.workspace(tab).unwrap().row_panel);
+            assert!(edits(&harness, tab, id).editor.is_none(), "{}", look.name);
+            // The footer's note is the reason. The terminal's mode line
+            // says it too, as for a cell; nothing is said under a field.
+            let why = look.label("This connection opens read-only");
+            let said = if look.terminal { 2 } else { 1 };
+            assert_eq!(times_painted(&harness, &why), said, "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn the_terminals_e_edits_the_row_in_the_row_panel() {
+        let (mut harness, tab, id) = normal_mode((1, 1));
+        type_key(&mut harness, Key::E, "e");
+        assert_eq!(form_editor(&harness, tab, id), Some(((1, 1), true)));
+        assert_eq!(
+            editor_text(&harness, tab, id).as_deref(),
+            Some("user2@example.com")
+        );
+        // Insert mode, as for a cell: but Tab does not move on to a next
+        // cell from the panel's field, and the line does not offer it.
+        assert!(painted(&harness, "-- INSERT --"), "{:?}", harness.painted);
+        assert!(painted(&harness, "esc normal"), "{:?}", harness.painted);
+        assert!(!painted(&harness, "esc normal · tab next cell"));
+        // The letter was the key, and is no part of the text.
+        type_text(&mut harness, "!");
+        harness.press(Key::Escape, Modifiers::NONE);
+        assert_eq!(
+            pending_text(&harness, tab, id, (1, 1)).as_deref(),
+            Some("user2@example.com!")
+        );
+        // On the key's cell it takes the row's first field that can be
+        // edited, and opens a closed panel.
+        select(&mut harness, tab, id, (2, 0));
+        harness.app.apply(Action::ToggleRowPanel(tab));
+        type_key(&mut harness, Key::E, "e");
+        assert!(harness.app.workspace(tab).unwrap().row_panel);
+        assert_eq!(form_editor(&harness, tab, id), Some(((2, 1), true)));
+        harness.press(Key::C, Modifiers::CTRL);
+        // In the other looks the letter is typed text, which starts an
+        // edit of the cell with it.
+        for look in desktop_looks() {
+            let (mut harness, tab, id) = editable_in(look);
+            select(&mut harness, tab, id, (1, 1));
+            type_key(&mut harness, Key::E, "e");
+            assert_eq!(
+                form_editor(&harness, tab, id),
+                Some(((1, 1), false)),
+                "{}",
+                look.name
+            );
+            assert_eq!(editor_text(&harness, tab, id).as_deref(), Some("e"));
+        }
+    }
+
+    #[test]
+    fn the_row_panel_names_the_keys_that_edit_its_row() {
+        for look in Look::ALL {
+            // A row that can be edited: the terminal's head offers `e` as
+            // its footer's cell does, and the other looks' footer names
+            // the chord.
+            let (mut harness, tab, id) = editable_in(look);
+            select(&mut harness, tab, id, (1, 1));
+            if look.terminal {
+                assert_eq!(times_painted(&harness, "e edit"), 2);
+                assert!(painted(&harness, "[ ] prev/next"));
+            } else {
+                let chord = format!("{}I edit", look.command_key());
+                assert!(
+                    painted(&harness, &chord),
+                    "{}: {:?}",
+                    look.name,
+                    harness.painted
+                );
+            }
+            // One that cannot: the footer's cell is all that is left of
+            // `e`, and it waits; the chord is not named.
+            harness.app.workspace_mut(tab).unwrap().access = tabletist_db::Access::ReadOnly;
+            harness
+                .app
+                .workspace_mut(tab)
+                .unwrap()
+                .object_tab_mut(id)
+                .unwrap()
+                .fields = None;
+            harness.settle();
+            if look.terminal {
+                assert_eq!(times_painted(&harness, "e edit"), 1);
+                assert!(painted(&harness, "[ ] prev/next"));
+            } else {
+                let chord = format!("{}I edit", look.command_key());
+                assert!(!painted(&harness, &chord), "{}", look.name);
+            }
+        }
+        // The shortcuts screen lists the chord in every look, and the
+        // letter where it is a key.
+        for look in Look::ALL {
+            let listed: Vec<&str> = crate::ui::keys::shortcuts(&look)
+                .filter(|(_, what)| *what == "Edit the row in the row panel")
+                .map(|(keys, _)| keys)
+                .collect();
+            let keys = if look.terminal { "e, Mod+I" } else { "Mod+I" };
+            assert_eq!(listed, [keys], "{}", look.name);
         }
     }
 }

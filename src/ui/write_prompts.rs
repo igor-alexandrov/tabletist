@@ -1007,7 +1007,9 @@ mod tests {
             cell: CellPos { row, col },
             start: EditStart::Replace(text.into()),
         });
-        harness.app.apply(Action::LeaveEdit { tab, id });
+        harness
+            .app
+            .apply(crate::testing::leave_edit(&harness.app, tab, id));
     }
 
     fn writes(harness: &Harness) -> usize {

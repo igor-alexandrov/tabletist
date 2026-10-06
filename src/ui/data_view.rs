@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use tabletist_db::{NewValue, SortDir, Value, ValueKind};
 
 use crate::app::App;
-use crate::edit::{Pending, State, Table};
+use crate::edit::{EditorPlace, Pending, State, Table};
 use crate::i18n::gettext;
 use crate::model::{Action, CellPos, ConnTabId, EditStart, ObjectTab, ObjectView, TabId};
 use crate::theme::{Icon, Look, Palette};
@@ -1192,7 +1192,11 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
     // What editing asks of the workspace and the tab together, read before
     // the tab is taken for its editor's text.
     let computed = computed_columns(workspace, object);
-    let target = editor_target(workspace, object, tab, hold);
+    let target = object
+        .edits
+        .editor
+        .as_ref()
+        .and_then(|editor| editor_target(workspace, object, tab, editor.cell, hold));
     // The tab itself from here on: the field on a cell edits the text its
     // editor holds, beside the page the grid reads. Nothing else of it is
     // changed.
@@ -1268,12 +1272,21 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
         changes.why = object
             .edits
             .why
+            // Where it was asked for: an edit asked for in the row panel
+            // is refused there.
+            .filter(|_| object.edits.why_place == EditorPlace::Grid)
             .filter(|_| !look.terminal && hold)
             .map(|(cell, lock)| {
                 let table = format::display_safe(&object.object.name);
                 (cell, cell_editor::lock_text(lock, &table, locale))
             });
-        let mut editor = object.edits.editor.as_mut();
+        // The editor the grid draws. One that is open in the row panel is
+        // the panel's: to the grid its cell is the selected cell, no more.
+        let mut editor = object
+            .edits
+            .editor
+            .as_mut()
+            .filter(|editor| editor.place == EditorPlace::Grid);
         let editing = editor.as_ref().map(|editor| editor.cell);
         // A value of several lines, a long one or a document is edited in
         // a popover at the cell, not on it.
@@ -1342,8 +1355,14 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
             actions.push(Action::CommitEdit { tab, id, then });
         } else if outcome.cancel {
             actions.push(Action::CancelEdit { tab, id });
-        } else if outcome.left {
-            actions.push(Action::LeaveEdit { tab, id });
+        } else if let (true, Some(cell)) = (outcome.left, editing) {
+            let place = EditorPlace::Grid;
+            actions.push(Action::LeaveEdit {
+                tab,
+                id,
+                cell,
+                place,
+            });
         }
         if let Some(cell) = output.clicked {
             actions.push(Action::SelectCell { tab, id, cell });
@@ -1450,17 +1469,18 @@ fn computed_columns(workspace: &crate::model::Workspace, object: &ObjectTab) -> 
         .collect()
 }
 
-/// The cell the tab's open editor is on, as its field needs it.
-fn editor_target(
+/// The cell `cell` an editor of the tab is open on, as its field needs it:
+/// the grid's on the cell, or the row panel's in the place of a value.
+pub(super) fn editor_target(
     workspace: &crate::model::Workspace,
     object: &ObjectTab,
     tab: ConnTabId,
+    cell: CellPos,
     hold: bool,
 ) -> Option<cell_editor::Target> {
-    let editor = object.edits.editor.as_ref()?;
     let table = Table::of(workspace, object)?;
-    let column = table.page.columns.get(editor.cell.col)?;
-    let max_chars = match table.class(editor.cell.col) {
+    let column = table.page.columns.get(cell.col)?;
+    let max_chars = match table.class(cell.col) {
         Some(tabletist_db::ColumnClass::Text { max_chars }) => max_chars,
         _ => None,
     };

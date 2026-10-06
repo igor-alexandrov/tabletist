@@ -7,8 +7,9 @@ use tabletist_db::{Access, ChangeSet, ColumnClass, Error, NewValue, WriteOutcome
 use super::App;
 use crate::backend::{Command, RequestId, SessionId};
 use crate::edit::{
-    Answer, Editor, Lock, Note, Pending, Problem, Saved, Saving, State, Table, change_set, check,
-    conflicting, is_change, opens_large, same_changes, settled, shown_lines, start_text,
+    Answer, Editor, EditorPlace, Lock, Note, Pending, Problem, Saved, Saving, State, Table,
+    change_set, check, conflicting, is_change, opens_large, same_changes, settled, shown_lines,
+    start_text,
 };
 use crate::model::{
     Action, CellPos, ConflictPrompt, ConnTabId, Dialog, EditStart, Held, LeavePrompt, ObjectTab,
@@ -30,6 +31,8 @@ pub(super) fn dropped_under_a_prompt(action: &Action) -> bool {
     matches!(
         action,
         Action::EditCell { .. }
+            | Action::EditField { .. }
+            | Action::EditRow { .. }
             | Action::EditorBreak { .. }
             | Action::CommitEdit { .. }
             | Action::LeaveEdit { .. }
@@ -41,6 +44,9 @@ pub(super) fn dropped_under_a_prompt(action: &Action) -> bool {
             | Action::ReviewEdits { .. }
             | Action::SelectCell { .. }
             | Action::MoveSelection { .. }
+            // Closing the row panel closes the editor it draws, and the
+            // text of that editor joins the set.
+            | Action::ToggleRowPanel(_)
             | Action::NewConnection
             | Action::EditConnection(_)
             // These two take the dialog before they look at its kind.
@@ -515,7 +521,36 @@ impl App {
         .flatten()
     }
 
-    pub(super) fn edit_cell(&mut self, tab: ConnTabId, id: TabId, cell: CellPos, start: EditStart) {
+    /// The column of the tab's open editor, when the row panel draws it.
+    pub(super) fn panel_field(&self, tab: ConnTabId, id: TabId) -> Option<usize> {
+        let object = self.workspace(tab)?.object_tab(id)?;
+        let editor = object.edits.editor.as_ref()?;
+        (editor.place == EditorPlace::Panel).then_some(editor.cell.col)
+    }
+
+    /// An edit made in the row panel's field of the column `col` ended, by
+    /// a commit or a cancel: the keyboard goes back to that field, so
+    /// Enter edits it again and Tab goes on from it. Not in the terminal
+    /// look, where the keys are the grid's again, in normal mode.
+    pub(super) fn back_to_field(&mut self, tab: ConnTabId, id: TabId, col: usize) {
+        if self.look.terminal {
+            return;
+        }
+        if let Some(object) = self.object_tab_mut(tab, id) {
+            object.focus_field = Some(col);
+        }
+    }
+
+    /// Opens the editor on `cell`, drawn in `place`, or says there why the
+    /// cell cannot be edited.
+    pub(super) fn edit_cell(
+        &mut self,
+        tab: ConnTabId,
+        id: TabId,
+        cell: CellPos,
+        start: EditStart,
+        place: EditorPlace,
+    ) {
         // An editor open on another cell keeps its text.
         self.close_editor(tab, id, true);
         // What this edit comes to (a cell that is locked) is what the
@@ -544,9 +579,14 @@ impl App {
                     None => start_text(&table.page.rows[cell.row][cell.col], class),
                 },
             };
+            // A value of several lines, a long one or a document is edited
+            // in the popover at its cell, wherever the edit was asked for:
+            // the row panel has no editor for it yet.
+            let large = opens_large(&text, class);
             Ok(Editor {
                 cell,
-                large: opens_large(&text, class),
+                place: if large { EditorPlace::Grid } else { place },
+                large,
                 text,
                 focus: true,
                 touched,
@@ -573,11 +613,42 @@ impl App {
             Err(lock) => {
                 object.selection = Some(cell);
                 object.edits.why = Some((cell, lock));
+                object.edits.why_place = place;
             }
         }
         if let Some(workspace) = self.workspace_mut(tab) {
             workspace.pane = Pane::Grid;
         }
+    }
+
+    /// Edits the selected row in the row panel: the selected cell's field
+    /// where it can be edited, and otherwise the row's first field that
+    /// can, in the page's column order. The panel is shown for it. A row
+    /// with no such field says why, for the selected cell: no cell of it
+    /// can be edited (a read-only connection, a view, a save that runs),
+    /// or each is locked for a reason of its own.
+    pub(super) fn edit_row(&mut self, tab: ConnTabId, id: TabId) {
+        let field = self.table(tab, id, |table, object| {
+            let cell = object.selection?;
+            // The panel shows a row of the Data view only.
+            if object.view != crate::model::ObjectView::Data {
+                return None;
+            }
+            if table.lock(cell).is_none() || table.row_lock(cell.row).is_some() {
+                return Some(cell);
+            }
+            let first = (0..table.page.columns.len())
+                .map(|col| CellPos { row: cell.row, col })
+                .find(|other| table.lock(*other).is_none());
+            Some(first.unwrap_or(cell))
+        });
+        let Some(Some(cell)) = field else {
+            return;
+        };
+        if let Some(workspace) = self.workspace_mut(tab) {
+            workspace.row_panel = true;
+        }
+        self.edit_cell(tab, id, cell, EditStart::Value, EditorPlace::Panel);
     }
 
     /// Takes the open editor's text as its cell's new value and closes it.
