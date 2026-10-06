@@ -66,6 +66,9 @@ fn line_of(ui: &egui::Ui, role: TextRole, look: &Look) -> f32 {
 /// A colour value's swatch.
 const SWATCH: f32 = 14.0;
 
+/// Between two key hints of the terminal's header.
+const HINT_GAP: f32 = 12.0;
+
 /// Field labels and notes: 11.5 in both looks.
 fn caption(look: &Look) -> TextRole {
     TextRole::pick(look, TextRole::FieldLabel, TextRole::OCaption)
@@ -474,17 +477,25 @@ fn draw(
                     None => number.to_string(),
                 };
                 let measure = |text: &str| role.width(ui.ctx(), look.faces, text);
-                // The hint gives way before the name does: its keys alone
-                // when the whole name does not fit before its words. The
-                // name is cut where the hint begins, 10 before it.
-                let mut hint = [("[ ]", "prev/next", true)];
-                let mut width = widgets::key_hints_width(ui, &hint, 0.0, &look, &palette);
-                let mut room = esc.left() - 10.0 - width - 10.0 - x;
-                if measure(&whole) > room {
-                    hint = [("[ ]", "", true)];
-                    width = widgets::key_hints_width(ui, &hint, 0.0, &look, &palette);
-                    room = esc.left() - 10.0 - width - 10.0 - x;
-                }
+                // The hint gives way before the name does: first `e edit`,
+                // which a row that can be edited offers, then the words of
+                // its keys, when the whole name does not fit before them.
+                // The name is cut where the hint begins, 10 before it.
+                let steps: widgets::Hint<'_> = ("[ ]", "prev/next", true);
+                let editable = source.table && locked.is_none();
+                let hints: [&[widgets::Hint<'_>]; 3] = [
+                    &[steps, ("e", "edit", true)],
+                    &[steps],
+                    &[("[ ]", "", true)],
+                ];
+                let fit = |hint: &[widgets::Hint<'_>]| {
+                    let width = widgets::key_hints_width(ui, hint, HINT_GAP, &look, &palette);
+                    (width, esc.left() - 10.0 - width - 10.0 - x)
+                };
+                let offered = &hints[usize::from(!editable)..];
+                let fitting = offered.iter().find(|hint| measure(&whole) <= fit(hint).1);
+                let hint = *fitting.unwrap_or(&hints[2]);
+                let (width, room) = fit(hint);
                 // A number keeps its last digits.
                 let shown = crate::ui::grid::ellipsize(&whole, room, keyed.is_none(), measure);
                 let name = match keyed {
@@ -527,8 +538,8 @@ fn draw(
                 widgets::key_hints(
                     ui,
                     (esc.left() - 10.0 - width, y),
-                    &hint,
-                    0.0,
+                    hint,
+                    HINT_GAP,
                     &look,
                     &palette,
                 );
@@ -1933,12 +1944,20 @@ fn editing_footer(
         }
         32.0
     };
-    // The note: why the row cannot be edited, where it cannot.
-    let Some(reason) = locked else {
-        return edit;
-    };
     let note_role = caption(look);
     let y = top + height + 8.0 + line_of(ui, note_role, look) / 2.0;
+    // The note: why the row cannot be edited, where it cannot. Where it
+    // can, the key that edits it; the terminal's cells name their keys.
+    let Some(reason) = locked else {
+        if !look.terminal {
+            let key = format!("{}I", look.command_key());
+            let hint = Text::one(look, note_role, &key, palette.secondary)
+                .space(note_role, " ")
+                .add(note_role, &gettext(locale, "edit"), palette.dim);
+            widgets::paint_text(ui, inner.left(), y, hint);
+        }
+        return edit;
+    };
     let measure = |text: &str| note_role.width(ui.ctx(), look.faces, text);
     if look.terminal {
         // Cut at the panel's side, as a field's label is.

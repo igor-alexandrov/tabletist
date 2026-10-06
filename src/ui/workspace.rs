@@ -1561,6 +1561,9 @@ struct Editing {
     can_edit: bool,
     /// Insert mode: the column being edited and its type.
     insert: Option<String>,
+    /// Tab moves on to the next cell: the editor is on a cell. In the row
+    /// panel's field Tab commits and stays.
+    walks: bool,
     /// How much is pending, while anything is: "3 pending · 2 rows".
     pending: Option<String>,
     /// The cells to fix and the ones a save failed on: "1 error".
@@ -1729,9 +1732,14 @@ fn editing_status(app: &App, tab: ConnTabId) -> Editing {
         });
         saved.or(blocked)
     };
+    let walks = edits
+        .editor
+        .as_ref()
+        .is_some_and(|editor| editor.place == crate::edit::EditorPlace::Grid);
     Editing {
         can_edit,
         insert,
+        walks,
         pending,
         errors,
         said,
@@ -2010,10 +2018,14 @@ fn status_line(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId) {
                 let mode = || Text::one(&look, TextRole::OModeLine, &mode, palette.success);
                 let words = ["normal", "next cell"].map(|word| gettext(locale, word));
                 let keys = || {
-                    Text::new(&look)
+                    let leave = Text::new(&look)
                         .add(role, "esc", palette.text)
                         .space(role, " ")
-                        .add(role, &words[0], palette.dim)
+                        .add(role, &words[0], palette.dim);
+                    if !editing.walks {
+                        return leave;
+                    }
+                    leave
                         .add(role, " · ", palette.dim)
                         .add(role, "tab", palette.text)
                         .space(role, " ")
