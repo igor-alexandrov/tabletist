@@ -176,6 +176,13 @@ impl<'a> Item<'a> {
             Some(current) => WidgetInfo::selected(WidgetType::Button, true, current, name),
             None => WidgetInfo::labeled(WidgetType::Button, true, name),
         });
+        // The note is drawn apart from the words: a screen reader hears it
+        // as what the row is described by.
+        if let Some(detail) = self.detail {
+            ui.ctx().accesskit_node_builder(response.id, |node| {
+                node.set_description(detail);
+            });
+        }
         // The pointer and the keyboard light a row the same way.
         let lit = response.hovered() || focus::shown(&response);
         focus::hint(ui, &response, rect, Ring::Own);
@@ -676,6 +683,33 @@ mod tests {
                 "{}",
                 look.name
             );
+        }
+    }
+
+    #[test]
+    fn a_rows_note_is_its_description_for_screen_readers() {
+        for look in Look::ALL {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            let palette = harness.app.palette;
+            let tree = harness.frame_with(|ui| {
+                super::Item::action("bastion")
+                    .detail("bastion.example.com")
+                    .show(ui, &look, &palette);
+                super::Item::action("plain").show(ui, &look, &palette);
+            });
+            let described = |name: &str| {
+                let id = node(&tree, name, Role::Button).unwrap();
+                let (_, node) = tree.nodes.iter().find(|(n, _)| *n == id).unwrap();
+                node.description().map(str::to_owned)
+            };
+            assert_eq!(
+                described("bastion").as_deref(),
+                Some("bastion.example.com"),
+                "{}",
+                look.name
+            );
+            assert_eq!(described("plain"), None, "{}", look.name);
         }
     }
 }
