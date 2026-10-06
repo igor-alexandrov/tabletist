@@ -735,18 +735,22 @@ fn shots() {
         let refused = crate::testing::refused_write();
         harness.answer_sql(Ok(crate::testing::script_outcome(vec![refused])), None);
     });
-    // A tab in Read-write: the badge's menu, a run that writes on
-    // its way (Run and Run all wait for it), and how such a run ends.
-    both("sql-write-menu", |harness| {
-        let tab = sql_editor(harness);
-        sql_mode(harness, tab, RunMode::ReadWrite);
-        harness.click("Transaction");
+    // The switch of a tab in Read-write and of one in Read-only, a run
+    // that writes on its way (Run and Run all wait for it), and how such
+    // a run ends.
+    both("sql-write-switch", |harness| {
+        sql_editor(harness);
     });
-    // On production the choice is shown and cannot be picked yet.
-    both("sql-write-menu-production", |harness| {
+    both("sql-write-switch-read-only", |harness| {
         let tab = sql_editor(harness);
+        sql_mode(harness, tab, RunMode::ReadOnly);
+    });
+    // On production the Read-write segment is shown and cannot be picked
+    // yet.
+    both("sql-write-switch-production", |harness| {
+        let tab = sql_editor(harness);
+        sql_mode(harness, tab, RunMode::ReadOnly);
         harness.app.workspace_mut(tab).unwrap().environment = Environment::Production;
-        harness.click("Transaction");
     });
     both("sql-write-running", |harness| {
         writing(harness, WRITES);
@@ -1071,7 +1075,7 @@ const UPDATE: &str = "UPDATE book_images\n   SET kind = 'ebook'\n WHERE id = 2;"
 const WRITES: &str = "UPDATE book_images\n   SET kind = 'ebook'\n WHERE kind = 'epub';\n\n\
                       DELETE FROM book_images\n WHERE book_id IS NULL;";
 
-/// Switches the SQL editor on screen to `mode`, as its badge does.
+/// Sets the SQL editor on screen to `mode`, as its switch does.
 fn sql_mode(harness: &mut Harness, tab: ConnTabId, mode: RunMode) {
     let sql_tab = harness.app.workspace(tab).unwrap().active_tab.unwrap();
     harness.app.apply(Action::SetSqlMode { tab, sql_tab, mode });
