@@ -1209,7 +1209,12 @@ fn field(
     } else {
         0.0
     };
-    let room = line.width() - 30.0 - was_room - mark - lock_room - pencil_room;
+    // "Format" stands in the label's line while a document is edited in
+    // the panel, in the looks that draw links there: the terminal look
+    // has its key.
+    let formats = part == Part::Editing && form.formats() && !look.terminal;
+    let format_room = if formats && doc.is_none() { 100.0 } else { 0.0 };
+    let room = line.width() - 30.0 - was_room - mark - lock_room - pencil_room - format_room;
     let shown = crate::ui::grid::ellipsize(&text, room, false, measure);
     let label_width = widgets::paint_text(
         ui,
@@ -1351,47 +1356,11 @@ fn field(
             // buttons.
             let link_right = left - 4.0 - 6.0;
             // Its tree is not drawn while the document is edited: there
-            // is nothing to fold. What is typed can be laid out, a member
-            // to a line: "Format", and its key. Only where there is
-            // something to lay out: a text column's document is its text,
-            // edited as text.
+            // is nothing to fold. What is typed can be laid out instead.
             if part == Part::Editing {
-                if form.formats() {
-                    let chord = if look.command_key() == "⌘" {
-                        "⇧⌘F"
-                    } else {
-                        "Ctrl+Shift+F"
-                    };
-                    let label = format!("{} {chord}", gettext(locale, "Format"));
-                    let role = TextRole::FieldLabel;
-                    let size = vec2(
-                        role.width(ui.ctx(), look.faces, &label),
-                        line_of(ui, role, look),
-                    );
-                    let place = Rect::from_min_size(
-                        pos2(link_right - size.x, line.center().y - size.y / 2.0),
-                        size,
-                    );
-                    let link = ui.interact(place, name_id.with("format"), Sense::click());
-                    link.widget_info(|| WidgetInfo::labeled(WidgetType::Link, true, &label));
-                    let color = if link.hovered() {
-                        palette.accent_hover
-                    } else {
-                        palette.accent
-                    };
-                    widgets::paint_text(
-                        ui,
-                        place.left(),
-                        place.center().y,
-                        Text::one(look, role, &label, color),
-                    );
-                    // The press is the editor's: its text keeps the keyboard,
-                    // and is still open when it is laid out.
-                    if link.is_pointer_button_down_on() || link.clicked() {
-                        let editor = crate::ui::cell_editor::field_id(tab, tab_id);
-                        crate::ui::cell_editor::press_is_the_editors(ui.ctx(), editor);
-                    }
-                    if link.clicked() {
+                if formats {
+                    let at = (link_right, line.center().y);
+                    if format_link(ui, at, name_id, (tab, tab_id), (look, palette, locale)) {
                         actions.push(Action::FormatEditor { tab, id: tab_id });
                     }
                 }
@@ -1416,6 +1385,15 @@ fn field(
         let mut child = ui.new_child(egui::UiBuilder::new().max_rect(copy));
         if caption_button(&mut child, Icon::Copy, &copy_label, hovered, look, palette).clicked() {
             ui.ctx().copy_text(format::plain_text(value));
+        }
+        // A document being typed where the field holds none yet (a NULL,
+        // a text left to fix) is laid out from here too: the link goes by
+        // the editor, not by what the field held.
+        if formats {
+            let at = (copy.left() - 6.0, line.center().y);
+            if format_link(ui, at, name_id, (tab, tab_id), (look, palette, locale)) {
+                actions.push(Action::FormatEditor { tab, id: tab_id });
+            }
         }
     }
     ui.add_space(if doc.is_some() {
@@ -2188,6 +2166,49 @@ fn singular(table: &str) -> &str {
         .map(|_| table)
         .or_else(|| table.strip_suffix('s'))
         .unwrap_or(table)
+}
+
+/// "Format" and its key, a link in a field's label line that ends at `at`:
+/// it lays out the document the panel's editor holds, a member to a line.
+/// A press on it is the editor's own, so the text keeps the keyboard and
+/// is still open when it is laid out. Says whether it was pressed.
+fn format_link(
+    ui: &egui::Ui,
+    (right, y): (f32, f32),
+    name_id: Id,
+    (tab, tab_id): (ConnTabId, TabId),
+    (look, palette, locale): (&Look, &Palette, crate::i18n::Locale),
+) -> bool {
+    let chord = if look.command_key() == "⌘" {
+        "⇧⌘F"
+    } else {
+        "Ctrl+Shift+F"
+    };
+    let label = format!("{} {chord}", gettext(locale, "Format"));
+    let role = TextRole::FieldLabel;
+    let size = vec2(
+        role.width(ui.ctx(), look.faces, &label),
+        line_of(ui, role, look),
+    );
+    let place = Rect::from_min_size(pos2(right - size.x, y - size.y / 2.0), size);
+    let link = ui.interact(place, name_id.with("format"), Sense::click());
+    link.widget_info(|| WidgetInfo::labeled(WidgetType::Link, true, &label));
+    let color = if link.hovered() {
+        palette.accent_hover
+    } else {
+        palette.accent
+    };
+    widgets::paint_text(
+        ui,
+        place.left(),
+        place.center().y,
+        Text::one(look, role, &label, color),
+    );
+    if link.is_pointer_button_down_on() || link.clicked() {
+        let editor = crate::ui::cell_editor::field_id(tab, tab_id);
+        crate::ui::cell_editor::press_is_the_editors(ui.ctx(), editor);
+    }
+    link.clicked()
 }
 
 /// A button of a field's label line (Copy, the pencil): bordered next to a

@@ -944,9 +944,12 @@ fn band(
         }
     };
     let width = |text: &str| role.width(ui.ctx(), look.faces, text);
-    // A document that is one says so, before its counts.
+    // A document that is one says so, before its counts. Not an empty
+    // text, which is none and fails nothing yet: a NULL opens with it,
+    // and nobody typed it.
     let valid = gettext(locale, "Valid JSON");
-    let lead = if target.json && editor.problem.is_none() {
+    let written = !editor.text.trim().is_empty();
+    let lead = if target.json && written && editor.problem.is_none() {
         format!("{valid} · ")
     } else {
         String::new()

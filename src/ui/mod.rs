@@ -20957,6 +20957,50 @@ mod tests {
     }
 
     #[test]
+    fn a_null_documents_editor_claims_nothing_and_can_be_laid_out() {
+        for look in desktop_looks() {
+            // Row 2's `meta` is NULL: its editor opens empty.
+            let (mut harness, tab, id) = editable_in(look);
+            select(&mut harness, tab, id, (1, 0));
+            click_value(&mut harness, "NULL");
+            assert_eq!(form_editor(&harness, tab, id), Some(((1, 2), true)));
+            assert!(is_large(&harness, tab, id), "{}", look.name);
+            assert_eq!(editor_text(&harness, tab, id).as_deref(), Some(""));
+            let valid = |harness: &Harness| {
+                let mut pieces = harness.painted.iter();
+                pieces.any(|(text, _)| text.starts_with("Valid JSON"))
+            };
+            // An empty text is no document, and nobody typed it: the band
+            // neither calls it valid nor says it fails.
+            let palette = harness.app.palette;
+            assert!(!valid(&harness), "{}", look.name);
+            let reds = harness.painted.iter();
+            assert_eq!(
+                reds.filter(|(_, color)| *color == palette.danger).count(),
+                0,
+                "{}",
+                look.name
+            );
+            // The field held no document, and what is typed can be laid
+            // out all the same: the link goes by the editor.
+            type_text(&mut harness, r#"{"a":1,"b":[2]}"#);
+            let tree = harness.settle();
+            assert!(valid(&harness), "{}", look.name);
+            let name = crate::testing::labels(&tree)
+                .into_iter()
+                .find(|label| label.starts_with("Format "))
+                .unwrap_or_else(|| panic!("{}: no Format link", look.name));
+            harness.click(&name);
+            assert_eq!(
+                editor_text(&harness, tab, id).as_deref(),
+                Some("{\n  \"a\": 1,\n  \"b\": [\n    2\n  ]\n}"),
+                "{}",
+                look.name
+            );
+        }
+    }
+
+    #[test]
     fn a_text_columns_document_is_edited_as_text_and_offers_no_format() {
         for look in desktop_looks() {
             // `email` is a text column that holds a document here: the
