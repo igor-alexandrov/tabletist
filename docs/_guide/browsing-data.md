@@ -23,6 +23,8 @@ A table opens on its data. The grid marks primary keys and foreign keys,
 shows JSON at a glance, and draws enum, CHECK and boolean values as colored
 tags.
 
+{% include shot.html file="macos-table" alt="A table's data grid sorted by a column, with a row open in the row panel beside it" %}
+
 - **Pages.** The grid loads 300 rows at a time unless you change
   [Rows per page]({% link _reference/settings-and-files.md %}#the-settings-window)
   in Settings. Cmd/Ctrl+Alt+Left and Right move between pages.
@@ -57,6 +59,8 @@ For anything else, tick **Raw WHERE** and write the condition yourself:
 id > 10 AND name LIKE 'A%'
 ```
 
+{% include shot.html file="macos-filter" alt="The filter bar open above the grid, with one condition being written" %}
+
 On MySQL, a raw WHERE reads `"..."` as a string, and names take backticks.
 
 ## The row panel
@@ -74,6 +78,8 @@ A foreign key has a link next to it that opens the row it points to.
 
 Switch a table from **Data** to **Structure** to read its columns, indexes
 and foreign keys.
+
+{% include shot.html file="macos-structure" alt="The Structure view of a table, listing its columns and indexes" %}
 
 ## Copying
 

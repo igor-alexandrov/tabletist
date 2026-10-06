@@ -11,7 +11,7 @@ and SQLite. It is written in Rust and draws its own window, so there is no
 browser inside. It runs on Linux (Omarchy and Hyprland first), macOS and
 Windows.
 
-![Tabletist with a table's data grid, the sidebar of tables on the left and the row panel on the right]({{ '/assets/images/macos.png' | relative_url }})
+{% include shot.html file="macos-table" alt="Tabletist with a table's data grid, the sidebar of tables on the left and the row panel on the right" %}
 
 ## What it does
 

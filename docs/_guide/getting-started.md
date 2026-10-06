@@ -23,12 +23,16 @@ never touches your saved connections or your keyring.
 Open Tabletist. With nothing saved yet, the picker says
 **No connections yet**. Press Cmd/Ctrl+N for a new connection.
 
+{% include shot.html file="macos-connections" alt="The connection picker with five saved connections, each tagged with its environment and when it was last used" %}
+
 1. Give it a **Name** and pick its **Type**: SQLite, PostgreSQL or MySQL.
 2. For SQLite, choose the file. For a server, fill in **Host**, **Port**,
    **Database** and **User**.
 3. Pick an **Environment**. It sets the connection's color, and production
    opens read-only unless you turn that off.
 4. Press **Test** to check it, then **Save & Connect**.
+
+{% include shot.html file="macos-connection-edit" alt="The connection dialog for a production database behind an SSH tunnel, after a test that passed" width="2880" height="1800" %}
 
 If you have a connection URL, paste it in the **URL** tab instead and press
 **Fill** (in the Omarchy look, press `u` for **Paste URL**). For example:

@@ -9,7 +9,7 @@ first, vim keys, and the desktop's monospace font throughout. Every Linux
 desktop gets it. On macOS and Windows the app has a desktop look instead,
 and there is no setting that switches between them.
 
-![Tabletist in its Omarchy look, with key hints along the bottom]({{ '/assets/images/omarchy.png' | relative_url }})
+{% include shot.html file="omarchy-table" alt="Tabletist in its Omarchy look: a table filtered with a WHERE line, a row open beside it, and key hints along the bottom" width="2880" height="1800" %}
 
 ## The keyboard
 
@@ -64,6 +64,8 @@ back.
 | `/` | Filter the list |
 | Esc | Cancel connecting |
 
+{% include shot.html file="omarchy-connections" alt="The connection picker in the Omarchy look, with its keys along the bottom" %}
+
 ### The connection form
 
 | Keys | Do |
@@ -74,6 +76,8 @@ back.
 | Ctrl+S | Save |
 | Ctrl+Enter | Save and connect |
 | Esc | Cancel |
+
+{% include shot.html file="omarchy-connection-edit" alt="The connection form in the Omarchy look, for a production database behind an SSH tunnel" width="2200" height="2032" %}
 
 ### The sidebar
 
@@ -134,6 +138,8 @@ back.
 
 The `:` prompt takes `w`, `e!` and `diff`, and nothing else.
 
+{% include shot.html file="omarchy-edit-review" alt="The :diff panel above the status line, showing the statement a save will run" %}
+
 A save can ask you something first. Each question has its own keys:
 
 | Question | Keys |
@@ -142,6 +148,8 @@ A save can ask you something first. Each question has its own keys:
 | A row that changed on the server | `o` overwrite, `s` use the server's values, `k` or Esc keep mine and reload. PgUp and PgDn scroll |
 | A row that was deleted on the server | `d` discard my changes, `k` or Esc keep them pending |
 | Leaving with pending changes | `w` write, `d` discard, Esc stay |
+
+{% include shot.html file="omarchy-edit-conflict" alt="The conflict box in the Omarchy look, with a letter for each answer" %}
 
 ### The SQL editor
 
@@ -154,6 +162,8 @@ A save can ask you something first. Each question has its own keys:
 | Ctrl+Shift+M | Switch between read-only and read-write runs |
 | Ctrl+Space, Ctrl+I | Complete |
 | Esc | Leave the editor |
+
+{% include shot.html file="omarchy-sql" alt="A SQL editor in the Omarchy look, with its result under it and the run keys in the status line" %}
 
 While the completion list is open:
 
@@ -222,3 +232,5 @@ dark setting. The folder and the file are described in
 Cmd/Ctrl+, opens Settings. In the Omarchy look it is a full screen with
 `settings.toml` shown beside the options. Edits made to the file in your
 editor are applied while Tabletist runs.
+
+{% include shot.html file="omarchy-settings" alt="The Settings screen in the Omarchy look: the options on the left and settings.toml on the right" width="2880" height="1800" %}

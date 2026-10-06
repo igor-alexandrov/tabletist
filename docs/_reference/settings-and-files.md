@@ -8,6 +8,8 @@ nav_order: 2
 
 Cmd/Ctrl+, opens Settings. Changes apply right away.
 
+{% include shot.html file="macos-settings" alt="The Settings window with its four options" %}
+
 | Option | Choices | Default |
 | --- | --- | --- |
 | **Rows per page** | 100, 300, 500, 1,000 or 5,000 | 300 |
@@ -18,6 +20,8 @@ Cmd/Ctrl+, opens Settings. Changes apply right away.
 On macOS and Windows the window shows where the settings file is, and can
 reveal it in your file manager, export it, or reset every option. In the
 Omarchy look the file is shown beside the options.
+
+{% include shot.html file="omarchy-settings" alt="The Settings screen in the Omarchy look, with settings.toml beside the options" width="2880" height="1800" %}
 
 ## The settings file
 

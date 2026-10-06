@@ -18,10 +18,11 @@ hero:
       text: GitHub
       link: https://github.com/igor-alexandrov/tabletist
   image:
-    src: /assets/images/macos.png
+    light: /assets/images/macos-table.webp
+    dark: /assets/images/macos-table-dark.webp
     alt: "Tabletist in its macOS look: a table's data grid, the sidebar of tables on the left and the row panel on the right"
-    width: 2880
-    height: 1800
+    width: 2560
+    height: 1600
 
 features:
   - icon: ⚡
@@ -69,8 +70,27 @@ follows the desktop's theme and recolors when you switch themes.
 Read about [the Omarchy look]({% link _guide/omarchy.md %}) and
 [Tabletist on macOS]({% link _guide/macos.md %}).
 
-<div class="look-showcase">
-  <img src="{{ '/assets/images/omarchy.png' | relative_url }}" alt="Tabletist in its Omarchy look: the same table in a dark, square, keyboard-first layout with key hints along the bottom" width="3840" height="2160" loading="lazy">
+{% include shot.html file="omarchy-table" alt="Tabletist in its Omarchy look: the same table in a dark, square, keyboard-first layout with key hints along the bottom" width="2880" height="1800" %}
+
+## A closer look
+
+<div class="shot-grid">
+  <figure>
+    {% include shot.html file="macos-edit-review" alt="Review SQL open above the bar of pending changes" %}
+    <figcaption>Read the SQL of your changes before it runs.</figcaption>
+  </figure>
+  <figure>
+    {% include shot.html file="macos-edit-conflict" alt="The question about a row that changed on the server" %}
+    <figcaption>See what changed on the server before you decide.</figcaption>
+  </figure>
+  <figure>
+    {% include shot.html file="macos-sql-complete" alt="The completion list in the SQL editor" %}
+    <figcaption>Write SQL with completion for tables and columns.</figcaption>
+  </figure>
+  <figure>
+    {% include shot.html file="macos-connections" alt="The connection picker with connections tagged by environment" %}
+    <figcaption>Keep every connection, tagged with its environment.</figcaption>
+  </figure>
 </div>
 
 ## Try it without a database
@@ -100,12 +120,25 @@ look around before you connect to your own.
     border-radius: 12px;
     box-shadow: 0 12px 48px rgba(0, 0, 0, 0.25);
   }
-  .look-showcase img {
-    display: block;
-    max-width: 100%;
-    height: auto;
-    border-radius: 12px;
-    box-shadow: 0 12px 48px rgba(0, 0, 0, 0.35);
+  .shot-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 24px;
+  }
+  .shot-grid figure {
+    margin: 0;
+  }
+  .shot-grid a.shot {
+    margin: 0 0 8px;
+  }
+  .shot-grid figcaption {
+    color: var(--vp-c-text-2);
+    font-size: 14px;
+  }
+  @media (max-width: 767px) {
+    .shot-grid {
+      grid-template-columns: minmax(0, 1fr);
+    }
   }
   @media (max-width: 959px) {
     .VPHero .image {
