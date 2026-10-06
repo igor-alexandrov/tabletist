@@ -20605,12 +20605,17 @@ mod tests {
             } else {
                 palette.border
             };
+            // The box is as tall as the field the editor opens in its
+            // place, and stands under the label's line, clear of it.
+            let (height, _) = crate::ui::row_panel::field_box(&look);
             let outlined = |harness: &Harness, text: &str| {
                 let value = panel_text(harness, text);
+                let label = panel_text(harness, "email · TEXT");
                 harness.outlines.iter().any(|(rect, stroke)| {
                     *stroke == egui::Stroke::new(1.0, color)
                         && rect.contains_rect(value)
-                        && rect.height() < value.height() + 14.0
+                        && (rect.height() - height).abs() < 1.0
+                        && (text != "user2@example.com" || rect.top() > label.bottom())
                 })
             };
             assert!(!outlined(&harness, "user2@example.com"), "{}", look.name);

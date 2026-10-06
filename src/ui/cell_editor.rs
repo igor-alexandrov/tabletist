@@ -339,8 +339,10 @@ fn block_cursor(
 }
 
 /// The editor in the row panel: a one-line field in the place of its
-/// field's value, as wide as the room it is given, its text in `role`, the
-/// role the value is read in. Its keys are the keys of the field on a cell,
+/// field's value, `height` tall and `outset` wider at each side than the
+/// room it is given (the box the value shows under the pointer, so the
+/// text stays where it was read), its text in `role`, the role the value
+/// is read in. Its keys are the keys of the field on a cell,
 /// but a commit moves no selection: Enter and Tab take the text and ask
 /// for the row's next field, Shift+Tab for the one before. Under the field
 /// it says what the text fails, and how much of its column's length the
@@ -349,7 +351,7 @@ pub fn in_panel(
     ui: &mut Ui,
     editor: &mut Editor,
     target: &Target,
-    role: TextRole,
+    (role, (height, outset)): (TextRole, (f32, f32)),
     (look, palette, locale): (&Look, &Palette, Locale),
 ) -> Outcome {
     let mut outcome = Outcome::default();
@@ -371,17 +373,30 @@ pub fn in_panel(
         Advance::Down | Advance::Right | Advance::NextField => Advance::NextField,
     });
     let width = ui.available_width();
-    let height = if look.terminal { 26.0 } else { 30.0 };
     let mut layouter = crate::typography::layouter(look, role, palette.text);
-    let output = widgets::field(ui, &mut editor.text, look, role, height, 8)
+    // The field's line is the room's; the field itself stands out of it
+    // at both sides, and its text is as far in as it stands out.
+    let (line, _) = ui.allocate_exact_size(vec2(width, height), egui::Sense::hover());
+    let place = line.expand2(vec2(outset, 0.0));
+    let mut within = ui.new_child(egui::UiBuilder::new().max_rect(place));
+    // On the panel's own tone, as the design's field is: the panel is the
+    // window's colour, and a field's usual fill would read as the tint of
+    // a value under the pointer. The terminal look's field keeps its fill.
+    let fill = if look.terminal {
+        ui.visuals().extreme_bg_color
+    } else {
+        palette.window
+    };
+    let output = widgets::field(&within, &mut editor.text, look, role, height, outset as i8)
         .id(id)
-        .desired_width(width)
+        .background_color(fill)
+        .desired_width(place.width())
         // Tab ends the edit; it is not egui's to move the keyboard with.
         .lock_focus(true)
         // As the field on a cell: a paste is cut, and left over the limit.
         .char_limit(MAX_EDIT_BYTES + 1)
         .layouter(&mut layouter)
-        .show(ui);
+        .show(&mut within);
     bound(&mut editor.text);
     if look.terminal && output.response.has_focus() {
         block_cursor(ui, &output, role, look, palette);

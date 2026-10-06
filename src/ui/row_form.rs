@@ -191,7 +191,10 @@ impl<'a> Form<'a> {
             return false;
         };
         let cell = editor.cell;
-        let outcome = cell_editor::in_panel(ui, editor, target, role, skin);
+        // In the box its value showed under the pointer: the text stays
+        // where it was read.
+        let place = super::row_panel::field_box(skin.0);
+        let outcome = cell_editor::in_panel(ui, editor, target, (role, place), skin);
         // The text is noted as typed before anything ends the edit, as for
         // a cell's field.
         if outcome.changed {

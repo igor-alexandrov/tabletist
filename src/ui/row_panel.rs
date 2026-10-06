@@ -1205,6 +1205,7 @@ fn field(
     // The row's form makes one control of a value that can be edited, and
     // of one locked for a reason of its own: its text takes no caret.
     let whole = editable || locked.is_some();
+    let pad = if whole { box_pad(ui, role, look) } else { 0.0 };
     // The control's states are painted behind the value.
     let behind = ui.painter().add(egui::Shape::Noop);
     let shown = match part {
@@ -1221,6 +1222,7 @@ fn field(
                 name_id,
                 role,
                 whole,
+                pad,
                 // A locked value reads as one that is not the user's to
                 // change.
                 dim: locked.is_some(),
@@ -1258,12 +1260,10 @@ fn field(
     // The value as one control: a click edits it, or says why it cannot
     // be edited.
     let control = shown.place.filter(|_| whole).map(|place| {
-        let frame = outline(line.left(), place, look);
-        // The box reaches up to the label line's Copy and down over "Show
-        // all": only the value's own lines take the pointer, or it would
-        // take their clicks.
-        let hit = Rect::from_x_y_ranges(frame.x_range(), place.y_range());
-        let response = ui.interact(hit, stop, Sense::click());
+        // The box is the room the value keeps round its lines: it reaches
+        // neither the label's line above nor what stands under the value.
+        let frame = outline(line.left(), place, pad, look);
+        let response = ui.interact(frame, stop, Sense::click());
         response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, &said));
         let corner = CornerRadius::same(look.radius);
         if editable && response.hovered() {
@@ -1397,20 +1397,35 @@ const PENCIL: f32 = 22.0;
 /// The lock after the label of a field that cannot be edited.
 const LOCK: f32 = 11.0;
 
-/// Where a field's box is, round the place of its value, in a field whose
-/// label starts at `left`: the value is flush with its label, and the box
-/// stands clear of its text, 8 at its sides, about as tall as the field
-/// the editor opens (the terminal look's is closer round it). It reaches
-/// less far up than down: the label's line is 3 above the value.
-fn outline(left: f32, place: Rect, look: &Look) -> Rect {
-    let (side, above, below) = if look.terminal {
-        (6.0, 3.0, 3.0)
+/// The box of a value that is one control: what the pointer shows round
+/// it, and the field the editor opens in its place. How tall it is for a
+/// value of one line, and how far it stands out at each side of the value,
+/// which is flush with its label.
+pub(super) fn field_box(look: &Look) -> (f32, f32) {
+    if look.terminal {
+        (26.0, 6.0)
     } else {
-        (8.0, 4.0, 6.0)
-    };
+        (30.0, 8.0)
+    }
+}
+
+/// The room a control's value keeps above and below its lines, in `role`:
+/// what makes its box as tall as [`field_box`] says. The value keeps it at
+/// rest too, so nothing moves when the pointer comes over it or its editor
+/// opens.
+fn box_pad(ui: &egui::Ui, role: TextRole, look: &Look) -> f32 {
+    let (height, _) = field_box(look);
+    ((height - line_of(ui, role, look)) / 2.0).max(2.0)
+}
+
+/// Where a field's box is, round the place of its value, in a field whose
+/// label starts at `left`: `pad` above and below the value's lines, which
+/// is the room they keep.
+fn outline(left: f32, place: Rect, pad: f32, look: &Look) -> Rect {
+    let (_, side) = field_box(look);
     Rect::from_min_max(
-        pos2(left - side, place.top() - above),
-        pos2(place.right() + side, place.bottom() + below),
+        pos2(left - side, place.top() - pad),
+        pos2(place.right() + side, place.bottom() + pad),
     )
 }
 
@@ -1427,6 +1442,8 @@ struct Reading<'a> {
     /// Whether the row's form makes one control of the whole value: its
     /// text is drawn, and takes neither the pointer nor a caret.
     whole: bool,
+    /// The room such a value keeps above and below its lines, for its box.
+    pad: f32,
     /// Whether it is drawn as a value that cannot be changed.
     dim: bool,
 }
@@ -1470,6 +1487,7 @@ fn value_of(
         name_id,
         role,
         whole,
+        pad,
         dim,
     } = read;
     let request = texts.and_then(|texts| texts.request);
@@ -1480,7 +1498,9 @@ fn value_of(
         Rect::from_min_max(rect.min, pos2(ui.max_rect().right(), rect.bottom()))
     };
     if value.is_null() {
+        ui.add_space(pad);
         let mark = crate::ui::grid::null_label(ui, look, palette).rect;
+        ui.add_space(pad);
         shown.place = Some(line_of_it(ui, mark));
         return shown;
     }
@@ -1539,7 +1559,9 @@ fn value_of(
                 } else {
                     say("whitespace only")
                 };
+                ui.add_space(pad);
                 let stood = stand_in(ui, &blank, &note, look, palette);
+                ui.add_space(pad);
                 shown.place = Some(line_of_it(ui, stood));
                 return shown;
             }
@@ -1590,6 +1612,7 @@ fn value_of(
         })
     };
     let small = widgets::secondary(look);
+    ui.add_space(pad);
     ui.horizontal_top(|ui| {
         // A colour (`#3a7bd5`) leads with a swatch of it, on the first line.
         if let Some(swatch) = format::color(value) {
@@ -1679,6 +1702,7 @@ fn value_of(
             });
         }
     });
+    ui.add_space(pad);
     if long || tall {
         let label = if expanded {
             gettext(locale, "Show less").into_owned()
