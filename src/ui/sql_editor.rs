@@ -23,6 +23,10 @@ const SIDE: f32 = 16.0;
 /// The least height of the editor, and of the results under it.
 const MIN_PANE: f32 = 80.0;
 
+/// Why Run and Run all cannot be pressed while a read-write run is in
+/// flight.
+const WRITING: &str = "A read-write run is still going in this tab. Cancel it or wait for it.";
+
 /// The height of what divides the editor from the results: a band to drag
 /// between two rules, or the terminal's one rule.
 fn splitter_height(look: &Look) -> f32 {
@@ -277,6 +281,8 @@ struct Bar<'a> {
     secs: Option<u32>,
     limit_label: &'a MenuLabel,
     timeout_label: &'a MenuLabel,
+    /// The editor's read-write run is in flight: Run and Run all wait.
+    writing: bool,
     locale: Locale,
     look: &'a Look,
     palette: &'a Palette,
@@ -314,6 +320,7 @@ fn toolbar(app: &mut App, ui: &mut Ui, tab: ConnTabId, id: TabId) {
         secs,
         limit_label: &limit_label,
         timeout_label: &timeout_label,
+        writing: sql.is_writing(),
         locale,
         look: &look,
         palette: &palette,
@@ -439,7 +446,9 @@ fn explain_note(ui: &Ui, rect: Rect, locale: Locale) {
     ));
 }
 
-/// Run or Run all in `rect`, with what it does on hover.
+/// Run or Run all in `rect`, with what it does on hover. Neither can be
+/// pressed while the editor's read-write run is in flight, and says so: a
+/// new run would cancel a transaction that may be about to commit.
 fn run_button(
     ui: &mut Ui,
     button: ButtonSpec<'_>,
@@ -456,6 +465,13 @@ fn run_button(
             "Run the statement at the cursor"
         },
     );
+    if bar.writing {
+        let waits = gettext(bar.locale, WRITING);
+        button
+            .disabled(&waits)
+            .show_at(ui, rect, bar.look, bar.palette);
+        return;
+    }
     let response = button.show_at(ui, rect, bar.look, bar.palette);
     if response.on_hover_text(explained).clicked() {
         actions.push(Action::RunSql {
@@ -936,7 +952,84 @@ pub fn status_summary(app: &App, tab: ConnTabId) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    use egui::accesskit::Role;
+    use egui::{Key, Modifiers};
+
     use super::*;
+    use crate::model::RunMode;
+    use crate::testing::{Harness, done_outcome, node, write_outcome};
+
+    /// A SQL editor on a connection that takes writes, drawn in `look`,
+    /// with `text` typed into it.
+    fn editor(look: Look, text: &str) -> (Harness, ConnTabId, TabId) {
+        let mut harness = Harness::new();
+        harness.set_look(look);
+        let tab = harness.connect_fake_as(false);
+        harness.press(Key::T, Modifiers::COMMAND);
+        harness.frame(vec![egui::Event::Paste(text.into())]);
+        harness.settle();
+        let id = harness.app.workspace(tab).unwrap().active_tab.unwrap();
+        (harness, tab, id)
+    }
+
+    fn set_mode(harness: &mut Harness, tab: ConnTabId, id: TabId, mode: RunMode) {
+        harness.app.apply(Action::SetSqlMode {
+            tab,
+            sql_tab: id,
+            mode,
+        });
+    }
+
+    /// Whether the button `name` cannot be pressed, and what it says of
+    /// that.
+    fn button(harness: &mut Harness, name: &str) -> (bool, Option<String>) {
+        let tree = harness.settle();
+        let id = node(&tree, name, Role::Button).unwrap_or_else(|| panic!("no {name}"));
+        let (_, node) = tree.nodes.iter().find(|(node, _)| *node == id).unwrap();
+        (node.is_disabled(), node.description().map(str::to_owned))
+    }
+
+    #[test]
+    fn run_and_run_all_wait_for_a_read_write_run_in_flight() {
+        for look in Look::ALL {
+            let (mut harness, tab, id) = editor(look, "DELETE FROM users WHERE id = 1");
+            set_mode(&mut harness, tab, id, RunMode::ReadWrite);
+            for name in ["Run", "Run all"] {
+                assert!(!button(&mut harness, name).0, "{name} in {}", look.name);
+            }
+            harness.press(Key::Enter, Modifiers::COMMAND);
+            let sent = harness.app.backend.sent.len();
+            for name in ["Run", "Run all"] {
+                assert_eq!(
+                    button(&mut harness, name),
+                    (true, Some(WRITING.to_owned())),
+                    "{name} in {}",
+                    look.name
+                );
+                // Nor does a press of it reach the run.
+                harness.click(name);
+            }
+            harness.press(Key::Enter, Modifiers::COMMAND | Modifiers::SHIFT);
+            assert_eq!(harness.app.backend.sent.len(), sent, "{}", look.name);
+            // The way to stop it stays.
+            assert!(harness.has("Cancel query"), "{}", look.name);
+            let done = vec![done_outcome(Some(1))];
+            let committed = write_outcome(done, tabletist_db::ScriptEnd::Committed);
+            harness.answer_sql(Ok(committed), None);
+            for name in ["Run", "Run all"] {
+                assert!(!button(&mut harness, name).0, "{name} in {}", look.name);
+            }
+        }
+    }
+
+    #[test]
+    fn run_stays_while_a_read_only_run_is_in_flight() {
+        let (mut harness, _, _) = editor(Look::standard(), "SELECT 1");
+        harness.press(Key::Enter, Modifiers::COMMAND);
+        for name in ["Run", "Run all"] {
+            assert!(!button(&mut harness, name).0, "{name}");
+        }
+    }
 
     #[test]
     fn the_editor_takes_its_share_of_the_room() {

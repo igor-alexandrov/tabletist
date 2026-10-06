@@ -760,6 +760,27 @@ pub fn script_outcome(
     }
 }
 
+/// What a script sent to write did: [`script_outcome`], with how its
+/// transaction ended.
+pub fn write_outcome(
+    outcomes: Vec<tabletist_db::StatementOutcome>,
+    end: tabletist_db::ScriptEnd,
+) -> tabletist_db::ScriptOutcome {
+    tabletist_db::ScriptOutcome {
+        end,
+        ..script_outcome(outcomes)
+    }
+}
+
+/// A statement that ran and gave no result set: how many rows it changed,
+/// where it counts them.
+pub fn done_outcome(affected: Option<u64>) -> tabletist_db::StatementOutcome {
+    tabletist_db::StatementOutcome::Done {
+        affected,
+        warnings: 0,
+    }
+}
+
 /// A script stopped before it began: cancelled while it was queued, or
 /// while its transaction opened. No statement has a result.
 pub fn stopped_before_it_began() -> tabletist_db::ScriptOutcome {
@@ -780,7 +801,7 @@ pub fn run_script(
     sql.text = text.into();
     let request = RequestId(sql.run.loaded.map_or(9, |last| last.0 + 1));
     let statements = tabletist_db::sql::statements(Driver::Sqlite.dialect(), text);
-    let _ = sql.start_run(request, statements);
+    let _ = sql.start_run(request, statements, tabletist_db::ScriptMode::ReadOnly);
     assert!(sql.finish_run(request, Ok(script_outcome(outcomes)), None));
 }
 

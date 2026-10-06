@@ -2083,6 +2083,8 @@ pub enum NoWrites {
 pub struct SqlRun {
     /// The statements as split when the run started.
     pub statements: Vec<tabletist_db::sql::Statement>,
+    /// The transaction the run was sent in.
+    pub mode: tabletist_db::ScriptMode,
     pub outcome: tabletist_db::ScriptOutcome,
     /// Who stopped the run, if someone did.
     pub cancel: Option<crate::backend::CancelReason>,
@@ -2094,7 +2096,7 @@ pub struct SqlRun {
 
 impl SqlRun {
     fn new(
-        statements: Vec<tabletist_db::sql::Statement>,
+        (statements, mode): (Vec<tabletist_db::sql::Statement>, tabletist_db::ScriptMode),
         outcome: tabletist_db::ScriptOutcome,
         cancel: Option<crate::backend::CancelReason>,
     ) -> Self {
@@ -2116,6 +2118,7 @@ impl SqlRun {
             });
         Self {
             statements,
+            mode,
             outcome,
             cancel,
             error_mark,
@@ -2161,6 +2164,8 @@ impl TextPrint {
 pub struct RunInFlight {
     /// The statements as split when the run started.
     pub statements: Vec<tabletist_db::sql::Statement>,
+    /// The transaction the run was sent in.
+    pub mode: tabletist_db::ScriptMode,
     /// When the run started, for the elapsed time.
     pub started: std::time::Instant,
     /// The editor's text when the run started.
@@ -2448,18 +2453,21 @@ impl SqlTab {
         }
     }
 
-    /// Starts a run of `statements` as `request`. Returns the run it
-    /// replaces, if one was still pending, for the caller to cancel.
+    /// Starts a run of `statements` as `request`, sent in a transaction
+    /// of `mode`. Returns the run it replaces, if one was still pending,
+    /// for the caller to cancel.
     #[must_use]
     pub fn start_run(
         &mut self,
         request: RequestId,
         statements: Vec<tabletist_db::sql::Statement>,
+        mode: tabletist_db::ScriptMode,
     ) -> Option<RequestId> {
         let superseded = self.run.pending;
         self.run.start(request);
         self.in_flight = Some(RunInFlight {
             statements,
+            mode,
             started: std::time::Instant::now(),
             text: TextPrint::of(&self.text),
         });
@@ -2485,10 +2493,12 @@ impl SqlTab {
             self.run.value = None;
             self.run.loaded = None;
         }
-        let statements = in_flight.map(|run| run.statements).unwrap_or_default();
+        let ran = in_flight
+            .map(|run| (run.statements, run.mode))
+            .unwrap_or_default();
         self.run.finish(
             request,
-            result.map(|outcome| SqlRun::new(statements, outcome, cancel)),
+            result.map(|outcome| SqlRun::new(ran, outcome, cancel)),
         )
     }
 
@@ -2501,6 +2511,15 @@ impl SqlTab {
 
     pub fn is_running(&self) -> bool {
         self.run.is_loading()
+    }
+
+    /// Whether the run in flight was sent to write. Such a run is never
+    /// replaced by another: that would cancel a transaction that may be
+    /// on its way to its commit. Cancel stops it.
+    pub fn is_writing(&self) -> bool {
+        self.in_flight
+            .as_ref()
+            .is_some_and(|run| run.mode == tabletist_db::ScriptMode::Write)
     }
 
     /// How long the run in flight has been going.
@@ -3146,6 +3165,9 @@ mod tests {
         tabletist_db::sql::statements(Driver::Sqlite.dialect(), text)
     }
 
+    /// The transaction every run was sent in before an editor could write.
+    const READ: tabletist_db::ScriptMode = tabletist_db::ScriptMode::ReadOnly;
+
     fn editor() -> SqlTab {
         SqlTab::new(TabId(2), 1, 1_000, Some(Duration::from_secs(30)))
     }
@@ -3173,7 +3195,7 @@ mod tests {
         let mut tab = sql_tab(2);
         assert!(tab.pending().is_empty());
         let sql = tab.as_sql_mut().unwrap();
-        assert_eq!(sql.start_run(RequestId(9), script("SELECT 1")), None);
+        assert_eq!(sql.start_run(RequestId(9), script("SELECT 1"), READ), None);
         assert_eq!(tab.pending(), vec![RequestId(9)]);
     }
 
@@ -3181,10 +3203,10 @@ mod tests {
     fn a_new_run_names_the_one_it_replaces() {
         let mut sql = editor();
         assert!(!sql.is_running() && sql.running_for().is_none());
-        assert_eq!(sql.start_run(RequestId(9), script("SELECT 1")), None);
+        assert_eq!(sql.start_run(RequestId(9), script("SELECT 1"), READ), None);
         assert!(sql.is_running() && sql.running_for().is_some());
         assert_eq!(
-            sql.start_run(RequestId(10), script("SELECT 2; SELECT 3")),
+            sql.start_run(RequestId(10), script("SELECT 2; SELECT 3"), READ),
             Some(RequestId(9)),
             "the caller cancels it"
         );
@@ -3195,7 +3217,7 @@ mod tests {
     #[test]
     fn a_finished_run_keeps_the_statements_it_ran() {
         let mut sql = editor();
-        let _ = sql.start_run(RequestId(9), script("SELECT 1; SELECT 2"));
+        let _ = sql.start_run(RequestId(9), script("SELECT 1; SELECT 2"), READ);
         let cancel = Some(crate::backend::CancelReason::User);
         let outcome = tabletist_db::ScriptOutcome {
             stopped: true,
@@ -3214,8 +3236,8 @@ mod tests {
     #[test]
     fn a_stale_answer_does_not_finish_the_run() {
         let mut sql = editor();
-        let _ = sql.start_run(RequestId(9), script("SELECT 1"));
-        let _ = sql.start_run(RequestId(10), script("SELECT 2"));
+        let _ = sql.start_run(RequestId(9), script("SELECT 1"), READ);
+        let _ = sql.start_run(RequestId(10), script("SELECT 2"), READ);
         assert!(!sql.finish_run(RequestId(9), Ok(Default::default()), None));
         assert_eq!(sql.run.pending, Some(RequestId(10)));
         assert!(sql.run.value.is_none());
@@ -3233,9 +3255,9 @@ mod tests {
     #[test]
     fn a_run_that_fails_as_a_whole_is_the_runs_error_and_leaves_no_result() {
         let mut sql = editor();
-        let _ = sql.start_run(RequestId(9), script("SELECT 1"));
+        let _ = sql.start_run(RequestId(9), script("SELECT 1"), READ);
         assert!(sql.finish_run(RequestId(9), Ok(Default::default()), None));
-        let _ = sql.start_run(RequestId(10), script("SELECT 2"));
+        let _ = sql.start_run(RequestId(10), script("SELECT 2"), READ);
         let lost = Error::ConnectionLost("the server went away".into());
         assert!(sql.finish_run(RequestId(10), Err(lost.clone()), None));
         assert!(!sql.is_running() && sql.in_flight.is_none());
@@ -3248,9 +3270,9 @@ mod tests {
     #[test]
     fn abandoning_a_run_keeps_the_last_result() {
         let mut sql = editor();
-        let _ = sql.start_run(RequestId(9), script("SELECT 1"));
+        let _ = sql.start_run(RequestId(9), script("SELECT 1"), READ);
         assert!(sql.finish_run(RequestId(9), Ok(Default::default()), None));
-        let _ = sql.start_run(RequestId(10), script("SELECT 2"));
+        let _ = sql.start_run(RequestId(10), script("SELECT 2"), READ);
         sql.abandon_run();
         assert!(!sql.is_running() && sql.running_for().is_none());
         assert!(sql.in_flight.is_none());
@@ -3382,7 +3404,7 @@ mod tests {
         run_script(&mut sql, "SELECT 1", vec![rows_outcome(5)]);
         assert_eq!(readings(&sql), (Some(1), true, (5, 3), None));
         // The run in flight leaves the last one in place.
-        let _ = sql.start_run(RequestId(20), script("COMMIT"));
+        let _ = sql.start_run(RequestId(20), script("COMMIT"), READ);
         assert_eq!(readings(&sql), (Some(1), true, (5, 3), None));
         let lost = Error::ConnectionLost("the server went away".into());
         assert!(sql.finish_run(RequestId(20), Err(lost), None));
@@ -3390,7 +3412,7 @@ mod tests {
         assert_eq!(readings(&sql), (None, false, (0, 0), None));
         // Starting the next run clears the error and brings nothing back,
         // nor does an answer for a run that was replaced.
-        let _ = sql.start_run(RequestId(21), script("SELECT 2"));
+        let _ = sql.start_run(RequestId(21), script("SELECT 2"), READ);
         assert!(sql.run.error.is_none());
         assert_eq!(readings(&sql), (None, false, (0, 0), None));
         assert!(!sql.finish_run(RequestId(20), Ok(Default::default()), None));
@@ -3479,12 +3501,12 @@ mod tests {
         assert_eq!(readings(&sql), (Some(2), true, (1, 3), Some(2)));
         // The next run fails as a whole: nothing of the run before stays,
         // its rows and its mark alike.
-        let _ = sql.start_run(RequestId(20), script("SELECT 1;\nSELECT x"));
+        let _ = sql.start_run(RequestId(20), script("SELECT 1;\nSELECT x"), READ);
         assert_eq!(readings(&sql), (Some(2), true, (1, 3), None), "in flight");
         assert!(sql.finish_run(RequestId(20), Err(Error::LeftReadOnly), None));
         assert_eq!(readings(&sql), (None, false, (0, 0), None));
         // The run after it is never answered (its session is gone).
-        let _ = sql.start_run(RequestId(21), script("SELECT 1;\nSELECT x"));
+        let _ = sql.start_run(RequestId(21), script("SELECT 1;\nSELECT x"), READ);
         assert_eq!(readings(&sql), (None, false, (0, 0), None));
         sql.abandon_run();
         assert!(sql.run.error.is_none() && !sql.is_running());
@@ -3492,7 +3514,7 @@ mod tests {
         // A refusal is the one whole-run failure with a line to mark, and
         // it too leaves no rows.
         run_script(&mut sql, "SELECT 1;\nSELECT x", vec![rows_outcome(4)]);
-        let _ = sql.start_run(RequestId(30), script("SELECT 1;\nSELECT x"));
+        let _ = sql.start_run(RequestId(30), script("SELECT 1;\nSELECT x"), READ);
         let refused = Error::Refused {
             line: 2,
             what: "COMMIT".into(),
@@ -3512,7 +3534,7 @@ mod tests {
         );
         assert_eq!(sql.error_mark(), Some((1, None)));
         // The run in flight has not failed anywhere yet.
-        let _ = sql.start_run(RequestId(20), script("SELECT 1;\n\n\nCOMMIT"));
+        let _ = sql.start_run(RequestId(20), script("SELECT 1;\n\n\nCOMMIT"), READ);
         assert_eq!(sql.error_mark(), None);
         let refused = Error::Refused {
             line: 4,
@@ -3523,7 +3545,7 @@ mod tests {
         assert_eq!(sql.error_mark(), Some((4, None)));
         // A run that failed as a whole for another reason marks nothing:
         // no statement ran.
-        let _ = sql.start_run(RequestId(21), script("SELECT 1"));
+        let _ = sql.start_run(RequestId(21), script("SELECT 1"), READ);
         let lost = Error::ConnectionLost("the server went away".into());
         assert!(sql.finish_run(RequestId(21), Err(lost), None));
         assert!(sql.run.value.is_none());
@@ -3550,7 +3572,7 @@ mod tests {
         assert_eq!(sql.error_mark(), Some((3, None)));
         // A refusal's line is a line of the text that was refused.
         sql.text = "SELECT 1;\nCOMMIT".into();
-        let _ = sql.start_run(RequestId(30), script("SELECT 1;\nCOMMIT"));
+        let _ = sql.start_run(RequestId(30), script("SELECT 1;\nCOMMIT"), READ);
         let refused = Error::Refused {
             line: 2,
             what: "COMMIT".into(),
@@ -3568,7 +3590,7 @@ mod tests {
         // Typed in while the run was in flight: the mark is stale at once.
         let mut sql = editor();
         sql.text = "SELECT x".into();
-        let _ = sql.start_run(RequestId(9), script("SELECT x"));
+        let _ = sql.start_run(RequestId(9), script("SELECT x"), READ);
         sql.text.insert_str(0, "SELECT 1;\n");
         let outcome = crate::testing::script_outcome(failing());
         assert!(sql.finish_run(RequestId(9), Ok(outcome), None));
@@ -3578,7 +3600,7 @@ mod tests {
         let mut sql = editor();
         run_script(&mut sql, "SELECT x", failing());
         sql.text = "\nSELECT x".into();
-        let _ = sql.start_run(RequestId(40), script("\nSELECT x"));
+        let _ = sql.start_run(RequestId(40), script("\nSELECT x"), READ);
         sql.abandon_run();
         assert_eq!(sql.error_mark(), None);
         sql.text = "SELECT x".into();
@@ -3599,7 +3621,11 @@ mod tests {
         let mut tab = sql_tab(2);
         let sql = tab.as_sql_mut().unwrap();
         sql.text = "SELECT secret_column FROM vault".into();
-        let _ = sql.start_run(RequestId(9), script("SELECT secret_column FROM vault"));
+        let _ = sql.start_run(
+            RequestId(9),
+            script("SELECT secret_column FROM vault"),
+            READ,
+        );
         for printed in [format!("{tab:?}"), format!("{tab:#?}")] {
             assert!(printed.contains("SqlTab"), "{printed}");
             assert!(!printed.contains("secret_column"), "{printed}");
@@ -3647,7 +3673,7 @@ mod tests {
         workspace.tabs.push(object_tab(1, "users", true));
         workspace.push_sql_tab(TabId(2), 1_000, None);
         let running = workspace.push_sql_tab(TabId(3), 1_000, None);
-        let _ = running.start_run(RequestId(9), script("SELECT 1"));
+        let _ = running.start_run(RequestId(9), script("SELECT 1"), READ);
         workspace.server_version.value = Some("SQLite 3.46.0".into());
         workspace
             .object_tab_mut(TabId(1))

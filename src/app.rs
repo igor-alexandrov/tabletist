@@ -3200,19 +3200,26 @@ impl App {
     /// editor holding no statement (empty, or only comments) runs nothing.
     /// Nor does one whose session is not connected: the backend would
     /// answer that the connection is closed, and a run that fails as a
-    /// whole takes the result before it away.
+    /// whole takes the result before it away. Nor one whose read-write run
+    /// is still in flight: a new run would cancel it.
+    ///
+    /// The run is read-write only when the editor's runs are (see
+    /// `Workspace::run_mode`) and one of the statements looks like a
+    /// write. Every other run is the read-only one.
     fn run_sql(&mut self, tab: ConnTabId, id: TabId, all: bool) {
-        let request = RequestId(self.next_id());
-        let Some(workspace) = self.workspace_mut(tab) else {
+        let Some(workspace) = self.workspace(tab) else {
             return;
         };
         if !matches!(workspace.status, SessionStatus::Connected) {
             return;
         }
-        let (session, dialect) = (workspace.session, workspace.driver.dialect());
-        let Some(sql) = workspace.sql_tab_mut(id) else {
+        let dialect = workspace.driver.dialect();
+        let Some(sql) = workspace.sql_tab(id) else {
             return;
         };
+        if sql.is_writing() {
+            return;
+        }
         let mut statements = tabletist_db::sql::statements(dialect, &sql.text);
         if !all {
             statements = tabletist_db::sql::statement_at(&statements, sql.cursor)
@@ -3223,8 +3230,29 @@ impl App {
         if statements.is_empty() {
             return;
         }
+        let mode = script_mode(workspace.run_mode(sql), dialect, &statements);
+        self.send_run(tab, id, statements, mode);
+    }
+
+    /// Sends `statements` to the editor's session as its run, in a
+    /// transaction of `mode`.
+    fn send_run(
+        &mut self,
+        tab: ConnTabId,
+        id: TabId,
+        statements: Vec<tabletist_db::sql::Statement>,
+        mode: tabletist_db::ScriptMode,
+    ) {
+        let request = RequestId(self.next_id());
+        let Some(workspace) = self.workspace_mut(tab) else {
+            return;
+        };
+        let session = workspace.session;
+        let Some(sql) = workspace.sql_tab_mut(id) else {
+            return;
+        };
         let (limit, timeout) = (sql.limit, sql.timeout);
-        let superseded = sql.start_run(request, statements.clone());
+        let superseded = sql.start_run(request, statements.clone(), mode);
         // The session runs one thing at a time: the run still going must
         // stop before this one can start.
         self.cancel(session, superseded);
@@ -3234,6 +3262,7 @@ impl App {
             statements,
             limit,
             timeout,
+            mode,
         });
     }
 
@@ -3784,6 +3813,27 @@ fn apply_url(form: &mut ConnectionForm) -> Result<(), String> {
     form.message = None;
     form.url_mode = false;
     Ok(())
+}
+
+/// The transaction a run of `statements` is sent in, in an editor whose
+/// runs have `mode`: a read-write one only in Read-write, and only when a
+/// statement looks like a write. So an editor left in Read-write opens no
+/// read-write transaction for its reads, and nothing writes from one in
+/// Read-only.
+fn script_mode(
+    mode: RunMode,
+    dialect: tabletist_db::Dialect,
+    statements: &[tabletist_db::sql::Statement],
+) -> tabletist_db::ScriptMode {
+    use tabletist_db::sql::{StatementKind, kind};
+    let writes = statements
+        .iter()
+        .any(|statement| kind(dialect, &statement.text) == StatementKind::Write);
+    if mode == RunMode::ReadWrite && writes {
+        tabletist_db::ScriptMode::Write
+    } else {
+        tabletist_db::ScriptMode::ReadOnly
+    }
 }
 
 /// Whether a finished SQL run opens Messages rather than Results. It does
@@ -5771,10 +5821,11 @@ mod tests {
         let request = RequestId(harness.app.next_id());
         let workspace = harness.app.workspace_mut(tab).unwrap();
         let statements = tabletist_db::sql::statements(workspace.driver.dialect(), "SELECT 1");
-        let superseded = workspace
-            .sql_tab_mut(id)
-            .unwrap()
-            .start_run(request, statements);
+        let superseded = workspace.sql_tab_mut(id).unwrap().start_run(
+            request,
+            statements,
+            tabletist_db::ScriptMode::ReadOnly,
+        );
         assert_eq!(superseded, None);
         request
     }
@@ -6686,6 +6737,142 @@ mod tests {
         // Writable once more, the tab's own mode counts again.
         harness.reconnect_fake_as(tab, false);
         assert_eq!(run_mode(&harness, tab, id), RunMode::ReadWrite);
+    }
+
+    /// The transaction the newest run was sent in.
+    fn sent_mode(harness: &Harness) -> tabletist_db::ScriptMode {
+        match last_sent(&harness.app) {
+            Command::RunSql { mode, .. } => *mode,
+            other => panic!("expected RunSql, got {other:?}"),
+        }
+    }
+
+    /// Ends the run in flight as committed, each statement having changed
+    /// one row.
+    fn commit(harness: &mut Harness, statements: usize) {
+        use crate::testing::{done_outcome, write_outcome};
+        let done = vec![done_outcome(Some(1)); statements];
+        let outcome = write_outcome(done, tabletist_db::ScriptEnd::Committed);
+        harness.answer_sql(Ok(outcome), None);
+    }
+
+    #[test]
+    fn a_run_is_read_write_only_in_a_read_write_editor_and_only_with_a_write() {
+        use tabletist_db::ScriptMode::{ReadOnly, Write};
+        let mut harness = Harness::new();
+        let (tab, id) = writable_sql(&mut harness);
+        let script = "SELECT 1;\nUPDATE users SET email = 'x' WHERE id = 1";
+        // In Read-only nothing is sent to write, whatever the script holds.
+        type_sql(&mut harness, tab, id, script, 0);
+        run(&mut harness, tab, id, true);
+        assert_eq!(sent_mode(&harness), ReadOnly);
+        assert!(!sql(&harness, tab, id).is_writing());
+        harness.answer_sql(Ok(crate::testing::script_outcome(Vec::new())), None);
+        assert_eq!(sql(&harness, tab, id).last_run().unwrap().mode, ReadOnly);
+        // In Read-write the run that holds the write is sent to write.
+        set_mode(&mut harness, tab, id, RunMode::ReadWrite);
+        run(&mut harness, tab, id, true);
+        assert_eq!(sent_mode(&harness), Write);
+        assert!(sql(&harness, tab, id).is_writing());
+        commit(&mut harness, 2);
+        assert!(!sql(&harness, tab, id).is_writing());
+        assert_eq!(sql(&harness, tab, id).last_run().unwrap().mode, Write);
+        // The statement at the cursor is a read: no read-write transaction
+        // is opened for it, though the tab is in Read-write.
+        run(&mut harness, tab, id, false);
+        assert_eq!(sent_mode(&harness), ReadOnly);
+        harness.answer_sql(Ok(crate::testing::script_outcome(Vec::new())), None);
+        // With the cursor in the UPDATE, that statement alone is the run.
+        type_sql(&mut harness, tab, id, script, script.len());
+        run(&mut harness, tab, id, false);
+        assert_eq!(sent_mode(&harness), Write);
+        assert!(matches!(
+            last_sent(&harness.app),
+            Command::RunSql { statements, .. } if statements.len() == 1
+        ));
+    }
+
+    #[test]
+    fn a_statement_is_a_write_unless_it_plainly_reads() {
+        use tabletist_db::ScriptMode::{ReadOnly, Write};
+        let mut harness = Harness::new();
+        let (tab, id) = writable_sql(&mut harness);
+        set_mode(&mut harness, tab, id, RunMode::ReadWrite);
+        for (text, mode) in [
+            ("SELECT * FROM users", ReadOnly),
+            ("WITH old AS (SELECT 1) SELECT * FROM old", ReadOnly),
+            ("EXPLAIN DELETE FROM users", ReadOnly),
+            ("PRAGMA table_info(users)", ReadOnly),
+            ("-- UPDATE in a note\nSELECT 'DELETE'", ReadOnly),
+            ("INSERT INTO users (email) VALUES ('a')", Write),
+            ("DELETE FROM users", Write),
+            ("CREATE TABLE notes (seen int)", Write),
+            (
+                "WITH gone AS (DELETE FROM users RETURNING id) SELECT * FROM gone",
+                Write,
+            ),
+            ("EXPLAIN ANALYZE DELETE FROM users", Write),
+            // One write among reads is enough.
+            ("SELECT 1; DROP TABLE users; SELECT 2", Write),
+        ] {
+            type_sql(&mut harness, tab, id, text, 0);
+            run(&mut harness, tab, id, true);
+            assert_eq!(sent_mode(&harness), mode, "{text}");
+            harness.answer_sql(Ok(crate::testing::script_outcome(Vec::new())), None);
+        }
+    }
+
+    #[test]
+    fn nothing_is_sent_to_write_where_the_session_cannot() {
+        use tabletist_db::ScriptMode::ReadOnly;
+        let write = "DELETE FROM users WHERE id = 1";
+        // The session came back read-only under a tab in Read-write.
+        let mut harness = Harness::new();
+        let (tab, id) = writable_sql(&mut harness);
+        set_mode(&mut harness, tab, id, RunMode::ReadWrite);
+        harness.reconnect_fake_as(tab, true);
+        type_sql(&mut harness, tab, id, write, 0);
+        run(&mut harness, tab, id, false);
+        assert_eq!(sent_mode(&harness), ReadOnly);
+        // Production, with a tab that says Read-write however it came to:
+        // no read-write run goes there without its confirmation.
+        let mut harness = Harness::new();
+        let (tab, id) = writable_sql(&mut harness);
+        let workspace = harness.app.workspace_mut(tab).unwrap();
+        workspace.environment = crate::env::Environment::Production;
+        workspace.sql_tab_mut(id).unwrap().mode = RunMode::ReadWrite;
+        type_sql(&mut harness, tab, id, write, 0);
+        run(&mut harness, tab, id, false);
+        assert_eq!(sent_mode(&harness), ReadOnly);
+    }
+
+    #[test]
+    fn run_does_nothing_while_the_editors_read_write_run_is_in_flight() {
+        let mut harness = Harness::new();
+        let (tab, id) = writable_sql(&mut harness);
+        set_mode(&mut harness, tab, id, RunMode::ReadWrite);
+        type_sql(&mut harness, tab, id, "DELETE FROM users WHERE id = 1", 0);
+        run(&mut harness, tab, id, false);
+        let writing = sql(&harness, tab, id).run.pending.expect("a run in flight");
+        let sent = harness.app.backend.sent.len();
+        // Neither Run nor Run all replaces it, nor cancels it.
+        run(&mut harness, tab, id, false);
+        run(&mut harness, tab, id, true);
+        assert_eq!(harness.app.backend.sent.len(), sent);
+        assert_eq!(sql(&harness, tab, id).run.pending, Some(writing));
+        // Cancel still stops it.
+        harness.app.apply(Action::CancelQuery(tab));
+        assert_eq!(cancels_since(&harness, sent), vec![writing]);
+        commit(&mut harness, 1);
+        assert!(!sql(&harness, tab, id).is_running());
+        // A read-only run is replaced by the next one, as it always was.
+        type_sql(&mut harness, tab, id, "SELECT 1", 0);
+        run(&mut harness, tab, id, false);
+        let reading = sql(&harness, tab, id).run.pending.expect("a run in flight");
+        let sent = harness.app.backend.sent.len();
+        run(&mut harness, tab, id, false);
+        assert_eq!(cancels_since(&harness, sent), vec![reading]);
+        assert_eq!(runs_since(&harness, sent), 1);
     }
 
     #[test]
@@ -7755,9 +7942,11 @@ mod tests {
         let run = RequestId(app.next_id());
         let workspace = app.workspace_mut(tab).unwrap();
         let statements = tabletist_db::sql::statements(workspace.driver.dialect(), "SELECT 1");
-        let _ = workspace
-            .push_sql_tab(id, 1_000, None)
-            .start_run(run, statements);
+        let _ = workspace.push_sql_tab(id, 1_000, None).start_run(
+            run,
+            statements,
+            tabletist_db::ScriptMode::ReadOnly,
+        );
         workspace.server_version.value = Some("PostgreSQL 17.2".into());
         prompt(&mut app).password = "right".into();
         app.apply(Action::SubmitPassword);
