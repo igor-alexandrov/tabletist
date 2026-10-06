@@ -16,6 +16,9 @@ A fast, native database client for **PostgreSQL**, **MySQL** and
 **SQLite**. Written in Rust with egui; runs on
 Linux (Omarchy and Hyprland first), macOS and Windows.
 
+The guide and the reference are on the website:
+**[igor-alexandrov.github.io/tabletist](https://igor-alexandrov.github.io/tabletist/)**.
+
 <p align="center">
   <img src="assets/screenshots/macos.png" width="900" alt="Tabletist 0.1.0, the macOS look: a table's data grid with the sidebar of tables on the left and the row panel on the right">
 </p>

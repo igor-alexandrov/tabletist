@@ -73,6 +73,30 @@ waits for it.
   every pull request the owner did not open. It files the request and nothing
   else, and needs the `COPILOT_REVIEW_TOKEN` secret.
 
+## Website
+
+The website is a Jekyll site in `docs/`, on jekyll-vitepress-theme. `docs.yml`
+builds and checks it on a pull request that touches it, and publishes it to
+GitHub Pages from `main`. `docs/superpowers/` is not part of the site:
+`docs/_config.yml` excludes it.
+
+    cd docs && bundle install
+    bin/check                                 # build and check, as docs.yml does
+    bundle exec jekyll serve --livereload     # http://localhost:4000/tabletist/
+
+- Update the pages when user-visible behaviour, settings, files or keys
+  change. `_reference/keyboard-shortcuts.md` follows `SHORTCUTS` in
+  `src/ui/keys.rs`; `_reference/settings-and-files.md` follows
+  `src/settings.rs` and `src/paths.rs`.
+- The site is served under `/tabletist`. Link to a page with
+  `{% link _guide/name.md %}` and to a file with the `relative_url` filter,
+  never with a bare `/path/`.
+- The icon and the screenshots stay in `assets/`: `docs/_plugins/repo_assets.rb`
+  publishes them. Do not copy them into `docs/`.
+- The pages name no version, so a release does not touch them.
+- The paths that start `docs.yml` are listed twice, as in `packaging.yml`.
+  Change them together.
+
 ## Style
 
 - Never use em dashes. Use a full stop, comma, colon, or parentheses.
