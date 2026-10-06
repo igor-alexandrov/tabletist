@@ -20957,6 +20957,40 @@ mod tests {
     }
 
     #[test]
+    fn a_text_columns_document_is_edited_as_text_and_offers_no_format() {
+        for look in desktop_looks() {
+            // `email` is a text column that holds a document here: the
+            // panel reads it as a tree, with a pencil.
+            let (mut harness, tab, id) = form_row(look, 1);
+            let object = harness.app.workspace_mut(tab).unwrap();
+            let object = object.object_tab_mut(id).unwrap();
+            let doc = r#"{"a":1,"b":[2,3]}"#;
+            object.rows.value.as_mut().unwrap().rows[1][1] = tabletist_db::Value::Text(doc.into());
+            object.fields = None;
+            harness.settle();
+            harness.click("Edit email");
+            // Its text, as it is stored: not laid out, in the field of
+            // one line of text.
+            assert_eq!(
+                form_editor(&harness, tab, id),
+                Some(((1, 1), true)),
+                "{}",
+                look.name
+            );
+            assert!(!is_large(&harness, tab, id), "{}", look.name);
+            assert_eq!(editor_text(&harness, tab, id).as_deref(), Some(doc));
+            // Nothing offers to lay it out, and the key does nothing.
+            let tree = harness.settle();
+            let named = crate::testing::labels(&tree);
+            let offered = named.iter().any(|label| label.starts_with("Format "));
+            assert!(!offered, "{}: {named:?}", look.name);
+            assert!(!named.iter().any(|label| label == "Collapse all"));
+            harness.press(Key::F, Modifiers::COMMAND | Modifiers::SHIFT);
+            assert_eq!(editor_text(&harness, tab, id).as_deref(), Some(doc));
+        }
+    }
+
+    #[test]
     fn alt_enter_makes_a_field_of_the_panel_tall_in_its_place() {
         for look in Look::ALL {
             let (mut harness, tab, id) = form_row(look, 1);
@@ -21204,6 +21238,21 @@ mod tests {
         assert!(harness.app.workspace(tab).unwrap().row_panel);
         assert!(field_focused(&harness, tab, id, 1));
         assert_eq!(selected(&harness, tab, id), Some((1, 1)));
+        // The field wears the look's cursor: the selection's tone behind
+        // its value, and the focus painter's bar in the accent at its left.
+        let palette = harness.app.palette;
+        let value = panel_text(&harness, "user2@example.com");
+        let behind = |fill: egui::Color32, width: Option<f32>| {
+            harness.fills.iter().any(|(rect, painted)| {
+                *painted == fill
+                    && rect.y_range().contains(value.center().y)
+                    && width.is_none_or(|width| rect.width() == width)
+                    && rect.left() <= value.left()
+                    && rect.left() > cell_of(&harness, "user3@example.com").x
+            })
+        };
+        assert!(behind(palette.selection, None));
+        assert!(behind(palette.accent, Some(2.0)));
         // `j` and `k` step the fields, not the grid's rows.
         type_key(&mut harness, Key::J, "j");
         harness.settle();

@@ -171,6 +171,14 @@ impl<'a> Form<'a> {
         self.parts.get(col).copied().unwrap_or(Part::Read)
     }
 
+    /// Whether the panel's open editor is one whose text can be laid out:
+    /// the large editor of a JSON column. A text column that holds a
+    /// document is edited as the text it is.
+    pub fn formats(&self) -> bool {
+        let large = self.editor.as_ref().is_some_and(|editor| editor.large);
+        large && self.target.as_ref().is_some_and(|target| target.json)
+    }
+
     /// Whether an edit of the column `col` was asked for in the panel and
     /// refused: its field says why.
     pub fn refused(&self, col: usize) -> bool {

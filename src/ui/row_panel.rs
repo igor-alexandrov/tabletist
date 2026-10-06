@@ -1352,44 +1352,48 @@ fn field(
             let link_right = left - 4.0 - 6.0;
             // Its tree is not drawn while the document is edited: there
             // is nothing to fold. What is typed can be laid out, a member
-            // to a line: "Format", and its key.
+            // to a line: "Format", and its key. Only where there is
+            // something to lay out: a text column's document is its text,
+            // edited as text.
             if part == Part::Editing {
-                let chord = if look.command_key() == "⌘" {
-                    "⇧⌘F"
-                } else {
-                    "Ctrl+Shift+F"
-                };
-                let label = format!("{} {chord}", gettext(locale, "Format"));
-                let role = TextRole::FieldLabel;
-                let size = vec2(
-                    role.width(ui.ctx(), look.faces, &label),
-                    line_of(ui, role, look),
-                );
-                let place = Rect::from_min_size(
-                    pos2(link_right - size.x, line.center().y - size.y / 2.0),
-                    size,
-                );
-                let link = ui.interact(place, name_id.with("format"), Sense::click());
-                link.widget_info(|| WidgetInfo::labeled(WidgetType::Link, true, &label));
-                let color = if link.hovered() {
-                    palette.accent_hover
-                } else {
-                    palette.accent
-                };
-                widgets::paint_text(
-                    ui,
-                    place.left(),
-                    place.center().y,
-                    Text::one(look, role, &label, color),
-                );
-                // The press is the editor's: its text keeps the keyboard,
-                // and is still open when it is laid out.
-                if link.is_pointer_button_down_on() || link.clicked() {
-                    let editor = crate::ui::cell_editor::field_id(tab, tab_id);
-                    crate::ui::cell_editor::press_is_the_editors(ui.ctx(), editor);
-                }
-                if link.clicked() {
-                    actions.push(Action::FormatEditor { tab, id: tab_id });
+                if form.formats() {
+                    let chord = if look.command_key() == "⌘" {
+                        "⇧⌘F"
+                    } else {
+                        "Ctrl+Shift+F"
+                    };
+                    let label = format!("{} {chord}", gettext(locale, "Format"));
+                    let role = TextRole::FieldLabel;
+                    let size = vec2(
+                        role.width(ui.ctx(), look.faces, &label),
+                        line_of(ui, role, look),
+                    );
+                    let place = Rect::from_min_size(
+                        pos2(link_right - size.x, line.center().y - size.y / 2.0),
+                        size,
+                    );
+                    let link = ui.interact(place, name_id.with("format"), Sense::click());
+                    link.widget_info(|| WidgetInfo::labeled(WidgetType::Link, true, &label));
+                    let color = if link.hovered() {
+                        palette.accent_hover
+                    } else {
+                        palette.accent
+                    };
+                    widgets::paint_text(
+                        ui,
+                        place.left(),
+                        place.center().y,
+                        Text::one(look, role, &label, color),
+                    );
+                    // The press is the editor's: its text keeps the keyboard,
+                    // and is still open when it is laid out.
+                    if link.is_pointer_button_down_on() || link.clicked() {
+                        let editor = crate::ui::cell_editor::field_id(tab, tab_id);
+                        crate::ui::cell_editor::press_is_the_editors(ui.ctx(), editor);
+                    }
+                    if link.clicked() {
+                        actions.push(Action::FormatEditor { tab, id: tab_id });
+                    }
                 }
             } else {
                 json_view::fold_all_link(
@@ -1562,25 +1566,13 @@ fn field(
         }
         let ring = if look.terminal {
             // The terminal look's cursor on a field: the selection's tone
-            // behind the value, and a 2 pt bar in the accent at its left.
-            // It is there whenever the field has the keyboard, as the
-            // grid's is, and is all that marks it.
-            if response.has_focus() {
-                let bar = Rect::from_min_size(frame.min, vec2(2.0, frame.height()));
-                let filled = |rect, color| {
-                    egui::Shape::from(egui::epaint::RectShape::filled(
-                        rect,
-                        CornerRadius::ZERO,
-                        color,
-                    ))
-                };
-                let cursor = vec![
-                    filled(frame, palette.selection),
-                    filled(bar, palette.accent),
-                ];
-                ui.painter().set(behind, egui::Shape::Vec(cursor));
+            // behind the value, and the focus painter's bar at its left.
+            if focus::shown(&response) {
+                let ground =
+                    egui::epaint::RectShape::filled(frame, CornerRadius::ZERO, palette.selection);
+                ui.painter().set(behind, ground);
             }
-            focus::Ring::Own
+            focus::Ring::Bar
         } else {
             focus::Ring::Inset {
                 radius: look.radius,
