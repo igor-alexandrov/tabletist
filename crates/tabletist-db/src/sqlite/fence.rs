@@ -64,13 +64,18 @@ pub(super) fn authorize(fence: Fence, action: &Action<'_>) -> Authorization {
         },
         // A write is left to `query_only`, whose error the app knows as a
         // refused write. What must not happen is the script leaving its
-        // transaction or lifting what refuses the write.
+        // transaction or lifting what refuses the write. Nor may it take
+        // the file for the session: an exclusive `locking_mode` outlives
+        // the run, and in a rollback journal setting it back does not let
+        // the lock go (only the session's next read of the file does), so
+        // every other program would be shut out of the file meanwhile.
+        // Inside the one transaction a script runs in it gains nothing.
         Fence::Script => match action.code {
             ffi::SQLITE_TRANSACTION | ffi::SQLITE_SAVEPOINT => false,
             ffi::SQLITE_PRAGMA => {
                 !pragma_is(action, "wal_checkpoint")
                     && !(action.second.is_some()
-                        && ["query_only", "writable_schema"]
+                        && ["query_only", "writable_schema", "locking_mode"]
                             .iter()
                             .any(|name| pragma_is(action, name)))
             }
@@ -177,6 +182,32 @@ mod tests {
                 false,
             ),
             (Fence::Script, pragma("query_only", None), true),
+            // The file's lock is not a script's to keep, in whatever
+            // letters; asking what the mode is changes nothing.
+            (
+                Fence::Script,
+                pragma("locking_mode", Some("EXCLUSIVE")),
+                false,
+            ),
+            (Fence::Script, pragma("LOCKING_MODE", Some("normal")), false),
+            (Fence::Script, pragma("locking_mode", None), true),
+            // A script may set these for its own run: the session's
+            // settings are put back after it (`set_session_pragmas`).
+            (
+                Fence::Script,
+                pragma("ignore_check_constraints", Some("ON")),
+                true,
+            ),
+            (
+                Fence::Script,
+                pragma("recursive_triggers", Some("ON")),
+                true,
+            ),
+            (
+                Fence::Script,
+                pragma("legacy_alter_table", Some("ON")),
+                true,
+            ),
             (Fence::Script, pragma("foreign_keys", Some("ON")), true),
             (Fence::Script, pragma("table_info", Some("users")), true),
             (Fence::Script, select, true),
