@@ -2,3 +2,7 @@
 *.png
 !assets/**/*.png
 !packaging/**/*.png
+/docs/_site
+/docs/.jekyll-cache
+/docs/.bundle
+/docs/vendor

@@ -1,0 +1,112 @@
+title: Tabletist
+description: A fast, native database client for PostgreSQL, MySQL and SQLite.
+lang: en-US
+url: https://igor-alexandrov.github.io
+baseurl: /tabletist
+logo: /assets/images/tabletist.svg
+image: /assets/images/macos.png
+
+markdown: kramdown
+kramdown:
+  input: GFM
+
+permalink: pretty
+theme: jekyll-vitepress-theme
+
+collections:
+  guide:
+    output: true
+    permalink: "/:name/"
+  reference:
+    output: true
+    permalink: "/:name/"
+
+defaults:
+  - scope:
+      path: ""
+    values:
+      layout: default
+      image: /assets/images/macos.png
+      topics:
+        - Database client
+        - PostgreSQL
+        - MySQL
+        - SQLite
+        - Rust
+        - egui
+
+jekyll_vitepress:
+  seo:
+    page_type: TechArticle
+    image:
+      path: /assets/images/macos.png
+      alt: Tabletist showing a table's data grid, the sidebar of tables and the row panel
+    publisher:
+      type: Person
+      name: Igor Alexandrov
+      url: https://github.com/igor-alexandrov
+      same_as:
+        - https://github.com/igor-alexandrov/tabletist
+  llms:
+    title: Tabletist
+    description: >-
+      Documentation for a native database client for PostgreSQL, MySQL and
+      SQLite that runs on Linux, macOS and Windows.
+    full: true
+    details: >-
+      Covers installation, connections, browsing and editing data, the SQL
+      editor, keyboard shortcuts, and settings. Source is on
+      [GitHub](https://github.com/igor-alexandrov/tabletist).
+  branding:
+    site_title: Tabletist
+    logo:
+      default: /assets/images/tabletist.svg
+      alt: Tabletist
+  # The icon's blues, so that links and buttons match the app.
+  tokens:
+    light:
+      vp-c-brand-1: "#1e40af"
+      vp-c-brand-2: "#1d4ed8"
+      vp-c-brand-3: "#2563eb"
+      vp-c-brand-soft: "rgba(59, 130, 246, 0.14)"
+      vp-home-hero-name-background: "linear-gradient(120deg, #1d4ed8 30%, #60a5fa)"
+      vp-home-hero-image-background-image: "linear-gradient(-45deg, #1d4ed8 50%, #60a5fa 50%)"
+    dark:
+      vp-c-brand-1: "#93c5fd"
+      vp-c-brand-2: "#3b82f6"
+      vp-c-brand-3: "#2563eb"
+      vp-c-brand-soft: "rgba(59, 130, 246, 0.16)"
+  syntax:
+    light_theme: github
+    dark_theme: github.dark
+  footer:
+    enabled: true
+    show_on_docs: false
+    message: Released under the MIT License.
+    copyright: >-
+      Copyright © 2026 Igor Alexandrov. Docs built with
+      <a href="https://jekyll-vitepress.dev" target="_blank" rel="noreferrer">Jekyll VitePress</a>.
+  doc_footer:
+    enabled: true
+    previous_label: Previous page
+    next_label: Next page
+  # A page's date would be the checkout's, which is the same for every page.
+  last_updated:
+    enabled: false
+  edit_link:
+    enabled: true
+    pattern: "https://github.com/igor-alexandrov/tabletist/edit/main/docs/:path"
+    text: Edit this page on GitHub
+  github_star:
+    enabled: true
+    repository: igor-alexandrov/tabletist
+    text: Star
+    show_count: true
+
+plugins:
+  - jekyll-vitepress-theme
+
+# docs/ also holds the project's specs and plans, which are not the website.
+exclude:
+  - superpowers
+  - bin
