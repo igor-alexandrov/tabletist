@@ -86,7 +86,8 @@ GitHub Pages from `main`. `docs/superpowers/` is not part of the site:
 
 - Update the pages when user-visible behaviour, settings, files or keys
   change. `_reference/keyboard-shortcuts.md` follows `SHORTCUTS` in
-  `src/ui/keys.rs`. `_guide/omarchy.md` lists every key of the Omarchy look,
+  `src/ui/keys.rs`, and `_guide/macos.md` writes the same keys with Cmd.
+  `_guide/omarchy.md` lists every key of the Omarchy look,
   the ones `SHORTCUTS` leaves out too: the letters in `keys.rs` and the key
   hints its dialogs draw. `_reference/settings-and-files.md` follows
   `src/settings.rs` and `src/paths.rs`.

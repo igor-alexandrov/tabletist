@@ -10,6 +10,10 @@ using.
 In this page, **Mod** is Cmd on macOS and Ctrl on Windows and Linux. Keys
 written with Ctrl are Ctrl on every system.
 
+The same keys are written out for one system in
+[Tabletist on macOS]({% link _guide/macos.md %}#the-keyboard) and
+[The Omarchy Look]({% link _guide/omarchy.md %}#the-keyboard).
+
 ## Connections
 
 | Keys | Do |

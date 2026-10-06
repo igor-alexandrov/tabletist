@@ -109,7 +109,7 @@ are typing, and Esc gives the keyboard back.
 | `i`, Enter | Edit the cell |
 | `cc` | Edit the cell from nothing |
 | `e`, Ctrl+I | Edit the row in the row panel |
-| Tab, Shift+Tab | Keep the edit and move right or left |
+| Enter, Tab, Shift+Tab | Keep the edit and move down, right or left |
 | Esc | Leave the editor and keep the edit |
 | Ctrl+C | Drop the edit |
 | Alt+Enter | Open the large editor. In it, Ctrl+Enter applies and Esc keeps the text |
@@ -176,7 +176,8 @@ offers.
 | `R` | Reset the option |
 | Esc | Close |
 
-The keys of the macOS and Windows looks are in
+The Mac's keys are in [Tabletist on macOS]({% link _guide/macos.md %}#the-keyboard),
+and the keys of the macOS and Windows looks together in
 [Keyboard Shortcuts]({% link _reference/keyboard-shortcuts.md %}).
 
 ## Themes

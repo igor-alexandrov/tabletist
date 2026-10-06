@@ -37,7 +37,8 @@ Windows.
   statements on screen.
 - **Looks at home.** A macOS look in IBM Plex, and on Linux the Omarchy
   look: square, keyboard first, with vim keys.
-  [Read about the Omarchy look]({% link _guide/omarchy.md %}).
+  Read about [the Omarchy look]({% link _guide/omarchy.md %}) and
+  [Tabletist on macOS]({% link _guide/macos.md %}).
 
 ## What it does not do yet
 
