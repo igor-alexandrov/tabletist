@@ -1,0 +1,24 @@
+#!/bin/sh
+# Builds the website as the Docs workflow publishes it, into docs/_site, and
+# checks what was built. Run it before pushing a change to the site.
+set -eu
+cd "$(dirname "$0")/.."
+
+# html-proofer reads pages in Ruby's default encoding. In an ASCII locale it
+# fails to read every page and still reports success.
+export RUBYOPT="-EUTF-8"
+export JEKYLL_ENV=production
+
+bundle exec jekyll build --strict_front_matter --destination _site
+
+# docs/ also holds the project's specs and plans, and this script. They are
+# not the website.
+for stray in superpowers bin; do
+  if [ -e "_site/$stray" ]; then
+    echo "check: docs/$stray was published; see exclude in _config.yml" >&2
+    exit 1
+  fi
+done
+
+# The site is served under /tabletist (baseurl in _config.yml).
+bundle exec htmlproofer _site --disable-external --swap-urls '^/tabletist:'

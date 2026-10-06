@@ -1,0 +1,63 @@
+name: Docs
+
+# Builds the website from docs/ and publishes it to GitHub Pages from main.
+# A pull request, and a manual run on another branch, only build and check
+# it. The paths are listed twice: change them together.
+on:
+  push:
+    branches: [main]
+    paths:
+      - docs/**
+      - "!docs/superpowers/**"
+      - assets/icon/tabletist.svg
+      - assets/screenshots/**
+      - .github/workflows/docs.yml
+  pull_request:
+    paths:
+      - docs/**
+      - "!docs/superpowers/**"
+      - assets/icon/tabletist.svg
+      - assets/screenshots/**
+      - .github/workflows/docs.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docs-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "4.0"
+          bundler-cache: true
+          working-directory: docs
+      - name: Build and check the site
+        working-directory: docs
+        run: bin/check
+      - uses: actions/upload-pages-artifact@v5
+        if: github.ref == 'refs/heads/main'
+        with:
+          path: docs/_site
+
+  deploy:
+    if: github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v5
