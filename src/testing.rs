@@ -740,6 +740,20 @@ pub fn error_outcome(message: &str, position: Option<usize>) -> tabletist_db::St
     }
 }
 
+/// A write refused in a read-only transaction, as PostgreSQL and MySQL say
+/// it (SQLSTATE 25006).
+pub fn refused_write() -> tabletist_db::StatementOutcome {
+    tabletist_db::StatementOutcome::Error {
+        error: tabletist_db::Error::Query {
+            code: Some("25006".into()),
+            message: "cannot execute UPDATE in a read-only transaction".into(),
+            detail: None,
+            hint: None,
+        },
+        position: None,
+    }
+}
+
 /// What a script did, as a driver reports it: one outcome per statement
 /// that started, each taking 14 ms. A `Cancelled` outcome is a stopped run,
 /// as it is for every driver.

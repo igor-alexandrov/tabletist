@@ -342,6 +342,12 @@ pub enum Action {
         sql_tab: TabId,
         all: bool,
     },
+    /// The card of a refused write: run the statements of the editor's
+    /// last run again, in a read-write transaction.
+    RunSqlAgain {
+        tab: ConnTabId,
+        sql_tab: TabId,
+    },
     /// Format the editor's script, or the statements its selection
     /// overlaps.
     FormatSql {
@@ -2537,6 +2543,13 @@ impl SqlTab {
     /// What the results, the footer and the gutter show is all this run's.
     pub fn last_run(&self) -> Option<&SqlRun> {
         self.run.value.as_ref()
+    }
+
+    /// Whether the editor still holds the text its last run started with,
+    /// and no run is in flight: what that run says of a line, or offers to
+    /// do with its statements, holds only then.
+    pub fn ran_this_text(&self) -> bool {
+        !self.is_running() && self.ran_text.is_some_and(|ran| ran.is_of(&self.text))
     }
 
     /// Whether the last run was sent to write and lost its session before

@@ -1302,6 +1302,13 @@ fn letters(app: &mut App, ctx: &egui::Context, actions: &mut Vec<Action>) {
             actions.push(Action::FoldDocuments { tab, id });
         }
     }
+    // The card of a refused write, while a SQL editor's Messages show it:
+    // the letter its button names.
+    if let Some((key, action)) = crate::ui::sql_results::card_key(app, tab)
+        && pressed(key)
+    {
+        actions.push(action);
+    }
     // The letters below act on an object tab: none of them on a SQL editor.
     let Some(object_tab) = active else {
         ctx.data_mut(|data| data.insert_temp(pending_id(), next_pending));

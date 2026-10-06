@@ -12,7 +12,9 @@ use tabletist_db::{Driver, Error, ScriptEnd, ScriptMode, StatementOutcome, Value
 use crate::app::App;
 use crate::backend::{CancelReason, RequestId};
 use crate::i18n::{Locale, gettext};
-use crate::model::{Action, ConnTabId, ResultPane, SqlRun, SqlTab, TabId};
+use crate::model::{
+    Action, ConnTabId, NoWrites, ResultPane, RunMode, SqlRun, SqlTab, TabId, Workspace,
+};
 use crate::theme::{Icon, Look, Palette};
 use crate::typography::{Laid, Text, TextRole};
 use crate::ui::data_view;
@@ -185,9 +187,9 @@ struct Place<'a> {
     fit: data_view::Fit,
     /// Whose error codes the results read.
     driver: tabletist_db::Driver,
-    /// Whether the connection takes writes: a write the editor refused has
-    /// a table's grid to go to.
-    writable: bool,
+    /// The write a database refused in the last run, when that run was
+    /// read-only: the Messages lead with its card.
+    blocked: Option<Blocked<'a>>,
     /// Whether the arrow keys move in the result's grid.
     keys: bool,
 }
@@ -210,7 +212,7 @@ fn draw(app: &App, ui: &mut Ui, tab: ConnTabId, id: TabId, actions: &mut Vec<Act
         sql,
         fit: data_view::Fit::of(workspace, &app.settings),
         driver: workspace.driver,
-        writable: workspace.access == tabletist_db::Access::Writable,
+        blocked: blocked(workspace, sql),
         keys: workspace.pane == crate::model::Pane::Grid,
     };
     let state = state(sql);
@@ -233,19 +235,15 @@ fn draw(app: &App, ui: &mut Ui, tab: ConnTabId, id: TabId, actions: &mut Vec<Act
             );
         }
         (State::Failed(error), ResultPane::Results) => {
-            if format::refuses_writes(error, place.driver) {
-                blocked(&mut body, rest, error, place.writable, &env);
-            } else {
-                let said = match may_be_written(sql, error) {
-                    Some(ours) => {
-                        let error = error_text(error);
-                        let error = error.trim_end_matches('.');
-                        env.said(|words| format!("{error}. {}", words.say(ours)))
-                    }
-                    None => whole(error),
-                };
-                note(&body, rest, &said, palette.danger, &env);
-            }
+            let said = match may_be_written(sql, error) {
+                Some(ours) => {
+                    let error = error_text(error);
+                    let error = error.trim_end_matches('.');
+                    env.said(|words| format!("{error}. {}", words.say(ours)))
+                }
+                None => whole(error),
+            };
+            note(&body, rest, &said, palette.danger, &env);
         }
         (State::Failed(error), ResultPane::Messages) => {
             let unknown = may_be_written(sql, error).map(|ours| Line::Ours(ours, Tone::Failed));
@@ -253,11 +251,11 @@ fn draw(app: &App, ui: &mut Ui, tab: ConnTabId, id: TabId, actions: &mut Vec<Act
                 .chain(more(error))
                 .chain(unknown)
                 .collect();
-            messages(&mut body, &lines, None, &place, &env);
+            messages(&mut body, &lines, None, &place, &env, actions);
         }
         (State::Ran(run), ResultPane::Results) => results(&mut body, run, &place, &env, actions),
         (State::Ran(run), ResultPane::Messages) => {
-            messages(&mut body, &lines(run), Some(run), &place, &env);
+            messages(&mut body, &lines(run), Some(run), &place, &env, actions);
         }
     }
 }
@@ -1135,13 +1133,16 @@ fn message(line: Line<'_>, run: Option<&SqlRun>, driver: Driver, words: Words) -
 }
 
 /// The messages: one line per statement of `run`, or why the run failed
-/// as a whole. Only the lines in view are written and laid out.
+/// as a whole. Only the lines in view are written and laid out. Over them,
+/// the card of a write a database refused in a read-only run: it scrolls
+/// with the lines, which a short pane then still reaches.
 fn messages(
     ui: &mut Ui,
     lines: &[Line<'_>],
     run: Option<&SqlRun>,
     place: &Place<'_>,
     env: &Env<'_>,
+    actions: &mut Vec<Action>,
 ) {
     let Env {
         look,
@@ -1195,6 +1196,9 @@ fn messages(
         .auto_shrink([false, false])
         .show(ui, |ui| {
             ui.add_space(8.0);
+            if let Some(blocked) = &place.blocked {
+                blocked_card(ui, blocked, place, env, actions);
+            }
             widgets::virtual_rows_varying(ui, &heights, |ui, index| {
                 let line = lines[index];
                 let size = vec2(ui.available_width(), heights[index]);
@@ -1217,58 +1221,293 @@ fn messages(
     keep_messages(ui.ctx(), results_id(place.tab, place.sql.id), area.id);
 }
 
-/// A write that was refused: said as what it is, the editor reading only,
-/// and not as a mistake in the statement. That holds on every connection,
-/// a writable one too, and whoever refused it: the server, SQLite, or the
-/// editor's own guard. A `writable` connection is told where values are
-/// edited. The exact error stays under the card. A pane too short for it
-/// all scrolls.
-fn blocked(ui: &mut Ui, rect: Rect, error: &Error, writable: bool, env: &Env<'_>) {
-    let Env { look, palette, .. } = *env;
-    let inner = rect.shrink2(vec2(16.0, 14.0));
-    let mut pane = ui.new_child(
-        egui::UiBuilder::new()
-            .id_salt("blocked")
-            .max_rect(inner)
-            .layout(egui::Layout::top_down(egui::Align::Min)),
-    );
-    // As short as the pane is: a scroll area keeps 64 pt by itself, which
-    // would run out under the pane.
-    egui::ScrollArea::vertical()
-        .auto_shrink([false, false])
-        .min_scrolled_height(0.0)
-        .show(&mut pane, |column| {
-            column.spacing_mut().item_spacing = vec2(8.0, 10.0);
-            let title = env.said(|words| words.say("The SQL editor only reads data"));
-            let text = env.said(|words| {
-                let refused = words.say(
-                    "Every query runs in a read-only transaction, so this statement was \
-                     refused. Nothing changed.",
+/// Why the run of a refused write was read-only, as things stand now: what
+/// its card says and offers follows from it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Why {
+    /// The connection opens read-only.
+    Connection,
+    /// The tab's runs are read-only. `unconfirmed`: and cannot be switched
+    /// here (see `NoWrites::Unconfirmed`).
+    Tab { unconfirmed: bool },
+    /// The tab's runs are read-write, and this one held nothing that
+    /// looked like a write.
+    TakenForRead,
+    /// The tab's runs are read-write now and were not when this one, which
+    /// holds a write, was sent: the tab was in Read-only then, or its
+    /// session could not write.
+    SentBefore,
+}
+
+/// What the card of a refused write offers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Offer {
+    EditConnection,
+    AllowWrites,
+    RunAgain,
+}
+
+impl Offer {
+    /// The button's name, and the letter that presses it in the terminal
+    /// look.
+    fn names(self) -> (&'static str, &'static str, egui::Key) {
+        match self {
+            Self::EditConnection => ("Edit connection", "e", egui::Key::E),
+            Self::AllowWrites => ("Allow writes in this tab", "w", egui::Key::W),
+            Self::RunAgain => ("Run in a read-write transaction", "w", egui::Key::W),
+        }
+    }
+}
+
+/// A write a database refused in a read-only run.
+#[derive(Clone, Copy)]
+struct Blocked<'a> {
+    /// What the database said.
+    error: &'a Error,
+    /// The statement it refused.
+    statement: Option<&'a tabletist_db::sql::Statement>,
+    why: Why,
+    /// Whether the run can be sent again as it is: the editor still holds
+    /// its text.
+    again: bool,
+    workspace: &'a Workspace,
+}
+
+/// The write a database refused in the editor's last run, when that run
+/// was read-only. In a run sent to write a read-only error (a standby, a
+/// role made read-only) is a statement's error like any other.
+fn blocked<'a>(workspace: &'a Workspace, sql: &'a SqlTab) -> Option<Blocked<'a>> {
+    use tabletist_db::sql::{StatementKind, kind};
+    let run = sql.last_run()?;
+    if run.mode != ScriptMode::ReadOnly {
+        return None;
+    }
+    let driver = workspace.driver;
+    let refused =
+        |(index, result): (usize, &'a tabletist_db::StatementResult)| match &result.outcome {
+            StatementOutcome::Error { error, .. } if format::refuses_writes(error, driver) => {
+                Some((index, error))
+            }
+            _ => None,
+        };
+    let (index, error) = run.outcome.results.iter().enumerate().find_map(refused)?;
+    let writes = |statement: &tabletist_db::sql::Statement| {
+        kind(driver.dialect(), &statement.text) == StatementKind::Write
+    };
+    let why = match workspace.sql_writes() {
+        Err(NoWrites::ReadOnlyConnection) => Why::Connection,
+        Err(NoWrites::Unconfirmed) => Why::Tab { unconfirmed: true },
+        Ok(()) if sql.mode == RunMode::ReadOnly => Why::Tab { unconfirmed: false },
+        // In Read-write a run that holds a write is sent to write: this
+        // one was sent before the tab was switched.
+        Ok(()) if run.statements.iter().any(writes) => Why::SentBefore,
+        Ok(()) => Why::TakenForRead,
+    };
+    Some(Blocked {
+        error,
+        statement: run.statements.get(index),
+        why,
+        again: sql.ran_this_text(),
+        workspace,
+    })
+}
+
+impl Blocked<'_> {
+    /// What the card's button does, where it has one: nothing is offered
+    /// that would do nothing.
+    fn offer(&self) -> Option<Offer> {
+        match self.why {
+            Why::Connection => Some(Offer::EditConnection),
+            Why::Tab { unconfirmed: false } => Some(Offer::AllowWrites),
+            Why::Tab { unconfirmed: true } => None,
+            Why::TakenForRead | Why::SentBefore => self.again.then_some(Offer::RunAgain),
+        }
+    }
+
+    fn action(&self, offer: Offer, tab: ConnTabId, sql_tab: TabId) -> Action {
+        match offer {
+            Offer::EditConnection => Action::EditConnection(self.workspace.conn_id.clone()),
+            Offer::AllowWrites => Action::SetSqlMode {
+                tab,
+                sql_tab,
+                mode: RunMode::ReadWrite,
+            },
+            Offer::RunAgain => Action::RunSqlAgain { tab, sql_tab },
+        }
+    }
+
+    /// The card's title and text, and the line that stands under the
+    /// database's words where the way on needs saying. The terminal look
+    /// writes all of it in lower case but the connection, which there is
+    /// the environment's tag, as its design has it ("PROD blocks writes").
+    fn says(&self, words: Words) -> (String, String, Option<String>) {
+        let workspace = self.workspace;
+        let driver = words.own(workspace.driver.label());
+        // "the UPDATE": the refused statement's first word.
+        let verb = self
+            .statement
+            .and_then(|statement| {
+                let words = tabletist_db::sql::words(workspace.driver.dialect(), &statement.text);
+                words.into_iter().next()
+            })
+            .map_or_else(
+                || words.say("the statement"),
+                |verb| format!("{} {}", words.say("the"), words.own(&verb)),
+            );
+        let nothing = words.say("Nothing changed.");
+        let refused = words.say("refused");
+        match self.why {
+            Why::Connection => (
+                words.say("This connection opens read-only"),
+                format!(
+                    "{} {} {driver} {refused} {verb}. {nothing}",
+                    self.who(words),
+                    words.say("blocks writes, so")
+                ),
+                Some(words.say(
+                    "To write, turn off Open read-only in the connection. It applies from the \
+                     next connect.",
+                )),
+            ),
+            Why::Tab { unconfirmed } => {
+                let mut text = format!(
+                    "{} {driver} {refused} {verb}. {nothing}",
+                    words.say("Every run here is a read-only transaction, so")
                 );
-                if writable {
-                    format!("{refused} {}", words.say("Edit values in a table's grid."))
-                } else {
-                    refused
+                if unconfirmed {
+                    text.push(' ');
+                    text.push_str(&words.say(super::sql_editor::UNCONFIRMED));
                 }
-            });
+                (words.say("This tab runs read-only"), text, None)
+            }
+            Why::TakenForRead => (
+                words.say("This run was read-only"),
+                format!(
+                    "{} {driver} {refused} {}. {nothing}",
+                    words.say(
+                        "Its statements looked like reads, so they ran in a read-only \
+                         transaction and"
+                    ),
+                    words.say("this one")
+                ),
+                None,
+            ),
+            Why::SentBefore => (
+                words.say("This run was read-only"),
+                format!(
+                    "{} {driver} {refused} {verb}. {nothing}",
+                    words.say("It was sent before this tab could write, so")
+                ),
+                None,
+            ),
+        }
+    }
+
+    /// The connection, as the card of a read-only one names it: its name
+    /// and environment, or in the terminal look the environment's tag
+    /// alone. A connection of no environment goes by its name.
+    fn who(&self, words: Words) -> String {
+        use crate::env::{Environment, Platform};
+        let workspace = self.workspace;
+        let name = format::display_safe(&workspace.name);
+        match (workspace.environment, words.lower) {
+            (Environment::None, _) => name.into_owned(),
+            (environment, true) => environment.label(Platform::Omarchy).to_owned(),
+            (environment, false) => format!("{name} · {}", environment.label(Platform::Native)),
+        }
+    }
+}
+
+/// The action the card of a refused write offers in the SQL editor on
+/// screen, and the letter that takes it in the terminal look. Only while
+/// the Messages show the card.
+pub(crate) fn card_key(app: &App, tab: ConnTabId) -> Option<(egui::Key, Action)> {
+    let workspace = app.workspace(tab)?;
+    let sql = workspace.active_sql_tab()?;
+    if sql.pane != ResultPane::Messages || sql.run.error.is_some() {
+        return None;
+    }
+    let blocked = blocked(workspace, sql)?;
+    let offer = blocked.offer()?;
+    Some((offer.names().2, blocked.action(offer, tab, sql.id)))
+}
+
+/// The card of a refused write, at the head of the Messages: said as what
+/// it is, a run that was read-only, and not as a mistake in the statement.
+/// Under it the database's own words, then the way on: what it asks of the
+/// user where that needs saying, and the button to the connection, to a
+/// tab that writes, or to the same run sent to write.
+fn blocked_card(
+    ui: &mut Ui,
+    blocked: &Blocked<'_>,
+    place: &Place<'_>,
+    env: &Env<'_>,
+    actions: &mut Vec<Action>,
+) {
+    let Env {
+        look,
+        palette,
+        locale,
+    } = *env;
+    let pad = side(look) as i8;
+    egui::Frame::new()
+        .inner_margin(egui::Margin {
+            left: pad,
+            right: pad,
+            top: 0,
+            bottom: 10,
+        })
+        .show(ui, |column| {
+            column.set_width(column.available_width());
+            column.spacing_mut().item_spacing = vec2(8.0, 10.0);
+            let said = env.said(|words| blocked.says(words).0);
+            let text = env.said(|words| blocked.says(words).1);
+            let then = env.said(|words| blocked.says(words).2.unwrap_or_default());
             let card = states::Card {
                 tone: states::Tone::Warning,
                 icon: Icon::Lock,
-                title: &title.painted,
+                title: &said.painted,
                 text: &text.painted,
             };
             states::card(column, &card, look, palette);
             // The database's own words, after its code when it gave one.
-            let raw = match error {
+            let raw = match blocked.error {
                 Error::Query {
                     code: Some(code), ..
-                } => format!("{code} · {}", error_text(error)),
+                } => format!("{code} · {}", error_text(blocked.error)),
                 other => error_text(other),
             };
             Text::one(look, widgets::code(look), &raw, palette.secondary)
                 .wrap(column.available_width())
                 .layout(column.ctx())
                 .label(column);
+            // What the way on asks of the user, where the button alone
+            // does not say it.
+            if !then.painted.is_empty() {
+                let role = widgets::secondary(look);
+                Text::one(look, role, &then.painted, palette.secondary)
+                    .wrap(column.available_width())
+                    .layout(column.ctx())
+                    .label(column);
+            }
+            let Some(offer) = blocked.offer() else {
+                return;
+            };
+            let (name, key, _) = offer.names();
+            let painted = look.label(&gettext(locale, name));
+            let button = if look.terminal {
+                states::key_button(&painted, key, look)
+            } else {
+                states::button(&painted, look)
+            };
+            let height = states::button_height(look);
+            if button
+                .label(name)
+                .show(column, height, look, palette)
+                .clicked()
+            {
+                actions.push(blocked.action(offer, place.tab, place.sql.id));
+            }
         });
 }
 
@@ -1324,13 +1563,9 @@ fn results(ui: &mut Ui, run: &SqlRun, place: &Place<'_>, env: &Env<'_>, actions:
             let said = env.said(|words| cancel_text(run.cancel, words));
             note(ui, rect, &said, palette.warning, env);
         } else if let Some(index) = failed {
-            if let StatementOutcome::Error { error, .. } = &run.outcome.results[index].outcome
-                && format::refuses_writes(error, place.driver)
-            {
-                blocked(ui, rect, error, place.writable, env);
-                return;
-            }
-            // The statement's line, then what the database said of it.
+            // The statement's line, then what the database said of it. A
+            // write the database refused reads so here too: its card
+            // leads the Messages, which a failed statement opens.
             let named = Words {
                 locale,
                 lower: false,
@@ -1475,7 +1710,7 @@ mod tests {
     use crate::backend::{CancelReason, Command};
     use crate::model::{Action, CellPos, ResultPane, SqlTab};
     use crate::testing::{
-        Harness, bounds, error_outcome, labels, node, rows_outcome, script_outcome,
+        Harness, bounds, error_outcome, labels, node, refused_write, rows_outcome, script_outcome,
         stopped_before_it_began, write_outcome,
     };
     use crate::theme::Look;
@@ -2037,62 +2272,309 @@ mod tests {
         }
     }
 
-    /// The server's refusal of a write in a read-only transaction.
-    fn read_only_refusal() -> StatementOutcome {
-        StatementOutcome::Error {
-            error: Error::Query {
-                code: Some("25006".into()),
-                message: "cannot execute UPDATE in a read-only transaction".into(),
-                detail: None,
-                hint: None,
-            },
-            position: None,
+    /// What PostgreSQL says of the refused write, as the card writes it
+    /// under itself.
+    const REFUSAL: &str = "25006 · cannot execute UPDATE in a read-only transaction";
+
+    /// The titles a refused write's card has.
+    const CARDS: [&str; 3] = [
+        "This connection opens read-only",
+        "This tab runs read-only",
+        "This run was read-only",
+    ];
+
+    /// A SQL editor on a connection that takes writes, on PostgreSQL, drawn
+    /// in `look`, with `text` typed into it.
+    fn writable(look: Look, text: &str) -> (Harness, ConnTabId) {
+        let mut harness = Harness::new();
+        harness.set_look(look);
+        let tab = harness.connect_fake_as(false);
+        harness.app.workspace_mut(tab).unwrap().driver = Driver::Postgres;
+        harness.press(Key::T, Modifiers::COMMAND);
+        harness.frame(vec![egui::Event::Paste(text.into())]);
+        harness.settle();
+        (harness, tab)
+    }
+
+    fn set_mode(harness: &mut Harness, tab: ConnTabId, mode: crate::model::RunMode) {
+        let sql_tab = sql(harness, tab).id;
+        harness.app.apply(Action::SetSqlMode { tab, sql_tab, mode });
+    }
+
+    /// The card on screen: its title and its text. A card's words are
+    /// read as they are painted, and the terminal look paints ours in
+    /// lower case: there both come back in lower case, to be compared with
+    /// [`reads`].
+    fn card(harness: &mut Harness) -> Option<(String, String)> {
+        let terminal = harness.app.look.terminal;
+        let reads = |text: &str| {
+            if terminal {
+                text.to_lowercase()
+            } else {
+                text.to_owned()
+            }
+        };
+        let lines = message_lines(harness);
+        let titles = CARDS.map(reads);
+        let at = lines.iter().position(|line| titles.contains(line))?;
+        Some((lines[at].clone(), reads(lines.get(at + 1)?)))
+    }
+
+    /// A card's title and text as [`card`] gives them in `look`.
+    fn reads(look: &Look, title: &str, text: &str) -> Option<(String, String)> {
+        if look.terminal {
+            Some((title.to_lowercase(), text.to_lowercase()))
+        } else {
+            Some((title.to_owned(), text.to_owned()))
+        }
+    }
+
+    /// The transaction and the statements of the newest run sent.
+    fn sent_run(harness: &Harness) -> (tabletist_db::ScriptMode, Vec<String>) {
+        let sent = harness.app.backend.sent.iter().rev();
+        sent.filter_map(|command| match command {
+            Command::RunSql {
+                mode, statements, ..
+            } => {
+                let texts = statements.iter().map(|statement| statement.text.clone());
+                Some((*mode, texts.collect()))
+            }
+            _ => None,
+        })
+        .next()
+        .expect("a RunSql was sent")
+    }
+
+    fn runs_sent(harness: &Harness) -> usize {
+        let sent = harness.app.backend.sent.iter();
+        sent.filter(|command| matches!(command, Command::RunSql { .. }))
+            .count()
+    }
+
+    /// Presses the card's button: by its letter in the terminal look, once
+    /// the editor has let go of the keyboard, and by a click in the others.
+    fn take_offer(harness: &mut Harness, look: &Look, name: &str, letter: Key) {
+        let tree = harness.settle();
+        assert!(
+            node(&tree, name, Role::Button).is_some(),
+            "{name} in {}",
+            look.name
+        );
+        if look.terminal {
+            harness.press(Key::Escape, Modifiers::NONE);
+            harness.press(letter, Modifiers::NONE);
+        } else {
+            harness.click(name);
         }
     }
 
     #[test]
-    fn a_refused_write_says_the_editor_only_reads() {
-        // The card, whole, as a look says it. On a connection that takes
-        // writes it ends with where values are edited.
-        let refused = "Every query runs in a read-only transaction, so this statement was \
-                       refused. Nothing changed.";
-        let says_so = |harness: &mut Harness, look: &Look, writable: bool, case: &str| {
-            let body = if writable {
-                format!("{refused} Edit values in a table's grid.")
-            } else {
-                refused.to_owned()
-            };
-            for ours in ["The SQL editor only reads data", body.as_str()] {
-                let said = look.label(ours);
-                assert!(harness.has(&said), "{said}, {case} in {}", look.name);
-            }
-        };
+    fn a_write_refused_on_a_read_only_connection_offers_the_connection() {
         for look in Look::ALL {
-            // The editor reads on a writable connection as on a read-only
-            // one, and the card says so on both. Only the way on differs:
-            // a read-only connection is not promised a grid that turning
-            // its box off would give.
-            for writable in [false, true] {
-                let (mut harness, tab) = editor(look, "UPDATE users SET email = 'x'");
-                let workspace = harness.app.workspace_mut(tab).unwrap();
-                // The fixture's session is SQLite's: the code is PostgreSQL's.
-                workspace.driver = tabletist_db::Driver::Postgres;
-                if writable {
-                    workspace.access = tabletist_db::Access::Writable;
-                }
-                run(&mut harness);
-                harness.answer_sql(Ok(script_outcome(vec![read_only_refusal()])), None);
-                show_pane(&mut harness, tab, ResultPane::Results);
-                let case = if writable { "writable" } else { "read-only" };
-                says_so(&mut harness, &look, writable, case);
-                assert!(
-                    harness.has("25006 · cannot execute UPDATE in a read-only transaction"),
-                    "{case} in {}",
-                    look.name
-                );
+            // After a statement that returned rows, too: the card leads the
+            // Messages, which the refusal opens.
+            let (mut harness, tab) = editor(look, "SELECT 1;\nUPDATE users SET email = 'x'");
+            harness.app.workspace_mut(tab).unwrap().driver = Driver::Postgres;
+            run_all(&mut harness);
+            harness.answer_sql(
+                Ok(script_outcome(vec![rows_outcome(1), refused_write()])),
+                None,
+            );
+            assert_eq!(sql(&harness, tab).pane, ResultPane::Messages);
+            // The connection by its name and environment, or by the
+            // terminal look's tag.
+            let text = if look.terminal {
+                "DEV blocks writes, so PostgreSQL refused the UPDATE. Nothing changed."
+            } else {
+                "Fixture · dev blocks writes, so PostgreSQL refused the UPDATE. Nothing changed."
+            };
+            assert_eq!(
+                card(&mut harness),
+                reads(&look, CARDS[0], text),
+                "{}",
+                look.name
+            );
+            // Under it the database's own words, then what the way on asks,
+            // and the statements' lines after them.
+            let then = "To write, turn off Open read-only in the connection. It applies from \
+                        the next connect.";
+            let lines = message_lines(&mut harness);
+            assert_eq!(lines[2], REFUSAL, "{}", look.name);
+            assert_eq!(lines[3], look.label(then), "{}", look.name);
+            assert_eq!(
+                lines[lines.len() - 3..],
+                [
+                    "Line 1: 1 row · 14 ms",
+                    "Line 2: cannot execute UPDATE in a read-only transaction",
+                    "Code: 25006",
+                ],
+                "{}",
+                look.name
+            );
+            // The terminal writes all of it in lower case but the tag.
+            if look.terminal {
+                let reads = "DEV blocks writes, so postgresql refused the update. nothing \
+                             changed.";
+                assert!(painted(&harness, reads), "{:?}", harness.painted);
+                assert!(painted(&harness, "this connection opens read-only"));
             }
-            // What the editor's own guard refuses reads the same.
-            let (mut harness, tab) = editor(look, "COMMIT");
+            // Results shows the rows it has, and no card.
+            harness.click("Results");
+            assert!(harness.has("Row 1"), "{}", look.name);
+            assert_eq!(card(&mut harness), None, "{}", look.name);
+            // The way on is the connection's own dialog.
+            harness.click("Messages");
+            take_offer(&mut harness, &look, "Edit connection", Key::E);
+            let conn = harness.app.workspace(tab).unwrap().conn_id.clone();
+            assert!(
+                matches!(
+                    &harness.app.dialog,
+                    Some(crate::model::Dialog::Connection(form)) if form.editing == Some(conn)
+                ),
+                "{}",
+                look.name
+            );
+        }
+    }
+
+    #[test]
+    fn a_write_refused_in_a_read_only_tab_offers_to_allow_writes_and_then_to_run_again() {
+        use crate::model::RunMode;
+        use tabletist_db::ScriptMode;
+        for look in Look::ALL {
+            let update = "UPDATE users SET email = 'x'";
+            let (mut harness, tab) = writable(look, update);
+            run(&mut harness);
+            assert_eq!(sent_run(&harness).0, ScriptMode::ReadOnly);
+            harness.answer_sql(Ok(script_outcome(vec![refused_write()])), None);
+            let text = "Every run here is a read-only transaction, so PostgreSQL refused the \
+                        UPDATE. Nothing changed.";
+            assert_eq!(
+                card(&mut harness),
+                reads(&look, CARDS[1], text),
+                "{}",
+                look.name
+            );
+            assert!(harness.has(REFUSAL), "{}", look.name);
+            // Allowing writes sets the mode and runs nothing.
+            let sent = runs_sent(&harness);
+            take_offer(&mut harness, &look, "Allow writes in this tab", Key::W);
+            assert_eq!(sql(&harness, tab).mode, RunMode::ReadWrite, "{}", look.name);
+            assert_eq!(runs_sent(&harness), sent, "{}", look.name);
+            // The card stays, and says what is true of the run now.
+            let text = "It was sent before this tab could write, so PostgreSQL refused the \
+                        UPDATE. Nothing changed.";
+            assert_eq!(
+                card(&mut harness),
+                reads(&look, CARDS[2], text),
+                "{}",
+                look.name
+            );
+            take_offer(
+                &mut harness,
+                &look,
+                "Run in a read-write transaction",
+                Key::W,
+            );
+            assert_eq!(
+                sent_run(&harness),
+                (ScriptMode::Write, vec![update.to_owned()]),
+                "{}",
+                look.name
+            );
+            assert_eq!(runs_sent(&harness), sent + 1, "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn a_write_taken_for_a_read_offers_to_run_it_in_a_read_write_transaction() {
+        use crate::model::RunMode;
+        use tabletist_db::ScriptMode;
+        for look in Look::ALL {
+            // A function that writes, behind a statement that reads.
+            let script = "SELECT 1;\nSELECT setval('ids', 9)";
+            let (mut harness, tab) = writable(look, script);
+            set_mode(&mut harness, tab, RunMode::ReadWrite);
+            run_all(&mut harness);
+            assert_eq!(sent_run(&harness).0, ScriptMode::ReadOnly, "{}", look.name);
+            harness.answer_sql(
+                Ok(script_outcome(vec![rows_outcome(1), refused_write()])),
+                None,
+            );
+            let text = "Its statements looked like reads, so they ran in a read-only transaction \
+                        and PostgreSQL refused this one. Nothing changed.";
+            assert_eq!(
+                card(&mut harness),
+                reads(&look, CARDS[2], text),
+                "{}",
+                look.name
+            );
+            take_offer(
+                &mut harness,
+                &look,
+                "Run in a read-write transaction",
+                Key::W,
+            );
+            // What ran is what is sent again: both statements, to write.
+            let both = vec!["SELECT 1".to_owned(), "SELECT setval('ids', 9)".to_owned()];
+            assert_eq!(
+                sent_run(&harness),
+                (ScriptMode::Write, both),
+                "{}",
+                look.name
+            );
+            assert!(sql(&harness, tab).is_writing(), "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn a_run_is_not_offered_again_once_the_text_is_another() {
+        use crate::model::RunMode;
+        let (mut harness, tab) = writable(Look::standard(), "SELECT setval('ids', 9)");
+        set_mode(&mut harness, tab, RunMode::ReadWrite);
+        run(&mut harness);
+        harness.answer_sql(Ok(script_outcome(vec![refused_write()])), None);
+        assert!(harness.has("Run in a read-write transaction"));
+        // Typed into since: what would be sent is not what the editor shows.
+        harness.frame(vec![egui::Event::Text(" ".into())]);
+        assert!(card(&mut harness).is_some());
+        assert!(!harness.has("Run in a read-write transaction"));
+    }
+
+    #[test]
+    fn on_production_the_card_says_why_the_tab_cannot_write_and_offers_nothing() {
+        for look in Look::ALL {
+            let (mut harness, tab) = writable(look, "UPDATE users SET email = 'x'");
+            harness.app.workspace_mut(tab).unwrap().environment =
+                crate::env::Environment::Production;
+            run(&mut harness);
+            harness.answer_sql(Ok(script_outcome(vec![refused_write()])), None);
+            let text = "Every run here is a read-only transaction, so PostgreSQL refused the \
+                        UPDATE. Nothing changed. Read-write runs on a production connection are \
+                        not available yet.";
+            assert_eq!(
+                card(&mut harness),
+                reads(&look, CARDS[1], text),
+                "{}",
+                look.name
+            );
+            assert!(!harness.has("Allow writes in this tab"), "{}", look.name);
+            // Nor does the terminal's letter do what no button offers.
+            harness.press(Key::Escape, Modifiers::NONE);
+            harness.press(Key::W, Modifiers::NONE);
+            assert_eq!(
+                sql(&harness, tab).mode,
+                crate::model::RunMode::ReadOnly,
+                "{}",
+                look.name
+            );
+        }
+    }
+
+    #[test]
+    fn what_the_guard_refuses_keeps_its_own_sentence_and_is_no_card() {
+        for look in Look::ALL {
+            let (mut harness, _tab) = editor(look, "COMMIT");
             run(&mut harness);
             let refused = Error::Refused {
                 line: 1,
@@ -2100,10 +2582,29 @@ mod tests {
                 mode: tabletist_db::ScriptMode::ReadOnly,
             };
             harness.answer_sql(Err(refused.clone()), None);
-            show_pane(&mut harness, tab, ResultPane::Results);
-            says_so(&mut harness, &look, false, "the editor's guard");
-            assert!(harness.has(&refused.to_string()), "{}", look.name);
+            assert_eq!(card(&mut harness), None, "{}", look.name);
+            assert_eq!(message_lines(&mut harness), [refused.to_string()]);
         }
+    }
+
+    #[test]
+    fn in_a_read_write_run_a_read_only_error_is_a_statements_error() {
+        // A standby, or a role an administrator made read-only: the run
+        // was sent to write, so no card offers what was already done.
+        let (mut harness, _tab) = writing(Look::standard(), Driver::Postgres, CHANGES);
+        let outcome = write_outcome(vec![refused_write()], ScriptEnd::RolledBack);
+        harness.answer_sql(Ok(outcome), None);
+        assert_eq!(card(&mut harness), None);
+        assert_eq!(
+            message_lines(&mut harness),
+            [
+                "Line 1: cannot execute UPDATE in a read-only transaction",
+                "Code: 25006",
+                "Line 2: Not run",
+                "Line 3: Not run",
+                "Rolled back. Nothing was written.",
+            ]
+        );
     }
 
     #[test]
@@ -2113,13 +2614,13 @@ mod tests {
             let workspace = harness.app.workspace_mut(tab).unwrap();
             workspace.driver = tabletist_db::Driver::Postgres;
             // The editor takes most of the height: the results have room
-            // for the card's first lines and not for its last.
+            // for the card's first lines and not for what follows it.
             let id = workspace.active_tab.unwrap();
             workspace.sql_tab_mut(id).unwrap().split = 0.8;
             run(&mut harness);
-            // The card ends in the database's own words, and a database
-            // may say a lot: enough here to wrap to several lines, so the
-            // card overflows the pane by lines and not by a few points.
+            // A database may say a lot: enough here to wrap to several
+            // lines, so the messages overflow the pane by lines and not by
+            // a few points.
             let message = "cannot execute UPDATE in a read-only transaction; ".repeat(12);
             let refusal = StatementOutcome::Error {
                 error: Error::Query {
@@ -2131,12 +2632,12 @@ mod tests {
                 position: None,
             };
             harness.answer_sql(Ok(script_outcome(vec![refusal])), None);
-            show_pane(&mut harness, tab, ResultPane::Results);
-            let title = look.label("The SQL editor only reads data");
-            let last = format!("25006 · {message}");
-            // The card's title and its last line, and how far down the
-            // pane shows anything: to the footer under it, or to the
-            // window's end in the terminal look, which has none.
+            assert_eq!(sql(&harness, tab).pane, ResultPane::Messages);
+            let title = look.label(CARDS[0]);
+            let last = "Code: 25006";
+            // The card's title and the messages' last line, and how far
+            // down the pane shows anything: to the footer under it, or to
+            // the window's end in the terminal look, which has none.
             let places = |harness: &mut Harness| {
                 let tree = harness.settle();
                 let place = |label: &str| bounds(&tree, label, Role::Label);
@@ -2147,16 +2648,21 @@ mod tests {
                     Some(footer) => footer.top(),
                     None => harness.size.y,
                 };
-                let [title, last] = [&title, &last].map(|label| place(label).expect("a label"));
-                (title, last, bottom)
+                (place(&title), place(last), bottom)
             };
-            let (title, before, bottom) = places(&mut harness);
-            assert!(before.bottom() > bottom, "{}: {before:?}", look.name);
-            // The wheel over the card brings the rest of it up.
-            harness.frame(vec![egui::Event::PointerMoved(title.center())]);
+            let (title_at, before, bottom) = places(&mut harness);
+            let title_at = title_at.expect("the card leads the messages");
+            // Not built at all, or under the pane's end.
+            assert!(
+                before.is_none_or(|last| last.bottom() > bottom),
+                "{}: {before:?}",
+                look.name
+            );
+            // The wheel over the card brings the rest up.
+            harness.frame(vec![egui::Event::PointerMoved(title_at.center())]);
             harness.frame(vec![egui::Event::MouseWheel {
                 unit: egui::MouseWheelUnit::Point,
-                delta: egui::vec2(0.0, -600.0),
+                delta: egui::vec2(0.0, -2000.0),
                 modifiers: Modifiers::NONE,
                 phase: egui::TouchPhase::Move,
             }]);
@@ -2164,19 +2670,21 @@ mod tests {
                 harness.frame(Vec::new());
             }
             let (_, after, bottom) = places(&mut harness);
+            let after = after.expect("the last line is built once it is in view");
             assert!(after.bottom() <= bottom, "{}: {after:?}", look.name);
         }
     }
 
     #[test]
-    fn another_error_keeps_its_own_words_in_the_results() {
+    fn another_error_is_no_refused_write() {
         let look = Look::macos();
         let (mut harness, tab) = editor(look, "SELECT nope");
         run(&mut harness);
         let failed = error_outcome("no such column: nope", None);
         harness.answer_sql(Ok(script_outcome(vec![failed])), None);
+        assert_eq!(card(&mut harness), None);
         show_pane(&mut harness, tab, ResultPane::Results);
-        assert!(!harness.has("The SQL editor only reads data"));
+        assert!(harness.has("Line 1: no such column: nope"));
     }
 
     #[test]
