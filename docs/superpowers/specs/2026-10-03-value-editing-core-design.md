@@ -39,10 +39,13 @@ sub-projects, each with its own spec, plan and pull request:
 2. Editors by type: enum and CHECK pickers, boolean cycling, foreign key
    search, the calendar, JSON highlighting, array chips, binary from a
    file, `DEFAULT`.
-3. The row panel (the design's inspector) as a row form.
+3. The row panel (the design's inspector) as a row form:
+   `2026-10-06-row-form-design.md`, which takes the form from the macOS
+   "Editing a row" artboard.
 4. Power keys: undo and redo, pasting a TSV block, `.`, the rest of the vim
    set, `$EDITOR`.
-5. Rows: add, duplicate, delete (the "Editing a row" artboards).
+5. Rows: add, duplicate, delete (the rest of the "Editing a row"
+   artboards).
 6. Writes from the SQL editor, and allowing writes for one tab of a
    read-only connection. The first is
    `2026-10-05-sql-editor-writes-design.md`, which rejects the second.
@@ -77,9 +80,9 @@ editing auto-updatable views.
 
 Everything in slices 2 to 6. Editing key columns, binary values, values
 over 256 KiB, views, materialized views and SQL results. Editing in the
-row panel: its Edit, Duplicate and Delete buttons stay disabled and say
-"arrives in a later version". Rows of a page that is no longer loaded:
-pending changes never outlive their page.
+row panel, which slice 3 has since added
+(`2026-10-06-row-form-design.md`). Rows of a page that is no longer
+loaded: pending changes never outlive their page.
 
 ## Writable connections
 
@@ -458,9 +461,9 @@ again.
 - **Revert one cell:** `Mod+Z` on a pending cell that is active puts back
   the loaded value. The undo and redo stack is slice 4.
 - The row panel shows a pending cell's new value with the pending mark and
-  "was <loaded value>", so it never disagrees with the grid. It stays
-  read-only: its Edit, Duplicate and Delete, and the header's Add row, stay
-  disabled.
+  "was <loaded value>", so it never disagrees with the grid. In this
+  slice it stayed read-only; slice 3 edits a field in it, and its
+  Duplicate and Delete, and the header's Add row, stay disabled.
 - Copying takes the pending value a cell shows, for the cell and for the
   row, in every look.
 
@@ -476,6 +479,7 @@ again.
 | Apply in the popover | `Mod+Enter` | Ctrl+Enter |
 | Set NULL | `Mod+Backspace` | `x` |
 | Revert the cell | `Mod+Z` | `u` |
+| Edit the row in the row panel (slice 3) | `Mod+I` | `e`, `Mod+I` |
 | Review SQL | `Mod+Shift+D`, the bar's button | `:diff`, `Mod+Shift+D` |
 | Close Review SQL | `Mod+Shift+D`, the bar's button | Esc, `Mod+Shift+D` |
 | Copy the SQL | Copy SQL, in the drawer's head | `Y`, while the panel is open |

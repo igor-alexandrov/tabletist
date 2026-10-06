@@ -1,7 +1,8 @@
 # Editing values, slice 3: the row panel as a row form
 
-Date: 2026-10-06. Status: designed, nothing built. Step 1 is planned in
-`docs/superpowers/plans/2026-10-06-row-form-fields.md`.
+Date: 2026-10-06. Status: step 1 (edit a field in place) is built, see
+`docs/superpowers/plans/2026-10-06-row-form-fields.md`. Steps 2 and 3 are
+designed and not built.
 
 ## Intent
 
@@ -116,7 +117,8 @@ Rejected:
 
     pub struct Editor { ..., pub place: EditorPlace }
 
-    Action::EditCell { tab, id, cell, start, place }
+    Action::EditCell { tab, id, cell, start }   // in the grid, as before
+    Action::EditField { tab, id, cell }         // in the panel, from the value
     Action::EditRow { tab, id }
 
 - **`Editor::place`** says which view draws the tab's editor. Nothing else
@@ -207,7 +209,7 @@ where that order turns:
   After the cut such a cell of such a row answers the row's reason. No
   view asks for a cell the page does not hold.)
 - **Why an edit that was asked for was refused** is kept with the place it
-  was asked from (`Edits::why` gains the `EditorPlace`), so the reason
+  was asked from (`Edits::why_place`, beside `Edits::why`), so the reason
   shows where the user is looking: at the cell, or under the field.
 - **What the panel knows of a pending cell** (`model::PendingField`) gains
   the cell's state in step 3, for what a field says of a cell to fix or
@@ -258,7 +260,8 @@ drawn as today, with no outline, pencil or checkbox.
 - `Mod+I`, Omarchy's `e`, and the footer's Edit: `Action::EditRow`.
 - Typing on a value does not start an edit: the panel's values take a
   caret to select and copy from, and `Mod+C` there must stay a copy.
-- Each of these asks for `EditCell` with `EditStart::Value` in the panel.
+- Each of these asks for `EditField`, which is `EditCell` with
+  `EditStart::Value`, drawn in the panel.
   The editor starts from the pending value where the cell has one, and
   otherwise from the value's whole text as the database gave it
   (`edit::start_text`), never from the text the panel cut. The cursor is
@@ -475,6 +478,26 @@ Each step ends compiling, tested and shippable, and gets its own plan run.
 After step 1 every editable value has a way in from the panel, and nothing
 on screen offers what is not built.
 
+### What step 1 leaves for steps 2 and 3
+
+- `Mod+I`, `e` and Edit go by the selected cell, not by the field a caret
+  is in: with a caret in one value of the panel they can open another
+  field. Enter and F2 are the keys of the value the caret is in.
+- The panel's field is drawn in the look's own text field, on its fill.
+  The red border of a text that fails its check is drawn at once; the
+  focus ring and its halo show once a key was pressed, as everywhere.
+- A locked value takes a double-click as an editable one does, and answers
+  with its reason: the word under the pointer is selected as well, and the
+  grid's selection moves to that cell.
+- Edit pressed while the grid's popover is open on the selected cell's
+  tall value closes the popover, its text kept: the click takes the
+  keyboard from it, and until step 2 a tall value has no editor in the
+  panel to open instead.
+- On Omarchy the pencil of a document stands before the `za fold` hint and
+  shows only while the pointer is near, so the caption's hints do not move.
+- The header's Add row still says "Editing arrives in a later version",
+  as it did while the grid alone was edited.
+
 ## Testing
 
 - `src/edit.rs`: `row_lock` against `lock` for every reason, in each
@@ -507,10 +530,11 @@ on screen offers what is not built.
   the checkbox of a field above the one being edited;
   `revert`; the header's count; the messages under a field.
 - `src/shots.rs` gains scenes to look at by hand, on its Bookshop data and
-  in every look: `row-form-field` (a field being edited), `row-form-locked`
-  (a locked field and a row lock's note), and with the later steps
-  `row-form-tall` and `row-form-pending`. No test compares a screen with
-  the design.
+  in every look: `row-form-field` (a field being edited, its text refused,
+  beside a pending one), `row-form-locked` (a locked field saying why; a
+  row lock's note shows in the scenes of a read-only connection), and with
+  the later steps `row-form-tall` and `row-form-pending`. No test compares
+  a screen with the design.
 - Nothing here changes what a save sends, so no test needs a PostgreSQL or
   a MySQL server: the suite that does is as it was.
 
