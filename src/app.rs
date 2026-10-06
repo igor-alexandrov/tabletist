@@ -916,10 +916,10 @@ impl App {
                 }
             }
             Action::SetNull { tab, id } => self.set_null(tab, id),
-            Action::RevertCell { tab, id } => {
+            Action::RevertCell { tab, id, cell } => {
                 // Not under a save: its answer is put into this set.
                 if let Some(object) = self.object_tab_mut(tab, id)
-                    && let Some(cell) = object.selection
+                    && let Some(cell) = cell.or(object.selection)
                     && object.edits.editor.is_none()
                     && object.edits.saving.is_none()
                 {
@@ -4020,13 +4020,15 @@ fn row_fields(
         .iter()
         .enumerate()
         .map(|(col, loaded)| {
-            let new = match &cells.get(&(row, col))?.new {
+            let pending = cells.get(&(row, col))?;
+            let new = match &pending.new {
                 NewValue::Text(text) => Value::Text(text.as_str().into()),
                 NewValue::Null => Value::Null,
             };
             Some(crate::model::PendingField {
                 new,
                 was: cell_text(loaded).into_owned(),
+                state: pending.state.clone(),
             })
         })
         .collect();
@@ -10600,7 +10602,11 @@ mod tests {
                 id,
                 cell: at(0, 2),
             });
-            harness.app.apply(Action::RevertCell { tab, id });
+            harness.app.apply(Action::RevertCell {
+                tab,
+                id,
+                cell: None,
+            });
             assert!(object(&harness, tab, id).edits.cells.is_empty());
         }
 
@@ -10919,7 +10925,11 @@ mod tests {
             assert!(pending.new.is_null());
             assert_eq!(pending.was, r#"{"plan":"pro"}"#);
             // Taken back, the text is the page's again and nothing is kept.
-            harness.app.apply(Action::RevertCell { tab, id });
+            harness.app.apply(Action::RevertCell {
+                tab,
+                id,
+                cell: None,
+            });
             harness.app.apply_actions();
             let fields = object(&harness, tab, id).selected_fields();
             let fields = fields.expect("the selected row's text");
@@ -11014,7 +11024,11 @@ mod tests {
                 .request;
             // The pending cell is the active one, as a revert needs it.
             assert_eq!(object(&harness, tab, id).selection, Some(at(1, 1)));
-            harness.app.apply(Action::RevertCell { tab, id });
+            harness.app.apply(Action::RevertCell {
+                tab,
+                id,
+                cell: None,
+            });
             harness.app.apply(Action::DiscardEdits { tab, id });
             let edits = &object(&harness, tab, id).edits;
             assert_eq!(edits.cells.len(), 1);
@@ -11850,7 +11864,11 @@ mod tests {
             harness.app.apply(Action::SetNull { tab, id });
             let three = reviewed(&mut harness, tab, id).unwrap();
             assert_eq!(three[1], r#"   SET "meta" = NULL"#);
-            harness.app.apply(Action::RevertCell { tab, id });
+            harness.app.apply(Action::RevertCell {
+                tab,
+                id,
+                cell: None,
+            });
             assert_eq!(reviewed(&mut harness, tab, id).unwrap(), two);
             // A cell to fix blocks its row: the row has no statement.
             type_into(&mut harness, tab, id, at(3, 2), "{oops");
@@ -11967,7 +11985,11 @@ mod tests {
                 id,
                 cell: at(3, 1),
             });
-            harness.app.apply(Action::RevertCell { tab, id });
+            harness.app.apply(Action::RevertCell {
+                tab,
+                id,
+                cell: None,
+            });
             // Open until the frame ends, with nothing to show.
             assert_eq!(reviewed(&mut harness, tab, id), None);
             assert!(!object(&harness, tab, id).edits.reviewing);
@@ -12413,7 +12435,11 @@ mod tests {
             harness.app.apply(Action::WriteEdits { tab, id });
             let shown = confirming(&harness).expect("the confirmation").clone();
             // The pending cell is the active one, as a revert needs it.
-            harness.app.apply(Action::RevertCell { tab, id });
+            harness.app.apply(Action::RevertCell {
+                tab,
+                id,
+                cell: None,
+            });
             harness.app.apply(Action::DiscardEdits { tab, id });
             // Nor does a second save ask a second time.
             harness.app.apply(Action::WriteEdits { tab, id });
@@ -13563,7 +13589,11 @@ mod tests {
                 id,
                 cell: at(1, 1),
             });
-            harness.app.apply(Action::RevertCell { tab, id });
+            harness.app.apply(Action::RevertCell {
+                tab,
+                id,
+                cell: None,
+            });
             harness.app.apply(Action::DiscardEdits { tab, id });
             harness.app.apply(Action::WriteEdits { tab, id });
             change(&mut harness, tab, id, at(0, 1), "ada@example.com");

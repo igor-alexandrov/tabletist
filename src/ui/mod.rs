@@ -5889,8 +5889,9 @@ mod tests {
         let tab = with_page(&mut harness);
         focus_grid(&mut harness, tab);
         harness.click("Row 1");
-        // Why the row cannot be edited: the fixture connection is read-only.
-        let note = "this connection opens read-only";
+        // Why the row cannot be edited, in the panel's first line: the
+        // fixture connection is read-only.
+        let note = "read-only connection";
         let pieces = |harness: &mut Harness| -> Vec<String> {
             harness.settle();
             let painted = harness.painted.iter();
@@ -5901,14 +5902,12 @@ mod tests {
         let wide = pieces(&mut harness);
         assert!(wide.iter().any(|piece| piece == note));
         assert!(wide.iter().any(|piece| piece == "yy p duplicate"));
-        // A narrower window cuts the panel: the note is cut to fit it.
+        // A narrower window cuts the panel: the line is there still, whole
+        // or cut to fit it.
         harness.size.x = 700.0;
         let narrow = pieces(&mut harness);
-        assert!(!narrow.iter().any(|piece| piece == note), "{narrow:?}");
         assert!(
-            narrow
-                .iter()
-                .any(|piece| piece.starts_with("this connection") && piece.ends_with('…')),
+            narrow.iter().any(|piece| piece.starts_with("read-only")),
             "{narrow:?}"
         );
         // And a cell too narrow for its words keeps its key alone.
@@ -5941,23 +5940,28 @@ mod tests {
             // The fixture connection is read-only.
             let (named, painted) = marks(&mut harness);
             if look.terminal {
-                // The row panel's note, which is why the row cannot be
-                // edited, and the bar's tag.
-                let marks = ["this connection opens read-only", "read-only"];
+                // The row panel's first line, which is why the row
+                // cannot be edited, and the bar's tag.
+                let mut named = named;
+                named.sort();
+                let marks = ["read-only", "read-only connection"];
                 assert_eq!(named, marks, "{}", look.name);
                 // Those two, and the status line's tag.
                 assert_eq!(
                     painted,
-                    ["read-only", "read-only", "this connection opens read-only"],
+                    ["read-only", "read-only", "read-only connection"],
                     "{}",
                     look.name
                 );
             } else {
-                // The bar's pill, the row panel's note and the footer.
+                // The footer, the bar's pill and the row panel's first
+                // line.
+                let mut named = named;
+                named.sort();
                 let marks = [
-                    "Read-only",
-                    "This connection opens read-only",
                     "1 row selected · read-only",
+                    "Read-only",
+                    "Read-only connection",
                 ];
                 assert_eq!(named, marks, "{}", look.name);
             }
@@ -13898,7 +13902,11 @@ mod tests {
         assert!(painted_in(&harness, "users [+]", palette.dim));
         // Reverted, the mark goes.
         harness.app.apply(Action::ActivateTab { tab, id });
-        harness.app.apply(Action::RevertCell { tab, id });
+        harness.app.apply(Action::RevertCell {
+            tab,
+            id,
+            cell: None,
+        });
         harness.settle();
         assert!(!painted(&harness, "users [+]"));
         // The other looks mark the tab with their dot, not with this.
@@ -15737,7 +15745,11 @@ mod tests {
         // The one change is taken back: the line of the save stays, with
         // nothing to save or to discard under it.
         select(&mut harness, tab, id, (1, 1));
-        harness.app.apply(Action::RevertCell { tab, id });
+        harness.app.apply(Action::RevertCell {
+            tab,
+            id,
+            cell: None,
+        });
         assert!(harness.has("Save cancelled. Nothing was written."));
         assert!(!harness.has("Save") && !harness.has("Discard all"));
         assert!(!harness.has("0 changes in 0 rows"));
@@ -15754,7 +15766,11 @@ mod tests {
             harness.click("Save");
             harness.answer_written(Err(tabletist_db::Error::Cancelled));
             select(&mut harness, tab, id, (1, 1));
-            harness.app.apply(Action::RevertCell { tab, id });
+            harness.app.apply(Action::RevertCell {
+                tab,
+                id,
+                cell: None,
+            });
             // Only the line of the save is left, and an editor is opened
             // and typed into under it.
             open_editor(&mut harness, tab, id, (3, 1));
@@ -16696,26 +16712,39 @@ mod tests {
         pieces.filter(|(piece, _)| piece == text).count()
     }
 
-    /// Whether the row panel's field labelled `label` carries the pending
-    /// mark: the amber dot after its label, or the terminal's `~`.
+    /// Whether the row panel's field labelled `label` is marked pending on
+    /// its label's line: by what it was, at the line's right (an amber dot
+    /// after a document's label), or by the terminal's `~` in the gutter.
     fn field_marked(harness: &Harness, label: &str) -> bool {
         let palette = harness.app.palette;
         let Some(line) = harness.painted_rect(label) else {
             panic!("no field labelled {label}");
         };
-        let beside = |rect: &egui::Rect| {
-            rect.left() >= line.right() && line.y_range().contains(rect.center().y)
-        };
+        let on_line = |rect: &egui::Rect| line.y_range().contains(rect.center().y);
+        let pieces = harness.text_rects.iter().zip(&harness.painted);
+        let mut amber = pieces.filter(|(_, (_, color))| *color == palette.warning);
         if harness.app.look.terminal {
-            let marks = harness.text_rects.iter().zip(&harness.painted);
-            marks
-                .filter(|((text, _), (_, color))| text == "~" && *color == palette.warning)
-                .any(|((_, rect), _)| beside(rect))
-        } else {
-            let dots = harness.fills.iter();
-            dots.filter(|(rect, fill)| *fill == palette.warning && rect.width() == 6.0)
-                .any(|(rect, _)| beside(rect))
+            return amber.any(|((text, rect), _)| {
+                text == "~" && on_line(rect) && rect.right() <= line.left() + 1.0
+            });
         }
+        let dots = harness.fills.iter();
+        let dot = dots
+            .filter(|(rect, fill)| *fill == palette.warning && rect.width() == 6.0)
+            .any(|(rect, _)| on_line(rect) && rect.left() >= line.right());
+        dot || amber.any(|((text, rect), _)| {
+            text.starts_with("was ") && on_line(rect) && rect.left() >= line.right()
+        })
+    }
+
+    /// Whether the row panel says a pending field was `was`: on its
+    /// label's line, with the way back, or under its value (the terminal
+    /// look, and a document).
+    fn says_was(harness: &Harness, was: &str) -> bool {
+        let plain = format!("was {was}");
+        let linked = format!("{plain} · revert");
+        let mut pieces = harness.painted.iter();
+        pieces.any(|(text, _)| *text == plain || *text == linked)
     }
 
     #[test]
@@ -16737,25 +16766,24 @@ mod tests {
                 look.name
             );
             assert_eq!(times_painted(&harness, "user2@example.com"), 0);
-            assert!(
-                painted_in(&harness, "was user2@example.com", palette.dim),
-                "{}",
-                look.name
-            );
+            // Under the value in the terminal look, and at the end of the
+            // label's line in the others, in the warning's colour.
+            let (said, color) = if look.terminal {
+                ("was user2@example.com", palette.dim)
+            } else {
+                ("was user2@example.com · revert", palette.warning)
+            };
+            assert!(painted_in(&harness, said, color), "{}", look.name);
             assert!(field_marked(&harness, "email · TEXT"), "{}", look.name);
             assert!(!field_marked(&harness, "meta · JSON"), "{}", look.name);
             assert!(harness.has("email · TEXT, pending"), "{}", look.name);
             // A NULL that is pending reads as NULL, over what it replaces.
             select(&mut harness, tab, id, (0, 2));
-            assert!(!painted(&harness, r#"was {"plan":"pro"}"#));
+            assert!(!says_was(&harness, r#"{"plan":"pro"}"#));
             let nulls = times_painted(&harness, "NULL");
             harness.app.apply(Action::SetNull { tab, id });
             harness.settle();
-            assert!(
-                painted_in(&harness, r#"was {"plan":"pro"}"#, palette.dim),
-                "{}",
-                look.name
-            );
+            assert!(says_was(&harness, r#"{"plan":"pro"}"#), "{}", look.name);
             // In the grid's cell and in the panel's field, where the
             // document was.
             assert_eq!(times_painted(&harness, "NULL"), nulls + 2, "{}", look.name);
@@ -16763,14 +16791,14 @@ mod tests {
             // A value on a NULL: the panel's word for what it was.
             make_pending(&mut harness, tab, id, (1, 2), "{}");
             harness.settle();
-            assert!(
-                painted_in(&harness, "was NULL", palette.dim),
-                "{}",
-                look.name
-            );
+            assert!(says_was(&harness, "NULL"), "{}", look.name);
             // Reverted, the panel is as the page.
             select(&mut harness, tab, id, (1, 1));
-            harness.app.apply(Action::RevertCell { tab, id });
+            harness.app.apply(Action::RevertCell {
+                tab,
+                id,
+                cell: None,
+            });
             harness.settle();
             assert_eq!(
                 times_painted(&harness, "user2@example.com"),
@@ -16779,11 +16807,11 @@ mod tests {
                 look.name
             );
             assert_eq!(times_painted(&harness, "bob@example.com"), 0);
-            assert!(!painted(&harness, "was user2@example.com"), "{}", look.name);
+            assert!(!says_was(&harness, "user2@example.com"), "{}", look.name);
             assert!(!field_marked(&harness, "email · TEXT"), "{}", look.name);
             assert!(harness.has("email · TEXT"), "{}", look.name);
             // The row's other change is still said.
-            assert!(painted(&harness, "was NULL"), "{}", look.name);
+            assert!(says_was(&harness, "NULL"), "{}", look.name);
             // Saved, the panel shows what the database holds.
             harness.app.apply(Action::WriteEdits { tab, id });
             harness.answer_written(Ok(tabletist_db::WriteOutcome::Written {
@@ -16847,9 +16875,9 @@ mod tests {
     }
 
     #[test]
-    fn the_footer_says_why_a_row_cannot_be_edited() {
+    fn the_row_panel_says_at_its_top_why_a_row_cannot_be_edited() {
         for look in Look::ALL {
-            // A read-only connection: the reason is the grid's own.
+            // A read-only connection says so, once, above the fields.
             let mut harness = Harness::new();
             harness.set_look(look);
             harness.connect_fake_as(true);
@@ -16857,14 +16885,18 @@ mod tests {
             harness.answer_structure(crate::testing::fixture_structure());
             harness.answer_rows(crate::testing::page(5, false));
             harness.click("Row 2");
-            let why = look.label("This connection opens read-only");
-            assert!(
-                painted(&harness, &why),
+            let why = look.label("Read-only connection");
+            assert_eq!(
+                times_painted(&harness, &why),
+                1,
                 "{}: {:?}",
                 look.name,
                 harness.painted
             );
             assert!(harness.has(&why), "{}", look.name);
+            let line = harness.painted_rect(&why).unwrap();
+            let first = panel_text(&harness, "2");
+            assert!(line.bottom() <= first.top(), "{}", look.name);
             let buttons = footer_buttons(&mut harness, &look);
             assert!(buttons.iter().all(|(_, enabled)| !enabled), "{}", look.name);
             // A view, on a connection that can write: its own reason,
@@ -19175,7 +19207,11 @@ mod tests {
         harness.press(Key::Escape, Modifiers::NONE);
         assert!(harness.app.dialog.is_none());
         select(&mut harness, tab, id, (0, 1));
-        harness.app.apply(Action::RevertCell { tab, id });
+        harness.app.apply(Action::RevertCell {
+            tab,
+            id,
+            cell: None,
+        });
         harness.app.apply(Action::WriteEdits { tab, id });
         harness.finish_animations();
         assert_eq!(confirmed_lines(&harness).len(), 2495);
@@ -19880,7 +19916,7 @@ mod tests {
             assert_eq!(row, Some(1), "{}", look.name);
             // The panel shows the new value, and what it was.
             assert!(painted(&harness, "user2@example.comx"), "{}", look.name);
-            assert!(painted(&harness, "was user2@example.com"), "{}", look.name);
+            assert!(says_was(&harness, "user2@example.com"), "{}", look.name);
         }
     }
 
@@ -20743,11 +20779,17 @@ mod tests {
             harness.press(Key::I, Modifiers::COMMAND);
             assert!(harness.app.workspace(tab).unwrap().row_panel);
             assert!(edits(&harness, tab, id).editor.is_none(), "{}", look.name);
-            // The footer's note is the reason. The terminal's mode line
-            // says it too, as for a cell; nothing is said under a field.
-            let why = look.label("This connection opens read-only");
-            let said = if look.terminal { 2 } else { 1 };
-            assert_eq!(times_painted(&harness, &why), said, "{}", look.name);
+            // The panel's first line is the reason, and no field has the
+            // keyboard. The terminal's mode line says it too, as for a
+            // cell; nothing is said under a field.
+            let why = look.label("Read-only connection");
+            assert_eq!(times_painted(&harness, &why), 1, "{}", look.name);
+            if look.terminal {
+                let line = "this connection opens read-only";
+                assert_eq!(times_painted(&harness, line), 1, "{}", look.name);
+            }
+            harness.settle();
+            assert!(!field_focused(&harness, tab, id, 1), "{}", look.name);
         }
     }
 
@@ -20819,6 +20861,196 @@ mod tests {
         // The panel's head names the keys.
         assert!(painted(&harness, "ctrl+l focus"), "{:?}", harness.painted);
         assert!(painted(&harness, "i edit field"));
+    }
+
+    #[test]
+    fn a_pending_field_says_what_it_was_and_reverts() {
+        for look in desktop_looks() {
+            let (mut harness, tab, id) = form_row(look, 1);
+            make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
+            make_pending(&mut harness, tab, id, (1, 2), "7");
+            // Whatever cell is selected, each field's link is its own.
+            select(&mut harness, tab, id, (1, 0));
+            assert!(says_was(&harness, "user2@example.com"), "{}", look.name);
+            assert!(field_marked(&harness, "email · TEXT"), "{}", look.name);
+            // On the label's line, above the value.
+            let was = harness
+                .painted_rect("was user2@example.com · revert")
+                .unwrap();
+            let value = panel_text(&harness, "bob@example.com");
+            assert!(was.bottom() <= value.top(), "{}", look.name);
+            harness.click("Revert email");
+            assert_eq!(
+                pending_text(&harness, tab, id, (1, 1)),
+                None,
+                "{}",
+                look.name
+            );
+            assert_eq!(
+                pending_text(&harness, tab, id, (1, 2)).as_deref(),
+                Some("7"),
+                "{}",
+                look.name
+            );
+            assert!(!says_was(&harness, "user2@example.com"), "{}", look.name);
+            assert!(says_was(&harness, "71"), "{}", look.name);
+            // A pending value is still a click away from its editor.
+            click_value(&mut harness, "7");
+            assert_eq!(
+                form_editor(&harness, tab, id),
+                Some(((1, 2), true)),
+                "{}",
+                look.name
+            );
+        }
+    }
+
+    #[test]
+    fn a_field_to_fix_says_what_its_column_refuses() {
+        for look in Look::ALL {
+            let (mut harness, tab, id) = form_row(look, 1);
+            let palette = harness.app.palette;
+            // Typed, and left for another field: the text is kept, as a
+            // cell to fix.
+            click_value(&mut harness, "71");
+            type_text(&mut harness, "a");
+            harness.settle();
+            click_value(&mut harness, "user2@example.com");
+            harness.app.apply(Action::CancelEdit { tab, id });
+            harness.settle();
+            assert_eq!(edits(&harness, tab, id).counts().to_fix, 1, "{}", look.name);
+            // Its field says what the column refuses, under the value,
+            // which the grid says under the pointer.
+            let message = "INTEGER expects a whole number";
+            assert!(
+                painted_in(&harness, message, palette.danger),
+                "{}: {:?}",
+                look.name,
+                harness.painted
+            );
+            let said = harness.painted_rect(message).unwrap();
+            let value = panel_text(&harness, "71a");
+            assert!(said.top() >= value.bottom(), "{}", look.name);
+            assert_eq!(
+                harness.app.save_blocked(tab, id),
+                Some(crate::model::SaveBlock::ToFix),
+                "{}",
+                look.name
+            );
+            // Fixed in its field, it says so no more.
+            click_value(&mut harness, "71a");
+            harness.press(Key::Backspace, Modifiers::NONE);
+            harness.press(Key::Enter, Modifiers::NONE);
+            harness.settle();
+            assert!(!painted(&harness, message), "{}", look.name);
+            assert_eq!(edits(&harness, tab, id).counts().to_fix, 0, "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn the_row_panels_header_counts_its_rows_unsaved_changes() {
+        for look in desktop_looks() {
+            let (mut harness, tab, id) = form_row(look, 1);
+            let palette = harness.app.palette;
+            let counted = |harness: &Harness| {
+                let mut pieces = harness.painted.iter();
+                pieces
+                    .find(|(text, _)| text.contains("unsaved change"))
+                    .cloned()
+            };
+            assert_eq!(counted(&harness), None, "{}", look.name);
+            make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
+            harness.settle();
+            let one = ("1 unsaved change".to_owned(), palette.warning);
+            assert_eq!(counted(&harness), Some(one), "{}", look.name);
+            make_pending(&mut harness, tab, id, (1, 2), "7");
+            // Another row's change is not this row's.
+            make_pending(&mut harness, tab, id, (2, 2), "8");
+            select(&mut harness, tab, id, (1, 0));
+            harness.settle();
+            let two = ("2 unsaved changes".to_owned(), palette.warning);
+            assert_eq!(counted(&harness), Some(two), "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn a_read_only_connection_says_so_once_and_edits_nothing() {
+        for look in Look::ALL {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            let tab = harness.connect_fake_as(true);
+            harness.click("users");
+            harness.answer_structure(crate::testing::fixture_structure());
+            harness.answer_rows(crate::testing::page(5, false));
+            harness.click("Row 2");
+            let id = harness.app.workspace(tab).unwrap().active_tab.unwrap();
+            let why = look.label("Read-only connection");
+            assert_eq!(times_painted(&harness, &why), 1, "{}", look.name);
+            // No value is a control, and a click on one edits nothing.
+            assert!(!has_control(&mut harness, "email"), "{}", look.name);
+            click_value(&mut harness, "user2@example.com");
+            assert!(edits(&harness, tab, id).editor.is_none(), "{}", look.name);
+            // Mod+I has no field to give the keyboard to.
+            focus_grid(&mut harness, tab);
+            harness.press(Key::I, Modifiers::COMMAND);
+            harness.settle();
+            let workspace = harness.app.workspace(tab).unwrap();
+            let owed = workspace.object_tab(id).unwrap().focus_field;
+            assert_eq!(owed, None, "{}", look.name);
+            assert!(edits(&harness, tab, id).editor.is_none(), "{}", look.name);
+            // Duplicate and Delete wait, as they do everywhere.
+            let buttons = footer_buttons(&mut harness, &look);
+            assert!(buttons.iter().all(|(_, enabled)| !enabled), "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn a_fields_pending_value_is_there_when_its_row_comes_back() {
+        for look in Look::ALL {
+            let (mut harness, tab, id) = form_row(look, 1);
+            click_value(&mut harness, "user2@example.com");
+            type_text(&mut harness, "x");
+            harness.press(Key::Enter, Modifiers::NONE);
+            harness.click("Next row");
+            assert_eq!(
+                selected(&harness, tab, id).map(|(row, _)| row),
+                Some(2),
+                "{}",
+                look.name
+            );
+            assert!(!says_was(&harness, "user2@example.com"), "{}", look.name);
+            harness.click("Previous row");
+            assert_eq!(
+                pending_text(&harness, tab, id, (1, 1)).as_deref(),
+                Some("user2@example.comx"),
+                "{}",
+                look.name
+            );
+            // The panel shows it again, and what it was.
+            assert!(painted(&harness, "user2@example.comx"), "{}", look.name);
+            assert!(says_was(&harness, "user2@example.com"), "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn an_edit_made_in_a_field_is_reviewed_as_the_same_edit_made_on_its_cell() {
+        for look in Look::ALL {
+            // In the panel's field.
+            let (mut harness, tab, id) = form_row(look, 1);
+            click_value(&mut harness, "user2@example.com");
+            type_text(&mut harness, "x");
+            harness.press(Key::Enter, Modifiers::NONE);
+            let from_field = harness.app.review_whole(tab, id).expect("a review");
+            // On the grid's cell.
+            let (mut harness, tab, id) = form_row(look, 1);
+            open_editor(&mut harness, tab, id, (1, 1));
+            type_text(&mut harness, "x");
+            harness.press(Key::Enter, Modifiers::NONE);
+            let from_cell = harness.app.review_whole(tab, id).expect("a review");
+            assert!(from_field == from_cell, "{}", look.name);
+            assert_eq!(from_field.changes, 1, "{}", look.name);
+            assert!(!from_field.lines.is_empty(), "{}", look.name);
+        }
     }
 
     #[test]

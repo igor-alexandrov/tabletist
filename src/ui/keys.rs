@@ -943,7 +943,11 @@ fn editing_keys(
         }
         if take_press(input, Modifiers::COMMAND, Key::Z) > 0 {
             on_cell(actions);
-            actions.push(Action::RevertCell { tab, id });
+            actions.push(Action::RevertCell {
+                tab,
+                id,
+                cell: None,
+            });
         }
         let Some(selected) = object.selection else {
             return;
@@ -1140,7 +1144,11 @@ fn editing_letters(
                 }
                 "u" => {
                     on_cell(actions);
-                    actions.push(Action::RevertCell { tab, id });
+                    actions.push(Action::RevertCell {
+                        tab,
+                        id,
+                        cell: None,
+                    });
                 }
                 ":" => {
                     opened = true;

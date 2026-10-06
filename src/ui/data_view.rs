@@ -1636,8 +1636,8 @@ impl<'a> Changes<'a> {
 }
 
 /// What the database said of a statement that failed, with its code: a
-/// failed cell's words.
-fn failure_text(error: &tabletist_db::Error) -> String {
+/// failed cell's words, and its field's in the row panel.
+pub(crate) fn failure_text(error: &tabletist_db::Error) -> String {
     match error {
         tabletist_db::Error::Query {
             code: Some(code),

@@ -312,10 +312,12 @@ pub enum Action {
         tab: ConnTabId,
         id: TabId,
     },
-    /// Put back the active cell's loaded value.
+    /// Put back a cell's loaded value: `cell`, or the active cell where
+    /// none is named, as the keys ask.
     RevertCell {
         tab: ConnTabId,
         id: TabId,
+        cell: Option<CellPos>,
     },
     /// Drop every pending change of the tab.
     DiscardEdits {
@@ -1882,6 +1884,9 @@ pub struct PendingField {
     pub new: tabletist_db::Value,
     /// What the cell loaded as, short, as the grid shows it.
     pub was: String,
+    /// Whether the cell is ready to save, or what stands against it: the
+    /// check its text fails, or what the last save's statement came to.
+    pub state: crate::edit::State,
 }
 
 /// Without the texts: a pending cell's is what the user typed, which stays

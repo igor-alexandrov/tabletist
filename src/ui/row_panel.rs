@@ -9,7 +9,7 @@ use std::sync::Arc;
 use tabletist_db::{Value, ValueKind};
 
 use crate::app::App;
-use crate::edit::Editor;
+use crate::edit::{Editor, Lock, State};
 use crate::i18n::gettext;
 use crate::model::{Action, CellPos, ConnTabId, RowFields, Tab, TabId, Workspace};
 use crate::theme::{Icon, Look, Palette};
@@ -18,6 +18,7 @@ use crate::ui::focus::{self, Region};
 use crate::ui::format;
 use crate::ui::json_view;
 use crate::ui::row_form::{self, Form, Part};
+use crate::ui::states::Tone;
 use crate::ui::widgets;
 
 /// The panel's width when it opens: macOS 344 and its 1 pt rule, terminal
@@ -405,9 +406,14 @@ fn draw(
                 None => Form::none(),
             };
             form.focus = focus;
-            // Why no field of the row can be edited, as the footer says it:
-            // in the grid's own words, the terminal's in its lower case.
+            // Why no field of the row can be edited, as the panel's first
+            // line says it: in the grid's own words, the terminal's in its
+            // lower case.
             let locked = object.zip(form.locked).map(|(object, lock)| {
+                // The design's words for the commonest of them.
+                if lock == Lock::ReadOnly {
+                    return look.label(&gettext(locale, "Read-only connection"));
+                }
                 let table = format::display_safe(&object.object.name);
                 if look.terminal {
                     crate::ui::workspace::lock_line(lock, &table, &look, locale)
@@ -607,11 +613,26 @@ fn draw(
                     top + title_line / 2.0,
                     Text::one(&look, title_role, &title, palette.text),
                 );
+                // Under it the table's name, or how much of the row is
+                // not saved yet, while anything is.
+                let changed = texts.map_or(0, |texts| texts.pending.iter().flatten().count());
+                let under = match changed {
+                    0 => Text::one(&look, sub_role, &source.name, palette.dim),
+                    _ => {
+                        let what = if changed == 1 {
+                            "unsaved change"
+                        } else {
+                            "unsaved changes"
+                        };
+                        let said = format!("{changed} {}", gettext(locale, what));
+                        Text::one(&look, sub_role, &said, palette.warning)
+                    }
+                };
                 widgets::paint_text(
                     ui,
                     header.left() + side,
                     top + title_line + sub_line / 2.0,
-                    Text::one(&look, sub_role, &source.name, palette.dim),
+                    under,
                 );
                 // Three 30 pt buttons, 4 apart, 8 in from the right.
                 let y = header.top() + 26.0;
@@ -669,19 +690,53 @@ fn draw(
                     });
                 }
             }
-            // Footer: the editing controls. Its rule, the buttons (28 or
-            // 32), the note under them. A SQL result has none: its rows are
-            // no table's to edit.
+            // A row no field of which can be edited says why, once, in a
+            // line under the header: a lock, and the reason.
+            let mut top = header.bottom();
+            if let Some(reason) = locked.as_deref().filter(|_| source.table) {
+                let role = caption(&look);
+                let height = 9.0 + line_of(ui, role, &look) + 9.0 + 1.0;
+                let strip = Rect::from_min_size(pos2(full.left(), top), vec2(full.width(), height));
+                top = strip.bottom();
+                if !look.terminal {
+                    ui.painter()
+                        .rect_filled(strip, CornerRadius::ZERO, palette.panel);
+                }
+                widgets::hline(ui, strip.x_range(), strip.bottom() - 0.5, divider);
+                let y = strip.center().y - 0.5;
+                let mut x = strip.left() + side;
+                if !look.terminal {
+                    Icon::Lock.image(palette.dim, 11.0).paint_at(
+                        ui,
+                        Rect::from_center_size(pos2(x + 5.5, y), vec2(11.0, 11.0)),
+                    );
+                    x += 17.0;
+                }
+                let room = strip.right() - side - x;
+                // Cut at the panel's side, as a field's label is.
+                let measure = |text: &str| role.width(ui.ctx(), look.faces, text);
+                let shown = crate::ui::grid::ellipsize(reason, room, false, measure);
+                widgets::paint_text(ui, x, y, Text::one(&look, role, &shown, palette.dim));
+                // The whole of it for a screen reader, cut or not.
+                let place = Rect::from_min_size(pos2(x, y - 8.0), vec2(room.max(1.0), 16.0));
+                widgets::announce(ui, place, reason);
+            }
+            // Footer: the row's controls. Its rule, the buttons (28 or 32)
+            // and, where the row can be edited, the line under them that
+            // says how (the terminal's head names its keys). A SQL result
+            // has none: its rows are no table's to edit.
             let note = line_of(ui, caption(&look), &look);
             let footer_height = if !source.table {
                 0.0
             } else if look.terminal {
-                1.0 + 10.0 + 28.0 + 8.0 + note + 10.0
+                1.0 + 10.0 + 28.0 + 10.0
+            } else if locked.is_some() {
+                1.0 + 12.0 + 32.0 + 12.0
             } else {
                 1.0 + 12.0 + 32.0 + 8.0 + note + 12.0
             };
             let body = Rect::from_min_max(
-                pos2(full.left(), header.bottom()),
+                pos2(full.left(), top),
                 pos2(full.right(), full.bottom() - footer_height),
             );
             let foot = Rect::from_min_max(pos2(full.left(), body.bottom()), full.max);
@@ -795,7 +850,7 @@ fn draw(
                                                 &mut form,
                                                 &mut actions,
                                             );
-                                            was(ui, *col, skin);
+                                            was(ui, *col, &column.name, skin);
                                         },
                                     );
                                 }
@@ -833,7 +888,7 @@ fn draw(
                                         &mut form,
                                         &mut actions,
                                     );
-                                    was(ui, *col, skin);
+                                    was(ui, *col, &column.name, skin);
                                 });
                             });
                             ui.add_space(12.0);
@@ -865,7 +920,16 @@ fn draw(
                                         &mut form,
                                         &mut actions,
                                     );
-                                    was(ui, *col, skin);
+                                    // A document's label line is its
+                                    // controls': what it was is said
+                                    // under it.
+                                    if document && was(ui, *col, &column.name, skin) {
+                                        let cell = Some(CellPos {
+                                            row: cell.row,
+                                            col: *col,
+                                        });
+                                        actions.push(Action::RevertCell { tab, id, cell });
+                                    }
                                 });
                             });
                             ui.add_space(12.0);
@@ -928,8 +992,11 @@ fn pending_field(texts: Option<&RowFields>, col: usize) -> Option<&crate::model:
     texts?.pending.get(col)?.as_ref()
 }
 
-/// Under a pending field's value: what it loaded as, "was {loaded}".
-fn was(ui: &mut egui::Ui, col: usize, skin: FieldSkin<'_>) {
+/// Under a pending field's value: what it loaded as, "was {loaded}". Where
+/// the label's line has no room for it: a document's, and every field's in
+/// the terminal look. The other looks end it in `revert`, a link: says
+/// whether that was pressed.
+fn was(ui: &mut egui::Ui, col: usize, column: &str, skin: FieldSkin<'_>) -> bool {
     let FieldSkin {
         look,
         palette,
@@ -938,15 +1005,53 @@ fn was(ui: &mut egui::Ui, col: usize, skin: FieldSkin<'_>) {
         ..
     } = skin;
     let Some(pending) = pending_field(texts, col) else {
-        return;
+        return false;
     };
     ui.add_space(if look.terminal { 2.0 } else { 3.0 });
+    let role = caption(look);
     let text = format!("{} {}", look.label(&gettext(locale, "was")), pending.was);
     let width = ui.available_width();
-    Text::one(look, caption(look), &text, palette.dim)
-        .wrap(width)
-        .layout(ui.ctx())
-        .label(ui);
+    if look.terminal {
+        // Its key reverts: `u`.
+        Text::one(look, role, &text, palette.dim)
+            .wrap(width)
+            .layout(ui.ctx())
+            .label(ui);
+        return false;
+    }
+    let revert = gettext(locale, "revert");
+    let measure = |text: &str| role.width(ui.ctx(), look.faces, text);
+    let after = measure(" · ") + measure(&revert);
+    ui.horizontal_top(|ui| {
+        ui.spacing_mut().item_spacing.x = 0.0;
+        Text::one(look, role, &text, palette.warning)
+            .wrap((width - after).max(24.0))
+            .layout(ui.ctx())
+            .label(ui);
+        Text::one(look, role, " · ", palette.warning)
+            .layout(ui.ctx())
+            .label(ui);
+        let link = Text::one(look, role, &revert, palette.warning)
+            .layout(ui.ctx())
+            .label_sense(ui, Sense::click());
+        let name = format!(
+            "{} {}",
+            gettext(locale, "Revert"),
+            format::display_safe(column)
+        );
+        link.widget_info(|| WidgetInfo::labeled(WidgetType::Link, true, &name));
+        widgets::hline(
+            ui,
+            link.rect.x_range(),
+            link.rect.bottom() - 0.5,
+            palette.warning,
+        );
+        if link.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+        link.clicked()
+    })
+    .inner
 }
 
 /// The pending mark after a field's label: the dot a pending cell's row
@@ -1013,7 +1118,30 @@ fn field(
     };
     let (line, response) = ui.allocate_exact_size(vec2(width, label_height), Sense::hover());
     let name_id = response.id;
-    let pending = pending_field(texts, col).is_some();
+    let pending_cell = pending_field(texts, col);
+    let pending = pending_cell.is_some();
+    // What stands against a pending cell, in the words its cell of the
+    // grid says it in: what its column refuses of the text, or what the
+    // database said of its row's statement.
+    let trouble = pending_cell.and_then(|cell| match &cell.state {
+        State::Ready => None,
+        State::ToFix(problem) => {
+            let typed = match &cell.new {
+                Value::Text(text) => Some(&**text),
+                _ => None,
+            };
+            let type_name = format::type_label(&column.type_name, column.kind);
+            let type_name = format::display_safe(&type_name);
+            let said = crate::ui::cell_editor::problem_text(problem, &type_name, typed, locale);
+            Some(said)
+        }
+        State::Failed(error) => Some(crate::ui::data_view::failure_text(error)),
+    });
+    let tone = match (&trouble, pending) {
+        (Some(_), _) => Some(Tone::Danger),
+        (None, true) => Some(Tone::Warning),
+        (None, false) => None,
+    };
     // A screen reader hears the mark as a word.
     let name = if pending {
         format!("{text}, {}", gettext(locale, "pending"))
@@ -1053,37 +1181,87 @@ fn field(
     // A value read as a tree or as a list has clicks of its own: its
     // pencil, in the label line, is what edits it.
     let lists = matches!(value, Value::Text(text) if listed(text, column));
+    let column_name = format::display_safe(&column.name);
+    let measure = |text: &str| label_role.width(ui.ctx(), look.faces, text);
+    // What a pending cell was, and the way back to it, end the label's
+    // line: "was print · revert". A document's line is its controls', and
+    // the terminal look's has its hints: there it is said under the value.
+    let was = pending_cell
+        .filter(|_| !look.terminal && doc.is_none())
+        .map(|cell| format!("{} {}", gettext(locale, "was"), cell.was));
+    let revert = gettext(locale, "revert");
+    let revert_width = measure(" · ") + measure(&revert);
+    // The label gives way to it, down to a few words of what the cell was.
+    let was_room = was
+        .as_ref()
+        .map_or(0.0, |was| measure(was).min(96.0) + revert_width + 12.0);
     // Cut at the column's edge, as the field's own width allows, before
-    // the mark of a pending one, the lock of one that cannot be edited and
-    // the pencil of one that has one.
-    let mark = if pending { 6.0 + MARK } else { 0.0 };
+    // the mark of a pending document, the lock of a field that cannot be
+    // edited and the pencil of one that has one.
+    let mark = if pending && doc.is_some() && !look.terminal {
+        6.0 + MARK
+    } else {
+        0.0
+    };
     let lock_room = if locked.is_some() { 6.0 + LOCK } else { 0.0 };
     let pencil_room = if editable && (doc.is_some() || lists) {
         PENCIL + 2.0
     } else {
         0.0
     };
-    let room = line.width() - 30.0 - mark - lock_room - pencil_room;
-    let shown = crate::ui::grid::ellipsize(&text, room, false, |text| {
-        label_role.width(ui.ctx(), look.faces, text)
-    });
+    let room = line.width() - 30.0 - was_room - mark - lock_room - pencil_room;
+    let shown = crate::ui::grid::ellipsize(&text, room, false, measure);
     let label_width = widgets::paint_text(
         ui,
         line.left(),
         line.center().y,
         Text::one(look, label_role, &shown, palette.dim),
     );
-    if pending {
-        let x = line.left() + label_width + 6.0;
+    if let Some(tone) = tone {
         if look.terminal {
-            let tilde = Text::one(look, label_role, "~", palette.warning);
-            widgets::paint_text(ui, x, line.center().y, tilde);
-        } else {
+            // The terminal look's mark stands in the gutter, as a changed
+            // row's does in the grid: `~`, or `!` for a cell in trouble.
+            let sign = if tone == Tone::Danger { "!" } else { "~" };
+            let sign = Text::one(look, label_role, sign, tone.color(palette));
+            let (_, side) = field_box(look);
+            widgets::paint_text_right(ui, line.left() - side + 2.0, line.center().y, sign);
+        } else if doc.is_some() {
+            let x = line.left() + label_width + 6.0;
             ui.painter().circle_filled(
                 pos2(x + MARK / 2.0, line.center().y),
                 MARK / 2.0,
-                palette.warning,
+                tone.color(palette),
             );
+        }
+    }
+    // Where the label line's Copy ends: at the line's right, or before
+    // what a pending cell was.
+    let mut copy_right = line.right();
+    if let Some(was) = &was {
+        let left = line.left() + label_width + lock_room + 12.0 + 26.0;
+        let room = (line.right() - left - revert_width).max(0.0);
+        let shown = crate::ui::grid::ellipsize(was, room, false, measure);
+        let words = Text::one(look, label_role, &shown, palette.warning)
+            .add(label_role, " · ", palette.warning)
+            .add(label_role, &revert, palette.warning);
+        let width = widgets::paint_text_right(ui, line.right(), line.center().y, words);
+        copy_right = line.right() - width - 6.0;
+        // `revert` is a link: it puts back what the cell loaded as,
+        // whatever cell is selected.
+        let word = Rect::from_min_max(pos2(line.right() - measure(&revert), line.top()), line.max);
+        let link = ui.interact(word.expand(2.0), name_id.with("revert"), Sense::click());
+        let name = format!("{} {column_name}", gettext(locale, "Revert"));
+        link.widget_info(|| WidgetInfo::labeled(WidgetType::Link, true, &name));
+        widgets::hline(ui, word.x_range(), word.bottom() - 0.5, palette.warning);
+        if link.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+        if link.clicked() {
+            actions.push(Action::RevertCell {
+                tab,
+                id: tab_id,
+                cell: Some(CellPos { row, col }),
+            });
         }
     }
     if let Some(reason) = &locked {
@@ -1102,7 +1280,6 @@ fn field(
         Icon::Lock.image(palette.dim, LOCK).paint_at(ui, place);
         lock.on_hover_text(reason.as_str());
     }
-    let column_name = format::display_safe(&column.name);
     let copy_label = format!("{} {column_name}", gettext(locale, "Copy"));
     let edit_label = format!("{} {column_name}", gettext(locale, "Edit"));
     let hovered = ui.rect_contains_pointer(line.expand2(vec2(16.0, 30.0)));
@@ -1179,7 +1356,7 @@ fn field(
         }
     } else {
         let copy = Rect::from_min_size(
-            pos2(line.right() - 22.0, line.center().y - 11.0),
+            pos2(copy_right - 22.0, line.center().y - 11.0),
             vec2(22.0, 22.0),
         );
         let mut child = ui.new_child(egui::UiBuilder::new().max_rect(copy));
@@ -1224,8 +1401,12 @@ fn field(
                 whole,
                 pad,
                 // A locked value reads as one that is not the user's to
-                // change.
-                dim: locked.is_some(),
+                // change. The terminal look writes a pending value in its
+                // tone, as its grid does, in place of a tint behind it.
+                color: match tone {
+                    Some(tone) if look.terminal => Some(tone.color(palette)),
+                    _ => locked.as_ref().map(|_| palette.secondary),
+                },
             };
             value_of(
                 ui, tab, tab_id, row, col, column, value, info, tag, skin, read, actions,
@@ -1249,13 +1430,23 @@ fn field(
             ui.data_mut(|data| data.insert_temp(asked, at));
         }
     }
+    // What stands against the field's cell, under its value: the panel
+    // has the room the grid gives a tooltip.
+    if let Some(message) = &trouble {
+        ui.add_space(if look.terminal { 2.0 } else { 3.0 });
+        let width = ui.available_width();
+        Text::one(look, caption(look), message, palette.danger)
+            .wrap(width)
+            .layout(ui.ctx())
+            .label(ui);
+    }
     // A row the form has no part in: its values are read, as ever.
     if part == Part::Read {
         return;
     }
     // A list is edited by a pencil beside Copy, as a document is.
     if editable && shown.place.is_none() && pencil.is_none() {
-        pencil = Some(pencil_at(ui, line.right() - 22.0 - 2.0, PENCIL, hovered));
+        pencil = Some(pencil_at(ui, copy_right - 22.0 - 2.0, PENCIL, hovered));
     }
     // The value as one control: a click edits it, or says why it cannot
     // be edited.
@@ -1266,31 +1457,71 @@ fn field(
         let response = ui.interact(frame, stop, Sense::click());
         response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, &said));
         let corner = CornerRadius::same(look.radius);
-        if editable && response.hovered() {
-            if look.terminal {
+        let hovering = editable && response.hovered();
+        if look.terminal {
+            if hovering {
                 let stroke = Stroke::new(1.0, palette.accent);
                 ui.painter()
                     .rect_stroke(frame, corner, stroke, StrokeKind::Inside);
-            } else {
-                // The design's hover: the fill of a grid's row under the
-                // pointer and a border inside it, a pencil at its right,
-                // and the text cursor.
-                ui.ctx().set_cursor_icon(egui::CursorIcon::Text);
-                let tint = crate::ui::grid::row_fill(false, true, false, look, palette)
-                    .unwrap_or(palette.surface);
-                let fill = egui::epaint::RectShape::filled(frame, corner, tint);
-                ui.painter().set(behind, fill);
-                let stroke = Stroke::new(1.0, palette.border);
+            }
+        } else {
+            // What the cell holds, as its cell of the grid says it: a
+            // pending one on the warning's tint with a 2 pt bar at its
+            // left, one in trouble on the failure's with a line round it.
+            // Under the pointer a value that can be edited shows the
+            // design's hover: the fill of a grid's row there and a border
+            // inside it, a pencil at its right, and the text cursor.
+            let hover = crate::ui::grid::row_fill(false, true, false, look, palette)
+                .unwrap_or(palette.surface);
+            let fill = match tone {
+                Some(tone) => Some(tone.fill(look, palette)),
+                None => hovering.then_some(hover),
+            };
+            let filled = |rect, corner, color| {
+                egui::Shape::from(egui::epaint::RectShape::filled(rect, corner, color))
+            };
+            if let Some(fill) = fill {
+                let shapes = if tone == Some(Tone::Warning) {
+                    // The bar is the box in the warning's colour, and the
+                    // tint over all of it but 2 at its left: a bar of its
+                    // own would stand out of the box's round corners.
+                    let rest = Rect::from_min_max(pos2(frame.left() + 2.0, frame.top()), frame.max);
+                    let right = CornerRadius {
+                        nw: 0,
+                        sw: 0,
+                        ..corner
+                    };
+                    vec![
+                        filled(frame, corner, palette.warning),
+                        filled(rest, right, fill),
+                    ]
+                } else {
+                    vec![filled(frame, corner, fill)]
+                };
+                ui.painter().set(behind, egui::Shape::Vec(shapes));
+            }
+            let line = match tone {
+                Some(Tone::Danger) => Some(palette.danger),
+                _ => hovering.then_some(palette.border),
+            };
+            if let Some(color) = line {
+                let stroke = Stroke::new(1.0, color);
                 ui.painter()
                     .rect_stroke(frame, corner, stroke, StrokeKind::Inside);
+            }
+            if hovering {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::Text);
                 let pencil = Rect::from_center_size(
                     pos2(frame.right() - 8.0 - 6.0, frame.center().y),
                     vec2(12.0, 12.0),
                 );
                 // A value that reaches the box's end runs under the
                 // pencil, not through it.
-                ui.painter()
-                    .rect_filled(pencil.expand2(vec2(4.0, 2.0)), CornerRadius::ZERO, tint);
+                ui.painter().rect_filled(
+                    pencil.expand2(vec2(4.0, 2.0)),
+                    CornerRadius::ZERO,
+                    fill.unwrap_or(hover),
+                );
                 Icon::Pencil
                     .image(palette.secondary, 12.0)
                     .paint_at(ui, pencil);
@@ -1444,8 +1675,9 @@ struct Reading<'a> {
     whole: bool,
     /// The room such a value keeps above and below its lines, for its box.
     pad: f32,
-    /// Whether it is drawn as a value that cannot be changed.
-    dim: bool,
+    /// The colour its text is written in, where it is not the text's own:
+    /// a value that cannot be changed, the terminal look's pending one.
+    color: Option<egui::Color32>,
 }
 
 /// What a field's value came to on screen.
@@ -1488,7 +1720,7 @@ fn value_of(
         role,
         whole,
         pad,
-        dim,
+        color,
     } = read;
     let request = texts.and_then(|texts| texts.request);
     let column_name = format::display_safe(&column.name);
@@ -1604,13 +1836,11 @@ fn value_of(
         }
     });
     // A tag's value in its text colour: the grid's chips stay in the grid.
-    let color = if dim {
-        palette.secondary
-    } else {
+    let color = color.unwrap_or_else(|| {
         tag.map_or(palette.text, |style| {
             crate::ui::value_tags::style_colors(style, look, palette).0
         })
-    };
+    });
     let small = widgets::secondary(look);
     ui.add_space(pad);
     ui.horizontal_top(|ui| {
@@ -2021,9 +2251,8 @@ fn attachment_card(
 
 /// The footer of a table's row: Duplicate and Delete, which wait for a
 /// later version, and under them how a value of the row is edited. `locked`
-/// is why no field of the row can be edited, in the look's words: the note
-/// under the buttons says that instead, and so do the buttons under the
-/// pointer.
+/// is why no field of the row can be edited, in the look's words: the
+/// buttons say that under the pointer, and nothing is said of editing.
 fn editing_footer(
     ui: &mut egui::Ui,
     rect: Rect,
@@ -2112,66 +2341,37 @@ fn editing_footer(
         }
         32.0
     };
+    // How a value is edited, under the buttons of a row that can be: the
+    // terminal look's head names its keys, and a row that cannot be edited
+    // says why at the top of the panel.
+    if look.terminal || locked.is_some() {
+        return;
+    }
     let note_role = caption(look);
     let y = top + height + 8.0 + line_of(ui, note_role, look) / 2.0;
     let measure = |text: &str| note_role.width(ui.ctx(), look.faces, text);
-    // The note: why the row cannot be edited, where it cannot. Where it
-    // can, how a value is edited; the terminal's head names its keys.
-    let Some(reason) = locked else {
-        if !look.terminal {
-            let key = format!("{}I", look.command_key());
-            let click = gettext(locale, "Click a value or press");
-            let edit = gettext(locale, "to edit");
-            let said = format!("{click} {key} {edit}");
-            // Cut at the panel's side, as a field's label is.
-            let hint = if measure(&said) <= inner.width() {
-                Text::one(look, note_role, &click, palette.dim)
-                    .space(note_role, " ")
-                    .add(note_role, &key, palette.secondary)
-                    .space(note_role, " ")
-                    .add(note_role, &edit, palette.dim)
-            } else {
-                let shown = crate::ui::grid::ellipsize(&said, inner.width(), false, measure);
-                Text::one(look, note_role, &shown, palette.dim)
-            };
-            widgets::paint_text(ui, inner.left(), y, hint);
-            // The whole of it for a screen reader, cut or not.
-            let place = Rect::from_min_size(
-                pos2(inner.left(), y - 8.0),
-                vec2(inner.width().max(1.0), 16.0),
-            );
-            widgets::announce(ui, place, &said);
-        }
-        return;
-    };
-    if look.terminal {
-        // Cut at the panel's side, as a field's label is.
-        let shown = crate::ui::grid::ellipsize(reason, inner.width(), false, measure);
-        widgets::paint_text(
-            ui,
-            inner.left(),
-            y,
-            Text::one(look, note_role, &shown, palette.dim),
-        );
+    let key = format!("{}I", look.command_key());
+    let click = gettext(locale, "Click a value or press");
+    let edit = gettext(locale, "to edit");
+    let said = format!("{click} {key} {edit}");
+    // Cut at the panel's side, as a field's label is.
+    let hint = if measure(&said) <= inner.width() {
+        Text::one(look, note_role, &click, palette.dim)
+            .space(note_role, " ")
+            .add(note_role, &key, palette.secondary)
+            .space(note_role, " ")
+            .add(note_role, &edit, palette.dim)
     } else {
-        Icon::Lock.image(palette.dim, 11.0).paint_at(
-            ui,
-            Rect::from_center_size(pos2(inner.left() + 5.5, y), vec2(11.0, 11.0)),
-        );
-        let shown = crate::ui::grid::ellipsize(reason, inner.width() - 17.0, false, measure);
-        widgets::paint_text(
-            ui,
-            inner.left() + 17.0,
-            y,
-            Text::one(look, note_role, &shown, palette.dim),
-        );
-    }
+        let shown = crate::ui::grid::ellipsize(&said, inner.width(), false, measure);
+        Text::one(look, note_role, &shown, palette.dim)
+    };
+    widgets::paint_text(ui, inner.left(), y, hint);
     // The whole of it for a screen reader, cut or not.
     let place = Rect::from_min_size(
         pos2(inner.left(), y - 8.0),
         vec2(inner.width().max(1.0), 16.0),
     );
-    widgets::announce(ui, place, reason);
+    widgets::announce(ui, place, &said);
 }
 
 /// A dashed 1 pt outline round `rect`.
