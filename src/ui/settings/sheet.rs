@@ -13,6 +13,7 @@ use crate::theme::{Look, Palette};
 use crate::typography::{Laid, Text, TextRole};
 use crate::ui::focus::{self, Ring};
 use crate::ui::format::group_digits;
+use crate::ui::menu;
 use crate::ui::value_tags::slot_colors;
 use crate::ui::widgets::{self, Segment};
 
@@ -349,23 +350,19 @@ fn control(
     let name = skin.say(label(option));
     match option {
         OptionId::PageSize => {
-            let written = |ui: &Ui, size: u32| {
-                let text = group_digits(u64::from(size));
-                widgets::galley(ui, &text, egui::Color32::PLACEHOLDER, look)
-            };
-            let combo = egui::ComboBox::from_id_salt("page-size")
-                .width(MENU)
-                .selected_text(written(ui, settings.page_size));
-            let menu = widgets::popup_button(ui, combo, look, palette, |ui| {
+            let written = |size: u32| group_digits(u64::from(size));
+            let size = written(settings.page_size);
+            let dropdown = menu::Dropdown::new("page-size", &size, MENU);
+            let menu = dropdown.show(ui, look, palette, |ui| {
                 for size in page_sizes(settings.page_size) {
                     let chosen = size == settings.page_size;
-                    let entry = ui.add(egui::Button::selectable(chosen, written(ui, size)));
                     // Named as the SQL editor's Limit menu names its
                     // entries: what it sets, and to what.
-                    let entry_name = format!("{name} {}", group_digits(u64::from(size)));
-                    entry.widget_info(|| {
-                        WidgetInfo::selected(WidgetType::Button, true, chosen, &entry_name)
-                    });
+                    let text = written(size);
+                    let entry_name = format!("{name} {text}");
+                    let entry = menu::Item::choice(&text, chosen)
+                        .name(&entry_name)
+                        .show(ui, look, palette);
                     if entry.clicked() {
                         actions.push(Action::SetOption(OptionValue::PageSize(size)));
                         // egui closes the menu on a pointer's click; a

@@ -8,6 +8,7 @@ use crate::i18n::gettext;
 use crate::model::{Action, ConnTabId, TabId};
 use crate::theme::Icon;
 use crate::ui::format::display_safe;
+use crate::ui::menu;
 use crate::ui::widgets::{self, icon_button};
 
 pub const FILTER_OPS: [FilterOp; 11] = [
@@ -86,26 +87,22 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
     for index in 0..count {
         let row = &mut bar.rows[index];
         ui.horizontal(|ui| {
-            let combo = crate::ui::widgets::popup_button(
-                ui,
-                egui::ComboBox::from_id_salt(("filter-column", tab.0, object_tab.0, index))
-                    .selected_text(widgets::galley(
-                        ui,
-                        &display_safe(&row.column),
-                        egui::Color32::PLACEHOLDER,
-                        &look,
-                    ))
-                    .width(160.0),
-                &look,
-                &palette,
-                |ui| {
-                    for column in &columns {
-                        let name = display_safe(column);
-                        let text = widgets::galley(ui, &name, egui::Color32::PLACEHOLDER, &look);
-                        ui.selectable_value(&mut row.column, column.clone(), text);
-                    }
-                },
-            );
+            let shown = display_safe(&row.column).into_owned();
+            let combo =
+                menu::Dropdown::new(("filter-column", tab.0, object_tab.0, index), &shown, 160.0)
+                    .show(ui, &look, &palette, |ui| {
+                        for column in &columns {
+                            let name = display_safe(column);
+                            menu::value(
+                                ui,
+                                &mut row.column,
+                                column.clone(),
+                                &name,
+                                &look,
+                                &palette,
+                            );
+                        }
+                    });
             // No visible label in the row: name it for screen readers,
             // keeping its selection as the value.
             let selected = Some(display_safe(&row.column).into_owned());
@@ -118,26 +115,17 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
                 info.current_text_value = selected.clone();
                 info
             });
-            let combo = crate::ui::widgets::popup_button(
-                ui,
-                egui::ComboBox::from_id_salt(("filter-op", tab.0, object_tab.0, index))
-                    .selected_text(widgets::galley(
-                        ui,
-                        &gettext(locale, op_label(row.op)),
-                        egui::Color32::PLACEHOLDER,
-                        &look,
-                    ))
-                    .width(110.0),
-                &look,
-                &palette,
-                |ui| {
-                    for op in FILTER_OPS {
-                        let label = gettext(locale, op_label(op));
-                        let text = widgets::galley(ui, &label, egui::Color32::PLACEHOLDER, &look);
-                        ui.selectable_value(&mut row.op, op, text);
-                    }
-                },
-            );
+            let combo = menu::Dropdown::new(
+                ("filter-op", tab.0, object_tab.0, index),
+                &gettext(locale, op_label(row.op)),
+                110.0,
+            )
+            .show(ui, &look, &palette, |ui| {
+                for op in FILTER_OPS {
+                    let label = gettext(locale, op_label(op));
+                    menu::value(ui, &mut row.op, op, &label, &look, &palette);
+                }
+            });
             // No visible label in the row: name it for screen readers,
             // keeping its selection as the value.
             let selected = Some(gettext(locale, op_label(row.op)).into_owned());

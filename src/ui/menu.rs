@@ -11,7 +11,10 @@
 //! rows a line high; `▌` marks the row under the pointer or the keyboard
 //! and a green `✓` the choice in use.
 
-use egui::{CornerRadius, Rect, Response, Sense, Stroke, Ui, WidgetInfo, WidgetType, pos2, vec2};
+use egui::{
+    Color32, CornerRadius, Rect, Response, Sense, Stroke, StrokeKind, Ui, WidgetInfo, WidgetType,
+    pos2, vec2,
+};
 
 use crate::theme::{Icon, Look, Palette};
 use crate::typography::{Text, TextRole};
@@ -331,6 +334,142 @@ pub fn value<T: PartialEq>(
     response
 }
 
+/// A dropdown: a field that reads the choice in use, with `▾` at its end,
+/// and opens a menu of the choices under it.
+pub struct Dropdown<'a> {
+    id: egui::Id,
+    text: &'a str,
+    width: f32,
+    height: Option<f32>,
+    fill: Option<Color32>,
+}
+
+impl<'a> Dropdown<'a> {
+    /// A dropdown `width` wide that reads `text`. `salt` tells it from the
+    /// others in its `Ui`.
+    pub fn new(salt: impl egui::AsIdSalt, text: &'a str, width: f32) -> Self {
+        Self {
+            id: egui::Id::new(salt),
+            text,
+            width,
+            height: None,
+            fill: None,
+        }
+    }
+
+    /// As tall as the fields beside it, where they are not the look's
+    /// controls' height.
+    pub fn height(mut self, height: f32) -> Self {
+        self.height = Some(height);
+        self
+    }
+
+    /// The fill of the fields beside it, where it is not the window's.
+    pub fn fill(mut self, fill: Color32) -> Self {
+        self.fill = Some(fill);
+        self
+    }
+
+    /// Draws the field, and `add`'s rows in its menu while that is open.
+    /// It is announced as a combo box whose value is what it reads: name
+    /// it with a `widget_info` of the caller's own, or `labelled_by`.
+    pub fn show<R>(
+        self,
+        ui: &mut Ui,
+        look: &Look,
+        palette: &Palette,
+        add: impl FnOnce(&mut Ui) -> R,
+    ) -> egui::InnerResponse<Option<R>> {
+        let height = self.height.unwrap_or(look.control_height);
+        let (_, rect) = ui.allocate_space(vec2(self.width, height));
+        let response = ui.interact(rect, ui.id().with(self.id), Sense::click());
+        response.widget_info(|| {
+            let mut info = WidgetInfo::new(WidgetType::ComboBox);
+            info.enabled = ui.is_enabled();
+            info.current_text_value = Some(self.text.to_owned());
+            info
+        });
+        // The terminal: an outline with corners of 3. Elsewhere a field's
+        // box, corners one tighter than a button's.
+        let (fill, border, radius, line) = if look.terminal {
+            (Color32::TRANSPARENT, palette.outline, 3, 1.0)
+        } else {
+            (
+                self.fill.unwrap_or(palette.window),
+                palette.border,
+                look.radius.saturating_sub(1),
+                widgets::hairline(ui),
+            )
+        };
+        if ui.is_rect_visible(rect) {
+            let open =
+                egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(&response));
+            // A step toward the text under the pointer, and while open.
+            let border = if response.hovered() || open {
+                border.lerp_to_gamma(palette.text, 0.1)
+            } else {
+                border
+            };
+            let corner = CornerRadius::same(radius);
+            let painter = ui.painter();
+            painter.rect(
+                rect,
+                corner,
+                fill,
+                Stroke::new(line, border),
+                StrokeKind::Inside,
+            );
+            // The border, then a field's padding: 8 in the terminal, 10.
+            let inset = if look.terminal { 9.0 } else { 11.0 };
+            let center = rect.center().y;
+            let mark = if look.terminal {
+                let mark = Text::one(look, widgets::body(look), "▾", palette.dim).layout(ui.ctx());
+                let width = mark.paint_right(painter, rect.right() - inset, center);
+                rect.right() - inset - width
+            } else {
+                let place = Rect::from_center_size(
+                    pos2(rect.right() - inset - 5.0, center),
+                    vec2(10.0, 10.0),
+                );
+                Icon::ChevronDown
+                    .image(palette.dim, 10.0)
+                    .paint_at(ui, place);
+                place.left()
+            };
+            // What does not fit ends at the mark.
+            let words = Rect::from_min_max(
+                pos2(rect.left() + inset, rect.top()),
+                pos2(mark - 6.0, rect.bottom()),
+            );
+            Text::one(look, widgets::body(look), self.text, palette.text)
+                .layout(ui.ctx())
+                .paint_left(
+                    &painter.with_clip_rect(words.intersect(ui.clip_rect())),
+                    words.left(),
+                    center,
+                );
+        }
+        focus::hint(ui, &response, rect, Ring::Field { radius });
+        let inner = under(&response, rect.width(), look, palette, add);
+        // The menu took the keyboard down its rows. Once a key or a screen
+        // reader closes it, by a pick or by Escape, the keyboard is back on
+        // the field, as after [`choices`]. A pointer that closed it put the
+        // keyboard where it clicked.
+        let popup = egui::Popup::default_response_id(&response);
+        let (escaped, clicked) = ui.input(|input| {
+            (
+                input.key_pressed(egui::Key::Escape),
+                input.pointer.any_click(),
+            )
+        });
+        let closed = !egui::Popup::is_id_open(ui.ctx(), popup);
+        if inner.is_some() && (escaped || (closed && !clicked)) {
+            response.request_focus();
+        }
+        egui::InnerResponse::new(inner, response)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
@@ -458,6 +597,64 @@ mod tests {
                 fill(&harness, lit),
                 Some(selection),
                 "the row with the keyboard in {}",
+                look.name
+            );
+        }
+    }
+
+    #[test]
+    fn a_dropdown_keeps_its_name_and_value_in_every_look() {
+        for look in Look::ALL {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            let palette = harness.app.palette;
+            let tree = harness.frame_with(|ui| {
+                let dropdown = super::Dropdown::new("database", "bookshop_test", 160.0);
+                let response = dropdown.show(ui, &look, &palette, |_| {}).response;
+                assert_eq!(response.rect.width(), 160.0, "{}", look.name);
+                response.widget_info(|| {
+                    let mut info =
+                        egui::WidgetInfo::labeled(egui::WidgetType::ComboBox, true, "Database");
+                    info.current_text_value = Some("bookshop_test".into());
+                    info
+                });
+            });
+            let id =
+                node(&tree, "Database", Role::ComboBox).unwrap_or_else(|| panic!("{}", look.name));
+            let (_, node) = tree.nodes.iter().find(|(n, _)| *n == id).unwrap();
+            assert_eq!(node.value(), Some("bookshop_test"), "{}", look.name);
+            assert_eq!(harness.painted_color("bookshop_test"), Some(palette.text));
+        }
+    }
+
+    #[test]
+    fn a_pick_in_a_dropdown_sets_the_value_and_closes_its_menu() {
+        for look in Look::ALL {
+            let mut harness = Harness::new();
+            harness.set_look(look);
+            let (tab, id) = harness.editable();
+            harness.press(Key::F, Modifiers::COMMAND);
+            harness.click("Filter operator");
+            assert!(harness.has("contains"), "the menu opens in {}", look.name);
+            harness.click("contains");
+            assert!(
+                !harness.has("starts with"),
+                "the menu stays open in {}",
+                look.name
+            );
+            // The row that had the keyboard is gone: the dropdown has it.
+            assert_eq!(
+                focused_name(&harness.settle()),
+                "Filter operator",
+                "{}",
+                look.name
+            );
+            let workspace = harness.app.workspace(tab).unwrap();
+            let rows = &workspace.object_tab(id).unwrap().filter.rows;
+            assert_eq!(
+                rows[0].op,
+                tabletist_db::FilterOp::Contains,
+                "{}",
                 look.name
             );
         }

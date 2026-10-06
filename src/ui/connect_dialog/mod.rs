@@ -419,8 +419,9 @@ fn frame(skin: &Skin) -> egui::Frame {
     }
 }
 
-/// Fields and pop-up buttons as the designs draw them: boxes with a border
-/// on the field colour, and no spacing but what the layout adds.
+/// Fields as the designs draw them: boxes with a border on the field
+/// colour, and no spacing but what the layout adds. A dropdown takes the
+/// fill from here.
 fn style_controls(ui: &mut Ui, skin: &Skin) {
     let Skin { look, palette, .. } = *skin;
     let (fill, border, radius, width) = if look.terminal {
