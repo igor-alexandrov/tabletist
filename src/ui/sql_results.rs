@@ -7,7 +7,7 @@
 use std::time::Duration;
 
 use egui::{CornerRadius, Id, Rect, Sense, Ui, WidgetInfo, WidgetType, pos2, vec2};
-use tabletist_db::{Error, StatementOutcome, ValueKind};
+use tabletist_db::{Driver, Error, ScriptEnd, ScriptMode, StatementOutcome, ValueKind};
 
 use crate::app::App;
 use crate::backend::{CancelReason, RequestId};
@@ -56,6 +56,18 @@ impl Words {
             text.to_lowercase()
         } else {
             text.into_owned()
+        }
+    }
+
+    /// A database's name or a statement's keyword inside a sentence of
+    /// ours, as the look writes it: in lower case in the terminal's, whose
+    /// design has "postgres refused the update". Never for what a database
+    /// itself said, nor for a name the user gave.
+    fn own(self, name: &str) -> String {
+        if self.lower {
+            name.to_lowercase()
+        } else {
+            name.to_owned()
         }
     }
 }
@@ -224,12 +236,22 @@ fn draw(app: &App, ui: &mut Ui, tab: ConnTabId, id: TabId, actions: &mut Vec<Act
             if format::refuses_writes(error, place.driver) {
                 blocked(&mut body, rest, error, place.writable, &env);
             } else {
-                note(&body, rest, &whole(error), palette.danger, &env);
+                let said = match may_be_written(sql, error) {
+                    Some(ours) => {
+                        let error = error_text(error);
+                        let error = error.trim_end_matches('.');
+                        env.said(|words| format!("{error}. {}", words.say(ours)))
+                    }
+                    None => whole(error),
+                };
+                note(&body, rest, &said, palette.danger, &env);
             }
         }
         (State::Failed(error), ResultPane::Messages) => {
+            let unknown = may_be_written(sql, error).map(|ours| Line::Ours(ours, Tone::Failed));
             let lines: Vec<Line<'_>> = std::iter::once(Line::Whole(error))
                 .chain(more(error))
+                .chain(unknown)
                 .collect();
             messages(&mut body, &lines, None, &place, &env);
         }
@@ -280,12 +302,15 @@ fn head(sql: &SqlTab, state: &State<'_>, env: &Env<'_>) -> Head {
         running,
         errors: match state {
             State::Failed(_) => 1,
-            State::Ran(run) => run
-                .outcome
-                .results
-                .iter()
-                .filter(|result| matches!(result.outcome, StatementOutcome::Error { .. }))
-                .count(),
+            // A commit that failed is an error of the run as a statement's
+            // is.
+            State::Ran(run) => {
+                let failed = |result: &&tabletist_db::StatementResult| {
+                    matches!(result.outcome, StatementOutcome::Error { .. })
+                };
+                let commit = matches!(run.outcome.end, ScriptEnd::CommitFailed { .. });
+                run.outcome.results.iter().filter(failed).count() + usize::from(commit)
+            }
             State::Idle | State::Waiting => 0,
         },
     }
@@ -689,6 +714,16 @@ fn rows_text(count: u64, words: Words) -> String {
     format!("{} {}", format::group_digits(count), words.say(noun))
 }
 
+/// "12 rows affected", "1 row affected".
+fn affected_text(count: u64, words: Words) -> String {
+    let noun = if count == 1 {
+        "row affected"
+    } else {
+        "rows affected"
+    };
+    format!("{} {}", format::group_digits(count), words.say(noun))
+}
+
 /// The statement that reads as cancelled though it has no result: the
 /// first one, when the run was stopped before it began. A run stopped
 /// later has a `Cancelled` result of its own (every driver gives the
@@ -711,6 +746,9 @@ enum Tone {
     /// A statement that did not run.
     Muted,
     Cancelled,
+    /// What a run left that it was not meant to: part of it written, or
+    /// not all of it rolled back.
+    Warned,
     Failed,
 }
 
@@ -719,7 +757,7 @@ impl Tone {
         match self {
             Self::Plain => palette.text,
             Self::Muted => palette.dim,
-            Self::Cancelled => palette.warning,
+            Self::Cancelled | Self::Warned => palette.warning,
             Self::Failed => palette.danger,
         }
     }
@@ -748,9 +786,64 @@ impl Message {
     }
 }
 
+/// Whether statement `index` did work that the end of `run` undid, so
+/// that its count must not read as a change that stayed. Only in a run
+/// sent to write, and never where the database could not roll everything
+/// back: then no line says that its work is gone.
+fn undone(run: &SqlRun, index: usize, driver: Driver) -> bool {
+    use tabletist_db::sql::{StatementKind, kind};
+    if run.mode != ScriptMode::Write || run.outcome.rollback_warning.is_some() {
+        return false;
+    }
+    // The statements before this one are written.
+    let kept = match &run.outcome.end {
+        ScriptEnd::Committed => return false,
+        ScriptEnd::RolledBack => 0,
+        ScriptEnd::Partly { committed } | ScriptEnd::CommitFailed { committed, .. } => *committed,
+    };
+    if index < kept {
+        return false;
+    }
+    match run.outcome.results.get(index).map(|result| &result.outcome) {
+        Some(StatementOutcome::Done { .. }) => true,
+        // A statement that returned rows may have changed some (RETURNING,
+        // a function that writes): told by what it looks like.
+        Some(StatementOutcome::Rows { .. }) => run.statements.get(index).is_some_and(|statement| {
+            kind(driver.dialect(), &statement.text) == StatementKind::Write
+        }),
+        _ => false,
+    }
+}
+
+/// What the line of a statement that ran ends with in a run sent to write:
+/// how many warnings the database raised (MySQL counts them), and that its
+/// work was rolled back, where it was. Nothing in a read-only run, which
+/// reads as it always did.
+fn after(run: &SqlRun, index: usize, driver: Driver, words: Words) -> String {
+    if run.mode != ScriptMode::Write {
+        return String::new();
+    }
+    let mut text = String::new();
+    if let Some(StatementOutcome::Done { warnings, .. }) =
+        run.outcome.results.get(index).map(|result| &result.outcome)
+        && *warnings > 0
+    {
+        let noun = if *warnings == 1 {
+            "warning"
+        } else {
+            "warnings"
+        };
+        text.push_str(&format!(" · {warnings} {}", words.say(noun)));
+    }
+    if undone(run, index, driver) {
+        text.push_str(&format!(" · {}", words.say("rolled back")));
+    }
+    text
+}
+
 /// What statement `index` of `run` did, after its line (the error's own
 /// line and column when the database gave a position).
-fn statement_message(run: &SqlRun, index: usize, words: Words) -> Message {
+fn statement_message(run: &SqlRun, index: usize, driver: Driver, words: Words) -> Message {
     let Some(statement) = run.statements.get(index) else {
         return Message::new(String::new(), String::new(), Tone::Plain);
     };
@@ -763,6 +856,7 @@ fn statement_message(run: &SqlRun, index: usize, words: Words) -> Message {
         };
     };
     let time = format::elapsed(result.elapsed);
+    let after = after(run, index, driver, words);
     match &result.outcome {
         StatementOutcome::Rows {
             rows, truncated, ..
@@ -773,23 +867,17 @@ fn statement_message(run: &SqlRun, index: usize, words: Words) -> Message {
                 String::new()
             };
             let rows = rows_text(rows.len() as u64, words);
-            Message::new(at, format!("{rows}{cut} · {time}"), Tone::Plain)
+            Message::new(at, format!("{rows}{cut} · {time}{after}"), Tone::Plain)
         }
         StatementOutcome::Done {
             affected: Some(count),
             ..
         } => {
-            let noun = if *count == 1 {
-                "row affected"
-            } else {
-                "rows affected"
-            };
-            let count = format::group_digits(*count);
-            let text = format!("{count} {} · {time}", words.say(noun));
+            let text = format!("{} · {time}{after}", affected_text(*count, words));
             Message::new(at, text, Tone::Plain)
         }
         StatementOutcome::Done { affected: None, .. } => {
-            let text = format!("{} · {time}", words.say("Statement ran"));
+            let text = format!("{} · {time}{after}", words.say("Statement ran"));
             Message::new(at, text, Tone::Plain)
         }
         StatementOutcome::Error { error, position } => {
@@ -816,16 +904,28 @@ enum Line<'a> {
     Statement(usize),
     /// More of the error above it: its code, detail or hint.
     More(&'static str, &'a str),
-    /// A run that failed as a whole, in the error's own words.
+    /// An error that is no statement's, in its own words: a run that
+    /// failed as a whole, or a commit that failed.
     Whole(&'a Error),
+    /// The cancel's own words, where no statement's line says them: the
+    /// stop came with every statement done.
+    Stopped,
+    /// How the transaction of a run sent to write ended.
+    End,
+    /// What the database said it could not roll back.
+    Kept(&'a str),
+    /// A sentence of ours about the run as a whole.
+    Ours(&'static str, Tone),
 }
 
 impl Line<'_> {
-    /// Whether the line holds what a database said, which can be long:
+    /// Whether the line holds what a database said, which can be long, or
+    /// says how a run sent to write ended, which is a sentence or two:
     /// such a line wraps. The others are ours, and short.
     fn wraps(&self, run: Option<&SqlRun>) -> bool {
         match self {
-            Self::More(..) | Self::Whole(_) => true,
+            Self::Stopped => false,
+            Self::More(..) | Self::Whole(_) | Self::End | Self::Kept(_) | Self::Ours(..) => true,
             Self::Statement(index) => run
                 .and_then(|run| run.outcome.results.get(*index))
                 .is_some_and(|result| matches!(result.outcome, StatementOutcome::Error { .. })),
@@ -845,7 +945,8 @@ fn more(error: &Error) -> impl Iterator<Item = Line<'_>> {
     parts.into_iter().flatten()
 }
 
-/// A line for every statement of `run`, in the script's order.
+/// A line for every statement of `run`, in the script's order, and after
+/// them how a run sent to write ended.
 fn lines(run: &SqlRun) -> Vec<Line<'_>> {
     let mut lines = Vec::with_capacity(run.statements.len());
     for index in 0..run.statements.len() {
@@ -856,16 +957,174 @@ fn lines(run: &SqlRun) -> Vec<Line<'_>> {
             lines.extend(more(error));
         }
     }
+    lines.extend(end_lines(run));
     lines
 }
 
+/// What the Messages say once a session was closed because a run sent to
+/// write could not put it back.
+const CLOSED: &str = "The session could not be put back and was closed.";
+
+/// The lines after the statements' in a run sent to write: how its
+/// transaction ended, what the database said of that, and that its session
+/// was closed, where it was. A read-only run has none.
+fn end_lines(run: &SqlRun) -> Vec<Line<'_>> {
+    if run.mode != ScriptMode::Write {
+        return Vec::new();
+    }
+    let outcome = &run.outcome;
+    let mut lines = Vec::new();
+    let said = stopped_at(run).is_some()
+        || outcome
+            .results
+            .iter()
+            .any(|result| result.outcome == StatementOutcome::Cancelled);
+    if outcome.stopped && !said {
+        lines.push(Line::Stopped);
+    }
+    lines.push(Line::End);
+    if let ScriptEnd::CommitFailed { error, .. } = &outcome.end {
+        lines.push(Line::Whole(error));
+        lines.extend(more(error));
+    }
+    if let Some(kept) = &outcome.rollback_warning {
+        lines.push(Line::Kept(kept));
+    }
+    if outcome.broken.is_some() {
+        lines.push(Line::Ours(CLOSED, Tone::Failed));
+    }
+    lines
+}
+
+/// "Lines 1 to 4 are written: MySQL commits CREATE, ALTER, DROP and
+/// similar statements as they run.": the first `committed` statements of
+/// `run`, by the lines they start on.
+fn written(run: &SqlRun, committed: usize, driver: Driver, words: Words) -> String {
+    let first = run.statements.first().map_or(1, |first| first.first_line);
+    let last = committed
+        .checked_sub(1)
+        .and_then(|last| run.statements.get(last))
+        .map_or(first, |last| last.first_line);
+    let lines = if first == last {
+        format!("{} {first} {}", words.say("Line"), words.say("is written:"))
+    } else {
+        format!(
+            "{} {first} {} {last} {}",
+            words.say("Lines"),
+            words.say("to"),
+            words.say("are written:")
+        )
+    };
+    format!(
+        "{lines} {} {} {} {}",
+        words.own(driver.label()),
+        words.say("commits"),
+        words.own("CREATE, ALTER, DROP"),
+        words.say("and similar statements as they run.")
+    )
+}
+
+/// How the transaction of `run`, a run sent to write, ended. Where the
+/// database could not roll everything back, nothing here says that the
+/// rest is gone or that nothing was written.
+fn end_message(run: &SqlRun, driver: Driver, words: Words) -> Message {
+    let outcome = &run.outcome;
+    let kept = outcome.rollback_warning.is_some();
+    let not_undone = || {
+        format!(
+            "{} {}",
+            words.own(driver.label()),
+            words.say("could not roll back every change.")
+        )
+    };
+    let rest = || {
+        if kept {
+            not_undone()
+        } else {
+            words.say("The rest was rolled back.")
+        }
+    };
+    let (text, tone) = match &outcome.end {
+        ScriptEnd::Committed => {
+            let count = outcome.results.len();
+            let noun = if count == 1 {
+                "statement"
+            } else {
+                "statements"
+            };
+            let time: Duration = outcome.results.iter().map(|result| result.elapsed).sum();
+            let text = format!(
+                "{} · {count} {} · {}",
+                words.say("Committed"),
+                words.say(noun),
+                format::elapsed(time)
+            );
+            (text, Tone::Plain)
+        }
+        // No driver says `Partly` of nothing, and none of these arms
+        // would word it.
+        ScriptEnd::RolledBack | ScriptEnd::Partly { committed: 0 } if kept => {
+            (not_undone(), Tone::Warned)
+        }
+        ScriptEnd::RolledBack | ScriptEnd::Partly { committed: 0 } => {
+            (words.say("Rolled back. Nothing was written."), Tone::Plain)
+        }
+        ScriptEnd::Partly { committed } => {
+            let written = written(run, *committed, driver, words);
+            (format!("{written} {}", rest()), Tone::Warned)
+        }
+        // The rollback after the commit could not undo everything either.
+        ScriptEnd::CommitFailed { committed: 0, .. } if kept => (
+            format!("{} {}", words.say("The commit failed."), not_undone()),
+            Tone::Failed,
+        ),
+        ScriptEnd::CommitFailed { committed: 0, .. } => (
+            words.say("The commit failed. Nothing was written."),
+            Tone::Failed,
+        ),
+        ScriptEnd::CommitFailed { committed, .. } => {
+            let written = written(run, *committed, driver, words);
+            let failed = words.say("The commit failed.");
+            (format!("{failed} {written} {}", rest()), Tone::Failed)
+        }
+    };
+    Message::new(String::new(), text, tone)
+}
+
+/// What is said under a run's error when the run was sent to write and
+/// lost its session before its end was known.
+fn may_be_written(sql: &SqlTab, error: &Error) -> Option<&'static str> {
+    if !sql.lost_writing() {
+        return None;
+    }
+    Some(match error {
+        Error::ConnectionLost(_) => {
+            "The connection was lost during a read-write run. Some or all of it may be written."
+        }
+        // The session was closed for what the script did: the error says
+        // so itself.
+        _ => "Some or all of the run may be written.",
+    })
+}
+
 /// What `line` says.
-fn message(line: Line<'_>, run: Option<&SqlRun>, words: Words) -> Message {
+fn message(line: Line<'_>, run: Option<&SqlRun>, driver: Driver, words: Words) -> Message {
+    let ours = |text: String, tone: Tone| Message::new(String::new(), text, tone);
     match line {
         Line::Statement(index) => match run {
-            Some(run) => statement_message(run, index, words),
+            Some(run) => statement_message(run, index, driver, words),
             None => Message::new(String::new(), String::new(), Tone::Plain),
         },
+        Line::Stopped => ours(
+            cancel_text(run.and_then(|run| run.cancel), words),
+            Tone::Cancelled,
+        ),
+        Line::End => match run {
+            Some(run) => end_message(run, driver, words),
+            None => Message::new(String::new(), String::new(), Tone::Plain),
+        },
+        Line::Kept(text) => ours(format::capped(text).into_owned(), Tone::Warned),
+        Line::Ours(text, tone) => ours(words.say(text), tone),
         Line::More(label, text) => Message::new(
             format!("{}:", words.say(label)),
             format::capped(text).into_owned(),
@@ -907,8 +1166,9 @@ fn messages(
             0.0
         }
     };
+    let driver = place.driver;
     let lay = |line: Line<'_>| -> LaidMessage {
-        let message = message(line, run, painted);
+        let message = message(line, run, driver, painted);
         LaidMessage::new(
             &ctx,
             (&message.place, palette.dim),
@@ -945,7 +1205,7 @@ fn messages(
                     locale,
                     lower: false,
                 };
-                let name = message(line, run, named).line();
+                let name = message(line, run, driver, named).line();
                 response.widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, &name));
                 if ui.is_rect_visible(rect) {
                     let at = pos2(rect.left() + pad + indent(line), rect.top() + above);
@@ -1012,6 +1272,27 @@ fn blocked(ui: &mut Ui, rect: Rect, error: &Error, writable: bool, env: &Env<'_>
         });
 }
 
+/// What Results says of a run none of whose statements returned rows:
+/// "Statement ran · 12 rows affected" where the last statement of a run
+/// sent to write counted the rows it changed, and "Statement ran · no rows
+/// returned" everywhere else.
+fn ran_text(run: &SqlRun, words: Words) -> String {
+    let last = run.outcome.results.last().map(|result| &result.outcome);
+    match last {
+        Some(StatementOutcome::Done {
+            affected: Some(count),
+            ..
+        }) if run.mode == ScriptMode::Write => {
+            format!(
+                "{} · {}",
+                words.say("Statement ran"),
+                affected_text(*count, words)
+            )
+        }
+        _ => words.say("Statement ran · no rows returned"),
+    }
+}
+
 /// The Results pane of a run that ran: the rows of its last statement
 /// that returned some, in the grid a table uses. With none, whether the
 /// run was stopped, where it failed, or that it ran.
@@ -1036,7 +1317,10 @@ fn results(ui: &mut Ui, run: &SqlRun, place: &Place<'_>, env: &Env<'_>, actions:
             .results
             .iter()
             .position(|result| matches!(result.outcome, StatementOutcome::Error { .. }));
-        if run.outcome.was_cancelled() {
+        // Unless it is written all the same: MySQL can commit by itself
+        // under a stop that came too late, and then the run did run.
+        let written = run.mode == ScriptMode::Write && run.outcome.end == ScriptEnd::Committed;
+        if run.outcome.was_cancelled() && !written {
             let said = env.said(|words| cancel_text(run.cancel, words));
             note(ui, rect, &said, palette.warning, env);
         } else if let Some(index) = failed {
@@ -1055,12 +1339,17 @@ fn results(ui: &mut Ui, run: &SqlRun, place: &Place<'_>, env: &Env<'_>, actions:
                 locale,
                 lower: look.terminal,
             };
-            let name = statement_message(run, index, named).line();
-            let message = statement_message(run, index, painted);
+            let name = statement_message(run, index, place.driver, named).line();
+            let message = statement_message(run, index, place.driver, painted);
             let parts = (message.place.as_str(), message.text.as_str());
             note_at(ui, rect, parts, &name, palette.danger, env);
+        } else if let ScriptEnd::CommitFailed { .. } = run.outcome.end {
+            // Every statement ran and none of it is kept: said as the
+            // Messages say it, never as a statement that ran.
+            let said = env.said(|words| end_message(run, place.driver, words).text);
+            note(ui, rect, &said, palette.danger, env);
         } else {
-            let said = env.said(|words| words.say("Statement ran · no rows returned"));
+            let said = env.said(|words| ran_text(run, words));
             note(ui, rect, &said, palette.secondary, env);
         }
         return;
@@ -1180,14 +1469,14 @@ mod tests {
 
     use egui::accesskit::Role;
     use egui::{Key, Modifiers};
-    use tabletist_db::{Error, StatementOutcome};
+    use tabletist_db::{Driver, Error, ScriptEnd, StatementOutcome};
 
     use super::*;
     use crate::backend::{CancelReason, Command};
     use crate::model::{Action, CellPos, ResultPane, SqlTab};
     use crate::testing::{
         Harness, bounds, error_outcome, labels, node, rows_outcome, script_outcome,
-        stopped_before_it_began,
+        stopped_before_it_began, write_outcome,
     };
     use crate::theme::Look;
 
@@ -1924,6 +2213,608 @@ mod tests {
             }
             assert_eq!(sql(&harness, tab).selection, None, "{}", look.name);
         }
+    }
+
+    /// A SQL editor switched to Read-write on a connection that takes
+    /// writes, drawn in `look`, with all of `text` sent as its run. The
+    /// session speaks as `driver` does.
+    fn writing(look: Look, driver: Driver, text: &str) -> (Harness, ConnTabId) {
+        let mut harness = Harness::new();
+        harness.set_look(look);
+        let tab = harness.connect_fake_as(false);
+        harness.app.workspace_mut(tab).unwrap().driver = driver;
+        harness.press(Key::T, Modifiers::COMMAND);
+        harness.frame(vec![egui::Event::Paste(text.into())]);
+        harness.settle();
+        let sql_tab = sql(&harness, tab).id;
+        harness.app.apply(Action::SetSqlMode {
+            tab,
+            sql_tab,
+            mode: crate::model::RunMode::ReadWrite,
+        });
+        run_all(&mut harness);
+        assert!(sql(&harness, tab).is_writing(), "the run was sent to write");
+        (harness, tab)
+    }
+
+    /// The lines the Messages pane shows, from its top: what stands under
+    /// the header's tabs and over the editor's footer (the terminal look's
+    /// status line).
+    fn message_lines(harness: &mut Harness) -> Vec<String> {
+        let tree = harness.settle();
+        let top = bounds(&tree, "Messages", Role::Button)
+            .expect("the Messages tab")
+            .bottom();
+        let labelled = |(_, node): &(_, egui::accesskit::Node)| {
+            let at = node.bounds()?.y0 as f32;
+            Some((at, node.value()?.to_owned()))
+        };
+        let mut found: Vec<(f32, String)> = tree
+            .nodes
+            .iter()
+            .filter(|(_, node)| node.role() == Role::Label)
+            .filter_map(labelled)
+            .filter(|(at, _)| *at > top)
+            .collect();
+        found.sort_by(|(a, _), (b, _)| a.total_cmp(b));
+        // The cursor's place is the first thing under the pane.
+        let under = |text: &str| text.starts_with("Ln ") || text.starts_with("ln ");
+        let bottom = found
+            .iter()
+            .find(|(_, text)| under(text))
+            .map_or(f32::INFINITY, |(at, _)| *at);
+        found.retain(|(at, _)| *at < bottom);
+        found.into_iter().map(|(_, text)| text).collect()
+    }
+
+    /// Three statements that change rows.
+    const CHANGES: &str = "INSERT INTO notes VALUES (1);\nUPDATE notes SET seen = 1;\nDELETE FROM notes WHERE seen = 0";
+
+    #[test]
+    fn a_committed_run_says_so_after_what_each_statement_changed() {
+        for look in Look::ALL {
+            let (mut harness, tab) = writing(look, Driver::Postgres, CHANGES);
+            let outcome = write_outcome(
+                vec![done(Some(1)), done(Some(12)), done(Some(1))],
+                ScriptEnd::Committed,
+            );
+            harness.answer_sql(Ok(outcome), None);
+            // Nothing went wrong: Results shows, with what the last
+            // statement changed in place of rows.
+            assert_eq!(sql(&harness, tab).pane, ResultPane::Results);
+            assert!(
+                harness.has("Statement ran · 1 row affected"),
+                "{}",
+                look.name
+            );
+            assert_eq!(count(&mut harness), None);
+            harness.click("Messages");
+            assert_eq!(
+                message_lines(&mut harness),
+                [
+                    "Line 1: 1 row affected · 14 ms",
+                    "Line 2: 12 rows affected · 14 ms",
+                    "Line 3: 1 row affected · 14 ms",
+                    "Committed · 3 statements · 42 ms",
+                ],
+                "{}",
+                look.name
+            );
+            let reads = if look.terminal {
+                "committed · 3 statements · 42 ms"
+            } else {
+                "Committed · 3 statements · 42 ms"
+            };
+            assert!(painted(&harness, reads), "{reads}: {:?}", harness.painted);
+        }
+    }
+
+    #[test]
+    fn a_committed_statement_that_counts_no_rows_says_it_ran() {
+        let (mut harness, _tab) =
+            writing(Look::standard(), Driver::Sqlite, "CREATE TABLE notes (n)");
+        harness.answer_sql(
+            Ok(write_outcome(vec![done(None)], ScriptEnd::Committed)),
+            None,
+        );
+        assert!(harness.has("Statement ran · no rows returned"));
+        harness.click("Messages");
+        assert_eq!(
+            message_lines(&mut harness),
+            [
+                "Line 1: Statement ran · 14 ms",
+                "Committed · 1 statement · 14 ms"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_run_that_failed_says_it_was_rolled_back_and_that_each_change_is_gone() {
+        for look in Look::ALL {
+            let script = format!("{CHANGES};\nSELECT nope;\nSELECT 2");
+            let (mut harness, tab) = writing(look, Driver::Postgres, &script);
+            let outcome = write_outcome(
+                vec![
+                    done(Some(1)),
+                    done(Some(12)),
+                    done(Some(1)),
+                    error_outcome("column \"nope\" does not exist", None),
+                ],
+                ScriptEnd::RolledBack,
+            );
+            harness.answer_sql(Ok(outcome), None);
+            assert_eq!(sql(&harness, tab).pane, ResultPane::Messages);
+            assert_eq!(
+                message_lines(&mut harness),
+                [
+                    "Line 1: 1 row affected · 14 ms · rolled back",
+                    "Line 2: 12 rows affected · 14 ms · rolled back",
+                    "Line 3: 1 row affected · 14 ms · rolled back",
+                    "Line 4: column \"nope\" does not exist",
+                    "Line 5: Not run",
+                    "Rolled back. Nothing was written.",
+                ],
+                "{}",
+                look.name
+            );
+            // Results says where it failed, never that a statement ran.
+            harness.click("Results");
+            assert!(!says_it_ran(&mut harness), "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn a_read_only_run_reads_as_it_always_did() {
+        // The same answers in the run every editor had before: no line for
+        // an end, and no count said to be rolled back.
+        let (mut harness, _tab) = editor(Look::standard(), CHANGES);
+        run_all(&mut harness);
+        harness.answer_sql(
+            Ok(script_outcome(vec![
+                StatementOutcome::Done {
+                    affected: Some(3),
+                    warnings: 2,
+                },
+                error_outcome("cannot execute UPDATE in a read-only transaction", None),
+            ])),
+            None,
+        );
+        assert_eq!(
+            message_lines(&mut harness),
+            [
+                "Line 1: 3 rows affected · 14 ms",
+                "Line 2: cannot execute UPDATE in a read-only transaction",
+                "Line 3: Not run",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_cancelled_or_timed_out_run_says_it_was_rolled_back() {
+        let timeout = CancelReason::Timeout(Duration::from_secs(30));
+        for (cancel, text) in [
+            (CancelReason::User, "Cancelled"),
+            (timeout, "Cancelled after 30 s (timeout)"),
+        ] {
+            let (mut harness, tab) = writing(Look::standard(), Driver::Postgres, CHANGES);
+            let outcome = write_outcome(
+                vec![done(Some(1)), StatementOutcome::Cancelled],
+                ScriptEnd::RolledBack,
+            );
+            harness.answer_sql(Ok(outcome), Some(cancel));
+            assert_eq!(sql(&harness, tab).pane, ResultPane::Messages);
+            assert_eq!(
+                message_lines(&mut harness),
+                [
+                    "Line 1: 1 row affected · 14 ms · rolled back".to_owned(),
+                    format!("Line 2: {text}"),
+                    "Line 3: Not run".to_owned(),
+                    "Rolled back. Nothing was written.".to_owned(),
+                ]
+            );
+        }
+        // A stop that came with every statement done has no statement's
+        // line to say it: the end says it first.
+        let (mut harness, _tab) = writing(Look::standard(), Driver::Postgres, CHANGES);
+        let mut outcome = write_outcome(
+            vec![done(Some(1)), done(Some(12)), done(Some(1))],
+            ScriptEnd::RolledBack,
+        );
+        outcome.stopped = true;
+        harness.answer_sql(Ok(outcome), Some(CancelReason::User));
+        assert_eq!(
+            message_lines(&mut harness)[3..],
+            ["Cancelled", "Rolled back. Nothing was written."]
+        );
+    }
+
+    #[test]
+    fn a_run_mysql_committed_part_of_says_which_lines_are_written() {
+        for look in Look::ALL {
+            let script = "INSERT INTO notes VALUES (1);\nCREATE TABLE more (n int);\n\
+                          INSERT INTO notes VALUES (2);\nSELECT nope";
+            let (mut harness, tab) = writing(look, Driver::MySql, script);
+            let outcome = write_outcome(
+                vec![
+                    done(Some(1)),
+                    done(None),
+                    done(Some(1)),
+                    error_outcome("Unknown column 'nope'", None),
+                ],
+                ScriptEnd::Partly { committed: 2 },
+            );
+            harness.answer_sql(Ok(outcome), None);
+            assert_eq!(sql(&harness, tab).pane, ResultPane::Messages);
+            assert_eq!(
+                message_lines(&mut harness),
+                [
+                    // What is written keeps its count as it is.
+                    "Line 1: 1 row affected · 14 ms",
+                    "Line 2: Statement ran · 14 ms",
+                    "Line 3: 1 row affected · 14 ms · rolled back",
+                    "Line 4: Unknown column 'nope'",
+                    "Lines 1 to 2 are written: MySQL commits CREATE, ALTER, DROP and similar \
+                     statements as they run. The rest was rolled back.",
+                ],
+                "{}",
+                look.name
+            );
+            // The terminal look writes the whole of it in lower case, the
+            // database's name and its statements too.
+            if look.terminal {
+                let end = harness
+                    .painted
+                    .iter()
+                    .find(|(piece, _)| piece.contains("are written:"))
+                    .map(|(piece, _)| piece.clone())
+                    .expect("the end's line");
+                assert!(end.starts_with(
+                    "lines 1 to 2 are written: mysql commits create, alter, drop and"
+                ));
+                assert_eq!(
+                    harness.painted_color(&end),
+                    Some(harness.app.palette.warning)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn one_committed_statement_is_one_line_that_is_written() {
+        let script = "CREATE TABLE more (n int);\nSELECT nope";
+        let (mut harness, _tab) = writing(Look::standard(), Driver::MySql, script);
+        let outcome = write_outcome(
+            vec![done(None), error_outcome("Unknown column 'nope'", None)],
+            ScriptEnd::Partly { committed: 1 },
+        );
+        harness.answer_sql(Ok(outcome), None);
+        assert!(harness.has(
+            "Line 1 is written: MySQL commits CREATE, ALTER, DROP and similar statements as \
+             they run. The rest was rolled back."
+        ));
+    }
+
+    /// Why a commit failed, as PostgreSQL says it of a deferred constraint.
+    fn deferred() -> Error {
+        Error::Query {
+            code: Some("23503".into()),
+            message: "insert or update on table \"notes\" violates foreign key constraint".into(),
+            detail: Some("Key (owner)=(9) is not present in table \"users\".".into()),
+            hint: None,
+        }
+    }
+
+    #[test]
+    fn a_commit_that_failed_says_nothing_was_written_and_why() {
+        for look in Look::ALL {
+            let (mut harness, tab) = writing(look, Driver::Postgres, CHANGES);
+            let outcome = write_outcome(
+                vec![done(Some(1)), done(Some(12)), done(Some(1))],
+                ScriptEnd::CommitFailed {
+                    error: deferred(),
+                    committed: 0,
+                },
+            );
+            harness.answer_sql(Ok(outcome), None);
+            // No statement failed, and still the Messages open.
+            assert_eq!(sql(&harness, tab).pane, ResultPane::Messages);
+            assert_eq!(
+                message_lines(&mut harness),
+                [
+                    "Line 1: 1 row affected · 14 ms · rolled back",
+                    "Line 2: 12 rows affected · 14 ms · rolled back",
+                    "Line 3: 1 row affected · 14 ms · rolled back",
+                    "The commit failed. Nothing was written.",
+                    "insert or update on table \"notes\" violates foreign key constraint",
+                    "Code: 23503",
+                    "Detail: Key (owner)=(9) is not present in table \"users\".",
+                ],
+                "{}",
+                look.name
+            );
+            // The commit's error counts beside the tab as a statement's.
+            let tree = harness.settle();
+            let id = node(&tree, "Messages", Role::Button).expect("the Messages tab");
+            let (_, messages) = tree.nodes.iter().find(|(node, _)| *node == id).unwrap();
+            assert_eq!(messages.value(), Some("1"), "{}", look.name);
+            // Results says the same, never that a statement ran.
+            harness.click("Results");
+            assert!(harness.has("The commit failed. Nothing was written."));
+            assert!(!says_it_ran(&mut harness), "{}", look.name);
+        }
+    }
+
+    #[test]
+    fn a_failed_commit_after_mysql_committed_part_says_what_is_written() {
+        let script = "CREATE TABLE more (n int);\nINSERT INTO more VALUES (1)";
+        let (mut harness, _tab) = writing(Look::standard(), Driver::MySql, script);
+        let outcome = write_outcome(
+            vec![done(None), done(Some(1))],
+            ScriptEnd::CommitFailed {
+                error: Error::query("Deadlock found when trying to get lock"),
+                committed: 1,
+            },
+        );
+        harness.answer_sql(Ok(outcome), None);
+        assert_eq!(
+            message_lines(&mut harness),
+            [
+                "Line 1: Statement ran · 14 ms",
+                "Line 2: 1 row affected · 14 ms · rolled back",
+                "The commit failed. Line 1 is written: MySQL commits CREATE, ALTER, DROP and \
+                 similar statements as they run. The rest was rolled back.",
+                "Deadlock found when trying to get lock",
+            ]
+        );
+        assert!(!harness.has("The commit failed. Nothing was written."));
+    }
+
+    #[test]
+    fn what_mysql_could_not_roll_back_is_said_and_nothing_is_said_to_be_gone() {
+        const MYISAM: &str = "Some non-transactional changed tables couldn't be rolled back";
+        let says_gone = |harness: &mut Harness| {
+            message_lines(harness).iter().any(|line| {
+                line.contains("Nothing was written")
+                    || line.contains("The rest was rolled back")
+                    || line.ends_with("· rolled back")
+            })
+        };
+        for look in Look::ALL {
+            // Rolled back, as far as the database could.
+            let script = "INSERT INTO logs VALUES (1);\nSELECT nope";
+            let (mut harness, tab) = writing(look, Driver::MySql, script);
+            let mut outcome = write_outcome(
+                vec![done(Some(1)), error_outcome("Unknown column 'nope'", None)],
+                ScriptEnd::RolledBack,
+            );
+            outcome.rollback_warning = Some(MYISAM.into());
+            harness.answer_sql(Ok(outcome), None);
+            assert_eq!(sql(&harness, tab).pane, ResultPane::Messages);
+            assert_eq!(
+                message_lines(&mut harness),
+                [
+                    "Line 1: 1 row affected · 14 ms",
+                    "Line 2: Unknown column 'nope'",
+                    "MySQL could not roll back every change.",
+                    MYISAM,
+                ],
+                "{}",
+                look.name
+            );
+            assert!(!says_gone(&mut harness), "{}", look.name);
+            // What the database said keeps its case in every look.
+            assert_eq!(
+                harness.painted_color(MYISAM),
+                Some(harness.app.palette.warning),
+                "{}",
+                look.name
+            );
+        }
+        // With part of the run written by the database itself.
+        let script = "CREATE TABLE more (n int);\nINSERT INTO logs VALUES (1);\nSELECT nope";
+        let (mut harness, _tab) = writing(Look::standard(), Driver::MySql, script);
+        let mut outcome = write_outcome(
+            vec![
+                done(None),
+                done(Some(1)),
+                error_outcome("Unknown column 'nope'", None),
+            ],
+            ScriptEnd::Partly { committed: 1 },
+        );
+        outcome.rollback_warning = Some(MYISAM.into());
+        harness.answer_sql(Ok(outcome), None);
+        assert_eq!(
+            message_lines(&mut harness)[3..],
+            [
+                "Line 1 is written: MySQL commits CREATE, ALTER, DROP and similar statements as \
+                 they run. MySQL could not roll back every change.",
+                MYISAM,
+            ]
+        );
+        assert!(!says_gone(&mut harness));
+        // A commit that failed, and a rollback after it that could not
+        // undo everything: nothing says "Nothing was written" then either,
+        // in the Messages or in Results.
+        let script = "INSERT INTO logs VALUES (1)";
+        let (mut harness, _tab) = writing(Look::standard(), Driver::MySql, script);
+        let failed = ScriptEnd::CommitFailed {
+            error: Error::query("Deadlock found when trying to get lock"),
+            committed: 0,
+        };
+        let mut outcome = write_outcome(vec![done(Some(1))], failed);
+        outcome.rollback_warning = Some(MYISAM.into());
+        harness.answer_sql(Ok(outcome), None);
+        assert_eq!(
+            message_lines(&mut harness),
+            [
+                "Line 1: 1 row affected · 14 ms",
+                "The commit failed. MySQL could not roll back every change.",
+                "Deadlock found when trying to get lock",
+                MYISAM,
+            ]
+        );
+        assert!(!says_gone(&mut harness));
+        harness.click("Results");
+        assert!(harness.has("The commit failed. MySQL could not roll back every change."));
+        assert!(!harness.has("The commit failed. Nothing was written."));
+    }
+
+    #[test]
+    fn a_run_mysql_committed_under_a_late_stop_reads_as_written() {
+        // The stop came while the last statement ran, and that statement
+        // made the server commit: nothing was left to roll back.
+        let script = "CREATE TABLE more (n int)";
+        let (mut harness, _tab) = writing(Look::standard(), Driver::MySql, script);
+        let mut outcome = write_outcome(vec![done(None)], ScriptEnd::Committed);
+        outcome.stopped = true;
+        harness.answer_sql(Ok(outcome), Some(CancelReason::User));
+        assert_eq!(
+            message_lines(&mut harness),
+            [
+                "Line 1: Statement ran · 14 ms",
+                "Cancelled",
+                "Committed · 1 statement · 14 ms",
+            ]
+        );
+        // Results does not say of a run that is written only that it was
+        // cancelled.
+        harness.click("Results");
+        assert!(harness.has("Statement ran · no rows returned"));
+        assert!(!harness.has("Cancelled"));
+    }
+
+    #[test]
+    fn a_run_whose_session_could_not_be_put_back_keeps_its_end_and_says_it_was_closed() {
+        for look in Look::ALL {
+            let (mut harness, tab) = writing(look, Driver::Postgres, CHANGES);
+            let mut outcome = write_outcome(
+                vec![done(Some(1)), done(Some(12)), done(Some(1))],
+                ScriptEnd::Committed,
+            );
+            outcome.broken = Some(Error::ConnectionLost(
+                "could not end the transaction".into(),
+            ));
+            harness.answer_sql(Ok(outcome), None);
+            assert_eq!(sql(&harness, tab).pane, ResultPane::Messages);
+            assert_eq!(
+                message_lines(&mut harness)[3..],
+                [
+                    "Committed · 3 statements · 42 ms",
+                    "The session could not be put back and was closed.",
+                ],
+                "{}",
+                look.name
+            );
+            // The backend closes the session once it has told the end: the
+            // reconnect banner comes, and the end stays said under it.
+            let session = harness.app.workspace(tab).unwrap().session;
+            let closed = Error::ConnectionLost("could not end the transaction".into());
+            harness
+                .app
+                .apply(Action::Backend(crate::backend::Event::Disconnected {
+                    session,
+                    error: closed,
+                }));
+            assert!(harness.has("Reconnect"), "{}", look.name);
+            assert_eq!(
+                message_lines(&mut harness)[3..],
+                [
+                    "Committed · 3 statements · 42 ms",
+                    "The session could not be put back and was closed.",
+                ],
+                "{}",
+                look.name
+            );
+        }
+    }
+
+    #[test]
+    fn a_statement_that_returned_rows_is_rolled_back_only_where_it_looks_like_a_write() {
+        let script =
+            "SELECT * FROM notes;\nINSERT INTO notes VALUES (1) RETURNING id;\nSELECT nope";
+        let (mut harness, _tab) = writing(Look::standard(), Driver::Postgres, script);
+        let outcome = write_outcome(
+            vec![
+                rows_outcome(2),
+                rows_outcome(1),
+                error_outcome("column \"nope\" does not exist", None),
+            ],
+            ScriptEnd::RolledBack,
+        );
+        harness.answer_sql(Ok(outcome), None);
+        assert_eq!(
+            message_lines(&mut harness)[..2],
+            [
+                "Line 1: 2 rows · 14 ms",
+                "Line 2: 1 row · 14 ms · rolled back"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_statements_warnings_are_counted_on_its_line() {
+        let script = "INSERT INTO notes VALUES ('too long');\nUPDATE notes SET n = 'x'";
+        let (mut harness, _tab) = writing(Look::standard(), Driver::MySql, script);
+        let warned = |affected, warnings| StatementOutcome::Done {
+            affected: Some(affected),
+            warnings,
+        };
+        let outcome = write_outcome(vec![warned(1, 1), warned(12, 2)], ScriptEnd::Committed);
+        harness.answer_sql(Ok(outcome), None);
+        harness.click("Messages");
+        assert_eq!(
+            message_lines(&mut harness)[..2],
+            [
+                "Line 1: 1 row affected · 14 ms · 1 warning",
+                "Line 2: 12 rows affected · 14 ms · 2 warnings",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_connection_lost_during_a_read_write_run_says_it_may_be_written() {
+        const UNKNOWN: &str =
+            "The connection was lost during a read-write run. Some or all of it may be written.";
+        for look in Look::ALL {
+            let (mut harness, tab) = writing(look, Driver::Postgres, CHANGES);
+            let lost = Error::ConnectionLost("the server went away".into());
+            harness.answer_sql(Err(lost.clone()), None);
+            assert_eq!(sql(&harness, tab).pane, ResultPane::Messages);
+            assert_eq!(
+                message_lines(&mut harness),
+                [lost.to_string(), UNKNOWN.to_owned()],
+                "{}",
+                look.name
+            );
+            harness.click("Results");
+            assert!(harness.has(&format!("{lost}. {UNKNOWN}")), "{}", look.name);
+        }
+        // A script that ended its own transaction: the error says why the
+        // session went, and what is written is as unknown.
+        let (mut harness, _tab) = writing(Look::standard(), Driver::Sqlite, CHANGES);
+        harness.answer_sql(Err(Error::LeftTransaction), None);
+        assert_eq!(
+            message_lines(&mut harness),
+            [
+                Error::LeftTransaction.to_string(),
+                "Some or all of the run may be written.".to_owned()
+            ]
+        );
+        // Lost in a read-only run, nothing can have been written.
+        let (mut harness, _tab) = editor(Look::standard(), "SELECT 1");
+        run(&mut harness);
+        let lost = Error::ConnectionLost("the server went away".into());
+        harness.answer_sql(Err(lost.clone()), None);
+        assert_eq!(message_lines(&mut harness), [lost.to_string()]);
+        // Nor does a run that was refused before anything was sent.
+        let (mut harness, _tab) = writing(Look::standard(), Driver::Postgres, CHANGES);
+        let refused = Error::Refused {
+            line: 1,
+            what: "COMMIT".into(),
+            mode: tabletist_db::ScriptMode::Write,
+        };
+        harness.answer_sql(Err(refused.clone()), None);
+        assert_eq!(message_lines(&mut harness), [refused.to_string()]);
     }
 
     /// The request of the newest run sent to the backend.

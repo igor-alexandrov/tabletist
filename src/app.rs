@@ -3840,8 +3840,11 @@ fn script_mode(
 /// when the run failed, as a whole or in a statement; when its timeout
 /// stopped it (nobody asked for that, so the reason must show); and when
 /// it was cancelled without a statement returning rows, which leaves
-/// Results nothing to show. A run the user stopped after rows came back
-/// stays on Results.
+/// Results nothing to show. And when a run sent to write ended as neither
+/// of the two a user expects, committed or rolled back whole: part of it
+/// is written, its commit failed, the database could not undo all of it,
+/// or its session had to be closed. A run the user stopped after rows came
+/// back stays on Results.
 fn opens_messages(
     result: &Result<tabletist_db::ScriptOutcome, Error>,
     cancel: Option<CancelReason>,
@@ -3853,7 +3856,13 @@ fn opens_messages(
     let any = |wanted: fn(&StatementOutcome) -> bool| {
         outcome.results.iter().any(|result| wanted(&result.outcome))
     };
-    any(|outcome| matches!(outcome, StatementOutcome::Error { .. }))
+    // A run sent to write that left something to read about its end.
+    let end = matches!(
+        outcome.end,
+        tabletist_db::ScriptEnd::Partly { .. } | tabletist_db::ScriptEnd::CommitFailed { .. }
+    ) || outcome.rollback_warning.is_some()
+        || outcome.broken.is_some();
+    end || any(|outcome| matches!(outcome, StatementOutcome::Error { .. }))
         || matches!(cancel, Some(CancelReason::Timeout(_)))
         || (outcome.was_cancelled()
             && !any(|outcome| matches!(outcome, StatementOutcome::Rows { .. })))
@@ -6873,6 +6882,39 @@ mod tests {
         run(&mut harness, tab, id, false);
         assert_eq!(cancels_since(&harness, sent), vec![reading]);
         assert_eq!(runs_since(&harness, sent), 1);
+    }
+
+    #[test]
+    fn messages_open_for_every_end_of_a_read_write_run_that_needs_reading() {
+        use crate::testing::{done_outcome, write_outcome};
+        use tabletist_db::ScriptEnd;
+        let done = || vec![done_outcome(Some(1))];
+        let failed = ScriptEnd::CommitFailed {
+            error: Error::query("a deferred constraint"),
+            committed: 0,
+        };
+        let mut kept = write_outcome(done(), ScriptEnd::RolledBack);
+        kept.rollback_warning = Some("could not be rolled back".into());
+        let mut closed = write_outcome(done(), ScriptEnd::Committed);
+        closed.broken = Some(Error::ConnectionLost(
+            "could not end the transaction".into(),
+        ));
+        for (outcome, messages) in [
+            (write_outcome(done(), ScriptEnd::Committed), false),
+            (
+                write_outcome(done(), ScriptEnd::Partly { committed: 1 }),
+                true,
+            ),
+            (write_outcome(done(), failed), true),
+            (kept, true),
+            (closed, true),
+        ] {
+            assert_eq!(
+                opens_messages(&Ok(outcome.clone()), None),
+                messages,
+                "{outcome:?}"
+            );
+        }
     }
 
     #[test]

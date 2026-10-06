@@ -841,21 +841,77 @@ fn ran(sql: &SqlTab) -> bool {
             .is_some_and(|run| !run.outcome.results.is_empty())
 }
 
-/// "5 rows · 14 ms" for the result that shows.
+/// "5 rows · 14 ms" for the result that shows. With none to show, in a run
+/// sent to write, what its last statement changed: "12 rows affected ·
+/// 14 ms".
 fn run_summary(sql: &SqlTab, locale: Locale) -> Option<String> {
+    use tabletist_db::StatementOutcome;
     if !ran(sql) {
         return None;
     }
-    let (_, result) = sql.shown()?;
-    let tabletist_db::StatementOutcome::Rows { rows, .. } = &result.outcome else {
-        return None;
+    let counted = |count: u64, one: &'static str, many: &'static str, took| {
+        format!(
+            "{} {} · {}",
+            format::group_digits(count),
+            gettext(locale, if count == 1 { one } else { many }),
+            format::elapsed(took)
+        )
     };
-    let noun = if rows.len() == 1 { "row" } else { "rows" };
+    if let Some((_, result)) = sql.shown() {
+        let StatementOutcome::Rows { rows, .. } = &result.outcome else {
+            return None;
+        };
+        return Some(counted(rows.len() as u64, "row", "rows", result.elapsed));
+    }
+    let run = sql.last_run()?;
+    let last = run.outcome.results.last()?;
+    match &last.outcome {
+        StatementOutcome::Done {
+            affected: Some(count),
+            ..
+        } if run.mode == tabletist_db::ScriptMode::Write => Some(counted(
+            *count,
+            "row affected",
+            "rows affected",
+            last.elapsed,
+        )),
+        _ => None,
+    }
+}
+
+/// What became of the last run's transaction: "rolled back" for every
+/// read-only run, and for a run sent to write how it ended. Where the
+/// database could not undo everything, that is what is said, whatever the
+/// end; and a commit that failed after the database had committed part by
+/// itself reads as what it left, partly committed.
+fn end_words(run: &crate::model::SqlRun) -> &'static str {
+    use tabletist_db::ScriptEnd;
+    if run.mode == tabletist_db::ScriptMode::ReadOnly {
+        return "rolled back";
+    }
+    if run.outcome.rollback_warning.is_some() {
+        return "not fully rolled back";
+    }
+    match &run.outcome.end {
+        ScriptEnd::Committed => "committed",
+        ScriptEnd::RolledBack | ScriptEnd::Partly { committed: 0 } => "rolled back",
+        ScriptEnd::CommitFailed { committed: 0, .. } => "commit failed",
+        ScriptEnd::Partly { .. } | ScriptEnd::CommitFailed { .. } => "partly committed",
+    }
+}
+
+/// "Read-only transaction · rolled back", "Read-write transaction ·
+/// committed": the footer's note of the last run.
+fn end_note(sql: &SqlTab, locale: Locale) -> Option<String> {
+    let run = sql.last_run().filter(|_| ran(sql))?;
+    let transaction = match run.mode {
+        tabletist_db::ScriptMode::ReadOnly => "Read-only transaction",
+        tabletist_db::ScriptMode::Write => "Read-write transaction",
+    };
     Some(format!(
-        "{} {} · {}",
-        format::group_digits(rows.len() as u64),
-        gettext(locale, noun),
-        format::elapsed(result.elapsed)
+        "{} · {}",
+        gettext(locale, transaction),
+        gettext(locale, end_words(run))
     ))
 }
 
@@ -876,8 +932,7 @@ fn footer(app: &App, ui: &mut Ui, tab: ConnTabId, id: TabId) {
         gettext(locale, "Col")
     );
     let summary = run_summary(sql, locale);
-    let note =
-        ran(sql).then(|| gettext(locale, "Read-only transaction · rolled back").into_owned());
+    let note = end_note(sql, locale);
     let version = workspace.server_version.value.clone();
     egui::Panel::bottom(Id::new(("sql-footer", tab.0, id.0)))
         .exact_size(33.0)
@@ -937,15 +992,16 @@ fn footer(app: &App, ui: &mut Ui, tab: ConnTabId, id: TabId) {
 }
 
 /// The right end of the terminal's status line on an editor: "ln 12:21 ·
-/// 5 rows · 14 ms · rolled back".
+/// 5 rows · 14 ms · rolled back", or after a run sent to write "ln 3:1 ·
+/// 12 rows affected · 14 ms · committed".
 pub fn status_summary(app: &App, tab: ConnTabId) -> Option<String> {
     let locale = app.locale;
     let sql = app.workspace(tab)?.active_sql_tab()?;
     let (line, column) = sql.line_col();
     let mut parts = vec![format!("{} {line}:{column}", gettext(locale, "ln"))];
     parts.extend(run_summary(sql, locale));
-    if ran(sql) {
-        parts.push(gettext(locale, "rolled back").into_owned());
+    if let Some(run) = sql.last_run().filter(|_| ran(sql)) {
+        parts.push(gettext(locale, end_words(run)).into_owned());
     }
     Some(parts.join(" · "))
 }
@@ -1020,6 +1076,84 @@ mod tests {
                 assert!(!button(&mut harness, name).0, "{name} in {}", look.name);
             }
         }
+    }
+
+    #[test]
+    fn the_footer_says_how_a_read_write_run_ended() {
+        use tabletist_db::{Error, ScriptEnd};
+        let failed = |committed| ScriptEnd::CommitFailed {
+            error: Error::query("a deferred constraint"),
+            committed,
+        };
+        let warned = Some("could not be rolled back".to_owned());
+        for (end, warning, words) in [
+            (ScriptEnd::Committed, None, "committed"),
+            (ScriptEnd::RolledBack, None, "rolled back"),
+            (ScriptEnd::Partly { committed: 1 }, None, "partly committed"),
+            (failed(0), None, "commit failed"),
+            // Part of it is written all the same: said as what it left.
+            (failed(1), None, "partly committed"),
+            (
+                ScriptEnd::RolledBack,
+                warned.clone(),
+                "not fully rolled back",
+            ),
+            (
+                ScriptEnd::Partly { committed: 1 },
+                warned,
+                "not fully rolled back",
+            ),
+        ] {
+            for look in Look::ALL {
+                let script = "CREATE TABLE notes (n);\nUPDATE notes SET n = 1";
+                let (mut harness, tab, id) = editor(look, script);
+                set_mode(&mut harness, tab, id, RunMode::ReadWrite);
+                harness.press(Key::Enter, Modifiers::COMMAND | Modifiers::SHIFT);
+                // Nothing is said of a run that is still going.
+                assert!(!harness.has("Read-write transaction · committed"));
+                let mut outcome = write_outcome(
+                    vec![done_outcome(None), done_outcome(Some(12))],
+                    end.clone(),
+                );
+                outcome.rollback_warning = warning.clone();
+                harness.answer_sql(Ok(outcome), None);
+                let context = format!("{words} in {}", look.name);
+                if look.terminal {
+                    // The terminal's status line, which has no footer.
+                    let status = status_summary(&harness.app, tab).expect("an editor shows");
+                    let (_, said) = status.split_once(" · ").expect("after the cursor");
+                    assert_eq!(
+                        said,
+                        format!("12 rows affected · 14 ms · {words}"),
+                        "{context}"
+                    );
+                } else {
+                    assert!(harness.has("12 rows affected · 14 ms"), "{context}");
+                    let note = format!("Read-write transaction · {words}");
+                    assert!(harness.has(&note), "{note} in {}", look.name);
+                    assert!(!harness.has("Read-only transaction · rolled back"));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_run_of_reads_in_a_read_write_tab_is_said_to_be_read_only() {
+        let (mut harness, tab, id) = editor(Look::standard(), "SELECT 1");
+        set_mode(&mut harness, tab, id, RunMode::ReadWrite);
+        harness.press(Key::Enter, Modifiers::COMMAND);
+        let rows = crate::testing::script_outcome(vec![crate::testing::rows_outcome(3)]);
+        harness.answer_sql(Ok(rows), None);
+        assert!(harness.has("3 rows · 14 ms"));
+        assert!(harness.has("Read-only transaction · rolled back"));
+        // A statement that counted rows in a read-only run is no change
+        // that stayed: the footer does not count it.
+        let (mut harness, _, _) = editor(Look::standard(), "UPDATE notes SET n = 1");
+        harness.press(Key::Enter, Modifiers::COMMAND);
+        let counted = crate::testing::script_outcome(vec![done_outcome(Some(12))]);
+        harness.answer_sql(Ok(counted), None);
+        assert!(!harness.has("12 rows affected · 14 ms"));
+        assert!(harness.has("Read-only transaction · rolled back"));
     }
 
     #[test]

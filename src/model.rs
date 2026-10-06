@@ -2394,6 +2394,9 @@ pub struct SqlTab {
     /// The text the last run that finished started with. Its error mark
     /// names a line of that text, so it holds only while the text is that.
     ran_text: Option<TextPrint>,
+    /// The transaction that run was sent in. A run that failed as a whole
+    /// leaves no `SqlRun` to say it.
+    ran_mode: tabletist_db::ScriptMode,
 }
 
 // Hand-written so the SQL text never reaches logs or panic messages (a
@@ -2442,6 +2445,7 @@ impl SqlTab {
             completion_wanted: None,
             format: false,
             ran_text: None,
+            ran_mode: tabletist_db::ScriptMode::ReadOnly,
         }
     }
 
@@ -2489,6 +2493,7 @@ impl SqlTab {
         }
         let in_flight = self.in_flight.take();
         self.ran_text = in_flight.as_ref().map(|run| run.text);
+        self.ran_mode = in_flight.as_ref().map(|run| run.mode).unwrap_or_default();
         if result.is_err() {
             self.run.value = None;
             self.run.loaded = None;
@@ -2532,6 +2537,18 @@ impl SqlTab {
     /// What the results, the footer and the gutter show is all this run's.
     pub fn last_run(&self) -> Option<&SqlRun> {
         self.run.value.as_ref()
+    }
+
+    /// Whether the last run was sent to write and lost its session before
+    /// its end was known: some or all of it may be written, and nothing
+    /// can say which.
+    pub fn lost_writing(&self) -> bool {
+        self.ran_mode == tabletist_db::ScriptMode::Write
+            && self
+                .run
+                .error
+                .as_ref()
+                .is_some_and(Error::is_connection_lost)
     }
 
     /// What the Results pane shows: the last statement of the last run
