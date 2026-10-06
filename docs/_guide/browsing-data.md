@@ -1,0 +1,79 @@
+---
+title: Browsing Data
+description: The sidebar, the data grid, sorting, filters, the row panel and the Structure view.
+nav_order: 3
+---
+
+## The sidebar
+
+The sidebar shows one schema at a time: the objects you opened recently,
+then the schema's tables and views. Tables that share a prefix, such as
+`book_`, fold into a group. You can also list them flat.
+
+Quick open (Cmd/Ctrl+P) finds any object by name without the sidebar.
+
+System schemas such as `pg_catalog` and `information_schema` are hidden.
+[A setting]({% link _reference/settings-and-files.md %}#the-settings-file)
+shows them.
+
+## The data grid
+
+A table opens on its data. The grid marks primary keys and foreign keys,
+shows JSON at a glance, and draws enum, CHECK and boolean values as colored
+tags.
+
+- **Pages.** The grid loads 300 rows at a time. Cmd/Ctrl+Alt+Left and
+  Right move between pages.
+- **Sorting.** Click a column's header to sort by it: ascending, then
+  descending, then not at all. The server does the sorting.
+- **Counts.** The footer shows the range you are looking at and the
+  table's size. For a large table the size is the database's estimate, such
+  as `~1.2M`. Click **Count** for the exact number.
+- **Cancel.** Cmd/Ctrl+. cancels a running query.
+- **Refresh.** Cmd/Ctrl+R loads the page again.
+
+A table without a primary key is marked **Unordered**: its rows may move
+between pages.
+
+## Filters
+
+Press Cmd/Ctrl+F, or click **Add filter**. A filter is a list of
+conditions, and a row must match all of them. Each condition is a column,
+an operator and a value:
+
+| Operator | Matches |
+| --- | --- |
+| `=`, `≠`, `<`, `>`, `≤`, `≥` | A comparison with the value |
+| `contains` | The value anywhere in the text. PostgreSQL ignores letter case, MySQL follows the column's collation, and SQLite ignores the case of ASCII letters |
+| `starts with` | Text that begins with the value |
+| `in (a, b, …)` | Any of the values, separated by commas |
+| `is NULL`, `is not NULL` | Whether there is a value at all |
+
+For anything else, tick **Raw WHERE** and write the condition yourself:
+
+```sql
+id > 10 AND name LIKE 'A%'
+```
+
+On MySQL, a raw WHERE reads `"..."` as a string, and names take backticks.
+
+## The row panel
+
+Select a row and the panel on the right shows every field in full,
+including long text and whole JSON documents. Space shows or hides it.
+
+A foreign key has a link next to it that opens the row it points to.
+
+## Structure
+
+Switch a table from **Data** to **Structure** to read its columns, indexes
+and foreign keys.
+
+## Copying
+
+Cmd/Ctrl+C copies the selected cell. Cmd/Ctrl+Shift+C copies the whole
+row, with tabs between its values.
+
+## Next
+
+[Edit a table's values]({% link _guide/editing-data.md %}).
