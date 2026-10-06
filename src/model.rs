@@ -1795,6 +1795,11 @@ pub enum Advance {
     Down,
     Right,
     Left,
+    /// To the row panel's next field that can be edited, in the page's
+    /// column order: Enter and Tab in a field of the panel.
+    NextField,
+    /// To the one before it: Shift+Tab there.
+    PrevField,
 }
 
 /// Why a tab's pending changes cannot be saved now. The view words it.

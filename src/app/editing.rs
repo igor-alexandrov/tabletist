@@ -12,8 +12,8 @@ use crate::edit::{
     start_text,
 };
 use crate::model::{
-    Action, CellPos, ConflictPrompt, ConnTabId, Dialog, EditStart, Held, LeavePrompt, ObjectTab,
-    Pane, SaveBlock, SessionStatus, TabId, WritePrompt,
+    Action, Advance, CellPos, ConflictPrompt, ConnTabId, Dialog, EditStart, Held, LeavePrompt,
+    ObjectTab, Pane, SaveBlock, SessionStatus, TabId, WritePrompt,
 };
 use crate::review::Values;
 
@@ -539,6 +539,34 @@ impl App {
         if let Some(object) = self.object_tab_mut(tab, id) {
             object.focus_field = Some(col);
         }
+    }
+
+    /// The field a commit in the row panel's field of the column `col`
+    /// walks to: the selected row's next that can be edited, in the page's
+    /// column order, or the one before it. None at the row's end, and for
+    /// a commit that stays.
+    pub(super) fn field_after(
+        &self,
+        tab: ConnTabId,
+        id: TabId,
+        col: usize,
+        then: Advance,
+    ) -> Option<usize> {
+        let forward = match then {
+            Advance::NextField => true,
+            Advance::PrevField => false,
+            Advance::Stay | Advance::Down | Advance::Right | Advance::Left => return None,
+        };
+        self.table(tab, id, |table, object| {
+            let row = object.selection?.row;
+            let free = |col: &usize| table.lock(CellPos { row, col: *col }).is_none();
+            if forward {
+                (col + 1..table.page.columns.len()).find(free)
+            } else {
+                (0..col).rev().find(free)
+            }
+        })
+        .flatten()
     }
 
     /// Opens the editor on `cell`, drawn in `place`, or says there why the

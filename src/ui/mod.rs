@@ -19994,30 +19994,64 @@ mod tests {
                 "{}",
                 look.name
             );
-            // Tab commits as Enter does, and stays.
-            type_text(&mut harness, "y");
-            harness.press(Key::Tab, Modifiers::NONE);
+        }
+    }
+
+    #[test]
+    fn enter_and_tab_in_a_field_commit_and_walk_to_the_next_that_can_be_edited() {
+        for look in desktop_looks() {
+            let (mut harness, tab, id) = form_row(look, 1);
+            harness.click("Edit email");
+            type_text(&mut harness, "x");
+            harness.press(Key::Enter, Modifiers::NONE);
             assert_eq!(
                 pending_text(&harness, tab, id, (1, 1)).as_deref(),
-                Some("user2@example.comy"),
+                Some("user2@example.comx"),
                 "{}",
                 look.name
             );
-            assert_eq!(selected(&harness, tab, id), Some((1, 1)), "{}", look.name);
-            assert!(harness.ctx.text_edit_focused(), "{}", look.name);
-            harness.press(Key::Enter, Modifiers::NONE);
+            assert!(edits(&harness, tab, id).editor.is_none(), "{}", look.name);
+            // The keyboard is on the next field, qty: F2 edits it.
+            harness.press(Key::F2, Modifiers::NONE);
+            assert_eq!(
+                form_editor(&harness, tab, id),
+                Some(((1, 2), true)),
+                "{}",
+                look.name
+            );
+            // Shift+Tab walks back to email.
+            harness.press(Key::Tab, Modifiers::SHIFT);
+            harness.press(Key::F2, Modifiers::NONE);
             assert_eq!(
                 form_editor(&harness, tab, id),
                 Some(((1, 1), true)),
                 "{}",
                 look.name
             );
+            // Before it stands only the key, which is locked: the walk
+            // stays where it is.
+            harness.press(Key::Tab, Modifiers::SHIFT);
+            harness.press(Key::F2, Modifiers::NONE);
             assert_eq!(
-                editor_text(&harness, tab, id).as_deref(),
-                Some("user2@example.comy"),
+                form_editor(&harness, tab, id),
+                Some(((1, 1), true)),
                 "{}",
                 look.name
             );
+            // Tab goes on to the last field, and from there stays on it.
+            harness.press(Key::Tab, Modifiers::NONE);
+            harness.press(Key::F2, Modifiers::NONE);
+            harness.press(Key::Tab, Modifiers::NONE);
+            harness.press(Key::F2, Modifiers::NONE);
+            assert_eq!(
+                form_editor(&harness, tab, id),
+                Some(((1, 2), true)),
+                "{}",
+                look.name
+            );
+            // Only what was typed is pending: a field that was walked
+            // through changed nothing.
+            assert_eq!(edits(&harness, tab, id).cells.len(), 1, "{}", look.name);
         }
     }
 
@@ -20167,6 +20201,14 @@ mod tests {
                 look.name
             );
             assert!(edits(&harness, tab, id).cells.is_empty(), "{}", look.name);
+            // Nor does Tab.
+            harness.press(Key::Tab, Modifiers::NONE);
+            assert_eq!(
+                form_editor(&harness, tab, id),
+                Some(((1, 2), true)),
+                "{}",
+                look.name
+            );
             // Left for another field, the text is kept as a cell to fix.
             harness.click("Edit email");
             assert_eq!(
@@ -20182,6 +20224,15 @@ mod tests {
                 look.name
             );
             assert_eq!(edits(&harness, tab, id).counts().to_fix, 1);
+            // And nothing is saved while it stands.
+            harness.press(Key::S, Modifiers::COMMAND);
+            assert_eq!(writes(&harness), 0, "{}", look.name);
+            assert_eq!(
+                harness.app.save_blocked(tab, id),
+                Some(crate::model::SaveBlock::ToFix),
+                "{}",
+                look.name
+            );
         }
     }
 

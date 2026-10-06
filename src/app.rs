@@ -831,14 +831,15 @@ impl App {
             Action::CommitEdit { tab, id, then } => {
                 let field = self.panel_field(tab, id);
                 if self.close_editor(tab, id, false) {
-                    // In the panel nothing moves: the keyboard goes back
-                    // to the field that was edited.
+                    // In the panel the keyboard goes to the field the
+                    // commit walks to, or back to the one that was edited.
                     if let Some(col) = field {
-                        self.back_to_field(tab, id, col);
+                        let to = self.field_after(tab, id, col, then).unwrap_or(col);
+                        self.back_to_field(tab, id, to);
                         return;
                     }
                     let (rows, cols) = match then {
-                        Advance::Stay => (0, 0),
+                        Advance::Stay | Advance::NextField | Advance::PrevField => (0, 0),
                         Advance::Down => (1, 0),
                         Advance::Right => (0, 1),
                         Advance::Left => (0, -1),
@@ -14446,6 +14447,69 @@ mod tests {
                 assert!(editor(&harness, tab, id).is_none());
                 assert_eq!(field(&harness), None, "{}", look.name);
             }
+        }
+
+        #[test]
+        fn a_walk_passes_over_a_locked_field() {
+            // `id`, `email`, a generated `slug` and `note`: the walk goes
+            // from email to note and back, over the column in between.
+            let mut harness = Harness::new();
+            let tab = harness.connect_fake_as(false);
+            harness.app.apply(Action::OpenObject {
+                tab,
+                object: tabletist_db::ObjectRef::new("main", "users"),
+                kind: tabletist_db::ObjectKind::Table,
+                pin: true,
+            });
+            let mut structure = crate::testing::fixture_structure();
+            structure.columns[2].name = "slug".into();
+            structure.columns[2].type_name = "TEXT".into();
+            structure.columns[2].generated = true;
+            let mut note = structure.columns[1].clone();
+            note.name = "note".into();
+            structure.columns.push(note);
+            harness.answer_structure(structure);
+            let mut page = crate::testing::page(3, false);
+            page.columns[2] = tabletist_db::ColumnMeta {
+                name: "slug".into(),
+                type_name: "TEXT".into(),
+                kind: tabletist_db::ValueKind::Text,
+            };
+            page.columns.push(tabletist_db::ColumnMeta {
+                name: "note".into(),
+                type_name: "TEXT".into(),
+                kind: tabletist_db::ValueKind::Text,
+            });
+            for row in &mut page.rows {
+                row[2] = tabletist_db::Value::Text("user".into());
+                row.push(tabletist_db::Value::Text("none".into()));
+            }
+            harness.answer_rows(page);
+            let id = harness
+                .app
+                .workspace(tab)
+                .and_then(|workspace| workspace.active_tab)
+                .expect("the table's tab is open");
+            let field = |harness: &Harness| object(harness, tab, id).focus_field;
+            let walk = |harness: &mut Harness, col, then| {
+                let cell = at(1, col);
+                harness.app.apply(Action::EditField { tab, id, cell });
+                harness.app.apply(Action::CommitEdit { tab, id, then });
+                assert!(editor(harness, tab, id).is_none());
+            };
+            walk(&mut harness, 1, Advance::NextField);
+            assert_eq!(field(&harness), Some(3));
+            walk(&mut harness, 3, Advance::PrevField);
+            assert_eq!(field(&harness), Some(1));
+            // At the row's ends the keyboard stays on the field: before
+            // email stands only the key, and after note nothing.
+            walk(&mut harness, 1, Advance::PrevField);
+            assert_eq!(field(&harness), Some(1));
+            walk(&mut harness, 3, Advance::NextField);
+            assert_eq!(field(&harness), Some(3));
+            // A commit that stays, stays.
+            walk(&mut harness, 1, Advance::Stay);
+            assert_eq!(field(&harness), Some(1));
         }
 
         #[test]

@@ -337,9 +337,10 @@ fn block_cursor(
 /// The editor in the row panel: a one-line field in the place of its
 /// field's value, as wide as the room it is given, its text in `role`, the
 /// role the value is read in. Its keys are the keys of the field on a cell,
-/// but nothing moves when it commits: Enter, Tab and Shift+Tab all take
-/// the text and stay. Under the field it says what the text fails, and how
-/// much of its column's length the text takes.
+/// but a commit moves no selection: Enter and Tab take the text and ask
+/// for the row's next field, Shift+Tab for the one before. Under the field
+/// it says what the text fails, and how much of its column's length the
+/// text takes.
 pub fn in_panel(
     ui: &mut Ui,
     editor: &mut Editor,
@@ -359,9 +360,12 @@ pub fn in_panel(
         keep_keyboard(ui.ctx());
     }
     ending_keys(ui, has, had, look.terminal, &mut outcome);
-    if outcome.commit.is_some() {
-        outcome.commit = Some(Advance::Stay);
-    }
+    // In the panel a commit walks the row's fields, not the grid's cells.
+    outcome.commit = outcome.commit.map(|then| match then {
+        Advance::Stay => Advance::Stay,
+        Advance::Left | Advance::PrevField => Advance::PrevField,
+        Advance::Down | Advance::Right | Advance::NextField => Advance::NextField,
+    });
     let width = ui.available_width();
     let height = if look.terminal { 26.0 } else { 30.0 };
     let mut layouter = crate::typography::layouter(look, role, palette.text);
