@@ -12705,7 +12705,7 @@ mod tests {
         // is the text's, and sets nothing NULL. On a column that takes
         // NULL, so the key would have done it.
         let (mut harness, tab, id) = normal_mode((0, 2));
-        let before = r#"{"plan":"pro"}"#;
+        let before = DOC;
         harness.frame(key_down(Key::I, "i"));
         harness.frame(key_down(Key::X, "x"));
         harness.settle();
@@ -12716,8 +12716,10 @@ mod tests {
         type_key(&mut harness, Key::X, "x");
         type_key(&mut harness, Key::U, "u");
         type_key(&mut harness, Key::Semicolon, ":");
+        // At the document's start, where its editor opens.
         let text = editor_text(&harness, tab, id).unwrap_or_default();
-        assert!(text.starts_with(before) && text.ends_with("xu:"), "{text}");
+        let typed = text.strip_suffix(before).unwrap_or_default();
+        assert!(typed.ends_with("xu:"), "{text}");
         assert!(nothing_null(&harness, tab, id));
         // On the cell's own field the first of them is text too.
         let (mut harness, tab, id) = normal_mode((1, 1));
@@ -13056,13 +13058,12 @@ mod tests {
         type_key(&mut harness, Key::I, "i");
         assert!(is_large(&harness, tab, id));
         assert!(painted(&harness, "ctrl+enter apply · esc keep"));
-        type_text(&mut harness, " ");
+        // Kept as typed, though it is no document any more.
+        type_at_end(&mut harness, "x");
         harness.press(Key::Escape, Modifiers::NONE);
         assert!(edits(&harness, tab, id).editor.is_none());
-        assert_eq!(
-            pending_text(&harness, tab, id, (0, 2)).as_deref(),
-            Some(r#"{"plan":"pro"} "#)
-        );
+        let kept = format!("{DOC}x");
+        assert_eq!(pending_text(&harness, tab, id, (0, 2)), Some(kept.clone()));
         assert!(harness.app.workspace(tab).unwrap().row_panel);
         // Ctrl+C drops what was typed since: the pending value stays.
         harness.press(Key::Enter, Modifiers::NONE);
@@ -13076,18 +13077,18 @@ mod tests {
         harness.frame(vec![egui::Event::ModifiersChanged(Modifiers::NONE)]);
         harness.settle();
         assert!(edits(&harness, tab, id).editor.is_none());
-        assert_eq!(
-            pending_text(&harness, tab, id, (0, 2)).as_deref(),
-            Some(r#"{"plan":"pro"} "#)
-        );
+        assert_eq!(pending_text(&harness, tab, id, (0, 2)), Some(kept));
         assert_eq!(harness.copied, None);
-        // Mod+Enter applies, as in the other looks.
+        // Mod+Enter applies, as in the other looks: the `x` goes, and a
+        // member comes.
         harness.press(Key::Enter, Modifiers::NONE);
-        type_text(&mut harness, " ");
+        harness.press(Key::End, Modifiers::CTRL);
+        harness.press(Key::Backspace, Modifiers::NONE);
+        add_a_member(&mut harness);
         harness.press(Key::Enter, Modifiers::COMMAND);
         assert_eq!(
             pending_text(&harness, tab, id, (0, 2)).as_deref(),
-            Some(r#"{"plan":"pro"}  "#)
+            Some(DOC_MORE)
         );
         // The other looks' band is as it was.
         for look in desktop_looks() {
@@ -15021,6 +15022,29 @@ mod tests {
         format!("{}↩ apply · esc cancel", look.command_key())
     }
 
+    /// The fixture's document as its editor opens it: laid out, a member
+    /// to a line.
+    const DOC: &str = "{\n  \"plan\": \"pro\"\n}";
+
+    /// The same with a member more, as `add_a_member` types it.
+    const DOC_MORE: &str = "{\n  \"plan\": \"pro\"\n,\"n\":1}";
+
+    /// Types `text` at the end of the open editor's text: a value of
+    /// several lines opens with its cursor at its start.
+    fn type_at_end(harness: &mut Harness, text: &str) {
+        harness.press(Key::End, Modifiers::CTRL);
+        type_text(harness, text);
+    }
+
+    /// Changes the document in the open editor and leaves it one: a
+    /// member more, typed over its closing brace. (White space alone is no
+    /// change of a document.)
+    fn add_a_member(harness: &mut Harness) {
+        harness.press(Key::End, Modifiers::CTRL);
+        harness.press(Key::Backspace, Modifiers::NONE);
+        type_text(harness, ",\"n\":1}");
+    }
+
     fn is_large(harness: &Harness, tab: ConnTabId, id: TabId) -> bool {
         let editor = edits(harness, tab, id).editor.as_ref();
         editor.is_some_and(|editor| editor.large)
@@ -15093,11 +15117,12 @@ mod tests {
             harness.press(Key::Enter, Modifiers::NONE);
             assert!(is_large(&harness, tab, id), "{}", look.name);
             assert!(harness.ctx.text_edit_focused(), "{}", look.name);
-            let text = r#"{"plan":"pro"}"#;
+            // Laid out, a member to a line, though it was loaded on one.
+            let text = DOC;
             assert_eq!(editor_text(&harness, tab, id).as_deref(), Some(text));
             // Its band says it is a document, counts what it holds and
             // names its keys.
-            let counted = "Valid JSON · 14 chars · 1 line";
+            let counted = "Valid JSON · 19 chars · 3 lines";
             assert!(painted(&harness, counted), "{}", look.name);
             assert!(painted(&harness, &band_keys(&look)), "{}", look.name);
             // It is a field of several lines, anchored to its cell: under
@@ -15137,7 +15162,7 @@ mod tests {
             });
             assert!(lined, "{}", look.name);
             // Enter is a line break here, and the count follows.
-            type_text(&mut harness, " ");
+            type_at_end(&mut harness, " ");
             harness.press(Key::Enter, Modifiers::NONE);
             assert!(is_large(&harness, tab, id), "{}", look.name);
             assert_eq!(
@@ -15146,7 +15171,7 @@ mod tests {
                 "{}",
                 look.name
             );
-            let counted = "Valid JSON · 16 chars · 2 lines";
+            let counted = "Valid JSON · 21 chars · 4 lines";
             assert!(painted(&harness, counted), "{}", look.name);
             assert!(edits(&harness, tab, id).cells.is_empty(), "{}", look.name);
         }
@@ -15208,12 +15233,12 @@ mod tests {
             let (mut harness, tab, id) = editable_in(look);
             select(&mut harness, tab, id, (0, 2));
             harness.press(Key::Enter, Modifiers::NONE);
-            type_text(&mut harness, " ");
+            add_a_member(&mut harness);
             harness.press(Key::Enter, Modifiers::COMMAND);
             assert!(edits(&harness, tab, id).editor.is_none(), "{}", look.name);
             assert_eq!(
                 pending_text(&harness, tab, id, (0, 2)).as_deref(),
-                Some(r#"{"plan":"pro"} "#),
+                Some(DOC_MORE),
                 "{}",
                 look.name
             );
@@ -15229,7 +15254,7 @@ mod tests {
             assert!(edits(&harness, tab, id).editor.is_none(), "{}", look.name);
             assert_eq!(
                 pending_text(&harness, tab, id, (0, 2)).as_deref(),
-                Some(r#"{"plan":"pro"} "#),
+                Some(DOC_MORE),
                 "{}",
                 look.name
             );
@@ -15246,15 +15271,15 @@ mod tests {
             let palette = harness.app.palette;
             select(&mut harness, tab, id, (0, 2));
             harness.press(Key::Enter, Modifiers::NONE);
-            type_text(&mut harness, "}");
+            type_at_end(&mut harness, "}");
             // The band says what the text fails, in place of its counts.
             let failing = |harness: &Harness| {
                 harness.painted.iter().any(|(text, color)| {
-                    text.starts_with("Trailing characters at 1:") && *color == palette.danger
+                    text.starts_with("Trailing characters at 3:") && *color == palette.danger
                 })
             };
             assert!(failing(&harness), "{}: {:?}", look.name, harness.painted);
-            let counted = "Valid JSON · 15 chars · 1 line";
+            let counted = "Valid JSON · 20 chars · 3 lines";
             assert!(!painted(&harness, counted), "{}", look.name);
             harness.press(Key::Enter, Modifiers::COMMAND);
             assert!(is_large(&harness, tab, id), "{}", look.name);
@@ -15301,7 +15326,7 @@ mod tests {
             assert!(is_large(&harness, tab, id), "{}", look.name);
             assert_eq!(editor_text(&harness, tab, id), Some(long.clone()));
             assert!(painted(&harness, "300 chars · 1 line"), "{}", look.name);
-            type_text(&mut harness, "!");
+            type_at_end(&mut harness, "!");
             harness.press(Key::Enter, Modifiers::COMMAND);
             assert_eq!(
                 pending_text(&harness, tab, id, (1, 1)),
@@ -15322,16 +15347,13 @@ mod tests {
         let (mut harness, tab, id) = editable_in(Look::macos());
         select(&mut harness, tab, id, (0, 2));
         harness.press(Key::Enter, Modifiers::NONE);
-        type_text(&mut harness, " ");
-        let band = cell_of(&harness, "Valid JSON · 15 chars · 1 line");
+        type_at_end(&mut harness, " ");
+        let band = cell_of(&harness, "Valid JSON · 20 chars · 3 lines");
         click_at(&mut harness, band);
         assert!(is_large(&harness, tab, id));
         assert!(harness.ctx.text_edit_focused());
         type_text(&mut harness, " ");
-        assert_eq!(
-            editor_text(&harness, tab, id).as_deref(),
-            Some(r#"{"plan":"pro"}  "#)
-        );
+        assert_eq!(editor_text(&harness, tab, id), Some(format!("{DOC}  ")));
         // Nor is it a click on the row under the popover.
         assert_eq!(selected(&harness, tab, id), Some((0, 2)));
     }
@@ -20577,7 +20599,7 @@ mod tests {
             assert_eq!(form_editor(&harness, tab, id), Some(((0, 2), true)));
             assert_eq!(
                 editor_text(&harness, tab, id).as_deref(),
-                Some(r#"{"plan":"pro"}"#),
+                Some(DOC),
                 "{}",
                 look.name
             );
@@ -20610,13 +20632,12 @@ mod tests {
             assert!(edits(&harness, tab, id).cells.is_empty(), "{}", look.name);
             // Mended and changed, Mod+Enter applies it.
             harness.press(Key::Backspace, Modifiers::NONE);
-            harness.press(Key::Backspace, Modifiers::NONE);
-            type_text(&mut harness, r#","n":1}"#);
+            add_a_member(&mut harness);
             harness.press(Key::Enter, Modifiers::COMMAND);
             assert!(edits(&harness, tab, id).editor.is_none(), "{}", look.name);
             assert_eq!(
                 pending_text(&harness, tab, id, (0, 2)).as_deref(),
-                Some(r#"{"plan":"pro","n":1}"#),
+                Some(DOC_MORE),
                 "{}",
                 look.name
             );
@@ -20669,26 +20690,19 @@ mod tests {
         for look in Look::ALL {
             let (mut harness, tab, id) = editing_a_document(look);
             let palette = harness.app.palette;
-            // One line as it was loaded: one number, in the gutter's
-            // colour, left of the text.
             let numbered = |harness: &Harness, number: &str| {
                 let pieces = harness.text_rects.iter().zip(&harness.painted);
                 pieces
                     .filter(|((text, _), (_, color))| text == number && *color == palette.faint)
                     .count()
             };
-            assert_eq!(numbered(&harness, "1"), 1, "{}", look.name);
-            assert_eq!(numbered(&harness, "2"), 0, "{}", look.name);
-            // The band says it is a document, in the colour of what went
-            // through.
             let valid = |harness: &Harness| {
                 let mut pieces = harness.painted.iter();
                 pieces.any(|(text, _)| text.starts_with("Valid JSON"))
             };
-            assert!(valid(&harness), "{}: {:?}", look.name, harness.painted);
-            // Laid out, a member to a line: its key, and the label's link
-            // in the looks that draw one.
-            harness.press(Key::F, Modifiers::COMMAND | Modifiers::SHIFT);
+            // It opens laid out, a member to a line, though it was loaded
+            // on one: each line has its number in the gutter, and the band
+            // says it is a document.
             let laid = "{\n  \"plan\": \"pro\",\n  \"seats\": [\n    3,\n    4\n  ],\n  \"notes\": null\n}";
             assert_eq!(
                 editor_text(&harness, tab, id).as_deref(),
@@ -20696,21 +20710,32 @@ mod tests {
                 "{}",
                 look.name
             );
-            harness.settle();
             for line in 1..=8 {
-                assert_eq!(
-                    numbered(&harness, &line.to_string()),
-                    1,
-                    "{}: {line}",
-                    look.name
-                );
+                let number = line.to_string();
+                assert_eq!(numbered(&harness, &number), 1, "{}: {line}", look.name);
             }
             assert_eq!(numbered(&harness, "9"), 0, "{}", look.name);
+            assert!(valid(&harness), "{}: {:?}", look.name, harness.painted);
+            // Typed over on one line, it has one number; its key lays it
+            // out again.
+            harness.press(Key::A, Modifiers::COMMAND);
+            type_text(&mut harness, r#"{"plan":"pro","seats":[3,4],"notes":null}"#);
+            harness.settle();
+            assert_eq!(numbered(&harness, "2"), 0, "{}", look.name);
+            harness.press(Key::F, Modifiers::COMMAND | Modifiers::SHIFT);
+            assert_eq!(
+                editor_text(&harness, tab, id).as_deref(),
+                Some(laid),
+                "{}",
+                look.name
+            );
+            harness.settle();
+            assert_eq!(numbered(&harness, "8"), 1, "{}", look.name);
             assert!(harness.ctx.text_edit_focused(), "{}", look.name);
             // A character that breaks it: it is valid no more, and the
             // band says what the check says, in red. It is not laid out
             // again while it is no document.
-            type_text(&mut harness, "x");
+            type_at_end(&mut harness, "x");
             harness.settle();
             assert!(!valid(&harness), "{}", look.name);
             let reds = harness
@@ -20742,6 +20767,10 @@ mod tests {
     fn the_format_link_lays_a_document_out_and_keeps_its_editor_open() {
         for look in desktop_looks() {
             let (mut harness, tab, id) = editing_a_document(look);
+            let laid = editor_text(&harness, tab, id).expect("the editor's text");
+            // Typed over on one line.
+            harness.press(Key::A, Modifiers::COMMAND);
+            type_text(&mut harness, r#"{"plan":"pro","seats":[3,4],"notes":null}"#);
             let tree = harness.settle();
             let name = crate::testing::labels(&tree)
                 .into_iter()
@@ -20758,18 +20787,55 @@ mod tests {
                 "{}",
                 look.name
             );
-            let text = editor_text(&harness, tab, id).expect("the editor's text");
-            assert!(
-                text.starts_with("{\n  \"plan\": \"pro\","),
-                "{}: {text}",
-                look.name
-            );
+            assert_eq!(editor_text(&harness, tab, id), Some(laid), "{}", look.name);
             assert!(harness.ctx.text_edit_focused(), "{}", look.name);
-            // Applied, the cell is pending as the laid out document.
+            // It is the document that was loaded, however it is spaced:
+            // applied, nothing is pending.
             harness.press(Key::Enter, Modifiers::COMMAND);
+            assert!(edits(&harness, tab, id).editor.is_none(), "{}", look.name);
             assert_eq!(
                 pending_text(&harness, tab, id, (0, 2)),
-                Some(text),
+                None,
+                "{}",
+                look.name
+            );
+        }
+    }
+
+    #[test]
+    fn a_tall_field_opens_at_its_start_and_a_click_moves_the_caret() {
+        for look in Look::ALL {
+            let (mut harness, tab, id) = editing_a_document(look);
+            // The editor opens with its caret at the text's start, where
+            // it is read from: what is typed goes there.
+            type_text(&mut harness, "a");
+            let text = editor_text(&harness, tab, id).expect("the editor's text");
+            assert!(text.starts_with("a{"), "{}: {text:?}", look.name);
+            // From its end, a click at the start of its first line puts
+            // the caret there.
+            harness.press(Key::End, Modifiers::CTRL);
+            let tree = harness.settle();
+            let role = egui::accesskit::Role::MultilineTextInput;
+            let field = crate::testing::bounds(&tree, "Edit meta", role).expect("the field");
+            click_at(&mut harness, field.left_top() + egui::vec2(1.0, 6.0));
+            assert_eq!(
+                form_editor(&harness, tab, id),
+                Some(((0, 2), true)),
+                "{}",
+                look.name
+            );
+            type_text(&mut harness, "b");
+            let text = editor_text(&harness, tab, id).expect("the editor's text");
+            assert!(text.starts_with("ba{"), "{}: {text:?}", look.name);
+            // A line break typed into a one-line field goes on after it.
+            harness.app.apply(Action::CancelEdit { tab, id });
+            select(&mut harness, tab, id, (1, 0));
+            click_value(&mut harness, "user2@example.com");
+            harness.press(Key::Enter, Modifiers::ALT);
+            type_text(&mut harness, "c");
+            assert_eq!(
+                editor_text(&harness, tab, id).as_deref(),
+                Some("user2@example.com\nc"),
                 "{}",
                 look.name
             );

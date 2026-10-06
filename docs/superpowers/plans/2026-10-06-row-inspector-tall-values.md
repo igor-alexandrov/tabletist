@@ -223,6 +223,13 @@ Run on 2026-10-06, inline, one signed commit per task, the four checks and the s
 - **Tests of the popover that read its band** read "Valid JSON · " before a document's counts, and its text is narrower by the gutter.
 - Not built, as the plan's table says: "1 line changed" and the changed line's tint, and the `NULL` checkbox.
 
+After the user's first look at it ("formatting is missing", and the caret of a tall field going to its end):
+
+- **A document opens laid out**, a member to a line, in the panel and in the grid's popover: `edit::start_text` lays a JSON column's text out where it is a document (a server gives it back on one line). What such a column holds that is none (SQLite keeps any text) opens as it is.
+- **White space alone is no change of a document.** `edit::is_change` compares a JSON column's text laid out, so a document that was only opened, or set back on one line, or laid out again, leaves the cell as it loaded. White space inside a string is the string's and counts.
+- **A tall value opens with its cursor at its start** (`Editor::top`), in both places: its end may be far below what the editor shows, and the editor scrolled there. A line break typed into a one-line field goes on after it, as before. The one-line field still opens with its cursor at the end.
+- Tests of the large editor that typed at the end of a document type there by `Ctrl+End` first, and the ones that made a change with a space add a member instead.
+
 ## By hand, for the user
 
 - A click in the tall field puts the caret where it was clicked; the wheel scrolls the text when it is longer than twelve lines, and the panel when the pointer is elsewhere.

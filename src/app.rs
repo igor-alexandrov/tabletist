@@ -911,6 +911,8 @@ impl App {
                     editor.text.push('\n');
                     editor.large = true;
                     editor.focus = true;
+                    // After the break that was typed.
+                    editor.top = false;
                     editor.touched = true;
                 }
             }
@@ -12696,6 +12698,7 @@ mod tests {
                         text: "dan@example.com".into(),
                         large: false,
                         focus: false,
+                        top: false,
                         touched: true,
                         problem: None,
                     });

@@ -590,6 +590,8 @@ impl App {
             EditStart::Replace(_) => (true, true),
             EditStart::Typed(_) => (false, true),
         };
+        // Opened from its value, to be read before it is changed.
+        let from_value = matches!(start, EditStart::Value);
         let opened = self.table(tab, id, |table, object| {
             if let Some(lock) = table.lock(cell) {
                 return Err(lock);
@@ -615,6 +617,9 @@ impl App {
                 large,
                 text,
                 focus: true,
+                // A value of several lines is read from its top: its end
+                // may be far below what its editor shows.
+                top: large && from_value,
                 touched,
                 problem: None,
             })

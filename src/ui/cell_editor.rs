@@ -67,7 +67,7 @@ fn had_id(id: Id) -> Id {
 
 /// Gives the field `id` the keyboard, its cursor at the end of `text` and
 /// nothing to undo: it is one field for every cell, and each edit is its
-/// own.
+/// own. An editor that opens at its text's top passes none of it.
 fn take_keyboard(ctx: &egui::Context, id: Id, text: &str) {
     let mut state = egui::text_edit::TextEditState::default();
     let end = CCursor::new(text.chars().count());
@@ -537,7 +537,8 @@ pub fn large(
             if sizing {
                 ui.ctx().request_repaint();
             } else if std::mem::take(&mut editor.focus) {
-                take_keyboard(ui.ctx(), id, &editor.text);
+                let before = if editor.top { "" } else { &editor.text };
+                take_keyboard(ui.ctx(), id, before);
             }
             let had = large_keys(ui, id, look.terminal, &mut outcome);
             let (rect, _) = ui.allocate_exact_size(LARGE, egui::Sense::hover());
@@ -571,7 +572,8 @@ pub fn tall(
     let id = target.id;
     let opened = std::mem::take(&mut editor.focus);
     if opened {
-        take_keyboard(ui.ctx(), id, &editor.text);
+        let before = if editor.top { "" } else { &editor.text };
+        take_keyboard(ui.ctx(), id, before);
     }
     let had = large_keys(ui, id, look.terminal, &mut outcome);
     // As tall as the text is at the width it gets, within its bounds.

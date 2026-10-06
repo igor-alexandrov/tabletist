@@ -537,22 +537,42 @@ fn rounded(negative: bool, whole: &str, fraction: &str, scale: i32) -> String {
 /// Where an editor starts: the whole value as the database gave it, never
 /// the shortened text a cell shows. Empty on NULL. A boolean column reads
 /// `true` or `false` whatever the driver loaded (SQLite and MySQL hold 1
-/// and 0).
+/// and 0). A document is laid out a member to a line, as its tree reads:
+/// a server gives it back on one.
 pub fn start_text(value: &Value, class: ColumnClass) -> String {
     match (value, class) {
         (Value::Null, _) => String::new(),
         (Value::Int(1), ColumnClass::Boolean) => "true".to_owned(),
         (Value::Int(0), ColumnClass::Boolean) => "false".to_owned(),
+        (value, ColumnClass::Json) => laid_out(crate::ui::format::plain_text(value)),
         (value, _) => crate::ui::format::plain_text(value),
     }
 }
 
+/// A JSON column's text laid out to be read and edited. Only the white
+/// space between its pieces changes (`ui::json_text::pretty` reads no
+/// value), and only where the text is a document: what such a column holds
+/// that is none (SQLite keeps any text) stays as it is.
+fn laid_out(text: String) -> String {
+    if serde_json::from_str::<serde::de::IgnoredAny>(&text).is_err() {
+        return text;
+    }
+    crate::ui::json_text::pretty(&text)
+}
+
 /// Whether `new` differs from what the cell loaded: a text equal to where
-/// the editor starts, or NULL on a NULL cell, is no change.
+/// the editor starts, or NULL on a NULL cell, is no change. Nor is a
+/// document that differs from the loaded one only in the white space
+/// between its pieces: laid out or set back on one line, it is the
+/// document that was loaded.
 pub fn is_change(loaded: &Value, new: &NewValue, class: ColumnClass) -> bool {
     match new {
         NewValue::Null => !loaded.is_null(),
-        NewValue::Text(text) => loaded.is_null() || *text != start_text(loaded, class),
+        NewValue::Text(_) if loaded.is_null() => true,
+        NewValue::Text(text) if class == ColumnClass::Json => {
+            laid_out(text.clone()) != start_text(loaded, class)
+        }
+        NewValue::Text(text) => *text != start_text(loaded, class),
     }
 }
 
@@ -603,6 +623,10 @@ pub struct Editor {
     pub large: bool,
     /// Taken by the view when it gives the field the keyboard.
     pub focus: bool,
+    /// The cursor starts at the text's start, not its end: a value of
+    /// several lines opened to be read and changed, which is read from
+    /// its top. One that was just typed into goes on from its end.
+    pub top: bool,
     /// Whether the text was typed into. An editor that was only opened and
     /// closed changes nothing: on a NULL cell it starts empty, and the
     /// empty string is not NULL.
@@ -2153,6 +2177,37 @@ mod tests {
     }
 
     #[test]
+    fn a_document_starts_laid_out_and_its_white_space_is_no_change() {
+        let json = ColumnClass::Json;
+        let loaded = text(r#"{"a":1,"b":[true]}"#);
+        let start = start_text(&loaded, json);
+        assert_eq!(start, "{\n  \"a\": 1,\n  \"b\": [\n    true\n  ]\n}");
+        let new = |text: &str| NewValue::Text(text.into());
+        // As it opens, as it was loaded, and spaced any other way: the
+        // document that was loaded.
+        assert!(!is_change(&loaded, &new(&start), json));
+        assert!(!is_change(&loaded, &new(r#"{"a":1,"b":[true]}"#), json));
+        assert!(!is_change(
+            &loaded,
+            &new("{ \"a\" : 1 , \"b\" : [ true ] }"),
+            json
+        ));
+        assert!(is_change(&loaded, &new(r#"{"a":2,"b":[true]}"#), json));
+        // The white space inside a string is the string's.
+        let spaced = text(r#"{"a":"x y"}"#);
+        assert!(is_change(&spaced, &new(r#"{"a":"x  y"}"#), json));
+        // What such a column holds that is no document stays as it is,
+        // and a text broken while it was typed is a change.
+        let odd = text("not json  at all");
+        assert_eq!(start_text(&odd, json), "not json  at all");
+        assert!(is_change(&loaded, &new(r#"{"a":1,"b":[true]"#), json));
+        // A text column's JSON is its text.
+        let plain = ColumnClass::Text { max_chars: None };
+        assert_eq!(start_text(&loaded, plain), r#"{"a":1,"b":[true]}"#);
+        assert!(is_change(&loaded, &new(&start), plain));
+    }
+
+    #[test]
     fn long_broken_and_json_values_open_the_large_editor() {
         let plain = ColumnClass::Text { max_chars: None };
         assert!(!opens_large("short", plain));
@@ -2178,6 +2233,7 @@ mod tests {
             text: "another secret".into(),
             large: false,
             focus: false,
+            top: false,
             touched: true,
             problem: None,
         });
