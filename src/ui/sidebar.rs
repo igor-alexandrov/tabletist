@@ -12,6 +12,7 @@ use crate::theme::{Icon, Look, Palette};
 use crate::typography::{Text, TextRole};
 use crate::ui::focus;
 use crate::ui::format::display_safe;
+use crate::ui::menu;
 use crate::ui::widgets::{self, ButtonSpec, icon_button};
 
 /// The sidebar's width when it opens, per look: the design's 264 and 248
@@ -576,10 +577,10 @@ fn schema_header(
                 .image(palette.secondary, 10.0)
                 .paint_at(ui, Rect::from_center_size(glyph, vec2(10.0, 10.0)));
         }
-        let picked = widgets::popup_menu(&response, 160.0, look, || {
+        let picked = menu::choices(&response, 160.0, look, palette, || {
             schemas
                 .iter()
-                .map(|other| widgets::MenuChoice {
+                .map(|other| menu::Choice {
                     text: display_safe(other).into_owned(),
                     name: None,
                     selected: Some(other.as_str()) == shown,

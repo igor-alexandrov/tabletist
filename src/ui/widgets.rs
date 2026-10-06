@@ -449,58 +449,6 @@ pub fn popup_button<R>(
     inner.inner
 }
 
-/// One choice of a [`popup_menu`].
-pub struct MenuChoice {
-    /// What the choice reads.
-    pub text: String,
-    /// Its name for screen readers, when it is not what it reads (the
-    /// terminal look's lower case).
-    pub name: Option<String>,
-    /// The choice in use.
-    pub selected: bool,
-}
-
-/// The menu that `button` opens when clicked: `choices` under it, at least
-/// `min_width` wide. Returns the index of the choice picked this frame.
-/// `choices` is asked for only while the menu is open.
-///
-/// egui closes a menu on a pointer's click; a pick by key or by a screen
-/// reader closes it here. After a pick or Escape the keyboard is back on
-/// `button`, where it was before the menu opened.
-pub fn popup_menu(
-    button: &Response,
-    min_width: f32,
-    look: &Look,
-    choices: impl FnOnce() -> Vec<MenuChoice>,
-) -> Option<usize> {
-    let mut picked = None;
-    let open = egui::Popup::menu(button).show(|ui| {
-        ui.set_min_width(min_width);
-        for (index, choice) in choices().into_iter().enumerate() {
-            let text = galley(ui, &choice.text, Color32::PLACEHOLDER, look);
-            let response = ui.add(egui::Button::selectable(choice.selected, text));
-            if let Some(name) = &choice.name {
-                response.widget_info(|| {
-                    WidgetInfo::selected(WidgetType::Button, true, choice.selected, name)
-                });
-            }
-            if response.clicked() {
-                picked = Some(index);
-                ui.close();
-            }
-        }
-    });
-    let escaped = || {
-        button
-            .ctx
-            .input(|input| input.key_pressed(egui::Key::Escape))
-    };
-    if open.is_some() && (picked.is_some() || escaped()) {
-        button.request_focus();
-    }
-    picked
-}
-
 /// Up and down chevrons, centred in `rect`: the mark of a macOS pop-up
 /// button.
 fn paint_chevrons(painter: &egui::Painter, rect: Rect, color: Color32) {
