@@ -1903,3 +1903,10 @@ These sessions have no display. Report these as not run, for the user to try in 
 - Typing in an open menu: the Omarchy picker's filter line and the macOS type-ahead.
 - Text fields against the sheet (the filter bar's value field has no border and takes the surface tone).
 - The 30 pt control height of the sheet against the look's 28.
+
+## What the review found
+
+Two things the plan's `Item` left out, found by the review of the pull request and fixed after Task 3, each with a test in `src/ui/menu.rs`:
+
+- **A row's note was drawn and not announced.** The hosts from `~/.ssh/config` read their HostName beside the alias. Before, it was a label of its own that a screen reader heard. `Item::show` now sets it as the row's description (`a_rows_note_is_its_description_for_screen_readers`).
+- **The keyboard could go to a row the menu had scrolled away.** A menu scrolls once its rows are taller than `combo_height`, and egui does not bring a widget into view when it takes the keyboard. `Item::show` scrolls the row into view when it gains the keyboard (`the_keyboard_brings_a_row_that_is_scrolled_away_into_view`). The combo boxes before this change did not do it either.
