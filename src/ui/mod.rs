@@ -15599,6 +15599,45 @@ mod tests {
         assert!(!harness.has("More actions"));
     }
 
+    /// Save's key is the first thing the bar gives up. What the last save
+    /// came to is cut only once the key is gone, however much room the rest
+    /// of the bar has, and a line that fits beside the key leaves it.
+    #[test]
+    fn saves_key_goes_before_what_the_last_save_came_to_is_cut() {
+        let look = Look::standard();
+        let keys = format!("{}S", look.command_key());
+        // A window wide enough for the whole of a short line.
+        let mut harness = Harness::with_size(egui::vec2(1600.0, 800.0));
+        harness.set_look(look);
+        let (tab, id) = harness.editable();
+        focus_grid(&mut harness, tab);
+        make_pending(&mut harness, tab, id, (1, 1), "bob@example.com");
+        harness.click("Save");
+        harness.answer_written(Err(tabletist_db::Error::Cancelled));
+        harness.settle();
+        assert!(painted(&harness, "Save cancelled. Nothing was written."));
+        assert!(painted(&harness, &keys));
+        // The database's own words, longer than the bar.
+        harness.click("Save");
+        let message = "insert or update on table \"users\" violates a constraint ".repeat(4);
+        harness.answer_written(Ok(tabletist_db::WriteOutcome::Failed {
+            row: 0,
+            error: tabletist_db::Error::Query {
+                code: Some("23503".into()),
+                message,
+                detail: None,
+                hint: None,
+            },
+        }));
+        harness.settle();
+        let cut = |(text, _): &(String, egui::Color32)| {
+            text.starts_with("23503 · insert or update") && text.ends_with('…')
+        };
+        assert!(harness.painted.iter().any(cut), "{:?}", harness.painted);
+        assert!(!painted(&harness, &keys));
+        assert_bar_fits(&mut harness, "a long line");
+    }
+
     /// A table can have its rows told apart by a unique index and no
     /// primary key. The row panel names such a row by that key, as the bar
     /// and a save's line do: one row, one name.

@@ -259,12 +259,14 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, id: TabId) {
                 .then(|| format!("{} {}", counts.to_fix, gettext(locale, "to fix")));
             let fix_width = fix.as_ref().map(|fix| MARK + 5.0 + width(body, fix));
             let busy_width = saving.then(|| RING + 6.0 + width(body, &busy));
-            let note_least = note.as_ref().map(|note| width(body, note).min(NOTE_LEAST));
+            let note_width = note.as_ref().map(|note| width(body, note));
+            let note_least = note_width.map(|width| width.min(NOTE_LEAST));
+            // All of it, whole: Save keeps its key only beside that.
             let said_width = {
                 let counts = whole
                     .as_ref()
                     .map(|whole| width(TextRole::UiBodyStrong, whole));
-                let parts = [counts, fix_width, busy_width, note_least];
+                let parts = [counts, fix_width, busy_width, note_width];
                 let gaps = parts.iter().flatten().count().saturating_sub(1);
                 parts.iter().flatten().sum::<f32>() + APART * gaps as f32
             };
