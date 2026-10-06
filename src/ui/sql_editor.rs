@@ -1229,6 +1229,13 @@ mod tests {
         workspace.run_mode(workspace.sql_tab(id).unwrap())
     }
 
+    /// What the tab itself is set to, whatever its session lets it run as:
+    /// where no editor can write, that is what a switch must not change.
+    fn own_mode(harness: &Harness, tab: ConnTabId, id: TabId) -> RunMode {
+        let workspace = harness.app.workspace(tab).unwrap();
+        workspace.sql_tab(id).unwrap().mode
+    }
+
     /// What the badge's menu is set to: none where the badge is no menu.
     fn badge_value(harness: &mut Harness) -> Option<String> {
         let tree = harness.settle();
@@ -1340,7 +1347,7 @@ mod tests {
             );
             harness.press(Key::M, Modifiers::COMMAND | Modifiers::SHIFT);
             assert_eq!(
-                mode_of(&harness, tab, id),
+                own_mode(&harness, tab, id),
                 RunMode::ReadOnly,
                 "{}",
                 look.name
@@ -1394,7 +1401,7 @@ mod tests {
             assert!(choice.is_disabled(), "{}", look.name);
             harness.click("Read-write transaction");
             assert_eq!(
-                mode_of(&harness, tab, id),
+                own_mode(&harness, tab, id),
                 RunMode::ReadOnly,
                 "{}",
                 look.name
@@ -1402,7 +1409,7 @@ mod tests {
             harness.press(Key::Escape, Modifiers::NONE);
             harness.press(Key::M, Modifiers::COMMAND | Modifiers::SHIFT);
             assert_eq!(
-                mode_of(&harness, tab, id),
+                own_mode(&harness, tab, id),
                 RunMode::ReadOnly,
                 "{}",
                 look.name

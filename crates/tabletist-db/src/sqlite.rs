@@ -1515,7 +1515,7 @@ mod tests {
         assert_eq!(own.end, ScriptEnd::Committed);
         assert_eq!(checked_rows(&conn).await, 1);
         assert_eq!(flags(&conn).await, [0, 0, 0]);
-        // A run that fails or is stopped puts them back as well.
+        // A run that fails puts them back as well.
         let failed = write_unrefused(&conn, &[FLAGS[0], FLAGS[1], "SELECT nope"])
             .await
             .unwrap();
