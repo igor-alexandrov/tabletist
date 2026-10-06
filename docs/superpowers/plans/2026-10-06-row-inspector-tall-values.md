@@ -33,7 +33,7 @@ The "Editing a row" artboard draws a JSON field being edited in the inspector: a
 | JSON: colours | Keys, strings, numbers | Built, in the shared body |
 | JSON: validity | "Valid JSON" in green, the parser's words in red | In the band: "Valid JSON" and the counts, or what the check says |
 | JSON: "1 line changed", the changed line's tint | Drawn | Not built: it needs a line diff against the loaded value |
-| "Format ⇧⌘F" | A link at the label's right | Not built: `serde_json` here sorts an object's keys, and a formatter that kept their order is its own piece |
+| "Format ⇧⌘F" | A link at the label's right | Built, by the key in both places and by a link in the panel's label line: a re-indent that reads no value (see "What the run found") |
 | The `NULL` checkbox in the label's line | Drawn | Not built: `Mod+Backspace` on the field, as for every field |
 
 ## What was decided
@@ -212,6 +212,16 @@ In `large_body`, for a `target.json` editor: the text's layouter is `json_job`'s
 - [ ] **Step 2:** Render and read them beside the artboards. The images stay local.
 - [ ] **Step 3:** The documents.
 - [ ] **Step 4:** The four checks and the shots lint, then commit: "Add scenes of the row panel's tall field, and say in the documents that it is built".
+
+## What the run found
+
+Run on 2026-10-06, inline, one signed commit per task, the four checks and the shots lint passing after each (1,798 tests in the main crate at the end).
+
+- **Format is built.** The plan left it out because `serde_json` here sorts an object's keys. Colouring needed a scanner of the text anyway (`ui/json_text.rs`), and a layout made from its pieces reads no value: it changes only the white space between them, so no key, string or number can come out other than it went in (a number no float holds, a key that stands twice, an escape). `Action::FormatEditor`, `Mod+Shift+F` wherever the large editor is open, and "Format ⇧⌘F" in the label line of a document being edited in the panel. It does nothing to a text its column does not take.
+- **A press on the Format link is the editor's own** (`cell_editor::press_is_the_editors`): the text would otherwise give up the keyboard to the click, and the editor close before it was laid out.
+- **The large editor's keys are read in one function** (`large_keys`) for the popover and the tall field, beside the shared body.
+- **Tests of the popover that read its band** read "Valid JSON · " before a document's counts, and its text is narrower by the gutter.
+- Not built, as the plan's table says: "1 line changed" and the changed line's tint, and the `NULL` checkbox.
 
 ## By hand, for the user
 

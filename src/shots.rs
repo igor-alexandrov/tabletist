@@ -372,11 +372,14 @@ const EDITING: [(&str, Scene); 10] = [
 ];
 
 /// The row panel's fields, one scene per state, in every look.
-const ROW_FORM: [(&str, Scene); 4] = [
+const ROW_FORM: [(&str, Scene); 7] = [
     ("row-form-field", row_form_field),
     ("row-form-locked", row_form_locked),
     ("row-form-pending", row_form_pending),
     ("row-form-read-only", row_form_read_only),
+    ("row-form-tall", row_form_tall),
+    ("row-form-json", row_form_json),
+    ("row-form-json-broken", row_form_json_broken),
 ];
 
 /// A field of the row panel being edited: the editor in the value's place,
@@ -427,6 +430,59 @@ fn row_form_pending(harness: &mut Harness) {
     // The ring shows once the keyboard is in use.
     harness.settle();
     harness.press(egui::Key::ArrowUp, egui::Modifiers::NONE);
+}
+
+/// A text of several lines being edited in the panel: the tall field in
+/// its value's place, with its band.
+fn row_form_tall(harness: &mut Harness) {
+    let (tab, id) = editable(harness);
+    let cell = CellPos { row: 4, col: KIND };
+    let start = EditStart::Value;
+    harness.app.apply(Action::EditField {
+        tab,
+        id,
+        cell,
+        start,
+    });
+    // Alt+Enter: the field is tall from here on.
+    harness.app.apply(Action::EditorBreak { tab, id });
+    let workspace = harness.app.workspace_mut(tab).unwrap();
+    let editor = workspace.object_tab_mut(id).unwrap().edits.editor.as_mut();
+    editor.expect("the panel's editor").text = "preview\nof the second edition".into();
+    harness.app.apply(Action::EditorTyped { tab, id });
+}
+
+/// A document being edited in the panel, laid out: its lines numbered, its
+/// syntax in colour, and the band saying it is valid.
+fn row_form_json(harness: &mut Harness) {
+    let (tab, id) = editable(harness);
+    let cell = CellPos {
+        row: 4,
+        col: IMAGE_DATA,
+    };
+    let start = EditStart::Value;
+    harness.app.apply(Action::EditField {
+        tab,
+        id,
+        cell,
+        start,
+    });
+    harness.app.apply(Action::FormatEditor { tab, id });
+}
+
+/// The same with a piece typed after it that breaks it: the editor's line
+/// is the failure's, and the band says what the check says.
+fn row_form_json_broken(harness: &mut Harness) {
+    row_form_json(harness);
+    let tab = harness.app.active_tab_id();
+    let id = harness.app.workspace(tab).unwrap().active_tab.unwrap();
+    let workspace = harness.app.workspace_mut(tab).unwrap();
+    let editor = workspace.object_tab_mut(id).unwrap().edits.editor.as_mut();
+    editor
+        .expect("the panel's editor")
+        .text
+        .push_str(" \"lang\"");
+    harness.app.apply(Action::EditorTyped { tab, id });
 }
 
 /// A row of a read-only connection: the panel's first line says so, and
@@ -1130,7 +1186,8 @@ fn shots() {
         both(name, scene);
     }
     // The row panel's fields: one being edited, a locked one saying why,
-    // what a field says of its cell, and a row that cannot be edited.
+    // what a field says of its cell, a row that cannot be edited, and the
+    // tall field of a long text and of a document.
     for (name, scene) in ROW_FORM {
         both(name, scene);
     }

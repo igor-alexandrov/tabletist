@@ -605,6 +605,11 @@ enum Dialog { Connection(..), Password(..), HostKey(..), QuickOpen(..), Help,
   says why when asked, and the panel's first line says why a whole row
   cannot ("Read-only connection"). Duplicate and Delete are disabled. See
   `2026-10-06-row-inspector-inline-edit-design.md`.
+- A value of several lines, a long one or a JSON document is edited there
+  too, in a tall field in its value's place: Enter and Tab are the text's
+  own, Cmd/Ctrl+Enter applies. A document's lines are numbered and its
+  syntax is in colour while it is edited, in the panel and in the grid's
+  popover, and Cmd/Ctrl+Shift+F lays it out a member to a line.
 - On Omarchy `i` and Enter edit the cell on a table's grid, and Space and
   Cmd/Ctrl+Shift+R open the panel there. On a SQL result `i` and Enter
   still open it, Enter only when no widget has the keyboard. An Esc that

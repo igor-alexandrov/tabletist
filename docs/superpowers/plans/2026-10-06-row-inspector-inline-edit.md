@@ -68,7 +68,7 @@ The spec is the user's. These are the places where the app cannot yet do what it
 
 ## What this run leaves
 
-- Step 2: the tall field in the panel (multi-line text, JSON).
+- Step 2: the tall field in the panel (multi-line text, JSON). Built since: `2026-10-06-row-inspector-tall-values.md`.
 - The value editing spec's slices 2, 4 and 5, for the grid and the inspector at once: editors by type, the undo stack, rows.
 - The "Editing in the grid…" stand-in stays: one editor is open at a time.
 

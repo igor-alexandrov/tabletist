@@ -6,8 +6,9 @@ Date: 2026-10-06. Status: replaced by
 edit as the design does: the pencil, the double-click, the Edit button and
 `e` are gone, a value is one control that a click edits, and Enter walks.
 What still holds of it: the tab's one editor and its place (`EditorPlace`),
-`Table::row_lock` and a field's own lock, "Editing in the grid…", a tall
-value opening the grid's popover (its step 2 is still to build), and the
+`Table::row_lock` and a field's own lock, "Editing in the grid…" for an
+edit asked for in the grid, the tall field of its step 2 (built since, see
+`docs/superpowers/plans/2026-10-06-row-inspector-tall-values.md`), and the
 edge cases under "Errors and edge cases".
 
 ## Intent
