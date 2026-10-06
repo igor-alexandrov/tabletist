@@ -129,10 +129,11 @@ impl Table<'_> {
             .map(|column| column_class(self.dialect, &column.type_name))
     }
 
-    /// Why `cell` cannot be edited, or `None` when it can. The reasons that
-    /// hold for the whole table come first, so every cell of such a table
-    /// says the same.
-    pub fn lock(&self, cell: CellPos) -> Option<Lock> {
+    /// Why no cell of the page's row `row` can be edited, or `None` when
+    /// each of its cells answers for itself: what holds for the whole
+    /// table, what holds for a while, and what the row's own key says. The
+    /// row panel says such a reason once, for the row.
+    pub fn row_lock(&self, row: usize) -> Option<Lock> {
         if let Some(lock) = self.never() {
             return Some(lock);
         }
@@ -145,19 +146,16 @@ impl Table<'_> {
         if self.refreshing {
             return Some(Lock::Refreshing);
         }
-        let Some(row) = self.page.rows.get(cell.row) else {
-            return Some(Lock::NoSuchCell);
-        };
-        let Some(value) = row.get(cell.col) else {
+        let Some(values) = self.page.rows.get(row) else {
             return Some(Lock::NoSuchCell);
         };
         // Before anything its values say: they are of a row that is no
         // longer there.
-        if self.gone.contains(&cell.row) {
+        if self.gone.contains(&row) {
             return Some(Lock::Gone);
         }
         // A row narrower than the page has no key to read.
-        let held = |col: &usize| row.get(*col);
+        let held = |col: &usize| values.get(*col);
         if key.iter().any(|col| held(col).is_none_or(Value::is_null)) {
             return Some(Lock::KeyIsNull);
         }
@@ -170,13 +168,28 @@ impl Table<'_> {
         if inexact {
             return Some(Lock::KeyInexact);
         }
+        None
+    }
+
+    /// Why `cell` cannot be edited, or `None` when it can. The reasons that
+    /// hold for the whole table come first, so every cell of such a table
+    /// says the same, then the row's (see [`Table::row_lock`]), then the
+    /// cell's own.
+    pub fn lock(&self, cell: CellPos) -> Option<Lock> {
+        if let Some(lock) = self.row_lock(cell.row) {
+            return Some(lock);
+        }
+        let row = self.page.rows.get(cell.row);
+        let Some(value) = row.and_then(|row| row.get(cell.col)) else {
+            return Some(Lock::NoSuchCell);
+        };
         let Some(column) = self.column(cell.col) else {
             return Some(Lock::UnknownColumn);
         };
         if column.generated {
             return Some(Lock::Generated);
         }
-        if key.contains(&cell.col) {
+        if self.key().is_some_and(|key| key.contains(&cell.col)) {
             return Some(Lock::KeyColumn);
         }
         if column_class(self.dialect, &column.type_name) == ColumnClass::Binary
@@ -1401,6 +1414,92 @@ mod tests {
         assert_eq!(ok().lock(at(0, 0)), Some(Lock::KeyColumn));
         assert_eq!(ok().lock(at(9, 1)), Some(Lock::NoSuchCell));
         assert_eq!(ok().lock(at(0, 9)), Some(Lock::NoSuchCell));
+    }
+
+    #[test]
+    fn a_rows_lock_is_every_reason_before_the_cells_own() {
+        let (structure, page) = (structure(), page(rows()));
+        let ok = || table(Some(&structure), &page);
+        // A row whose cells answer for themselves has none, whatever its
+        // cells say: the key column of it is locked, and the row is not.
+        assert_eq!(ok().row_lock(0), None);
+        assert_eq!(ok().lock(at(0, 0)), Some(Lock::KeyColumn));
+        // The table's reasons, and the ones that hold for a while.
+        let read_only = Table {
+            access: Access::ReadOnly,
+            ..ok()
+        };
+        assert_eq!(read_only.row_lock(0), Some(Lock::ReadOnly));
+        let view = Table {
+            kind: ObjectKind::View,
+            ..ok()
+        };
+        assert_eq!(view.row_lock(0), Some(Lock::NotATable));
+        assert_eq!(table(None, &page).row_lock(0), Some(Lock::StructureLoading));
+        let saving = Table {
+            saving: true,
+            ..ok()
+        };
+        assert_eq!(saving.row_lock(0), Some(Lock::Saving));
+        let refreshing = Table {
+            refreshing: true,
+            ..ok()
+        };
+        assert_eq!(refreshing.row_lock(0), Some(Lock::Refreshing));
+        // A table with no key, and one whose key a save could not match.
+        let keyless = Structure {
+            primary_key: Vec::new(),
+            ..structure.clone()
+        };
+        assert_eq!(table(Some(&keyless), &page).row_lock(0), Some(Lock::NoKey));
+        let mut stamped = structure.clone();
+        stamped.columns[0].type_name = "timestamp".into();
+        let mysql = Table {
+            dialect: Dialect::MySql,
+            ..table(Some(&stamped), &page)
+        };
+        assert_eq!(mysql.row_lock(0), Some(Lock::KeyType));
+        // The row's own: it is not on the page, it is gone, its key is
+        // NULL or was not read exactly.
+        assert_eq!(ok().row_lock(9), Some(Lock::NoSuchCell));
+        let gone = BTreeSet::from([1]);
+        let with_gone = Table {
+            gone: &gone,
+            ..ok()
+        };
+        assert_eq!(with_gone.row_lock(1), Some(Lock::Gone));
+        assert_eq!(with_gone.row_lock(0), None);
+        let nulls = self::page(vec![vec![Value::Null, text("a"), Value::Null]]);
+        assert_eq!(
+            table(Some(&structure), &nulls).row_lock(0),
+            Some(Lock::KeyIsNull)
+        );
+        let inexact = self::page(vec![vec![text("caf\u{FFFD}"), text("a"), Value::Null]]);
+        assert_eq!(
+            table(Some(&structure), &inexact).row_lock(0),
+            Some(Lock::KeyInexact)
+        );
+        // Only SQLite reads a key's text that way: the others hold it.
+        for dialect in [Dialect::Postgres, Dialect::MySql] {
+            let exact = Table {
+                dialect,
+                ..table(Some(&structure), &inexact)
+            };
+            assert_eq!(exact.row_lock(0), None, "{dialect:?}");
+        }
+        // A row's reason comes before a cell's: a column the row does not
+        // hold answers for the row first.
+        assert_eq!(with_gone.lock(at(1, 9)), Some(Lock::Gone));
+        assert_eq!(with_gone.lock(at(0, 9)), Some(Lock::NoSuchCell));
+        // And every cell of a row answers its row's reason, where it has
+        // one, and never another.
+        for row in 0..2 {
+            for col in 0..3 {
+                if let Some(lock) = with_gone.row_lock(row) {
+                    assert_eq!(with_gone.lock(at(row, col)), Some(lock));
+                }
+            }
+        }
     }
 
     #[test]
