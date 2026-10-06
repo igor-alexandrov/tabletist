@@ -10,6 +10,8 @@ Cmd/Ctrl+O opens the picker with your saved connections. Each row shows
 the connection's environment and when it was last used, and
 **Find connection…** searches by name or by `user@host:port/database`.
 
+{% include shot.html file="macos-connections" alt="The connection picker: three connections named Bookshop grouped under that name, and two local ones" %}
+
 Connections with exactly the same name form a group under that name, which
 suits one database in several environments. The rest are listed under
 **Local** or **Remote**.
@@ -33,6 +35,8 @@ already open, and Shift+Enter opens it again.
 | **Open read-only** | See [Open read-only](#open-read-only) |
 
 **Test** checks the connection without saving it.
+
+{% include shot.html file="macos-connection-edit" alt="The connection dialog with every field filled in for a production database behind an SSH tunnel" width="2880" height="1800" %}
 
 ## Connection URLs
 

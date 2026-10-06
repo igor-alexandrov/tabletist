@@ -14,6 +14,8 @@ opened on.
 - **Run all** (Cmd/Ctrl+Shift+Return) runs the whole script.
 - Cmd/Ctrl+. cancels a run.
 
+{% include shot.html file="macos-sql" alt="A SQL editor with two statements, the result of the one at the cursor under it" %}
+
 Two menus in the toolbar bound every run:
 
 | Menu | Choices | Default |
@@ -33,6 +35,8 @@ The toolbar's switch (Cmd/Ctrl+Shift+M) sets what a run may do.
   committed when every statement succeeded, and rolled back on the first
   error, on cancel and on timeout. A run that only reads is still
   read-only.
+
+{% include shot.html file="macos-sql-committed" alt="A read-write run of two statements, with Messages saying how many rows each changed and that the run was committed" %}
 
 A new tab opens in Read-write only on a writable connection that is not
 production. On a connection that opens read-only, and on any production
@@ -69,6 +73,8 @@ keywords change.
 Keywords, schemas, tables, views and the columns of the tables in your
 statement are offered while you type. Ctrl+Space or Cmd/Ctrl+I asks for
 the list anywhere.
+
+{% include shot.html file="macos-sql-complete" alt="The completion list under a table name being typed, offering the tables that match" %}
 
 Tab accepts the highlighted row, and Esc closes the list. Enter accepts
 too once you moved in the list or asked for it. When the list opened by

@@ -32,6 +32,8 @@ What you type is checked against the column's type before anything is
 sent: numbers and their ranges, booleans, enum values, the maximum length,
 and the syntax of JSON.
 
+{% include shot.html file="macos-edit-pending" alt="The grid with three changed cells, one of them red because its column does not take the text, and the bar of pending changes under it" %}
+
 ## Save
 
 Nothing is written while you edit. Your changes stay pending, and a bar
@@ -43,8 +45,12 @@ appears with what you can do with them.
 - **Review SQL** (Cmd/Ctrl+Shift+D) shows the statements a save will run.
   **Copy SQL** in that panel copies them.
 
+{% include shot.html file="macos-edit-review" alt="Review SQL open above the bar, showing the statement a save will run and the conditions it runs under" %}
+
 A save to a production connection asks first, with every statement on
 screen.
+
+{% include shot.html file="macos-edit-production" alt="The question before a save to production, with the statement it will run and a red Save to production button" %}
 
 ## When someone else changed the row
 
@@ -58,6 +64,8 @@ yours. Then you choose:
   pending. Esc does the same.
 - **Use server values** drops your change to that row.
 - **Overwrite** writes your values over the server's.
+
+{% include shot.html file="macos-edit-conflict" alt="The question about a row that changed on the server: what was loaded, what the server holds now and your values, side by side" %}
 
 If someone deleted the row, there is nothing to reload or overwrite:
 **Discard my changes** drops your change, and Esc leaves it pending.

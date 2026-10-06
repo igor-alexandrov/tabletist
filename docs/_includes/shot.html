@@ -1,0 +1,7 @@
+{%- comment -%}
+  A screenshot from assets/screenshots, linked to itself at full size:
+  {% include shot.html file="macos-sql" alt="..." %}
+  Most are 2560 by 1600; give width and height for one that is not.
+{%- endcomment -%}
+{%- assign shot_src = '/assets/images/' | append: include.file | append: '.webp' | relative_url -%}
+<a class="shot" href="{{ shot_src }}"><img src="{{ shot_src }}" alt="{{ include.alt | escape }}" width="{{ include.width | default: 2560 }}" height="{{ include.height | default: 1600 }}" loading="lazy"></a>

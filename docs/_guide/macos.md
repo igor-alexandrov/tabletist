@@ -8,7 +8,7 @@ On a Mac, Tabletist has the macOS look: rounded controls, IBM Plex Sans
 for the interface and IBM Plex Mono for data. There is no setting that
 switches to another look.
 
-![Tabletist in its macOS look, with the connections in the title bar]({{ '/assets/images/macos.png' | relative_url }})
+{% include shot.html file="macos-table" alt="Tabletist in its macOS look, with two connections in the bar at the top" %}
 
 ## Install
 
@@ -29,6 +29,8 @@ launch, are on the
   Mac too.
 - **The app menu has the usual two.** **Tabletist → About Tabletist**
   shows the version, and **Tabletist → Settings…** opens Settings.
+
+{% include shot.html file="macos-table-dark" alt="The same window in the dark appearance" %}
 
 ## The keyboard
 
@@ -146,6 +148,9 @@ A password field in the connection dialog has a **Keychain** checkbox.
 Ticked, the password is kept in your keychain under the name
 `dev.tabletist.Tabletist`. Not ticked, Tabletist asks for the password
 when you connect.
+
+{% include shot.html file="macos-connection-edit" alt="The connection dialog, with a Keychain checkbox beside the password and beside the key's passphrase" width="2880" height="1800" %}
+
 [Read about passwords]({% link _reference/connections.md %}#passwords).
 
 ## SSH agents
@@ -166,4 +171,7 @@ Everything Tabletist keeps is in one folder:
 It holds `settings.toml`, `connections.json`, `known_hosts.json`, the
 `themes` folder and the logs. **Settings** shows where the settings file
 is, and **Reveal in Finder** takes you there.
+
+{% include shot.html file="macos-settings" alt="The Settings window, with the path of the settings file at the bottom" %}
+
 [Every file is described in Settings and Files]({% link _reference/settings-and-files.md %}#files).

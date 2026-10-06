@@ -95,7 +95,10 @@ GitHub Pages from `main`. `docs/superpowers/` is not part of the site:
   `{% link _guide/name.md %}` and to a file with the `relative_url` filter,
   never with a bare `/path/`.
 - The icon and the screenshots stay in `assets/`: `docs/_plugins/repo_assets.rb`
-  publishes them. Do not copy them into `docs/`.
+  publishes the icon and every picture in `assets/screenshots/`. Do not copy
+  them into `docs/`. A page shows one with `{% include shot.html %}`. The
+  site's are lossless WebP, rendered from the scenes of `src/shots.rs` (the
+  Bookshop data, never a real project's).
 - The pages name no version, so a release does not touch them.
 - The paths that start `docs.yml` are listed twice, as in `packaging.yml`.
   Change them together.
