@@ -14,7 +14,7 @@ use tabletist_db::{
 
 use crate::connections::{ConnectionId, PasswordMode, SavedConnection};
 use crate::env::Environment;
-use crate::model::{Action, CellPos, ConnTabId, EditStart, TabId};
+use crate::model::{Action, CellPos, ConnTabId, EditStart, RunMode, TabId};
 use crate::testing::Harness;
 
 const SIZE: egui::Vec2 = egui::vec2(1000.0, 650.0);
@@ -702,18 +702,19 @@ fn shots() {
             std::time::Instant::now().checked_sub(Duration::from_millis(4200));
     });
     // A write a database refused in a read-only run, as each of its
-    // cards: in a tab that is in Read-only, in a tab in Read-write whose
+    // cards: in a tab switched to Read-only, in a tab in Read-write whose
     // run was taken for one of reads, and on a connection that opens
     // read-only. The Messages lead with it.
     both("sql-blocked", |harness| {
         let tab = sql_script(harness, UPDATE);
+        sql_mode(harness, tab, RunMode::ReadOnly);
         run_sql(harness, tab, true);
         let refused = crate::testing::refused_write();
         harness.answer_sql(Ok(crate::testing::script_outcome(vec![refused])), None);
     });
     both("sql-blocked-run", |harness| {
         let tab = sql_script(harness, "SELECT setval('book_images_id_seq', 1);");
-        read_write(harness, tab);
+        sql_mode(harness, tab, RunMode::ReadWrite);
         run_sql(harness, tab, true);
         let refused = tabletist_db::StatementOutcome::Error {
             error: tabletist_db::Error::Query {
@@ -734,11 +735,11 @@ fn shots() {
         let refused = crate::testing::refused_write();
         harness.answer_sql(Ok(crate::testing::script_outcome(vec![refused])), None);
     });
-    // A tab switched to Read-write: the badge's menu, a run that writes on
+    // A tab in Read-write: the badge's menu, a run that writes on
     // its way (Run and Run all wait for it), and how such a run ends.
     both("sql-write-menu", |harness| {
         let tab = sql_editor(harness);
-        read_write(harness, tab);
+        sql_mode(harness, tab, RunMode::ReadWrite);
         harness.click("Transaction");
     });
     // On production the choice is shown and cannot be picked yet.
@@ -799,7 +800,7 @@ fn shots() {
                       INSERT INTO book_formats VALUES ('ebook');";
         let tab = sql_script(harness, script);
         harness.app.workspace_mut(tab).unwrap().driver = Driver::MySql;
-        read_write(harness, tab);
+        sql_mode(harness, tab, RunMode::ReadWrite);
         run_sql(harness, tab, true);
         let outcomes = vec![
             crate::testing::done_outcome(Some(12)),
@@ -1070,20 +1071,16 @@ const UPDATE: &str = "UPDATE book_images\n   SET kind = 'ebook'\n WHERE id = 2;"
 const WRITES: &str = "UPDATE book_images\n   SET kind = 'ebook'\n WHERE kind = 'epub';\n\n\
                       DELETE FROM book_images\n WHERE book_id IS NULL;";
 
-/// Switches the SQL editor on screen to Read-write, as its badge does.
-fn read_write(harness: &mut Harness, tab: ConnTabId) {
+/// Switches the SQL editor on screen to `mode`, as its badge does.
+fn sql_mode(harness: &mut Harness, tab: ConnTabId, mode: RunMode) {
     let sql_tab = harness.app.workspace(tab).unwrap().active_tab.unwrap();
-    harness.app.apply(Action::SetSqlMode {
-        tab,
-        sql_tab,
-        mode: crate::model::RunMode::ReadWrite,
-    });
+    harness.app.apply(Action::SetSqlMode { tab, sql_tab, mode });
 }
 
 /// A SQL editor in Read-write holding `script`, all of it sent as its run.
 fn writing(harness: &mut Harness, script: &str) -> ConnTabId {
     let tab = sql_script(harness, script);
-    read_write(harness, tab);
+    sql_mode(harness, tab, RunMode::ReadWrite);
     run_sql(harness, tab, true);
     tab
 }

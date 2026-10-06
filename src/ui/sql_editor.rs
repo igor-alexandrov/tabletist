@@ -1252,44 +1252,47 @@ mod tests {
     #[test]
     fn the_badge_is_a_menu_that_switches_the_tabs_mode() {
         for look in Look::ALL {
+            // A tab of a writable connection opens in Read-write, and its
+            // badge reads in the warning colour.
             let (mut harness, tab, id) = editor(look, "SELECT 1");
-            assert_eq!(
-                badge_value(&mut harness).as_deref(),
-                Some("Read-only transaction"),
-                "{}",
-                look.name
-            );
-            let quiet = badge_color(&harness, &look, RunMode::ReadOnly);
-            harness.click(TRANSACTION);
-            harness.click("Read-write transaction");
-            assert_eq!(
-                mode_of(&harness, tab, id),
-                RunMode::ReadWrite,
-                "{}",
-                look.name
-            );
             assert_eq!(
                 badge_value(&mut harness).as_deref(),
                 Some("Read-write transaction"),
                 "{}",
                 look.name
             );
-            // The menu closed on the pick, and the badge reads in the
-            // warning colour, which the read-only one did not.
-            assert!(!harness.has("Read-only transaction"), "{}", look.name);
             let warning = Some(harness.app.palette.warning);
             assert_eq!(badge_color(&harness, &look, RunMode::ReadWrite), warning);
-            assert_ne!(quiet, warning, "{}", look.name);
-            // Picking the mode in use changes nothing; the other one
-            // switches back.
-            harness.click(TRANSACTION);
-            harness.click("Read-write transaction");
-            assert_eq!(mode_of(&harness, tab, id), RunMode::ReadWrite);
             harness.click(TRANSACTION);
             harness.click("Read-only transaction");
             assert_eq!(
                 mode_of(&harness, tab, id),
                 RunMode::ReadOnly,
+                "{}",
+                look.name
+            );
+            assert_eq!(
+                badge_value(&mut harness).as_deref(),
+                Some("Read-only transaction"),
+                "{}",
+                look.name
+            );
+            // The menu closed on the pick, and the read-only badge is not
+            // in the warning colour.
+            assert!(!harness.has("Read-write transaction"), "{}", look.name);
+            let quiet = badge_color(&harness, &look, RunMode::ReadOnly);
+            assert!(quiet.is_some(), "{}", look.name);
+            assert_ne!(quiet, warning, "{}", look.name);
+            // Picking the mode in use changes nothing; the other one
+            // switches back.
+            harness.click(TRANSACTION);
+            harness.click("Read-only transaction");
+            assert_eq!(mode_of(&harness, tab, id), RunMode::ReadOnly);
+            harness.click(TRANSACTION);
+            harness.click("Read-write transaction");
+            assert_eq!(
+                mode_of(&harness, tab, id),
+                RunMode::ReadWrite,
                 "{}",
                 look.name
             );
@@ -1305,7 +1308,7 @@ mod tests {
             harness.press(Key::M, chord);
             assert_eq!(
                 mode_of(&harness, tab, id),
-                RunMode::ReadWrite,
+                RunMode::ReadOnly,
                 "{}",
                 look.name
             );
@@ -1321,7 +1324,7 @@ mod tests {
             harness.press(Key::M, chord);
             assert_eq!(
                 mode_of(&harness, tab, id),
-                RunMode::ReadOnly,
+                RunMode::ReadWrite,
                 "{}",
                 look.name
             );
@@ -1392,6 +1395,8 @@ mod tests {
     fn on_production_the_read_write_choice_is_shown_and_cannot_be_picked() {
         for look in Look::ALL {
             let (mut harness, tab, id) = editor(look, "SELECT 1");
+            // The tab an editor opened on production is: in Read-only.
+            set_mode(&mut harness, tab, id, RunMode::ReadOnly);
             harness.app.workspace_mut(tab).unwrap().environment =
                 crate::env::Environment::Production;
             harness.click(TRANSACTION);
@@ -1540,7 +1545,8 @@ mod tests {
         assert!(harness.has("Read-only transaction · rolled back"));
         // A statement that counted rows in a read-only run is no change
         // that stayed: the footer does not count it.
-        let (mut harness, _, _) = editor(Look::standard(), "UPDATE notes SET n = 1");
+        let (mut harness, tab, id) = editor(Look::standard(), "UPDATE notes SET n = 1");
+        set_mode(&mut harness, tab, id, RunMode::ReadOnly);
         harness.press(Key::Enter, Modifiers::COMMAND);
         let counted = crate::testing::script_outcome(vec![done_outcome(Some(12))]);
         harness.answer_sql(Ok(counted), None);

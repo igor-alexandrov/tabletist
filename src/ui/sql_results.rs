@@ -2465,6 +2465,7 @@ mod tests {
         for look in Look::ALL {
             let update = "UPDATE users SET email = 'x'";
             let (mut harness, tab) = writable(look, update);
+            set_mode(&mut harness, tab, RunMode::ReadOnly);
             run(&mut harness);
             assert_eq!(sent_run(&harness).0, ScriptMode::ReadOnly);
             harness.answer_sql(Ok(script_outcome(vec![refused_write()])), None);
@@ -2566,6 +2567,8 @@ mod tests {
     fn on_production_the_card_says_why_the_tab_cannot_write_and_offers_nothing() {
         for look in Look::ALL {
             let (mut harness, tab) = writable(look, "UPDATE users SET email = 'x'");
+            // The tab an editor opened on production is: in Read-only.
+            set_mode(&mut harness, tab, crate::model::RunMode::ReadOnly);
             harness.app.workspace_mut(tab).unwrap().environment =
                 crate::env::Environment::Production;
             run(&mut harness);
@@ -2592,10 +2595,11 @@ mod tests {
         }
     }
 
-    /// A refused `UPDATE` in a tab in Read-only of a writable connection,
-    /// drawn in `look`: the card offers to allow writes.
+    /// A refused `UPDATE` in a tab switched to Read-only on a writable
+    /// connection, drawn in `look`: the card offers to allow writes.
     fn refused_in_a_read_only_tab(look: Look) -> (Harness, ConnTabId) {
         let (mut harness, tab) = writable(look, "UPDATE users SET email = 'x'");
+        set_mode(&mut harness, tab, crate::model::RunMode::ReadOnly);
         run(&mut harness);
         harness.answer_sql(Ok(script_outcome(vec![refused_write()])), None);
         (harness, tab)

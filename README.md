@@ -39,8 +39,8 @@ Linux (Omarchy and Hyprland first), macOS and Windows.
   connection tab (reconnecting in that tab reuses them).
 - A connection opens read-only when its "Open read-only" box says so, which
   is the default for production. A writable one opens a read-write session,
-  in which browsing, a raw WHERE and a SQL editor left in Read-only still
-  only read.
+  in which browsing, a raw WHERE and a SQL editor switched to Read-only
+  still only read.
 - On a writable connection a table's values are edited in its grid: changes
   stay pending until Save writes them in one transaction, which never
   overwrites a row someone else changed: a save that finds one writes
@@ -62,12 +62,14 @@ Linux (Omarchy and Hyprland first), macOS and Windows.
 - A SQL editor per connection (Cmd/Ctrl+T): run the statement at the cursor
   (Cmd/Ctrl+Return) or the whole script, with a row limit and a timeout, and
   read a result row in full in the row panel.
-  Every run happens in a read-only transaction that is rolled back, and
-  statements that would leave it are refused. On a writable connection
-  that is not production's a tab can be switched to Read-write (its
-  toolbar's badge, or Cmd/Ctrl+Shift+M): a run that changes data is then
-  one transaction, committed when every statement succeeded and rolled
-  back on the first error, cancel or timeout, and the Messages say which.
+  On a read-only connection, and on production, every run happens in a
+  read-only transaction that is rolled back, and statements that would
+  leave it are refused. On a writable connection that is not production's
+  a tab opens in Read-write: a run that changes data is one transaction,
+  committed when every statement succeeded and rolled back on the first
+  error, cancel or timeout, and the Messages say which. A run of reads is
+  read-only there too, and the tab's badge (or Cmd/Ctrl+Shift+M) switches
+  it to Read-only and back.
   Format (Cmd/Ctrl+Shift+F)
   lays queries out in river style and uppercases reserved words, in the
   selection's statements or the whole script. Keywords, schemas, tables,

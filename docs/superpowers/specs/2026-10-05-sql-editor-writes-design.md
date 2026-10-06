@@ -6,7 +6,10 @@ tab) is built in two runs. The first is
 `docs/superpowers/plans/2026-10-05-sql-editor-writes-tab.md`: a tab that
 writes, on every connection but a production one. The second, not yet
 planned, is the production confirmation and `editor.sql_new_tab`. Step 3
-is not yet planned. The PostgreSQL and MySQL runs were built with no
+is not yet planned. Since 2026-10-06 a new tab follows its connection: it
+opens in Read-write where its editors can write, which the first draft
+left to `editor.sql_new_tab` and off by default. On production it opens
+in Read-only all the same. The PostgreSQL and MySQL runs were built with no
 server at hand: their tests have been compiled, and are first run by CI.
 
 ## Intent
@@ -16,8 +19,8 @@ rolled back, on a writable connection too. This slice lets a SQL tab of a
 writable connection run `INSERT`, `UPDATE`, `DELETE`, DDL and whatever else
 the database takes inside a transaction, and keep the result.
 
-Success: on each driver, a user on a writable connection switches a SQL tab
-to Read-write, runs statements that change data, reads how many rows each
+Success: on each driver, a user on a writable connection opens a SQL tab,
+which is in Read-write, runs statements that change data, reads how many rows each
 one changed and whether the run was committed or rolled back, and finds the
 session afterwards as it was before; a run that fails, is cancelled or times
 out leaves nothing behind, or says exactly what it left; on production the
@@ -39,11 +42,11 @@ repository.
 
 | Question | Decision |
 |---|---|
-| Who may write | A SQL tab switched to Read-write, on a writable connection. Never on a read-only one. |
+| Who may write | A SQL tab in Read-write, on a writable connection. Never on a read-only one. |
 | Commit model | One transaction per run. Committed when every statement succeeded, rolled back on the first error, cancel or timeout. |
 | Which runs write | A run is read-write only when the tab is in Read-write mode and one of its statements looks like a write. Every other run is today's read-only run, unchanged. |
 | A write taken for a read | The database refuses it in the read-only transaction, and the card offers to run it again read-write. |
-| New tabs | Read-only, until `editor.sql_new_tab` says to follow the connection. |
+| New tabs | They follow the connection: Read-write where its editors can write, Read-only everywhere else. On production always Read-only, to be switched by the user. `editor.sql_new_tab` can say Read-only for all of them. |
 | Production | Every read-write run shows its statements and is confirmed first (Omarchy: by typing `write`). |
 | `UPDATE` or `DELETE` without `WHERE` | Asked about on every writable connection, unless `editor.confirm_unsafe_writes` is off. |
 | Transaction statements | `BEGIN`, `COMMIT`, `ROLLBACK` and the rest of the refusal list stay refused. The run owns its transaction. |
@@ -91,10 +94,29 @@ switch, as the Omarchy artboard has it (it closes the tab).
 
 ### The tab's mode
 
-`SqlTab` gains `mode: RunMode`, `ReadOnly` or `ReadWrite`. A new tab starts
-`ReadOnly`; with `editor.sql_new_tab = "connection"` it starts `ReadWrite`
-on a writable connection. The user switches it with the toolbar's badge or
-`Mod+Shift+M`.
+`SqlTab` gains `mode: RunMode`, `ReadOnly` or `ReadWrite`. A new tab
+follows the connection (`RunMode::of_new_tab`): it starts `ReadWrite`
+where an editor of its workspace can write when it opens
+(`Workspace::sql_writes`), and `ReadOnly` everywhere else; with
+`editor.sql_new_tab = "read-only"` it starts `ReadOnly` everywhere. The
+user switches it with the toolbar's badge or `Mod+Shift+M`.
+
+Production is the exception: a tab there starts `ReadOnly` on a writable
+connection too, whatever `editor.sql_new_tab` says, and the user switches
+it to `ReadWrite`. The rule is the environment's own,
+`Environment::read_only_by_default`: where connections open read-only
+unless the user says otherwise, so do their editors. Until the production
+confirmation is built the switch there does nothing, as before. A setting
+of its own for production's new tabs may follow later. None is planned.
+
+The mode is given once, when the tab opens: a tab opened on a read-only
+connection stays in `ReadOnly` when the session takes writes later, and
+only the tabs opened from then on start in `ReadWrite`.
+
+So on a writable connection that is not production's, a statement that
+changes data is committed from the first run of a new tab, with no switch
+before it. Until `editor.confirm_unsafe_writes` is built, that includes an
+`UPDATE` or a `DELETE` without a `WHERE`.
 
 The mode that counts is the effective one: `ReadWrite` only while the
 workspace's `access` is `Writable`. A tab whose session comes back
@@ -588,7 +610,7 @@ dropped without a question, as today.
 
 | Key | Type | Default | Notes |
 |---|---|---|---|
-| `editor.sql_new_tab` | string | `"read-only"` | `"read-only"` or `"connection"`. Any other value is an invalid line. |
+| `editor.sql_new_tab` | string | `"connection"` | `"connection"` or `"read-only"`. Any other value is an invalid line. On production a new tab is in Read-only under both. |
 | `editor.confirm_unsafe_writes` | boolean | `true` | The question about `UPDATE` and `DELETE` without `WHERE`. |
 
 Both are `#[serde(default)]` in `Settings` and reload live with the file.
@@ -598,8 +620,8 @@ Both are `#[serde(default)]` in `Settings` and reload live with the file.
 ## The promise, restated
 
 On a read-only connection no action in the app can modify data. On a
-writable connection only Save can, and a run in a SQL tab the user
-switched to Read-write; browsing, a raw WHERE and every other run still
+writable connection only Save can, and a run in a SQL tab in Read-write;
+browsing, a raw WHERE and every other run still
 cannot.
 
 ## Errors and edge cases

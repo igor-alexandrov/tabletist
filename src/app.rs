@@ -6711,24 +6711,50 @@ mod tests {
     }
 
     #[test]
-    fn a_new_editor_reads_only_until_it_is_switched() {
+    fn a_new_editor_writes_where_its_connection_does() {
+        use crate::env::Environment;
         let mut harness = Harness::new();
         let (tab, id) = writable_sql(&mut harness);
-        assert_eq!(sql(&harness, tab, id).mode, RunMode::ReadOnly);
-        assert_eq!(run_mode(&harness, tab, id), RunMode::ReadOnly);
-        set_mode(&mut harness, tab, id, RunMode::ReadWrite);
+        assert_eq!(sql(&harness, tab, id).mode, RunMode::ReadWrite);
         assert_eq!(run_mode(&harness, tab, id), RunMode::ReadWrite);
+        // A connection that opens read-only: its editors read, and one
+        // opened there still does once the session takes writes. Only an
+        // editor opened from then on writes.
+        let mut harness = Harness::new();
+        let (tab, id) = new_sql(&mut harness);
+        assert_eq!(sql(&harness, tab, id).mode, RunMode::ReadOnly);
+        harness.reconnect_fake_as(tab, false);
+        assert_eq!(run_mode(&harness, tab, id), RunMode::ReadOnly);
+        harness.app.apply(Action::NewSqlTab(tab));
+        let later = harness.app.workspace(tab).unwrap().active_tab.unwrap();
+        assert_eq!(run_mode(&harness, tab, later), RunMode::ReadWrite);
+        // A writable connection to production: an editor there opens in
+        // Read-only, as production's connections do.
+        let mut harness = Harness::new();
+        let tab = harness.connect_fake_as(false);
+        harness.app.workspace_mut(tab).unwrap().environment = Environment::Production;
+        harness.app.apply(Action::NewSqlTab(tab));
+        let id = harness.app.workspace(tab).unwrap().active_tab.unwrap();
+        assert_eq!(sql(&harness, tab, id).mode, RunMode::ReadOnly);
+    }
+
+    #[test]
+    fn the_badge_and_the_key_switch_an_editors_own_mode() {
+        let mut harness = Harness::new();
+        let (tab, id) = writable_sql(&mut harness);
+        set_mode(&mut harness, tab, id, RunMode::ReadOnly);
+        assert_eq!(run_mode(&harness, tab, id), RunMode::ReadOnly);
         // The key switches to the other mode, and back.
         toggle_mode(&mut harness, tab, id);
-        assert_eq!(run_mode(&harness, tab, id), RunMode::ReadOnly);
-        toggle_mode(&mut harness, tab, id);
         assert_eq!(run_mode(&harness, tab, id), RunMode::ReadWrite);
+        toggle_mode(&mut harness, tab, id);
+        assert_eq!(run_mode(&harness, tab, id), RunMode::ReadOnly);
         // The mode is the tab's own: another editor of the connection
-        // starts read-only all the same.
+        // starts read-write all the same.
         harness.app.apply(Action::NewSqlTab(tab));
         let other = harness.app.workspace(tab).unwrap().active_tab.unwrap();
-        assert_eq!(run_mode(&harness, tab, other), RunMode::ReadOnly);
-        assert_eq!(run_mode(&harness, tab, id), RunMode::ReadWrite);
+        assert_eq!(run_mode(&harness, tab, other), RunMode::ReadWrite);
+        assert_eq!(run_mode(&harness, tab, id), RunMode::ReadOnly);
     }
 
     #[test]
@@ -6745,8 +6771,10 @@ mod tests {
         // A writable connection to production: a write there is asked about
         // first, and nothing asks about a script yet.
         let mut harness = Harness::new();
-        let (tab, id) = writable_sql(&mut harness);
+        let tab = harness.connect_fake_as(false);
         harness.app.workspace_mut(tab).unwrap().environment = crate::env::Environment::Production;
+        harness.app.apply(Action::NewSqlTab(tab));
+        let id = harness.app.workspace(tab).unwrap().active_tab.unwrap();
         let workspace = harness.app.workspace(tab).unwrap();
         assert_eq!(workspace.sql_writes(), Err(NoWrites::Unconfirmed));
         set_mode(&mut harness, tab, id, RunMode::ReadWrite);
@@ -6808,6 +6836,7 @@ mod tests {
         let (tab, id) = writable_sql(&mut harness);
         let script = "SELECT 1;\nUPDATE users SET email = 'x' WHERE id = 1";
         // In Read-only nothing is sent to write, whatever the script holds.
+        set_mode(&mut harness, tab, id, RunMode::ReadOnly);
         type_sql(&mut harness, tab, id, script, 0);
         run(&mut harness, tab, id, true);
         assert_eq!(sent_mode(&harness), ReadOnly);
