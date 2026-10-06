@@ -68,8 +68,8 @@ Linux (Omarchy and Hyprland first), macOS and Windows.
   a tab opens in Read-write: a run that changes data is one transaction,
   committed when every statement succeeded and rolled back on the first
   error, cancel or timeout, and the Messages say which. A run of reads is
-  read-only there too, and the tab's badge (or Cmd/Ctrl+Shift+M) switches
-  it to Read-only and back.
+  read-only there too, and the toolbar's switch (or Cmd/Ctrl+Shift+M)
+  sets the tab to Read-only and back.
   Format (Cmd/Ctrl+Shift+F)
   lays queries out in river style and uppercases reserved words, in the
   selection's statements or the whole script. Keywords, schemas, tables,

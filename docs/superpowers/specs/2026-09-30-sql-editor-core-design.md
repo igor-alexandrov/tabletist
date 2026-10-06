@@ -635,17 +635,19 @@ tab's result grid as on a table's.
 ### Toolbar
 
 - macOS: Run (with `Cmd+Return`), Run all (`Shift+Cmd+Return`); on the right
-  a "Read-only transaction" badge whose tooltip explains it, then
-  "Limit 1,000" and "Timeout 30 s" menus. On a connection that takes
-  writes the badge is a menu too, with "Read-only transaction" and
-  "Read-write transaction", and in Read-write it reads in the warning
-  tone.
-- Omarchy: the tab title, a muted `read-only transaction · limit 1000 ·
-  timeout 30s` whose limit and timeout parts open the same menus, then
-  `run ctrl+enter` and `run all ctrl+shift+enter`. On a connection that
-  takes writes the first part opens the badge's menu.
+  a segmented switch, "Read-only" and "Read-write", whose segments say on
+  hover what each mode does, then "Limit 1,000" and "Timeout 30 s" menus.
+  The chosen Read-only stands behind a lock, and the chosen Read-write
+  reads in the warning tone. Where no editor of the connection can write
+  the switch is drawn as a control that is off, and its Read-write segment
+  says why (see `2026-10-05-sql-editor-writes-design.md`, "Toolbar and
+  keys").
+- Omarchy: the tab title, the same switch as `read-only` and `read-write`
+  with the chosen one in a box and the other muted, then a muted `· limit
+  1000 · timeout 30s` whose parts open the menus, then `run ctrl+enter`
+  and `run all ctrl+shift+enter`.
 - Where the toolbar is too narrow, pieces give way in this order: the run
-  buttons' keys, the read-only note, on Omarchy the tab title, then the
+  buttons' keys, the switch, on Omarchy the tab title, then the
   menus' words (leaving "1,000" and "30 s"), on macOS the menus' chevrons,
   and last the menus. The run buttons stay.
 - Explain is absent until its slice, not disabled. Format, its button

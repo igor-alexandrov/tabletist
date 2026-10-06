@@ -9,7 +9,9 @@ planned, is the production confirmation and `editor.sql_new_tab`. Step 3
 is not yet planned. Since 2026-10-06 a new tab follows its connection: it
 opens in Read-write where its editors can write, which the first draft
 left to `editor.sql_new_tab` and off by default. On production it opens
-in Read-only all the same. The PostgreSQL and MySQL runs were built with no
+in Read-only all the same. Since the same day the toolbar's badge and its
+menu are a segmented switch, as the design canvas now draws it ("Toolbar
+and keys"). The PostgreSQL and MySQL runs were built with no
 server at hand: their tests have been compiled, and are first run by CI.
 
 ## Intent
@@ -31,9 +33,9 @@ This is slice 6 of editing values
 (`2026-10-03-value-editing-core-design.md`, "Editing as a whole") and it
 changes what the core editor promises (`2026-09-30-sql-editor-core-design.md`).
 
-The design canvas has no artboard for a run that writes. What it gives is
-the frame: the toolbar's "Read-only transaction" badge as a switch for the
-tab, the Editor settings "New tabs run in" and "Confirm UPDATE or DELETE
+The design canvas had no artboard for a run that writes when this was
+written. What it gave is the frame: the toolbar's "Read-only transaction"
+badge as a switch for the tab, the Editor settings "New tabs run in" and "Confirm UPDATE or DELETE
 without WHERE", and the "Write blocked" card of the "read-only connection"
 error artboards (macOS and Omarchy). They are not copied into the
 repository.
@@ -99,7 +101,7 @@ follows the connection (`RunMode::of_new_tab`): it starts `ReadWrite`
 where an editor of its workspace can write when it opens
 (`Workspace::sql_writes`), and `ReadOnly` everywhere else; with
 `editor.sql_new_tab = "read-only"` it starts `ReadOnly` everywhere. The
-user switches it with the toolbar's badge or `Mod+Shift+M`.
+user switches it with the toolbar's switch or `Mod+Shift+M`.
 
 Production is the exception: a tab there starts `ReadOnly` on a writable
 connection too, whatever `editor.sql_new_tab` says, and the user switches
@@ -121,9 +123,9 @@ before it. Until `editor.confirm_unsafe_writes` is built, that includes an
 The mode that counts is the effective one: `ReadWrite` only while the
 workspace's `access` is `Writable`. A tab whose session comes back
 read-only (the box was turned on meanwhile) runs read-only and shows the
-read-only connection's badge; its own mode is kept and counts again if the
-session is writable once more. On a read-only connection the key and the
-badge do nothing.
+read-only connection's switch; its own mode is kept and counts again if
+the session is writable once more. On a read-only connection the key and
+the switch do nothing.
 
 ### The statement's kind
 
@@ -463,21 +465,31 @@ does.
 
 ### Toolbar and keys
 
-- macOS and Windows, writable connection: the badge is a menu, as Limit and
-  Timeout are, with "Read-only transaction" and "Read-write transaction".
-  In Read-write it is drawn in the warning tone, on production in the
-  production tone. Its tooltip says what the mode does: "Runs are rolled
+- macOS and Windows, writable connection: a segmented switch, "Read-only"
+  and "Read-write", as the design's Components draw one: a sunken track
+  with the chosen segment raised. The chosen Read-only stands behind a
+  lock; the chosen Read-write reads in the warning tone. A click on a
+  segment sets the mode, and with the keyboard on the switch the arrows
+  do. Each segment says on hover what its mode does: "Runs are rolled
   back. Nothing is changed." and "A run that changes data is committed
   when every statement succeeds."
-- Read-only connection: the badge is today's, inert, and its tooltip adds
-  "This connection opens read-only."
-- Omarchy: the first part of `read-only transaction · limit 1000 · timeout
-  30s` opens the same menu and reads `read-write transaction` in the
-  warning colour, the production colour on PROD.
+- Where no editor can write (a read-only connection, and production until
+  its confirmation is built): the switch is drawn as a control that is
+  off, with Read-only chosen. Its Read-write segment cannot be picked and
+  says why, to a screen reader, to the keyboard while it is on it, and on
+  hover: "This connection opens read-only." or the sentence about
+  production.
+- Omarchy: the same two segments before `· limit 1000 · timeout 30s`, the
+  chosen one in a box and the other muted, `read-write` in the warning
+  colour when it is chosen.
 - `Mod+Shift+M` switches the mode of the active SQL tab. It is in the
   shortcuts table as "Read-only or read-write runs in the SQL editor".
-- The toolbar gives way in the core spec's order, with the badge in the
-  place of the read-only note.
+- The toolbar gives way in the core spec's order: the switch goes after
+  the run buttons' keys.
+- Not built from those artboards: the "Auto-commit" and "Transaction"
+  control beside the switch, the bar of an open transaction with Commit
+  and Rollback, and the key the Omarchy artboard writes beside the switch
+  (`ctrl+w` closes the tab here).
 
 ### Results, Messages and the footer
 
@@ -673,7 +685,7 @@ Each step ends compiling, tested and shippable, and gets its own plan run:
    the read-write run in the three drivers, `Error::LeftTransaction`. The
    backend passes `ScriptMode::ReadOnly` everywhere; nothing in the app
    writes. It needs nothing from value editing and can be built on `main`.
-2. **The tab.** The mode, the badge's menu and `Mod+Shift+M`,
+2. **The tab.** The mode, the toolbar's switch and `Mod+Shift+M`,
    `editor.sql_new_tab`, the decision in `RunSql`, the production
    confirmation in both looks, the three cards, Messages, Results and the
    footer for a read-write run, and Run held back while one is in flight.
@@ -683,9 +695,9 @@ Each step ends compiling, tested and shippable, and gets its own plan run:
    3, so it is planned once that has landed. It is built in two runs.
    The first leaves out the production confirmation and
    `editor.sql_new_tab`, and so lets no tab of a production connection
-   write: there the badge's menu shows "Read-write transaction" disabled,
-   the key does nothing, and the menu, the badge's tooltip and the card of
-   a tab in Read-only say "Read-write runs on a production connection are
+   write: there the switch's Read-write segment cannot be picked,
+   the key does nothing, and the segment, the switch's tooltip and the card
+   of a tab in Read-only say "Read-write runs on a production connection are
    not available yet." in place of the way on. So does the card of a
    production connection that opens read-only, in place of "To write, turn
    off Open read-only ..." and **Edit connection**: with the box off its
@@ -765,12 +777,12 @@ No step ships a read-write run on production without its confirmation.
   is read-only;
   stale marks and their refetch, with and without pending changes; the
   tree's refresh after DDL; the leaving guard.
-- Headless UI tests, in every look: the badge's menu and the key; the
+- Headless UI tests, in every look: the switch and the key; the
   three cards and their actions, in Messages, after a statement that
   returned rows too; the production confirmation, with
   `write` typed on Omarchy; the question about a missing `WHERE`, alone
   and inside the production sheet; Messages, Results and the footer for
-  each `ScriptEnd`; the badge on a read-only connection.
+  each `ScriptEnd`; the switch on a read-only connection.
 - Settings: an older file without the new keys loads with the defaults; an
   unknown `sql_new_tab` is an invalid line.
 - `src/shots.rs` gains scenes for review on the Bookshop demo data, whose

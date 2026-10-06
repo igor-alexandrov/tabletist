@@ -367,7 +367,7 @@ pub enum Action {
         sql_tab: TabId,
         secs: Option<u32>,
     },
-    /// The badge's menu: how this editor's runs end. Nothing on a
+    /// The toolbar's switch: how this editor's runs end. Nothing on a
     /// connection whose editors cannot write (see `Workspace::sql_writes`).
     SetSqlMode {
         tab: ConnTabId,
@@ -2052,8 +2052,8 @@ pub type ShownRows<'a> = (
     bool,
 );
 
-/// How a SQL editor's runs are meant to end: what its toolbar's badge
-/// says and switches.
+/// How a SQL editor's runs are meant to end: what its toolbar's switch
+/// shows and sets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum RunMode {
     /// Every run is a read-only transaction that is rolled back.
@@ -2384,7 +2384,7 @@ pub struct SqlTab {
     pub cursor: usize,
     pub limit: u32,
     pub timeout: Option<Duration>,
-    /// What the badge was set to: by `Workspace::push_sql_tab` when the
+    /// What the switch was set to: by `Workspace::push_sql_tab` when the
     /// tab opened, and by the user since. It counts only while the session
     /// can write: ask `Workspace::run_mode` for the mode a run has.
     pub mode: RunMode,

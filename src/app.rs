@@ -3182,7 +3182,7 @@ impl App {
     }
 
     /// Sets how an editor's runs end: to `mode`, or to the other one. Only
-    /// where an editor can run read-write: everywhere else the badge and
+    /// where an editor can run read-write: everywhere else the switch and
     /// the key do nothing, and a mode the tab was given before stays as it
     /// is for a session that can write again.
     fn set_sql_mode(&mut self, tab: ConnTabId, id: TabId, mode: Option<RunMode>) {
@@ -6739,7 +6739,7 @@ mod tests {
     }
 
     #[test]
-    fn the_badge_and_the_key_switch_an_editors_own_mode() {
+    fn the_switch_and_the_key_set_an_editors_own_mode() {
         let mut harness = Harness::new();
         let (tab, id) = writable_sql(&mut harness);
         set_mode(&mut harness, tab, id, RunMode::ReadOnly);
@@ -6758,7 +6758,7 @@ mod tests {
     }
 
     #[test]
-    fn the_badge_and_the_key_do_nothing_where_an_editor_cannot_write() {
+    fn the_switch_and_the_key_do_nothing_where_an_editor_cannot_write() {
         use crate::model::NoWrites;
         // A connection that opens read-only.
         let mut harness = Harness::new();
@@ -6803,7 +6803,7 @@ mod tests {
         harness.reconnect_fake_as(tab, true);
         assert_eq!(run_mode(&harness, tab, id), RunMode::ReadOnly);
         assert_eq!(sql(&harness, tab, id).mode, RunMode::ReadWrite);
-        // Neither the badge nor the key changes what the tab was set to.
+        // Neither the switch nor the key changes what the tab was set to.
         toggle_mode(&mut harness, tab, id);
         set_mode(&mut harness, tab, id, RunMode::ReadOnly);
         assert_eq!(sql(&harness, tab, id).mode, RunMode::ReadWrite);
