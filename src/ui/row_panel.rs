@@ -369,13 +369,29 @@ fn draw(
             // A part of the window to step to once it has a row to show.
             focus::region(ui, Region::Panel, full);
             // What editing adds, for a table's row that can be edited.
-            let mut form = match workspace.tab(id) {
-                Some(Tab::Object(object)) => {
-                    Form::of(workspace, object, tab, cell.row, editor, hold)
+            let object = match workspace.tab(id) {
+                Some(Tab::Object(object)) => Some(object),
+                _ => None,
+            };
+            let mut form = match object {
+                Some(object) => {
+                    let how = (hold, look.terminal);
+                    Form::of(workspace, object, tab, cell.row, editor, how)
                 }
-                _ => Form::none(),
+                None => Form::none(),
             };
             form.focus = focus;
+            // Why no field of the row can be edited, as the footer says it:
+            // in the grid's own words, the terminal's in its lower case.
+            let locked = object.and_then(|object| {
+                let lock = row_form::row_lock(workspace, object, cell.row)?;
+                let table = format::display_safe(&object.object.name);
+                Some(if look.terminal {
+                    crate::ui::workspace::lock_line(lock, &table, &look, locale)
+                } else {
+                    crate::ui::cell_editor::lock_text(lock, &table, locale)
+                })
+            });
             let structure = source.structure;
             let info = |name: &str| {
                 let key =
@@ -619,9 +635,9 @@ fn draw(
                     });
                 }
             }
-            // Footer: the editing controls, disabled until editing arrives.
-            // Its rule, the buttons (28 or 32), the note under them. A SQL
-            // result has none: its rows are no table's to edit.
+            // Footer: the editing controls. Its rule, the buttons (28 or
+            // 32), the note under them. A SQL result has none: its rows are
+            // no table's to edit.
             let note = line_of(ui, caption(&look), &look);
             let footer_height = if !source.table {
                 0.0
@@ -635,9 +651,9 @@ fn draw(
                 pos2(full.right(), full.bottom() - footer_height),
             );
             let foot = Rect::from_min_max(pos2(full.left(), body.bottom()), full.max);
-            if source.table {
-                let read_only = workspace.access == tabletist_db::Access::ReadOnly;
-                editing_footer(ui, foot, read_only, &look, &palette, locale);
+            if source.table && editing_footer(ui, foot, locked.as_deref(), &look, &palette, locale)
+            {
+                actions.push(Action::EditRow { tab, id });
             }
             let mut body_ui = ui.new_child(egui::UiBuilder::new().max_rect(body));
             let skin = FieldSkin {
@@ -965,11 +981,21 @@ fn field(
     response.widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, &name));
     let part = form.part(col);
     let editable = part == Part::Editable;
+    // Why this field alone cannot be edited, where it has a reason to give.
+    let locked = match part {
+        Part::Locked(lock) => {
+            let reason = crate::ui::cell_editor::lock_text(lock, "", locale);
+            (!reason.is_empty()).then_some(reason)
+        }
+        Part::Read | Part::Editable | Part::InGrid | Part::Editing => None,
+    };
     // Cut at the column's edge, as the field's own width allows, before
-    // the mark of a pending one and the pencil of one that can be edited.
+    // the mark of a pending one, the lock of one that cannot be edited and
+    // the pencil of one that can.
     let mark = if pending { 6.0 + MARK } else { 0.0 };
+    let lock_room = if locked.is_some() { 6.0 + LOCK } else { 0.0 };
     let pencil_room = if editable { PENCIL + 2.0 } else { 0.0 };
-    let room = line.width() - 30.0 - mark - pencil_room;
+    let room = line.width() - 30.0 - mark - lock_room - pencil_room;
     let shown = crate::ui::grid::ellipsize(&text, room, false, |text| {
         label_role.width(ui.ctx(), look.faces, text)
     });
@@ -991,6 +1017,22 @@ fn field(
                 palette.warning,
             );
         }
+    }
+    if let Some(reason) = &locked {
+        // A small lock after the label, always there: under the pointer
+        // it says why, and a screen reader hears it after the label.
+        let place = Rect::from_center_size(
+            pos2(
+                line.left() + label_width + mark + 6.0 + LOCK / 2.0,
+                line.center().y,
+            ),
+            vec2(LOCK, LOCK),
+        );
+        let lock = ui.interact(place.expand(3.0), name_id.with("lock"), Sense::hover());
+        let said = format!("{}: {reason}", gettext(locale, "Locked"));
+        lock.widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, &said));
+        Icon::Lock.image(palette.dim, LOCK).paint_at(ui, place);
+        lock.on_hover_text(reason.as_str());
     }
     let column_name = format::display_safe(&column.name);
     let copy_label = format!("{} {column_name}", gettext(locale, "Copy"));
@@ -1112,12 +1154,30 @@ fn field(
     let shown = value_of(
         ui, tab, tab_id, row, col, column, value, info, tag, skin, read, actions,
     );
-    if !editable {
+    // An edit of a locked field was asked for here: it says why, under
+    // its value, until the selection moves. Brought into view once.
+    if let (Some(reason), true) = (&locked, form.refused(col)) {
+        ui.add_space(if look.terminal { 2.0 } else { 3.0 });
+        let width = ui.available_width();
+        let note = Text::one(look, caption(look), reason, palette.secondary)
+            .wrap(width)
+            .layout(ui.ctx())
+            .label(ui);
+        let asked = Id::new(("row-panel-refused", tab, tab_id));
+        let at = (request, row, col);
+        let seen = ui.data(|data| data.get_temp(asked)) == Some(at);
+        if !seen {
+            note.scroll_to_me(None);
+            ui.data_mut(|data| data.insert_temp(asked, at));
+        }
+    }
+    if !editable && locked.is_none() {
         return;
     }
     // What starts an edit of the value: its pencil, a double-click on it,
     // and Enter or F2 while its text has the keyboard (the terminal look
-    // edits with its own letters).
+    // edits with its own letters). Asked of a locked field, the same
+    // things say why it is locked.
     let mut edit = pencil.as_ref().is_some_and(egui::Response::clicked);
     // Enter on the pencil is the button's press. F2 edits from it too: a
     // value with no text of its own (a NULL, a document) has the keyboard
@@ -1130,7 +1190,7 @@ fn field(
     }
     if let Some(place) = shown.place {
         let over = ui.rect_contains_pointer(place);
-        if over {
+        if over && editable {
             // A field's border: the value can be edited.
             let color = if look.terminal {
                 palette.accent
@@ -1183,6 +1243,9 @@ fn field(
 
 /// The pencil of a field that can be edited: 22 pt, as Copy is.
 const PENCIL: f32 = 22.0;
+
+/// The lock after the label of a field that cannot be edited.
+const LOCK: f32 = 11.0;
 
 /// Where a field's outline is, round the place of its value: the value is
 /// flush with its label, and a field's border stands clear of its text.
@@ -1747,15 +1810,19 @@ fn attachment_card(
     );
 }
 
-/// Edit, Duplicate and Delete, disabled, and why.
+/// The footer of a table's row: Edit, which edits the row in the panel,
+/// and Duplicate and Delete, which wait for a later version. `locked` is
+/// why no field of the row can be edited, in the look's words: Edit is
+/// disabled with it, and the note under the buttons says it. Returns
+/// whether Edit was pressed.
 fn editing_footer(
     ui: &mut egui::Ui,
     rect: Rect,
-    read_only: bool,
+    locked: Option<&str>,
     look: &Look,
     palette: &Palette,
     locale: crate::i18n::Locale,
-) {
+) -> bool {
     let side = side(look);
     if !look.terminal {
         ui.painter()
@@ -1771,14 +1838,19 @@ fn editing_footer(
             palette.surface_hover
         },
     );
-    let reason = gettext(locale, "Editing arrives in a later version");
+    let later = gettext(
+        locale,
+        "Duplicating and deleting rows arrive in a later version",
+    );
     let inner = rect.shrink2(vec2(side, 0.0));
     let gap = 6.0;
     let top = rect.top() + 1.0 + if look.terminal { 10.0 } else { 12.0 };
     let role = widgets::body(look);
     let measure = |text: &str| role.width(ui.ctx(), look.faces, text);
+    let mut edit = false;
     let height = if look.terminal {
-        // Three equal cells, dashed, at 55%: the keys in the text colour.
+        // Three equal cells, the keys in the text colour. Edit is a
+        // button, in a solid line; what waits is dashed, at 55%.
         let keys = [("e", "edit"), ("yy p", "duplicate"), ("dd", "delete")];
         let width = (inner.width() - 2.0 * gap) / 3.0;
         let faded = |color: egui::Color32| palette.panel.lerp_to_gamma(color, 0.55);
@@ -1787,19 +1859,39 @@ fn editing_footer(
                 pos2(inner.left() + index as f32 * (width + gap), top),
                 vec2(width, 28.0),
             );
-            let response = ui.interact(place, ui.id().with(("edit", index)), Sense::hover());
+            let enabled = index == 0 && locked.is_none();
+            let sense = if enabled {
+                Sense::click()
+            } else {
+                Sense::hover()
+            };
+            let response = ui.interact(place, ui.id().with(("edit", index)), sense);
             let name = format!("{key} {label}");
-            response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, false, &name));
-            let _ = response.on_hover_text(reason.as_ref());
-            dashed(ui, place, faded(palette.outline));
+            response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, enabled, &name));
+            let tint = |color: egui::Color32| if enabled { color } else { faded(color) };
+            if enabled {
+                edit = response.clicked();
+                ui.painter().rect_stroke(
+                    place,
+                    CornerRadius::same(3),
+                    Stroke::new(1.0, palette.outline),
+                    StrokeKind::Inside,
+                );
+            } else {
+                // Why not, under the pointer: the row's reason for Edit,
+                // the later version for the others.
+                let reason = locked.filter(|_| index == 0).unwrap_or(later.as_ref());
+                let _ = response.on_hover_text(reason);
+                dashed(ui, place, faded(palette.outline));
+            }
             // A cell too narrow for both shows its key alone.
-            let text = Text::one(look, role, key, faded(palette.text));
+            let text = Text::one(look, role, key, tint(palette.text));
             let total = measure(&name);
             let (total, text) = if total > width {
                 (measure(key), text)
             } else {
                 let text = text.space(role, " ");
-                (total, text.add(role, label, faded(palette.dim)))
+                (total, text.add(role, label, tint(palette.dim)))
             };
             let x = place.center().x - total / 2.0;
             widgets::paint_text(ui, x, place.center().y, text);
@@ -1819,33 +1911,38 @@ fn editing_footer(
             .collect();
         let extra = (inner.width() - 2.0 * gap - widths.iter().sum::<f32>()) / 3.0;
         let mut x = inner.left();
-        for ((icon, text), width) in labels.iter().zip(widths) {
+        for (index, ((icon, text), width)) in labels.iter().zip(widths).enumerate() {
             let place = Rect::from_min_size(pos2(x, top), vec2(width + extra, 32.0));
             x += width + extra + gap;
-            widgets::ButtonSpec::new(text)
+            let button = widgets::ButtonSpec::new(text)
                 .icon(*icon)
                 .icon_size(13.0)
-                .padding(0.0)
-                .disabled(&reason)
-                .show_at(ui, place, look, palette);
+                .padding(0.0);
+            // Edit waits only for a row that can be edited.
+            let why = if index == 0 {
+                locked
+            } else {
+                Some(later.as_ref())
+            };
+            match why {
+                Some(reason) => {
+                    button.disabled(reason).show_at(ui, place, look, palette);
+                }
+                None => edit = button.show_at(ui, place, look, palette).clicked(),
+            }
         }
         32.0
     };
+    // The note: why the row cannot be edited, where it cannot.
+    let Some(reason) = locked else {
+        return edit;
+    };
     let note_role = caption(look);
     let y = top + height + 8.0 + line_of(ui, note_role, look) / 2.0;
+    let measure = |text: &str| note_role.width(ui.ctx(), look.faces, text);
     if look.terminal {
-        let note = if read_only {
-            gettext(
-                locale,
-                "read-only connection · editing arrives in a later version",
-            )
-        } else {
-            gettext(locale, "editing arrives in a later version")
-        };
         // Cut at the panel's side, as a field's label is.
-        let shown = crate::ui::grid::ellipsize(&note, inner.width(), false, |text| {
-            note_role.width(ui.ctx(), look.faces, text)
-        });
+        let shown = crate::ui::grid::ellipsize(reason, inner.width(), false, measure);
         widgets::paint_text(
             ui,
             inner.left(),
@@ -1857,13 +1954,21 @@ fn editing_footer(
             ui,
             Rect::from_center_size(pos2(inner.left() + 5.5, y), vec2(11.0, 11.0)),
         );
+        let shown = crate::ui::grid::ellipsize(reason, inner.width() - 17.0, false, measure);
         widgets::paint_text(
             ui,
             inner.left() + 17.0,
             y,
-            Text::one(look, note_role, &reason, palette.dim),
+            Text::one(look, note_role, &shown, palette.dim),
         );
     }
+    // The whole of it for a screen reader, cut or not.
+    let place = Rect::from_min_size(
+        pos2(inner.left(), y - 8.0),
+        vec2(inner.width().max(1.0), 16.0),
+    );
+    widgets::announce(ui, place, reason);
+    edit
 }
 
 /// A dashed 1 pt outline round `rect`.

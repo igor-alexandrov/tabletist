@@ -40,6 +40,10 @@ pub struct Form<'a> {
     /// One per column of the page. Empty where the form has no part in
     /// the panel.
     parts: Vec<Part>,
+    /// The column whose edit was asked for in the panel and refused: its
+    /// field says why under its value. The terminal look says it in its
+    /// mode line.
+    refused: Option<usize>,
     /// The column whose field gets the keyboard back, until that field
     /// takes it.
     pub focus: Option<usize>,
@@ -72,6 +76,12 @@ pub fn put_editor(app: &mut App, tab: ConnTabId, id: TabId, editor: Option<Edito
     }
 }
 
+/// Why no field of the page's row `row` can be edited: what the panel's
+/// footer says, once, for a row whose fields the form leaves as they are.
+pub fn row_lock(workspace: &Workspace, object: &ObjectTab, row: usize) -> Option<Lock> {
+    Table::of(workspace, object)?.row_lock(row)
+}
+
 impl<'a> Form<'a> {
     /// A panel the form has no part in: a SQL editor's result.
     pub fn none() -> Self {
@@ -79,6 +89,7 @@ impl<'a> Form<'a> {
             editor: None,
             target: None,
             parts: Vec::new(),
+            refused: None,
             focus: None,
             ending: Vec::new(),
         }
@@ -86,14 +97,15 @@ impl<'a> Form<'a> {
 
     /// The form of the page's row `row` of the table `object` shows.
     /// `editor` is the panel's, taken out of the tab; `hold` says no dialog
-    /// is up, so an open field has the keyboard.
+    /// is up, so an open field has the keyboard; `terminal` is the look,
+    /// which says a refused edit's reason in its mode line.
     pub fn of(
         workspace: &Workspace,
         object: &ObjectTab,
         tab: ConnTabId,
         row: usize,
         editor: Option<&'a mut Editor>,
-        hold: bool,
+        (hold, terminal): (bool, bool),
     ) -> Self {
         // Only an editor on this row is the panel's to draw.
         let editor = editor.filter(|editor| editor.cell.row == row);
@@ -105,6 +117,14 @@ impl<'a> Form<'a> {
         if table.row_lock(row).is_some() {
             return Self::none();
         }
+        // What an edit asked for in the panel was refused for, where it
+        // is one of this row's cells.
+        let refused = object
+            .edits
+            .why
+            .filter(|(cell, _)| cell.row == row)
+            .filter(|_| object.edits.why_place == EditorPlace::Panel && !terminal)
+            .map(|(cell, _)| cell.col);
         let editing = editor.as_ref().map(|editor| editor.cell.col);
         // The editor still in the tab is the grid's.
         let in_grid = object
@@ -134,6 +154,7 @@ impl<'a> Form<'a> {
             editor,
             target,
             parts,
+            refused,
             focus: None,
             ending: Vec::new(),
         }
@@ -142,6 +163,12 @@ impl<'a> Form<'a> {
     /// What the form makes of the field of the column `col`.
     pub fn part(&self, col: usize) -> Part {
         self.parts.get(col).copied().unwrap_or(Part::Read)
+    }
+
+    /// Whether an edit of the column `col` was asked for in the panel and
+    /// refused: its field says why.
+    pub fn refused(&self, col: usize) -> bool {
+        self.refused == Some(col)
     }
 
     /// Draws the panel's editor in its field's place, its text in `role`,
