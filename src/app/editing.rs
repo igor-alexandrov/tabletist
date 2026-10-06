@@ -788,7 +788,9 @@ impl App {
             if check(table.dialect, column, &editor.text).is_some() {
                 return None;
             }
-            let laid = crate::ui::json_text::pretty(&editor.text);
+            // Not one that would not fit the editor laid out: the editor
+            // cuts what is over its limit, and the document's end with it.
+            let laid = crate::edit::laid_out_json(&editor.text)?;
             (laid != editor.text).then_some(laid)
         });
         if let (Some(Some(laid)), Some(editor)) = (laid, self.editor_mut(tab, id)) {

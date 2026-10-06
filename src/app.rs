@@ -14686,6 +14686,39 @@ mod tests {
         }
 
         #[test]
+        fn a_document_is_not_laid_out_past_what_its_editor_holds() {
+            let mut harness = Harness::new();
+            let (tab, id) = harness.editable();
+            harness.app.apply(Action::EditField {
+                tab,
+                id,
+                cell: at(0, 2),
+                start: EditStart::Value,
+            });
+            let text = |harness: &Harness| {
+                let editor = object(harness, tab, id).edits.editor.as_ref();
+                editor.expect("an editor").text.clone()
+            };
+            // Typed over on one line, it is laid out when asked.
+            let set = |harness: &mut Harness, text: String| {
+                let workspace = harness.app.workspace_mut(tab).unwrap();
+                let editor = workspace.object_tab_mut(id).unwrap().edits.editor.as_mut();
+                editor.expect("an editor").text = text;
+                harness.app.apply(Action::EditorTyped { tab, id });
+            };
+            set(&mut harness, "[1,2]".into());
+            harness.app.apply(Action::FormatEditor { tab, id });
+            assert_eq!(text(&harness), "[\n  1,\n  2\n]");
+            // One that fits the editor on one line and would not laid
+            // out stays whole, as it was typed.
+            let compact = format!("[{}0]", "0,".repeat(99_999));
+            assert!(compact.len() <= crate::edit::MAX_EDIT_BYTES);
+            set(&mut harness, compact.clone());
+            harness.app.apply(Action::FormatEditor { tab, id });
+            assert_eq!(text(&harness), compact);
+        }
+
+        #[test]
         fn the_field_the_keyboard_is_sent_to_is_the_selected_cell_at_once() {
             let mut harness = Harness::new();
             let (tab, id) = harness.editable();

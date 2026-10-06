@@ -549,15 +549,23 @@ pub fn start_text(value: &Value, class: ColumnClass) -> String {
     }
 }
 
-/// A JSON column's text laid out to be read and edited. Only the white
-/// space between its pieces changes (`ui::json_text::pretty` reads no
-/// value), and only where the text is a document: what such a column holds
-/// that is none (SQLite keeps any text) stays as it is.
+/// A JSON column's text laid out to be read and edited, a member to a
+/// line. Only the white space between its pieces changes
+/// (`ui::json_text::pretty` reads no value). None where it stays as it
+/// is: a text that is no document (SQLite keeps any text in such a
+/// column), and a document that would not fit an editor laid out. Its
+/// white space can more than double it, and an editor cuts what is over
+/// its limit: the document's end would be lost.
+pub fn laid_out_json(text: &str) -> Option<String> {
+    serde_json::from_str::<serde::de::IgnoredAny>(text).ok()?;
+    let laid = crate::ui::json_text::pretty(text);
+    (laid.len() <= MAX_EDIT_BYTES).then_some(laid)
+}
+
+/// `text` laid out where [`laid_out_json`] lays it out, and as it is where
+/// it does not.
 fn laid_out(text: String) -> String {
-    if serde_json::from_str::<serde::de::IgnoredAny>(&text).is_err() {
-        return text;
-    }
-    crate::ui::json_text::pretty(&text)
+    laid_out_json(&text).unwrap_or(text)
 }
 
 /// Whether `new` differs from what the cell loaded: a text equal to where
@@ -2205,6 +2213,28 @@ mod tests {
         let plain = ColumnClass::Text { max_chars: None };
         assert_eq!(start_text(&loaded, plain), r#"{"a":1,"b":[true]}"#);
         assert!(is_change(&loaded, &new(&start), plain));
+    }
+
+    #[test]
+    fn a_document_too_large_to_edit_laid_out_stays_as_it_is() {
+        let json = ColumnClass::Json;
+        // 200,001 bytes on one line, and more than twice that a member to
+        // a line: over what an editor holds.
+        let compact = format!("[{}0]", "0,".repeat(99_999));
+        assert!(compact.len() <= MAX_EDIT_BYTES);
+        assert!(crate::ui::json_text::pretty(&compact).len() > MAX_EDIT_BYTES);
+        assert_eq!(laid_out_json(&compact), None);
+        let loaded = text(&compact);
+        // Its editor starts from all of it, as it was loaded.
+        assert_eq!(start_text(&loaded, json), compact);
+        let same = NewValue::Text(compact.clone());
+        assert!(!is_change(&loaded, &same, json));
+        let other = NewValue::Text(compact.replacen('0', "1", 1));
+        assert!(is_change(&loaded, &other, json));
+        // One that fits is laid out.
+        let small = format!("[{}0]", "0,".repeat(9));
+        let laid = laid_out_json(&small).expect("laid out");
+        assert_eq!(laid.lines().count(), 12);
     }
 
     #[test]
