@@ -110,8 +110,17 @@ with the server's before you trust it.
 Trusted keys are kept in Tabletist's own `known_hosts.json`, not in
 OpenSSH's `known_hosts`. If a server's key changes later, Tabletist
 refuses to connect, because that can mean someone is intercepting the
-connection. If the key really did change, remove the server's line from
-[`known_hosts.json`]({% link _reference/settings-and-files.md %}#files).
+connection. If the key really did change:
+
+1. Quit Tabletist. It reads the file when it starts and writes it when
+   you trust a host, so an edit made while it runs can be lost.
+2. Open [`known_hosts.json`]({% link _reference/settings-and-files.md %}#files)
+   and remove the server's entry from `hosts`. Keep the file valid JSON:
+   the last entry has no comma after it.
+3. Start Tabletist and connect. It asks about the new key.
+
+If the file cannot be read, Tabletist leaves it as it is and trusts no
+new host until it is fixed.
 
 ## Passwords
 

@@ -40,8 +40,8 @@ appears with what you can do with them.
 - **Save** (Cmd/Ctrl+S) writes all of them in one transaction. Either
   every change is written or none is.
 - **Discard all** drops them.
-- **Review SQL** (Cmd/Ctrl+Shift+D) shows the statements a save will run,
-  and copies them.
+- **Review SQL** (Cmd/Ctrl+Shift+D) shows the statements a save will run.
+  **Copy SQL** in that panel copies them.
 
 A save to a production connection asks first, with every statement on
 screen.
@@ -54,11 +54,12 @@ versions side by side: what you loaded, what the server holds now, and
 yours. Then you choose:
 
 - **Keep mine, reload row** loads the row again and keeps your change
-  pending.
+  pending. Esc does the same.
 - **Use server values** drops your change to that row.
 - **Overwrite** writes your values over the server's.
 
-If someone deleted the row, the only choice is to discard your change.
+If someone deleted the row, there is nothing to reload or overwrite:
+**Discard my changes** drops your change, and Esc leaves it pending.
 
 ## What cannot be edited
 

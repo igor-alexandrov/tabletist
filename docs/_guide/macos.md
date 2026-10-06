@@ -32,7 +32,9 @@ launch, are on the
 
 ## The keyboard
 
-Every key of the macOS look is on this page. `?` lists them in the app.
+Every key of the macOS look is on this page. The app's own list (`?`) is
+shorter: it leaves out the keys of the dialogs and of the lists that open
+in an editor.
 
 Keys written with Ctrl are the Control key, not Cmd. Backspace is the key
 a Mac keyboard labels Delete.

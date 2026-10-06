@@ -14,11 +14,13 @@ and there is no setting that switches between them.
 ## The keyboard
 
 Every key of the Omarchy look is on this page. The status line along the
-bottom shows the ones that work where you are, and `?` lists them in the
-app.
+bottom shows the ones that work where you are. The app's own list (`?`)
+is shorter: it leaves out the keys of the dialogs and of the lists that
+open in an editor.
 
-A letter does its job when no text field has the keyboard. In a field you
-are typing, and Esc gives the keyboard back.
+A letter does its job when no text field has the keyboard. While a field
+has it, letters are typed into the field, and Esc gives the keyboard
+back.
 
 ### Everywhere
 
@@ -128,8 +130,8 @@ A save can ask you something first. Each question has its own keys:
 | Question | Keys |
 | --- | --- |
 | A save to production | Type `write` to confirm |
-| A row that changed on the server | `o` overwrite, `s` use the server's values, `k` keep mine and reload. PgUp and PgDn scroll |
-| A row that was deleted on the server | `d` discard my changes |
+| A row that changed on the server | `o` overwrite, `s` use the server's values, `k` or Esc keep mine and reload. PgUp and PgDn scroll |
+| A row that was deleted on the server | `d` discard my changes, `k` or Esc keep them pending |
 | Leaving with pending changes | `w` write, `d` discard, Esc stay |
 
 ### The SQL editor
