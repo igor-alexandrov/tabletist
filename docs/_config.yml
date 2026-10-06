@@ -62,20 +62,23 @@ jekyll_vitepress:
     logo:
       default: /assets/images/tabletist.svg
       alt: Tabletist
-  # The icon's blues, so that links and buttons match the app.
+  # The icon's blues, so that links and buttons match the app. The home
+  # page's name is drawn in a gradient: both of its ends keep 3:1 against
+  # the page (white, and #1b1b1f in the dark), the least large text needs.
   tokens:
     light:
       vp-c-brand-1: "#1e40af"
       vp-c-brand-2: "#1d4ed8"
       vp-c-brand-3: "#2563eb"
       vp-c-brand-soft: "rgba(59, 130, 246, 0.14)"
-      vp-home-hero-name-background: "linear-gradient(120deg, #1d4ed8 30%, #60a5fa)"
+      vp-home-hero-name-background: "linear-gradient(120deg, #1d4ed8 30%, #3b82f6)"
       vp-home-hero-image-background-image: "linear-gradient(-45deg, #1d4ed8 50%, #60a5fa 50%)"
     dark:
       vp-c-brand-1: "#93c5fd"
       vp-c-brand-2: "#3b82f6"
       vp-c-brand-3: "#2563eb"
       vp-c-brand-soft: "rgba(59, 130, 246, 0.16)"
+      vp-home-hero-name-background: "linear-gradient(120deg, #3b82f6 30%, #93c5fd)"
   syntax:
     light_theme: github
     dark_theme: github.dark
