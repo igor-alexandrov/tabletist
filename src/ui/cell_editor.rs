@@ -9,7 +9,7 @@ use crate::edit::{Editor, Lock, MAX_EDIT_BYTES, Problem};
 use crate::i18n::{Locale, gettext, ngettext};
 use crate::model::{Advance, ConnTabId, TabId};
 use crate::theme::{Look, Palette};
-use crate::typography::Text;
+use crate::typography::{Text, TextRole};
 use crate::ui::focus::{self, Ring};
 use crate::ui::format::display_safe;
 use crate::ui::keys::{consume_press, copy_is_ctrl_c, is_press};
@@ -263,25 +263,8 @@ pub fn field(
         .layouter(&mut layouter)
         .show(&mut child);
     bound(&mut editor.text);
-    if look.terminal
-        && output.response.has_focus()
-        && let Some(cursor) = output.cursor_range
-    {
-        // A terminal's cursor is a block: one character wide from where
-        // the next one goes, over the caret's line. Tinted, so the
-        // character under it reads through.
-        let caret = output.galley.pos_from_cursor(cursor.primary);
-        let block = Rect::from_min_size(
-            output.galley_pos + caret.min.to_vec2(),
-            vec2(role.width(ui.ctx(), look.faces, "0"), caret.height()),
-        );
-        ui.painter()
-            .with_clip_rect(output.text_clip_rect.intersect(ui.clip_rect()))
-            .rect_filled(
-                block,
-                CornerRadius::ZERO,
-                palette.accent.gamma_multiply(0.5),
-            );
+    if look.terminal && output.response.has_focus() {
+        block_cursor(ui, &output, role, look, palette);
     }
     let response: egui::Response = output.response.response;
     // The name only: the field keeps the role and the value egui gave it.
@@ -318,6 +301,142 @@ pub fn field(
     if let (Some(problem), true) = (&editor.problem, target.hold) {
         let message = problem_text(problem, &target.type_name, Some(&editor.text), locale);
         say_under(ui, rect, id, &message, look, palette);
+    }
+    outcome.changed = response.changed();
+    keyboard_after(ui.ctx(), target, has, had, &mut outcome);
+    outcome
+}
+
+/// A terminal's cursor is a block: one character wide from where the next
+/// one goes, over the caret's line of the field `output` is of. Tinted, so
+/// the character under it reads through.
+fn block_cursor(
+    ui: &Ui,
+    output: &egui::text_edit::TextEditOutput,
+    role: TextRole,
+    look: &Look,
+    palette: &Palette,
+) {
+    let Some(cursor) = output.cursor_range else {
+        return;
+    };
+    let caret = output.galley.pos_from_cursor(cursor.primary);
+    let block = Rect::from_min_size(
+        output.galley_pos + caret.min.to_vec2(),
+        vec2(role.width(ui.ctx(), look.faces, "0"), caret.height()),
+    );
+    ui.painter()
+        .with_clip_rect(output.text_clip_rect.intersect(ui.clip_rect()))
+        .rect_filled(
+            block,
+            CornerRadius::ZERO,
+            palette.accent.gamma_multiply(0.5),
+        );
+}
+
+/// The editor in the row panel: a one-line field in the place of its
+/// field's value, as wide as the room it is given, its text in `role`, the
+/// role the value is read in. Its keys are the keys of the field on a cell,
+/// but nothing moves when it commits: Enter, Tab and Shift+Tab all take
+/// the text and stay. Under the field it says what the text fails, and how
+/// much of its column's length the text takes.
+pub fn in_panel(
+    ui: &mut Ui,
+    editor: &mut Editor,
+    target: &Target,
+    role: TextRole,
+    (look, palette, locale): (&Look, &Palette, Locale),
+) -> Outcome {
+    let mut outcome = Outcome::default();
+    let id = target.id;
+    let opened = std::mem::take(&mut editor.focus);
+    if opened {
+        take_keyboard(ui.ctx(), id, &editor.text);
+    }
+    let has = ui.memory(|memory| memory.has_focus(id));
+    let had = had_keyboard(ui.ctx(), id);
+    if has {
+        keep_keyboard(ui.ctx());
+    }
+    ending_keys(ui, has, had, look.terminal, &mut outcome);
+    if outcome.commit.is_some() {
+        outcome.commit = Some(Advance::Stay);
+    }
+    let width = ui.available_width();
+    let height = if look.terminal { 26.0 } else { 30.0 };
+    let mut layouter = crate::typography::layouter(look, role, palette.text);
+    let output = widgets::field(ui, &mut editor.text, look, role, height, 8)
+        .id(id)
+        .desired_width(width)
+        // Tab ends the edit; it is not egui's to move the keyboard with.
+        .lock_focus(true)
+        // As the field on a cell: a paste is cut, and left over the limit.
+        .char_limit(MAX_EDIT_BYTES + 1)
+        .layouter(&mut layouter)
+        .show(ui);
+    bound(&mut editor.text);
+    if look.terminal && output.response.has_focus() {
+        block_cursor(ui, &output, role, look, palette);
+    }
+    let response: egui::Response = output.response.response;
+    // The name only: the field keeps the role and the value egui gave it.
+    let name = format!("{} {}", gettext(locale, "Edit"), display_safe(&target.name));
+    ui.ctx().accesskit_node_builder(id, |node| {
+        node.set_label(name);
+    });
+    let has = response.has_focus();
+    if has {
+        hold_keys(ui.ctx(), id);
+    }
+    // A field's own ring, red while the text fails its check. The ring
+    // shows once the keyboard is in use; the red border does not wait for
+    // that, since a pasted text can fail before any key is pressed.
+    let radius = look.radius;
+    let ring = if editor.problem.is_some() {
+        ui.painter().rect_stroke(
+            response.rect,
+            CornerRadius::same(radius),
+            Stroke::new(1.0, palette.danger),
+            StrokeKind::Inside,
+        );
+        Ring::Failing { radius }
+    } else {
+        Ring::Field { radius }
+    };
+    focus::hint(ui, &response, response.rect, ring);
+    // The field can open far down a long row: it is brought into view
+    // once, when it takes the keyboard.
+    if opened {
+        response.scroll_to_me(None);
+    }
+    let problem = editor
+        .problem
+        .as_ref()
+        .map(|problem| problem_text(problem, &target.type_name, Some(&editor.text), locale));
+    let count = target
+        .max_chars
+        .map(|max| format!("{} / {max}", editor.text.chars().count()));
+    if problem.is_some() || count.is_some() {
+        let small = widgets::secondary(look);
+        ui.add_space(3.0);
+        ui.horizontal_top(|ui| {
+            let taken = count
+                .as_ref()
+                .map_or(0.0, |count| small.width(ui.ctx(), look.faces, count) + 8.0);
+            if let Some(problem) = &problem {
+                Text::one(look, small, problem, palette.danger)
+                    .wrap((width - taken).max(0.0))
+                    .layout(ui.ctx())
+                    .label(ui);
+            }
+            if let Some(count) = &count {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                    Text::one(look, small, count, palette.dim)
+                        .layout(ui.ctx())
+                        .label(ui);
+                });
+            }
+        });
     }
     outcome.changed = response.changed();
     keyboard_after(ui.ctx(), target, has, had, &mut outcome);

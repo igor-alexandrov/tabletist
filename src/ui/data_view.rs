@@ -1192,7 +1192,11 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
     // What editing asks of the workspace and the tab together, read before
     // the tab is taken for its editor's text.
     let computed = computed_columns(workspace, object);
-    let target = editor_target(workspace, object, tab, hold);
+    let target = object
+        .edits
+        .editor
+        .as_ref()
+        .and_then(|editor| editor_target(workspace, object, tab, editor.cell, hold));
     // The tab itself from here on: the field on a cell edits the text its
     // editor holds, beside the page the grid reads. Nothing else of it is
     // changed.
@@ -1465,17 +1469,18 @@ fn computed_columns(workspace: &crate::model::Workspace, object: &ObjectTab) -> 
         .collect()
 }
 
-/// The cell the tab's open editor is on, as its field needs it.
-fn editor_target(
+/// The cell `cell` an editor of the tab is open on, as its field needs it:
+/// the grid's on the cell, or the row panel's in the place of a value.
+pub(super) fn editor_target(
     workspace: &crate::model::Workspace,
     object: &ObjectTab,
     tab: ConnTabId,
+    cell: CellPos,
     hold: bool,
 ) -> Option<cell_editor::Target> {
-    let editor = object.edits.editor.as_ref()?;
     let table = Table::of(workspace, object)?;
-    let column = table.page.columns.get(editor.cell.col)?;
-    let max_chars = match table.class(editor.cell.col) {
+    let column = table.page.columns.get(cell.col)?;
+    let max_chars = match table.class(cell.col) {
         Some(tabletist_db::ColumnClass::Text { max_chars }) => max_chars,
         _ => None,
     };

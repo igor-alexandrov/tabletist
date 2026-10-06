@@ -9,6 +9,7 @@ use std::sync::Arc;
 use tabletist_db::{Value, ValueKind};
 
 use crate::app::App;
+use crate::edit::Editor;
 use crate::i18n::gettext;
 use crate::model::{Action, CellPos, ConnTabId, RowFields, Tab, TabId, Workspace};
 use crate::theme::{Icon, Look, Palette};
@@ -16,6 +17,8 @@ use crate::typography::{Text, TextRole};
 use crate::ui::focus::{self, Region};
 use crate::ui::format;
 use crate::ui::json_view;
+use crate::ui::keys::consume_press;
+use crate::ui::row_form::{self, Form, Part};
 use crate::ui::widgets;
 
 /// The panel's width when it opens: macOS 344 and its 1 pt rule, terminal
@@ -251,10 +254,33 @@ fn source(workspace: &Workspace, id: TabId, locale: crate::i18n::Locale) -> Opti
 
 /// Draws the panel for the tab `id`: an object tab, or a SQL editor.
 pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, id: TabId) {
+    // The editor the panel draws is out of its tab while the panel is
+    // drawn: the field edits its text, and everything else is read.
+    let mut editor = row_form::take_editor(app, tab, id);
+    // The field an edit ended in gets the keyboard back, once.
+    let focus = app
+        .workspace_mut(tab)
+        .and_then(|workspace| workspace.object_tab_mut(id))
+        .and_then(|object| object.focus_field.take());
+    draw(app, ui, (tab, id), editor.as_mut(), focus);
+    row_form::put_editor(app, tab, id, editor);
+}
+
+/// The panel itself. `editor` is the tab's editor where the panel draws
+/// it, and `focus` the column whose field takes the keyboard.
+fn draw(
+    app: &mut App,
+    ui: &mut egui::Ui,
+    (tab, id): (ConnTabId, TabId),
+    editor: Option<&mut Editor>,
+    focus: Option<usize>,
+) {
     let locale = app.locale;
     let palette = app.palette;
     let look = app.look;
     let value_tags = app.settings.value_tags;
+    // An editor that is open has the keyboard, unless a dialog has it.
+    let hold = app.dialog.is_none();
     // `za` asked to fold the documents.
     let fold = app.workspace_mut(tab).is_some_and(|workspace| {
         let asked = workspace.fold_documents == Some(id);
@@ -270,6 +296,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, id: TabId) {
         return;
     };
     let mut actions = Vec::new();
+    // What ends the panel's open field, queued ahead of the rest.
+    let mut ending = Vec::new();
     let panel = Id::new(("row-panel", tab.0));
     let range = width_range(ui.available_width());
     // egui remembers the width it last drew, which a small window cuts
@@ -340,6 +368,14 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, id: TabId) {
             };
             // A part of the window to step to once it has a row to show.
             focus::region(ui, Region::Panel, full);
+            // What editing adds, for a table's row that can be edited.
+            let mut form = match workspace.tab(id) {
+                Some(Tab::Object(object)) => {
+                    Form::of(workspace, object, tab, cell.row, editor, hold)
+                }
+                _ => Form::none(),
+            };
+            form.focus = focus;
             let structure = source.structure;
             let info = |name: &str| {
                 let key =
@@ -707,6 +743,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, id: TabId) {
                                                 &info,
                                                 tag_of(*col, value),
                                                 skin,
+                                                &mut form,
                                                 &mut actions,
                                             );
                                             was(ui, *col, skin);
@@ -744,6 +781,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, id: TabId) {
                                         &info,
                                         tag_of(*col, value),
                                         skin,
+                                        &mut form,
                                         &mut actions,
                                     );
                                     was(ui, *col, skin);
@@ -775,6 +813,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, id: TabId) {
                                         &info,
                                         tag_of(*col, value),
                                         skin,
+                                        &mut form,
                                         &mut actions,
                                     );
                                     was(ui, *col, skin);
@@ -800,6 +839,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, id: TabId) {
                         }
                     }
                 });
+            ending.append(&mut form.ending);
         });
     // The edge was dragged: that is the width wanted from now on. egui
     // stores a width only when the drag is over, so a width that did not
@@ -810,6 +850,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, id: TabId) {
     {
         ui.data_mut(|data| data.insert_persisted(panel.with("wanted"), after));
     }
+    app.actions.extend(ending);
     app.actions.extend(actions);
 }
 
@@ -858,7 +899,9 @@ fn was(ui: &mut egui::Ui, col: usize, skin: FieldSkin<'_>) {
 const MARK: f32 = 6.0;
 
 /// One field: its label (with a copy button, or a document's controls, and
-/// the pending mark when its cell is pending), then its value.
+/// the pending mark when its cell is pending), then its value. Where the
+/// row's form lets the value be edited, the label line has a pencil too,
+/// and the value's place holds the editor while it is open.
 #[allow(clippy::too_many_arguments)] // one call site per layout
 fn field(
     ui: &mut egui::Ui,
@@ -871,15 +914,16 @@ fn field(
     info: &FieldInfo,
     tag: Option<crate::ui::grid::Style>,
     skin: FieldSkin<'_>,
+    form: &mut Form<'_>,
     actions: &mut Vec<Action>,
 ) {
     let FieldSkin {
         look,
         palette,
         locale,
-        fold,
         texts,
         copy_key,
+        ..
     } = skin;
     // The request whose answer holds the row: the same row of another
     // page or another result keeps no folds and nothing expanded.
@@ -919,10 +963,13 @@ fn field(
         text.clone()
     };
     response.widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, &name));
-    // Cut at the column's edge, as the field's own width allows, and
-    // before the mark of a pending one.
+    let part = form.part(col);
+    let editable = part == Part::Editable;
+    // Cut at the column's edge, as the field's own width allows, before
+    // the mark of a pending one and the pencil of one that can be edited.
     let mark = if pending { 6.0 + MARK } else { 0.0 };
-    let room = line.width() - 30.0 - mark;
+    let pencil_room = if editable { PENCIL + 2.0 } else { 0.0 };
+    let room = line.width() - 30.0 - mark - pencil_room;
     let shown = crate::ui::grid::ellipsize(&text, room, false, |text| {
         label_role.width(ui.ctx(), look.faces, text)
     });
@@ -947,7 +994,19 @@ fn field(
     }
     let column_name = format::display_safe(&column.name);
     let copy_label = format!("{} {column_name}", gettext(locale, "Copy"));
+    let edit_label = format!("{} {column_name}", gettext(locale, "Edit"));
     let hovered = ui.rect_contains_pointer(line.expand2(vec2(16.0, 30.0)));
+    // The pencil of a value that can be edited, at `right`: beside Copy,
+    // and shown as Copy is.
+    let pencil_at = |ui: &mut egui::Ui, right: f32, size: f32, shown: bool| {
+        let place = Rect::from_min_size(
+            pos2(right - size, line.center().y - size / 2.0),
+            vec2(size, size),
+        );
+        let mut child = ui.new_child(egui::UiBuilder::new().max_rect(place));
+        caption_button(&mut child, Icon::Pencil, &edit_label, shown, look, palette)
+    };
+    let mut pencil = None;
     if let Some(doc) = &doc {
         // A document's own controls: fold everything, and copy.
         let copy = Rect::from_min_size(
@@ -972,17 +1031,29 @@ fn field(
             } else {
                 hints.add(role, "fold", palette.dim)
             };
-            widgets::paint_text_right(ui, line.right(), line.center().y, hints);
-            if copy_button(&mut child, &copy_label, false, look, palette).clicked() {
+            let hints = widgets::paint_text_right(ui, line.right(), line.center().y, hints);
+            if caption_button(&mut child, Icon::Copy, &copy_label, false, look, palette).clicked() {
                 ui.ctx().copy_text(format::plain_text(value));
+            }
+            // The pencil stands before the hints.
+            if editable {
+                let right = line.right() - hints - 6.0;
+                pencil = Some(pencil_at(ui, right, PENCIL, hovered));
             }
         } else {
-            if copy_button(&mut child, &copy_label, true, look, palette).clicked() {
+            if caption_button(&mut child, Icon::Copy, &copy_label, true, look, palette).clicked() {
                 ui.ctx().copy_text(format::plain_text(value));
             }
+            // The pencil beside Copy, bordered as it is: 4 between them.
+            let mut left = copy.left();
+            if editable {
+                pencil = Some(pencil_at(ui, left - 4.0, 26.0, true));
+                left -= 4.0 + 26.0;
+            }
             let id = Id::new(("row-panel-json", tab, tab_id, request, row, col));
-            // "Collapse all": a 24 pt button 6 at its sides, 4 before copy.
-            let link_right = copy.left() - 4.0 - 6.0;
+            // "Collapse all": a 24 pt button 6 at its sides, 4 before the
+            // buttons.
+            let link_right = left - 4.0 - 6.0;
             json_view::fold_all_link(
                 ui,
                 id,
@@ -1000,8 +1071,11 @@ fn field(
             vec2(22.0, 22.0),
         );
         let mut child = ui.new_child(egui::UiBuilder::new().max_rect(copy));
-        if copy_button(&mut child, &copy_label, hovered, look, palette).clicked() {
+        if caption_button(&mut child, Icon::Copy, &copy_label, hovered, look, palette).clicked() {
             ui.ctx().copy_text(format::plain_text(value));
+        }
+        if editable {
+            pencil = Some(pencil_at(ui, copy.left() - 2.0, PENCIL, hovered));
         }
     }
     ui.add_space(if doc.is_some() {
@@ -1011,9 +1085,173 @@ fn field(
     } else {
         3.0
     });
-    if value.is_null() {
-        crate::ui::grid::null_label(ui, look, palette);
+    // Values in the data face at 13; the terminal's timestamps at 12.
+    let role = if matches!(column.kind, ValueKind::Json | ValueKind::Binary) {
+        TextRole::pick(look, TextRole::MonoSecondary, TextRole::OSecondary)
+    } else if look.terminal && column.kind == ValueKind::Temporal {
+        TextRole::OSecondary
+    } else {
+        TextRole::pick(look, TextRole::InspectorValue, TextRole::OBody)
+    };
+    match part {
+        // The editor, in the value's place.
+        Part::Editing if form.editing(ui, (tab, tab_id), role, (look, palette, locale)) => return,
+        Part::InGrid => {
+            row_form::in_grid(ui, look, palette, locale);
+            return;
+        }
+        Part::Editing | Part::Read | Part::Editable | Part::Locked(_) => {}
+    }
+    let read = Reading {
+        doc,
+        formatted,
+        name_id,
+        role,
+        editable,
+    };
+    let shown = value_of(
+        ui, tab, tab_id, row, col, column, value, info, tag, skin, read, actions,
+    );
+    if !editable {
         return;
+    }
+    // What starts an edit of the value: its pencil, a double-click on it,
+    // and Enter or F2 while its text has the keyboard (the terminal look
+    // edits with its own letters).
+    let mut edit = pencil.as_ref().is_some_and(egui::Response::clicked);
+    // Enter on the pencil is the button's press. F2 edits from it too: a
+    // value with no text of its own (a NULL, a document) has the keyboard
+    // there.
+    if let Some(pencil) = &pencil
+        && !look.terminal
+        && pencil.has_focus()
+    {
+        edit |= ui.input_mut(|input| consume_press(input, egui::Modifiers::NONE, egui::Key::F2));
+    }
+    if let Some(place) = shown.place {
+        let over = ui.rect_contains_pointer(place);
+        if over {
+            // A field's border: the value can be edited.
+            let color = if look.terminal {
+                palette.accent
+            } else {
+                palette.border
+            };
+            ui.painter().rect_stroke(
+                outline(place),
+                CornerRadius::same(look.radius),
+                Stroke::new(1.0, color),
+                StrokeKind::Inside,
+            );
+        }
+        let twice = ui.input(|input| {
+            input
+                .pointer
+                .button_double_clicked(egui::PointerButton::Primary)
+        });
+        edit |= over && twice;
+    }
+    if let Some(text) = &shown.text
+        && !look.terminal
+        && text.has_focus()
+    {
+        edit |= ui.input_mut(|input| {
+            consume_press(input, egui::Modifiers::NONE, egui::Key::Enter)
+                || consume_press(input, egui::Modifiers::NONE, egui::Key::F2)
+        });
+    }
+    if edit {
+        actions.push(Action::EditField {
+            tab,
+            id: tab_id,
+            cell: CellPos { row, col },
+        });
+    }
+    // An edit of this field ended: the keyboard is on it again, on its
+    // text, or on its pencil where the value has none (a NULL, a document).
+    if form.focus == Some(col) {
+        form.focus = None;
+        if let Some(back) = shown.text.as_ref().or(pencil.as_ref()) {
+            back.request_focus();
+            back.scroll_to_me(None);
+            // What shows that it has the keyboard (the pencil, a caret)
+            // was drawn before it had it: the next frame draws it.
+            ui.ctx().request_repaint();
+        }
+    }
+}
+
+/// The pencil of a field that can be edited: 22 pt, as Copy is.
+const PENCIL: f32 = 22.0;
+
+/// Where a field's outline is, round the place of its value: the value is
+/// flush with its label, and a field's border stands clear of its text.
+fn outline(place: Rect) -> Rect {
+    place.expand2(vec2(6.0, 3.0))
+}
+
+/// What a field's value is read from, besides the value itself.
+struct Reading<'a> {
+    /// The value as a tree, when it holds a document.
+    doc: Option<Arc<json_view::Doc>>,
+    /// The value's text, formatted by the app.
+    formatted: Option<&'a format::FieldText>,
+    /// The label the value is named by.
+    name_id: Id,
+    /// The role its text is drawn in.
+    role: TextRole,
+    /// Whether the row's form lets it be edited.
+    editable: bool,
+}
+
+/// What a field's value came to on screen.
+#[derive(Default)]
+struct Shown {
+    /// Where a double-click edits it: its text, the NULL mark, the stand-in
+    /// of an empty or a blank text. None for what has its own clicks (a
+    /// tree, a list) or cannot be edited at all.
+    place: Option<Rect>,
+    /// Its text, which takes a caret and the keyboard.
+    text: Option<egui::Response>,
+}
+
+/// A field's value, under its label: read, selected and copied from.
+#[allow(clippy::too_many_arguments)] // the field's own, passed on
+fn value_of(
+    ui: &mut egui::Ui,
+    tab: ConnTabId,
+    tab_id: TabId,
+    row: usize,
+    col: usize,
+    column: &tabletist_db::ColumnMeta,
+    value: &Value,
+    info: &FieldInfo,
+    tag: Option<crate::ui::grid::Style>,
+    skin: FieldSkin<'_>,
+    read: Reading<'_>,
+    actions: &mut Vec<Action>,
+) -> Shown {
+    let FieldSkin {
+        look,
+        palette,
+        locale,
+        fold,
+        texts,
+        ..
+    } = skin;
+    let Reading {
+        doc,
+        formatted,
+        name_id,
+        role,
+        editable,
+    } = read;
+    let request = texts.and_then(|texts| texts.request);
+    let column_name = format::display_safe(&column.name);
+    let mut shown = Shown::default();
+    if value.is_null() {
+        shown.place = Some(crate::ui::grid::null_label(ui, look, palette).rect);
+        return shown;
     }
     if let Some(doc) = doc {
         if fold {
@@ -1042,10 +1280,10 @@ fn field(
                     json_view::show(ui, id, &doc, &column_name, locale, palette, look);
                 });
         }
-        return;
+        return shown;
     }
     let Some(formatted) = formatted else {
-        return;
+        return shown;
     };
     let say = |text: &'static str| look.label(&gettext(locale, text));
     match value {
@@ -1060,18 +1298,18 @@ fn field(
                     col,
                 });
             }
-            return;
+            return shown;
         }
         Value::Text(text) => {
             let marks = crate::ui::grid::marks(ui.ctx(), look);
-            if let Some(shown) = format::blank_text(text, marks) {
+            if let Some(blank) = format::blank_text(text, marks) {
                 let note = if text.is_empty() {
                     say("empty string")
                 } else {
                     say("whitespace only")
                 };
-                stand_in(ui, &shown, &note, look, palette);
-                return;
+                shown.place = Some(stand_in(ui, &blank, &note, look, palette));
+                return shown;
             }
             if listed(text, column)
                 && let Some(array) = format::array_items(text)
@@ -1081,7 +1319,7 @@ fn field(
                 } else {
                     elements(ui, &array, look, palette, locale);
                 }
-                return;
+                return shown;
             }
         }
         Value::Null | Value::Bool(_) | Value::Int(_) | Value::Float(_) => {}
@@ -1092,17 +1330,9 @@ fn field(
     // known once it is laid out at the width it gets.
     let mut tall = false;
     let long = formatted.full.is_some();
-    let shown = match &formatted.full {
+    let read = match &formatted.full {
         Some(full) if expanded => full,
         _ => &formatted.short,
-    };
-    // Values in the data face at 13; the terminal's timestamps at 12.
-    let role = if matches!(column.kind, ValueKind::Json | ValueKind::Binary) {
-        TextRole::pick(look, TextRole::MonoSecondary, TextRole::OSecondary)
-    } else if look.terminal && column.kind == ValueKind::Temporal {
-        TextRole::OSecondary
-    } else {
-        TextRole::pick(look, TextRole::InspectorValue, TextRole::OBody)
     };
     // The follow link sits at the value's right.
     let follow = info.target.as_ref().map(|target| {
@@ -1146,11 +1376,11 @@ fn field(
         let room = (ui.available_width() - link).max(24.0);
         ui.allocate_ui(vec2(room, 0.0), |ui| {
             let mut layouter = crate::typography::layouter(look, role, color);
-            tall = layouter(ui, &shown.as_str(), room).rows.len() > CLAMP_ROWS;
+            tall = layouter(ui, &read.as_str(), room).rows.len() > CLAMP_ROWS;
             let mut edit = |ui: &mut egui::Ui| {
                 let value = ui
                     .add(
-                        TextEdit::multiline(&mut shown.as_str())
+                        TextEdit::multiline(&mut read.as_str())
                             .font(role.font_id(look.faces))
                             // Flush with the field name above.
                             .frame(egui::Frame::NONE)
@@ -1161,8 +1391,18 @@ fn field(
                     )
                     .labelled_by(name_id);
                 // A value to read and select, not a field: its caret says
-                // where the keyboard is.
-                crate::ui::focus::hint(ui, &value, value.rect, crate::ui::focus::Ring::Own);
+                // where the keyboard is. One that can be edited wears a
+                // field's ring, where its outline is.
+                let ring = if editable {
+                    focus::Ring::Field {
+                        radius: look.radius,
+                    }
+                } else {
+                    focus::Ring::Own
+                };
+                focus::hint(ui, &value, outline(value.rect), ring);
+                shown.place = Some(value.rect);
+                shown.text = Some(value);
             };
             if tall && !expanded {
                 // The first lines, the last of them fading out (macOS):
@@ -1173,6 +1413,8 @@ fn field(
                 let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect));
                 child.set_clip_rect(rect.intersect(ui.clip_rect()));
                 edit(&mut child);
+                // The lines that show are the value's place.
+                shown.place = Some(rect);
                 if !look.terminal {
                     let last =
                         Rect::from_min_max(pos2(rect.left(), rect.bottom() - line), rect.max);
@@ -1218,6 +1460,7 @@ fn field(
             ui.data_mut(|data| data.insert_temp(expanded_id, !expanded));
         }
     }
+    shown
 }
 
 /// The lines of a long value the panel shows before "Show all".
@@ -1239,7 +1482,7 @@ fn fade(ui: &egui::Ui, rect: Rect, color: egui::Color32) {
 
 /// A value with nothing to see: what the grid writes for it (`''`, a mark
 /// for each space, `{}`), and in words what that is.
-fn stand_in(ui: &mut egui::Ui, shown: &str, note: &str, look: &Look, palette: &Palette) {
+fn stand_in(ui: &mut egui::Ui, shown: &str, note: &str, look: &Look, palette: &Palette) -> Rect {
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 6.0;
         let role = crate::ui::grid::data_role(look);
@@ -1249,7 +1492,9 @@ fn stand_in(ui: &mut egui::Ui, shown: &str, note: &str, look: &Look, palette: &P
         Text::one(look, widgets::secondary(look), note, palette.secondary)
             .layout(ui.ctx())
             .label(ui);
-    });
+    })
+    .response
+    .rect
 }
 
 /// The most elements of an array the panel lists.
@@ -1382,11 +1627,12 @@ fn singular(table: &str) -> &str {
         .unwrap_or(table)
 }
 
-/// A field's copy button: bordered next to a document, otherwise a bare
-/// icon shown when the pointer is near. It is always there for keyboards
-/// and screen readers.
-fn copy_button(
+/// A button of a field's label line (Copy, the pencil): bordered next to a
+/// document, otherwise a bare icon shown when the pointer is near. It is
+/// always there for keyboards and screen readers.
+fn caption_button(
     ui: &mut egui::Ui,
+    icon: Icon,
     label: &str,
     shown: bool,
     look: &Look,
@@ -1408,8 +1654,7 @@ fn copy_button(
                 StrokeKind::Inside,
             );
         }
-        Icon::Copy
-            .image(palette.secondary, 13.0)
+        icon.image(palette.secondary, 13.0)
             .paint_at(ui, Rect::from_center_size(rect.center(), vec2(13.0, 13.0)));
     }
     response.on_hover_text(label)
@@ -1622,7 +1867,7 @@ fn editing_footer(
 }
 
 /// A dashed 1 pt outline round `rect`.
-fn dashed(ui: &egui::Ui, rect: Rect, color: egui::Color32) {
+pub(super) fn dashed(ui: &egui::Ui, rect: Rect, color: egui::Color32) {
     let stroke = Stroke::new(1.0, color);
     let rect = rect.shrink(0.5);
     for side in [
