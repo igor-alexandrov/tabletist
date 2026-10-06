@@ -321,7 +321,9 @@ fn retype(
         cell: CellPos { row, col },
         start: EditStart::Replace(text.into()),
     });
-    harness.app.apply(Action::LeaveEdit { tab, id });
+    harness
+        .app
+        .apply(crate::testing::leave_edit(&harness.app, tab, id));
 }
 
 /// Image 3 becomes a cover that was deleted this morning: two pending

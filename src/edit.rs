@@ -574,9 +574,21 @@ pub enum State {
     Failed(Error),
 }
 
+/// Where a tab's editor is drawn: on its cell in the grid (or in the
+/// popover at the cell), or in the row panel, in the place of the field's
+/// value. Its text becomes the same pending cell from either.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum EditorPlace {
+    #[default]
+    Grid,
+    Panel,
+}
+
 /// The editor that is open. Only `text` is the view's to change.
 pub struct Editor {
     pub cell: CellPos,
+    /// The view that draws it.
+    pub place: EditorPlace,
     pub text: String,
     /// The popover rather than the field on the cell.
     pub large: bool,
@@ -598,6 +610,9 @@ pub struct Edits {
     pub editor: Option<Editor>,
     /// Why the cell last asked for could not be edited.
     pub why: Option<(CellPos, Lock)>,
+    /// Where that edit was asked for: the reason is said there, at the
+    /// cell or under the row panel's field.
+    pub why_place: EditorPlace,
     /// The save that is running.
     pub saving: Option<Saving>,
     /// The last save that wrote, for the cells' green and the status.
@@ -2144,6 +2159,7 @@ mod tests {
         );
         edits.editor = Some(Editor {
             cell: at(0, 2),
+            place: EditorPlace::Grid,
             text: "another secret".into(),
             large: false,
             focus: false,

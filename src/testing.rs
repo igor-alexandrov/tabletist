@@ -568,6 +568,28 @@ impl Harness {
 
 use tabletist_db::{ColumnMeta, RowPage, Value, ValueKind};
 
+/// What a view sends when the tab's open editor loses the keyboard: the
+/// action names the editor it is about, by its cell and its place.
+pub fn leave_edit(app: &App, tab: ConnTabId, id: TabId) -> Action {
+    let editor = app
+        .workspace(tab)
+        .and_then(|workspace| workspace.object_tab(id))
+        .and_then(|object| object.edits.editor.as_ref());
+    let (cell, place) = editor.map_or(
+        (
+            crate::model::CellPos { row: 0, col: 0 },
+            crate::edit::EditorPlace::Grid,
+        ),
+        |editor| (editor.cell, editor.place),
+    );
+    Action::LeaveEdit {
+        tab,
+        id,
+        cell,
+        place,
+    }
+}
+
 /// A page shaped like the fixture's users table.
 pub fn page(rows: usize, has_more: bool) -> RowPage {
     RowPage {

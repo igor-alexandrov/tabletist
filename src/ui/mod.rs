@@ -15034,7 +15034,9 @@ mod tests {
             harness.app.apply(Action::CommitEdit { tab, id, then });
             assert!(edits(&harness, tab, id).editor.is_some(), "large: {large}");
             assert!(edits(&harness, tab, id).cells.is_empty(), "large: {large}");
-            harness.app.apply(Action::LeaveEdit { tab, id });
+            harness
+                .app
+                .apply(crate::testing::leave_edit(&harness.app, tab, id));
             let pending = edits(&harness, tab, id).cells.get(&at).unwrap();
             assert_eq!(
                 pending.state,
@@ -15319,7 +15321,9 @@ mod tests {
             cell,
             start,
         });
-        harness.app.apply(Action::LeaveEdit { tab, id });
+        harness
+            .app
+            .apply(crate::testing::leave_edit(&harness.app, tab, id));
     }
 
     /// The row `id 2` of the fixture's page as a save reads it back.

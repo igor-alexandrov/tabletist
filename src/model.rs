@@ -239,6 +239,15 @@ pub enum Action {
         cell: CellPos,
         start: EditStart,
     },
+    /// Open the editor on a field of the row panel: the selected row's
+    /// value in the column of `cell`, edited in the panel instead of on the
+    /// cell. From the value, as `EditStart::Value` is. On a field that
+    /// cannot be edited it says why.
+    EditField {
+        tab: ConnTabId,
+        id: TabId,
+        cell: CellPos,
+    },
     /// The editor's text changed: check it again.
     EditorTyped {
         tab: ConnTabId,
@@ -251,11 +260,16 @@ pub enum Action {
         id: TabId,
         then: Advance,
     },
-    /// The editor lost the keyboard: keep its text, as a cell to fix when
-    /// its column does not take it.
+    /// The editor on `cell`, drawn in `place`, lost the keyboard: keep its
+    /// text, as a cell to fix when its column does not take it. It names
+    /// the editor it is about: the click that took the keyboard can have
+    /// asked for another editor in the same frame, which is the one open
+    /// by the time this is applied, and is not the one that was left.
     LeaveEdit {
         tab: ConnTabId,
         id: TabId,
+        cell: CellPos,
+        place: crate::edit::EditorPlace,
     },
     /// Close the editor and drop its text.
     CancelEdit {
@@ -1804,6 +1818,10 @@ pub struct ObjectTab {
     pub filter: FilterBar,
     /// The row panel's text for the selected row (see `App::format_rows`).
     pub fields: Option<RowFields>,
+    /// The column whose field of the row panel gets the keyboard back: an
+    /// edit made there was committed or dropped. Taken by the panel when
+    /// it draws that field.
+    pub focus_field: Option<usize>,
     /// What is pending, while the tab's values are edited. A tab that holds
     /// edits keeps its page.
     pub edits: crate::edit::Edits,
@@ -1921,6 +1939,7 @@ impl ObjectTab {
             count: Fetch::default(),
             filter: FilterBar::default(),
             fields: None,
+            focus_field: None,
             edits: crate::edit::Edits::default(),
         }
     }

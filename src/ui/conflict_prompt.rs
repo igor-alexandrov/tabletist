@@ -1020,7 +1020,9 @@ mod tests {
             cell,
             start: EditStart::Replace(text.into()),
         });
-        harness.app.apply(Action::LeaveEdit { tab, id });
+        harness
+            .app
+            .apply(crate::testing::leave_edit(&harness.app, tab, id));
     }
 
     /// A writable table `users` with `structure` and `page`, in `look` and
