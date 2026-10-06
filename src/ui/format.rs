@@ -767,17 +767,18 @@ pub fn capped(text: &str) -> Cow<'_, str> {
     }
 }
 
-/// Whether `error` is a write that was refused: by Tabletist's own guard,
-/// or by the database, be it a read-only session or, on a writable one,
-/// the script's read-only transaction (SQLite's `query_only`). PostgreSQL
-/// and MySQL say SQLSTATE 25006; SQLite says SQLITE_READONLY (8) and no
-/// more. Its extended codes keep the 8 in their low byte and are not a
-/// refused write: a journal to recover, a lock or a directory it cannot
-/// have, which a SELECT can meet.
+/// Whether `error` is a write the database refused: on a read-only
+/// session or, on a writable one, in the script's read-only transaction
+/// (SQLite's `query_only`). PostgreSQL and MySQL say SQLSTATE 25006; SQLite
+/// says SQLITE_READONLY (8) and no more. Its extended codes keep the 8 in
+/// their low byte and are not a refused write: a journal to recover, a
+/// lock or a directory it cannot have, which a SELECT can meet. What
+/// Tabletist's own guard refuses (`Error::Refused`) is none either: that
+/// list is about the run's transaction, not about writing, and its
+/// sentence says so.
 pub fn refuses_writes(error: &tabletist_db::Error, driver: tabletist_db::Driver) -> bool {
     use tabletist_db::{Driver, Error};
     match error {
-        Error::Refused { .. } => true,
         Error::Query {
             code: Some(code), ..
         } => match driver {
@@ -876,7 +877,8 @@ mod tests {
             mode: tabletist_db::ScriptMode::ReadOnly,
         };
         for driver in [Driver::Postgres, Driver::MySql, Driver::Sqlite] {
-            assert!(refuses_writes(&refused, driver));
+            // The guard's refusal is about the transaction, in either mode.
+            assert!(!refuses_writes(&refused, driver));
             assert!(!refuses_writes(&Error::Timeout, driver));
         }
         // SQLSTATE 25006: read_only_sql_transaction.

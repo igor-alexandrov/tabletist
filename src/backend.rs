@@ -137,6 +137,9 @@ pub enum Command {
         /// How long the script may run before it is stopped; `None` lets
         /// it run until it ends or the user cancels it.
         timeout: Option<Duration>,
+        /// The transaction the script runs in: read-only and rolled back,
+        /// or read-write and committed when every statement succeeded.
+        mode: ScriptMode,
     },
     /// The server's name and version, for the SQL editor's footer.
     ServerVersion {
@@ -2182,6 +2185,7 @@ async fn run_session(
                 statements,
                 limit,
                 timeout,
+                mode,
             } => {
                 let timer = timeout.map(|after| {
                     Timer::start(
@@ -2193,16 +2197,18 @@ async fn run_session(
                     )
                 });
                 // Awaited to its end whatever stops it: the script rolls
-                // back and leaves the session as it found it.
+                // back, or commits, and leaves the session as it found it.
                 let result = connection
-                    .run_script(statements, *limit, ScriptMode::ReadOnly, &run_stop)
+                    .run_script(statements, *limit, *mode, &run_stop)
                     .await;
                 let timed_out = match timer {
                     Some(timer) => timer.end().await,
                     None => None,
                 };
                 let cancel = cancel_reason(&run_stop, timed_out, &result);
-                let lost = lost_error(&result);
+                // Told first, closed after: a run known to be committed is
+                // never shown as one that may be.
+                let lost = lost_error(&result).or_else(|| broken_by(&result));
                 outbox.emit(Event::SqlRan {
                     session: *session,
                     request: *request,
@@ -2256,6 +2262,13 @@ fn lost_error<T>(result: &Result<T, Error>) -> Option<Error> {
         Err(error) if error.is_connection_lost() => Some(error.clone()),
         _ => None,
     }
+}
+
+/// Why the session a script ran on must be closed though the script
+/// answered: a run that writes ended, committed or rolled back, and the
+/// session could not be put back as it connected.
+fn broken_by(result: &Result<ScriptOutcome, Error>) -> Option<Error> {
+    result.as_ref().ok()?.broken.clone()
 }
 
 /// How long to wait after the first cancel before sending another. Each
@@ -2744,6 +2757,7 @@ mod tests {
             statements: statements("SELECT 1; SELECT 2"),
             limit: 10,
             timeout: None,
+            mode: ScriptMode::ReadOnly,
         });
         let (request, result, cancel) = sql_ran(&mut backend);
         assert_eq!(request, RequestId(2));
@@ -2760,6 +2774,7 @@ mod tests {
             statements: statements("SELECT 1"),
             limit: 10,
             timeout: Some(Duration::from_secs(3600)),
+            mode: ScriptMode::ReadOnly,
         });
         let (_, result, cancel) = sql_ran(&mut backend);
         assert_eq!(cancel, None);
@@ -2785,6 +2800,7 @@ mod tests {
             statements: statements(&format!("SELECT 1; {ENDLESS}")),
             limit: 10,
             timeout: Some(after),
+            mode: ScriptMode::ReadOnly,
         });
         let (_, result, cancel) = sql_ran(&mut backend);
         assert_eq!(cancel, Some(CancelReason::Timeout(after)));
@@ -2807,6 +2823,7 @@ mod tests {
             statements: statements("SELECT count(*) FROM big"),
             limit: 10,
             timeout: None,
+            mode: ScriptMode::ReadOnly,
         });
         let (request, result, cancel) = sql_ran(&mut backend);
         assert_eq!(request, RequestId(3));
@@ -2823,6 +2840,7 @@ mod tests {
             statements: statements(&format!("SELECT 1; {ENDLESS}")),
             limit: 10,
             timeout: Some(Duration::from_secs(3600)),
+            mode: ScriptMode::ReadOnly,
         });
         wait_until_running(&backend, session, RequestId(2), true);
         backend.send(Command::Cancel {
@@ -2863,6 +2881,7 @@ mod tests {
                 statements: statements(ENDLESS),
                 limit: 10,
                 timeout: None,
+                mode: ScriptMode::ReadOnly,
             });
             wait_until_running(&backend, session, request, true);
             // The cancels sent for the script before it ended with that
@@ -2887,6 +2906,7 @@ mod tests {
             statements: statements(ENDLESS),
             limit: 10,
             timeout: None,
+            mode: ScriptMode::ReadOnly,
         });
         backend.send(Command::RunSql {
             session,
@@ -2894,6 +2914,7 @@ mod tests {
             statements: statements("SELECT 1"),
             limit: 10,
             timeout: None,
+            mode: ScriptMode::ReadOnly,
         });
         // Superseded while the first still runs (or waits its turn).
         backend.send(Command::Cancel {
@@ -2950,6 +2971,7 @@ mod tests {
                 statements: statements("SELECT 1"),
                 limit: 10,
                 timeout: None,
+                mode: ScriptMode::ReadOnly,
             },
         );
         skip(
@@ -2968,6 +2990,7 @@ mod tests {
                 statements: statements("SELECT 1"),
                 limit: 10,
                 timeout: None,
+                mode: ScriptMode::ReadOnly,
             },
             lost(),
         );
@@ -3016,6 +3039,7 @@ mod tests {
             statements: statements(&format!("SELECT 1; {ENDLESS}")),
             limit: 10,
             timeout: None,
+            mode: ScriptMode::ReadOnly,
         });
         wait_until_running(&backend, session, RequestId(2), true);
         backend.send(Command::Close { session });
@@ -3147,6 +3171,7 @@ mod tests {
                     statements: statements(&format!("SELECT 1; {ENDLESS}")),
                     limit: 10,
                     timeout: None,
+                    mode: ScriptMode::ReadOnly,
                 })
                 .unwrap();
             let mut task = tokio::spawn(run_session(
@@ -3823,6 +3848,7 @@ mod tests {
             statements: statements("SELECT 1;\nCOMMIT"),
             limit: 10,
             timeout: Some(Duration::from_secs(3600)),
+            mode: ScriptMode::ReadOnly,
         });
         let (_, result, cancel) = sql_ran(&mut backend);
         assert_eq!(cancel, None);
@@ -3940,6 +3966,96 @@ mod tests {
     }
 
     #[test]
+    fn a_broken_outcome_is_why_its_session_is_closed() {
+        let broken = ScriptOutcome {
+            end: tabletist_db::ScriptEnd::Committed,
+            broken: Some(Error::ConnectionLost(
+                "could not end the transaction".into(),
+            )),
+            ..Default::default()
+        };
+        // The outcome is delivered as it is, and is why the session goes.
+        let closed = broken_by(&Ok(broken)).expect("the session is to be closed");
+        assert!(closed.is_connection_lost());
+        assert_eq!(broken_by(&Ok(ScriptOutcome::default())), None);
+        assert_eq!(broken_by(&Ok(cancelled_outcome())), None);
+        assert_eq!(broken_by(&Err(Error::Cancelled)), None);
+    }
+
+    #[test]
+    fn a_script_writes_only_in_a_run_sent_to_write() {
+        use tabletist_db::{ScriptEnd, StatementOutcome};
+        let (_dir, mut backend, session) = connected_as(Access::Writable);
+        let insert = "INSERT INTO events (kind) VALUES ('probe')";
+        let mut run = |request: u64, text: &str, mode: ScriptMode| {
+            backend.send(Command::RunSql {
+                session,
+                request: RequestId(request),
+                statements: statements(text),
+                limit: 10,
+                timeout: None,
+                mode,
+            });
+            let (_, result, _) = sql_ran(&mut backend);
+            result
+        };
+        // The run every editor had before: the database refuses the write.
+        let refused = run(2, insert, ScriptMode::ReadOnly).unwrap();
+        assert!(matches!(
+            refused.results[0].outcome,
+            StatementOutcome::Error { .. }
+        ));
+        assert_eq!(refused.end, ScriptEnd::RolledBack);
+        // Sent to write, it is committed and says how many rows it changed.
+        let written = run(3, insert, ScriptMode::Write).unwrap();
+        assert_eq!(written.end, ScriptEnd::Committed);
+        assert_eq!(
+            written.results[0].outcome,
+            StatementOutcome::Done {
+                affected: Some(1),
+                warnings: 0
+            }
+        );
+        // The session is fenced again: the next read-only run cannot write,
+        // and finds the one row.
+        assert!(matches!(
+            run(4, insert, ScriptMode::ReadOnly).unwrap().results[0].outcome,
+            StatementOutcome::Error { .. }
+        ));
+        let count = "SELECT count(*) FROM events WHERE kind = 'probe'";
+        let counted = run(5, count, ScriptMode::ReadOnly).unwrap();
+        assert!(matches!(
+            &counted.results[0].outcome,
+            StatementOutcome::Rows { rows, .. } if rows == &[vec![Value::Int(1)]]
+        ));
+    }
+
+    #[test]
+    fn a_run_sent_to_write_on_a_read_only_session_sends_nothing_and_keeps_it() {
+        let (_dir, mut backend, session) = connected_as(Access::ReadOnly);
+        backend.send(Command::RunSql {
+            session,
+            request: RequestId(2),
+            statements: statements("INSERT INTO events (kind) VALUES ('probe')"),
+            limit: 10,
+            timeout: None,
+            mode: ScriptMode::Write,
+        });
+        let (_, result, cancel) = sql_ran(&mut backend);
+        assert_eq!(result, Err(Error::ReadOnly));
+        assert_eq!(cancel, None);
+        // The session takes the next request.
+        backend.send(Command::ListSchemas {
+            session,
+            request: RequestId(3),
+        });
+        assert!(matches!(
+            backend.wait(WAIT),
+            Some(Event::Schemas { result: Ok(_), .. })
+        ));
+    }
+
+    #[test]
     fn a_lost_connection_answers_queued_scripts() {
         let (sender, mut commands) = tokio_mpsc::unbounded_channel();
         let (outbox, received) = quiet_outbox();
@@ -3951,6 +4067,7 @@ mod tests {
                 statements: statements("SELECT 1"),
                 limit: 10,
                 timeout: Some(Duration::from_secs(30)),
+                mode: ScriptMode::ReadOnly,
             })
             .unwrap();
         sender
@@ -3990,6 +4107,7 @@ mod tests {
             statements: statements("SELECT 1"),
             limit: 10,
             timeout: None,
+            mode: ScriptMode::ReadOnly,
         };
         let version = Command::ServerVersion {
             session: SessionId(7),
@@ -4028,6 +4146,7 @@ mod tests {
             statements: statements("SELECT 1"),
             limit: 10,
             timeout: None,
+            mode: ScriptMode::ReadOnly,
         });
         let (_, result, cancel) = sql_ran(&mut backend);
         assert_eq!(cancel, None);
@@ -4427,6 +4546,7 @@ mod tests {
             statements: statements("SELECT 1;\nSELECT 'hunter2' FROM payroll"),
             limit: 10,
             timeout: None,
+            mode: ScriptMode::ReadOnly,
         };
         let printed = format!("{command:?}");
         for typed in ["hunter2", "payroll", "SELECT"] {

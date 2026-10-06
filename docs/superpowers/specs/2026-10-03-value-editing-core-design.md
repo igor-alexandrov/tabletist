@@ -44,7 +44,8 @@ sub-projects, each with its own spec, plan and pull request:
    set, `$EDITOR`.
 5. Rows: add, duplicate, delete (the "Editing a row" artboards).
 6. Writes from the SQL editor, and allowing writes for one tab of a
-   read-only connection.
+   read-only connection. The first is
+   `2026-10-05-sql-editor-writes-design.md`, which rejects the second.
 
 ## Decisions
 
@@ -110,7 +111,10 @@ pending changes never outlive their page.
   connection**, the per-tab switch) belongs to slice 6: until the SQL
   editor can write, turning the box off would not make the statement run,
   and the card must not say it would. From step 3 on, the card adds "Edit
-  values in a table's grid." on a writable connection.
+  values in a table's grid." on a writable connection. Slice 6 replaced
+  this card with three, at the head of the Messages, each saying why its
+  run was read-only (`2026-10-05-sql-editor-writes-design.md`, "The
+  refused write").
 
 ### Sessions (`tabletist-db`)
 
@@ -195,8 +199,9 @@ pending changes never outlive their page.
     session's settings, the catalog, later the save): everything is
     allowed;
   - a script's statement: transaction and savepoint statements are
-    denied, and so are `query_only` and `writable_schema` with a value
-    and `wal_checkpoint` in any form. Writes are left to `query_only`,
+    denied, and so are `query_only`, `writable_schema` and `locking_mode`
+    with a value and `wal_checkpoint` in any form. Writes are left to
+    `query_only`,
     whose error the refused-write card recognises. `ATTACH` and other
     pragmas stay, as the SQL editor spec allows them;
   - a table's page or count, which holds the raw WHERE: a pragma with a
@@ -221,8 +226,9 @@ pending changes never outlive their page.
   authorized", and the checks hold if the authorizer is ever wrong.
 
 The promise, restated: on a read-only connection no action in the app can
-modify data. On a writable connection only Save can; browsing, a raw WHERE
-and the SQL editor still cannot.
+modify data. On a writable connection only Save can, and since slice 6 a
+run in a SQL tab the user switched to Read-write; browsing, a raw WHERE
+and every other run still cannot.
 
 ## What can be edited
 

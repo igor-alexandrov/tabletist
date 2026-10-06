@@ -1,8 +1,12 @@
 # Writes from the SQL editor
 
 Date: 2026-10-05. Status: step 1 (the run) is built, see
-`docs/superpowers/plans/2026-10-05-sql-editor-writes-run.md`; steps 2 and 3
-are not yet planned. The PostgreSQL and MySQL runs were built with no
+`docs/superpowers/plans/2026-10-05-sql-editor-writes-run.md`. Step 2 (the
+tab) is built in two runs. The first is
+`docs/superpowers/plans/2026-10-05-sql-editor-writes-tab.md`: a tab that
+writes, on every connection but a production one. The second, not yet
+planned, is the production confirmation and `editor.sql_new_tab`. Step 3
+is not yet planned. The PostgreSQL and MySQL runs were built with no
 server at hand: their tests have been compiled, and are first run by CI.
 
 ## Intent
@@ -333,9 +337,10 @@ statement outside a transaction.
    statement runs. A `BEGIN` that fails as busy is the run's error with
    SQLite's message; the session stays open.
 2. Each statement runs behind the script fence (`Fence::Script`), which
-   denies what it denies today: transaction and savepoint statements,
-   `query_only` and `writable_schema` with a value, `wal_checkpoint`. What
-   lets the statement write is `query_only` being off.
+   denies what it denies a read-only run: transaction and savepoint
+   statements, `query_only`, `writable_schema` and `locking_mode` with a
+   value, `wal_checkpoint`. What lets the statement write is `query_only`
+   being off.
 3. Before every statement the driver asks whether its transaction is still
    open. One that is gone ends the run with `Error::LeftTransaction`.
 4. `COMMIT` after the last statement, `ROLLBACK` after an error or a stop.
@@ -473,24 +478,39 @@ A read-only run reads as today. For a read-write run:
     then its text. Nothing then says "Nothing was written".
   - With `broken`: the end's own line, then "The session could not be put
     back and was closed.", and the reconnect banner.
+  - A stop that came with every statement done has no statement's line to
+    say it: "Cancelled" (or the timeout's words) then stands before the
+    end's line.
+  - A commit that failed counts beside the Messages tab as a statement's
+    error does.
 - In a run that did not end `Committed`, a statement whose work was undone
   ends its line with "· rolled back", so no count reads as a change that
-  stayed. With a `rollback_warning` no line gets it.
+  stayed: a statement without a result set, and one that returned rows
+  and looks like a write (`INSERT ... RETURNING`). With a
+  `rollback_warning` no line gets it.
 - Results shows the last statement that returned rows, as today. A
   statement without a result set shows "Statement ran · 12 rows affected"
   when it counted rows, else today's "Statement ran · no rows returned". A
   statement counts rows where it does today (`WITH ... UPDATE` and `CREATE
-  TABLE ... AS` do not).
+  TABLE ... AS` do not). After a commit that failed, with no rows to show,
+  Results says what the Messages say of it ("The commit failed. Nothing
+  was written."), never that a statement ran. After a run that MySQL
+  committed by itself under a stop that came too late, Results says that
+  the statement ran, not only "Cancelled": the run is written.
 - Messages opens by itself as today, and also when a read-write run ends
   `Partly`, `CommitFailed`, with a `rollback_warning` or `broken`.
 - Footer, macOS and Windows: the shown statement's `12 rows affected ·
   14 ms`, as it shows a result's rows today, then `Read-write transaction ·
   committed`, `· rolled back`, `· partly committed`, `· commit failed`,
-  or, with a `rollback_warning`, `· not fully rolled back`. Omarchy:
+  or, with a `rollback_warning`, `· not fully rolled back`. A commit that
+  failed after MySQL had committed part by itself reads `· partly
+  committed`, which is what it left. Omarchy:
   `ln 3:1 · 12 rows affected · 14 ms · committed`.
 - A connection lost during a read-write run shows the reconnect banner and
   "The connection was lost during a read-write run. Some or all of it may
-  be written."
+  be written." A session closed because the script ended its own
+  transaction (`Error::LeftTransaction`) says that itself, and under it
+  "Some or all of the run may be written."
 
 ### The refused write
 
@@ -509,10 +529,30 @@ read-only:
 | Writable connection, tab in Read-only | "This tab runs read-only". "Every run here is a read-only transaction, so PostgreSQL refused the UPDATE. Nothing changed." | **Allow writes in this tab** (Omarchy `w`) |
 | Writable connection, tab in Read-write, run taken for a read | "This run was read-only". "Its statements looked like reads, so they ran in a read-only transaction and PostgreSQL refused this one. Nothing changed." | **Run in a read-write transaction** (Omarchy `w`) |
 
-- "Allow writes in this tab" sets the mode and runs nothing.
+- "Allow writes in this tab" sets the mode and runs nothing. The card
+  stays, for a run that is now one of a tab in Read-write: "This run was
+  read-only", "It was sent before this tab could write, so PostgreSQL
+  refused the UPDATE. Nothing changed.", and **Run in a read-write
+  transaction**. Its statements held a write, so "looked like reads"
+  would not be true of it.
 - Edit connection opens the connection dialog on the workspace's saved
   connection (`Action::EditConnection`).
-- The Omarchy keys work while the editor does not have the keyboard.
+- The Omarchy keys work while the editor does not have the keyboard, and
+  only while the card is on screen: not under the opening screen a switch
+  of database puts over the editor.
+- The card's button and its letter take a press of their own. "Allow
+  writes in this tab" gives way to "Run in a read-write transaction" in
+  the same place and under the same letter, so the repeats of a held key
+  and the second click of a double-click answer nothing.
+- "Run in a read-write transaction" is offered only on a connected
+  session.
+- Under the card stand the database's own words, then, for a read-only
+  connection, the line "To write, turn off Open read-only ...", then the
+  action. The terminal look writes the card in lower case throughout, the
+  database's name and the statement's verb too, and names a read-only
+  connection by its tag, as its artboard does: "PROD blocks writes, so
+  postgresql refused the update. nothing changed." It writes the lines of
+  a run's end the same way.
 - A statement the guard refused (`Error::Refused`) keeps its own sentence
   and is not one of these cards any more: the refusal list is about the
   transaction, not about writing.
@@ -585,8 +625,13 @@ cannot.
   says. Some of them change what a later run that writes keeps
   (`ignore_check_constraints`, `recursive_triggers`, `legacy_alter_table`,
   `locking_mode`), and a script may set them in a read-only run. Step 2
-  settles them, by putting them back after every run or by denying them
-  to a script, before any tab can write.
+  settled them before any tab could write. The first three are put back
+  after every run, with the other connect-time settings: a script may set
+  one for its own run, and no later run or save feels it. `locking_mode`
+  with a value is denied to a script, as `query_only` is, and fails with
+  SQLite's "not authorized": in a rollback journal an exclusive lock is
+  let go only by the session's next read of the file, not by setting the
+  mode back, and inside the one transaction of a run it gains nothing.
 - Run on an empty or comment-only editor does nothing, and neither does
   Run while the session is connecting or disconnected.
 - A tab switched to Read-write whose runs are all reads never opens a
@@ -613,7 +658,17 @@ Each step ends compiling, tested and shippable, and gets its own plan run:
    It also settles the SQLite pragmas that outlive a run (see "Errors and
    edge cases"), since it is the step that lets a tab write.
    It reuses the production sheet and the PROD box of value editing's step
-   3, so it is planned once that has landed. Until step 3 of this spec,
+   3, so it is planned once that has landed. It is built in two runs.
+   The first leaves out the production confirmation and
+   `editor.sql_new_tab`, and so lets no tab of a production connection
+   write: there the badge's menu shows "Read-write transaction" disabled,
+   the key does nothing, and the menu, the badge's tooltip and the card of
+   a tab in Read-only say "Read-write runs on a production connection are
+   not available yet." in place of the way on. So does the card of a
+   production connection that opens read-only, in place of "To write, turn
+   off Open read-only ..." and **Edit connection**: with the box off its
+   tabs still could not write. The second run builds the confirmation and
+   takes that sentence out. Until step 3 of this spec,
    closing a tab or a connection cancels a read-write run in flight
    without asking, as it cancels any run (rolled back unless its commit
    was already sent), and table tabs show what they loaded until they are

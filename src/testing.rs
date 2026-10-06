@@ -527,6 +527,45 @@ impl Harness {
     }
 }
 
+impl Harness {
+    /// Sets the "Open read-only" box of `tab`'s saved connection and
+    /// reconnects, as a user who changed the box and pressed Reconnect: the
+    /// session comes back as the box says. The tree's requests are left
+    /// unanswered.
+    pub fn reconnect_fake_as(&mut self, tab: ConnTabId, read_only: bool) {
+        let conn = self
+            .app
+            .workspace(tab)
+            .expect("a workspace")
+            .conn_id
+            .clone();
+        let mut saved = self.app.connections.get(&conn).expect("saved").clone();
+        saved.read_only = Some(read_only);
+        self.app.connections.upsert(saved);
+        self.app.apply(Action::Reconnect(tab));
+        let (session, request) = self
+            .app
+            .backend
+            .sent
+            .iter()
+            .rev()
+            .find_map(|command| match command {
+                Command::Connect {
+                    session, request, ..
+                } => Some((*session, *request)),
+                _ => None,
+            })
+            .expect("a Connect was sent");
+        self.app.apply(Action::Backend(Event::Connected {
+            session,
+            request,
+            driver: Driver::Sqlite,
+            encrypted: false,
+            access: asked_access(&self.app),
+        }));
+    }
+}
+
 use tabletist_db::{ColumnMeta, RowPage, Value, ValueKind};
 
 /// A page shaped like the fixture's users table.
@@ -701,6 +740,20 @@ pub fn error_outcome(message: &str, position: Option<usize>) -> tabletist_db::St
     }
 }
 
+/// A write refused in a read-only transaction, as PostgreSQL and MySQL say
+/// it (SQLSTATE 25006).
+pub fn refused_write() -> tabletist_db::StatementOutcome {
+    tabletist_db::StatementOutcome::Error {
+        error: tabletist_db::Error::Query {
+            code: Some("25006".into()),
+            message: "cannot execute UPDATE in a read-only transaction".into(),
+            detail: None,
+            hint: None,
+        },
+        position: None,
+    }
+}
+
 /// What a script did, as a driver reports it: one outcome per statement
 /// that started, each taking 14 ms. A `Cancelled` outcome is a stopped run,
 /// as it is for every driver.
@@ -718,6 +771,27 @@ pub fn script_outcome(
             .collect(),
         stopped,
         ..Default::default()
+    }
+}
+
+/// What a script sent to write did: [`script_outcome`], with how its
+/// transaction ended.
+pub fn write_outcome(
+    outcomes: Vec<tabletist_db::StatementOutcome>,
+    end: tabletist_db::ScriptEnd,
+) -> tabletist_db::ScriptOutcome {
+    tabletist_db::ScriptOutcome {
+        end,
+        ..script_outcome(outcomes)
+    }
+}
+
+/// A statement that ran and gave no result set: how many rows it changed,
+/// where it counts them.
+pub fn done_outcome(affected: Option<u64>) -> tabletist_db::StatementOutcome {
+    tabletist_db::StatementOutcome::Done {
+        affected,
+        warnings: 0,
     }
 }
 
@@ -741,7 +815,7 @@ pub fn run_script(
     sql.text = text.into();
     let request = RequestId(sql.run.loaded.map_or(9, |last| last.0 + 1));
     let statements = tabletist_db::sql::statements(Driver::Sqlite.dialect(), text);
-    let _ = sql.start_run(request, statements);
+    let _ = sql.start_run(request, statements, tabletist_db::ScriptMode::ReadOnly);
     assert!(sql.finish_run(request, Ok(script_outcome(outcomes)), None));
 }
 

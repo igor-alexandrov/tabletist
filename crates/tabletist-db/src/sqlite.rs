@@ -493,12 +493,20 @@ fn declared_columns(
 /// them off (the pragma does nothing inside a transaction, which is where
 /// a script runs), but a save's refusal of a child with no parent should
 /// not rest on how the library was built.
+///
+/// Three more are put back because they change what a later write keeps,
+/// a save's as much as a script's: a script may turn CHECK constraints
+/// off, let triggers fire themselves, or have `ALTER TABLE ... RENAME`
+/// leave the views and triggers that name the table alone. It may, for its
+/// own run; the flag ends with the run. (`locking_mode`, the fourth
+/// setting of that kind, is denied to a script: see `Fence::Script`.)
 fn set_session_pragmas(connection: &rusqlite::Connection) -> rusqlite::Result<()> {
     connection.busy_timeout(std::time::Duration::from_secs(5))?;
     connection.execute_batch(
         "PRAGMA query_only = ON; PRAGMA trusted_schema = OFF; PRAGMA case_sensitive_like = OFF; \
          PRAGMA full_column_names = OFF; PRAGMA short_column_names = ON; \
-         PRAGMA foreign_keys = ON;",
+         PRAGMA foreign_keys = ON; PRAGMA ignore_check_constraints = OFF; \
+         PRAGMA recursive_triggers = OFF; PRAGMA legacy_alter_table = OFF;",
     )
 }
 
@@ -1429,6 +1437,155 @@ mod tests {
         let outcome = write_unrefused(&conn, &[probe]).await.unwrap();
         assert_eq!(outcome.end, ScriptEnd::Committed);
         assert_eq!(events_of(&conn, "probe").await, 1);
+    }
+
+    /// The three flags a script may set for its own run, as the session
+    /// has them now: CHECK constraints ignored, triggers firing themselves,
+    /// and the old `ALTER TABLE ... RENAME`.
+    async fn flags(conn: &Conn) -> [i64; 3] {
+        conn.run(|connection| {
+            let one = |sql: &str| {
+                connection
+                    .query_row(sql, [], |row| row.get::<_, i64>(0))
+                    .map_err(map_error)
+            };
+            Ok([
+                one("PRAGMA ignore_check_constraints")?,
+                one("PRAGMA recursive_triggers")?,
+                one("PRAGMA legacy_alter_table")?,
+            ])
+        })
+        .await
+        .unwrap()
+    }
+
+    /// How many rows the probe table `checked` holds.
+    async fn checked_rows(conn: &Conn) -> i64 {
+        conn.run(|connection| {
+            connection
+                .query_row("SELECT count(*) FROM checked", [], |row| row.get(0))
+                .map_err(map_error)
+        })
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_flag_a_script_sets_ends_with_its_run() {
+        const FLAGS: [&str; 3] = [
+            "PRAGMA ignore_check_constraints = ON",
+            "PRAGMA recursive_triggers = ON",
+            "PRAGMA legacy_alter_table = ON",
+        ];
+        let (conn, _dir) = fixture_as(Access::Writable).await;
+        let made = write_unrefused(&conn, &["CREATE TABLE checked (n INTEGER CHECK (n > 0))"])
+            .await
+            .unwrap();
+        assert_eq!(made.end, ScriptEnd::Committed);
+        // Set in a run that only reads, and in one that writes: neither
+        // leaves the session with them.
+        for mode in [ScriptMode::ReadOnly, ScriptMode::Write] {
+            let script = FLAGS.iter().map(|text| (*text).to_owned()).collect();
+            let outcome = conn
+                .run_script(script, 10, mode, &StopFlag::new())
+                .await
+                .unwrap();
+            assert_eq!(outcome.results.len(), 3, "{mode:?}");
+            assert!(outcome.succeeded(), "{mode:?}: {outcome:?}");
+            assert_eq!(flags(&conn).await, [0, 0, 0], "{mode:?}");
+            assert_eq!(standing(&conn).await, (1, true), "{mode:?}");
+        }
+        // So the next run that writes keeps what the table's CHECK allows,
+        // and no more.
+        let refused = write_unrefused(&conn, &["INSERT INTO checked VALUES (-1)"])
+            .await
+            .unwrap();
+        assert!(
+            matches!(refused.results[0].outcome, StatementOutcome::Error { .. }),
+            "{:?}",
+            refused.results[0].outcome
+        );
+        assert_eq!(refused.end, ScriptEnd::RolledBack);
+        assert_eq!(checked_rows(&conn).await, 0);
+        // A script may still set one for its own run, which then keeps
+        // what it wrote under it.
+        let own = write_unrefused(&conn, &[FLAGS[0], "INSERT INTO checked VALUES (-1)"])
+            .await
+            .unwrap();
+        assert_eq!(own.end, ScriptEnd::Committed);
+        assert_eq!(checked_rows(&conn).await, 1);
+        assert_eq!(flags(&conn).await, [0, 0, 0]);
+        // A run that fails puts them back as well.
+        let failed = write_unrefused(&conn, &[FLAGS[0], FLAGS[1], "SELECT nope"])
+            .await
+            .unwrap();
+        assert_eq!(failed.end, ScriptEnd::RolledBack);
+        assert_eq!(flags(&conn).await, [0, 0, 0]);
+    }
+
+    /// The session's `locking_mode`.
+    async fn locking_mode(conn: &Conn) -> String {
+        conn.run(|connection| {
+            connection
+                .query_row("PRAGMA locking_mode", [], |row| row.get(0))
+                .map_err(map_error)
+        })
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_script_cannot_take_the_file_for_the_session() {
+        for mode in [ScriptMode::ReadOnly, ScriptMode::Write] {
+            for text in [
+                "PRAGMA locking_mode = EXCLUSIVE",
+                "PRAGMA main.locking_mode(exclusive)",
+                "PRAGMA LOCKING_MODE = EXCLUSIVE",
+            ] {
+                let (conn, dir) = fixture_as(Access::Writable).await;
+                let probe = "INSERT INTO events (kind) VALUES ('probe')";
+                // In a run that writes, with a change before it, which is
+                // what would have taken the lock.
+                let script: Vec<String> = match mode {
+                    ScriptMode::ReadOnly => vec![text.to_owned()],
+                    ScriptMode::Write => vec![probe.to_owned(), text.to_owned()],
+                };
+                let outcome = conn
+                    .run_script(script, 10, mode, &StopFlag::new())
+                    .await
+                    .unwrap();
+                let last = outcome.results.last().unwrap();
+                assert!(
+                    matches!(
+                        &last.outcome,
+                        StatementOutcome::Error {
+                            error: Error::Query { message, .. },
+                            ..
+                        } if message.contains("not authorized")
+                    ),
+                    "{mode:?} {text}: {:?}",
+                    last.outcome
+                );
+                assert_eq!(outcome.end, ScriptEnd::RolledBack, "{mode:?} {text}");
+                assert_eq!(locking_mode(&conn).await, "normal", "{mode:?} {text}");
+                assert_eq!(events_of(&conn, "probe").await, 0, "{mode:?} {text}");
+                // Another program can write to the file right away.
+                let other = rusqlite::Connection::open(dir.path().join("fixture.db")).unwrap();
+                other
+                    .execute_batch("INSERT INTO events (kind) VALUES ('other')")
+                    .unwrap();
+            }
+        }
+        // Asking what the mode is stays a read like any other.
+        let (conn, _dir) = fixture_as(Access::ReadOnly).await;
+        let asked = run_unrefused(&conn, &["PRAGMA locking_mode"])
+            .await
+            .unwrap();
+        assert!(
+            matches!(asked.results[0].outcome, StatementOutcome::Rows { .. }),
+            "{:?}",
+            asked.results[0].outcome
+        );
     }
 
     /// The session's `query_only` and whether it is out of a transaction.

@@ -584,6 +584,7 @@ fn schema_header(
                     text: display_safe(other).into_owned(),
                     name: None,
                     selected: Some(other.as_str()) == shown,
+                    disabled: None,
                 })
                 .collect()
         });

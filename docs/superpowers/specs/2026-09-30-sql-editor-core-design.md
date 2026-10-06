@@ -3,7 +3,11 @@
 Date: 2026-09-30. Status: implemented. This spec describes the slice as
 built; where the code and the first draft differed, the text follows the
 code. Since 2026-10-01 the row panel shows a selected result row (see Results
-and Shortcuts on a SQL tab).
+and Shortcuts on a SQL tab). Since 2026-10-05 a SQL tab of a writable
+connection can be switched to Read-write
+(`2026-10-05-sql-editor-writes-design.md`): what this spec says of every
+run holds for the read-only run, which every tab starts with and every run
+of reads still is.
 
 ## Intent
 
@@ -14,7 +18,9 @@ table data: every run happens in a read-only transaction that is rolled back,
 and scripts that would leave that transaction are refused before anything
 runs. That holds on a writable connection too, whose session is read-write
 between runs: the editor is fenced there as on a read-only one (see
-`2026-10-03-value-editing-core-design.md`, "Writable connections").
+`2026-10-03-value-editing-core-design.md`, "Writable connections"), until
+the user switches the tab to Read-write. Then a run that holds a write is
+one read-write transaction, committed when every statement succeeded.
 
 Success: on each driver, a user opens a SQL tab, runs a query, sees its rows
 with column types, sees the database's error when a statement fails, and can
@@ -50,7 +56,7 @@ each with its own spec, plan and pull request:
 |---|---|
 | Scope | Core editor only; slices 2 to 5 follow separately. |
 | Query text | In memory only. Closing a SQL tab never asks; no unsaved dot. |
-| Run all | One read-only transaction, statements in order, stop at the first error. Results shows the last statement that returned rows; Messages lists every statement. |
+| Run all | One read-only transaction, statements in order, stop at the first error. Results shows the last statement that returned rows; Messages lists every statement. In a tab switched to Read-write a run that holds a write is one read-write transaction instead. |
 | Read-only guard | Refuse transaction and session-mode statements before running; on PostgreSQL take the snapshot first; check the transaction is still read-only before rolling back; reset the MySQL session after every script. |
 | Editor widget | egui `TextEdit` in code mode with our own layouter and a gutter; the SQL tokenizer lives in `tabletist-db`. |
 | Tab model | `Workspace.objects` becomes `tabs: Vec<Tab>`, `enum Tab { Object(Box<ObjectTab>), Sql(Box<SqlTab>) }`. |
@@ -130,7 +136,10 @@ a string is what the splitter and the guard treat as one.
 
 ### The read-only guard
 
-Four layers, all in `tabletist-db`, so no caller can skip them.
+Four layers, all in `tabletist-db`, so no caller can skip them. They guard
+the read-only run (`ScriptMode::ReadOnly`), one of the two modes
+`run_script` has; the run that writes keeps the refusal list and its own
+checks (`2026-10-05-sql-editor-writes-design.md`).
 
 1. **Refusal before running.** `run_script` checks every statement first and
    runs nothing if any is refused. The whole script fails with
@@ -308,7 +317,10 @@ Cleanup after every script, on every path:
   `PRAGMA trusted_schema = OFF`, `PRAGMA case_sensitive_like = OFF`,
   `PRAGMA full_column_names = OFF` and `PRAGMA short_column_names = ON`, so
   a script cannot leave the session writable, change how the filters
-  compare, or rename the columns of the pages and saves after it. A
+  compare, or rename the columns of the pages and saves after it; and
+  `ignore_check_constraints`, `recursive_triggers` and
+  `legacy_alter_table` off, so a flag a script set for its own run does
+  not change what a later run or save keeps. A
   script's other `PRAGMA`s and its `ATTACH`es last for the session (see
   Intent); those a write would feel are put back by the save itself (the
   value-editing spec, "Saving").
@@ -476,7 +488,9 @@ has SQL tabs; kept on the workspace as a `Fetch<String>`.
   Cancel does, records `CancelReason::Timeout` when it was the first to stop
   it, and waits for `run_script` to return; the interrupted statement then
   reports `Cancelled`, and the transaction is rolled back.
-- A new run in the same tab cancels the one still running (reason `User`).
+- A new run in the same tab cancels the one still running (reason `User`),
+  unless that one was sent to write: then Run and Run all do nothing until
+  it ends, and Cancel stops it.
   Results for a closed tab or a replaced run are dropped by `RequestId`.
   A run is sent only on a connected session: while the workspace is
   connecting or disconnected, Run does nothing.
@@ -596,6 +610,8 @@ tab's result grid as on a table's.
 
 - `Mod+Return` runs the statement at the cursor, `Mod+Shift+Return` runs
   all, also while typing. `Mod+.` cancels.
+- `Mod+Shift+M` switches the tab between Read-only and Read-write, on a
+  connection that takes writes.
 - `Mod+W`, `Mod+Shift+[ / ]`, `Mod+1..9`, `Mod+B`, `Mod+P`, `?` work as on
   any tab.
 - `Mod+R`, `Mod+F` and `Mod+Alt+Left / Right` do nothing on a SQL tab (no
@@ -619,10 +635,14 @@ tab's result grid as on a table's.
 
 - macOS: Run (with `Cmd+Return`), Run all (`Shift+Cmd+Return`); on the right
   a "Read-only transaction" badge whose tooltip explains it, then
-  "Limit 1,000" and "Timeout 30 s" menus.
+  "Limit 1,000" and "Timeout 30 s" menus. On a connection that takes
+  writes the badge is a menu too, with "Read-only transaction" and
+  "Read-write transaction", and in Read-write it reads in the warning
+  tone.
 - Omarchy: the tab title, a muted `read-only transaction · limit 1000 ·
   timeout 30s` whose limit and timeout parts open the same menus, then
-  `run ctrl+enter` and `run all ctrl+shift+enter`.
+  `run ctrl+enter` and `run all ctrl+shift+enter`. On a connection that
+  takes writes the first part opens the badge's menu.
 - Where the toolbar is too narrow, pieces give way in this order: the run
   buttons' keys, the read-only note, on Omarchy the tab title, then the
   menus' words (leaving "1,000" and "30 s"), on macOS the menus' chevrons,
@@ -690,11 +710,16 @@ tab's result grid as on a table's.
   refusal, on a timeout, and on a cancel that left no rows to show; a run
   the user cancelled after rows came back stays on Results. A statement's
   error marks its line in the gutter in the error colour.
+- A write a database refused in a read-only run leads the Messages as a
+  card that says why the run was read-only and offers the way on; what a
+  run sent to write adds to the Messages, Results and the footer is in
+  `2026-10-05-sql-editor-writes-design.md`.
 
 ### Footer
 
 - macOS: `5 rows · 14 ms`, `Read-only transaction · rolled back`, then on
-  the right `Ln 12, Col 21` and the server version.
+  the right `Ln 12, Col 21` and the server version. After a run sent to
+  write: `12 rows affected · 14 ms`, `Read-write transaction · committed`.
 - Omarchy: a mode line of key hints (run, run all, cancel, leave editor,
   tables), then `ln 12:21 · 5 rows · 14 ms · rolled back` on the right. The
   vim mode indicator waits for slice 5.
@@ -706,10 +731,10 @@ tab's result grid as on a table's.
   is "Line 12, col 15:" and the gutter marks that line. The code, detail
   and hint a database gave follow on lines of their own. What a database
   said is cut at 2,000 characters where it is shown.
-- Writes fail through the database's own read-only error (PostgreSQL and
-  MySQL read-only transactions; SQLite's `query_only`, with the read-only
-  open behind it on a read-only connection); escaping the transaction is
-  refused by the guard.
+- In a read-only run writes fail through the database's own read-only
+  error (PostgreSQL and MySQL read-only transactions; SQLite's
+  `query_only`, with the read-only open behind it on a read-only
+  connection); escaping the transaction is refused by the guard.
 - A timeout reads "Cancelled after 30 s (timeout)", a user cancel
   "Cancelled". A `Cancelled` outcome without a reason (a user-set
   `statement_timeout`, say) also reads "Cancelled". The cancelled
@@ -721,7 +746,9 @@ tab's result grid as on a table's.
 - Session settings a script changes (`SET search_path`, `SET time_zone`)
   last only for that run: PostgreSQL rolls them back, MySQL resets the
   session. SQLite puts `query_only`, `trusted_schema`, `case_sensitive_like`,
-  the column-name pragmas and the busy timeout back after every run; its other `PRAGMA`s and its
+  the column-name pragmas, `ignore_check_constraints`, `recursive_triggers`,
+  `legacy_alter_table` and the busy timeout back after every run, and
+  denies a script `locking_mode` with a value; its other `PRAGMA`s and its
   `ATTACH`es last for the session.
 - A run that failed as a whole (a refusal, a lost session) shows its error
   and no older rows: the result of the run before it is dropped.
