@@ -100,7 +100,8 @@ These are the keys of the macOS and Windows looks. The Omarchy look has
 | Mod+Shift+M | Switch between read-only and read-write runs |
 | Ctrl+Space, Mod+I | Complete |
 | Up, Down | Move in the completion list |
-| Tab, Enter | Accept the completion |
+| Tab | Accept the completion |
+| Enter | Accept the completion, except when it stays a line break: [the SQL Editor guide says when]({% link _guide/sql-editor.md %}#completion) |
 | Esc | Close the completion list |
 
 ## The Omarchy look

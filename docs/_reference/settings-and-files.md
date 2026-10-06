@@ -89,5 +89,5 @@ Passwords are kept in the system keyring, never in these files.
 | `--version` | Prints the version |
 | `--help` | Lists the options |
 
-`--help` also lists `--demo-shot` and `--demo-size`, which save a picture
-of the demo's window.
+`--help` also lists `--demo-shot`, which saves a picture of the demo's
+window to a file, and `--demo-size`, which sets that window's size.

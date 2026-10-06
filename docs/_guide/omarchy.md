@@ -160,7 +160,8 @@ While the completion list is open:
 | Keys | Do |
 | --- | --- |
 | Up, Down, Ctrl+P, Ctrl+N | Move in the list |
-| Tab, Enter | Accept |
+| Tab | Accept |
+| Enter | Accept, except when it stays a line break: [the SQL Editor guide says when]({% link _guide/sql-editor.md %}#completion) |
 | Esc | Close the list |
 
 On a result, with the keyboard out of the editor:

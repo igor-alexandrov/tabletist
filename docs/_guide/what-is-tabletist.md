@@ -24,7 +24,7 @@ Windows.
   [Read about connections]({% link _reference/connections.md %}).
 - **Browses tables.** A sidebar of one schema's tables and views, a data
   grid with sorting, filters and paging done by the server, a row panel
-  that shows every field in full, and a Structure view.
+  that shows every field of a row, and a Structure view.
   [Browse a table]({% link _guide/browsing-data.md %}).
 - **Edits values safely.** Changes stay pending until you save. A save is
   one transaction. When someone else changed the same row, the save

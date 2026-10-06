@@ -45,7 +45,7 @@ features:
     link_text: How editing works
   - icon: 🧭
     title: Made for browsing
-    details: Sort, filter and page on the server. Open a row in full, follow its foreign keys, and read the table's structure.
+    details: Sort, filter and page on the server. Open a row to read every field, follow its foreign keys, and read the table's structure.
     link: /browsing-data/
     link_text: Browse a table
   - icon: ⌨️

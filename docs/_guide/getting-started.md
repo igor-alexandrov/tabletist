@@ -48,8 +48,8 @@ TLS, SSH tunnels and where passwords are kept are covered in
   you opened recently on top. Cmd/Ctrl+B shows or hides it.
 - **Quick open** (Cmd/Ctrl+P) finds any table or view by name.
 - **Tabs** hold the tables and SQL editors you have open.
-- **The row panel** on the right shows the selected row in full. Space
-  shows or hides it.
+- **The row panel** on the right shows every field of the selected row.
+  Space shows or hides it.
 
 Press `?` at any time for a list of the keys. They are described in
 [Keyboard Shortcuts]({% link _reference/keyboard-shortcuts.md %}).

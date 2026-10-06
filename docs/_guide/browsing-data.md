@@ -60,8 +60,12 @@ On MySQL, a raw WHERE reads `"..."` as a string, and names take backticks.
 
 ## The row panel
 
-Select a row and the panel on the right shows every field in full,
-including long text and whole JSON documents. Space shows or hides it.
+Select a row and the panel on the right shows every one of its fields,
+with long text and JSON documents laid out to read. Space shows or hides
+it.
+
+A very large value is shown up to 256 KiB. Copying it gives the whole
+value.
 
 A foreign key has a link next to it that opens the row it points to.
 

@@ -133,8 +133,9 @@ a Mac keyboard labels Delete.
 | Cmd+Shift+M | Switch between read-only and read-write runs |
 | Cmd+I, Ctrl+Space | Complete |
 
-While the completion list is open, Up and Down move in it, Tab or Return
-accepts, and Esc closes it.
+While the completion list is open, Up and Down move in it, Tab accepts
+and Esc closes it. Return accepts too, except when it stays a line break:
+[the SQL Editor guide says when]({% link _guide/sql-editor.md %}#completion).
 
 macOS may keep Ctrl+Space for switching input sources. Cmd+I always
 reaches Tabletist.

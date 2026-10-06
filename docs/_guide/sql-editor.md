@@ -49,7 +49,7 @@ which lines were written.
 ## Results and messages
 
 **Results** shows the rows of the statement you ran. Select a row and
-press Space to read it in full in the row panel. When the limit cut a
+press Space to read every field of it in the row panel. When the limit cut a
 result short, the result says so.
 
 **Messages** has a line for every statement: how many rows it returned or
@@ -68,4 +68,9 @@ keywords change.
 
 Keywords, schemas, tables, views and the columns of the tables in your
 statement are offered while you type. Ctrl+Space or Cmd/Ctrl+I asks for
-the list anywhere. Tab or Enter accepts, and Esc closes it.
+the list anywhere.
+
+Tab accepts the highlighted row, and Esc closes the list. Enter accepts
+too once you moved in the list or asked for it. When the list opened by
+itself and its row is only a guess (it does not begin with what you
+typed), or is what you typed already, Enter stays a line break.
