@@ -1922,6 +1922,7 @@ mod tests {
         .unwrap();
         let changes = ChangeSet {
             object: ObjectRef::new("main", "users"),
+            inserts: Vec::new(),
             rows: vec![crate::RowChange {
                 key: vec![("id".into(), Value::Int(1))],
                 set: vec![crate::CellChange {
@@ -1985,6 +1986,7 @@ mod tests {
         .unwrap();
         let changes = ChangeSet {
             object: ObjectRef::new("main", "users"),
+            inserts: Vec::new(),
             rows: vec![crate::RowChange {
                 key: vec![("id".into(), Value::Int(1))],
                 set: vec![crate::CellChange {

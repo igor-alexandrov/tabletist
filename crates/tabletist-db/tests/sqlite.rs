@@ -1747,6 +1747,7 @@ async fn the_fence_stands_over_names_that_are_not_utf8() {
 fn rename(id: i64, loaded: &str, new: &str) -> ChangeSet {
     ChangeSet {
         object: ObjectRef::new("main", "users"),
+        inserts: Vec::new(),
         rows: vec![RowChange {
             key: vec![("id".into(), Value::Int(id))],
             set: vec![CellChange {
@@ -1772,6 +1773,7 @@ async fn a_read_only_connection_refuses_a_save_before_it_reads_it() {
     // Not even looked at: a set that could never be written gets the same.
     let empty = ChangeSet {
         object: ObjectRef::new("main", "users"),
+        inserts: Vec::new(),
         rows: Vec::new(),
     };
     assert_eq!(
@@ -1789,6 +1791,7 @@ async fn a_writable_connection_refuses_a_set_it_cannot_write() {
     let (connection, _dir) = fixture_as(Access::Writable).await;
     let empty = ChangeSet {
         object: ObjectRef::new("main", "users"),
+        inserts: Vec::new(),
         rows: Vec::new(),
     };
     assert!(matches!(
@@ -1837,6 +1840,7 @@ async fn save(
         .collect();
     let changes = ChangeSet {
         object: ObjectRef::new("main", "users"),
+        inserts: Vec::new(),
         rows: vec![RowChange {
             key: vec![("id".into(), Value::Int(id))],
             set,
@@ -1917,6 +1921,7 @@ async fn a_row_changed_by_someone_else_is_a_conflict_and_nothing_is_written() {
     let name = columns.iter().position(|column| column == "name").unwrap();
     let changes = ChangeSet {
         object: ObjectRef::new("main", "users"),
+        inserts: Vec::new(),
         rows: vec![
             RowChange {
                 key: vec![("id".into(), Value::Int(2))],
@@ -1967,6 +1972,7 @@ async fn a_change_to_a_column_the_save_leaves_alone_is_no_conflict() {
     let name = columns.iter().position(|column| column == "name").unwrap();
     let changes = ChangeSet {
         object: ObjectRef::new("main", "users"),
+        inserts: Vec::new(),
         rows: vec![RowChange {
             key: vec![("id".into(), Value::Int(1))],
             set: vec![CellChange {
@@ -1993,6 +1999,7 @@ async fn a_row_that_is_gone_is_a_conflict_without_a_row() {
     let name = columns.iter().position(|column| column == "name").unwrap();
     let changes = ChangeSet {
         object: ObjectRef::new("main", "users"),
+        inserts: Vec::new(),
         rows: vec![RowChange {
             key: vec![("id".into(), Value::Int(5))],
             set: vec![CellChange {
@@ -2026,6 +2033,7 @@ async fn a_statement_that_fails_undoes_the_rows_before_it() {
     let at = |name: &str| columns.iter().position(|column| column == name).unwrap();
     let changes = ChangeSet {
         object: ObjectRef::new("main", "users"),
+        inserts: Vec::new(),
         rows: vec![
             RowChange {
                 key: vec![("id".into(), Value::Int(1))],
@@ -2119,6 +2127,7 @@ async fn a_save_does_not_inherit_what_a_script_left_on_the_session() {
     .unwrap();
     let changes = ChangeSet {
         object: ObjectRef::new("main", "kinds"),
+        inserts: Vec::new(),
         rows: vec![RowChange {
             key: vec![("id".into(), Value::Int(1))],
             set: vec![CellChange {
@@ -2323,6 +2332,7 @@ async fn a_save_writes_a_decimal_as_a_number() {
             .unwrap();
         let changes = ChangeSet {
             object: orders.clone(),
+            inserts: Vec::new(),
             rows: vec![RowChange {
                 key: vec![("id".into(), page.rows[0][0].clone())],
                 set: vec![CellChange {
@@ -2364,6 +2374,7 @@ async fn a_key_that_matches_two_rows_is_an_error_and_nothing_is_written() {
     // `events` has no key: two of its rows are logins.
     let changes = ChangeSet {
         object: ObjectRef::new("main", "events"),
+        inserts: Vec::new(),
         rows: vec![RowChange {
             key: vec![("kind".into(), Value::Text("login".into()))],
             set: vec![CellChange {
@@ -2441,6 +2452,7 @@ async fn an_update_that_does_not_change_one_row_fails_and_is_undone() {
     let (_, before) = user(&connection, 1).await;
     let changes = ChangeSet {
         object: ObjectRef::new("main", "named"),
+        inserts: Vec::new(),
         rows: vec![RowChange {
             key: vec![("id".into(), Value::Int(1))],
             set: vec![CellChange {
@@ -2481,6 +2493,7 @@ async fn a_column_with_no_type_keeps_the_kind_of_value_it_held() {
     ] {
         let changes = ChangeSet {
             object: ObjectRef::new("main", "loose"),
+            inserts: Vec::new(),
             rows: vec![RowChange {
                 key: vec![("id".into(), Value::Int(id))],
                 set: vec![CellChange {
@@ -2514,6 +2527,7 @@ async fn a_save_reads_a_table_with_names_that_are_not_utf8() {
     let one =
         |table: &str, key: (&str, Value), column: &str, type_name: &str, loaded, new| ChangeSet {
             object: ObjectRef::new("main", table),
+            inserts: Vec::new(),
             rows: vec![RowChange {
                 key: vec![(key.0.into(), key.1)],
                 set: vec![CellChange {
@@ -2631,6 +2645,7 @@ async fn a_name_two_columns_read_as_is_refused() {
         // name the twin, whose value the save never compared.
         let changes = ChangeSet {
             object,
+            inserts: Vec::new(),
             rows: vec![RowChange {
                 key: vec![("id".into(), Value::Int(1))],
                 set: vec![CellChange {
@@ -2673,6 +2688,7 @@ fn one_cell(
 ) -> ChangeSet {
     ChangeSet {
         object: ObjectRef::new("main", table),
+        inserts: Vec::new(),
         rows: vec![RowChange {
             key: vec![(key.0.into(), key.1)],
             set: vec![CellChange {
@@ -3043,6 +3059,7 @@ async fn a_name_in_other_letters_than_the_tables_is_refused() {
     // them through as two.
     let twice = ChangeSet {
         object: ObjectRef::new("main", "users"),
+        inserts: Vec::new(),
         rows: vec![
             change("id", "name", "Ada Lovelace"),
             change("ID", "email", "ada@example.com"),
@@ -3052,6 +3069,7 @@ async fn a_name_in_other_letters_than_the_tables_is_refused() {
     // A set's name too, alone.
     let set = ChangeSet {
         object: ObjectRef::new("main", "users"),
+        inserts: Vec::new(),
         rows: vec![change("id", "NAME", "Ada Lovelace")],
     };
     for (changes, name) in [(twice, "ID"), (set, "NAME")] {
@@ -3148,6 +3166,7 @@ async fn changes_that_read_the_same_row_are_refused_and_nothing_is_written() {
         };
         ChangeSet {
             object: ObjectRef::new("main", table),
+            inserts: Vec::new(),
             rows: vec![change(first, "a", "a"), change(second, "b", "b")],
         }
     };

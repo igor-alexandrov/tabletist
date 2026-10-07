@@ -10805,6 +10805,7 @@ mod tests {
                 Some((at(0, 1), Lock::Saving))
             );
             harness.answer_written(Ok(WriteOutcome::Written {
+                inserted: Vec::new(),
                 rows: vec![row(2, "bob@example.com"), row(4, "dan@example.com")],
                 elapsed: std::time::Duration::from_millis(14),
             }));
@@ -10966,6 +10967,7 @@ mod tests {
             harness.app.apply(Action::WriteEdits { tab, id });
             let before = harness.app.backend.sent.len();
             harness.answer_written(Ok(WriteOutcome::Written {
+                inserted: Vec::new(),
                 rows: vec![vec![Value::Int(2)]],
                 elapsed: std::time::Duration::ZERO,
             }));
@@ -10994,6 +10996,7 @@ mod tests {
             type_into(&mut harness, tab, id, at(1, 1), "bob@example.com");
             harness.app.apply(Action::WriteEdits { tab, id });
             harness.answer_written(Ok(WriteOutcome::Written {
+                inserted: Vec::new(),
                 rows: vec![row(2, "bob@example.com")],
                 elapsed: std::time::Duration::ZERO,
             }));
@@ -11046,6 +11049,7 @@ mod tests {
             );
             // So the answer still finds the tab it was sent for.
             harness.answer_written(Ok(WriteOutcome::Written {
+                inserted: Vec::new(),
                 rows: vec![row(2, "bob@example.com")],
                 elapsed: std::time::Duration::ZERO,
             }));
@@ -11254,6 +11258,7 @@ mod tests {
             harness.app.apply(Action::CloseTab { tab, id });
             harness.app.apply(Action::LeaveSave);
             harness.answer_written(Ok(WriteOutcome::Written {
+                inserted: Vec::new(),
                 rows: vec![row(2, "bob@example.com")],
                 elapsed: std::time::Duration::ZERO,
             }));
@@ -12383,6 +12388,7 @@ mod tests {
 
         fn written(email: &str) -> Result<WriteOutcome, tabletist_db::Error> {
             Ok(WriteOutcome::Written {
+                inserted: Vec::new(),
                 rows: vec![row(2, email)],
                 elapsed: std::time::Duration::ZERO,
             })
@@ -13177,6 +13183,7 @@ mod tests {
             harness.app.apply(Action::LeaveSave);
             // Everything was written, by a table of another width.
             harness.answer_written(Ok(WriteOutcome::Written {
+                inserted: Vec::new(),
                 rows: vec![vec![Value::Int(2)]],
                 elapsed: std::time::Duration::ZERO,
             }));
@@ -13439,6 +13446,7 @@ mod tests {
             type_into(&mut harness, tab, id, at(3, 1), "dan@example.com");
             harness.app.apply(Action::WriteEdits { tab, id });
             harness.answer_written(Ok(WriteOutcome::Written {
+                inserted: Vec::new(),
                 rows: vec![row(4, "dan@example.com")],
                 elapsed: std::time::Duration::ZERO,
             }));

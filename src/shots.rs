@@ -561,6 +561,7 @@ fn edit_saved(harness: &mut Harness) {
     row[KIND] = Value::Text("cover".into());
     row[DELETED_AT] = Value::Text(DELETED.into());
     harness.answer_written(Ok(tabletist_db::WriteOutcome::Written {
+        inserted: Vec::new(),
         rows: vec![row],
         elapsed: Duration::from_millis(14),
     }));

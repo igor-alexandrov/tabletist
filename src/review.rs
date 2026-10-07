@@ -842,6 +842,7 @@ mod tests {
         };
         let changes = ChangeSet {
             object: users(),
+            inserts: Vec::new(),
             rows: vec![row],
         };
         let review = of(Dialect::Postgres, &changes, &[], Values::Shown);
@@ -905,6 +906,7 @@ mod tests {
         };
         let changes = ChangeSet {
             object: ObjectRef::new("a SET b", "c\u{202E} WHERE d"),
+            inserts: Vec::new(),
             rows: vec![RowChange {
                 key: vec![
                     ("id\n".into(), Value::Text("k'\n1".into())),
@@ -1007,6 +1009,7 @@ mod tests {
         ] {
             let changes = ChangeSet {
                 object: users(),
+                inserts: Vec::new(),
                 rows: vec![row(text("a"), "fine"), refused],
             };
             for values in [Values::Shown, Values::Whole] {
@@ -1064,6 +1067,7 @@ mod tests {
         };
         let changes = ChangeSet {
             object: ObjectRef::new("shop", "order_lines"),
+            inserts: Vec::new(),
             rows: vec![RowChange {
                 key: vec![
                     ("order_id".into(), Value::Int(7)),

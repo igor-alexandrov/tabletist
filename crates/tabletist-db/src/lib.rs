@@ -47,7 +47,9 @@ pub use script::{
 pub use spec::{ConnectSpec, Driver, ParsedUrl, Secrets, SshAuth, SshSpec, TlsMode};
 pub use ssh::HostKeys;
 pub use value::{ColumnMeta, Value, ValueKind, value_from_pg_text};
-pub use write::{CellChange, ChangeSet, Conflict, NewValue, RowChange, WriteOutcome};
+pub use write::{
+    CellChange, ChangeSet, Conflict, InsertValue, NewValue, RowChange, RowInsert, WriteOutcome,
+};
 
 /// Whether a session may write. [`Connection::write`] and a script run in
 /// [`ScriptMode::Write`] are the calls that do, and both are refused on a

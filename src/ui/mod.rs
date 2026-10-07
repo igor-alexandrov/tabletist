@@ -11475,6 +11475,7 @@ mod tests {
             let amber = Tone::Warning.fill(&look, &palette);
             assert!(filled_behind(&harness, "b@x.io", amber), "{}", look.name);
             harness.answer_written(Ok(tabletist_db::WriteOutcome::Written {
+                inserted: Vec::new(),
                 rows: vec![vec![
                     tabletist_db::Value::Int(2),
                     tabletist_db::Value::Text("b@x.io".into()),
@@ -11527,6 +11528,7 @@ mod tests {
                 ]
             });
             harness.answer_written(Ok(tabletist_db::WriteOutcome::Written {
+                inserted: Vec::new(),
                 rows: rows.to_vec(),
                 elapsed: std::time::Duration::from_millis(14),
             }));
@@ -11573,6 +11575,7 @@ mod tests {
                 values
             });
             harness.answer_written(Ok(tabletist_db::WriteOutcome::Written {
+                inserted: Vec::new(),
                 rows: rows.to_vec(),
                 elapsed: std::time::Duration::from_millis(14),
             }));
@@ -12146,6 +12149,7 @@ mod tests {
             assert_eq!(writes(&harness), 1, "{}", look.name);
             assert!(edits(&harness, tab, id).saving.is_some(), "{}", look.name);
             harness.answer_written(Ok(tabletist_db::WriteOutcome::Written {
+                inserted: Vec::new(),
                 rows: vec![vec![
                     tabletist_db::Value::Int(2),
                     tabletist_db::Value::Text("bob@example.com".into()),
@@ -13995,6 +13999,7 @@ mod tests {
         // Written: the mark in the success colour, and what it came to.
         harness.press(Key::S, Modifiers::COMMAND);
         harness.answer_written(Ok(WriteOutcome::Written {
+            inserted: Vec::new(),
             rows: vec![
                 vec![
                     tabletist_db::Value::Int(2),
@@ -15403,6 +15408,7 @@ mod tests {
     /// The row `id 2` of the fixture's page as a save reads it back.
     fn written_row(email: &str) -> tabletist_db::WriteOutcome {
         tabletist_db::WriteOutcome::Written {
+            inserted: Vec::new(),
             rows: vec![vec![
                 tabletist_db::Value::Int(2),
                 tabletist_db::Value::Text(email.into()),
@@ -16123,6 +16129,7 @@ mod tests {
             assert_eq!(writes(&harness), 1, "{}", look.name);
             assert!(open(&harness, tab, id), "{}", look.name);
             harness.answer_written(Ok(tabletist_db::WriteOutcome::Written {
+                inserted: Vec::new(),
                 rows: vec![vec![
                     tabletist_db::Value::Int(2),
                     tabletist_db::Value::Text("bob@example.com".into()),
@@ -17021,6 +17028,7 @@ mod tests {
             // Saved, the panel shows what the database holds.
             harness.app.apply(Action::WriteEdits { tab, id });
             harness.answer_written(Ok(tabletist_db::WriteOutcome::Written {
+                inserted: Vec::new(),
                 rows: vec![
                     vec![
                         tabletist_db::Value::Int(1),

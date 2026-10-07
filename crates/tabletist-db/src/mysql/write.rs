@@ -12,7 +12,7 @@ use super::{
 };
 use crate::script::retry_cancelled;
 use crate::write::{
-    Applied, changed_since_loaded, conflicts_of, more_than_one, not_read_back, not_stopped,
+    Applied, Stored, changed_since_loaded, conflicts_of, more_than_one, not_read_back, not_stopped,
     same_row_twice, spelled_otherwise,
 };
 use crate::{
@@ -43,6 +43,12 @@ impl Conn {
     /// next transaction is read-only" pending. `stop` is asked before each
     /// statement: `KILL QUERY` does nothing when it arrives between two.
     pub(super) async fn save(&self, changes: &ChangeSet, stop: &StopFlag) -> Result<WriteOutcome> {
+        // Until this engine's save runs them (tasks 4 to 6 of the plan).
+        if !changes.inserts.is_empty() {
+            return Err(Error::Unsupported(
+                "adding rows is not built for this engine yet",
+            ));
+        }
         // Every statement is built first: a set that cannot be written as
         // MySQL reads it, or a value that cannot be sent, fails the save
         // before the server hears of it.
@@ -449,7 +455,10 @@ async fn apply(
         }
         saved.push(found.pop().ok_or_else(not_read_back)?);
     }
-    Ok(Applied::Rows(saved))
+    Ok(Applied::Rows(Stored {
+        inserted: Vec::new(),
+        rows: saved,
+    }))
 }
 
 #[cfg(test)]
@@ -671,6 +680,7 @@ mod tests {
     fn set(table: &str, column: &str, type_name: &str, loaded: Value, new: &str) -> ChangeSet {
         ChangeSet {
             object: ObjectRef::new("tabletist", table),
+            inserts: Vec::new(),
             rows: vec![RowChange {
                 key: vec![("id".into(), Value::Int(1))],
                 set: vec![CellChange {
@@ -1029,6 +1039,7 @@ mod tests {
             assert_eq!(page.rows[1][0], shown);
             let changes = ChangeSet {
                 object,
+                inserts: Vec::new(),
                 rows: vec![RowChange {
                     key: vec![("at".into(), page.rows[1][0].clone())],
                     set: vec![CellChange {

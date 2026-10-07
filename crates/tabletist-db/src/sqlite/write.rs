@@ -8,7 +8,7 @@ use rusqlite::types::ValueRef;
 use super::{end_transaction, from_sqlite, map_error};
 use crate::dialect::RowUpdate;
 use crate::write::{
-    Applied, changed_since_loaded, conflicts_of, more_than_one, not_read_back, not_stopped,
+    Applied, Stored, changed_since_loaded, conflicts_of, more_than_one, not_read_back, not_stopped,
     same_row_twice, spelled_otherwise,
 };
 use crate::{ChangeSet, Dialect, Error, Result, RowChange, Sql, StopFlag, Value, WriteOutcome};
@@ -19,6 +19,12 @@ pub(super) fn write(
     journal_mode: &str,
     stop: &StopFlag,
 ) -> Result<WriteOutcome> {
+    // Until this engine's save runs them (tasks 4 to 6 of the plan).
+    if !changes.inserts.is_empty() {
+        return Err(Error::Unsupported(
+            "adding rows is not built for this engine yet",
+        ));
+    }
     // Every statement is built first: a key that may not be the row's, or
     // a value that cannot be sent, fails the save before the file is even
     // asked for. The builder refuses both.
@@ -295,5 +301,8 @@ fn apply(
         }
         rows.push(found.pop().ok_or_else(not_read_back)?.values);
     }
-    Ok(Applied::Rows(rows))
+    Ok(Applied::Rows(Stored {
+        inserted: Vec::new(),
+        rows,
+    }))
 }

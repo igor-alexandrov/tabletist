@@ -9,7 +9,7 @@ use super::{Conn, column_metas, query_error, row_values};
 use crate::dialect::RowUpdate;
 use crate::script::retry_cancelled;
 use crate::write::{
-    Applied, changed_since_loaded, conflicts_of, more_than_one, not_read_back, not_stopped,
+    Applied, Stored, changed_since_loaded, conflicts_of, more_than_one, not_read_back, not_stopped,
     same_row_twice,
 };
 use crate::{ChangeSet, ColumnMeta, Dialect, Error, Result, StopFlag, Value, WriteOutcome};
@@ -23,6 +23,12 @@ impl Conn {
     /// before each statement: a cancel request does nothing when it arrives
     /// between two.
     pub(super) async fn save(&self, changes: &ChangeSet, stop: &StopFlag) -> Result<WriteOutcome> {
+        // Until this engine's save runs them (tasks 4 to 6 of the plan).
+        if !changes.inserts.is_empty() {
+            return Err(Error::Unsupported(
+                "adding rows is not built for this engine yet",
+            ));
+        }
         // Every statement is built first: a value that cannot be sent
         // fails the save before the server hears of it. Text that holds a
         // NUL is such a value, which the builder refuses: the driver could
@@ -221,7 +227,10 @@ async fn apply(
         }
         saved.push(found.pop().ok_or_else(not_read_back)?);
     }
-    Ok(Applied::Rows(saved))
+    Ok(Applied::Rows(Stored {
+        inserted: Vec::new(),
+        rows: saved,
+    }))
 }
 
 #[cfg(test)]
@@ -318,6 +327,7 @@ mod tests {
     fn body(table: &str, id: &str, body: &str) -> ChangeSet {
         ChangeSet {
             object: ObjectRef::new("public", table),
+            inserts: Vec::new(),
             rows: vec![RowChange {
                 key: vec![("id".into(), Value::Text(id.into()))],
                 set: vec![CellChange {
@@ -435,6 +445,7 @@ mod tests {
                 let second = &page.rows[1];
                 let changes = ChangeSet {
                     object: object.clone(),
+                    inserts: Vec::new(),
                     rows: vec![RowChange {
                         key: vec![(key.into(), second[index].clone())],
                         set: vec![CellChange {

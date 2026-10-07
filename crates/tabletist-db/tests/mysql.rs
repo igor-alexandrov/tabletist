@@ -2746,6 +2746,7 @@ fn by_id(id: i64, set: Vec<CellChange>) -> RowChange {
 fn changes_to(table: &str, rows: Vec<RowChange>) -> ChangeSet {
     ChangeSet {
         object: ObjectRef::new("tabletist", table),
+        inserts: Vec::new(),
         rows,
     }
 }
