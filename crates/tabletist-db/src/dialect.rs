@@ -3,7 +3,7 @@
 use std::fmt::Write as _;
 
 use crate::{
-    CellChange, ColumnClass, Error, Filter, FilterOp, NewValue, ObjectRef, Result, RowChange,
+    ColumnClass, Error, Filter, FilterOp, NewValue, ObjectRef, Result, RowChange, RowInsert,
     RowQuery, SortDir, Value, column_class,
 };
 
@@ -32,6 +32,17 @@ pub struct RowUpdate {
     pub sql: Sql,
     /// Where the parts of `shown` stand.
     pub parts: UpdateParts,
+}
+
+/// A new row's `INSERT`, as a user reads it and as the driver runs it. Both
+/// come from the same values, as a [`RowUpdate`]'s do.
+#[derive(Debug, Clone, PartialEq)]
+pub struct InsertStatement {
+    /// The statement with its values as literals.
+    pub shown: String,
+    /// What the driver sends: for PostgreSQL the shown text, for MySQL and
+    /// SQLite the same statement with the values bound.
+    pub sql: Sql,
 }
 
 /// Where the parts of a shown `UPDATE` stand, as byte offsets into its
@@ -474,30 +485,35 @@ impl Dialect {
     /// text as it is, it is converted here, by the column's class: numbers
     /// on SQLite, and a boolean on SQLite and MySQL, which keep one as 1 or
     /// 0. Text that cannot be converted is refused, naming the column.
-    fn new_operand(self, change: &CellChange) -> Result<Operand> {
-        let class = column_class(self, &change.type_name);
+    /// `loaded` is what the cell held, and `None` for a new row's.
+    fn new_operand(
+        self,
+        column: &str,
+        type_name: &str,
+        loaded: Option<&Value>,
+        new: &NewValue,
+    ) -> Result<Operand> {
+        let class = column_class(self, type_name);
         // A binary column is never sent text (MySQL would store a `bit`'s
         // text as the characters' codes), and is not edited at all yet: a
         // NULL for one is refused with the rest.
         // By what the cell held too: a SQLite column of any declared type
         // can hold a blob.
-        if class == ColumnClass::Binary || matches!(change.loaded, Value::Bytes(_)) {
+        if class == ColumnClass::Binary || matches!(loaded, Some(Value::Bytes(_))) {
             return Err(Error::query(format!(
-                "{}: binary values cannot be edited yet",
-                change.column
+                "{column}: binary values cannot be edited yet"
             )));
         }
-        let NewValue::Text(text) = &change.new else {
+        let NewValue::Text(text) = new else {
             return Ok(Operand::Null);
         };
         let refused = |expects: &str| {
             Error::query(format!(
-                "{}: {} expects {expects}",
-                change.column,
-                if change.type_name.is_empty() {
+                "{column}: {} expects {expects}",
+                if type_name.is_empty() {
                     "the column"
                 } else {
-                    &change.type_name
+                    type_name
                 }
             ))
         };
@@ -531,7 +547,7 @@ impl Dialect {
             // converts the text, so a number stays a number only where the
             // cell held one.
             (Self::Sqlite, ColumnClass::Other)
-                if matches!(change.loaded, Value::Int(_) | Value::Float(_)) =>
+                if matches!(loaded, Some(Value::Int(_) | Value::Float(_))) =>
             {
                 Ok(whole()
                     .or_else(real)
@@ -609,7 +625,12 @@ impl Dialect {
             ..UpdateParts::default()
         };
         for (index, change) in row.set.iter().enumerate() {
-            let operand = self.new_operand(change)?;
+            let operand = self.new_operand(
+                &change.column,
+                &change.type_name,
+                Some(&change.loaded),
+                &change.new,
+            )?;
             let column = self.quote_ident(&change.column);
             let lead = if index == 0 { "" } else { ", " };
             shown.push_str(lead);
@@ -646,6 +667,63 @@ impl Dialect {
             shown,
             sql: Sql { text: sent, params },
             parts,
+        })
+    }
+
+    /// The `INSERT` of one new row of a save: the columns that were set,
+    /// and nothing for the others, which the database fills. `Err` names
+    /// the value that cannot be sent in its column's form. Refused here and
+    /// nowhere after it, as [`Dialect::update_row`] refuses, so what a
+    /// review shows of a new row is what a save does with it.
+    ///
+    /// PostgreSQL and SQLite hand the row back, as it was stored; MySQL
+    /// cannot, and its save finds the row again.
+    pub fn insert_row(self, object: &ObjectRef, row: &RowInsert) -> Result<InsertStatement> {
+        let table = self.qualified(object);
+        let back = match self {
+            Self::Postgres | Self::Sqlite => " RETURNING *",
+            Self::MySql => "",
+        };
+        if row.set.is_empty() {
+            let text = match self {
+                Self::Postgres | Self::Sqlite => {
+                    format!("INSERT INTO {table} DEFAULT VALUES{back}")
+                }
+                Self::MySql => format!("INSERT INTO {table} () VALUES (){back}"),
+            };
+            return Ok(InsertStatement {
+                shown: text.clone(),
+                sql: Sql {
+                    text,
+                    params: Vec::new(),
+                },
+            });
+        }
+        let mut params = Vec::new();
+        let mut names = Vec::with_capacity(row.set.len());
+        let mut shown = Vec::with_capacity(row.set.len());
+        let mut sent = Vec::with_capacity(row.set.len());
+        for cell in &row.set {
+            let operand = self.new_operand(&cell.column, &cell.type_name, None, &cell.new)?;
+            names.push(self.quote_ident(&cell.column));
+            shown.push(self.shown(&operand));
+            sent.push(self.sent(&operand, &mut params));
+        }
+        let head = format!("INSERT INTO {table} ({}) VALUES (", names.join(", "));
+        let shown = format!("{head}{}){back}", shown.join(", "));
+        let text = format!("{head}{}){back}", sent.join(", "));
+        // PostgreSQL text cannot hold a NUL, and the driver cannot put one
+        // in a message: see `update_row`.
+        let refused = match self {
+            Self::Postgres => text.contains('\0'),
+            Self::MySql | Self::Sqlite => false,
+        };
+        if refused {
+            return Err(Error::query("PostgreSQL text cannot hold a NUL character"));
+        }
+        Ok(InsertStatement {
+            shown,
+            sql: Sql { text, params },
         })
     }
 
@@ -721,8 +799,8 @@ impl Dialect {
 mod tests {
     use super::*;
     use crate::{
-        CellChange, Filter, FilterOp, NewValue, ObjectRef, RowChange, RowQuery, Sort, SortDir,
-        Value,
+        CellChange, Filter, FilterOp, InsertValue, NewValue, ObjectRef, RowChange, RowQuery, Sort,
+        SortDir, Value,
     };
 
     fn query() -> RowQuery {
@@ -1266,6 +1344,137 @@ mod tests {
         }
         assert!(params.next().is_none(), "a value without a placeholder");
         text
+    }
+
+    fn covers(schema: &str) -> ObjectRef {
+        ObjectRef::new(schema, "book_covers")
+    }
+
+    fn sets(column: &str, type_name: &str, new: NewValue) -> InsertValue {
+        InsertValue {
+            column: column.into(),
+            type_name: type_name.into(),
+            new,
+        }
+    }
+
+    /// The canvas' new row: a cover of the publisher Harbor Press.
+    const PUBLISHER: &str = "9100000000000000004";
+
+    #[test]
+    fn the_same_new_row_on_each_engine() {
+        let row = |type_name: &str| RowInsert {
+            set: vec![sets(
+                "publisher_id",
+                type_name,
+                NewValue::Text(PUBLISHER.into()),
+            )],
+        };
+        let insert = Dialect::Postgres
+            .insert_row(&covers("public"), &row("bigint"))
+            .unwrap();
+        assert_eq!(
+            insert.shown,
+            r#"INSERT INTO "public"."book_covers" ("publisher_id") VALUES ('9100000000000000004') RETURNING *"#
+        );
+        // PostgreSQL runs exactly what it shows.
+        assert_eq!(insert.sql.text, insert.shown);
+        assert!(insert.sql.params.is_empty());
+
+        let insert = Dialect::MySql
+            .insert_row(&covers("bookshop"), &row("bigint"))
+            .unwrap();
+        assert_eq!(
+            insert.shown,
+            "INSERT INTO `bookshop`.`book_covers` (`publisher_id`) VALUES ('9100000000000000004')"
+        );
+        assert_eq!(
+            insert.sql.text,
+            "INSERT INTO `bookshop`.`book_covers` (`publisher_id`) VALUES (?)"
+        );
+        assert_eq!(insert.sql.params, [text(PUBLISHER)]);
+
+        // SQLite stores text as text: a number is made one here.
+        let insert = Dialect::Sqlite
+            .insert_row(&covers("main"), &row("INTEGER"))
+            .unwrap();
+        assert_eq!(
+            insert.shown,
+            r#"INSERT INTO "main"."book_covers" ("publisher_id") VALUES (9100000000000000004) RETURNING *"#
+        );
+        assert_eq!(
+            insert.sql.text,
+            r#"INSERT INTO "main"."book_covers" ("publisher_id") VALUES (?) RETURNING *"#
+        );
+        assert_eq!(insert.sql.params, [Value::Int(9_100_000_000_000_000_004)]);
+    }
+
+    #[test]
+    fn a_new_row_names_only_what_was_set() {
+        let row = RowInsert {
+            set: vec![
+                sets("publisher_id", "bigint", NewValue::Text(PUBLISHER.into())),
+                sets("image_data", "jsonb", NewValue::Null),
+            ],
+        };
+        let insert = Dialect::Postgres
+            .insert_row(&covers("public"), &row)
+            .unwrap();
+        // Not `kind`, `created_at` or `id`: the database fills those.
+        assert_eq!(
+            insert.shown,
+            r#"INSERT INTO "public"."book_covers" ("publisher_id", "image_data") VALUES ('9100000000000000004', NULL) RETURNING *"#
+        );
+        let insert = Dialect::MySql
+            .insert_row(&covers("bookshop"), &row)
+            .unwrap();
+        // NULL is written out, never bound, as in an UPDATE.
+        assert_eq!(
+            insert.sql.text,
+            "INSERT INTO `bookshop`.`book_covers` (`publisher_id`, `image_data`) VALUES (?, NULL)"
+        );
+        assert_eq!(insert.sql.params, [text(PUBLISHER)]);
+    }
+
+    #[test]
+    fn a_new_row_with_nothing_set_takes_every_default() {
+        let row = RowInsert { set: Vec::new() };
+        let shown = |dialect: Dialect, schema: &str| {
+            let insert = dialect.insert_row(&covers(schema), &row).unwrap();
+            assert_eq!(insert.sql.text, insert.shown);
+            assert!(insert.sql.params.is_empty());
+            insert.shown
+        };
+        assert_eq!(
+            shown(Dialect::Postgres, "public"),
+            r#"INSERT INTO "public"."book_covers" DEFAULT VALUES RETURNING *"#
+        );
+        assert_eq!(
+            shown(Dialect::Sqlite, "main"),
+            r#"INSERT INTO "main"."book_covers" DEFAULT VALUES RETURNING *"#
+        );
+        // MySQL has no DEFAULT VALUES.
+        assert_eq!(
+            shown(Dialect::MySql, "bookshop"),
+            "INSERT INTO `bookshop`.`book_covers` () VALUES ()"
+        );
+    }
+
+    #[test]
+    fn a_new_value_its_column_cannot_take_is_refused_before_it_is_sent() {
+        let row = |type_name: &str, new: &str| RowInsert {
+            set: vec![sets("n", type_name, NewValue::Text(new.into()))],
+        };
+        let built = |dialect: Dialect, schema: &str, type_name: &str, new: &str| {
+            dialect.insert_row(&covers(schema), &row(type_name, new))
+        };
+        // SQLite would store the text as it is.
+        assert!(built(Dialect::Sqlite, "main", "INTEGER", "seven").is_err());
+        // Bytes are not sent as text, for a new row as for a changed one.
+        assert!(built(Dialect::Postgres, "public", "bytea", "x").is_err());
+        // PostgreSQL text cannot hold a NUL.
+        assert!(built(Dialect::Postgres, "public", "text", "a\0b").is_err());
+        assert!(built(Dialect::Sqlite, "main", "TEXT", "a\0b").is_ok());
     }
 
     #[test]
