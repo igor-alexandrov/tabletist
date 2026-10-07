@@ -2635,7 +2635,9 @@ use std::future::Future;
 use std::panic::AssertUnwindSafe;
 
 use futures_util::FutureExt;
-use tabletist_db::{CellChange, ChangeSet, Conflict, NewValue, RowChange, WriteOutcome};
+use tabletist_db::{
+    CellChange, ChangeSet, Conflict, InsertValue, NewValue, RowChange, RowInsert, WriteOutcome,
+};
 
 /// Runs `test` on tables of its own. The fixture is loaded once and shared
 /// by every test of this suite, so a test that writes never touches it.
@@ -3043,6 +3045,163 @@ async fn a_statement_that_fails_undoes_the_rows_before_it() {
         assert_eq!(row_of(&connection, "write_undone", 1).await.1, first);
         assert_eq!(row_of(&connection, "write_undone", 2).await.1, second);
     })
+    .await;
+}
+
+/// Bookshop's covers, as the design's new row needs them: a counted key, a
+/// required column, a unique one, and two defaults.
+fn covers(table: &str) -> [String; 2] {
+    [
+        format!(
+            "CREATE TABLE {table} (
+                 id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                 publisher_id BIGINT NOT NULL,
+                 kind VARCHAR(20) NOT NULL DEFAULT 'print',
+                 isbn VARCHAR(32) UNIQUE,
+                 created_at DATETIME NOT NULL DEFAULT '2026-10-07 10:42:09'
+             )"
+        ),
+        format!(
+            "INSERT INTO {table} (publisher_id, kind, isbn) VALUES
+                 (9100000000000000001, 'print', '978-1-4028-9462-6'),
+                 (9100000000000000001, 'ebook', NULL)"
+        ),
+    ]
+}
+
+fn sets(column: &str, type_name: &str, new: &str) -> InsertValue {
+    InsertValue {
+        column: column.into(),
+        type_name: type_name.into(),
+        new: to(new),
+    }
+}
+
+#[tokio::test]
+async fn a_new_row_comes_back_as_the_database_stored_it() {
+    let Some(connection) = connect_as(Access::Writable).await else {
+        return;
+    };
+    let covers = covers("covers_new");
+    on_its_own_tables("covers_new", &[&covers[0], &covers[1]], async move {
+        let mut changes = changes_to("covers_new", Vec::new());
+        changes.inserts = vec![RowInsert {
+            set: vec![sets("publisher_id", "bigint", "9100000000000000004")],
+        }];
+        let outcome = within(connection.write(&changes, &StopFlag::new()))
+            .await
+            .unwrap();
+        let WriteOutcome::Written { inserted, rows, .. } = outcome else {
+            panic!("the save wrote");
+        };
+        assert!(rows.is_empty());
+        // Two covers were there: the counter gives 3.
+        let (columns, stored) = row_of(&connection, "covers_new", 3).await;
+        assert_eq!(inserted, [Some(stored.clone())]);
+        let at = |name: &str| &stored[columns.iter().position(|column| column == name).unwrap()];
+        assert_eq!(*at("publisher_id"), Value::Int(9_100_000_000_000_000_004));
+        assert_eq!(*at("kind"), Value::Text("print".into()));
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_new_row_whose_key_was_typed_is_found_by_it() {
+    let Some(connection) = connect_as(Access::Writable).await else {
+        return;
+    };
+    let people = people("people_new");
+    on_its_own_tables("people_new", &[&people[0], &people[1]], async move {
+        let mut changes = changes_to("people_new", Vec::new());
+        changes.inserts = vec![RowInsert {
+            set: vec![sets("id", "int", "7"), sets("email", VARCHAR, "g@x")],
+        }];
+        let outcome = within(connection.write(&changes, &StopFlag::new()))
+            .await
+            .unwrap();
+        let WriteOutcome::Written { inserted, .. } = outcome else {
+            panic!("the save wrote");
+        };
+        assert_eq!(
+            inserted,
+            [Some(row_of(&connection, "people_new", 7).await.1)]
+        );
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_new_row_that_fails_undoes_the_rows_before_it() {
+    let Some(connection) = connect_as(Access::Writable).await else {
+        return;
+    };
+    let covers = covers("covers_undone");
+    on_its_own_tables("covers_undone", &[&covers[0], &covers[1]], async move {
+        let (columns, second) = row_of(&connection, "covers_undone", 2).await;
+        let mut changes = changes_to(
+            "covers_undone",
+            vec![by_id(
+                2,
+                vec![cell(&columns, &second, "kind", "varchar(20)", to("audio"))],
+            )],
+        );
+        changes.inserts = vec![
+            RowInsert {
+                set: vec![sets("publisher_id", "bigint", "9100000000000000004")],
+            },
+            // UNIQUE: the first cover has it.
+            RowInsert {
+                set: vec![
+                    sets("publisher_id", "bigint", "9100000000000000004"),
+                    sets("isbn", "varchar(32)", "978-1-4028-9462-6"),
+                ],
+            },
+        ];
+        let outcome = within(connection.write(&changes, &StopFlag::new()))
+            .await
+            .unwrap();
+        assert!(
+            matches!(
+                &outcome,
+                // MySQL's 1062, by its SQLSTATE.
+                WriteOutcome::FailedInsert { insert: 1, error: Error::Query { code, .. } }
+                    if code.as_deref() == Some("23000")
+            ),
+            "{outcome:?}"
+        );
+        // Neither the first new row nor the change is there.
+        assert_eq!(page_of(&connection, "covers_undone").await.1.len(), 2);
+        assert_eq!(row_of(&connection, "covers_undone", 2).await.1, second);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_table_without_a_key_takes_a_new_row_and_cannot_hand_it_back() {
+    let Some(connection) = connect_as(Access::Writable).await else {
+        return;
+    };
+    on_its_own_tables(
+        "cover_stamps",
+        &["CREATE TABLE cover_stamps (line VARCHAR(20) DEFAULT 'none', n INT DEFAULT 7)"],
+        async move {
+            let mut changes = changes_to("cover_stamps", Vec::new());
+            // Nothing set: `() VALUES ()`.
+            changes.inserts = vec![RowInsert { set: Vec::new() }];
+            let outcome = within(connection.write(&changes, &StopFlag::new()))
+                .await
+                .unwrap();
+            let WriteOutcome::Written { inserted, .. } = outcome else {
+                panic!("the save wrote");
+            };
+            // Written, and no key to find it by.
+            assert_eq!(inserted, [None]);
+            assert_eq!(
+                page_of(&connection, "cover_stamps").await.1,
+                [vec![Value::Text("none".into()), Value::Int(7)]]
+            );
+        },
+    )
     .await;
 }
 
@@ -3597,6 +3756,60 @@ async fn a_table_that_lost_its_transactions_while_the_save_waited_is_refused() {
             // Nothing was written: on this engine it could not have been undone.
             assert_eq!(row_of(&connection, "write_altered", 1).await.1, row);
             assert!(nothing_holds(&mut admin, "write_altered").await);
+        },
+    )
+    .await;
+}
+
+/// A save of new rows alone reads no row, and still asks for the engine
+/// only once it holds the table.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_save_of_new_rows_alone_holds_its_table_before_it_asks_for_the_engine() {
+    let Some(connection) = connect_as(Access::Writable).await else {
+        return;
+    };
+    let mut admin = admin().await;
+    let engines: Vec<String> = admin
+        .query("SELECT engine FROM information_schema.engines WHERE support IN ('YES', 'DEFAULT')")
+        .await
+        .unwrap();
+    if !engines.iter().any(|engine| engine == "MyISAM") {
+        eprintln!("skipped: the server has no MyISAM");
+        return;
+    }
+    on_its_own_tables(
+        "insert_altered",
+        // No key longer than MyISAM takes.
+        &[
+            "CREATE TABLE insert_altered (id INT PRIMARY KEY, name VARCHAR(50))",
+            "INSERT INTO insert_altered VALUES (1, 'Ada')",
+        ],
+        async move {
+            let mut changes = changes_to("insert_altered", Vec::new());
+            changes.inserts = vec![RowInsert {
+                set: vec![sets("id", "int", "2"), sets("name", "varchar(50)", "Grace")],
+            }];
+            let mut theirs = self::admin().await;
+            theirs
+                .query_drop("LOCK TABLES insert_altered WRITE")
+                .await
+                .unwrap();
+            let connection = std::sync::Arc::new(connection);
+            let saving = {
+                let connection = std::sync::Arc::clone(&connection);
+                tokio::spawn(async move { connection.write(&changes, &StopFlag::new()).await })
+            };
+            waits_on_the_server(&mut admin, "insert_altered", "metadata lock").await;
+            theirs
+                .query_drop("ALTER TABLE insert_altered ENGINE = MyISAM")
+                .await
+                .unwrap();
+            theirs.query_drop("UNLOCK TABLES").await.unwrap();
+            let outcome = within(saving).await.unwrap();
+            assert!(matches!(outcome, Err(Error::Unsupported(_))), "{outcome:?}");
+            // Nothing was written: on this engine it could not have been undone.
+            assert_eq!(page_of(&connection, "insert_altered").await.1.len(), 1);
+            assert!(nothing_holds(&mut admin, "insert_altered").await);
         },
     )
     .await;
