@@ -294,8 +294,9 @@ impl Connection {
     /// the database decides which row a key finds.
     ///
     /// The set's new rows are written first, each by one `INSERT`, then
-    /// its changed rows. A new row comes back as the database stored it,
-    /// or as `None` where MySQL cannot find it again.
+    /// its changed rows. A new row comes back as it stands once every
+    /// statement has run, a trigger's changes with it, or as `None` where
+    /// nothing finds it again for sure.
     ///
     /// On a read-only connection it is refused before the set is even
     /// looked at. The future must be awaited to its end and never dropped:

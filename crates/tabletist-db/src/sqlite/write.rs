@@ -3,6 +3,7 @@
 
 use std::time::Instant;
 
+use rusqlite::OptionalExtension;
 use rusqlite::types::ValueRef;
 
 use super::{end_transaction, from_sqlite, map_error};
@@ -11,7 +12,9 @@ use crate::write::{
     Applied, Stored, changed_since_loaded, conflicts_of, more_than_one, named_twice, not_read_back,
     not_stopped, same_row_twice, spelled_otherwise,
 };
-use crate::{ChangeSet, Dialect, Error, Result, RowChange, Sql, StopFlag, Value, WriteOutcome};
+use crate::{
+    ChangeSet, Dialect, Error, ObjectRef, Result, RowChange, Sql, StopFlag, Value, WriteOutcome,
+};
 
 pub(super) fn write(
     connection: &rusqlite::Connection,
@@ -204,6 +207,77 @@ fn ambiguous<'a>(change: &'a RowChange, columns: &[String]) -> Option<&'a str> {
         })
 }
 
+/// What finds a row an `INSERT` made, to read it as it stands at the save's
+/// end.
+enum FoundBy {
+    /// The rowid the insert gave it.
+    Rowid,
+    /// The primary key's columns, of a table WITHOUT ROWID.
+    Key(Vec<String>),
+}
+
+impl FoundBy {
+    fn of(connection: &rusqlite::Connection, object: &ObjectRef) -> Result<Self> {
+        let without_rowid = connection
+            .query_row(
+                "SELECT wr <> 0 FROM pragma_table_list(?1) WHERE schema = ?2",
+                [&object.name, &object.schema],
+                |row| row.get::<_, bool>(0),
+            )
+            .optional()
+            .map_err(map_error)?
+            .unwrap_or(false);
+        if !without_rowid {
+            return Ok(Self::Rowid);
+        }
+        let key = super::key_names(connection, object)?;
+        Ok(Self::Key(key.into_iter().map(|name| name.text).collect()))
+    }
+
+    /// The read that finds the row an insert `returned`, with these
+    /// `columns`, and gave `rowid`. `None` when nothing finds it for sure.
+    fn select(
+        &self,
+        object: &ObjectRef,
+        columns: &[String],
+        returned: &Found,
+        rowid: i64,
+    ) -> Option<Sql> {
+        match self {
+            Self::Rowid => {
+                // A column of the table can take any of the rowid's three
+                // names for itself: the one it left free is the rowid's.
+                let name = ["rowid", "_rowid_", "oid"].into_iter().find(|name| {
+                    !columns
+                        .iter()
+                        .any(|column| column.eq_ignore_ascii_case(name))
+                })?;
+                Some(Sql {
+                    text: format!(
+                        "SELECT * FROM {} WHERE {name} = ? LIMIT 2",
+                        Dialect::Sqlite.qualified(object)
+                    ),
+                    params: vec![Value::Int(rowid)],
+                })
+            }
+            Self::Key(names) => {
+                let key = names
+                    .iter()
+                    .map(|name| {
+                        let at = columns.iter().position(|column| column == name)?;
+                        // Text that was not read exactly finds another row,
+                        // or none: see `Dialect::key_read_exactly`.
+                        let exact = !returned.inexact.contains(&at);
+                        let value = returned.values.get(at)?;
+                        (exact && !value.is_null()).then(|| (name.clone(), value.clone()))
+                    })
+                    .collect::<Option<Vec<_>>>()?;
+                (!key.is_empty()).then(|| Dialect::Sqlite.select_row(object, &key, false))
+            }
+        }
+    }
+}
+
 /// The steps of a save inside its transaction: read and compare every row,
 /// update every row, read every row back. `stop` is asked before each
 /// statement, and a save it ends is undone like every other end but
@@ -274,12 +348,19 @@ fn apply(
         return Ok(Applied::Conflicts(conflicts_of(conflicts, rows_read)));
     }
     // The new rows, before any row is changed: the order a review shows
-    // them in. `RETURNING *` gives each as the table now holds it.
-    let mut inserted = Vec::with_capacity(inserts.len());
+    // them in. `RETURNING *` gives each as its `INSERT` left it, which is
+    // before an AFTER trigger had its say: what it gives is used to find
+    // the row again, once every statement has run.
+    let found_by = if inserts.is_empty() {
+        None
+    } else {
+        Some(FoundBy::of(connection, &changes.object)?)
+    };
+    let mut made = Vec::with_capacity(inserts.len());
     for (insert, statement) in inserts.iter().enumerate() {
         not_stopped(stop)?;
-        let mut made = match read(connection, &statement.sql) {
-            Ok((_, made)) => made,
+        let (columns, mut returned) = match read(connection, &statement.sql) {
+            Ok(read) => read,
             // A cancel or a lost session ends the save; anything else is
             // the statement's own failure.
             Err(error @ (Error::Cancelled | Error::ConnectionLost(_))) => return Err(error),
@@ -287,11 +368,17 @@ fn apply(
         };
         // One statement makes one row. A trigger that ran in its place can
         // have made none, and then what was stored is not known.
-        let row = made
+        let row = returned
             .pop()
-            .filter(|_| made.is_empty())
+            .filter(|_| returned.is_empty())
             .ok_or_else(not_read_back)?;
-        inserted.push(Some(row.values));
+        // Read now: the next insert gives the session another.
+        let rowid = connection.last_insert_rowid();
+        made.push(
+            found_by
+                .as_ref()
+                .and_then(|by| by.select(&changes.object, &columns, &row, rowid)),
+        );
     }
     for (row, update) in updates.iter().enumerate() {
         not_stopped(stop)?;
@@ -327,6 +414,21 @@ fn apply(
             return Err(more_than_one());
         }
         rows.push(found.pop().ok_or_else(not_read_back)?.values);
+    }
+    // The new rows last, as they stand once every statement has run.
+    let mut inserted = Vec::with_capacity(made.len());
+    for select in made {
+        let Some(select) = select else {
+            inserted.push(None);
+            continue;
+        };
+        not_stopped(stop)?;
+        let (_, mut found) = read(connection, &select)?;
+        if found.len() > 1 {
+            return Err(more_than_one());
+        }
+        // None: a trigger moved the row to another key, or took it away.
+        inserted.push(found.pop().map(|row| row.values));
     }
     Ok(Applied::Rows(Stored { inserted, rows }))
 }

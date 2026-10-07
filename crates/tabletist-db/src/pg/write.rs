@@ -5,7 +5,7 @@ use std::time::Instant;
 
 use tokio_postgres::SimpleQueryMessage;
 
-use super::{Conn, column_metas, query_error, row_values};
+use super::{Conn, PRIMARY_KEY, column, column_metas, query_error, row_values};
 use crate::dialect::{InsertStatement, RowUpdate};
 use crate::script::retry_cancelled;
 use crate::write::{
@@ -189,8 +189,10 @@ async fn apply(
     }
     // The new rows, before any row is changed: the order a review shows
     // them in. `RETURNING *` gives each in the table's column order, the
-    // order `columns` was read in.
-    let mut inserted = Vec::with_capacity(inserts.len());
+    // order `columns` was read in, and as its `INSERT` left it, which is
+    // before an AFTER trigger had its say: what it gives is used to find
+    // the row again, once every statement has run.
+    let mut returned = Vec::with_capacity(inserts.len());
     for (insert, statement) in inserts.iter().enumerate() {
         not_stopped(stop)?;
         let messages = match client
@@ -216,7 +218,7 @@ async fn apply(
             .pop()
             .filter(|_| made.is_empty())
             .ok_or_else(not_read_back)?;
-        inserted.push(Some(row));
+        returned.push(row);
     }
     for (row, update) in updates.iter().enumerate() {
         not_stopped(stop)?;
@@ -259,6 +261,44 @@ async fn apply(
             return Err(more_than_one());
         }
         saved.push(found.pop().ok_or_else(not_read_back)?);
+    }
+    // The new rows last, as they stand once every statement has run, each
+    // found by its primary key as `RETURNING` gave it. A table without one
+    // gives nothing to find a row by, and its new rows are written and not
+    // known.
+    let key: Vec<String> = if returned.is_empty() {
+        Vec::new()
+    } else {
+        not_stopped(stop)?;
+        client
+            .query(PRIMARY_KEY, &[&changes.object.schema, &changes.object.name])
+            .await
+            .map_err(query_error)?
+            .iter()
+            .map(|row| column(row, 0))
+            .collect::<Result<_>>()?
+    };
+    let mut inserted = Vec::with_capacity(returned.len());
+    for row in returned {
+        let found_by: Option<Vec<(String, Value)>> = key
+            .iter()
+            .map(|name| {
+                let at = names.iter().position(|column| column == name)?;
+                Some((name.clone(), row.get(at)?.clone()))
+            })
+            .collect();
+        let Some(found_by) = found_by.filter(|key| !key.is_empty()) else {
+            inserted.push(None);
+            continue;
+        };
+        let select = dialect.select_row(&changes.object, &found_by, false);
+        not_stopped(stop)?;
+        let mut found = rows(client, &select.text, &columns).await?;
+        if found.len() > 1 {
+            return Err(more_than_one());
+        }
+        // None: a trigger moved the row to another key, or took it away.
+        inserted.push(found.pop());
     }
     Ok(Applied::Rows(Stored {
         inserted,

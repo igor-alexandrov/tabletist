@@ -2232,6 +2232,62 @@ async fn a_table_without_a_key_takes_a_new_row() {
     assert_eq!(inserted, [Some(vec![Value::Text("never".into())])]);
 }
 
+/// `RETURNING` gives a row as its `INSERT` left it, before an AFTER trigger
+/// ran. What a save hands back is the row as the save left it.
+#[tokio::test]
+async fn a_new_row_comes_back_as_a_trigger_left_it() {
+    let (connection, dir) = fixture_as(Access::Writable).await;
+    other_program(&dir)
+        .execute_batch(
+            "CREATE TABLE cover_log (id INTEGER PRIMARY KEY, line TEXT, seen TEXT);
+             CREATE TRIGGER cover_log_seen AFTER INSERT ON cover_log BEGIN
+                 UPDATE cover_log SET seen = 'yes' WHERE id = NEW.id;
+             END;
+             CREATE TABLE cover_codes (code TEXT PRIMARY KEY, seen TEXT) WITHOUT ROWID;
+             CREATE TRIGGER cover_codes_seen AFTER INSERT ON cover_codes BEGIN
+                 UPDATE cover_codes SET seen = 'yes' WHERE code = NEW.code;
+             END;
+             CREATE TABLE cover_moved (code TEXT PRIMARY KEY) WITHOUT ROWID;
+             CREATE TRIGGER cover_moved_on AFTER INSERT ON cover_moved BEGIN
+                 UPDATE cover_moved SET code = 'moved' WHERE code = NEW.code;
+             END",
+        )
+        .unwrap();
+    let one = |column: &str, new: &str| RowInsert {
+        set: vec![InsertValue {
+            column: column.into(),
+            type_name: "TEXT".into(),
+            new: to(new),
+        }],
+    };
+    let written = |table: &'static str, row: RowInsert| {
+        let connection = &connection;
+        async move {
+            let outcome = connection
+                .write(&adding(table, vec![row], Vec::new()), &StopFlag::new())
+                .await
+                .unwrap();
+            let WriteOutcome::Written { inserted, .. } = outcome else {
+                panic!("the save wrote");
+            };
+            inserted
+        }
+    };
+    let text = |text: &str| Value::Text(text.into());
+    // Found by its rowid.
+    assert_eq!(
+        written("cover_log", one("line", "first")).await,
+        [Some(vec![Value::Int(1), text("first"), text("yes")])]
+    );
+    // Found by its key, where there is no rowid.
+    assert_eq!(
+        written("cover_codes", one("code", "a")).await,
+        [Some(vec![text("a"), text("yes")])]
+    );
+    // A row whose key the trigger changed is written, and not known.
+    assert_eq!(written("cover_moved", one("code", "a")).await, [None]);
+}
+
 #[tokio::test]
 async fn a_value_sqlite_would_store_as_text_is_refused_before_anything_is_sent() {
     let (connection, dir) = fixture_as(Access::Writable).await;

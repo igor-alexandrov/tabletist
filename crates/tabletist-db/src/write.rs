@@ -79,10 +79,11 @@ pub enum NewValue {
 #[derive(Debug, Clone, PartialEq)]
 pub enum WriteOutcome {
     Written {
-        /// Each new row as the database now holds it, in the order of the
-        /// set's `inserts`. `None` for a row that was written and could
-        /// not be found again: MySQL hands no row back, and a table
-        /// without a primary key gives nothing to look one up by.
+        /// Each new row as the database holds it once every statement of
+        /// the save has run, in the order of the set's `inserts`. `None`
+        /// for a row that was written and could not be found again:
+        /// nothing finds a row of a table without a primary key (but a
+        /// rowid, on SQLite), and a trigger can move a row to another key.
         inserted: Vec<Option<Vec<Value>>>,
         /// Each changed row as the database now holds it, in the set's
         /// order.

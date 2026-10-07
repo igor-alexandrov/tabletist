@@ -2718,7 +2718,7 @@ async fn a_new_row_that_fails_undoes_the_rows_before_it() {
 }
 
 #[tokio::test]
-async fn a_table_without_a_key_takes_a_new_row() {
+async fn a_table_without_a_key_takes_a_new_row_and_cannot_hand_it_back() {
     let Some(connection) = connect_as(Access::Writable).await else {
         return;
     };
@@ -2735,9 +2735,56 @@ async fn a_table_without_a_key_takes_a_new_row() {
             let WriteOutcome::Written { inserted, .. } = outcome else {
                 panic!("the save wrote");
             };
+            // Written, and no key to find it by once the save is done.
+            assert_eq!(inserted, [None]);
+            assert_eq!(
+                page_of(&connection, "cover_stamps").await.1,
+                [vec![Value::Text("none".into()), Value::Int(7)]]
+            );
+        },
+    )
+    .await;
+}
+
+/// `RETURNING` gives a row as its `INSERT` left it, before an AFTER trigger
+/// ran. What a save hands back is the row as the save left it.
+#[tokio::test]
+async fn a_new_row_comes_back_as_a_trigger_left_it() {
+    let Some(connection) = connect_as(Access::Writable).await else {
+        return;
+    };
+    on_its_own_tables(
+        "DROP TABLE IF EXISTS covers_seen; DROP FUNCTION IF EXISTS covers_seen_mark()",
+        "CREATE TABLE covers_seen (
+             id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+             kind text,
+             seen text
+         );
+         CREATE FUNCTION covers_seen_mark() RETURNS trigger LANGUAGE plpgsql AS $$
+         BEGIN
+             UPDATE covers_seen SET seen = 'yes' WHERE id = NEW.id;
+             RETURN NULL;
+         END $$;
+         CREATE TRIGGER covers_seen_after AFTER INSERT ON covers_seen
+             FOR EACH ROW EXECUTE FUNCTION covers_seen_mark()",
+        async move {
+            let mut changes = changes_to("covers_seen", Vec::new());
+            changes.inserts = vec![RowInsert {
+                set: vec![sets("kind", "text", "print")],
+            }];
+            let outcome = within(connection.write(&changes, &StopFlag::new()))
+                .await
+                .unwrap();
+            let WriteOutcome::Written { inserted, .. } = outcome else {
+                panic!("the save wrote");
+            };
             assert_eq!(
                 inserted,
-                [Some(vec![Value::Text("none".into()), Value::Int(7)])]
+                [Some(vec![
+                    Value::Int(1),
+                    Value::Text("print".into()),
+                    Value::Text("yes".into())
+                ])]
             );
         },
     )

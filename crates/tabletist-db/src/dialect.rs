@@ -676,8 +676,9 @@ impl Dialect {
     /// nowhere after it, as [`Dialect::update_row`] refuses, so what a
     /// review shows of a new row is what a save does with it.
     ///
-    /// PostgreSQL and SQLite hand the row back, as it was stored; MySQL
-    /// cannot, and its save finds the row again.
+    /// PostgreSQL and SQLite hand the row back as the statement left it,
+    /// which gives their saves what finds it again at their end; MySQL
+    /// hands nothing back, and its save works the key out.
     pub fn insert_row(self, object: &ObjectRef, row: &RowInsert) -> Result<InsertStatement> {
         let table = self.qualified(object);
         let back = match self {

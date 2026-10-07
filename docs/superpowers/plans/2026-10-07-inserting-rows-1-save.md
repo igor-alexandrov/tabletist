@@ -86,6 +86,8 @@ Where the app cannot yet do what the canvas and the spec ask, or where they leav
 6. **What a new value is.** `InsertValue { column, type_name, new }`: the same `NewValue` a changed cell carries, converted by the same rules (`Dialect::new_operand`), without a loaded value. A binary column is refused as it is for a change.
 7. **The app until run 2.** It builds sets with `inserts: Vec::new()`, compares `inserts` in `same_changes`, ignores `inserted`, and takes a `FailedInsert` as a save the database refused. No path sends an insert.
 
+8. **After the pull request's review.** `RETURNING` gives a row as its `INSERT` left it, before an AFTER trigger ran, so no driver hands that row back as it is. PostgreSQL finds the new row again by its primary key, as `RETURNING` gave it, and SQLite by its rowid (by its key in a table WITHOUT ROWID), each once every statement of the save has run. A PostgreSQL table without a primary key gives `None`, as MySQL's does. The tasks below show the first shape, where `RETURNING`'s row was the answer. Also from the review: PostgreSQL's `identity` asks that the default draws on the sequence the column owns, SQLite's leaves out `INTEGER PRIMARY KEY DESC`, and MySQL matches a sent key column without regard to case.
+
 ## The spec's tests, and where each is
 
 | Spec test | Run | In this run |
