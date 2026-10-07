@@ -1,0 +1,12 @@
+kind = "app"
+categories = ["Development"]
+icon = "assets/icon/tabletist-256.png"
+screenshots = ["assets/screenshots/omarchy.png"]
+
+[linux.x86_64]
+asset = "tabletist-{tag}-x86_64-unknown-linux-gnu.tar.gz"
+exec = "tabletist-{tag}-x86_64-unknown-linux-gnu/tabletist"
+
+[linux.aarch64]
+asset = "tabletist-{tag}-aarch64-unknown-linux-gnu.tar.gz"
+exec = "tabletist-{tag}-aarch64-unknown-linux-gnu/tabletist"
