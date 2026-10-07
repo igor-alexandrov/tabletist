@@ -264,6 +264,7 @@ impl Adapter for Conn {
                     generated: ["VIRTUAL", "STORED", "PERSISTENT"]
                         .iter()
                         .any(|word| extra.to_ascii_uppercase().contains(word)),
+                    identity: extra.to_ascii_lowercase().contains("auto_increment"),
                 },
             )
             .collect();

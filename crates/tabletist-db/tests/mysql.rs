@@ -329,6 +329,33 @@ async fn generated_columns_say_so() {
     );
 }
 
+#[tokio::test]
+async fn an_auto_increment_column_is_an_identity_column() {
+    let Some(connection) = connect_as(Access::ReadOnly).await else {
+        return;
+    };
+    on_its_own_tables(
+        "identity_cols",
+        &["CREATE TABLE identity_cols (
+               id INT AUTO_INCREMENT PRIMARY KEY,
+               title VARCHAR(20) NOT NULL DEFAULT 'none'
+           )"],
+        async move {
+            let structure = connection
+                .describe(&ObjectRef::new("tabletist", "identity_cols"))
+                .await
+                .unwrap();
+            let identity: Vec<(&str, bool)> = structure
+                .columns
+                .iter()
+                .map(|column| (column.name.as_str(), column.identity))
+                .collect();
+            assert_eq!(identity, [("id", true), ("title", false)]);
+        },
+    )
+    .await;
+}
+
 /// The catalog names a column for an index over its first characters, and
 /// nothing for an expression. Neither tells rows apart by whole columns.
 #[tokio::test]

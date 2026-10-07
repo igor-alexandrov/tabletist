@@ -10,7 +10,7 @@ use std::time::Instant;
 
 use rusqlite::config::DbConfig;
 use rusqlite::types::{FromSql, FromSqlError, FromSqlResult, ValueRef};
-use rusqlite::{ErrorCode, OpenFlags};
+use rusqlite::{ErrorCode, OpenFlags, OptionalExtension};
 
 use crate::adapter::Adapter;
 use crate::script::{cancelled_commit, cleanup_failed};
@@ -963,28 +963,55 @@ impl Adapter for Conn {
 }
 
 fn columns(connection: &rusqlite::Connection, object: &ObjectRef) -> Result<Vec<ColumnInfo>> {
+    // A table WITHOUT ROWID has no rowid for a column to be the alias of.
+    let rowid = connection
+        .query_row(
+            "SELECT wr = 0 FROM pragma_table_list(?1) WHERE schema = ?2",
+            [&object.name, &object.schema],
+            |row| row.get::<_, bool>(0),
+        )
+        .optional()
+        .map_err(map_error)?
+        .unwrap_or(false);
     let mut statement = connection
         .prepare(
-            "SELECT name, type, \"notnull\", dflt_value, hidden FROM pragma_table_xinfo(?1, ?2) \
-             WHERE hidden <> 1 ORDER BY cid",
+            "SELECT name, type, \"notnull\", dflt_value, hidden, pk \
+             FROM pragma_table_xinfo(?1, ?2) WHERE hidden <> 1 ORDER BY cid",
         )
         .map_err(map_error)?;
-    statement
+    let columns = statement
         .query_map([&object.name, &object.schema], |row| {
-            Ok(ColumnInfo {
-                name: text(row, 0)?,
-                type_name: optional_text(row, 1)?.unwrap_or_default(),
-                nullable: row.get::<_, i64>(2)? == 0,
-                default: optional_text(row, 3)?,
-                comment: None,
-                allowed_values: None,
-                // 2 is a virtual generated column, 3 a stored one.
-                generated: matches!(row.get::<_, i64>(4)?, 2 | 3),
-            })
+            let type_name = optional_text(row, 1)?.unwrap_or_default();
+            let keyed = row.get::<_, i64>(5)? > 0;
+            Ok((
+                ColumnInfo {
+                    name: text(row, 0)?,
+                    nullable: row.get::<_, i64>(2)? == 0,
+                    default: optional_text(row, 3)?,
+                    comment: None,
+                    allowed_values: None,
+                    // 2 is a virtual generated column, 3 a stored one.
+                    generated: matches!(row.get::<_, i64>(4)?, 2 | 3),
+                    // Decided below, once the key's columns are counted.
+                    identity: keyed && type_name.eq_ignore_ascii_case("INTEGER"),
+                    type_name,
+                },
+                keyed,
+            ))
         })
         .map_err(map_error)?
         .collect::<std::result::Result<Vec<_>, _>>()
-        .map_err(map_error)
+        .map_err(map_error)?;
+    // The rowid's alias is the key's one column, declared INTEGER and
+    // nothing else: SQLite numbers it when an insert names no value.
+    let alone = columns.iter().filter(|(_, keyed)| *keyed).count() == 1;
+    Ok(columns
+        .into_iter()
+        .map(|(mut column, _)| {
+            column.identity &= rowid && alone;
+            column
+        })
+        .collect())
 }
 
 /// The columns a filter of `query` compares as bytes when its value reads
@@ -2192,6 +2219,46 @@ mod tests {
                 ("title", false),
                 ("slug", true),
                 ("shout", true)
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn the_rowids_alias_is_an_identity_column() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("identity.db");
+        rusqlite::Connection::open(&path)
+            .unwrap()
+            .execute_batch(
+                "CREATE TABLE books (id INTEGER PRIMARY KEY, title TEXT NOT NULL);
+                 CREATE TABLE tags (name TEXT PRIMARY KEY, id INTEGER);
+                 CREATE TABLE pairs (a INTEGER, b INTEGER, PRIMARY KEY (a, b));
+                 CREATE TABLE codes (id INTEGER PRIMARY KEY, label TEXT) WITHOUT ROWID;
+                 CREATE TABLE counts (id INT PRIMARY KEY, n INTEGER)",
+            )
+            .unwrap();
+        let conn = Conn::open(&path, Access::ReadOnly).await.unwrap();
+        let mut found = Vec::new();
+        for table in ["books", "tags", "pairs", "codes", "counts"] {
+            let structure = conn.describe(&ObjectRef::new("main", table)).await.unwrap();
+            let identity: Vec<String> = structure
+                .columns
+                .into_iter()
+                .filter(|column| column.identity)
+                .map(|column| column.name)
+                .collect();
+            found.push((table, identity));
+        }
+        // Only a rowid's alias: one key column, declared INTEGER and
+        // nothing else, in a table that has a rowid.
+        assert_eq!(
+            found,
+            [
+                ("books", vec!["id".to_owned()]),
+                ("tags", Vec::new()),
+                ("pairs", Vec::new()),
+                ("codes", Vec::new()),
+                ("counts", Vec::new()),
             ]
         );
     }

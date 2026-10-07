@@ -168,6 +168,7 @@ fn structure() -> Structure {
         // `kind` has a CHECK (kind IN ('cover', 'preview')).
         allowed_values: (name == "kind").then(|| vec!["cover".into(), "preview".into()]),
         generated: false,
+        identity: false,
     };
     Structure {
         columns: vec![
@@ -1864,6 +1865,7 @@ mod mock {
             comment: None,
             allowed_values: None,
             generated: false,
+            identity: false,
         };
         let mut format = column("format", "edition_format", true);
         format.allowed_values = Some(
@@ -1899,6 +1901,7 @@ mod mock {
             comment: None,
             allowed_values: None,
             generated: false,
+            identity: false,
         };
         Structure {
             columns: vec![

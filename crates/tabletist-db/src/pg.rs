@@ -540,7 +540,11 @@ impl Adapter for Conn {
                                   WHERE c.conrelid = a.attrelid AND c.contype = 'c' \
                                     AND c.conkey = ARRAY[a.attnum] ORDER BY c.conname) END, \
                         COALESCE(to_jsonb(a) ->> 'attgenerated', '') <> '' \
-                            OR COALESCE(to_jsonb(a) ->> 'attidentity', '') = 'a' \
+                            OR COALESCE(to_jsonb(a) ->> 'attidentity', '') = 'a', \
+                        (d.adbin IS NOT NULL \
+                            OR COALESCE(to_jsonb(a) ->> 'attidentity', '') <> '') \
+                            AND pg_get_serial_sequence(a.attrelid::regclass::text, \
+                                                       a.attname::text) IS NOT NULL \
                  FROM pg_attribute a \
                  JOIN pg_type t ON t.oid = a.atttypid \
                  LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum \
@@ -567,6 +571,12 @@ impl Adapter for Conn {
                     comment: column(row, 4)?,
                     allowed_values,
                     generated: column(row, 7)?,
+                    // A sequence the column owns and still draws on: an
+                    // identity's, of either kind, and a serial's. A default
+                    // that draws on some other sequence is a default like
+                    // any other, and a serial whose default was dropped
+                    // keeps its sequence and is numbered by nobody.
+                    identity: column(row, 8)?,
                 })
             })
             .collect::<Result<_>>()?;
