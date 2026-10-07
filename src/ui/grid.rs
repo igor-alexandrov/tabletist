@@ -180,20 +180,61 @@ pub fn columns_shown(ctx: &egui::Context, id: Id) -> Option<ColumnsShown> {
     ctx.data(|data| data.get_temp(id.with("columns-shown")))
 }
 
-/// How many columns start at or past `right`, and where the first of them
-/// starts.
-fn columns_past(widths: &[f32], gutter: f32, right: f32) -> (usize, Option<f32>) {
-    let mut edge = gutter;
-    let mut past = 0;
-    let mut first = None;
-    for width in widths {
-        if edge >= right {
-            past += 1;
-            first.get_or_insert(edge);
+/// Where a grid's columns stop being in view.
+#[derive(Clone, Copy, Debug)]
+struct ViewEnd {
+    at: f32,
+    /// The hidden-columns pill is drawn: its fade covers the viewport's
+    /// end, and `at` is where a column must start to show the narrowest
+    /// column's width before it.
+    pill: bool,
+}
+
+impl ViewEnd {
+    /// The end of a viewport whose right edge is at `view_right`, in the
+    /// columns' own coordinates. `pills` is whether the look draws a pill
+    /// over columns the viewport cuts off entirely.
+    fn of(widths: &[f32], gutter: f32, view_right: f32, pills: bool) -> Self {
+        let viewport = Self {
+            at: view_right,
+            pill: false,
+        };
+        if pills && viewport.hidden(widths, gutter).0 > 0 {
+            Self {
+                at: view_right - FADE - MIN_WIDTH,
+                pill: true,
+            }
+        } else {
+            viewport
         }
-        edge += width;
     }
-    (past, first)
+
+    /// Whether a column that starts at `edge` is out of view. One that
+    /// starts at the viewport's edge shows nothing. One that starts where a
+    /// pill's view ends shows its width in full.
+    fn hides(self, edge: f32) -> bool {
+        if self.pill {
+            edge > self.at
+        } else {
+            edge >= self.at
+        }
+    }
+
+    /// How many columns are out of view, and where the first of them
+    /// starts.
+    fn hidden(self, widths: &[f32], gutter: f32) -> (usize, Option<f32>) {
+        let mut edge = gutter;
+        let mut hidden = 0;
+        let mut first = None;
+        for width in widths {
+            if self.hides(edge) {
+                hidden += 1;
+                first.get_or_insert(edge);
+            }
+            edge += width;
+        }
+        (hidden, first)
+    }
 }
 
 /// How wide `text` is in `role`, in points (laid out once, then cached).
@@ -1055,13 +1096,8 @@ pub fn show<'a>(
     let offset = scroll.state.offset.x;
     let lead = if pinned { gutter + widths[0] } else { 0.0 };
     let view_right = offset + scroll.inner_rect.width();
-    let has_pill = !look.terminal && columns_past(&widths, gutter, view_right).0 > 0;
-    let to = if has_pill {
-        view_right - FADE - MIN_WIDTH
-    } else {
-        view_right
-    };
-    let (hidden, first_hidden) = columns_past(&widths, gutter, to);
+    let end = ViewEnd::of(&widths, gutter, view_right, !look.terminal);
+    let (hidden, first_hidden) = end.hidden(&widths, gutter);
 
     // The columns in view, for the status line to say: the ones that show
     // any of themselves past the pinned one.
@@ -1071,7 +1107,7 @@ pub fn show<'a>(
         let mut seen: Option<(usize, usize)> = None;
         for (col, width) in widths.iter().enumerate() {
             let scrolls = !(pinned && col == 0);
-            if scrolls && edge < to && edge + width > from {
+            if scrolls && !end.hides(edge) && edge + width > from {
                 seen = Some((seen.map_or(col, |(first, _)| first), col));
             }
             edge += width;
@@ -1095,7 +1131,7 @@ pub fn show<'a>(
 
     // A pill at the header's right edge says how many columns are out of
     // sight, and scrolls to them.
-    if has_pill {
+    if end.pill {
         let text = format!("+{hidden}");
         let role = TextRole::FieldLabel;
         let text_width = text_width(ui, &text, role, look);
@@ -2427,9 +2463,20 @@ mod tests {
             .expect("the pill");
         frame(vec![click(more)]);
         frame(Vec::new());
-        let (_, texts, _) = frame(Vec::new());
+        let (_, texts, tree) = frame(Vec::new());
         let scrolled = columns_shown(&ctx, id).unwrap();
         assert!(scrolled.last > shown.last, "{scrolled:?}");
+        // The first column that was out of view is beside the key, not
+        // under it.
+        let header = |col: usize| {
+            tree.nodes
+                .iter()
+                .find(|(_, node)| node.label() == Some(names[col].as_str()))
+                .and_then(|(_, node)| node.bounds())
+                .expect("the header")
+        };
+        assert_eq!(scrolled.first, shown.last + 1, "{scrolled:?}");
+        assert_eq!(header(scrolled.first).x0, header(0).x1);
         // The range is of the columns that scrolled into view: the key is
         // in sight beside it, and some are still out of it.
         assert!(scrolled.first > 1 && scrolled.pinned, "{scrolled:?}");
@@ -2470,7 +2517,7 @@ mod tests {
         let look = Look::standard();
         let mut pills = 0;
         // Every width, so that a column starts under the pill at some.
-        for width in (200..=520).step_by(4) {
+        for width in 200..=520 {
             let ctx = egui::Context::default();
             crate::theme::install(&ctx, false, &look);
             ctx.enable_accesskit();
@@ -2508,20 +2555,59 @@ mod tests {
             frame();
             let tree = frame();
             let shown = columns_shown(&ctx, id).expect("the columns in view");
-            let left_of = |label: &dyn Fn(&str) -> bool| {
+            let bounds_of = |label: &dyn Fn(&str) -> bool| {
                 tree.nodes.iter().find_map(|(_, node)| {
-                    label(node.label()?).then(|| node.bounds().expect("bounds").x0)
+                    label(node.label()?).then(|| node.bounds().expect("bounds"))
                 })
             };
-            let Some(pill) = left_of(&|label| label.ends_with(" more columns")) else {
+            let Some(pill) = bounds_of(&|label| label.ends_with(" more columns")) else {
                 continue;
             };
             pills += 1;
-            // The last column the status line counts shows its start.
-            let last = left_of(&|label| label == names[shown.last]).expect("its header");
-            assert!(last < pill, "at {width}: {shown:?}, {last} under {pill}");
+            // The pill is 8 from the grid's right, where its fade ends. The
+            // last column the status line counts shows the narrowest
+            // column's width before that fade, and the next one does not.
+            let fade = pill.x1 as f32 + 8.0 - FADE;
+            let start = |col: usize| {
+                bounds_of(&|label| label == names[col])
+                    .expect("its header")
+                    .x0 as f32
+            };
+            let last = start(shown.last);
+            assert!(
+                last + MIN_WIDTH <= fade,
+                "at {width}: {shown:?} starts at {last}, the fade at {fade}"
+            );
+            let next = start(shown.last + 1);
+            assert!(
+                next + MIN_WIDTH > fade,
+                "at {width}: column {} at {next} reads before the fade at {fade}",
+                shown.last + 1
+            );
         }
         assert!(pills > 0, "no width cut a column off");
+    }
+
+    #[test]
+    fn a_column_with_the_narrowest_width_before_the_fade_is_in_view() {
+        // Six columns, each starting on a hundred.
+        let widths = [100.0; 6];
+        let hidden = |view_right: f32, pills: bool| {
+            let end = ViewEnd::of(&widths, 0.0, view_right, pills);
+            (end.pill, end.hidden(&widths, 0.0))
+        };
+        // Every column starts in the viewport: no pill, and nothing out of
+        // view.
+        assert_eq!(hidden(500.5, true), (false, (0, None)));
+        // A column that starts on the viewport's edge shows nothing.
+        assert_eq!(hidden(500.0, false), (false, (1, Some(500.0))));
+        assert!(hidden(500.0, true).0);
+        // Under a pill, the third column has exactly the narrowest width
+        // before the fade in a viewport this wide, and is in view.
+        let exact = 200.0 + MIN_WIDTH + FADE;
+        assert_eq!(hidden(exact, true), (true, (3, Some(300.0))));
+        // A point narrower and it is not.
+        assert_eq!(hidden(exact - 1.0, true), (true, (4, Some(200.0))));
     }
 
     #[test]
