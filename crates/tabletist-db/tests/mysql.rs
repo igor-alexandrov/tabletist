@@ -3253,6 +3253,61 @@ async fn a_new_row_of_a_table_with_a_trigger_is_written_and_not_known() {
     .await;
 }
 
+/// A change cannot carry a new row of its own table with it: InnoDB lets no
+/// update cascade back into the table it started in, and refuses the
+/// change. So a new row found by its key after the save's changes is the
+/// row that was made, and the save asks nothing about foreign keys.
+#[tokio::test]
+async fn a_change_cannot_carry_a_new_row_of_its_own_table() {
+    let Some(connection) = connect_as(Access::Writable).await else {
+        return;
+    };
+    on_its_own_tables(
+        "chapters_carried",
+        &[
+            "CREATE TABLE chapters_carried (
+                 id INT PRIMARY KEY,
+                 code VARCHAR(20) UNIQUE,
+                 part VARCHAR(20),
+                 FOREIGN KEY (part) REFERENCES chapters_carried (code) ON UPDATE CASCADE
+             )",
+            "INSERT INTO chapters_carried VALUES (1, 'a', NULL)",
+        ],
+        async move {
+            let (columns, first) = row_of(&connection, "chapters_carried", 1).await;
+            let mut changes = changes_to(
+                "chapters_carried",
+                vec![by_id(
+                    1,
+                    vec![cell(&columns, &first, "code", "varchar(20)", to("z"))],
+                )],
+            );
+            changes.inserts = vec![RowInsert {
+                set: vec![
+                    sets("id", "int", "2"),
+                    sets("code", "varchar(20)", "b"),
+                    sets("part", "varchar(20)", "a"),
+                ],
+            }];
+            let outcome = within(connection.write(&changes, &StopFlag::new()))
+                .await
+                .unwrap();
+            // The change of the row the new one refers to is refused, and
+            // the save with it: nothing was carried anywhere.
+            assert!(
+                matches!(
+                    &outcome,
+                    WriteOutcome::Failed { row: 0, error: Error::Query { code, .. } }
+                        if code.as_deref() == Some("23000")
+                ),
+                "{outcome:?}"
+            );
+            assert_eq!(page_of(&connection, "chapters_carried").await.1.len(), 1);
+        },
+    )
+    .await;
+}
+
 /// The server fires a table's triggers for everyone and lists them only to
 /// who has the TRIGGER privilege on it. A user without it is told of none,
 /// which proves none: their new row is written and handed back as not

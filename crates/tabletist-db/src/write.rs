@@ -87,6 +87,9 @@ pub enum WriteOutcome {
         ///   table that is not an ordinary one), which can change the row
         ///   after its `INSERT`, move its key, or take the row for itself
         ///   and store it elsewhere or nowhere;
+        /// - on PostgreSQL and SQLite, in a save that also changes rows,
+        ///   on a table one of whose foreign keys acts on an update: a
+        ///   changed row can carry a new one with it;
         /// - on MySQL, which hands no row back, where the primary key
         ///   does not find the row again, or the server would not list
         ///   the table's triggers to this user.

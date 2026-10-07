@@ -2361,6 +2361,69 @@ async fn a_new_row_a_trigger_takes_for_itself_does_not_fail_the_save() {
     );
 }
 
+/// A foreign key that acts on an update does a trigger's work without one:
+/// a row changed after the inserts carries the new row that refers to it.
+/// What the new row's `INSERT` returned is then not the row.
+#[tokio::test]
+async fn a_new_row_a_later_change_can_carry_with_it_is_not_known() {
+    let (connection, dir) = fixture_as(Access::Writable).await;
+    other_program(&dir)
+        .execute_batch(
+            "CREATE TABLE chapters (
+                 id INTEGER PRIMARY KEY,
+                 code TEXT UNIQUE,
+                 part TEXT REFERENCES chapters (code) ON UPDATE CASCADE
+             );
+             INSERT INTO chapters VALUES (1, 'a', NULL)",
+        )
+        .unwrap();
+    let chapter = |code: &str| RowInsert {
+        set: [("code", code), ("part", "a")]
+            .into_iter()
+            .map(|(column, new)| InsertValue {
+                column: column.into(),
+                type_name: "TEXT".into(),
+                new: to(new),
+            })
+            .collect(),
+    };
+    let text = |text: &str| Value::Text(text.into());
+    // Alone, the new row is what its INSERT returned.
+    let outcome = connection
+        .write(
+            &adding("chapters", vec![chapter("b")], Vec::new()),
+            &StopFlag::new(),
+        )
+        .await
+        .unwrap();
+    let WriteOutcome::Written { inserted, .. } = outcome else {
+        panic!("the save wrote: {outcome:?}");
+    };
+    assert_eq!(inserted, [Some(vec![Value::Int(2), text("b"), text("a")])]);
+    // Beside a change of the row it refers to, it is not.
+    let renamed = RowChange {
+        key: vec![("id".into(), Value::Int(1))],
+        set: vec![CellChange {
+            column: "code".into(),
+            type_name: "TEXT".into(),
+            loaded: text("a"),
+            new: to("z"),
+        }],
+    };
+    let outcome = connection
+        .write(
+            &adding("chapters", vec![chapter("c")], vec![renamed]),
+            &StopFlag::new(),
+        )
+        .await
+        .unwrap();
+    let WriteOutcome::Written { inserted, rows, .. } = outcome else {
+        panic!("the save wrote: {outcome:?}");
+    };
+    assert_eq!(inserted, [None]);
+    assert_eq!(rows, [vec![Value::Int(1), text("z"), Value::Null]]);
+}
+
 /// A key whose name is not UTF-8 cannot be spelled in a read. A new row
 /// needs none: it is what its `INSERT` returned.
 #[tokio::test]

@@ -2745,6 +2745,68 @@ async fn a_table_without_a_key_takes_a_new_row() {
     .await;
 }
 
+/// A foreign key that acts on an update does a trigger's work without one:
+/// a row changed after the inserts carries the new row that refers to it.
+/// What the new row's `INSERT` returned is then not the row.
+#[tokio::test]
+async fn a_new_row_a_later_change_can_carry_with_it_is_not_known() {
+    let Some(connection) = connect_as(Access::Writable).await else {
+        return;
+    };
+    on_its_own_tables(
+        &drop_table("chapters_carried"),
+        "CREATE TABLE chapters_carried (
+             id integer PRIMARY KEY,
+             code text UNIQUE,
+             part text REFERENCES chapters_carried (code) ON UPDATE CASCADE
+         );
+         INSERT INTO chapters_carried VALUES (1, 'a', NULL)",
+        async move {
+            let chapter = |id: &str, code: &str| RowInsert {
+                set: vec![
+                    sets("id", "integer", id),
+                    sets("code", "text", code),
+                    sets("part", "text", "a"),
+                ],
+            };
+            let text = |text: &str| Value::Text(text.into());
+            // Alone, the new row is what its INSERT returned.
+            let mut changes = changes_to("chapters_carried", Vec::new());
+            changes.inserts = vec![chapter("2", "b")];
+            let outcome = within(connection.write(&changes, &StopFlag::new()))
+                .await
+                .unwrap();
+            let WriteOutcome::Written { inserted, .. } = outcome else {
+                panic!("the save wrote: {outcome:?}");
+            };
+            assert_eq!(inserted, [Some(vec![Value::Int(2), text("b"), text("a")])]);
+            // Beside a change of the row it refers to, it is not: the
+            // change carries the new row's `part` with it.
+            let (columns, first) = row_of(&connection, "chapters_carried", 1).await;
+            let mut changes = changes_to(
+                "chapters_carried",
+                vec![by_id(
+                    1,
+                    vec![cell(&columns, &first, "code", "text", to("z"))],
+                )],
+            );
+            changes.inserts = vec![chapter("3", "c")];
+            let outcome = within(connection.write(&changes, &StopFlag::new()))
+                .await
+                .unwrap();
+            let WriteOutcome::Written { inserted, .. } = outcome else {
+                panic!("the save wrote: {outcome:?}");
+            };
+            assert_eq!(inserted, [None]);
+            assert_eq!(
+                row_of(&connection, "chapters_carried", 3).await.1,
+                [Value::Int(3), text("c"), text("z")]
+            );
+        },
+    )
+    .await;
+}
+
 /// A BEFORE trigger can take a new row for itself, to store it elsewhere or
 /// nowhere: the statement goes through and returns no row. That is no
 /// failure of the save, and what became of the row is not known.

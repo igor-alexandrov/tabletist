@@ -226,6 +226,20 @@ fn triggered(connection: &rusqlite::Connection, object: &ObjectRef) -> Result<bo
         .map_err(map_error)
 }
 
+/// Whether a row of the table follows a change made elsewhere: whether one
+/// of the table's foreign keys acts when what it refers to is updated
+/// (`CASCADE`, `SET NULL`, `SET DEFAULT`). The table can refer to itself.
+fn follows_updates(connection: &rusqlite::Connection, object: &ObjectRef) -> Result<bool> {
+    connection
+        .query_row(
+            "SELECT EXISTS (SELECT 1 FROM pragma_foreign_key_list(?1, ?2) \
+                            WHERE upper(on_update) NOT IN ('NO ACTION', 'RESTRICT'))",
+            [&object.name, &object.schema],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(map_error)
+}
+
 /// The steps of a save inside its transaction: read and compare every row,
 /// update every row, read every row back. `stop` is asked before each
 /// statement, and a save it ends is undone like every other end but
@@ -352,7 +366,13 @@ fn apply(
     // nothing ran after it: a trigger can change the row, and no read finds
     // it again for sure, since a trigger can move its key too. With one on
     // the table the new rows are written and handed back as not known.
-    let known = returned.is_empty() || !triggered(connection, &changes.object)?;
+    //
+    // A foreign key of the table whose ON UPDATE acts does the same without
+    // a trigger: a row changed after the inserts can carry a new row with
+    // it. Only a save that changes rows has such an update.
+    let known = returned.is_empty()
+        || !(triggered(connection, &changes.object)?
+            || (!updates.is_empty() && follows_updates(connection, &changes.object)?));
     let inserted = returned
         .into_iter()
         .map(|row| row.filter(|_| known))

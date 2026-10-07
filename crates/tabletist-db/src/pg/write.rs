@@ -273,13 +273,26 @@ async fn apply(
                 // An ordinary table: a row written through a partitioned
                 // one goes to a partition, with triggers of its own. The
                 // triggers PostgreSQL keeps for a foreign key only check.
+                //
+                // A foreign key of the table whose ON UPDATE acts (anything
+                // but `a`, no action, and `r`, restrict) does a trigger's
+                // work without one: a row changed after the inserts can
+                // carry a new row with it. Only a save that changes rows
+                // has such an update.
                 "SELECT c.relkind = 'r' AND NOT c.relhasrules \
                         AND NOT EXISTS (SELECT 1 FROM pg_trigger t \
                                         WHERE t.tgrelid = c.oid AND NOT t.tgisinternal) \
+                        AND ($3 OR NOT EXISTS (SELECT 1 FROM pg_constraint k \
+                                               WHERE k.conrelid = c.oid AND k.contype = 'f' \
+                                                 AND k.confupdtype NOT IN ('a', 'r'))) \
                  FROM pg_class c \
                  JOIN pg_namespace n ON n.oid = c.relnamespace \
                  WHERE n.nspname = $1 AND c.relname = $2",
-                &[&changes.object.schema, &changes.object.name],
+                &[
+                    &changes.object.schema,
+                    &changes.object.name,
+                    &changes.rows.is_empty(),
+                ],
             )
             .await
             .map_err(query_error)?
