@@ -293,6 +293,10 @@ impl Connection {
     /// that read the same row, however each spells its key, are an error:
     /// the database decides which row a key finds.
     ///
+    /// The set's new rows are written first, each by one `INSERT`, then
+    /// its changed rows. A new row comes back as the database stored it,
+    /// or as `None` where MySQL cannot find it again.
+    ///
     /// On a read-only connection it is refused before the set is even
     /// looked at. The future must be awaited to its end and never dropped:
     /// a save dropped mid-way would leave its transaction open on the

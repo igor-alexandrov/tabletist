@@ -1989,6 +1989,8 @@ and after the loop that reads the changed rows back, in place of `Ok(Applied::Ro
 
 Add what the new code names to the file's imports: `named_twice` from `crate::write` (`Stored` came in task 2, `from_row` is there), and `ColumnClass`, `InsertValue`, `NewValue`, `RowInsert`, `column_class` from `crate`.
 
+As built: `hold`'s statement is made in `save` with the others, before anything is sent, and `apply` takes the save's statements as one value (`Written { statements, inserts, hold }`) in place of three arguments. The code blocks above show the first shape; the tree has the second.
+
 Extend the comment over the second `transactional` call in `apply` with one sentence: "A save of new rows alone has no such read, and takes the table with one that reads no row (`hold`)."
 
 - [ ] **Step 4: Run the tests.**

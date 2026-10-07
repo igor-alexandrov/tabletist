@@ -1,11 +1,11 @@
 # Inserting rows
 
-Date: 2026-10-07. Status: planned in runs. Run 1 (a save carries new rows,
-and the three drivers write them) is
-`docs/superpowers/plans/2026-10-07-inserting-rows-1-save.md`, whose "The
-runs" lists the others (add a row in the grid, duplicate, paste, errors and
-after the save) and whose "What the design asks, and what gets built" says
-what of the text below the app can do today, and what waits for which run.
+Date: 2026-10-07. Status: built in runs, listed in
+`docs/superpowers/plans/2026-10-07-inserting-rows-1-save.md`. Run 1 is
+built: a save carries new rows and the three drivers write them. Nothing in
+the app adds a row yet; that is run 2. The plan's "What the design asks, and
+what gets built" says what of the text below the app can do, and in which
+run.
 
 This is slice 5 of `2026-10-03-value-editing-core-design.md` ("Rows: add,
 duplicate, delete"), without delete. The text below is the user's spec as
