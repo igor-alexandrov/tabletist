@@ -2288,6 +2288,64 @@ async fn a_new_row_comes_back_as_a_trigger_left_it() {
     assert_eq!(written("cover_moved", one("code", "a")).await, [None]);
 }
 
+/// A key whose name is not UTF-8 cannot be spelled in a read: the new row
+/// is written, and handed back as not known.
+#[tokio::test]
+async fn a_new_row_whose_keys_name_is_not_utf8_is_written_and_not_read_again() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("latin1-codes.db");
+    rusqlite::Connection::open(&path)
+        .unwrap()
+        .execute_batch(
+            r#"CREATE TABLE codes ("caf~" TEXT PRIMARY KEY DEFAULT 'k', note TEXT)
+                   WITHOUT ROWID;"#,
+        )
+        .unwrap();
+    // SQL text is a `str` here: the byte is put in afterwards, as
+    // `latin1_names` does.
+    let mut bytes = std::fs::read(&path).unwrap();
+    let mut replaced = 0;
+    for start in 0..bytes.len() - 3 {
+        if &bytes[start..start + 4] == b"caf~" {
+            bytes[start + 3] = 0xE9;
+            replaced += 1;
+        }
+    }
+    assert!(replaced >= 1, "{replaced} names were replaced");
+    std::fs::write(&path, bytes).unwrap();
+    let connection = Connection::connect_with(
+        &ConnectSpec::sqlite(&path),
+        &Secrets::default(),
+        &HostKeys::default(),
+        Access::Writable,
+    )
+    .await
+    .unwrap();
+    let note = RowInsert {
+        set: vec![InsertValue {
+            column: "note".into(),
+            type_name: "TEXT".into(),
+            new: to("first"),
+        }],
+    };
+    let outcome = connection
+        .write(&adding("codes", vec![note], Vec::new()), &StopFlag::new())
+        .await
+        .unwrap();
+    let WriteOutcome::Written { inserted, .. } = outcome else {
+        panic!("the save wrote");
+    };
+    assert_eq!(inserted, [None]);
+    let page = connection
+        .fetch_rows(&RowQuery::new(ObjectRef::new("main", "codes"), 50))
+        .await
+        .unwrap();
+    assert_eq!(
+        page.rows,
+        [vec![Value::Text("k".into()), Value::Text("first".into())]]
+    );
+}
+
 #[tokio::test]
 async fn a_value_sqlite_would_store_as_text_is_refused_before_anything_is_sent() {
     let (connection, dir) = fixture_as(Access::Writable).await;

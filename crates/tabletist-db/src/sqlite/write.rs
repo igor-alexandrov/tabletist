@@ -212,7 +212,8 @@ fn ambiguous<'a>(change: &'a RowChange, columns: &[String]) -> Option<&'a str> {
 enum FoundBy {
     /// The rowid the insert gave it.
     Rowid,
-    /// The primary key's columns, of a table WITHOUT ROWID.
+    /// The primary key's columns, of a table WITHOUT ROWID. None of them
+    /// when the key cannot be named in SQL.
     Key(Vec<String>),
 }
 
@@ -230,8 +231,9 @@ impl FoundBy {
         if !without_rowid {
             return Ok(Self::Rowid);
         }
-        let key = super::key_names(connection, object)?;
-        Ok(Self::Key(key.into_iter().map(|name| name.text).collect()))
+        // Nothing, when one of the key's names is not UTF-8: no read can
+        // spell that column, and the row is then not looked for.
+        Ok(Self::Key(super::ordering_key(connection, object)?))
     }
 
     /// The read that finds the row an insert `returned`, with these
