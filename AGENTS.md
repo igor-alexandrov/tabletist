@@ -136,7 +136,7 @@ other way round.
 
 1. Bump `version` in `Cargo.toml`, run `cargo update -p tabletist`, commit,
    and get the commit onto `main`.
-2. On that commit: `git tag -s v0.2.0 -m v0.2.0 && git push origin v0.2.0`.
+2. On that commit: `git tag -s v0.2.1 -m v0.2.1 && git push origin v0.2.1`.
 3. `release.yml` builds Linux (x86_64, aarch64 `.tar.gz`), Windows (x64,
    arm64 `.zip` and `-setup.exe`) and macOS (universal `.dmg`), publishes a
    GitHub release with `checksums.txt`, then updates the AUR. A tag with a
