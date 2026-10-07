@@ -295,8 +295,10 @@ impl Connection {
     ///
     /// The set's new rows are written first, each by one `INSERT`, then
     /// its changed rows. A new row comes back as the database stored it,
-    /// or as `None` where that is not known for sure: on a table with a
-    /// trigger, and where MySQL cannot find the row again.
+    /// or as `None` where that is not known for sure, which is more often
+    /// than on a table with a trigger: [`WriteOutcome::Written`] lists
+    /// every case. A caller reads the table again for such a row, and
+    /// takes no new row for known because its table has no trigger.
     ///
     /// On a read-only connection it is refused before the set is even
     /// looked at. The future must be awaited to its end and never dropped:
