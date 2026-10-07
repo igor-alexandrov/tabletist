@@ -9198,6 +9198,33 @@ mod tests {
     }
 
     #[test]
+    fn the_header_marks_the_tables_estimate_as_one() {
+        let mut harness = Harness::new();
+        let tab = harness.connect_fake();
+        harness.app.apply(crate::model::Action::OpenObject {
+            tab,
+            object: tabletist_db::ObjectRef::new("main", "users"),
+            kind: tabletist_db::ObjectKind::Table,
+            pin: true,
+        });
+        harness.answer_rows(crate::testing::page(3, true));
+        let id = harness.app.workspace(tab).unwrap().active_tab.unwrap();
+        let workspace = harness.app.workspace_mut(tab).unwrap();
+        workspace.object_tab_mut(id).unwrap().estimated_rows = Some(1_200);
+        let tree = harness.settle();
+        let labels = crate::testing::labels(&tree);
+        let said = |start: &str| labels.iter().any(|label| label.starts_with(start));
+        assert!(said("~1,200 rows · "), "{labels:?}");
+        // Counted, it is no estimate.
+        let workspace = harness.app.workspace_mut(tab).unwrap();
+        workspace.object_tab_mut(id).unwrap().count.value = Some(1_204);
+        let tree = harness.settle();
+        let labels = crate::testing::labels(&tree);
+        let said = |start: &str| labels.iter().any(|label| label.starts_with(start));
+        assert!(said("1,204 rows · "), "{labels:?}");
+    }
+
+    #[test]
     fn the_tree_scrolls_to_the_keyboard_cursor() {
         let (mut harness, tab) = tree_harness();
         let names: Vec<String> = (0..200).map(|i| format!("t_{i:03}")).collect();
