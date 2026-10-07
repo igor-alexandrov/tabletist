@@ -6,10 +6,10 @@ use std::time::Instant;
 use rusqlite::types::ValueRef;
 
 use super::{end_transaction, from_sqlite, map_error};
-use crate::dialect::RowUpdate;
+use crate::dialect::{InsertStatement, RowUpdate};
 use crate::write::{
-    Applied, Stored, changed_since_loaded, conflicts_of, more_than_one, not_read_back, not_stopped,
-    same_row_twice, spelled_otherwise,
+    Applied, Stored, changed_since_loaded, conflicts_of, more_than_one, named_twice, not_read_back,
+    not_stopped, same_row_twice, spelled_otherwise,
 };
 use crate::{ChangeSet, Dialect, Error, Result, RowChange, Sql, StopFlag, Value, WriteOutcome};
 
@@ -19,12 +19,6 @@ pub(super) fn write(
     journal_mode: &str,
     stop: &StopFlag,
 ) -> Result<WriteOutcome> {
-    // Until this engine's save runs them (tasks 4 to 6 of the plan).
-    if !changes.inserts.is_empty() {
-        return Err(Error::Unsupported(
-            "adding rows is not built for this engine yet",
-        ));
-    }
     // Every statement is built first: a key that may not be the row's, or
     // a value that cannot be sent, fails the save before the file is even
     // asked for. The builder refuses both.
@@ -36,11 +30,23 @@ pub(super) fn write(
             Err(error) => return Ok(WriteOutcome::Failed { row, error }),
         }
     }
+    let mut inserts = Vec::with_capacity(changes.inserts.len());
+    for (insert, row) in changes.inserts.iter().enumerate() {
+        // SQLite takes a name in other ASCII letters for the column too.
+        let built = match named_twice(row, |a, b| a.eq_ignore_ascii_case(b)) {
+            Some(name) => Err(Error::query(format!("{name} is set twice in one new row"))),
+            None => Dialect::Sqlite.insert_row(&changes.object, row),
+        };
+        match built {
+            Ok(built) => inserts.push(built),
+            Err(error) => return Ok(WriteOutcome::FailedInsert { insert, error }),
+        }
+    }
     // Stopped before it began: the session is not touched.
     not_stopped(stop)?;
     let started = Instant::now();
     let applied = begin(connection, journal_mode, stop)
-        .and_then(|()| apply(connection, changes, &updates, stop));
+        .and_then(|()| apply(connection, changes, &inserts, &updates, stop));
     // Before the COMMIT is the last moment a stop is heard. Once it runs
     // the save is written, whatever arrives after it.
     let committed = match &applied {
@@ -205,6 +211,7 @@ fn ambiguous<'a>(change: &'a RowChange, columns: &[String]) -> Option<&'a str> {
 fn apply(
     connection: &rusqlite::Connection,
     changes: &ChangeSet,
+    inserts: &[InsertStatement],
     updates: &[RowUpdate],
     stop: &StopFlag,
 ) -> Result<Applied> {
@@ -266,6 +273,26 @@ fn apply(
     if !conflicts.is_empty() {
         return Ok(Applied::Conflicts(conflicts_of(conflicts, rows_read)));
     }
+    // The new rows, before any row is changed: the order a review shows
+    // them in. `RETURNING *` gives each as the table now holds it.
+    let mut inserted = Vec::with_capacity(inserts.len());
+    for (insert, statement) in inserts.iter().enumerate() {
+        not_stopped(stop)?;
+        let mut made = match read(connection, &statement.sql) {
+            Ok((_, made)) => made,
+            // A cancel or a lost session ends the save; anything else is
+            // the statement's own failure.
+            Err(error @ (Error::Cancelled | Error::ConnectionLost(_))) => return Err(error),
+            Err(error) => return Ok(Applied::FailedInsert { insert, error }),
+        };
+        // One statement makes one row. A trigger that ran in its place can
+        // have made none, and then what was stored is not known.
+        let row = made
+            .pop()
+            .filter(|_| made.is_empty())
+            .ok_or_else(not_read_back)?;
+        inserted.push(Some(row.values));
+    }
     for (row, update) in updates.iter().enumerate() {
         not_stopped(stop)?;
         let params = rusqlite::params_from_iter(update.sql.params.iter().map(exact));
@@ -301,8 +328,5 @@ fn apply(
         }
         rows.push(found.pop().ok_or_else(not_read_back)?.values);
     }
-    Ok(Applied::Rows(Stored {
-        inserted: Vec::new(),
-        rows,
-    }))
+    Ok(Applied::Rows(Stored { inserted, rows }))
 }

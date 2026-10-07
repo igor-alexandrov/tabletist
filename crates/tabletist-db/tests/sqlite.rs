@@ -7,8 +7,9 @@ use std::time::Duration;
 
 use tabletist_db::{
     Access, CellChange, ChangeSet, Conflict, ConnectSpec, Connection, Dialect, Driver, Error,
-    Filter, FilterOp, HostKeys, NewValue, ObjectRef, RowChange, RowQuery, ScriptEnd, ScriptMode,
-    Secrets, Sort, SortDir, StatementOutcome, StopFlag, Value, ValueKind, WriteOutcome,
+    Filter, FilterOp, HostKeys, InsertValue, NewValue, ObjectRef, RowChange, RowInsert, RowQuery,
+    ScriptEnd, ScriptMode, Secrets, Sort, SortDir, StatementOutcome, StopFlag, Value, ValueKind,
+    WriteOutcome,
 };
 
 async fn fixture_as(access: Access) -> (Connection, tempfile::TempDir) {
@@ -2063,6 +2064,172 @@ async fn a_statement_that_fails_undoes_the_rows_before_it() {
     );
     assert_eq!(user(&connection, 1).await.1, first);
     assert_eq!(query_only(&connection).await, Value::Int(1));
+}
+
+/// A new row of `users`: each (column, declared type, new value).
+fn new_user(cells: &[(&str, &str, NewValue)]) -> RowInsert {
+    RowInsert {
+        set: cells
+            .iter()
+            .map(|(column, type_name, new)| InsertValue {
+                column: (*column).into(),
+                type_name: (*type_name).into(),
+                new: new.clone(),
+            })
+            .collect(),
+    }
+}
+
+fn adding(table: &str, inserts: Vec<RowInsert>, rows: Vec<RowChange>) -> ChangeSet {
+    ChangeSet {
+        object: ObjectRef::new("main", table),
+        inserts,
+        rows,
+    }
+}
+
+#[tokio::test]
+async fn a_new_row_comes_back_as_the_database_stored_it() {
+    let (connection, _dir) = fixture_as(Access::Writable).await;
+    let changes = adding(
+        "users",
+        vec![new_user(&[("email", "TEXT", to("new@example.com"))])],
+        Vec::new(),
+    );
+    let WriteOutcome::Written { inserted, rows, .. } =
+        connection.write(&changes, &StopFlag::new()).await.unwrap()
+    else {
+        panic!("the save wrote");
+    };
+    assert!(rows.is_empty());
+    // The fixture's users are 1 to 5: the rowid's alias gives the next.
+    let (columns, stored) = user(&connection, 6).await;
+    assert_eq!(inserted, [Some(stored.clone())]);
+    let at = |name: &str| &stored[columns.iter().position(|column| column == name).unwrap()];
+    assert_eq!(*at("id"), Value::Int(6));
+    assert_eq!(*at("email"), Value::Text("new@example.com".into()));
+    // What was not set is the column's default, or NULL.
+    assert_eq!(*at("created_at"), Value::Text("2026-01-01 00:00:00".into()));
+    assert_eq!(*at("name"), Value::Null);
+}
+
+#[tokio::test]
+async fn new_rows_and_changed_rows_are_one_save() {
+    let (connection, _dir) = fixture_as(Access::Writable).await;
+    let mut changes = rename(1, "Ada Lovelace", "Grace");
+    changes.inserts = vec![new_user(&[
+        ("email", "TEXT", to("new@example.com")),
+        ("active", "BOOLEAN", to("false")),
+    ])];
+    let WriteOutcome::Written { inserted, rows, .. } =
+        connection.write(&changes, &StopFlag::new()).await.unwrap()
+    else {
+        panic!("the save wrote");
+    };
+    assert_eq!(inserted, [Some(user(&connection, 6).await.1)]);
+    assert_eq!(rows, [user(&connection, 1).await.1]);
+}
+
+#[tokio::test]
+async fn a_new_row_that_fails_undoes_the_rows_before_it() {
+    let (connection, _dir) = fixture_as(Access::Writable).await;
+    let before = connection.fetch_rows(&users(10)).await.unwrap().rows;
+    let mut changes = rename(1, "Ada Lovelace", "Grace");
+    changes.inserts = vec![
+        new_user(&[("email", "TEXT", to("new@example.com"))]),
+        // UNIQUE: Ada has it.
+        new_user(&[("email", "TEXT", to("ada@example.com"))]),
+    ];
+    let outcome = connection.write(&changes, &StopFlag::new()).await.unwrap();
+    assert!(
+        matches!(
+            &outcome,
+            // 2067 is SQLITE_CONSTRAINT_UNIQUE.
+            WriteOutcome::FailedInsert { insert: 1, error: Error::Query { code, .. } }
+                if code.as_deref() == Some("2067")
+        ),
+        "{outcome:?}"
+    );
+    // Neither the first new row nor the change is there.
+    assert_eq!(
+        connection.fetch_rows(&users(10)).await.unwrap().rows,
+        before
+    );
+    // And the session refuses writes again, as after any save.
+    assert_eq!(query_only(&connection).await, Value::Int(1));
+}
+
+#[tokio::test]
+async fn a_new_row_that_leaves_a_required_column_out_is_the_databases_error() {
+    let (connection, _dir) = fixture_as(Access::Writable).await;
+    // `email` is NOT NULL and has no default.
+    let outcome = connection
+        .write(
+            &adding("users", vec![new_user(&[])], Vec::new()),
+            &StopFlag::new(),
+        )
+        .await
+        .unwrap();
+    assert!(
+        matches!(
+            &outcome,
+            // 1299 is SQLITE_CONSTRAINT_NOTNULL.
+            WriteOutcome::FailedInsert { insert: 0, error: Error::Query { code, .. } }
+                if code.as_deref() == Some("1299")
+        ),
+        "{outcome:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_table_without_a_key_takes_a_new_row() {
+    let (connection, dir) = fixture_as(Access::Writable).await;
+    other_program(&dir)
+        .execute_batch(
+            "CREATE TABLE cover_notes (line TEXT, kind TEXT DEFAULT 'print');
+             CREATE TABLE cover_stamps (at TEXT DEFAULT 'never')",
+        )
+        .unwrap();
+    let note = RowInsert {
+        set: vec![InsertValue {
+            column: "line".into(),
+            type_name: "TEXT".into(),
+            new: to("first"),
+        }],
+    };
+    let outcome = connection
+        .write(
+            &adding("cover_notes", vec![note], Vec::new()),
+            &StopFlag::new(),
+        )
+        .await
+        .unwrap();
+    let WriteOutcome::Written { inserted, .. } = outcome else {
+        panic!("the save wrote");
+    };
+    assert_eq!(
+        inserted,
+        [Some(vec![
+            Value::Text("first".into()),
+            Value::Text("print".into())
+        ])]
+    );
+    // Nothing set at all: DEFAULT VALUES.
+    let outcome = connection
+        .write(
+            &adding(
+                "cover_stamps",
+                vec![RowInsert { set: Vec::new() }],
+                Vec::new(),
+            ),
+            &StopFlag::new(),
+        )
+        .await
+        .unwrap();
+    let WriteOutcome::Written { inserted, .. } = outcome else {
+        panic!("the save wrote");
+    };
+    assert_eq!(inserted, [Some(vec![Value::Text("never".into())])]);
 }
 
 #[tokio::test]

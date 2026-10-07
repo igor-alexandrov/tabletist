@@ -196,6 +196,7 @@ pub(crate) enum Applied {
     Rows(Stored),
     Conflicts(Vec<Conflict>),
     Failed { row: usize, error: Error },
+    FailedInsert { insert: usize, error: Error },
 }
 
 impl Applied {
@@ -210,6 +211,7 @@ impl Applied {
             },
             Self::Conflicts(conflicts) => WriteOutcome::Conflicts(conflicts),
             Self::Failed { row, error } => WriteOutcome::Failed { row, error },
+            Self::FailedInsert { insert, error } => WriteOutcome::FailedInsert { insert, error },
         }
     }
 }
@@ -259,6 +261,19 @@ pub(crate) fn spelled_otherwise<'a>(change: &'a RowChange, columns: &[String]) -
         .map(|(name, _)| name.as_str())
         .chain(change.set.iter().map(|cell| cell.column.as_str()))
         .find(|name| !columns.iter().any(|column| column == name))
+}
+
+/// A column `insert` names a second time, as an engine that matches names
+/// without regard to case reads them: `same` is how it compares two.
+/// `ChangeSet::check` compares names exactly, and lets `kind` beside `KIND`
+/// through: MySQL and SQLite would take both for one column.
+pub(crate) fn named_twice(insert: &RowInsert, same: impl Fn(&str, &str) -> bool) -> Option<&str> {
+    insert.set.iter().enumerate().find_map(|(index, cell)| {
+        insert.set[..index]
+            .iter()
+            .any(|earlier| same(&earlier.column, &cell.column))
+            .then_some(cell.column.as_str())
+    })
 }
 
 /// Whether two keys find the same row: the same columns, each with the
@@ -398,6 +413,32 @@ mod tests {
             type_name: "text".into(),
             new: NewValue::Text("typed".into()),
         }
+    }
+
+    #[test]
+    fn a_name_in_other_letters_is_the_same_column_where_the_engine_says_so() {
+        let row = RowInsert {
+            set: vec![
+                value("kind"),
+                value("title"),
+                value("KIND"),
+                value("É"),
+                value("é"),
+            ],
+        };
+        // SQLite folds ASCII letters only; MySQL folds every letter.
+        let ascii = |a: &str, b: &str| a.eq_ignore_ascii_case(b);
+        let every = |a: &str, b: &str| a.to_lowercase() == b.to_lowercase();
+        assert_eq!(named_twice(&row, ascii), Some("KIND"));
+        let accents = RowInsert {
+            set: vec![value("É"), value("é")],
+        };
+        assert_eq!(named_twice(&accents, ascii), None);
+        assert_eq!(named_twice(&accents, every), Some("é"));
+        let one = RowInsert {
+            set: vec![value("kind")],
+        };
+        assert_eq!(named_twice(&one, every), None);
     }
 
     #[test]
