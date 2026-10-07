@@ -53,6 +53,11 @@ pub struct ColumnInfo {
     /// for it: a generated column, or an identity column that is always
     /// generated.
     pub generated: bool,
+    /// Whether the database gives the column its value from a counter of
+    /// its own when an insert names none: an identity column (always or by
+    /// default), a serial, MySQL's `AUTO_INCREMENT`, SQLite's alias of the
+    /// rowid. Its default, where it has one, says nothing to a user.
+    pub identity: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]

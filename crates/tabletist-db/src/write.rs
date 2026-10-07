@@ -9,6 +9,8 @@ use crate::{Error, ObjectRef, Result, StopFlag, Value};
 #[derive(Clone, PartialEq)]
 pub struct ChangeSet {
     pub object: ObjectRef,
+    /// The new rows. They are written before `rows` are changed.
+    pub inserts: Vec<RowInsert>,
     pub rows: Vec<RowChange>,
 }
 
@@ -20,10 +22,28 @@ impl std::fmt::Debug for ChangeSet {
         let cells: usize = self.rows.iter().map(|row| row.set.len()).sum();
         f.debug_struct("ChangeSet")
             .field("object", &self.object)
+            .field("inserts", &self.inserts.len())
             .field("rows", &self.rows.len())
             .field("cells", &cells)
             .finish_non_exhaustive()
     }
+}
+
+/// A new row: the columns that were given a value. Every other column is
+/// left to the database, its default or its counter.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RowInsert {
+    pub set: Vec<InsertValue>,
+}
+
+/// One value of a new row.
+#[derive(Debug, Clone, PartialEq)]
+pub struct InsertValue {
+    pub column: String,
+    /// The structure's type name (`ColumnInfo::type_name`), which decides
+    /// how `new` is sent.
+    pub type_name: String,
+    pub new: NewValue,
 }
 
 /// The changes to one row.
@@ -58,8 +78,26 @@ pub enum NewValue {
 /// How a save ended. Only `Written` changed anything.
 #[derive(Debug, Clone, PartialEq)]
 pub enum WriteOutcome {
-    /// Each row as the database now holds it, in the set's order.
     Written {
+        /// Each new row as the database holds it, in the order of the
+        /// set's `inserts`. `None` where that is not known for sure,
+        /// though the row's `INSERT` went through:
+        ///
+        /// - on a table with a trigger (on PostgreSQL also a rule, or a
+        ///   table that is not an ordinary one), which can change the row
+        ///   after its `INSERT`, move its key, or take the row for itself
+        ///   and store it elsewhere or nowhere;
+        /// - on PostgreSQL and SQLite, in a save that also changes rows,
+        ///   on a table one of whose foreign keys acts on an update: a
+        ///   changed row can carry a new one with it;
+        /// - on MySQL, which hands no row back, where the primary key
+        ///   does not find the row again, or the server would not list
+        ///   the table's triggers to this user.
+        ///
+        /// The caller reads the table again.
+        inserted: Vec<Option<Vec<Value>>>,
+        /// Each changed row as the database now holds it, in the set's
+        /// order.
         rows: Vec<Vec<Value>>,
         elapsed: Duration,
     },
@@ -69,6 +107,9 @@ pub enum WriteOutcome {
     /// The statement of `rows[row]` could not be built or failed. Nothing
     /// was written.
     Failed { row: usize, error: Error },
+    /// The statement of `inserts[insert]` could not be built or failed.
+    /// Nothing was written.
+    FailedInsert { insert: usize, error: Error },
 }
 
 /// A row a save found changed since it was loaded.
@@ -84,8 +125,21 @@ impl ChangeSet {
     /// Refuses a set that cannot be written as it stands, before anything
     /// is sent: a statement without a key would touch every row.
     pub fn check(&self) -> Result<()> {
-        if self.rows.is_empty() {
+        if self.rows.is_empty() && self.inserts.is_empty() {
             return Err(Error::query("there is nothing to save"));
+        }
+        for insert in &self.inserts {
+            if let Some(cell) = insert.set.iter().enumerate().find_map(|(index, cell)| {
+                insert.set[..index]
+                    .iter()
+                    .any(|earlier| earlier.column == cell.column)
+                    .then_some(cell)
+            }) {
+                return Err(Error::query(format!(
+                    "{} is set twice in one new row",
+                    cell.column
+                )));
+            }
         }
         for (index, row) in self.rows.iter().enumerate() {
             // The same row twice: both changes would be compared with the
@@ -141,13 +195,20 @@ impl ChangeSet {
     }
 }
 
+/// What a save wrote, before its transaction ends.
+pub(crate) struct Stored {
+    pub(crate) inserted: Vec<Option<Vec<Value>>>,
+    pub(crate) rows: Vec<Vec<Value>>,
+}
+
 /// What the statements of a save came to, before its transaction ends.
 /// Each driver ends its own: committed for `Rows`, rolled back for the
 /// others.
 pub(crate) enum Applied {
-    Rows(Vec<Vec<Value>>),
+    Rows(Stored),
     Conflicts(Vec<Conflict>),
     Failed { row: usize, error: Error },
+    FailedInsert { insert: usize, error: Error },
 }
 
 impl Applied {
@@ -155,12 +216,14 @@ impl Applied {
     /// has ended.
     pub(crate) fn outcome(self, started: Instant) -> WriteOutcome {
         match self {
-            Self::Rows(rows) => WriteOutcome::Written {
+            Self::Rows(Stored { inserted, rows }) => WriteOutcome::Written {
+                inserted,
                 rows,
                 elapsed: started.elapsed(),
             },
             Self::Conflicts(conflicts) => WriteOutcome::Conflicts(conflicts),
             Self::Failed { row, error } => WriteOutcome::Failed { row, error },
+            Self::FailedInsert { insert, error } => WriteOutcome::FailedInsert { insert, error },
         }
     }
 }
@@ -210,6 +273,19 @@ pub(crate) fn spelled_otherwise<'a>(change: &'a RowChange, columns: &[String]) -
         .map(|(name, _)| name.as_str())
         .chain(change.set.iter().map(|cell| cell.column.as_str()))
         .find(|name| !columns.iter().any(|column| column == name))
+}
+
+/// A column `insert` names a second time, as an engine that matches names
+/// without regard to case reads them: `same` is how it compares two.
+/// `ChangeSet::check` compares names exactly, and lets `kind` beside `KIND`
+/// through: MySQL and SQLite would take both for one column.
+pub(crate) fn named_twice(insert: &RowInsert, same: impl Fn(&str, &str) -> bool) -> Option<&str> {
+    insert.set.iter().enumerate().find_map(|(index, cell)| {
+        insert.set[..index]
+            .iter()
+            .any(|earlier| same(&earlier.column, &cell.column))
+            .then_some(cell.column.as_str())
+    })
 }
 
 /// Whether two keys find the same row: the same columns, each with the
@@ -338,8 +414,92 @@ mod tests {
     fn set(rows: Vec<RowChange>) -> ChangeSet {
         ChangeSet {
             object: ObjectRef::new("main", "users"),
+            inserts: Vec::new(),
             rows,
         }
+    }
+
+    fn value(column: &str) -> InsertValue {
+        InsertValue {
+            column: column.into(),
+            type_name: "text".into(),
+            new: NewValue::Text("typed".into()),
+        }
+    }
+
+    #[test]
+    fn a_name_in_other_letters_is_the_same_column_where_the_engine_says_so() {
+        let row = RowInsert {
+            set: vec![
+                value("kind"),
+                value("title"),
+                value("KIND"),
+                value("É"),
+                value("é"),
+            ],
+        };
+        // SQLite folds ASCII letters only; MySQL folds every letter.
+        let ascii = |a: &str, b: &str| a.eq_ignore_ascii_case(b);
+        let every = |a: &str, b: &str| a.to_lowercase() == b.to_lowercase();
+        assert_eq!(named_twice(&row, ascii), Some("KIND"));
+        let accents = RowInsert {
+            set: vec![value("É"), value("é")],
+        };
+        assert_eq!(named_twice(&accents, ascii), None);
+        assert_eq!(named_twice(&accents, every), Some("é"));
+        let one = RowInsert {
+            set: vec![value("kind")],
+        };
+        assert_eq!(named_twice(&one, every), None);
+    }
+
+    #[test]
+    fn a_set_of_new_rows_alone_is_a_save() {
+        let changes = ChangeSet {
+            object: ObjectRef::new("public", "book_covers"),
+            inserts: vec![
+                RowInsert {
+                    set: vec![value("kind")],
+                },
+                RowInsert { set: Vec::new() },
+            ],
+            rows: Vec::new(),
+        };
+        assert_eq!(changes.check(), Ok(()));
+        let nothing = ChangeSet {
+            inserts: Vec::new(),
+            ..changes
+        };
+        assert!(nothing.check().is_err());
+    }
+
+    #[test]
+    fn a_new_row_that_sets_a_column_twice_is_refused() {
+        let changes = ChangeSet {
+            object: ObjectRef::new("public", "book_covers"),
+            inserts: vec![RowInsert {
+                set: vec![value("kind"), value("kind")],
+            }],
+            rows: Vec::new(),
+        };
+        assert_eq!(
+            changes.check(),
+            Err(Error::query("kind is set twice in one new row"))
+        );
+    }
+
+    #[test]
+    fn a_set_is_printed_without_its_new_rows_values() {
+        let changes = ChangeSet {
+            object: ObjectRef::new("public", "book_covers"),
+            inserts: vec![RowInsert {
+                set: vec![value("kind")],
+            }],
+            rows: Vec::new(),
+        };
+        let printed = format!("{changes:?}");
+        assert!(printed.contains("inserts: 1"), "{printed}");
+        assert!(!printed.contains("typed"), "{printed}");
     }
 
     /// A set is what a command to save carries at its top, and a command
@@ -369,7 +529,7 @@ mod tests {
         let printed = format!("{changes:?}");
         assert_eq!(
             printed,
-            r#"ChangeSet { object: ObjectRef { schema: "main", name: "users" }, rows: 2, cells: 3, .. }"#
+            r#"ChangeSet { object: ObjectRef { schema: "main", name: "users" }, inserts: 0, rows: 2, cells: 3, .. }"#
         );
         // On several lines too, as a panic prints a value.
         let pretty = format!("{changes:#?}");

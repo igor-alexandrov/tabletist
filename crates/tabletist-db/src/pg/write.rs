@@ -5,11 +5,11 @@ use std::time::Instant;
 
 use tokio_postgres::SimpleQueryMessage;
 
-use super::{Conn, column_metas, query_error, row_values};
-use crate::dialect::RowUpdate;
+use super::{Conn, column, column_metas, query_error, row_values};
+use crate::dialect::{InsertStatement, RowUpdate};
 use crate::script::retry_cancelled;
 use crate::write::{
-    Applied, changed_since_loaded, conflicts_of, more_than_one, not_read_back, not_stopped,
+    Applied, Stored, changed_since_loaded, conflicts_of, more_than_one, not_read_back, not_stopped,
     same_row_twice,
 };
 use crate::{ChangeSet, ColumnMeta, Dialect, Error, Result, StopFlag, Value, WriteOutcome};
@@ -35,13 +35,20 @@ impl Conn {
                 Err(error) => return Ok(WriteOutcome::Failed { row, error }),
             }
         }
+        let mut inserts = Vec::with_capacity(changes.inserts.len());
+        for (insert, row) in changes.inserts.iter().enumerate() {
+            match Dialect::Postgres.insert_row(&changes.object, row) {
+                Ok(built) => inserts.push(built),
+                Err(error) => return Ok(WriteOutcome::FailedInsert { insert, error }),
+            }
+        }
         let client = self.client.lock().await;
         // Stopped before it began: nothing is sent.
         not_stopped(stop)?;
         let started = Instant::now();
         // From here every path ends the transaction, whatever of it began.
         let applied = match begin(&client).await {
-            Ok(()) => apply(&client, changes, &updates, stop).await,
+            Ok(()) => apply(&client, changes, &inserts, &updates, stop).await,
             Err(error) => Err(error),
         };
         // The last moment a stop is heard. Once COMMIT is sent the save is
@@ -131,6 +138,7 @@ async fn rows(
 async fn apply(
     client: &tokio_postgres::Client,
     changes: &ChangeSet,
+    inserts: &[InsertStatement],
     updates: &[RowUpdate],
     stop: &StopFlag,
 ) -> Result<Applied> {
@@ -179,6 +187,35 @@ async fn apply(
     if !conflicts.is_empty() {
         return Ok(Applied::Conflicts(conflicts_of(conflicts, read)));
     }
+    // The new rows, before any row is changed: the order a review shows
+    // them in. `RETURNING *` gives each in the table's column order, the
+    // order `columns` was read in, and as its `INSERT` left it.
+    let mut returned = Vec::with_capacity(inserts.len());
+    for (insert, statement) in inserts.iter().enumerate() {
+        not_stopped(stop)?;
+        let messages = match client
+            .simple_query(&statement.sql.text)
+            .await
+            .map_err(query_error)
+        {
+            Ok(messages) => messages,
+            // A cancel or a lost session ends the save; anything else is
+            // the statement's own failure.
+            Err(error @ (Error::Cancelled | Error::ConnectionLost(_))) => return Err(error),
+            Err(error) => return Ok(Applied::FailedInsert { insert, error }),
+        };
+        let mut made = Vec::new();
+        for message in messages {
+            if let SimpleQueryMessage::Row(row) = message {
+                made.push(row_values(&row, &columns)?);
+            }
+        }
+        // One statement makes one row, but for a trigger or a rule: a
+        // BEFORE trigger can take the row for itself and store it
+        // elsewhere, or nowhere. The statement went through all the same,
+        // and what became of its row is then not known.
+        returned.push(made.pop().filter(|_| made.is_empty()));
+    }
     for (row, update) in updates.iter().enumerate() {
         not_stopped(stop)?;
         let messages = match client
@@ -221,7 +258,56 @@ async fn apply(
         }
         saved.push(found.pop().ok_or_else(not_read_back)?);
     }
-    Ok(Applied::Rows(saved))
+    // What an `INSERT` returned is the row the table holds only where
+    // nothing ran after it: a trigger or a rule can change the row, and no
+    // read finds it again for sure, since a trigger can move its key too.
+    // On such a table the new rows are written and handed back as not
+    // known. Asked now, with the table held by what was written to it:
+    // nobody adds a trigger before the save ends.
+    let known = if returned.is_empty() {
+        true
+    } else {
+        not_stopped(stop)?;
+        client
+            .query_opt(
+                // An ordinary table: a row written through a partitioned
+                // one goes to a partition, with triggers of its own. The
+                // triggers PostgreSQL keeps for a foreign key only check.
+                //
+                // A foreign key of the table whose ON UPDATE acts (anything
+                // but `a`, no action, and `r`, restrict) does a trigger's
+                // work without one: a row changed after the inserts can
+                // carry a new row with it. Only a save that changes rows
+                // has such an update.
+                "SELECT c.relkind = 'r' AND NOT c.relhasrules \
+                        AND NOT EXISTS (SELECT 1 FROM pg_trigger t \
+                                        WHERE t.tgrelid = c.oid AND NOT t.tgisinternal) \
+                        AND ($3 OR NOT EXISTS (SELECT 1 FROM pg_constraint k \
+                                               WHERE k.conrelid = c.oid AND k.contype = 'f' \
+                                                 AND k.confupdtype NOT IN ('a', 'r'))) \
+                 FROM pg_class c \
+                 JOIN pg_namespace n ON n.oid = c.relnamespace \
+                 WHERE n.nspname = $1 AND c.relname = $2",
+                &[
+                    &changes.object.schema,
+                    &changes.object.name,
+                    &changes.rows.is_empty(),
+                ],
+            )
+            .await
+            .map_err(query_error)?
+            .map(|row| column(&row, 0))
+            .transpose()?
+            .unwrap_or(false)
+    };
+    let inserted = returned
+        .into_iter()
+        .map(|row| row.filter(|_| known))
+        .collect();
+    Ok(Applied::Rows(Stored {
+        inserted,
+        rows: saved,
+    }))
 }
 
 #[cfg(test)]
@@ -318,6 +404,7 @@ mod tests {
     fn body(table: &str, id: &str, body: &str) -> ChangeSet {
         ChangeSet {
             object: ObjectRef::new("public", table),
+            inserts: Vec::new(),
             rows: vec![RowChange {
                 key: vec![("id".into(), Value::Text(id.into()))],
                 set: vec![CellChange {
@@ -435,6 +522,7 @@ mod tests {
                 let second = &page.rows[1];
                 let changes = ChangeSet {
                     object: object.clone(),
+                    inserts: Vec::new(),
                     rows: vec![RowChange {
                         key: vec![(key.into(), second[index].clone())],
                         set: vec![CellChange {

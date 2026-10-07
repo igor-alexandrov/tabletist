@@ -975,7 +975,13 @@ impl App {
         // did not send: no row is named for want of it.
         let place = |index: usize| saving.rows.get(index).copied();
         match result {
-            Ok(WriteOutcome::Written { rows, elapsed }) => {
+            // No save of the app carries a new row yet, so nothing comes
+            // back for one.
+            Ok(WriteOutcome::Written {
+                inserted: _,
+                rows,
+                elapsed,
+            }) => {
                 let counts = object.edits.counts();
                 let cells = object
                     .edits
@@ -1054,6 +1060,12 @@ impl App {
             Ok(WriteOutcome::Failed { row, error }) => {
                 object.edits.fail(place(row), error);
                 // The row panel says what stands against a cell.
+                object.fields = None;
+            }
+            Ok(WriteOutcome::FailedInsert { error, .. }) => {
+                // As a save the database refused, until a tab holds new
+                // rows for the failure to be shown on.
+                object.edits.fail(None, error);
                 object.fields = None;
             }
             Err(error) => {

@@ -38,7 +38,9 @@ pub use catalog::{
     ColumnInfo, ForeignKeyInfo, IndexInfo, MAX_LISTED, ObjectInfo, ObjectKind, ObjectRef, Structure,
 };
 pub use class::{ColumnClass, column_class};
-pub use dialect::{Dialect, RowUpdate, Sql, UpdateParts, escape_like, quote_literal};
+pub use dialect::{
+    Dialect, InsertStatement, RowUpdate, Sql, UpdateParts, escape_like, quote_literal,
+};
 pub use error::{Error, Result, SshStage};
 pub use query::{Filter, FilterOp, RowPage, RowQuery, Sort, SortDir};
 pub use script::{
@@ -47,7 +49,9 @@ pub use script::{
 pub use spec::{ConnectSpec, Driver, ParsedUrl, Secrets, SshAuth, SshSpec, TlsMode};
 pub use ssh::HostKeys;
 pub use value::{ColumnMeta, Value, ValueKind, value_from_pg_text};
-pub use write::{CellChange, ChangeSet, Conflict, NewValue, RowChange, WriteOutcome};
+pub use write::{
+    CellChange, ChangeSet, Conflict, InsertValue, NewValue, RowChange, RowInsert, WriteOutcome,
+};
 
 /// Whether a session may write. [`Connection::write`] and a script run in
 /// [`ScriptMode::Write`] are the calls that do, and both are refused on a
@@ -288,6 +292,13 @@ impl Connection {
     /// that differs or is gone makes the whole save a conflict. Two changes
     /// that read the same row, however each spells its key, are an error:
     /// the database decides which row a key finds.
+    ///
+    /// The set's new rows are written first, each by one `INSERT`, then
+    /// its changed rows. A new row comes back as the database stored it,
+    /// or as `None` where that is not known for sure, which is more often
+    /// than on a table with a trigger: [`WriteOutcome::Written`] lists
+    /// every case. A caller reads the table again for such a row, and
+    /// takes no new row for known because its table has no trigger.
     ///
     /// On a read-only connection it is refused before the set is even
     /// looked at. The future must be awaited to its end and never dropped:

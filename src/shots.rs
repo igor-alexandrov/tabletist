@@ -168,6 +168,7 @@ fn structure() -> Structure {
         // `kind` has a CHECK (kind IN ('cover', 'preview')).
         allowed_values: (name == "kind").then(|| vec!["cover".into(), "preview".into()]),
         generated: false,
+        identity: false,
     };
     Structure {
         columns: vec![
@@ -560,6 +561,7 @@ fn edit_saved(harness: &mut Harness) {
     row[KIND] = Value::Text("cover".into());
     row[DELETED_AT] = Value::Text(DELETED.into());
     harness.answer_written(Ok(tabletist_db::WriteOutcome::Written {
+        inserted: Vec::new(),
         rows: vec![row],
         elapsed: Duration::from_millis(14),
     }));
@@ -1864,6 +1866,7 @@ mod mock {
             comment: None,
             allowed_values: None,
             generated: false,
+            identity: false,
         };
         let mut format = column("format", "edition_format", true);
         format.allowed_values = Some(
@@ -1899,6 +1902,7 @@ mod mock {
             comment: None,
             allowed_values: None,
             generated: false,
+            identity: false,
         };
         Structure {
             columns: vec![

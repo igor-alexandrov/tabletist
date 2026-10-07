@@ -12,12 +12,12 @@ use super::{
 };
 use crate::script::retry_cancelled;
 use crate::write::{
-    Applied, changed_since_loaded, conflicts_of, more_than_one, not_read_back, not_stopped,
-    same_row_twice, spelled_otherwise,
+    Applied, Stored, changed_since_loaded, conflicts_of, more_than_one, named_twice, not_read_back,
+    not_stopped, same_row_twice, spelled_otherwise,
 };
 use crate::{
-    ChangeSet, ColumnMeta, Dialect, Error, ObjectRef, Result, RowChange, Sql, StopFlag, Value,
-    WriteOutcome,
+    ChangeSet, ColumnClass, ColumnMeta, Dialect, Error, InsertValue, NewValue, ObjectRef, Result,
+    RowChange, RowInsert, Sql, StopFlag, Value, WriteOutcome, column_class,
 };
 
 /// One row's statements, built before anything is sent.
@@ -56,6 +56,25 @@ impl Conn {
                 Err(error) => return Ok(WriteOutcome::Failed { row, error }),
             }
         }
+        let mut inserts = Vec::with_capacity(changes.inserts.len());
+        for (insert, row) in changes.inserts.iter().enumerate() {
+            match build_insert(&changes.object, row) {
+                Ok(built) => inserts.push(built),
+                Err(error) => return Ok(WriteOutcome::FailedInsert { insert, error }),
+            }
+        }
+        // A save that changes no row reads none, and takes its table with
+        // a read of its own (see `hold`).
+        let hold = if changes.rows.is_empty() {
+            Some(hold(&changes.object)?)
+        } else {
+            None
+        };
+        let written = Written {
+            statements: &statements,
+            inserts: &inserts,
+            hold: hold.as_ref(),
+        };
         let mut conn = self.conn.lock().await;
         // Stopped before it began: nothing is sent.
         not_stopped(stop)?;
@@ -67,7 +86,7 @@ impl Conn {
         // From here every path ends the transaction, whatever of it began:
         // a `begin` whose status check failed has one open too.
         let applied = match begin(&mut conn).await {
-            Ok(()) => apply(&mut conn, changes, &statements, stop).await,
+            Ok(()) => apply(&mut conn, changes, written, stop).await,
             Err(error) => Err(error),
         };
         // The last moment a stop is heard. Once COMMIT is sent the save is
@@ -157,6 +176,283 @@ fn build(object: &ObjectRef, change: &RowChange) -> Result<Statements> {
         }
     }
     Ok(statements)
+}
+
+/// The `INSERT` of one new row, as the driver would send it as it stands
+/// (see [`build`]).
+fn build_insert(object: &ObjectRef, row: &RowInsert) -> Result<Sql> {
+    // MySQL matches a column's name without regard to case.
+    if let Some(name) = named_twice(row, |a, b| a.to_lowercase() == b.to_lowercase()) {
+        return Err(Error::query(format!("{name} is set twice in one new row")));
+    }
+    let sql = Dialect::MySql.insert_row(object, row)?.sql;
+    if driver_parameter(&sql.text).is_err() {
+        return Err(Error::query(
+            "the MySQL driver would read part of a name as a parameter, so the save cannot \
+             be sent",
+        ));
+    }
+    Ok(sql)
+}
+
+/// A read that takes the table and no row of it. A save that changes rows
+/// holds its table from its first locking read on; one of new rows alone
+/// reads nothing before it asks for the table's engine, and without this
+/// someone could still change the engine, or the key, before the first
+/// `INSERT` (see the comment in [`apply`]). A locking read, so it takes no
+/// snapshot either.
+fn hold(object: &ObjectRef) -> Result<Sql> {
+    let sql = Sql {
+        text: format!(
+            "SELECT 1 FROM {} LIMIT 0 FOR UPDATE",
+            Dialect::MySql.qualified(object)
+        ),
+        params: Vec::new(),
+    };
+    if driver_parameter(&sql.text).is_err() {
+        return Err(Error::query(
+            "the MySQL driver would read part of a name as a parameter, so the save cannot \
+             be sent",
+        ));
+    }
+    Ok(sql)
+}
+
+/// The statements of a save, built before anything is sent.
+#[derive(Clone, Copy)]
+struct Written<'a> {
+    /// Of each changed row.
+    statements: &'a [Statements],
+    /// The `INSERT` of each new row.
+    inserts: &'a [Sql],
+    /// What takes the table, for a save that changes no row.
+    hold: Option<&'a Sql>,
+}
+
+/// What finds a row an `INSERT` made: the table's primary key, and the
+/// column its counter fills.
+struct FoundBy {
+    key: Vec<String>,
+    counter: Option<String>,
+    /// A trigger stands on the table, or the server would not say: it
+    /// fires a table's triggers for everyone, and lists them only to who
+    /// has the TRIGGER privilege on it. A row is then not known by the key
+    /// it was sent with: a trigger can give it another, and give that one
+    /// to another row.
+    triggered: bool,
+}
+
+impl FoundBy {
+    /// Asked inside the save's transaction, once its table is held (by the
+    /// locking reads of its changed rows, or by [`hold`]): nobody changes
+    /// the key between this and the rows it is used to read.
+    async fn of(conn: &mut mysql_async::Conn, object: &ObjectRef, stop: &StopFlag) -> Result<Self> {
+        let at = (&object.schema, &object.name, &object.schema, &object.name);
+        not_stopped(stop)?;
+        // The names by their bytes as well, as `transactional` matches
+        // them, and each with a `LIMIT` of its own: a server's default
+        // `sql_select_limit` can be 0.
+        let key: Vec<mysql_async::Row> = conn
+            .exec(
+                "SELECT column_name FROM information_schema.key_column_usage \
+                 WHERE table_schema = ? AND table_name = ? \
+                   AND CAST(table_schema AS BINARY) = CAST(? AS BINARY) \
+                   AND CAST(table_name AS BINARY) = CAST(? AS BINARY) \
+                   AND constraint_name = 'PRIMARY' \
+                 ORDER BY ordinal_position LIMIT 64",
+                at,
+            )
+            .await
+            .map_err(query_error)?;
+        not_stopped(stop)?;
+        let counter: Vec<mysql_async::Row> = conn
+            .exec(
+                "SELECT column_name FROM information_schema.columns \
+                 WHERE table_schema = ? AND table_name = ? \
+                   AND CAST(table_schema AS BINARY) = CAST(? AS BINARY) \
+                   AND CAST(table_name AS BINARY) = CAST(? AS BINARY) \
+                   AND extra LIKE '%auto_increment%' \
+                 LIMIT 1",
+                at,
+            )
+            .await
+            .map_err(query_error)?;
+        not_stopped(stop)?;
+        let triggers: Vec<mysql_async::Row> = conn
+            .exec(
+                "SELECT 1 FROM information_schema.triggers \
+                 WHERE event_object_schema = ? AND event_object_table = ? \
+                   AND CAST(event_object_schema AS BINARY) = CAST(? AS BINARY) \
+                   AND CAST(event_object_table AS BINARY) = CAST(? AS BINARY) \
+                 LIMIT 1",
+                at,
+            )
+            .await
+            .map_err(query_error)?;
+        // No trigger listed proves none only to a user who is shown them.
+        let shown = sees_triggers(conn, object, stop).await?;
+        Ok(Self {
+            key: key.into_iter().map(from_row).collect::<Result<_>>()?,
+            counter: counter.into_iter().next().map(from_row).transpose()?,
+            triggered: !shown || !triggers.is_empty(),
+        })
+    }
+
+    /// The key of the row `insert` made, whose counter gave it `id`: each
+    /// column of the primary key with the counter's value where it is the
+    /// counter's column and the counter gave one (a `0` or a NULL sent for
+    /// it is not what was stored), and otherwise the value sent for it.
+    /// `None` when the row cannot be found again for sure: a trigger
+    /// stands on the table, or could without this user being told, the
+    /// table has no primary key, the database
+    /// filled a key column some other way (a default), or a key column's
+    /// value cannot be matched exactly.
+    fn key(&self, insert: &RowInsert, id: Option<u64>) -> Option<Vec<(String, Value)>> {
+        if self.triggered || self.key.is_empty() {
+            return None;
+        }
+        self.key
+            .iter()
+            .map(|name| {
+                let counted = id.filter(|_| self.counter.as_deref() == Some(name.as_str()));
+                // As MySQL matches a name: without regard to case. The
+                // catalog's spelling is the one the row is then read by.
+                let sent = insert
+                    .set
+                    .iter()
+                    .find(|cell| cell.column.to_lowercase() == name.to_lowercase());
+                let value = match (counted, sent) {
+                    (Some(id), _) => Value::Int(i64::try_from(id).ok()?),
+                    (None, Some(cell)) => sent_key(cell)?,
+                    (None, None) => return None,
+                };
+                Some((name.clone(), value))
+            })
+            .collect()
+    }
+}
+
+/// Whether the server lists the table's triggers to this session's account:
+/// whether it has the TRIGGER privilege on the table, by the server's own
+/// lists of what is granted. Only a grant that is found counts. One that
+/// comes through a role, or names its schema by a pattern, is not looked
+/// for, and the answer is then no: a new row is handed back as not known,
+/// which is always true enough.
+async fn sees_triggers(
+    conn: &mut mysql_async::Conn,
+    object: &ObjectRef,
+    stop: &StopFlag,
+) -> Result<bool> {
+    not_stopped(stop)?;
+    let account: Option<mysql_async::Row> = conn
+        .query_first("SELECT CURRENT_USER()")
+        .await
+        .map_err(query_error)?;
+    let account: Option<String> = account.map(from_row).transpose()?;
+    // The lists name an account as `'user'@'host'`. A host holds no `@`.
+    let Some((user, host)) = account.as_deref().and_then(|name| name.rsplit_once('@')) else {
+        return Ok(false);
+    };
+    let grantee = format!("'{user}'@'{host}'");
+    // A grant on everything holds for this schema only where none of it
+    // can be taken back schema by schema. MariaDB has no such setting, and
+    // answers with no row.
+    not_stopped(stop)?;
+    let partial: Option<mysql_async::Row> = conn
+        .query_first("SHOW VARIABLES LIKE 'partial_revokes'")
+        .await
+        .map_err(query_error)?;
+    let partial: Option<(String, String)> = partial.map(from_row).transpose()?;
+    let whole = !partial.is_some_and(|(_, value)| value.eq_ignore_ascii_case("ON"));
+    not_stopped(stop)?;
+    let granted: Option<mysql_async::Row> = conn
+        .exec_first(
+            "SELECT 1 FROM information_schema.user_privileges \
+             WHERE ? AND privilege_type = 'TRIGGER' AND grantee = ? \
+             UNION ALL \
+             SELECT 1 FROM information_schema.schema_privileges \
+             WHERE privilege_type = 'TRIGGER' AND grantee = ? AND table_schema = ? \
+               AND CAST(table_schema AS BINARY) = CAST(? AS BINARY) \
+             UNION ALL \
+             SELECT 1 FROM information_schema.table_privileges \
+             WHERE privilege_type = 'TRIGGER' AND grantee = ? \
+               AND table_schema = ? AND table_name = ? \
+               AND CAST(table_schema AS BINARY) = CAST(? AS BINARY) \
+               AND CAST(table_name AS BINARY) = CAST(? AS BINARY) \
+             LIMIT 1",
+            (
+                whole,
+                &grantee,
+                &grantee,
+                &object.schema,
+                &object.schema,
+                &grantee,
+                &object.schema,
+                &object.name,
+                &object.schema,
+                &object.name,
+            ),
+        )
+        .await
+        .map_err(query_error)?;
+    Ok(granted.is_some())
+}
+
+/// A value sent for a key column, as what finds its row again. A whole
+/// number goes as a number: bound as text, MySQL would compare it with the
+/// column as two doubles, and past 2^53 find a neighbour. Text goes as
+/// text. Every other class is one whose stored form is not the text that
+/// was sent (a decimal is rounded, a float is not its text, a date is
+/// normalised), and its row is not looked for.
+fn sent_key(cell: &InsertValue) -> Option<Value> {
+    let NewValue::Text(text) = &cell.new else {
+        return None;
+    };
+    if inexact(&cell.type_name).is_some() {
+        return None;
+    }
+    match column_class(Dialect::MySql, &cell.type_name) {
+        ColumnClass::Integer { .. } => text.trim().parse().ok().map(Value::Int),
+        ColumnClass::Text { .. } => Some(Value::Text(text.as_str().into())),
+        ColumnClass::Decimal { .. }
+        | ColumnClass::Float
+        | ColumnClass::Boolean
+        | ColumnClass::Json
+        | ColumnClass::Binary
+        | ColumnClass::Other => None,
+    }
+}
+
+/// Runs one new row's `INSERT`. The inner `Err` is the statement's own
+/// failure: the server's error, or a warning (see [`update`]). The outer is
+/// a cancel, a stop or a lost session. `Ok(Ok(id))` is the value the
+/// table's counter gave the row, when it gave one.
+async fn insert_row(
+    conn: &mut mysql_async::Conn,
+    sql: &Sql,
+    stop: &StopFlag,
+) -> Result<std::result::Result<Option<u64>, Error>> {
+    let statement = match prepare(conn, sql, stop).await {
+        Ok(statement) => statement,
+        Err(error @ (Error::Cancelled | Error::ConnectionLost(_))) => return Err(error),
+        Err(error) => return Ok(Err(error)),
+    };
+    not_stopped(stop)?;
+    if let Err(error) = conn.exec_drop(&statement, params(&sql.params)).await {
+        return match query_error(error) {
+            error @ (Error::Cancelled | Error::ConnectionLost(_)) => Err(error),
+            error => Ok(Err(error)),
+        };
+    }
+    // Read before the warnings are asked for: that is a statement too.
+    let id = conn.last_insert_id().filter(|id| *id > 0);
+    // Outside strict mode a column without a default takes its type's
+    // zero, and a value is cut to fit, with only a warning. What was
+    // stored is then not what was asked for, and the save fails.
+    if conn.get_warnings() > 0 {
+        return warning(conn).await.map(Err);
+    }
+    Ok(Ok(id))
 }
 
 /// Whether the table's engine has transactions. One transaction is the
@@ -370,9 +666,14 @@ async fn warning(conn: &mut mysql_async::Conn) -> Result<Error> {
 async fn apply(
     conn: &mut mysql_async::Conn,
     changes: &ChangeSet,
-    statements: &[Statements],
+    written: Written<'_>,
     stop: &StopFlag,
 ) -> Result<Applied> {
+    let Written {
+        statements,
+        inserts,
+        hold,
+    } = written;
     // Every row is locked and compared before any is changed. The lock is
     // what makes the comparison hold: a change someone has not committed
     // yet is waited for, and then it is their row that is read.
@@ -427,10 +728,32 @@ async fn apply(
     // read before the locking reads would take the snapshot while someone
     // could still change the engine, and `information_schema` would show
     // this read the engine as it was then. So no plain read goes before it.
+    //
+    // A save of new rows alone has no such read, and takes the table with
+    // one that reads no row (`hold`).
+    if let Some(hold) = hold {
+        rows(conn, hold, stop).await?;
+    }
     not_stopped(stop)?;
     transactional(conn, &changes.object).await?;
     if !conflicts.is_empty() {
         return Ok(Applied::Conflicts(conflicts_of(conflicts, read)));
+    }
+    // The new rows, before any row is changed: the order a review shows
+    // them in. What finds each again is noted as it is made, and asked for
+    // only here, after the plain read above took the transaction's
+    // snapshot.
+    let found_by = if inserts.is_empty() {
+        None
+    } else {
+        Some(FoundBy::of(conn, &changes.object, stop).await?)
+    };
+    let mut made = Vec::with_capacity(inserts.len());
+    for (insert, (row, sql)) in changes.inserts.iter().zip(inserts).enumerate() {
+        match insert_row(conn, sql, stop).await? {
+            Ok(id) => made.push(found_by.as_ref().and_then(|by| by.key(row, id))),
+            Err(error) => return Ok(Applied::FailedInsert { insert, error }),
+        }
     }
     for (row, statement) in statements.iter().enumerate() {
         if let Some(error) = update(conn, &statement.update, stop).await? {
@@ -449,7 +772,31 @@ async fn apply(
         }
         saved.push(found.pop().ok_or_else(not_read_back)?);
     }
-    Ok(Applied::Rows(saved))
+    // The new rows last, as they stand once every statement has run.
+    let mut inserted = Vec::with_capacity(made.len());
+    for key in made {
+        let Some(key) = key else {
+            inserted.push(None);
+            continue;
+        };
+        let select = Dialect::MySql.select_row(&changes.object, &key, false);
+        // A name the driver would read as a parameter: not looked for.
+        if driver_parameter(&select.text).is_err() {
+            inserted.push(None);
+            continue;
+        }
+        let (_, mut found) = rows(conn, &select, stop).await?;
+        // More than one row by a primary key is no key at all.
+        if found.len() > 1 {
+            return Err(more_than_one());
+        }
+        // None: the row is not there by its key, and so not known.
+        inserted.push(found.pop());
+    }
+    Ok(Applied::Rows(Stored {
+        inserted,
+        rows: saved,
+    }))
 }
 
 #[cfg(test)]
@@ -671,6 +1018,7 @@ mod tests {
     fn set(table: &str, column: &str, type_name: &str, loaded: Value, new: &str) -> ChangeSet {
         ChangeSet {
             object: ObjectRef::new("tabletist", table),
+            inserts: Vec::new(),
             rows: vec![RowChange {
                 key: vec![("id".into(), Value::Int(1))],
                 set: vec![CellChange {
@@ -1029,6 +1377,7 @@ mod tests {
             assert_eq!(page.rows[1][0], shown);
             let changes = ChangeSet {
                 object,
+                inserts: Vec::new(),
                 rows: vec![RowChange {
                     key: vec![("at".into(), page.rows[1][0].clone())],
                     set: vec![CellChange {

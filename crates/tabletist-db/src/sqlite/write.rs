@@ -6,12 +6,14 @@ use std::time::Instant;
 use rusqlite::types::ValueRef;
 
 use super::{end_transaction, from_sqlite, map_error};
-use crate::dialect::RowUpdate;
+use crate::dialect::{InsertStatement, RowUpdate};
 use crate::write::{
-    Applied, changed_since_loaded, conflicts_of, more_than_one, not_read_back, not_stopped,
-    same_row_twice, spelled_otherwise,
+    Applied, Stored, changed_since_loaded, conflicts_of, more_than_one, named_twice, not_read_back,
+    not_stopped, same_row_twice, spelled_otherwise,
 };
-use crate::{ChangeSet, Dialect, Error, Result, RowChange, Sql, StopFlag, Value, WriteOutcome};
+use crate::{
+    ChangeSet, Dialect, Error, ObjectRef, Result, RowChange, Sql, StopFlag, Value, WriteOutcome,
+};
 
 pub(super) fn write(
     connection: &rusqlite::Connection,
@@ -30,11 +32,23 @@ pub(super) fn write(
             Err(error) => return Ok(WriteOutcome::Failed { row, error }),
         }
     }
+    let mut inserts = Vec::with_capacity(changes.inserts.len());
+    for (insert, row) in changes.inserts.iter().enumerate() {
+        // SQLite takes a name in other ASCII letters for the column too.
+        let built = match named_twice(row, |a, b| a.eq_ignore_ascii_case(b)) {
+            Some(name) => Err(Error::query(format!("{name} is set twice in one new row"))),
+            None => Dialect::Sqlite.insert_row(&changes.object, row),
+        };
+        match built {
+            Ok(built) => inserts.push(built),
+            Err(error) => return Ok(WriteOutcome::FailedInsert { insert, error }),
+        }
+    }
     // Stopped before it began: the session is not touched.
     not_stopped(stop)?;
     let started = Instant::now();
     let applied = begin(connection, journal_mode, stop)
-        .and_then(|()| apply(connection, changes, &updates, stop));
+        .and_then(|()| apply(connection, changes, &inserts, &updates, stop));
     // Before the COMMIT is the last moment a stop is heard. Once it runs
     // the save is written, whatever arrives after it.
     let committed = match &applied {
@@ -192,6 +206,40 @@ fn ambiguous<'a>(change: &'a RowChange, columns: &[String]) -> Option<&'a str> {
         })
 }
 
+/// Whether a trigger stands on the table, in the file or among the
+/// session's own. With one, a row is not known by what its `INSERT`
+/// returned: a trigger can change it after, another row with it, and give
+/// either the other's key.
+fn triggered(connection: &rusqlite::Connection, object: &ObjectRef) -> Result<bool> {
+    // A save is of `main` (see `Conn::write`), and a temporary trigger can
+    // stand on a table of it. SQLite matches the table's name without
+    // regard to ASCII case.
+    connection
+        .query_row(
+            "SELECT EXISTS (SELECT 1 FROM main.sqlite_master \
+                            WHERE type = 'trigger' AND tbl_name = ?1 COLLATE NOCASE) \
+                 OR EXISTS (SELECT 1 FROM temp.sqlite_master \
+                            WHERE type = 'trigger' AND tbl_name = ?1 COLLATE NOCASE)",
+            [&object.name],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(map_error)
+}
+
+/// Whether a row of the table follows a change made elsewhere: whether one
+/// of the table's foreign keys acts when what it refers to is updated
+/// (`CASCADE`, `SET NULL`, `SET DEFAULT`). The table can refer to itself.
+fn follows_updates(connection: &rusqlite::Connection, object: &ObjectRef) -> Result<bool> {
+    connection
+        .query_row(
+            "SELECT EXISTS (SELECT 1 FROM pragma_foreign_key_list(?1, ?2) \
+                            WHERE upper(on_update) NOT IN ('NO ACTION', 'RESTRICT'))",
+            [&object.name, &object.schema],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(map_error)
+}
+
 /// The steps of a save inside its transaction: read and compare every row,
 /// update every row, read every row back. `stop` is asked before each
 /// statement, and a save it ends is undone like every other end but
@@ -199,6 +247,7 @@ fn ambiguous<'a>(change: &'a RowChange, columns: &[String]) -> Option<&'a str> {
 fn apply(
     connection: &rusqlite::Connection,
     changes: &ChangeSet,
+    inserts: &[InsertStatement],
     updates: &[RowUpdate],
     stop: &StopFlag,
 ) -> Result<Applied> {
@@ -260,6 +309,24 @@ fn apply(
     if !conflicts.is_empty() {
         return Ok(Applied::Conflicts(conflicts_of(conflicts, rows_read)));
     }
+    // The new rows, before any row is changed: the order a review shows
+    // them in. `RETURNING *` gives each as its `INSERT` left it.
+    let mut returned = Vec::with_capacity(inserts.len());
+    for (insert, statement) in inserts.iter().enumerate() {
+        not_stopped(stop)?;
+        let mut made = match read(connection, &statement.sql) {
+            Ok((_, made)) => made,
+            // A cancel or a lost session ends the save; anything else is
+            // the statement's own failure.
+            Err(error @ (Error::Cancelled | Error::ConnectionLost(_))) => return Err(error),
+            Err(error) => return Ok(Applied::FailedInsert { insert, error }),
+        };
+        // One statement makes one row, but for a trigger: one that runs
+        // before it can take the row for itself (`RAISE(IGNORE)`) and
+        // store it elsewhere, or nowhere. The statement went through all
+        // the same, and what became of its row is then not known.
+        returned.push(made.pop().filter(|_| made.is_empty()).map(|row| row.values));
+    }
     for (row, update) in updates.iter().enumerate() {
         not_stopped(stop)?;
         let params = rusqlite::params_from_iter(update.sql.params.iter().map(exact));
@@ -295,5 +362,20 @@ fn apply(
         }
         rows.push(found.pop().ok_or_else(not_read_back)?.values);
     }
-    Ok(Applied::Rows(rows))
+    // What an `INSERT` returned is the row the table holds only where
+    // nothing ran after it: a trigger can change the row, and no read finds
+    // it again for sure, since a trigger can move its key too. With one on
+    // the table the new rows are written and handed back as not known.
+    //
+    // A foreign key of the table whose ON UPDATE acts does the same without
+    // a trigger: a row changed after the inserts can carry a new row with
+    // it. Only a save that changes rows has such an update.
+    let known = returned.is_empty()
+        || !(triggered(connection, &changes.object)?
+            || (!updates.is_empty() && follows_updates(connection, &changes.object)?));
+    let inserted = returned
+        .into_iter()
+        .map(|row| row.filter(|_| known))
+        .collect();
+    Ok(Applied::Rows(Stored { inserted, rows }))
 }

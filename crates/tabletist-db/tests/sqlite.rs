@@ -7,8 +7,9 @@ use std::time::Duration;
 
 use tabletist_db::{
     Access, CellChange, ChangeSet, Conflict, ConnectSpec, Connection, Dialect, Driver, Error,
-    Filter, FilterOp, HostKeys, NewValue, ObjectRef, RowChange, RowQuery, ScriptEnd, ScriptMode,
-    Secrets, Sort, SortDir, StatementOutcome, StopFlag, Value, ValueKind, WriteOutcome,
+    Filter, FilterOp, HostKeys, InsertValue, NewValue, ObjectRef, RowChange, RowInsert, RowQuery,
+    ScriptEnd, ScriptMode, Secrets, Sort, SortDir, StatementOutcome, StopFlag, Value, ValueKind,
+    WriteOutcome,
 };
 
 async fn fixture_as(access: Access) -> (Connection, tempfile::TempDir) {
@@ -1747,6 +1748,7 @@ async fn the_fence_stands_over_names_that_are_not_utf8() {
 fn rename(id: i64, loaded: &str, new: &str) -> ChangeSet {
     ChangeSet {
         object: ObjectRef::new("main", "users"),
+        inserts: Vec::new(),
         rows: vec![RowChange {
             key: vec![("id".into(), Value::Int(id))],
             set: vec![CellChange {
@@ -1772,6 +1774,7 @@ async fn a_read_only_connection_refuses_a_save_before_it_reads_it() {
     // Not even looked at: a set that could never be written gets the same.
     let empty = ChangeSet {
         object: ObjectRef::new("main", "users"),
+        inserts: Vec::new(),
         rows: Vec::new(),
     };
     assert_eq!(
@@ -1789,6 +1792,7 @@ async fn a_writable_connection_refuses_a_set_it_cannot_write() {
     let (connection, _dir) = fixture_as(Access::Writable).await;
     let empty = ChangeSet {
         object: ObjectRef::new("main", "users"),
+        inserts: Vec::new(),
         rows: Vec::new(),
     };
     assert!(matches!(
@@ -1837,6 +1841,7 @@ async fn save(
         .collect();
     let changes = ChangeSet {
         object: ObjectRef::new("main", "users"),
+        inserts: Vec::new(),
         rows: vec![RowChange {
             key: vec![("id".into(), Value::Int(id))],
             set,
@@ -1917,6 +1922,7 @@ async fn a_row_changed_by_someone_else_is_a_conflict_and_nothing_is_written() {
     let name = columns.iter().position(|column| column == "name").unwrap();
     let changes = ChangeSet {
         object: ObjectRef::new("main", "users"),
+        inserts: Vec::new(),
         rows: vec![
             RowChange {
                 key: vec![("id".into(), Value::Int(2))],
@@ -1967,6 +1973,7 @@ async fn a_change_to_a_column_the_save_leaves_alone_is_no_conflict() {
     let name = columns.iter().position(|column| column == "name").unwrap();
     let changes = ChangeSet {
         object: ObjectRef::new("main", "users"),
+        inserts: Vec::new(),
         rows: vec![RowChange {
             key: vec![("id".into(), Value::Int(1))],
             set: vec![CellChange {
@@ -1993,6 +2000,7 @@ async fn a_row_that_is_gone_is_a_conflict_without_a_row() {
     let name = columns.iter().position(|column| column == "name").unwrap();
     let changes = ChangeSet {
         object: ObjectRef::new("main", "users"),
+        inserts: Vec::new(),
         rows: vec![RowChange {
             key: vec![("id".into(), Value::Int(5))],
             set: vec![CellChange {
@@ -2026,6 +2034,7 @@ async fn a_statement_that_fails_undoes_the_rows_before_it() {
     let at = |name: &str| columns.iter().position(|column| column == name).unwrap();
     let changes = ChangeSet {
         object: ObjectRef::new("main", "users"),
+        inserts: Vec::new(),
         rows: vec![
             RowChange {
                 key: vec![("id".into(), Value::Int(1))],
@@ -2055,6 +2064,420 @@ async fn a_statement_that_fails_undoes_the_rows_before_it() {
     );
     assert_eq!(user(&connection, 1).await.1, first);
     assert_eq!(query_only(&connection).await, Value::Int(1));
+}
+
+/// A new row of `users`: each (column, declared type, new value).
+fn new_user(cells: &[(&str, &str, NewValue)]) -> RowInsert {
+    RowInsert {
+        set: cells
+            .iter()
+            .map(|(column, type_name, new)| InsertValue {
+                column: (*column).into(),
+                type_name: (*type_name).into(),
+                new: new.clone(),
+            })
+            .collect(),
+    }
+}
+
+fn adding(table: &str, inserts: Vec<RowInsert>, rows: Vec<RowChange>) -> ChangeSet {
+    ChangeSet {
+        object: ObjectRef::new("main", table),
+        inserts,
+        rows,
+    }
+}
+
+#[tokio::test]
+async fn a_new_row_comes_back_as_the_database_stored_it() {
+    let (connection, _dir) = fixture_as(Access::Writable).await;
+    let changes = adding(
+        "users",
+        vec![new_user(&[("email", "TEXT", to("new@example.com"))])],
+        Vec::new(),
+    );
+    let WriteOutcome::Written { inserted, rows, .. } =
+        connection.write(&changes, &StopFlag::new()).await.unwrap()
+    else {
+        panic!("the save wrote");
+    };
+    assert!(rows.is_empty());
+    // The fixture's users are 1 to 5: the rowid's alias gives the next.
+    let (columns, stored) = user(&connection, 6).await;
+    assert_eq!(inserted, [Some(stored.clone())]);
+    let at = |name: &str| &stored[columns.iter().position(|column| column == name).unwrap()];
+    assert_eq!(*at("id"), Value::Int(6));
+    assert_eq!(*at("email"), Value::Text("new@example.com".into()));
+    // What was not set is the column's default, or NULL.
+    assert_eq!(*at("created_at"), Value::Text("2026-01-01 00:00:00".into()));
+    assert_eq!(*at("name"), Value::Null);
+}
+
+#[tokio::test]
+async fn new_rows_and_changed_rows_are_one_save() {
+    let (connection, _dir) = fixture_as(Access::Writable).await;
+    let mut changes = rename(1, "Ada Lovelace", "Grace");
+    changes.inserts = vec![new_user(&[
+        ("email", "TEXT", to("new@example.com")),
+        ("active", "BOOLEAN", to("false")),
+    ])];
+    let WriteOutcome::Written { inserted, rows, .. } =
+        connection.write(&changes, &StopFlag::new()).await.unwrap()
+    else {
+        panic!("the save wrote");
+    };
+    assert_eq!(inserted, [Some(user(&connection, 6).await.1)]);
+    assert_eq!(rows, [user(&connection, 1).await.1]);
+}
+
+#[tokio::test]
+async fn a_new_row_that_fails_undoes_the_rows_before_it() {
+    let (connection, _dir) = fixture_as(Access::Writable).await;
+    let before = connection.fetch_rows(&users(10)).await.unwrap().rows;
+    let mut changes = rename(1, "Ada Lovelace", "Grace");
+    changes.inserts = vec![
+        new_user(&[("email", "TEXT", to("new@example.com"))]),
+        // UNIQUE: Ada has it.
+        new_user(&[("email", "TEXT", to("ada@example.com"))]),
+    ];
+    let outcome = connection.write(&changes, &StopFlag::new()).await.unwrap();
+    assert!(
+        matches!(
+            &outcome,
+            // 2067 is SQLITE_CONSTRAINT_UNIQUE.
+            WriteOutcome::FailedInsert { insert: 1, error: Error::Query { code, .. } }
+                if code.as_deref() == Some("2067")
+        ),
+        "{outcome:?}"
+    );
+    // Neither the first new row nor the change is there.
+    assert_eq!(
+        connection.fetch_rows(&users(10)).await.unwrap().rows,
+        before
+    );
+    // And the session refuses writes again, as after any save.
+    assert_eq!(query_only(&connection).await, Value::Int(1));
+}
+
+#[tokio::test]
+async fn a_new_row_that_leaves_a_required_column_out_is_the_databases_error() {
+    let (connection, _dir) = fixture_as(Access::Writable).await;
+    // `email` is NOT NULL and has no default.
+    let outcome = connection
+        .write(
+            &adding("users", vec![new_user(&[])], Vec::new()),
+            &StopFlag::new(),
+        )
+        .await
+        .unwrap();
+    assert!(
+        matches!(
+            &outcome,
+            // 1299 is SQLITE_CONSTRAINT_NOTNULL.
+            WriteOutcome::FailedInsert { insert: 0, error: Error::Query { code, .. } }
+                if code.as_deref() == Some("1299")
+        ),
+        "{outcome:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_table_without_a_key_takes_a_new_row() {
+    let (connection, dir) = fixture_as(Access::Writable).await;
+    other_program(&dir)
+        .execute_batch(
+            "CREATE TABLE cover_notes (line TEXT, kind TEXT DEFAULT 'print');
+             CREATE TABLE cover_stamps (at TEXT DEFAULT 'never')",
+        )
+        .unwrap();
+    let note = RowInsert {
+        set: vec![InsertValue {
+            column: "line".into(),
+            type_name: "TEXT".into(),
+            new: to("first"),
+        }],
+    };
+    let outcome = connection
+        .write(
+            &adding("cover_notes", vec![note], Vec::new()),
+            &StopFlag::new(),
+        )
+        .await
+        .unwrap();
+    let WriteOutcome::Written { inserted, .. } = outcome else {
+        panic!("the save wrote");
+    };
+    assert_eq!(
+        inserted,
+        [Some(vec![
+            Value::Text("first".into()),
+            Value::Text("print".into())
+        ])]
+    );
+    // Nothing set at all: DEFAULT VALUES.
+    let outcome = connection
+        .write(
+            &adding(
+                "cover_stamps",
+                vec![RowInsert { set: Vec::new() }],
+                Vec::new(),
+            ),
+            &StopFlag::new(),
+        )
+        .await
+        .unwrap();
+    let WriteOutcome::Written { inserted, .. } = outcome else {
+        panic!("the save wrote");
+    };
+    assert_eq!(inserted, [Some(vec![Value::Text("never".into())])]);
+}
+
+/// `RETURNING` gives a row as its `INSERT` left it, before an AFTER trigger
+/// ran, and a trigger can move the row's key, so no read finds it again
+/// for sure. On a table with a trigger a new row is written and handed
+/// back as not known.
+#[tokio::test]
+async fn a_new_row_of_a_table_with_a_trigger_is_written_and_not_known() {
+    let (connection, dir) = fixture_as(Access::Writable).await;
+    other_program(&dir)
+        .execute_batch(
+            "CREATE TABLE cover_log (id INTEGER PRIMARY KEY, line TEXT, seen TEXT);
+             CREATE TRIGGER cover_log_seen AFTER INSERT ON cover_log BEGIN
+                 UPDATE cover_log SET seen = 'yes' WHERE id = NEW.id;
+             END;
+             CREATE TABLE cover_codes (code TEXT PRIMARY KEY) WITHOUT ROWID;
+             CREATE TRIGGER cover_codes_swap AFTER INSERT ON cover_codes
+             WHEN NEW.code = 'b' BEGIN
+                 UPDATE cover_codes SET code = 'held' WHERE code = 'a';
+                 UPDATE cover_codes SET code = 'a' WHERE code = 'b';
+                 UPDATE cover_codes SET code = 'b' WHERE code = 'held';
+             END",
+        )
+        .unwrap();
+    let one = |column: &str, new: &str| RowInsert {
+        set: vec![InsertValue {
+            column: column.into(),
+            type_name: "TEXT".into(),
+            new: to(new),
+        }],
+    };
+    let rows_of = |table: &'static str| {
+        let connection = &connection;
+        async move {
+            connection
+                .fetch_rows(&RowQuery::new(ObjectRef::new("main", table), 50))
+                .await
+                .unwrap()
+                .rows
+        }
+    };
+    let text = |text: &str| Value::Text(text.into());
+    let outcome = connection
+        .write(
+            &adding("cover_log", vec![one("line", "first")], Vec::new()),
+            &StopFlag::new(),
+        )
+        .await
+        .unwrap();
+    let WriteOutcome::Written { inserted, .. } = outcome else {
+        panic!("the save wrote");
+    };
+    // What `RETURNING` gave is no longer the row.
+    assert_eq!(inserted, [None]);
+    assert_eq!(
+        rows_of("cover_log").await,
+        [vec![Value::Int(1), text("first"), text("yes")]]
+    );
+    // Two new rows whose keys the trigger swaps: each key finds a row, and
+    // it is the other's. Neither is handed back as either.
+    let outcome = connection
+        .write(
+            &adding(
+                "cover_codes",
+                vec![one("code", "a"), one("code", "b")],
+                Vec::new(),
+            ),
+            &StopFlag::new(),
+        )
+        .await
+        .unwrap();
+    let WriteOutcome::Written { inserted, .. } = outcome else {
+        panic!("the save wrote");
+    };
+    assert_eq!(inserted, [None, None]);
+    assert_eq!(rows_of("cover_codes").await.len(), 2);
+}
+
+/// A trigger that runs before an insert can take the row for itself
+/// (`RAISE(IGNORE)`), to store it elsewhere or nowhere: the statement goes
+/// through and returns no row. That is no failure of the save, and what
+/// became of the row is not known.
+#[tokio::test]
+async fn a_new_row_a_trigger_takes_for_itself_does_not_fail_the_save() {
+    let (connection, dir) = fixture_as(Access::Writable).await;
+    other_program(&dir)
+        .execute_batch(
+            "CREATE TABLE covers_taken (id INTEGER PRIMARY KEY, kind TEXT);
+             CREATE TABLE covers_kept (kind TEXT);
+             CREATE TRIGGER covers_taken_before BEFORE INSERT ON covers_taken BEGIN
+                 INSERT INTO covers_kept VALUES (NEW.kind);
+                 SELECT RAISE(IGNORE);
+             END",
+        )
+        .unwrap();
+    let cover = RowInsert {
+        set: vec![InsertValue {
+            column: "kind".into(),
+            type_name: "TEXT".into(),
+            new: to("ebook"),
+        }],
+    };
+    let outcome = connection
+        .write(
+            &adding("covers_taken", vec![cover], Vec::new()),
+            &StopFlag::new(),
+        )
+        .await
+        .unwrap();
+    let WriteOutcome::Written { inserted, .. } = outcome else {
+        panic!("the save wrote: {outcome:?}");
+    };
+    assert_eq!(inserted, [None]);
+    let rows_of = |table: &'static str| {
+        let connection = &connection;
+        async move {
+            connection
+                .fetch_rows(&RowQuery::new(ObjectRef::new("main", table), 50))
+                .await
+                .unwrap()
+                .rows
+        }
+    };
+    // The row is where the trigger put it, and the save was committed.
+    assert!(rows_of("covers_taken").await.is_empty());
+    assert_eq!(
+        rows_of("covers_kept").await,
+        [vec![Value::Text("ebook".into())]]
+    );
+}
+
+/// A foreign key that acts on an update does a trigger's work without one:
+/// a row changed after the inserts carries the new row that refers to it.
+/// What the new row's `INSERT` returned is then not the row.
+#[tokio::test]
+async fn a_new_row_a_later_change_can_carry_with_it_is_not_known() {
+    let (connection, dir) = fixture_as(Access::Writable).await;
+    other_program(&dir)
+        .execute_batch(
+            "CREATE TABLE chapters (
+                 id INTEGER PRIMARY KEY,
+                 code TEXT UNIQUE,
+                 part TEXT REFERENCES chapters (code) ON UPDATE CASCADE
+             );
+             INSERT INTO chapters VALUES (1, 'a', NULL)",
+        )
+        .unwrap();
+    let chapter = |code: &str| RowInsert {
+        set: [("code", code), ("part", "a")]
+            .into_iter()
+            .map(|(column, new)| InsertValue {
+                column: column.into(),
+                type_name: "TEXT".into(),
+                new: to(new),
+            })
+            .collect(),
+    };
+    let text = |text: &str| Value::Text(text.into());
+    // Alone, the new row is what its INSERT returned.
+    let outcome = connection
+        .write(
+            &adding("chapters", vec![chapter("b")], Vec::new()),
+            &StopFlag::new(),
+        )
+        .await
+        .unwrap();
+    let WriteOutcome::Written { inserted, .. } = outcome else {
+        panic!("the save wrote: {outcome:?}");
+    };
+    assert_eq!(inserted, [Some(vec![Value::Int(2), text("b"), text("a")])]);
+    // Beside a change of the row it refers to, it is not.
+    let renamed = RowChange {
+        key: vec![("id".into(), Value::Int(1))],
+        set: vec![CellChange {
+            column: "code".into(),
+            type_name: "TEXT".into(),
+            loaded: text("a"),
+            new: to("z"),
+        }],
+    };
+    let outcome = connection
+        .write(
+            &adding("chapters", vec![chapter("c")], vec![renamed]),
+            &StopFlag::new(),
+        )
+        .await
+        .unwrap();
+    let WriteOutcome::Written { inserted, rows, .. } = outcome else {
+        panic!("the save wrote: {outcome:?}");
+    };
+    assert_eq!(inserted, [None]);
+    assert_eq!(rows, [vec![Value::Int(1), text("z"), Value::Null]]);
+}
+
+/// A key whose name is not UTF-8 cannot be spelled in a read. A new row
+/// needs none: it is what its `INSERT` returned.
+#[tokio::test]
+async fn a_new_row_whose_keys_name_is_not_utf8_is_written_and_handed_back() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("latin1-codes.db");
+    rusqlite::Connection::open(&path)
+        .unwrap()
+        .execute_batch(
+            r#"CREATE TABLE codes ("caf~" TEXT PRIMARY KEY DEFAULT 'k', note TEXT)
+                   WITHOUT ROWID;"#,
+        )
+        .unwrap();
+    // SQL text is a `str` here: the byte is put in afterwards, as
+    // `latin1_names` does.
+    let mut bytes = std::fs::read(&path).unwrap();
+    let mut replaced = 0;
+    for start in 0..bytes.len() - 3 {
+        if &bytes[start..start + 4] == b"caf~" {
+            bytes[start + 3] = 0xE9;
+            replaced += 1;
+        }
+    }
+    assert!(replaced >= 1, "{replaced} names were replaced");
+    std::fs::write(&path, bytes).unwrap();
+    let connection = Connection::connect_with(
+        &ConnectSpec::sqlite(&path),
+        &Secrets::default(),
+        &HostKeys::default(),
+        Access::Writable,
+    )
+    .await
+    .unwrap();
+    let note = RowInsert {
+        set: vec![InsertValue {
+            column: "note".into(),
+            type_name: "TEXT".into(),
+            new: to("first"),
+        }],
+    };
+    let outcome = connection
+        .write(&adding("codes", vec![note], Vec::new()), &StopFlag::new())
+        .await
+        .unwrap();
+    let WriteOutcome::Written { inserted, .. } = outcome else {
+        panic!("the save wrote");
+    };
+    let stored = vec![Value::Text("k".into()), Value::Text("first".into())];
+    assert_eq!(inserted, [Some(stored.clone())]);
+    let page = connection
+        .fetch_rows(&RowQuery::new(ObjectRef::new("main", "codes"), 50))
+        .await
+        .unwrap();
+    assert_eq!(page.rows, [stored]);
 }
 
 #[tokio::test]
@@ -2119,6 +2542,7 @@ async fn a_save_does_not_inherit_what_a_script_left_on_the_session() {
     .unwrap();
     let changes = ChangeSet {
         object: ObjectRef::new("main", "kinds"),
+        inserts: Vec::new(),
         rows: vec![RowChange {
             key: vec![("id".into(), Value::Int(1))],
             set: vec![CellChange {
@@ -2323,6 +2747,7 @@ async fn a_save_writes_a_decimal_as_a_number() {
             .unwrap();
         let changes = ChangeSet {
             object: orders.clone(),
+            inserts: Vec::new(),
             rows: vec![RowChange {
                 key: vec![("id".into(), page.rows[0][0].clone())],
                 set: vec![CellChange {
@@ -2364,6 +2789,7 @@ async fn a_key_that_matches_two_rows_is_an_error_and_nothing_is_written() {
     // `events` has no key: two of its rows are logins.
     let changes = ChangeSet {
         object: ObjectRef::new("main", "events"),
+        inserts: Vec::new(),
         rows: vec![RowChange {
             key: vec![("kind".into(), Value::Text("login".into()))],
             set: vec![CellChange {
@@ -2441,6 +2867,7 @@ async fn an_update_that_does_not_change_one_row_fails_and_is_undone() {
     let (_, before) = user(&connection, 1).await;
     let changes = ChangeSet {
         object: ObjectRef::new("main", "named"),
+        inserts: Vec::new(),
         rows: vec![RowChange {
             key: vec![("id".into(), Value::Int(1))],
             set: vec![CellChange {
@@ -2481,6 +2908,7 @@ async fn a_column_with_no_type_keeps_the_kind_of_value_it_held() {
     ] {
         let changes = ChangeSet {
             object: ObjectRef::new("main", "loose"),
+            inserts: Vec::new(),
             rows: vec![RowChange {
                 key: vec![("id".into(), Value::Int(id))],
                 set: vec![CellChange {
@@ -2514,6 +2942,7 @@ async fn a_save_reads_a_table_with_names_that_are_not_utf8() {
     let one =
         |table: &str, key: (&str, Value), column: &str, type_name: &str, loaded, new| ChangeSet {
             object: ObjectRef::new("main", table),
+            inserts: Vec::new(),
             rows: vec![RowChange {
                 key: vec![(key.0.into(), key.1)],
                 set: vec![CellChange {
@@ -2631,6 +3060,7 @@ async fn a_name_two_columns_read_as_is_refused() {
         // name the twin, whose value the save never compared.
         let changes = ChangeSet {
             object,
+            inserts: Vec::new(),
             rows: vec![RowChange {
                 key: vec![("id".into(), Value::Int(1))],
                 set: vec![CellChange {
@@ -2673,6 +3103,7 @@ fn one_cell(
 ) -> ChangeSet {
     ChangeSet {
         object: ObjectRef::new("main", table),
+        inserts: Vec::new(),
         rows: vec![RowChange {
             key: vec![(key.0.into(), key.1)],
             set: vec![CellChange {
@@ -3043,6 +3474,7 @@ async fn a_name_in_other_letters_than_the_tables_is_refused() {
     // them through as two.
     let twice = ChangeSet {
         object: ObjectRef::new("main", "users"),
+        inserts: Vec::new(),
         rows: vec![
             change("id", "name", "Ada Lovelace"),
             change("ID", "email", "ada@example.com"),
@@ -3052,6 +3484,7 @@ async fn a_name_in_other_letters_than_the_tables_is_refused() {
     // A set's name too, alone.
     let set = ChangeSet {
         object: ObjectRef::new("main", "users"),
+        inserts: Vec::new(),
         rows: vec![change("id", "NAME", "Ada Lovelace")],
     };
     for (changes, name) in [(twice, "ID"), (set, "NAME")] {
@@ -3148,6 +3581,7 @@ async fn changes_that_read_the_same_row_are_refused_and_nothing_is_written() {
         };
         ChangeSet {
             object: ObjectRef::new("main", table),
+            inserts: Vec::new(),
             rows: vec![change(first, "a", "a"), change(second, "b", "b")],
         }
     };

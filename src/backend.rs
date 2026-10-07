@@ -4641,6 +4641,7 @@ mod tests {
     fn rename(new: &str) -> tabletist_db::ChangeSet {
         tabletist_db::ChangeSet {
             object: ObjectRef::new("main", "users"),
+            inserts: Vec::new(),
             rows: vec![tabletist_db::RowChange {
                 key: vec![("id".into(), Value::Int(1))],
                 set: vec![tabletist_db::CellChange {
@@ -4863,7 +4864,7 @@ mod tests {
         assert_eq!(
             printed,
             "Write { session: SessionId(7), request: RequestId(11), changes: ChangeSet { \
-             object: ObjectRef { schema: \"main\", name: \"users\" }, rows: 1, cells: 1, .. } }"
+             object: ObjectRef { schema: \"main\", name: \"users\" }, inserts: 0, rows: 1, cells: 1, .. } }"
         );
         let pretty = format!("{command:#?}");
         for hidden in ["Grace Hopper", "Ada Lovelace", "TEXT"] {
@@ -4877,6 +4878,7 @@ mod tests {
     fn long_save(rows: i64) -> tabletist_db::ChangeSet {
         tabletist_db::ChangeSet {
             object: ObjectRef::new("main", "big"),
+            inserts: Vec::new(),
             rows: (1..=rows)
                 .map(|id| tabletist_db::RowChange {
                     key: vec![("id".into(), Value::Int(id))],

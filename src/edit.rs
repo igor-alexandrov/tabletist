@@ -1197,6 +1197,7 @@ pub fn change_set(
         (
             ChangeSet {
                 object: object.clone(),
+                inserts: Vec::new(),
                 rows,
             },
             places,
@@ -1221,9 +1222,14 @@ fn same_value(a: &Value, b: &Value) -> bool {
 pub fn same_changes(a: &ChangeSet, b: &ChangeSet) -> bool {
     // Every field by name: one added to a set is one to compare here.
     let (
-        ChangeSet { object, rows },
+        ChangeSet {
+            object,
+            inserts,
+            rows,
+        },
         ChangeSet {
             object: other,
+            inserts: other_inserts,
             rows: others,
         },
     ) = (a, b);
@@ -1249,7 +1255,9 @@ pub fn same_changes(a: &ChangeSet, b: &ChangeSet) -> bool {
             && set.len() == b.set.len()
             && set.iter().zip(&b.set).all(|(a, b)| same_cell(a, b))
     };
+    // A new row holds no float: its values are text or NULL.
     object == other
+        && inserts == other_inserts
         && rows.len() == others.len()
         && rows.iter().zip(others).all(|(a, b)| same_row(a, b))
 }
@@ -1259,6 +1267,23 @@ mod tests {
     use super::*;
     use std::time::Duration;
     use tabletist_db::{ColumnMeta, IndexInfo, ObjectRef, ValueKind};
+
+    #[test]
+    fn two_saves_that_differ_in_a_new_row_are_not_the_same_save() {
+        let with = |text: &str| ChangeSet {
+            object: ObjectRef::new("public", "book_covers"),
+            inserts: vec![tabletist_db::RowInsert {
+                set: vec![tabletist_db::InsertValue {
+                    column: "kind".into(),
+                    type_name: "character varying".into(),
+                    new: NewValue::Text(text.into()),
+                }],
+            }],
+            rows: Vec::new(),
+        };
+        assert!(same_changes(&with("print"), &with("print")));
+        assert!(!same_changes(&with("print"), &with("ebook")));
+    }
 
     #[test]
     fn two_change_sets_are_the_same_save_by_the_bits_of_their_floats() {
@@ -1274,6 +1299,7 @@ mod tests {
         };
         let set = |rows: Vec<RowChange>| ChangeSet {
             object: ObjectRef::new("main", "readings"),
+            inserts: Vec::new(),
             rows,
         };
         let nan = || Value::Float(f64::NAN);
