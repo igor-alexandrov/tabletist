@@ -9225,6 +9225,73 @@ mod tests {
     }
 
     #[test]
+    fn a_forgotten_count_is_the_estimate_the_header_and_footer_show() {
+        let mut harness = Harness::new();
+        let tab = harness.connect_fake();
+        harness.app.apply(crate::model::Action::OpenObject {
+            tab,
+            object: tabletist_db::ObjectRef::new("main", "users"),
+            kind: tabletist_db::ObjectKind::Table,
+            pin: true,
+        });
+        harness.answer_rows(crate::testing::page(3, true));
+        let id = harness.app.workspace(tab).unwrap().active_tab.unwrap();
+        // The catalog's figure, older than the count to come.
+        let workspace = harness.app.workspace_mut(tab).unwrap();
+        workspace.object_tab_mut(id).unwrap().estimated_rows = Some(40);
+        let header = |harness: &mut Harness, start: &str| {
+            let labels = crate::testing::labels(&harness.settle());
+            labels.iter().any(|label| label.starts_with(start))
+        };
+        assert!(header(&mut harness, "~40 rows · "));
+        assert!(harness.has("Rows 1–3 of ~40"));
+        harness.click("Count");
+        let (session, request) = match harness.app.backend.sent.last() {
+            Some(crate::backend::Command::CountRows {
+                session, request, ..
+            }) => (*session, *request),
+            other => panic!("{other:?}"),
+        };
+        harness.app.apply(crate::model::Action::Backend(
+            crate::backend::Event::Count {
+                session,
+                request,
+                result: Ok(42),
+            },
+        ));
+        assert!(header(&mut harness, "42 rows · "));
+        assert!(harness.has("Rows 1–3 of 42"));
+        // A filter applied and cleared forgets the count. What is left is
+        // the counted total as an estimate, not the catalog's.
+        let object = harness
+            .app
+            .workspace_mut(tab)
+            .unwrap()
+            .object_tab_mut(id)
+            .unwrap();
+        object.filter.rows = vec![crate::model::FilterRow {
+            column: "id".into(),
+            op: tabletist_db::FilterOp::Eq,
+            value: "5".into(),
+        }];
+        harness.app.apply(crate::model::Action::ApplyFilters {
+            tab,
+            object_tab: id,
+        });
+        harness.answer_rows(crate::testing::page(3, true));
+        assert!(!header(&mut harness, "~4"), "no total of a filtered page");
+        harness.app.apply(crate::model::Action::ClearFilters {
+            tab,
+            object_tab: id,
+        });
+        harness.answer_rows(crate::testing::page(3, true));
+        let object = harness.app.workspace(tab).unwrap().object_tab(id).unwrap();
+        assert_eq!(object.count.value, None);
+        assert!(header(&mut harness, "~42 rows · "));
+        assert!(harness.has("Rows 1–3 of ~42"));
+    }
+
+    #[test]
     fn the_tree_scrolls_to_the_keyboard_cursor() {
         let (mut harness, tab) = tree_harness();
         let names: Vec<String> = (0..200).map(|i| format!("t_{i:03}")).collect();
