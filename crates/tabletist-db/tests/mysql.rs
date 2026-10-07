@@ -3126,6 +3126,22 @@ async fn a_new_row_whose_key_was_typed_is_found_by_it() {
             inserted,
             [Some(row_of(&connection, "people_new", 7).await.1)]
         );
+        // In other letters than the table's: MySQL takes `ID` for `id`,
+        // and the row is found all the same.
+        let mut changes = changes_to("people_new", Vec::new());
+        changes.inserts = vec![RowInsert {
+            set: vec![sets("ID", "int", "8"), sets("Email", VARCHAR, "h@x")],
+        }];
+        let outcome = within(connection.write(&changes, &StopFlag::new()))
+            .await
+            .unwrap();
+        let WriteOutcome::Written { inserted, .. } = outcome else {
+            panic!("the save wrote");
+        };
+        assert_eq!(
+            inserted,
+            [Some(row_of(&connection, "people_new", 8).await.1)]
+        );
     })
     .await;
 }

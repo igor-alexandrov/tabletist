@@ -973,6 +973,18 @@ fn columns(connection: &rusqlite::Connection, object: &ObjectRef) -> Result<Vec<
         .optional()
         .map_err(map_error)?
         .unwrap_or(false);
+    // The alias has no index: the rowid is the key. `INTEGER PRIMARY KEY
+    // DESC` reads the same in the column list and is no alias (an old
+    // exception SQLite keeps): its key has an index of its own, and an
+    // insert that names no value leaves the column NULL.
+    let indexed = connection
+        .query_row(
+            "SELECT count(*) FROM pragma_index_list(?1, ?2) WHERE origin = 'pk'",
+            [&object.name, &object.schema],
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(map_error)?
+        > 0;
     let mut statement = connection
         .prepare(
             "SELECT name, type, \"notnull\", dflt_value, hidden, pk \
@@ -1008,7 +1020,7 @@ fn columns(connection: &rusqlite::Connection, object: &ObjectRef) -> Result<Vec<
     Ok(columns
         .into_iter()
         .map(|(mut column, _)| {
-            column.identity &= rowid && alone;
+            column.identity &= rowid && alone && !indexed;
             column
         })
         .collect())
@@ -2236,12 +2248,16 @@ mod tests {
                  CREATE TABLE tags (name TEXT PRIMARY KEY, id INTEGER);
                  CREATE TABLE pairs (a INTEGER, b INTEGER, PRIMARY KEY (a, b));
                  CREATE TABLE codes (id INTEGER PRIMARY KEY, label TEXT) WITHOUT ROWID;
-                 CREATE TABLE counts (id INT PRIMARY KEY, n INTEGER)",
+                 CREATE TABLE counts (id INT PRIMARY KEY, n INTEGER);
+                 CREATE TABLE downs (id INTEGER PRIMARY KEY DESC, label TEXT);
+                 CREATE TABLE lasts (id INTEGER, label TEXT, PRIMARY KEY (id DESC))",
             )
             .unwrap();
         let conn = Conn::open(&path, Access::ReadOnly).await.unwrap();
         let mut found = Vec::new();
-        for table in ["books", "tags", "pairs", "codes", "counts"] {
+        for table in [
+            "books", "tags", "pairs", "codes", "counts", "downs", "lasts",
+        ] {
             let structure = conn.describe(&ObjectRef::new("main", table)).await.unwrap();
             let identity: Vec<String> = structure
                 .columns
@@ -2261,6 +2277,10 @@ mod tests {
                 ("pairs", Vec::new()),
                 ("codes", Vec::new()),
                 ("counts", Vec::new()),
+                // `DESC` on the column makes it a column like any other.
+                ("downs", Vec::new()),
+                // On the key it does not.
+                ("lasts", vec!["id".to_owned()]),
             ]
         );
     }

@@ -292,7 +292,12 @@ impl FoundBy {
             .iter()
             .map(|name| {
                 let counted = id.filter(|_| self.counter.as_deref() == Some(name.as_str()));
-                let sent = insert.set.iter().find(|cell| cell.column == *name);
+                // As MySQL matches a name: without regard to case. The
+                // catalog's spelling is the one the row is then read by.
+                let sent = insert
+                    .set
+                    .iter()
+                    .find(|cell| cell.column.to_lowercase() == name.to_lowercase());
                 let value = match (counted, sent) {
                     (Some(id), _) => Value::Int(i64::try_from(id).ok()?),
                     (None, Some(cell)) => sent_key(cell)?,
