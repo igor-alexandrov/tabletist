@@ -17,13 +17,24 @@ pub const COLLAPSE_LINES: usize = 20;
 /// a huge single-line value is never laid out whole.
 pub const COLLAPSE_CHARS: usize = 4_000;
 
+/// A float with an exponent where PostgreSQL writes one: plain digits
+/// would run to a line of zeros that says nothing of the number.
+fn float_text(number: f64) -> String {
+    let size = number.abs();
+    if number.is_finite() && size != 0.0 && !(1e-4..1e15).contains(&size) {
+        format!("{number:e}")
+    } else {
+        number.to_string()
+    }
+}
+
 /// One short line for a grid cell.
 pub fn cell_text(value: &Value) -> Cow<'_, str> {
     match value {
         Value::Null => Cow::Borrowed("NULL"),
         Value::Bool(flag) => Cow::Borrowed(if *flag { "true" } else { "false" }),
         Value::Int(number) => Cow::Owned(number.to_string()),
-        Value::Float(number) => Cow::Owned(number.to_string()),
+        Value::Float(number) => Cow::Owned(float_text(*number)),
         Value::Text(text) => one_line(text),
         Value::Bytes(bytes) => {
             Cow::Owned(uuid(bytes).unwrap_or_else(|| format!("BLOB · {}", human_size(bytes.len()))))
@@ -977,6 +988,17 @@ mod tests {
         assert_eq!(cell_text(&Value::Bool(true)), "true");
         assert_eq!(cell_text(&Value::Int(-42)), "-42");
         assert_eq!(cell_text(&Value::Float(99.5)), "99.5");
+        assert_eq!(cell_text(&Value::Float(0.0)), "0");
+        assert_eq!(cell_text(&Value::Float(0.0001)), "0.0001");
+        assert_eq!(
+            cell_text(&Value::Float(123_456_789_012_345.0)),
+            "123456789012345"
+        );
+        // Past what reads as digits, the exponent.
+        assert_eq!(cell_text(&Value::Float(1e308)), "1e308");
+        assert_eq!(cell_text(&Value::Float(-1e20)), "-1e20");
+        assert_eq!(cell_text(&Value::Float(1.5e-10)), "1.5e-10");
+        assert_eq!(cell_text(&Value::Float(f64::INFINITY)), "inf");
         assert_eq!(cell_text(&text("Zoë 🚀")), "Zoë 🚀");
     }
 
