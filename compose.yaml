@@ -37,6 +37,10 @@ services:
       MYSQL_PASSWORD: tabletist
     ports:
       - "127.0.0.1:53306:3306"
+    # With its binary log on, the server lets only a SUPER user make a
+    # trigger. The tests' user is none, and one test needs a trigger.
+    command:
+      - --log-bin-trust-function-creators=1
     volumes:
       # A second database, so schema listing has more than one.
       - ./compose/mysql-init.sql:/docker-entrypoint-initdb.d/billing.sql:ro

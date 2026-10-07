@@ -2233,9 +2233,11 @@ async fn a_table_without_a_key_takes_a_new_row() {
 }
 
 /// `RETURNING` gives a row as its `INSERT` left it, before an AFTER trigger
-/// ran. What a save hands back is the row as the save left it.
+/// ran, and a trigger can move the row's key, so no read finds it again
+/// for sure. On a table with a trigger a new row is written and handed
+/// back as not known.
 #[tokio::test]
-async fn a_new_row_comes_back_as_a_trigger_left_it() {
+async fn a_new_row_of_a_table_with_a_trigger_is_written_and_not_known() {
     let (connection, dir) = fixture_as(Access::Writable).await;
     other_program(&dir)
         .execute_batch(
@@ -2243,13 +2245,12 @@ async fn a_new_row_comes_back_as_a_trigger_left_it() {
              CREATE TRIGGER cover_log_seen AFTER INSERT ON cover_log BEGIN
                  UPDATE cover_log SET seen = 'yes' WHERE id = NEW.id;
              END;
-             CREATE TABLE cover_codes (code TEXT PRIMARY KEY, seen TEXT) WITHOUT ROWID;
-             CREATE TRIGGER cover_codes_seen AFTER INSERT ON cover_codes BEGIN
-                 UPDATE cover_codes SET seen = 'yes' WHERE code = NEW.code;
-             END;
-             CREATE TABLE cover_moved (code TEXT PRIMARY KEY) WITHOUT ROWID;
-             CREATE TRIGGER cover_moved_on AFTER INSERT ON cover_moved BEGIN
-                 UPDATE cover_moved SET code = 'moved' WHERE code = NEW.code;
+             CREATE TABLE cover_codes (code TEXT PRIMARY KEY) WITHOUT ROWID;
+             CREATE TRIGGER cover_codes_swap AFTER INSERT ON cover_codes
+             WHEN NEW.code = 'b' BEGIN
+                 UPDATE cover_codes SET code = 'held' WHERE code = 'a';
+                 UPDATE cover_codes SET code = 'a' WHERE code = 'b';
+                 UPDATE cover_codes SET code = 'b' WHERE code = 'held';
              END",
         )
         .unwrap();
@@ -2260,38 +2261,57 @@ async fn a_new_row_comes_back_as_a_trigger_left_it() {
             new: to(new),
         }],
     };
-    let written = |table: &'static str, row: RowInsert| {
+    let rows_of = |table: &'static str| {
         let connection = &connection;
         async move {
-            let outcome = connection
-                .write(&adding(table, vec![row], Vec::new()), &StopFlag::new())
+            connection
+                .fetch_rows(&RowQuery::new(ObjectRef::new("main", table), 50))
                 .await
-                .unwrap();
-            let WriteOutcome::Written { inserted, .. } = outcome else {
-                panic!("the save wrote");
-            };
-            inserted
+                .unwrap()
+                .rows
         }
     };
     let text = |text: &str| Value::Text(text.into());
-    // Found by its rowid.
+    let outcome = connection
+        .write(
+            &adding("cover_log", vec![one("line", "first")], Vec::new()),
+            &StopFlag::new(),
+        )
+        .await
+        .unwrap();
+    let WriteOutcome::Written { inserted, .. } = outcome else {
+        panic!("the save wrote");
+    };
+    // What `RETURNING` gave is no longer the row.
+    assert_eq!(inserted, [None]);
     assert_eq!(
-        written("cover_log", one("line", "first")).await,
-        [Some(vec![Value::Int(1), text("first"), text("yes")])]
+        rows_of("cover_log").await,
+        [vec![Value::Int(1), text("first"), text("yes")]]
     );
-    // Found by its key, where there is no rowid.
-    assert_eq!(
-        written("cover_codes", one("code", "a")).await,
-        [Some(vec![text("a"), text("yes")])]
-    );
-    // A row whose key the trigger changed is written, and not known.
-    assert_eq!(written("cover_moved", one("code", "a")).await, [None]);
+    // Two new rows whose keys the trigger swaps: each key finds a row, and
+    // it is the other's. Neither is handed back as either.
+    let outcome = connection
+        .write(
+            &adding(
+                "cover_codes",
+                vec![one("code", "a"), one("code", "b")],
+                Vec::new(),
+            ),
+            &StopFlag::new(),
+        )
+        .await
+        .unwrap();
+    let WriteOutcome::Written { inserted, .. } = outcome else {
+        panic!("the save wrote");
+    };
+    assert_eq!(inserted, [None, None]);
+    assert_eq!(rows_of("cover_codes").await.len(), 2);
 }
 
-/// A key whose name is not UTF-8 cannot be spelled in a read: the new row
-/// is written, and handed back as not known.
+/// A key whose name is not UTF-8 cannot be spelled in a read. A new row
+/// needs none: it is what its `INSERT` returned.
 #[tokio::test]
-async fn a_new_row_whose_keys_name_is_not_utf8_is_written_and_not_read_again() {
+async fn a_new_row_whose_keys_name_is_not_utf8_is_written_and_handed_back() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("latin1-codes.db");
     rusqlite::Connection::open(&path)
@@ -2335,15 +2355,13 @@ async fn a_new_row_whose_keys_name_is_not_utf8_is_written_and_not_read_again() {
     let WriteOutcome::Written { inserted, .. } = outcome else {
         panic!("the save wrote");
     };
-    assert_eq!(inserted, [None]);
+    let stored = vec![Value::Text("k".into()), Value::Text("first".into())];
+    assert_eq!(inserted, [Some(stored.clone())]);
     let page = connection
         .fetch_rows(&RowQuery::new(ObjectRef::new("main", "codes"), 50))
         .await
         .unwrap();
-    assert_eq!(
-        page.rows,
-        [vec![Value::Text("k".into()), Value::Text("first".into())]]
-    );
+    assert_eq!(page.rows, [stored]);
 }
 
 #[tokio::test]

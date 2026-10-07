@@ -202,24 +202,6 @@ pub(crate) fn query_error(error: tokio_postgres::Error) -> Error {
 /// A value from a catalog row as `T`. A server (or proxy) that answers
 /// with another type or a NULL is a query error, not a panic: release
 /// builds abort on panic.
-/// The columns of a table's primary key, in the key's order, by the
-/// table's schema and name.
-///
-/// Only the key's own columns: `INCLUDE` puts more after them in `indkey`,
-/// and those are no part of the key. Their count, `indnkeyatts`, exists
-/// from PostgreSQL 11, so it is read through `to_jsonb`: every page asks
-/// for the key, and naming a column an older server lacks would fail them
-/// all.
-const PRIMARY_KEY: &str = "SELECT a.attname::text \
-     FROM pg_index i \
-     JOIN pg_class c ON c.oid = i.indrelid \
-     JOIN pg_namespace n ON n.oid = c.relnamespace \
-     CROSS JOIN LATERAL unnest(i.indkey) WITH ORDINALITY AS k(attnum, ord) \
-     JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = k.attnum \
-     WHERE n.nspname = $1 AND c.relname = $2 AND i.indisprimary \
-       AND k.ord <= COALESCE((to_jsonb(i) ->> 'indnkeyatts')::int, i.indnatts) \
-     ORDER BY k.ord";
-
 fn column<'a, T: tokio_postgres::types::FromSql<'a>>(
     row: &'a tokio_postgres::Row,
     index: usize,
@@ -413,7 +395,23 @@ impl Conn {
 
     pub async fn primary_key(&self, object: &ObjectRef) -> Result<Vec<String>> {
         let rows = self
-            .catalog(PRIMARY_KEY, &[&object.schema, &object.name])
+            .catalog(
+                // Only the key's own columns: `INCLUDE` puts more after them
+                // in `indkey`, and those are no part of the key. Their count,
+                // `indnkeyatts`, exists from PostgreSQL 11, so it is read
+                // through `to_jsonb`: every page asks for the key, and naming
+                // a column an older server lacks would fail them all.
+                "SELECT a.attname::text \
+                 FROM pg_index i \
+                 JOIN pg_class c ON c.oid = i.indrelid \
+                 JOIN pg_namespace n ON n.oid = c.relnamespace \
+                 CROSS JOIN LATERAL unnest(i.indkey) WITH ORDINALITY AS k(attnum, ord) \
+                 JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = k.attnum \
+                 WHERE n.nspname = $1 AND c.relname = $2 AND i.indisprimary \
+                   AND k.ord <= COALESCE((to_jsonb(i) ->> 'indnkeyatts')::int, i.indnatts) \
+                 ORDER BY k.ord",
+                &[&object.schema, &object.name],
+            )
             .await?;
         rows.iter().map(|row| column(row, 0)).collect()
     }

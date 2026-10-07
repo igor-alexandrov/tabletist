@@ -2718,7 +2718,7 @@ async fn a_new_row_that_fails_undoes_the_rows_before_it() {
 }
 
 #[tokio::test]
-async fn a_table_without_a_key_takes_a_new_row_and_cannot_hand_it_back() {
+async fn a_table_without_a_key_takes_a_new_row() {
     let Some(connection) = connect_as(Access::Writable).await else {
         return;
     };
@@ -2735,11 +2735,10 @@ async fn a_table_without_a_key_takes_a_new_row_and_cannot_hand_it_back() {
             let WriteOutcome::Written { inserted, .. } = outcome else {
                 panic!("the save wrote");
             };
-            // Written, and no key to find it by once the save is done.
-            assert_eq!(inserted, [None]);
+            // No key is needed: the row is what its INSERT returned.
             assert_eq!(
-                page_of(&connection, "cover_stamps").await.1,
-                [vec![Value::Text("none".into()), Value::Int(7)]]
+                inserted,
+                [Some(vec![Value::Text("none".into()), Value::Int(7)])]
             );
         },
     )
@@ -2747,9 +2746,11 @@ async fn a_table_without_a_key_takes_a_new_row_and_cannot_hand_it_back() {
 }
 
 /// `RETURNING` gives a row as its `INSERT` left it, before an AFTER trigger
-/// ran. What a save hands back is the row as the save left it.
+/// ran, and a trigger can move the row's key, so no read finds it again
+/// for sure. On a table with a trigger a new row is written and handed
+/// back as not known.
 #[tokio::test]
-async fn a_new_row_comes_back_as_a_trigger_left_it() {
+async fn a_new_row_of_a_table_with_a_trigger_is_written_and_not_known() {
     let Some(connection) = connect_as(Access::Writable).await else {
         return;
     };
@@ -2778,13 +2779,15 @@ async fn a_new_row_comes_back_as_a_trigger_left_it() {
             let WriteOutcome::Written { inserted, .. } = outcome else {
                 panic!("the save wrote");
             };
+            // What `RETURNING` gave is no longer the row.
+            assert_eq!(inserted, [None]);
             assert_eq!(
-                inserted,
-                [Some(vec![
+                page_of(&connection, "covers_seen").await.1,
+                [vec![
                     Value::Int(1),
                     Value::Text("print".into()),
                     Value::Text("yes".into())
-                ])]
+                ]]
             );
         },
     )

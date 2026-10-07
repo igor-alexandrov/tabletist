@@ -234,6 +234,10 @@ struct Written<'a> {
 struct FoundBy {
     key: Vec<String>,
     counter: Option<String>,
+    /// A trigger stands on the table. A row is then not known by the key
+    /// it was sent with: a trigger can give it another, and give that one
+    /// to another row.
+    triggered: bool,
 }
 
 impl FoundBy {
@@ -271,9 +275,22 @@ impl FoundBy {
             )
             .await
             .map_err(query_error)?;
+        not_stopped(stop)?;
+        let triggers: Vec<mysql_async::Row> = conn
+            .exec(
+                "SELECT 1 FROM information_schema.triggers \
+                 WHERE event_object_schema = ? AND event_object_table = ? \
+                   AND CAST(event_object_schema AS BINARY) = CAST(? AS BINARY) \
+                   AND CAST(event_object_table AS BINARY) = CAST(? AS BINARY) \
+                 LIMIT 1",
+                at,
+            )
+            .await
+            .map_err(query_error)?;
         Ok(Self {
             key: key.into_iter().map(from_row).collect::<Result<_>>()?,
             counter: counter.into_iter().next().map(from_row).transpose()?,
+            triggered: !triggers.is_empty(),
         })
     }
 
@@ -281,11 +298,12 @@ impl FoundBy {
     /// column of the primary key with the counter's value where it is the
     /// counter's column and the counter gave one (a `0` or a NULL sent for
     /// it is not what was stored), and otherwise the value sent for it.
-    /// `None` when the row cannot be found again for sure: the table has no
-    /// primary key, the database filled a key column some other way (a
-    /// default), or a key column's value cannot be matched exactly.
+    /// `None` when the row cannot be found again for sure: a trigger
+    /// stands on the table, the table has no primary key, the database
+    /// filled a key column some other way (a default), or a key column's
+    /// value cannot be matched exactly.
     fn key(&self, insert: &RowInsert, id: Option<u64>) -> Option<Vec<(String, Value)>> {
-        if self.key.is_empty() {
+        if self.triggered || self.key.is_empty() {
             return None;
         }
         self.key
@@ -701,7 +719,7 @@ async fn apply(
         if found.len() > 1 {
             return Err(more_than_one());
         }
-        // None: a trigger changed the row's key, and the row is unknown.
+        // None: the row is not there by its key, and so not known.
         inserted.push(found.pop());
     }
     Ok(Applied::Rows(Stored {

@@ -3192,6 +3192,67 @@ async fn a_new_row_that_fails_undoes_the_rows_before_it() {
     .await;
 }
 
+/// A trigger can give a new row another key than the one it was sent with,
+/// and give that one to another row: the key then finds a row, and not
+/// this one. On a table with a trigger a new row is written and handed
+/// back as not known.
+#[tokio::test]
+async fn a_new_row_of_a_table_with_a_trigger_is_written_and_not_known() {
+    let Some(connection) = connect_as(Access::Writable).await else {
+        return;
+    };
+    on_its_own_tables(
+        "codes_moved",
+        &[
+            "CREATE TABLE codes_moved (code VARCHAR(20) PRIMARY KEY, note VARCHAR(20))",
+            "INSERT INTO codes_moved VALUES ('a', 'there before')",
+        ],
+        async move {
+            // What is sent as `a2` is stored as `b`, and `b` as `a2`. With
+            // its binary log on, the server lets a user without SUPER make
+            // a trigger only where `log_bin_trust_function_creators` is
+            // set, as `compose.yaml` sets it.
+            let made = self::admin()
+                .await
+                .query_drop(
+                    "CREATE TRIGGER codes_moved_swap BEFORE INSERT ON codes_moved FOR EACH ROW \
+                     SET NEW.code = CASE NEW.code WHEN 'a2' THEN 'b' WHEN 'b' THEN 'a2' \
+                                    ELSE NEW.code END",
+                )
+                .await;
+            if let Err(error) = made {
+                eprintln!("skipped: the server lets this user make no trigger: {error}");
+                return;
+            }
+            let mut changes = changes_to("codes_moved", Vec::new());
+            changes.inserts = vec![
+                RowInsert {
+                    set: vec![
+                        sets("code", "varchar(20)", "a2"),
+                        sets("note", "varchar(20)", "first"),
+                    ],
+                },
+                RowInsert {
+                    set: vec![
+                        sets("code", "varchar(20)", "b"),
+                        sets("note", "varchar(20)", "second"),
+                    ],
+                },
+            ];
+            let outcome = within(connection.write(&changes, &StopFlag::new()))
+                .await
+                .unwrap();
+            let WriteOutcome::Written { inserted, .. } = outcome else {
+                panic!("the save wrote");
+            };
+            // Each key sent finds a row, and it is the other's.
+            assert_eq!(inserted, [None, None]);
+            assert_eq!(page_of(&connection, "codes_moved").await.1.len(), 3);
+        },
+    )
+    .await;
+}
+
 #[tokio::test]
 async fn a_table_without_a_key_takes_a_new_row_and_cannot_hand_it_back() {
     let Some(connection) = connect_as(Access::Writable).await else {

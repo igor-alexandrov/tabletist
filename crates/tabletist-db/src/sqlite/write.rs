@@ -3,7 +3,6 @@
 
 use std::time::Instant;
 
-use rusqlite::OptionalExtension;
 use rusqlite::types::ValueRef;
 
 use super::{end_transaction, from_sqlite, map_error};
@@ -207,77 +206,24 @@ fn ambiguous<'a>(change: &'a RowChange, columns: &[String]) -> Option<&'a str> {
         })
 }
 
-/// What finds a row an `INSERT` made, to read it as it stands at the save's
-/// end.
-enum FoundBy {
-    /// The rowid the insert gave it.
-    Rowid,
-    /// The primary key's columns, of a table WITHOUT ROWID. None of them
-    /// when the key cannot be named in SQL.
-    Key(Vec<String>),
-}
-
-impl FoundBy {
-    fn of(connection: &rusqlite::Connection, object: &ObjectRef) -> Result<Self> {
-        let without_rowid = connection
-            .query_row(
-                "SELECT wr <> 0 FROM pragma_table_list(?1) WHERE schema = ?2",
-                [&object.name, &object.schema],
-                |row| row.get::<_, bool>(0),
-            )
-            .optional()
-            .map_err(map_error)?
-            .unwrap_or(false);
-        if !without_rowid {
-            return Ok(Self::Rowid);
-        }
-        // Nothing, when one of the key's names is not UTF-8: no read can
-        // spell that column, and the row is then not looked for.
-        Ok(Self::Key(super::ordering_key(connection, object)?))
-    }
-
-    /// The read that finds the row an insert `returned`, with these
-    /// `columns`, and gave `rowid`. `None` when nothing finds it for sure.
-    fn select(
-        &self,
-        object: &ObjectRef,
-        columns: &[String],
-        returned: &Found,
-        rowid: i64,
-    ) -> Option<Sql> {
-        match self {
-            Self::Rowid => {
-                // A column of the table can take any of the rowid's three
-                // names for itself: the one it left free is the rowid's.
-                let name = ["rowid", "_rowid_", "oid"].into_iter().find(|name| {
-                    !columns
-                        .iter()
-                        .any(|column| column.eq_ignore_ascii_case(name))
-                })?;
-                Some(Sql {
-                    text: format!(
-                        "SELECT * FROM {} WHERE {name} = ? LIMIT 2",
-                        Dialect::Sqlite.qualified(object)
-                    ),
-                    params: vec![Value::Int(rowid)],
-                })
-            }
-            Self::Key(names) => {
-                let key = names
-                    .iter()
-                    .map(|name| {
-                        let at = columns.iter().position(|column| column == name)?;
-                        // Text that was not read exactly finds another row,
-                        // or none: see `Dialect::key_read_exactly`.
-                        let exact = !returned.inexact.contains(&at);
-                        let value = returned.values.get(at)?;
-                        (exact && !value.is_null()).then(|| (name.clone(), value.clone()))
-                    })
-                    .collect::<Option<Vec<_>>>()?;
-                (!key.is_empty()).then(|| Dialect::Sqlite.select_row(object, &key, false))
-            }
-        }
-    }
+/// Whether a trigger stands on the table, in the file or among the
+/// session's own. With one, a row is not known by what its `INSERT`
+/// returned: a trigger can change it after, another row with it, and give
+/// either the other's key.
+fn triggered(connection: &rusqlite::Connection, object: &ObjectRef) -> Result<bool> {
+    // A save is of `main` (see `Conn::write`), and a temporary trigger can
+    // stand on a table of it. SQLite matches the table's name without
+    // regard to ASCII case.
+    connection
+        .query_row(
+            "SELECT EXISTS (SELECT 1 FROM main.sqlite_master \
+                            WHERE type = 'trigger' AND tbl_name = ?1 COLLATE NOCASE) \
+                 OR EXISTS (SELECT 1 FROM temp.sqlite_master \
+                            WHERE type = 'trigger' AND tbl_name = ?1 COLLATE NOCASE)",
+            [&object.name],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(map_error)
 }
 
 /// The steps of a save inside its transaction: read and compare every row,
@@ -350,19 +296,12 @@ fn apply(
         return Ok(Applied::Conflicts(conflicts_of(conflicts, rows_read)));
     }
     // The new rows, before any row is changed: the order a review shows
-    // them in. `RETURNING *` gives each as its `INSERT` left it, which is
-    // before an AFTER trigger had its say: what it gives is used to find
-    // the row again, once every statement has run.
-    let found_by = if inserts.is_empty() {
-        None
-    } else {
-        Some(FoundBy::of(connection, &changes.object)?)
-    };
-    let mut made = Vec::with_capacity(inserts.len());
+    // them in. `RETURNING *` gives each as its `INSERT` left it.
+    let mut returned = Vec::with_capacity(inserts.len());
     for (insert, statement) in inserts.iter().enumerate() {
         not_stopped(stop)?;
-        let (columns, mut returned) = match read(connection, &statement.sql) {
-            Ok(read) => read,
+        let mut made = match read(connection, &statement.sql) {
+            Ok((_, made)) => made,
             // A cancel or a lost session ends the save; anything else is
             // the statement's own failure.
             Err(error @ (Error::Cancelled | Error::ConnectionLost(_))) => return Err(error),
@@ -370,17 +309,11 @@ fn apply(
         };
         // One statement makes one row. A trigger that ran in its place can
         // have made none, and then what was stored is not known.
-        let row = returned
+        let row = made
             .pop()
-            .filter(|_| returned.is_empty())
+            .filter(|_| made.is_empty())
             .ok_or_else(not_read_back)?;
-        // Read now: the next insert gives the session another.
-        let rowid = connection.last_insert_rowid();
-        made.push(
-            found_by
-                .as_ref()
-                .and_then(|by| by.select(&changes.object, &columns, &row, rowid)),
-        );
+        returned.push(row.values);
     }
     for (row, update) in updates.iter().enumerate() {
         not_stopped(stop)?;
@@ -417,20 +350,14 @@ fn apply(
         }
         rows.push(found.pop().ok_or_else(not_read_back)?.values);
     }
-    // The new rows last, as they stand once every statement has run.
-    let mut inserted = Vec::with_capacity(made.len());
-    for select in made {
-        let Some(select) = select else {
-            inserted.push(None);
-            continue;
-        };
-        not_stopped(stop)?;
-        let (_, mut found) = read(connection, &select)?;
-        if found.len() > 1 {
-            return Err(more_than_one());
-        }
-        // None: a trigger moved the row to another key, or took it away.
-        inserted.push(found.pop().map(|row| row.values));
-    }
+    // What an `INSERT` returned is the row the table holds only where
+    // nothing ran after it: a trigger can change the row, and no read finds
+    // it again for sure, since a trigger can move its key too. With one on
+    // the table the new rows are written and handed back as not known.
+    let known = returned.is_empty() || !triggered(connection, &changes.object)?;
+    let inserted = returned
+        .into_iter()
+        .map(|row| known.then_some(row))
+        .collect();
     Ok(Applied::Rows(Stored { inserted, rows }))
 }

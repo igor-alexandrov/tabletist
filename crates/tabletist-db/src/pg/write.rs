@@ -5,7 +5,7 @@ use std::time::Instant;
 
 use tokio_postgres::SimpleQueryMessage;
 
-use super::{Conn, PRIMARY_KEY, column, column_metas, query_error, row_values};
+use super::{Conn, column, column_metas, query_error, row_values};
 use crate::dialect::{InsertStatement, RowUpdate};
 use crate::script::retry_cancelled;
 use crate::write::{
@@ -189,9 +189,7 @@ async fn apply(
     }
     // The new rows, before any row is changed: the order a review shows
     // them in. `RETURNING *` gives each in the table's column order, the
-    // order `columns` was read in, and as its `INSERT` left it, which is
-    // before an AFTER trigger had its say: what it gives is used to find
-    // the row again, once every statement has run.
+    // order `columns` was read in, and as its `INSERT` left it.
     let mut returned = Vec::with_capacity(inserts.len());
     for (insert, statement) in inserts.iter().enumerate() {
         not_stopped(stop)?;
@@ -262,44 +260,39 @@ async fn apply(
         }
         saved.push(found.pop().ok_or_else(not_read_back)?);
     }
-    // The new rows last, as they stand once every statement has run, each
-    // found by its primary key as `RETURNING` gave it. A table without one
-    // gives nothing to find a row by, and its new rows are written and not
-    // known.
-    let key: Vec<String> = if returned.is_empty() {
-        Vec::new()
+    // What an `INSERT` returned is the row the table holds only where
+    // nothing ran after it: a trigger or a rule can change the row, and no
+    // read finds it again for sure, since a trigger can move its key too.
+    // On such a table the new rows are written and handed back as not
+    // known. Asked now, with the table held by what was written to it:
+    // nobody adds a trigger before the save ends.
+    let known = if returned.is_empty() {
+        true
     } else {
         not_stopped(stop)?;
         client
-            .query(PRIMARY_KEY, &[&changes.object.schema, &changes.object.name])
+            .query_opt(
+                // An ordinary table: a row written through a partitioned
+                // one goes to a partition, with triggers of its own. The
+                // triggers PostgreSQL keeps for a foreign key only check.
+                "SELECT c.relkind = 'r' AND NOT c.relhasrules \
+                        AND NOT EXISTS (SELECT 1 FROM pg_trigger t \
+                                        WHERE t.tgrelid = c.oid AND NOT t.tgisinternal) \
+                 FROM pg_class c \
+                 JOIN pg_namespace n ON n.oid = c.relnamespace \
+                 WHERE n.nspname = $1 AND c.relname = $2",
+                &[&changes.object.schema, &changes.object.name],
+            )
             .await
             .map_err(query_error)?
-            .iter()
-            .map(|row| column(row, 0))
-            .collect::<Result<_>>()?
+            .map(|row| column(&row, 0))
+            .transpose()?
+            .unwrap_or(false)
     };
-    let mut inserted = Vec::with_capacity(returned.len());
-    for row in returned {
-        let found_by: Option<Vec<(String, Value)>> = key
-            .iter()
-            .map(|name| {
-                let at = names.iter().position(|column| column == name)?;
-                Some((name.clone(), row.get(at)?.clone()))
-            })
-            .collect();
-        let Some(found_by) = found_by.filter(|key| !key.is_empty()) else {
-            inserted.push(None);
-            continue;
-        };
-        let select = dialect.select_row(&changes.object, &found_by, false);
-        not_stopped(stop)?;
-        let mut found = rows(client, &select.text, &columns).await?;
-        if found.len() > 1 {
-            return Err(more_than_one());
-        }
-        // None: a trigger moved the row to another key, or took it away.
-        inserted.push(found.pop());
-    }
+    let inserted = returned
+        .into_iter()
+        .map(|row| known.then_some(row))
+        .collect();
     Ok(Applied::Rows(Stored {
         inserted,
         rows: saved,
