@@ -2070,7 +2070,9 @@ use std::future::Future;
 use std::panic::AssertUnwindSafe;
 
 use futures_util::FutureExt;
-use tabletist_db::{CellChange, ChangeSet, Conflict, NewValue, RowChange, WriteOutcome};
+use tabletist_db::{
+    CellChange, ChangeSet, Conflict, InsertValue, NewValue, RowChange, RowInsert, WriteOutcome,
+};
 
 /// Runs `test` on tables of its own. The fixture is loaded once and shared
 /// by every test of this suite, so a test that writes never touches it, nor
@@ -2589,6 +2591,146 @@ async fn a_statement_that_fails_undoes_the_rows_before_it() {
             );
             assert_eq!(row_of(&connection, "write_undone", 1).await.1, first);
             assert_eq!(row_of(&connection, "write_undone", 2).await.1, second);
+        },
+    )
+    .await;
+}
+
+/// Bookshop's covers, as the design's new row needs them: an identity key,
+/// a required column, a unique one, and two defaults.
+fn covers(table: &str) -> String {
+    format!(
+        "CREATE TABLE {table} (
+             id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+             publisher_id bigint NOT NULL,
+             kind varchar NOT NULL DEFAULT 'print',
+             isbn text UNIQUE,
+             created_at timestamp NOT NULL DEFAULT '2026-10-07 10:42:09'
+         );
+         INSERT INTO {table} (publisher_id, kind, isbn) VALUES
+             (9100000000000000001, 'print', '978-1-4028-9462-6'),
+             (9100000000000000001, 'ebook', NULL)"
+    )
+}
+
+fn sets(column: &str, type_name: &str, new: &str) -> InsertValue {
+    InsertValue {
+        column: column.into(),
+        type_name: type_name.into(),
+        new: to(new),
+    }
+}
+
+#[tokio::test]
+async fn a_new_row_comes_back_as_the_database_stored_it() {
+    let Some(connection) = connect_as(Access::Writable).await else {
+        return;
+    };
+    on_its_own_tables(
+        &drop_table("covers_new"),
+        &covers("covers_new"),
+        async move {
+            let mut changes = changes_to("covers_new", Vec::new());
+            changes.inserts = vec![RowInsert {
+                set: vec![sets("publisher_id", "bigint", "9100000000000000004")],
+            }];
+            let outcome = within(connection.write(&changes, &StopFlag::new()))
+                .await
+                .unwrap();
+            let WriteOutcome::Written { inserted, rows, .. } = outcome else {
+                panic!("the save wrote");
+            };
+            assert!(rows.is_empty());
+            // Two covers were there: the identity gives 3.
+            let (columns, stored) = row_of(&connection, "covers_new", 3).await;
+            assert_eq!(inserted, [Some(stored.clone())]);
+            let at =
+                |name: &str| &stored[columns.iter().position(|column| column == name).unwrap()];
+            assert_eq!(*at("id"), Value::Int(3));
+            assert_eq!(*at("publisher_id"), Value::Int(9_100_000_000_000_000_004));
+            assert_eq!(*at("kind"), Value::Text("print".into()));
+            assert_eq!(*at("isbn"), Value::Null);
+        },
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn a_new_row_that_fails_undoes_the_rows_before_it() {
+    let Some(connection) = connect_as(Access::Writable).await else {
+        return;
+    };
+    on_its_own_tables(
+        &drop_table("covers_undone"),
+        &covers("covers_undone"),
+        async move {
+            let (columns, second) = row_of(&connection, "covers_undone", 2).await;
+            let mut changes = changes_to(
+                "covers_undone",
+                vec![by_id(
+                    2,
+                    vec![cell(
+                        &columns,
+                        &second,
+                        "kind",
+                        "character varying",
+                        to("audio"),
+                    )],
+                )],
+            );
+            changes.inserts = vec![
+                RowInsert {
+                    set: vec![sets("publisher_id", "bigint", "9100000000000000004")],
+                },
+                // UNIQUE: the first cover has it.
+                RowInsert {
+                    set: vec![
+                        sets("publisher_id", "bigint", "9100000000000000004"),
+                        sets("isbn", "text", "978-1-4028-9462-6"),
+                    ],
+                },
+            ];
+            let outcome = within(connection.write(&changes, &StopFlag::new()))
+                .await
+                .unwrap();
+            assert!(
+                matches!(
+                    &outcome,
+                    WriteOutcome::FailedInsert { insert: 1, error: Error::Query { code, .. } }
+                        if code.as_deref() == Some("23505")
+                ),
+                "{outcome:?}"
+            );
+            // Neither the first new row nor the change is there.
+            assert_eq!(page_of(&connection, "covers_undone").await.1.len(), 2);
+            assert_eq!(row_of(&connection, "covers_undone", 2).await.1, second);
+        },
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn a_table_without_a_key_takes_a_new_row() {
+    let Some(connection) = connect_as(Access::Writable).await else {
+        return;
+    };
+    on_its_own_tables(
+        &drop_table("cover_stamps"),
+        "CREATE TABLE cover_stamps (line text DEFAULT 'none', n integer DEFAULT 7)",
+        async move {
+            let mut changes = changes_to("cover_stamps", Vec::new());
+            // Nothing set: DEFAULT VALUES.
+            changes.inserts = vec![RowInsert { set: Vec::new() }];
+            let outcome = within(connection.write(&changes, &StopFlag::new()))
+                .await
+                .unwrap();
+            let WriteOutcome::Written { inserted, .. } = outcome else {
+                panic!("the save wrote");
+            };
+            assert_eq!(
+                inserted,
+                [Some(vec![Value::Text("none".into()), Value::Int(7)])]
+            );
         },
     )
     .await;

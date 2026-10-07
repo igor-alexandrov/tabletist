@@ -6,7 +6,7 @@ use std::time::Instant;
 use tokio_postgres::SimpleQueryMessage;
 
 use super::{Conn, column_metas, query_error, row_values};
-use crate::dialect::RowUpdate;
+use crate::dialect::{InsertStatement, RowUpdate};
 use crate::script::retry_cancelled;
 use crate::write::{
     Applied, Stored, changed_since_loaded, conflicts_of, more_than_one, not_read_back, not_stopped,
@@ -23,12 +23,6 @@ impl Conn {
     /// before each statement: a cancel request does nothing when it arrives
     /// between two.
     pub(super) async fn save(&self, changes: &ChangeSet, stop: &StopFlag) -> Result<WriteOutcome> {
-        // Until this engine's save runs them (tasks 4 to 6 of the plan).
-        if !changes.inserts.is_empty() {
-            return Err(Error::Unsupported(
-                "adding rows is not built for this engine yet",
-            ));
-        }
         // Every statement is built first: a value that cannot be sent
         // fails the save before the server hears of it. Text that holds a
         // NUL is such a value, which the builder refuses: the driver could
@@ -41,13 +35,20 @@ impl Conn {
                 Err(error) => return Ok(WriteOutcome::Failed { row, error }),
             }
         }
+        let mut inserts = Vec::with_capacity(changes.inserts.len());
+        for (insert, row) in changes.inserts.iter().enumerate() {
+            match Dialect::Postgres.insert_row(&changes.object, row) {
+                Ok(built) => inserts.push(built),
+                Err(error) => return Ok(WriteOutcome::FailedInsert { insert, error }),
+            }
+        }
         let client = self.client.lock().await;
         // Stopped before it began: nothing is sent.
         not_stopped(stop)?;
         let started = Instant::now();
         // From here every path ends the transaction, whatever of it began.
         let applied = match begin(&client).await {
-            Ok(()) => apply(&client, changes, &updates, stop).await,
+            Ok(()) => apply(&client, changes, &inserts, &updates, stop).await,
             Err(error) => Err(error),
         };
         // The last moment a stop is heard. Once COMMIT is sent the save is
@@ -137,6 +138,7 @@ async fn rows(
 async fn apply(
     client: &tokio_postgres::Client,
     changes: &ChangeSet,
+    inserts: &[InsertStatement],
     updates: &[RowUpdate],
     stop: &StopFlag,
 ) -> Result<Applied> {
@@ -185,6 +187,37 @@ async fn apply(
     if !conflicts.is_empty() {
         return Ok(Applied::Conflicts(conflicts_of(conflicts, read)));
     }
+    // The new rows, before any row is changed: the order a review shows
+    // them in. `RETURNING *` gives each in the table's column order, the
+    // order `columns` was read in.
+    let mut inserted = Vec::with_capacity(inserts.len());
+    for (insert, statement) in inserts.iter().enumerate() {
+        not_stopped(stop)?;
+        let messages = match client
+            .simple_query(&statement.sql.text)
+            .await
+            .map_err(query_error)
+        {
+            Ok(messages) => messages,
+            // A cancel or a lost session ends the save; anything else is
+            // the statement's own failure.
+            Err(error @ (Error::Cancelled | Error::ConnectionLost(_))) => return Err(error),
+            Err(error) => return Ok(Applied::FailedInsert { insert, error }),
+        };
+        let mut made = Vec::new();
+        for message in messages {
+            if let SimpleQueryMessage::Row(row) = message {
+                made.push(row_values(&row, &columns)?);
+            }
+        }
+        // One statement makes one row. A trigger can skip the row, or a
+        // rule write somewhere else: then what was stored is not known.
+        let row = made
+            .pop()
+            .filter(|_| made.is_empty())
+            .ok_or_else(not_read_back)?;
+        inserted.push(Some(row));
+    }
     for (row, update) in updates.iter().enumerate() {
         not_stopped(stop)?;
         let messages = match client
@@ -228,7 +261,7 @@ async fn apply(
         saved.push(found.pop().ok_or_else(not_read_back)?);
     }
     Ok(Applied::Rows(Stored {
-        inserted: Vec::new(),
+        inserted,
         rows: saved,
     }))
 }
