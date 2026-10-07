@@ -85,7 +85,9 @@ pub enum WriteOutcome {
         /// PostgreSQL, a rule, or a table that is not an ordinary one),
         /// which can change the row after its `INSERT` and move its key,
         /// and on MySQL, which hands no row back, one that its primary
-        /// key does not find again. The caller reads the table again.
+        /// key does not find again, or one of a table whose triggers the
+        /// server would not list to this user. The caller reads the
+        /// table again.
         inserted: Vec<Option<Vec<Value>>>,
         /// Each changed row as the database now holds it, in the set's
         /// order.

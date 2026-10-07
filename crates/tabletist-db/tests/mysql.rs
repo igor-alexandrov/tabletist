@@ -3253,6 +3253,49 @@ async fn a_new_row_of_a_table_with_a_trigger_is_written_and_not_known() {
     .await;
 }
 
+/// The server fires a table's triggers for everyone and lists them only to
+/// who has the TRIGGER privilege on it. A user without it is told of none,
+/// which proves none: their new row is written and handed back as not
+/// known. `compose/mysql-init.sql` makes that user.
+#[tokio::test]
+async fn a_user_who_is_shown_no_triggers_gets_a_new_row_back_as_not_known() {
+    let Some((mut spec, mut secrets)) = spec() else {
+        eprintln!("skipped: TABLETIST_TEST_MYSQL_URL is not set");
+        return;
+    };
+    load_fixture().await;
+    spec.user = "writer".into();
+    secrets.password = Some("writer".into());
+    let connection =
+        match Connection::connect_with(&spec, &secrets, &HostKeys::default(), Access::Writable)
+            .await
+        {
+            Ok(connection) => connection,
+            Err(error) => {
+                eprintln!("skipped: the server has no user without TRIGGER: {error}");
+                return;
+            }
+        };
+    let people = people("people_unseen");
+    on_its_own_tables("people_unseen", &[&people[0], &people[1]], async move {
+        let mut changes = changes_to("people_unseen", Vec::new());
+        changes.inserts = vec![RowInsert {
+            set: vec![sets("id", "int", "7"), sets("email", VARCHAR, "g@x")],
+        }];
+        let outcome = within(connection.write(&changes, &StopFlag::new()))
+            .await
+            .unwrap();
+        let WriteOutcome::Written { inserted, .. } = outcome else {
+            panic!("the save wrote");
+        };
+        // The same save as `a_new_row_whose_key_was_typed_is_found_by_it`,
+        // which a user who is shown the table's triggers gets its row from.
+        assert_eq!(inserted, [None]);
+        assert_eq!(row_of(&connection, "people_unseen", 7).await.0.len(), 4);
+    })
+    .await;
+}
+
 #[tokio::test]
 async fn a_table_without_a_key_takes_a_new_row_and_cannot_hand_it_back() {
     let Some(connection) = connect_as(Access::Writable).await else {

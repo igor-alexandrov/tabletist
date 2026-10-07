@@ -234,7 +234,9 @@ struct Written<'a> {
 struct FoundBy {
     key: Vec<String>,
     counter: Option<String>,
-    /// A trigger stands on the table. A row is then not known by the key
+    /// A trigger stands on the table, or the server would not say: it
+    /// fires a table's triggers for everyone, and lists them only to who
+    /// has the TRIGGER privilege on it. A row is then not known by the key
     /// it was sent with: a trigger can give it another, and give that one
     /// to another row.
     triggered: bool,
@@ -287,10 +289,12 @@ impl FoundBy {
             )
             .await
             .map_err(query_error)?;
+        // No trigger listed proves none only to a user who is shown them.
+        let shown = sees_triggers(conn, object, stop).await?;
         Ok(Self {
             key: key.into_iter().map(from_row).collect::<Result<_>>()?,
             counter: counter.into_iter().next().map(from_row).transpose()?,
-            triggered: !triggers.is_empty(),
+            triggered: !shown || !triggers.is_empty(),
         })
     }
 
@@ -299,7 +303,8 @@ impl FoundBy {
     /// counter's column and the counter gave one (a `0` or a NULL sent for
     /// it is not what was stored), and otherwise the value sent for it.
     /// `None` when the row cannot be found again for sure: a trigger
-    /// stands on the table, the table has no primary key, the database
+    /// stands on the table, or could without this user being told, the
+    /// table has no primary key, the database
     /// filled a key column some other way (a default), or a key column's
     /// value cannot be matched exactly.
     fn key(&self, insert: &RowInsert, id: Option<u64>) -> Option<Vec<(String, Value)>> {
@@ -325,6 +330,72 @@ impl FoundBy {
             })
             .collect()
     }
+}
+
+/// Whether the server lists the table's triggers to this session's account:
+/// whether it has the TRIGGER privilege on the table, by the server's own
+/// lists of what is granted. Only a grant that is found counts. One that
+/// comes through a role, or names its schema by a pattern, is not looked
+/// for, and the answer is then no: a new row is handed back as not known,
+/// which is always true enough.
+async fn sees_triggers(
+    conn: &mut mysql_async::Conn,
+    object: &ObjectRef,
+    stop: &StopFlag,
+) -> Result<bool> {
+    not_stopped(stop)?;
+    let account: Option<mysql_async::Row> = conn
+        .query_first("SELECT CURRENT_USER()")
+        .await
+        .map_err(query_error)?;
+    let account: Option<String> = account.map(from_row).transpose()?;
+    // The lists name an account as `'user'@'host'`. A host holds no `@`.
+    let Some((user, host)) = account.as_deref().and_then(|name| name.rsplit_once('@')) else {
+        return Ok(false);
+    };
+    let grantee = format!("'{user}'@'{host}'");
+    // A grant on everything holds for this schema only where none of it
+    // can be taken back schema by schema. MariaDB has no such setting, and
+    // answers with no row.
+    not_stopped(stop)?;
+    let partial: Option<mysql_async::Row> = conn
+        .query_first("SHOW VARIABLES LIKE 'partial_revokes'")
+        .await
+        .map_err(query_error)?;
+    let partial: Option<(String, String)> = partial.map(from_row).transpose()?;
+    let whole = !partial.is_some_and(|(_, value)| value.eq_ignore_ascii_case("ON"));
+    not_stopped(stop)?;
+    let granted: Option<mysql_async::Row> = conn
+        .exec_first(
+            "SELECT 1 FROM information_schema.user_privileges \
+             WHERE ? AND privilege_type = 'TRIGGER' AND grantee = ? \
+             UNION ALL \
+             SELECT 1 FROM information_schema.schema_privileges \
+             WHERE privilege_type = 'TRIGGER' AND grantee = ? AND table_schema = ? \
+               AND CAST(table_schema AS BINARY) = CAST(? AS BINARY) \
+             UNION ALL \
+             SELECT 1 FROM information_schema.table_privileges \
+             WHERE privilege_type = 'TRIGGER' AND grantee = ? \
+               AND table_schema = ? AND table_name = ? \
+               AND CAST(table_schema AS BINARY) = CAST(? AS BINARY) \
+               AND CAST(table_name AS BINARY) = CAST(? AS BINARY) \
+             LIMIT 1",
+            (
+                whole,
+                &grantee,
+                &grantee,
+                &object.schema,
+                &object.schema,
+                &grantee,
+                &object.schema,
+                &object.name,
+                &object.schema,
+                &object.name,
+            ),
+        )
+        .await
+        .map_err(query_error)?;
+    Ok(granted.is_some())
 }
 
 /// A value sent for a key column, as what finds its row again. A whole
