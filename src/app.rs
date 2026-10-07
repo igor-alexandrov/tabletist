@@ -1511,6 +1511,7 @@ impl App {
                     // The other database has other objects, but a SQL
                     // editor's text is the user's work: it stays.
                     workspace.tabs.retain(|open| matches!(open, Tab::Sql(_)));
+                    workspace.recent.clear();
                     workspace.active_tab = workspace
                         .active_tab
                         .filter(|id| workspace.tab(*id).is_some())
@@ -8735,6 +8736,7 @@ mod tests {
         workspace.active_tab = Some(users);
         workspace.sql_tab_mut(second).unwrap().text = "SELECT 1".into();
         assert!(workspace.sql_tab(second).unwrap().is_running());
+        assert_eq!(workspace.recent.len(), 2);
         harness.app.apply(Action::SwitchDatabase {
             tab,
             database: "other".into(),
@@ -8742,6 +8744,7 @@ mod tests {
         let workspace = harness.app.workspace(tab).unwrap();
         assert_eq!(strip(&harness, tab), vec![first, second]);
         assert_eq!(workspace.object_tabs().count(), 0);
+        assert!(workspace.recent.is_empty(), "they are the other database's");
         assert_eq!(
             workspace.active_tab,
             Some(first),
