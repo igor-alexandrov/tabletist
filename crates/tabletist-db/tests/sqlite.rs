@@ -2308,6 +2308,59 @@ async fn a_new_row_of_a_table_with_a_trigger_is_written_and_not_known() {
     assert_eq!(rows_of("cover_codes").await.len(), 2);
 }
 
+/// A trigger that runs before an insert can take the row for itself
+/// (`RAISE(IGNORE)`), to store it elsewhere or nowhere: the statement goes
+/// through and returns no row. That is no failure of the save, and what
+/// became of the row is not known.
+#[tokio::test]
+async fn a_new_row_a_trigger_takes_for_itself_does_not_fail_the_save() {
+    let (connection, dir) = fixture_as(Access::Writable).await;
+    other_program(&dir)
+        .execute_batch(
+            "CREATE TABLE covers_taken (id INTEGER PRIMARY KEY, kind TEXT);
+             CREATE TABLE covers_kept (kind TEXT);
+             CREATE TRIGGER covers_taken_before BEFORE INSERT ON covers_taken BEGIN
+                 INSERT INTO covers_kept VALUES (NEW.kind);
+                 SELECT RAISE(IGNORE);
+             END",
+        )
+        .unwrap();
+    let cover = RowInsert {
+        set: vec![InsertValue {
+            column: "kind".into(),
+            type_name: "TEXT".into(),
+            new: to("ebook"),
+        }],
+    };
+    let outcome = connection
+        .write(
+            &adding("covers_taken", vec![cover], Vec::new()),
+            &StopFlag::new(),
+        )
+        .await
+        .unwrap();
+    let WriteOutcome::Written { inserted, .. } = outcome else {
+        panic!("the save wrote: {outcome:?}");
+    };
+    assert_eq!(inserted, [None]);
+    let rows_of = |table: &'static str| {
+        let connection = &connection;
+        async move {
+            connection
+                .fetch_rows(&RowQuery::new(ObjectRef::new("main", table), 50))
+                .await
+                .unwrap()
+                .rows
+        }
+    };
+    // The row is where the trigger put it, and the save was committed.
+    assert!(rows_of("covers_taken").await.is_empty());
+    assert_eq!(
+        rows_of("covers_kept").await,
+        [vec![Value::Text("ebook".into())]]
+    );
+}
+
 /// A key whose name is not UTF-8 cannot be spelled in a read. A new row
 /// needs none: it is what its `INSERT` returned.
 #[tokio::test]

@@ -2745,6 +2745,59 @@ async fn a_table_without_a_key_takes_a_new_row() {
     .await;
 }
 
+/// A BEFORE trigger can take a new row for itself, to store it elsewhere or
+/// nowhere: the statement goes through and returns no row. That is no
+/// failure of the save, and what became of the row is not known.
+#[tokio::test]
+async fn a_new_row_a_trigger_takes_for_itself_does_not_fail_the_save() {
+    let Some(connection) = connect_as(Access::Writable).await else {
+        return;
+    };
+    on_its_own_tables(
+        "DROP TABLE IF EXISTS covers_taken, covers_kept; \
+         DROP FUNCTION IF EXISTS covers_taken_keep()",
+        "CREATE TABLE covers_taken (id integer PRIMARY KEY, kind text);
+         INSERT INTO covers_taken VALUES (1, 'print');
+         CREATE TABLE covers_kept (id integer, kind text);
+         CREATE FUNCTION covers_taken_keep() RETURNS trigger LANGUAGE plpgsql AS $$
+         BEGIN
+             INSERT INTO covers_kept VALUES (NEW.id, NEW.kind);
+             RETURN NULL;
+         END $$;
+         CREATE TRIGGER covers_taken_before BEFORE INSERT ON covers_taken
+             FOR EACH ROW EXECUTE FUNCTION covers_taken_keep()",
+        async move {
+            let (columns, first) = row_of(&connection, "covers_taken", 1).await;
+            let mut changes = changes_to(
+                "covers_taken",
+                vec![by_id(
+                    1,
+                    vec![cell(&columns, &first, "kind", "text", to("audio"))],
+                )],
+            );
+            changes.inserts = vec![RowInsert {
+                set: vec![sets("id", "integer", "2"), sets("kind", "text", "ebook")],
+            }];
+            let outcome = within(connection.write(&changes, &StopFlag::new()))
+                .await
+                .unwrap();
+            let WriteOutcome::Written { inserted, rows, .. } = outcome else {
+                panic!("the save wrote: {outcome:?}");
+            };
+            assert_eq!(inserted, [None]);
+            // The rest of the save is written, and the row is where the
+            // trigger put it.
+            assert_eq!(rows, [row_of(&connection, "covers_taken", 1).await.1]);
+            assert_eq!(page_of(&connection, "covers_taken").await.1.len(), 1);
+            assert_eq!(
+                page_of(&connection, "covers_kept").await.1,
+                [vec![Value::Int(2), Value::Text("ebook".into())]]
+            );
+        },
+    )
+    .await;
+}
+
 /// `RETURNING` gives a row as its `INSERT` left it, before an AFTER trigger
 /// ran, and a trigger can move the row's key, so no read finds it again
 /// for sure. On a table with a trigger a new row is written and handed

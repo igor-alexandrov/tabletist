@@ -210,13 +210,11 @@ async fn apply(
                 made.push(row_values(&row, &columns)?);
             }
         }
-        // One statement makes one row. A trigger can skip the row, or a
-        // rule write somewhere else: then what was stored is not known.
-        let row = made
-            .pop()
-            .filter(|_| made.is_empty())
-            .ok_or_else(not_read_back)?;
-        returned.push(row);
+        // One statement makes one row, but for a trigger or a rule: a
+        // BEFORE trigger can take the row for itself and store it
+        // elsewhere, or nowhere. The statement went through all the same,
+        // and what became of its row is then not known.
+        returned.push(made.pop().filter(|_| made.is_empty()));
     }
     for (row, update) in updates.iter().enumerate() {
         not_stopped(stop)?;
@@ -291,7 +289,7 @@ async fn apply(
     };
     let inserted = returned
         .into_iter()
-        .map(|row| known.then_some(row))
+        .map(|row| row.filter(|_| known))
         .collect();
     Ok(Applied::Rows(Stored {
         inserted,

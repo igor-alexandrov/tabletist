@@ -307,13 +307,11 @@ fn apply(
             Err(error @ (Error::Cancelled | Error::ConnectionLost(_))) => return Err(error),
             Err(error) => return Ok(Applied::FailedInsert { insert, error }),
         };
-        // One statement makes one row. A trigger that ran in its place can
-        // have made none, and then what was stored is not known.
-        let row = made
-            .pop()
-            .filter(|_| made.is_empty())
-            .ok_or_else(not_read_back)?;
-        returned.push(row.values);
+        // One statement makes one row, but for a trigger: one that runs
+        // before it can take the row for itself (`RAISE(IGNORE)`) and
+        // store it elsewhere, or nowhere. The statement went through all
+        // the same, and what became of its row is then not known.
+        returned.push(made.pop().filter(|_| made.is_empty()).map(|row| row.values));
     }
     for (row, update) in updates.iter().enumerate() {
         not_stopped(stop)?;
@@ -357,7 +355,7 @@ fn apply(
     let known = returned.is_empty() || !triggered(connection, &changes.object)?;
     let inserted = returned
         .into_iter()
-        .map(|row| known.then_some(row))
+        .map(|row| row.filter(|_| known))
         .collect();
     Ok(Applied::Rows(Stored { inserted, rows }))
 }

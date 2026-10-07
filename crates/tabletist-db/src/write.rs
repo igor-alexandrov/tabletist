@@ -80,14 +80,18 @@ pub enum NewValue {
 pub enum WriteOutcome {
     Written {
         /// Each new row as the database holds it, in the order of the
-        /// set's `inserts`. `None` for a row that was written and is not
-        /// known for sure: one of a table with a trigger (or, on
-        /// PostgreSQL, a rule, or a table that is not an ordinary one),
-        /// which can change the row after its `INSERT` and move its key,
-        /// and on MySQL, which hands no row back, one that its primary
-        /// key does not find again, or one of a table whose triggers the
-        /// server would not list to this user. The caller reads the
-        /// table again.
+        /// set's `inserts`. `None` where that is not known for sure,
+        /// though the row's `INSERT` went through:
+        ///
+        /// - on a table with a trigger (on PostgreSQL also a rule, or a
+        ///   table that is not an ordinary one), which can change the row
+        ///   after its `INSERT`, move its key, or take the row for itself
+        ///   and store it elsewhere or nowhere;
+        /// - on MySQL, which hands no row back, where the primary key
+        ///   does not find the row again, or the server would not list
+        ///   the table's triggers to this user.
+        ///
+        /// The caller reads the table again.
         inserted: Vec<Option<Vec<Value>>>,
         /// Each changed row as the database now holds it, in the set's
         /// order.
