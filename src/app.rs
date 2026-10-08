@@ -3758,16 +3758,13 @@ impl App {
     /// What the grid shows: a pending cell gives its new value, as the row
     /// panel's copy does.
     pub fn copy_text(&self, whole_row: bool) -> Option<String> {
-        use tabletist_db::{NewValue, Value};
+        use tabletist_db::Value;
         let (tab, id) = self.active_object()?;
         let object = self.workspace(tab)?.object_tab(id)?;
         let cell = object.selection?;
         let row = object.page()?.rows.get(cell.row)?;
         let shown = |col: usize, loaded: &Value| match object.edits.cells.get(&(cell.row, col)) {
-            Some(pending) => match &pending.new {
-                NewValue::Text(text) => Value::Text(text.as_str().into()),
-                NewValue::Null => Value::Null,
-            },
+            Some(pending) => crate::edit::shown_value(&pending.new),
             None => loaded.clone(),
         };
         Some(if whole_row {
@@ -4033,16 +4030,12 @@ fn row_fields(
     cells: &std::collections::BTreeMap<(usize, usize), crate::edit::Pending>,
 ) -> crate::model::RowFields {
     use crate::ui::format::{cell_text, field_text};
-    use tabletist_db::{NewValue, Value};
     let pending: Vec<Option<crate::model::PendingField>> = values
         .iter()
         .enumerate()
         .map(|(col, loaded)| {
             let pending = cells.get(&(row, col))?;
-            let new = match &pending.new {
-                NewValue::Text(text) => Value::Text(text.as_str().into()),
-                NewValue::Null => Value::Null,
-            };
+            let new = crate::edit::shown_value(&pending.new);
             Some(crate::model::PendingField {
                 new,
                 was: cell_text(loaded).into_owned(),

@@ -33,6 +33,32 @@ pub enum ColumnClass {
     Other,
 }
 
+/// What a date or time column keeps.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Temporal {
+    Date,
+    Time,
+    Timestamp,
+}
+
+/// What the column whose type the catalog names `type_name` keeps of a
+/// moment, by the type's first word: the three engines name these types
+/// alike. `None` for every other type.
+pub fn temporal(type_name: &str) -> Option<Temporal> {
+    let word: String = type_name
+        .trim()
+        .chars()
+        .take_while(char::is_ascii_alphabetic)
+        .collect::<String>()
+        .to_ascii_lowercase();
+    match word.as_str() {
+        "date" => Some(Temporal::Date),
+        "time" | "timetz" => Some(Temporal::Time),
+        "timestamp" | "timestamptz" | "datetime" => Some(Temporal::Timestamp),
+        _ => None,
+    }
+}
+
 /// The class of a column whose type the catalog names `type_name`
 /// (`ColumnInfo::type_name`).
 pub fn column_class(dialect: Dialect, type_name: &str) -> ColumnClass {
@@ -235,6 +261,31 @@ mod tests {
 
     fn int(min: i128, max: i128) -> ColumnClass {
         Integer { min, max }
+    }
+
+    #[test]
+    fn date_and_time_types_are_told_by_their_first_word() {
+        use Temporal::{Date, Time, Timestamp};
+        for (name, kind) in [
+            ("date", Some(Date)),
+            ("DATE", Some(Date)),
+            ("time without time zone", Some(Time)),
+            ("time(3)", Some(Time)),
+            ("timetz", Some(Time)),
+            ("timestamp(6) without time zone", Some(Timestamp)),
+            ("timestamp with time zone", Some(Timestamp)),
+            ("timestamptz", Some(Timestamp)),
+            ("datetime(6)", Some(Timestamp)),
+            ("DATETIME", Some(Timestamp)),
+            // A name that only begins like one is no time.
+            ("daterange", None),
+            ("interval", None),
+            ("bigint", None),
+            ("text", None),
+            ("", None),
+        ] {
+            assert_eq!(temporal(name), kind, "{name}");
+        }
     }
 
     #[test]

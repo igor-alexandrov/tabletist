@@ -12050,6 +12050,10 @@ mod tests {
         Some(match &pending.new {
             tabletist_db::NewValue::Text(text) => text.clone(),
             tabletist_db::NewValue::Null => "NULL".to_owned(),
+            // The word of what the database will make.
+            new @ (tabletist_db::NewValue::Default { .. } | tabletist_db::NewValue::Now) => {
+                crate::edit::word(new).unwrap_or_default().to_owned()
+            }
         })
     }
 

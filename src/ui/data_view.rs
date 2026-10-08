@@ -1175,7 +1175,7 @@ fn error_line(app: &App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId) {
                 State::ToFix(problem) => {
                     let typed = match &pending.new {
                         NewValue::Text(text) => Some(text.as_str()),
-                        NewValue::Null => None,
+                        NewValue::Null | NewValue::Default { .. } | NewValue::Now => None,
                     };
                     let type_name = format::type_label(&column.type_name, column.kind);
                     let type_name = format::display_safe(&type_name);
@@ -1649,10 +1649,7 @@ thread_local! {
 fn drawn(new: &NewValue) -> Value {
     #[cfg(test)]
     DRAWN.with(|count| count.set(count.get() + 1));
-    match new {
-        NewValue::Text(text) => Value::Text(text.as_str().into()),
-        NewValue::Null => Value::Null,
-    }
+    crate::edit::shown_value(new)
 }
 
 /// `cell` with its text its own: what is drawn of a value that does not
@@ -1780,7 +1777,7 @@ impl<'a> Changes<'a> {
                 cell.mark = Mark::Trouble;
                 let typed = match &pending.new {
                     NewValue::Text(text) => Some(text.as_str()),
-                    NewValue::Null => None,
+                    NewValue::Null | NewValue::Default { .. } | NewValue::Now => None,
                 };
                 let type_name = format::type_label(&column.type_name, column.kind);
                 let type_name = format::display_safe(&type_name);

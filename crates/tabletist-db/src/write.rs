@@ -67,12 +67,21 @@ pub struct CellChange {
     pub new: NewValue,
 }
 
-/// What a cell becomes: NULL, or text the database turns into the column's
-/// type.
+/// What a cell becomes: NULL, text the database turns into the column's
+/// type, or what the database makes itself.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NewValue {
     Null,
     Text(String),
+    /// The column's default. `expression` is the default as the catalog
+    /// writes it, where the column has one: SQLite has no `DEFAULT` to
+    /// write in a statement, and is sent the expression itself.
+    Default {
+        expression: Option<String>,
+    },
+    /// The time the statement runs, by the database's clock: the date or
+    /// the time of day where the column keeps only that.
+    Now,
 }
 
 /// How a save ended. Only `Written` changed anything.

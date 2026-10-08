@@ -658,11 +658,37 @@ fn laid_out(text: String) -> String {
 pub fn is_change(loaded: &Value, new: &NewValue, class: ColumnClass) -> bool {
     match new {
         NewValue::Null => !loaded.is_null(),
+        // What the database will make is not what the cell holds, whatever
+        // that is.
+        NewValue::Default { .. } | NewValue::Now => true,
         NewValue::Text(_) if loaded.is_null() => true,
         NewValue::Text(text) if class == ColumnClass::Json => {
             laid_out(text.clone()) != start_text(loaded, class)
         }
         NewValue::Text(text) => *text != start_text(loaded, class),
+    }
+}
+
+/// The word a value that is no value yet is shown as, until the database
+/// has made it. `None` for NULL, which a cell draws as it draws any NULL,
+/// and for text.
+pub fn word(new: &NewValue) -> Option<&'static str> {
+    match new {
+        NewValue::Default { .. } => Some("DEFAULT"),
+        NewValue::Now => Some("now()"),
+        NewValue::Null | NewValue::Text(_) => None,
+    }
+}
+
+/// A pending value as a value to show: its text, NULL, or the word of what
+/// the database will make.
+pub fn shown_value(new: &NewValue) -> Value {
+    match new {
+        NewValue::Text(text) => Value::Text(text.as_str().into()),
+        NewValue::Null => Value::Null,
+        NewValue::Default { .. } | NewValue::Now => {
+            Value::Text(word(new).unwrap_or_default().into())
+        }
     }
 }
 
@@ -1553,6 +1579,7 @@ pub fn shown_lines(
             let yours = match line.yours {
                 NewValue::Null => None,
                 NewValue::Text(text) => Some(text.as_str()),
+                NewValue::Default { .. } | NewValue::Now => word(line.yours),
             };
             let mut values = vec![loaded.as_deref(), yours];
             if let Some(server) = &server {

@@ -662,7 +662,9 @@ impl App {
                             kept = true;
                             text.clone()
                         }
-                        NewValue::Null => String::new(),
+                        // As a pending NULL: nothing of it is text
+                        // to go on from.
+                        NewValue::Null | NewValue::Default { .. } | NewValue::Now => String::new(),
                     },
                     // A new row's cell starts from nothing.
                     None => table

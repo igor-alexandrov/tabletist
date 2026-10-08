@@ -2630,6 +2630,89 @@ fn sets(column: &str, type_name: &str, new: &str) -> InsertValue {
 }
 
 #[tokio::test]
+async fn default_and_now_are_stored_as_the_database_makes_them() {
+    let Some(connection) = connect_as(Access::Writable).await else {
+        return;
+    };
+    on_its_own_tables(
+        "DROP TABLE IF EXISTS write_words",
+        "CREATE TABLE write_words (
+             id integer PRIMARY KEY,
+             kind varchar(20) NOT NULL DEFAULT 'print',
+             made_at timestamptz NOT NULL DEFAULT '2026-01-01 00:00:00+00',
+             made_on date,
+             opens_at time
+         );
+         INSERT INTO write_words VALUES (1, 'ebook', '2020-02-02 00:00:00+00', NULL, NULL)",
+        async move {
+            let outcome = save(
+                &connection,
+                "write_words",
+                1,
+                &[
+                    (
+                        "kind",
+                        "character varying(20)",
+                        NewValue::Default { expression: None },
+                    ),
+                    ("made_at", "timestamp with time zone", NewValue::Now),
+                    ("made_on", "date", NewValue::Now),
+                    ("opens_at", "time without time zone", NewValue::Now),
+                ],
+            )
+            .await
+            .unwrap();
+            assert!(
+                matches!(outcome, WriteOutcome::Written { .. }),
+                "{outcome:?}"
+            );
+            let (columns, row) = row_of(&connection, "write_words", 1).await;
+            let at = |name: &str| &row[columns.iter().position(|column| column == name).unwrap()];
+            // The default's value, and the clock's own: not what was
+            // there, and not the words.
+            assert_eq!(*at("kind"), text("print"));
+            let made = format!("{:?}", at("made_at"));
+            assert!(
+                !made.contains("2020-02-02") && !made.contains("now"),
+                "{made}"
+            );
+            assert!(!at("made_at").is_null() && !at("made_on").is_null());
+            assert!(!at("opens_at").is_null());
+            // And in a new row.
+            let value = |column: &str, type_name: &str, new: NewValue| InsertValue {
+                column: column.into(),
+                type_name: type_name.into(),
+                new,
+            };
+            let mut changes = changes_to("write_words", Vec::new());
+            changes.inserts = vec![RowInsert {
+                set: vec![
+                    value("id", "integer", to("2")),
+                    value(
+                        "kind",
+                        "character varying(20)",
+                        NewValue::Default { expression: None },
+                    ),
+                    value("made_at", "timestamp with time zone", NewValue::Now),
+                ],
+            }];
+            let outcome = within(connection.write(&changes, &StopFlag::new()))
+                .await
+                .unwrap();
+            assert!(
+                matches!(outcome, WriteOutcome::Written { .. }),
+                "{outcome:?}"
+            );
+            let (columns, row) = row_of(&connection, "write_words", 2).await;
+            let at = |name: &str| &row[columns.iter().position(|column| column == name).unwrap()];
+            assert_eq!(*at("kind"), text("print"));
+            assert!(!format!("{:?}", at("made_at")).contains("2026-01-01"));
+        },
+    )
+    .await;
+}
+
+#[tokio::test]
 async fn a_new_row_comes_back_as_the_database_stored_it() {
     let Some(connection) = connect_as(Access::Writable).await else {
         return;
