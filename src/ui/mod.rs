@@ -21020,10 +21020,17 @@ mod tests {
                 let cell = edits(harness, tab, id).cells.get(&at);
                 cell.map(|cell| matches!(cell.new, tabletist_db::NewValue::Null))
             };
-            // email is NOT NULL: Mod+Backspace on its field does nothing.
+            // email is NOT NULL: Mod+Backspace on its field changes
+            // nothing, and the field says why, under its value. The grid
+            // hangs no note of it on the cell.
             focus_field(&mut harness, tab, id, 1);
             harness.press(Key::Backspace, Modifiers::COMMAND);
             assert_eq!(null(&harness, (1, 1)), None, "{}", look.name);
+            let said = painted_at(&harness, "This column cannot be NULL");
+            assert_eq!(said.len(), 1, "{}: {:?}", look.name, harness.painted);
+            let value = panel_text(&harness, "user2@example.com");
+            assert!(said[0].top() >= value.bottom(), "{}", look.name);
+            assert!(said[0].left() >= value.left() - 1.0, "{}", look.name);
             // Where the column takes NULL, it makes the field NULL.
             let object = harness.app.workspace_mut(tab).unwrap();
             let object = object.object_tab_mut(id).unwrap();

@@ -47,7 +47,7 @@ pub struct Form<'a> {
     /// The column whose edit was asked for in the panel and refused: its
     /// field says why under its value. The terminal look says it in its
     /// mode line.
-    refused: Option<usize>,
+    refused: Option<(usize, Lock)>,
     /// The column whose field gets the keyboard back, until that field
     /// takes it.
     pub focus: Option<usize>,
@@ -129,7 +129,7 @@ impl<'a> Form<'a> {
             .why
             .filter(|(cell, _)| cell.row == row)
             .filter(|_| object.edits.why_place == EditorPlace::Panel && !terminal)
-            .map(|(cell, _)| cell.col);
+            .map(|(cell, lock)| (cell.col, lock));
         let editing = editor.as_ref().map(|editor| editor.cell.col);
         // The editor still in the tab is the grid's.
         let in_grid = object
@@ -182,7 +182,15 @@ impl<'a> Form<'a> {
     /// Whether an edit of the column `col` was asked for in the panel and
     /// refused: its field says why.
     pub fn refused(&self, col: usize) -> bool {
-        self.refused == Some(col)
+        self.refusal(col).is_some()
+    }
+
+    /// Why the edit asked for on the field of the column `col` was refused,
+    /// where one was.
+    pub fn refusal(&self, col: usize) -> Option<Lock> {
+        self.refused
+            .filter(|(refused, _)| *refused == col)
+            .map(|(_, lock)| lock)
     }
 
     /// Draws the panel's editor in its field's place, its text in `role`,

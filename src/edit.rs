@@ -690,8 +690,14 @@ pub fn typed_as(dialect: Dialect, column: &ColumnInfo, text: &str) -> NewValue {
         ColumnClass::Integer { .. }
         | ColumnClass::Decimal { .. }
         | ColumnClass::Float
-        | ColumnClass::Boolean
-        | ColumnClass::Other => typed.eq_ignore_ascii_case(word),
+        | ColumnClass::Boolean => typed.eq_ignore_ascii_case(word),
+        // A date or a time keeps no text.
+        ColumnClass::Other if temporal(&column.type_name).is_some() => {
+            typed.eq_ignore_ascii_case(word)
+        }
+        // The rest may: an enum, `citext`, a SQLite column with no type.
+        // `null` is four letters there, and only the capitals are SQL's.
+        ColumnClass::Other => typed == word.to_ascii_uppercase(),
     };
     if is("null") && column.nullable {
         return NewValue::Null;
@@ -2132,6 +2138,37 @@ mod tests {
         let flag = column("boolean", true, None);
         assert_eq!(typed_as(pg, &flag, "true"), typed("true"));
         assert_eq!(typed_as(pg, &flag, "null"), NewValue::Null);
+        // A type the app has no class for may keep text: the words are
+        // text there but in capitals, as in JSON.
+        let lite = Dialect::Sqlite;
+        let kept = [
+            (pg, "citext"),
+            (pg, "mood"),
+            (pg, "uuid"),
+            (Dialect::MySql, "enum('a','b')"),
+            (lite, ""),
+            (lite, "STRING"),
+        ];
+        for (dialect, type_name) in kept {
+            let column = column(type_name, true, Some("'a'"));
+            for word in ["null", "Null", "default", "now()", "NOW()"] {
+                let read = typed_as(dialect, &column, word);
+                assert_eq!(read, typed(word), "{type_name}: {word}");
+            }
+            assert_eq!(typed_as(dialect, &column, "NULL"), NewValue::Null);
+            let read = typed_as(dialect, &column, " DEFAULT ");
+            assert!(matches!(read, NewValue::Default { .. }), "{type_name}");
+        }
+        // An array of dates is no date: no moment goes into it.
+        let dates = column("date[]", true, None);
+        for word in ["now()", "NOW()"] {
+            assert_eq!(typed_as(pg, &dates, word), typed(word), "{word}");
+        }
+        // SQLite's date and time columns have no class either, and read
+        // the words in any case, as PostgreSQL's do.
+        let stamp = column("DATETIME", true, None);
+        assert_eq!(typed_as(lite, &stamp, "now"), NewValue::Now);
+        assert_eq!(typed_as(lite, &stamp, "null"), NewValue::Null);
     }
 
     #[test]

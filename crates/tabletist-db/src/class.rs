@@ -43,10 +43,14 @@ pub enum Temporal {
 
 /// What the column whose type the catalog names `type_name` keeps of a
 /// moment, by the type's first word: the three engines name these types
-/// alike. `None` for every other type.
+/// alike. `None` for every other type, an array of them too: PostgreSQL
+/// names that `date[]`, and it takes no one moment.
 pub fn temporal(type_name: &str) -> Option<Temporal> {
-    let word: String = type_name
-        .trim()
+    let name = type_name.trim();
+    if name.ends_with("[]") {
+        return None;
+    }
+    let word: String = name
         .chars()
         .take_while(char::is_ascii_alphabetic)
         .collect::<String>()
@@ -279,6 +283,9 @@ mod tests {
             ("DATETIME", Some(Timestamp)),
             // A name that only begins like one is no time.
             ("daterange", None),
+            // Nor is an array of them.
+            ("date[]", None),
+            ("timestamp without time zone[]", None),
             ("interval", None),
             ("bigint", None),
             ("text", None),

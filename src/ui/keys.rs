@@ -998,7 +998,11 @@ fn editing_keys(
         };
         if take_press(input, Modifiers::COMMAND, Key::Backspace) > 0 {
             on_cell(actions);
-            actions.push(Action::SetNull { tab, id });
+            // A refusal is said where it was asked for.
+            actions.push(match field {
+                Some(_) => Action::SetFieldNull { tab, id },
+                None => Action::SetNull { tab, id },
+            });
         }
         if take_press(input, Modifiers::COMMAND, Key::Quote) > 0 {
             on_cell(actions);
@@ -1215,7 +1219,10 @@ fn editing_letters(
                 }
                 "x" => {
                     on_cell(actions);
-                    actions.push(Action::SetNull { tab, id });
+                    actions.push(match field {
+                        Some(_) => Action::SetFieldNull { tab, id },
+                        None => Action::SetNull { tab, id },
+                    });
                 }
                 "D" => {
                     on_cell(actions);

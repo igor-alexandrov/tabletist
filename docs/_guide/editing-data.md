@@ -28,7 +28,7 @@ double-click the value there.
 | Leave the editor without the change | Esc |
 
 Set NULL on a column that cannot be NULL does nothing, and the cell says
-why.
+why. Pressed on a field of the row panel, the field says it.
 
 The Omarchy look uses vim keys for these. They are in
 [The Omarchy Look]({% link _guide/omarchy.md %}#editing).
@@ -55,6 +55,10 @@ after. Review SQL shows the keyword as it is sent.
   Cmd/Ctrl+Backspace for NULL and Cmd/Ctrl+' for DEFAULT.
 - In a JSON column `null` is a JSON document. `NULL` and `DEFAULT` in
   capitals are the database's.
+- The same goes for a type that is no number, boolean, date or time and
+  may keep text: an enum, `citext`, a UUID, a SQLite column with no type.
+  `null` there is four letters, and only the capitals are the database's.
+- An array of dates is no date: `now()` there is text.
 - A word the column cannot take stays text, and is checked like any other:
   `NULL` in a column that cannot be NULL, `DEFAULT` where there is no
   default, `now()` outside date and time columns.

@@ -318,6 +318,12 @@ pub enum Action {
         tab: ConnTabId,
         id: TabId,
     },
+    /// `SetNull`, asked for on the cell's field of the row panel: where the
+    /// column takes no NULL, the field says so.
+    SetFieldNull {
+        tab: ConnTabId,
+        id: TabId,
+    },
     /// Flip the active cell where it is a boolean's: true, false, and NULL
     /// where the column takes it.
     CycleBoolean {

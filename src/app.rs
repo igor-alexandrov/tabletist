@@ -923,7 +923,8 @@ impl App {
                 }
             }
             Action::FormatEditor { tab, id } => self.format_editor(tab, id),
-            Action::SetNull { tab, id } => self.set_null(tab, id),
+            Action::SetNull { tab, id } => self.set_null(tab, id, EditorPlace::Grid),
+            Action::SetFieldNull { tab, id } => self.set_null(tab, id, EditorPlace::Panel),
             Action::SetDefault { tab, id } => self.set_default(tab, id),
             Action::CycleBoolean { tab, id } => self.cycle_boolean(tab, id),
             Action::SetBoolean { tab, id, value } => self.set_boolean(tab, id, value),
@@ -11134,6 +11135,12 @@ mod tests {
             let edits = &object(&harness, tab, id).edits;
             assert!(edits.cells.is_empty());
             assert_eq!(edits.why, Some((cell, Lock::NotNull)));
+            assert_eq!(edits.why_place, EditorPlace::Grid);
+            // Asked for on the row panel's field, it is said there.
+            harness.app.apply(Action::SetFieldNull { tab, id });
+            let edits = &object(&harness, tab, id).edits;
+            assert_eq!(edits.why, Some((cell, Lock::NotNull)));
+            assert_eq!(edits.why_place, EditorPlace::Panel);
             // Where the column takes one, the reason goes with the NULL.
             let cell = at(0, 3);
             harness.app.apply(Action::SelectCell { tab, id, cell });

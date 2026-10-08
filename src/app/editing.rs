@@ -39,6 +39,7 @@ pub(super) fn dropped_under_a_prompt(action: &Action) -> bool {
             | Action::LeaveEdit { .. }
             | Action::CancelEdit { .. }
             | Action::SetNull { .. }
+            | Action::SetFieldNull { .. }
             | Action::SetDefault { .. }
             | Action::CycleBoolean { .. }
             | Action::SetBoolean { .. }
@@ -951,7 +952,9 @@ impl App {
         }
     }
 
-    pub(super) fn set_null(&mut self, tab: ConnTabId, id: TabId) {
+    /// Makes the selected cell NULL, where its column takes one. Where it
+    /// takes none the cell says why, at `place`: where it was asked for.
+    pub(super) fn set_null(&mut self, tab: ConnTabId, id: TabId, place: EditorPlace) {
         let verdict = self.table(tab, id, |table, object| {
             let cell = object.selection?;
             if object.edits.editor.is_some() || table.lock(cell).is_some() {
@@ -976,7 +979,7 @@ impl App {
             Ok(changed) => changed,
             Err(lock) => {
                 object.edits.why = Some((cell, lock));
-                object.edits.why_place = EditorPlace::Grid;
+                object.edits.why_place = place;
                 return;
             }
         };
