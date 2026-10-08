@@ -111,7 +111,7 @@ back.
 
 | Keys | Do |
 | --- | --- |
-| Space, Ctrl+Shift+R | Show or hide the row panel |
+| Space, Ctrl+Shift+R | Show or hide the row panel. On a boolean cell that can be edited, Space flips the cell instead |
 | Esc | Close it |
 | `[` `]` | Previous and next row |
 | `za` | Fold the documents in it |
@@ -130,7 +130,11 @@ back.
 | Esc | Leave the editor and keep the edit |
 | Ctrl+C | Drop the edit |
 | Alt+Enter | Open the large editor. In it, Ctrl+Enter applies and Esc keeps the text |
-| `x` | Set NULL |
+| `x` | Set NULL. On a column that cannot be NULL, the status line says so |
+| `D` | Set DEFAULT, where the column has a default |
+| Space | Flip a boolean cell: true, false, NULL |
+| `t`, `f` | Set a boolean cell true or false |
+| Ctrl+T | Now, while a date or time cell is being edited. Anywhere else it opens a SQL editor |
 | `u` | Revert the cell |
 | `:w`, Ctrl+S | Save all pending changes |
 | `:e!` | Discard all pending changes |

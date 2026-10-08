@@ -4,7 +4,7 @@ use std::fmt::Write as _;
 
 use crate::{
     ColumnClass, Error, Filter, FilterOp, NewValue, ObjectRef, Result, RowChange, RowInsert,
-    RowQuery, SortDir, Value, column_class,
+    RowQuery, SortDir, Temporal, Value, column_class, temporal,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -95,6 +95,9 @@ enum Operand {
     Float(f64),
     Text(String),
     Bytes(Vec<u8>),
+    /// Written into the statement as it is, shown and sent alike: a
+    /// keyword, or a default's expression as the catalog gave it.
+    Raw(String),
 }
 
 /// Escapes `\`, `%` and `_` so `text` matches literally inside a LIKE
@@ -460,6 +463,22 @@ impl Dialect {
             }
             Operand::Text(text) => self.literal(text),
             Operand::Bytes(bytes) => self.bytes_literal(bytes),
+            Operand::Raw(text) => text.clone(),
+        }
+    }
+
+    /// The time a statement runs, as this engine writes it for a column
+    /// that keeps `kind`.
+    fn now(self, kind: Temporal) -> &'static str {
+        match (self, kind) {
+            (Self::Postgres | Self::MySql | Self::Sqlite, Temporal::Date) => "CURRENT_DATE",
+            (Self::Postgres | Self::Sqlite, Temporal::Time) => "CURRENT_TIME",
+            (Self::Postgres, Temporal::Timestamp) => "now()",
+            // To the microsecond: without the precision MySQL gives whole
+            // seconds, whatever the column keeps.
+            (Self::MySql, Temporal::Time) => "CURRENT_TIME(6)",
+            (Self::MySql, Temporal::Timestamp) => "CURRENT_TIMESTAMP(6)",
+            (Self::Sqlite, Temporal::Timestamp) => "CURRENT_TIMESTAMP",
         }
     }
 
@@ -472,6 +491,8 @@ impl Dialect {
         }
         params.push(match operand {
             Operand::Null => return "NULL".to_owned(),
+            // A keyword is no value to bind.
+            Operand::Raw(text) => return text.clone(),
             Operand::Int(number) => Value::Int(*number),
             Operand::Float(number) => Value::Float(*number),
             Operand::Text(text) => Value::Text(text.as_str().into()),
@@ -520,9 +541,6 @@ impl Dialect {
                 "{column}: binary values cannot be edited yet"
             )));
         }
-        let NewValue::Text(text) = new else {
-            return Ok(Operand::Null);
-        };
         let refused = |expects: &str| {
             Error::query(format!(
                 "{column}: {} expects {expects}",
@@ -532,6 +550,28 @@ impl Dialect {
                     type_name
                 }
             ))
+        };
+        let text = match new {
+            NewValue::Null => return Ok(Operand::Null),
+            NewValue::Default { expression } => {
+                return Ok(Operand::Raw(match self {
+                    Self::Postgres | Self::MySql => "DEFAULT".to_owned(),
+                    // SQLite has no DEFAULT to write in an UPDATE or among
+                    // VALUES: the column's own expression, which is what
+                    // the word would have come to, or NULL where it has
+                    // none.
+                    Self::Sqlite => match expression {
+                        Some(expression) => format!("({expression})"),
+                        None => "NULL".to_owned(),
+                    },
+                }));
+            }
+            NewValue::Now => {
+                let kind = temporal(type_name)
+                    .ok_or_else(|| refused("a value, not the time of the save"))?;
+                return Ok(Operand::Raw(self.now(kind).to_owned()));
+            }
+            NewValue::Text(text) => text,
         };
         let typed = text.trim();
         let whole = || typed.parse::<i64>().ok().map(Operand::Int);
@@ -1400,6 +1440,98 @@ mod tests {
 
     /// The canvas' new row: a cover of the publisher Harbor Press.
     const PUBLISHER: &str = "9100000000000000004";
+
+    #[test]
+    fn default_and_now_are_written_as_keywords_never_bound() {
+        let key = vec![("id".to_owned(), Value::Int(2))];
+        let change = |column: &str, type_name: &str, new: NewValue| CellChange {
+            column: column.into(),
+            type_name: type_name.into(),
+            loaded: Value::Null,
+            new,
+        };
+        let default = || NewValue::Default {
+            expression: Some("'print'".into()),
+        };
+        for (dialect, schema, stamp, kind) in [
+            (Dialect::Postgres, "public", "now()", "DEFAULT"),
+            (
+                Dialect::MySql,
+                "bookshop",
+                "CURRENT_TIMESTAMP(6)",
+                "DEFAULT",
+            ),
+            // SQLite has no DEFAULT to write: the expression itself.
+            (Dialect::Sqlite, "main", "CURRENT_TIMESTAMP", "('print')"),
+        ] {
+            let row = RowChange {
+                key: key.clone(),
+                set: vec![
+                    change("kind", "varchar(20)", default()),
+                    change("created_at", "timestamp", NewValue::Now),
+                    change("printed_on", "date", NewValue::Now),
+                ],
+            };
+            let update = dialect.update_row(&covers(schema), &row).unwrap();
+            let literals: Vec<&str> = update.parts.values[..3]
+                .iter()
+                .map(|range| &update.shown[range.clone()])
+                .collect();
+            assert_eq!(literals, [kind, stamp, "CURRENT_DATE"], "{dialect:?}");
+            // Shown and sent alike: only the key's value is bound.
+            for literal in &literals {
+                assert!(update.sql.text.contains(literal), "{dialect:?}: {literal}");
+            }
+            let bound = match dialect {
+                Dialect::Postgres => 0,
+                Dialect::MySql | Dialect::Sqlite => 1,
+            };
+            assert_eq!(update.sql.params.len(), bound, "{dialect:?}");
+            // A new row's values are written the same way.
+            let insert = RowInsert {
+                set: vec![sets("created_at", "timestamp", NewValue::Now)],
+            };
+            let insert = dialect.insert_row(&covers(schema), &insert).unwrap();
+            let range = insert.parts.literals[0].clone();
+            assert_eq!(&insert.shown[range], stamp, "{dialect:?}");
+            assert!(insert.sql.params.is_empty(), "{dialect:?}");
+        }
+        // The time of day, where the column keeps only that.
+        let time = |dialect: Dialect| {
+            let row = RowChange {
+                key: key.clone(),
+                set: vec![change("opens_at", "time", NewValue::Now)],
+            };
+            let update = dialect.update_row(&covers("main"), &row).unwrap();
+            update.shown[update.parts.values[0].clone()].to_owned()
+        };
+        assert_eq!(time(Dialect::Postgres), "CURRENT_TIME");
+        assert_eq!(time(Dialect::MySql), "CURRENT_TIME(6)");
+        assert_eq!(time(Dialect::Sqlite), "CURRENT_TIME");
+        // A column with no default, on SQLite: NULL is what it would get.
+        let none = RowChange {
+            key: key.clone(),
+            set: vec![change(
+                "note",
+                "text",
+                NewValue::Default { expression: None },
+            )],
+        };
+        let update = Dialect::Sqlite.update_row(&covers("main"), &none).unwrap();
+        assert_eq!(&update.shown[update.parts.values[0].clone()], "NULL");
+        // The time of the save is no value for a number.
+        let wrong = RowChange {
+            key,
+            set: vec![change("pages", "integer", NewValue::Now)],
+        };
+        let error = Dialect::Postgres
+            .update_row(&covers("public"), &wrong)
+            .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "pages: integer expects a value, not the time of the save"
+        );
+    }
 
     #[test]
     fn a_new_rows_parts_are_where_its_statement_has_them() {

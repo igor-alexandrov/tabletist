@@ -2089,6 +2089,68 @@ fn adding(table: &str, inserts: Vec<RowInsert>, rows: Vec<RowChange>) -> ChangeS
 }
 
 #[tokio::test]
+async fn default_and_now_are_stored_as_the_database_makes_them() {
+    let (connection, _dir) = fixture_as(Access::Writable).await;
+    // The default as the catalog writes it: what SQLite is sent for the
+    // word, having no DEFAULT to write in an UPDATE.
+    let users = ObjectRef::new("main", "users");
+    let structure = connection.describe(&users).await.unwrap();
+    let made = structure.columns.iter().find(|c| c.name == "created_at");
+    let expression = made.unwrap().default.clone();
+    assert!(expression.is_some(), "the fixture's column has a default");
+    let stored = |row: (Vec<String>, Vec<Value>)| {
+        let (columns, row) = row;
+        let at = columns.iter().position(|name| name == "created_at");
+        row[at.unwrap()].clone()
+    };
+    // Away from the default, then back to it by the word.
+    let away = [("created_at", "DATETIME", to("2027-02-03 04:05:06"))];
+    save(&connection, 1, &away).await.1.unwrap();
+    let back = [("created_at", "DATETIME", NewValue::Default { expression })];
+    let (_, outcome) = save(&connection, 1, &back).await;
+    assert!(
+        matches!(outcome, Ok(WriteOutcome::Written { .. })),
+        "{outcome:?}"
+    );
+    assert_eq!(
+        stored(user(&connection, 1).await),
+        Value::Text("2026-01-01 00:00:00".into())
+    );
+    // The time of the save: the clock's own, not the word.
+    let now = [("created_at", "DATETIME", NewValue::Now)];
+    let (_, outcome) = save(&connection, 1, &now).await;
+    assert!(
+        matches!(outcome, Ok(WriteOutcome::Written { .. })),
+        "{outcome:?}"
+    );
+    let is_a_time = |value: &Value| match value {
+        Value::Text(text) => {
+            let text: &str = text;
+            text.len() == 19 && text.starts_with("20") && text != "2026-01-01 00:00:00"
+        }
+        _ => false,
+    };
+    let time = stored(user(&connection, 1).await);
+    assert!(is_a_time(&time), "{time:?}");
+    // And in a new row.
+    let changes = adding(
+        "users",
+        vec![new_user(&[
+            ("email", "TEXT", to("now@example.com")),
+            ("created_at", "DATETIME", NewValue::Now),
+        ])],
+        Vec::new(),
+    );
+    let outcome = connection.write(&changes, &StopFlag::new()).await.unwrap();
+    assert!(
+        matches!(outcome, WriteOutcome::Written { .. }),
+        "{outcome:?}"
+    );
+    let time = stored(user(&connection, 6).await);
+    assert!(is_a_time(&time), "{time:?}");
+}
+
+#[tokio::test]
 async fn a_new_row_comes_back_as_the_database_stored_it() {
     let (connection, _dir) = fixture_as(Access::Writable).await;
     let changes = adding(

@@ -318,6 +318,35 @@ pub enum Action {
         tab: ConnTabId,
         id: TabId,
     },
+    /// `SetNull`, asked for on the cell's field of the row panel: where the
+    /// column takes no NULL, the field says so.
+    SetFieldNull {
+        tab: ConnTabId,
+        id: TabId,
+    },
+    /// Flip the active cell where it is a boolean's: true, false, and NULL
+    /// where the column takes it.
+    CycleBoolean {
+        tab: ConnTabId,
+        id: TabId,
+    },
+    /// Set the active boolean cell to `value`.
+    SetBoolean {
+        tab: ConnTabId,
+        id: TabId,
+        value: bool,
+    },
+    /// Give a date or time cell the time of the save: the cell the open
+    /// editor is on, whose text is dropped.
+    SetNow {
+        tab: ConnTabId,
+        id: TabId,
+    },
+    /// Give the active cell its column's default, where it has one.
+    SetDefault {
+        tab: ConnTabId,
+        id: TabId,
+    },
     /// Add a new row to the tab's table at `place`, and open the editor on
     /// its first cell a save needs a value in.
     AddRow {

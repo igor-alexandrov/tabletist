@@ -1175,7 +1175,7 @@ fn error_line(app: &App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId) {
                 State::ToFix(problem) => {
                     let typed = match &pending.new {
                         NewValue::Text(text) => Some(text.as_str()),
-                        NewValue::Null => None,
+                        NewValue::Null | NewValue::Default { .. } | NewValue::Now => None,
                     };
                     let type_name = format::type_label(&column.type_name, column.kind);
                     let type_name = format::display_safe(&type_name);
@@ -1435,10 +1435,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
                 // a set can hold thousands of texts of a quarter of a
                 // megabyte each, and a frame draws the rows in view.
                 let mut cell = match changes.cells.get(&(row, col)) {
-                    Some(pending) => {
-                        let value = drawn(&pending.new);
-                        kept(cell(&ctx, &value, column, &tags[col], &look, fits[col]))
-                    }
+                    Some(pending) => pending_cell(&pending.new, |value| {
+                        kept(cell(&ctx, value, column, &tags[col], &look, fits[col]))
+                    }),
                     None => cell(&ctx, loaded, column, &tags[col], &look, fits[col]),
                 };
                 changes.mark(&mut cell, (row, col), loaded, column, &look, locale);
@@ -1459,7 +1458,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
         if outcome.changed {
             actions.push(Action::EditorTyped { tab, id });
         }
-        if outcome.large {
+        if outcome.now {
+            actions.push(Action::SetNow { tab, id });
+        } else if outcome.large {
             actions.push(Action::EditorBreak { tab, id });
         } else if let Some(then) = outcome.commit {
             actions.push(Action::CommitEdit { tab, id, then });
@@ -1636,6 +1637,9 @@ pub(super) fn editor_target(
         max_chars,
         json: class == Some(tabletist_db::ColumnClass::Json),
         hold,
+        now: table
+            .column(cell.col)
+            .is_some_and(|column| tabletist_db::temporal(&column.type_name).is_some()),
     })
 }
 
@@ -1649,9 +1653,20 @@ thread_local! {
 fn drawn(new: &NewValue) -> Value {
     #[cfg(test)]
     DRAWN.with(|count| count.set(count.get() + 1));
-    match new {
-        NewValue::Text(text) => Value::Text(text.as_str().into()),
-        NewValue::Null => Value::Null,
+    crate::edit::shown_value(new)
+}
+
+/// A pending value's cell: the value as `value` draws it, or, for what the
+/// database will make at the save, its word in the style of what stands
+/// for a value.
+fn pending_cell<'c>(new: &NewValue, value: impl Fn(&Value) -> Cell<'c>) -> Cell<'c> {
+    match crate::edit::word(new) {
+        Some(word) => Cell {
+            text: word.into(),
+            style: Style::Quiet,
+            ..Cell::default()
+        },
+        None => value(&drawn(new)),
     }
 }
 
@@ -1772,7 +1787,12 @@ impl<'a> Changes<'a> {
                 Some(loaded) => {
                     cell.mark = if saving { Mark::Saving } else { Mark::Pending };
                     let was = format::cell_text(loaded);
-                    cell.hint = Some(format!("{} {was}", gettext(locale, "was")));
+                    let was = format!("{} {was}", gettext(locale, "was"));
+                    // A pending DEFAULT says what it will come to.
+                    cell.hint = Some(match default_hint(&pending.new, locale) {
+                        Some(default) => format!("{was}\n{default}"),
+                        None => was,
+                    });
                 }
                 None => cell.mark = if saving { Mark::Saving } else { Mark::None },
             },
@@ -1780,7 +1800,7 @@ impl<'a> Changes<'a> {
                 cell.mark = Mark::Trouble;
                 let typed = match &pending.new {
                     NewValue::Text(text) => Some(text.as_str()),
-                    NewValue::Null => None,
+                    NewValue::Null | NewValue::Default { .. } | NewValue::Now => None,
                 };
                 let type_name = format::type_label(&column.type_name, column.kind);
                 let type_name = format::display_safe(&type_name);
@@ -1821,7 +1841,7 @@ impl Changes<'_> {
         let say = |text: &'static str| gettext(locale, text).into_owned();
         let mut cell = match self.cells.get(&at) {
             Some(pending) => {
-                let mut cell = value(&drawn(&pending.new));
+                let mut cell = pending_cell(&pending.new, &value);
                 self.mark_state(&mut cell, pending, None, column, look, locale);
                 cell
             }
@@ -1869,6 +1889,22 @@ impl Changes<'_> {
         self.say_why(&mut cell, at);
         cell
     }
+}
+
+/// What a pending DEFAULT will come to, where the column's default is
+/// known: "print from DEFAULT", as a new row's unset cell says it.
+fn default_hint(new: &NewValue, locale: crate::i18n::Locale) -> Option<String> {
+    let NewValue::Default {
+        expression: Some(expression),
+    } = new
+    else {
+        return None;
+    };
+    Some(format!(
+        "{} {}",
+        format::capped(expression),
+        gettext(locale, "from DEFAULT")
+    ))
 }
 
 /// What the database said of a statement that failed, with its code: a

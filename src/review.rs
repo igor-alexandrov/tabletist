@@ -23,7 +23,8 @@ pub enum Ink {
     /// Names, `=`, commas, the semicolon.
     Plain,
     /// `UPDATE`, `SET`, `WHERE`, `AND`, `INSERT INTO`, `VALUES`,
-    /// `RETURNING`, and a `NULL`.
+    /// `RETURNING`, and a value that is a word: `NULL`, `DEFAULT`, the
+    /// time of the save.
     Keyword,
     /// A quoted value.
     Text,
@@ -451,7 +452,10 @@ fn plain(text: &str, values: Values) -> Piece {
 
 /// A value of the statement, by the literal the builder wrote.
 fn value(literal: &str, values: Values) -> Piece {
-    let ink = if literal == "NULL" {
+    // What the database makes itself is written as its word, not quoted.
+    let keyword =
+        matches!(literal, "NULL" | "DEFAULT" | "now()") || literal.starts_with("CURRENT_");
+    let ink = if keyword {
         Ink::Keyword
     } else if literal.starts_with(|first: char| first.is_ascii_digit() || first == '-') {
         Ink::Number
@@ -795,6 +799,24 @@ mod tests {
         let review = build(&covers_ref(), &table, &edits.cells, Values::Shown).unwrap();
         assert_eq!(review.lines, [Line::Unsendable]);
         assert_eq!((review.added, review.changes, review.rows), (1, 1, 1));
+    }
+
+    #[test]
+    fn a_keyword_is_inked_as_one() {
+        for literal in [
+            "NULL",
+            "DEFAULT",
+            "now()",
+            "CURRENT_TIMESTAMP",
+            "CURRENT_TIMESTAMP(6)",
+            "CURRENT_DATE",
+        ] {
+            assert_eq!(value(literal, Values::Shown).ink, Ink::Keyword, "{literal}");
+        }
+        // A default's expression on SQLite, and any value, is not.
+        assert_eq!(value("('print')", Values::Shown).ink, Ink::Text);
+        assert_eq!(value("'DEFAULT'", Values::Shown).ink, Ink::Text);
+        assert_eq!(value("42", Values::Shown).ink, Ink::Number);
     }
 
     #[test]

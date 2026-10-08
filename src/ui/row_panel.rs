@@ -1460,8 +1460,15 @@ fn field(
         }
     };
     // An edit of a locked field was asked for here: it says why, under
-    // its value, until the selection moves. Brought into view once.
-    if let (Some(reason), true) = (&locked, form.refused(col)) {
+    // its value, until the selection moves. Brought into view once. A
+    // field that is not locked says what was refused of it: a NULL, where
+    // its column takes none.
+    let refused = locked.clone().or_else(|| {
+        let lock = form.refusal(col)?;
+        let reason = crate::ui::cell_editor::lock_text(lock, "", locale);
+        (!reason.is_empty()).then_some(reason)
+    });
+    if let (Some(reason), true) = (&refused, form.refused(col)) {
         ui.add_space(if look.terminal { 2.0 } else { 3.0 });
         let width = ui.available_width();
         let note = Text::one(look, caption(look), reason, palette.secondary)

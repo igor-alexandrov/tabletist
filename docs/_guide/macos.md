@@ -107,7 +107,7 @@ a Mac keyboard labels Delete.
 | Cmd+Shift+C | Copy the row |
 | Cmd+R | Refresh |
 | Cmd+. | Cancel the running query |
-| Space, Cmd+Shift+R | Show or hide the row panel |
+| Space, Cmd+Shift+R | Show or hide the row panel. On a boolean cell that can be edited, Space flips the cell instead |
 
 ### Editing
 
@@ -121,6 +121,8 @@ a Mac keyboard labels Delete.
 | Esc | Cancel the edit |
 | Option+Return | Open the large editor. In it, Cmd+Return applies and Esc cancels |
 | Cmd+Backspace | Set NULL |
+| Cmd+' | Set DEFAULT, where the column has a default |
+| Space | Flip a boolean cell: true, false, NULL |
 | Cmd+Z | Revert the cell |
 | Cmd+S | Save all pending changes |
 | Cmd+Option+Backspace | Discard all pending changes |

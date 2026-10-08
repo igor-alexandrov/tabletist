@@ -22,8 +22,13 @@ double-click the value there.
 | To | Press |
 | --- | --- |
 | Set the value to NULL | Cmd/Ctrl+Backspace |
+| Set the value to the column's DEFAULT | Cmd/Ctrl+' |
+| Flip a boolean: true, false, NULL | Space |
 | Put the cell back as it was | Cmd/Ctrl+Z |
 | Leave the editor without the change | Esc |
+
+Set NULL on a column that cannot be NULL does nothing, and the cell says
+why. Pressed on a field of the row panel, the field says it.
 
 The Omarchy look uses vim keys for these. They are in
 [The Omarchy Look]({% link _guide/omarchy.md %}#editing).
@@ -31,6 +36,38 @@ The Omarchy look uses vim keys for these. They are in
 What you type is checked against the column's type before anything is
 sent: numbers and their ranges, booleans, enum values, the maximum length,
 and the syntax of JSON.
+
+### Words that are not text
+
+In a column that is not text, three words typed into a cell are what they
+say, not their letters. They are read in any case.
+
+| Typed | Is |
+| --- | --- |
+| `NULL` | NULL, where the column takes it |
+| `DEFAULT` | The column's default, where it has one |
+| `now()`, `now`, `current_timestamp` | The moment of the save by the database's own clock, in a date or time column |
+
+The cell shows the word until you save, and what the database stored
+after. Review SQL shows the keyword as it is sent.
+
+- In a text column these are text: `NULL` there is four letters. Use
+  Cmd/Ctrl+Backspace for NULL and Cmd/Ctrl+' for DEFAULT.
+- In a JSON column `null` is a JSON document. `NULL` and `DEFAULT` in
+  capitals are the database's.
+- The same goes for a type that is no number, boolean, date or time and
+  may keep text: an enum, `citext`, a UUID, a SQLite column with no type.
+  `null` there is four letters, and only the capitals are the database's.
+- An array of dates is no date: `now()` there is text.
+- A word the column cannot take stays text, and is checked like any other:
+  `NULL` in a column that cannot be NULL, `DEFAULT` where there is no
+  default, `now()` outside date and time columns.
+- A date column gets the date and a time column the time of day. On
+  SQLite the time is UTC, to the second.
+- While a date or time value is being edited, the **now** button beside
+  it sets the same thing. In the Omarchy look the key is Ctrl+T.
+- In a new row, a cell you leave alone is its default already, so
+  `DEFAULT` there takes the value out again.
 
 {% include shot.html file="macos-edit-pending" alt="The grid with three changed cells, one of them red because its column does not take the text, and the bar of pending changes under it" %}
 

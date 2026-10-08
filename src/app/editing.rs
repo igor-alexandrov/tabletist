@@ -39,6 +39,11 @@ pub(super) fn dropped_under_a_prompt(action: &Action) -> bool {
             | Action::LeaveEdit { .. }
             | Action::CancelEdit { .. }
             | Action::SetNull { .. }
+            | Action::SetFieldNull { .. }
+            | Action::SetDefault { .. }
+            | Action::CycleBoolean { .. }
+            | Action::SetBoolean { .. }
+            | Action::SetNow { .. }
             | Action::AddRow { .. }
             | Action::DropRow { .. }
             | Action::RevertCell { .. }
@@ -88,10 +93,15 @@ fn typed(table: &Table<'_>, object: &ObjectTab) -> Option<Typed> {
     if !editor.touched {
         return None;
     }
-    let new = NewValue::Text(editor.text.clone());
-    let changed = loaded.is_none_or(|loaded| is_change(loaded, &new, class));
+    // What was typed, as the column reads it: a keyword where it is one.
+    let new = crate::edit::typed_as(table.dialect, column, &editor.text);
+    let changed = match (&new, loaded) {
+        // A new row's unset cell is its default already.
+        (NewValue::Default { .. }, None) => false,
+        (new, loaded) => loaded.is_none_or(|loaded| is_change(loaded, new, class)),
+    };
     let problem = changed
-        .then(|| check(table.dialect, column, &editor.text))
+        .then(|| crate::edit::problem(table.dialect, column, &editor.text))
         .flatten();
     Some(Typed {
         cell,
@@ -569,7 +579,7 @@ impl App {
         self.table(tab, id, |table, object| {
             let editor = object.edits.editor.as_ref()?;
             let column = table.column(editor.cell.col)?;
-            check(table.dialect, column, &editor.text)
+            crate::edit::problem(table.dialect, column, &editor.text)
         })
         .flatten()
     }
@@ -662,7 +672,9 @@ impl App {
                             kept = true;
                             text.clone()
                         }
-                        NewValue::Null => String::new(),
+                        // As a pending NULL: nothing of it is text
+                        // to go on from.
+                        NewValue::Null | NewValue::Default { .. } | NewValue::Now => String::new(),
                     },
                     // A new row's cell starts from nothing.
                     None => table
@@ -683,7 +695,7 @@ impl App {
             let problem = table
                 .column(cell.col)
                 .filter(|_| kept || !text.is_empty())
-                .and_then(|column| check(table.dialect, column, &text));
+                .and_then(|column| crate::edit::problem(table.dialect, column, &text));
             Ok(Editor {
                 cell,
                 place,
@@ -940,7 +952,9 @@ impl App {
         }
     }
 
-    pub(super) fn set_null(&mut self, tab: ConnTabId, id: TabId) {
+    /// Makes the selected cell NULL, where its column takes one. Where it
+    /// takes none the cell says why, at `place`: where it was asked for.
+    pub(super) fn set_null(&mut self, tab: ConnTabId, id: TabId, place: EditorPlace) {
         let verdict = self.table(tab, id, |table, object| {
             let cell = object.selection?;
             if object.edits.editor.is_some() || table.lock(cell).is_some() {
@@ -948,18 +962,28 @@ impl App {
             }
             let column = table.column(cell.col)?;
             if !column.nullable {
-                return None;
+                // Refused, and the cell says why.
+                return Some((cell, Err(Lock::NotNull)));
             }
             // A new row's cell loaded nothing: NULL is a value set in it.
             let changed = table.loaded(cell).is_none_or(|loaded| !loaded.is_null());
-            Some((cell, changed))
+            Some((cell, Ok(changed)))
         });
-        let Some(Some((cell, changed))) = verdict else {
+        let Some(Some((cell, verdict))) = verdict else {
             return;
         };
         let Some(object) = self.object_tab_mut(tab, id) else {
             return;
         };
+        let changed = match verdict {
+            Ok(changed) => changed,
+            Err(lock) => {
+                object.edits.why = Some((cell, lock));
+                object.edits.why_place = place;
+                return;
+            }
+        };
+        object.edits.why = None;
         let key = (cell.row, cell.col);
         if changed {
             let null = Pending {
@@ -974,6 +998,172 @@ impl App {
             object.edits.revert(key);
         }
         object.fields = None;
+    }
+
+    /// Gives the selected cell its column's default, where the column has
+    /// one. In a new row that is the cell with nothing set in it.
+    pub(super) fn set_default(&mut self, tab: ConnTabId, id: TabId) {
+        let verdict = self.table(tab, id, |table, object| {
+            let cell = object.selection?;
+            if object.edits.editor.is_some() || table.lock(cell).is_some() {
+                return None;
+            }
+            let column = table.column(cell.col)?;
+            let expression = column.default.clone()?;
+            // A new row's unset cell is its default already.
+            let new = table.loaded(cell).map(|_| NewValue::Default {
+                expression: Some(expression),
+            });
+            Some((cell, new))
+        });
+        let Some(Some((cell, new))) = verdict else {
+            return;
+        };
+        let Some(object) = self.object_tab_mut(tab, id) else {
+            return;
+        };
+        let key = (cell.row, cell.col);
+        match new {
+            Some(new) => {
+                let state = State::Ready;
+                object.edits.put(key, Pending { new, state });
+                // As opening an editor does: a tab with a pending cell is
+                // no preview for the next single click to replace.
+                object.pinned = true;
+            }
+            None => object.edits.revert(key),
+        }
+        object.edits.why = None;
+        object.fields = None;
+    }
+
+    /// Whether the tab's selected cell is a boolean's that can be edited
+    /// now: where Space flips the cell.
+    pub fn flips(&self, tab: ConnTabId, id: TabId) -> bool {
+        self.table(tab, id, |table, object| {
+            let Some(cell) = object.selection else {
+                return false;
+            };
+            object.view == ObjectView::Data
+                && object.edits.editor.is_none()
+                && table.class(cell.col) == Some(ColumnClass::Boolean)
+                && table.lock(cell).is_none()
+        })
+        .unwrap_or(false)
+    }
+
+    /// Flips the selected boolean cell: true, then false, then NULL where
+    /// the column takes it, then true again. A value that is what the cell
+    /// loaded is no change.
+    pub(super) fn cycle_boolean(&mut self, tab: ConnTabId, id: TabId) {
+        if !self.flips(tab, id) {
+            return;
+        }
+        let next = self.table(tab, id, |table, object| {
+            let cell = object.selection?;
+            let column = table.column(cell.col)?;
+            let loaded = table.loaded(cell);
+            // What the cell holds now: what is pending in it, or what it
+            // loaded. Anything that is no flag is taken for none.
+            let flag = |text: &str| match text.trim().to_ascii_lowercase().as_str() {
+                "true" | "1" => Some(true),
+                "false" | "0" => Some(false),
+                _ => None,
+            };
+            let class = ColumnClass::Boolean;
+            let now = match object.edits.cells.get(&(cell.row, cell.col)) {
+                Some(pending) => match &pending.new {
+                    NewValue::Text(text) => flag(text),
+                    NewValue::Null | NewValue::Default { .. } | NewValue::Now => None,
+                },
+                None => loaded.and_then(|loaded| flag(&start_text(loaded, class))),
+            };
+            let new = match now {
+                Some(true) => NewValue::Text("false".into()),
+                Some(false) if column.nullable => NewValue::Null,
+                Some(false) | None => NewValue::Text("true".into()),
+            };
+            let changed = loaded.is_none_or(|loaded| is_change(loaded, &new, class));
+            Some((cell, new, changed))
+        });
+        let Some(Some((cell, new, changed))) = next else {
+            return;
+        };
+        self.put_value(tab, id, cell, new, changed);
+    }
+
+    /// Makes `new` the pending value of `cell`, or takes what was pending
+    /// there out where `new` is no change of what the cell loaded.
+    fn put_value(
+        &mut self,
+        tab: ConnTabId,
+        id: TabId,
+        cell: CellPos,
+        new: NewValue,
+        changed: bool,
+    ) {
+        let Some(object) = self.object_tab_mut(tab, id) else {
+            return;
+        };
+        let key = (cell.row, cell.col);
+        if changed {
+            let state = State::Ready;
+            object.edits.put(key, Pending { new, state });
+            // As opening an editor does: a tab with a pending cell is no
+            // preview for the next single click to replace.
+            object.pinned = true;
+        } else {
+            object.edits.revert(key);
+        }
+        object.edits.why = None;
+        object.fields = None;
+    }
+
+    /// Sets the selected boolean cell to `value`: the terminal's `t` and
+    /// `f`. A value that is what the cell loaded is no change.
+    pub(super) fn set_boolean(&mut self, tab: ConnTabId, id: TabId, value: bool) {
+        if !self.flips(tab, id) {
+            return;
+        }
+        let set = self.table(tab, id, |table, object| {
+            let cell = object.selection?;
+            let new = NewValue::Text(value.to_string());
+            let loaded = table.loaded(cell);
+            let changed = loaded.is_none_or(|loaded| is_change(loaded, &new, ColumnClass::Boolean));
+            Some((cell, new, changed))
+        });
+        if let Some(Some((cell, new, changed))) = set {
+            self.put_value(tab, id, cell, new, changed);
+        }
+    }
+
+    /// The cell of the tab's open editor, where it is one of a column that
+    /// keeps a date or a time: where "now" is offered, and what it sets.
+    pub fn stamps(&self, tab: ConnTabId, id: TabId) -> Option<CellPos> {
+        self.table(tab, id, |table, object| {
+            let cell = object.edits.editor.as_ref()?.cell;
+            let column = table.column(cell.col)?;
+            tabletist_db::temporal(&column.type_name).map(|_| cell)
+        })
+        .flatten()
+    }
+
+    /// Gives the cell of the open editor the time of the save, where its
+    /// column keeps a date or a time. The editor closes without its text:
+    /// the value is the database's to make.
+    pub(super) fn set_now(&mut self, tab: ConnTabId, id: TabId) {
+        let Some(cell) = self.stamps(tab, id) else {
+            return;
+        };
+        let field = self.panel_field(tab, id);
+        if let Some(object) = self.object_tab_mut(tab, id) {
+            object.edits.editor = None;
+        }
+        self.put_value(tab, id, cell, NewValue::Now, true);
+        // In the panel the keyboard goes back to the field that was edited.
+        if let Some(col) = field {
+            self.back_to_field(tab, id, col);
+        }
     }
 
     /// Runs what the terminal's `:` prompt holds, and closes it: `w` saves

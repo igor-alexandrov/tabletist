@@ -37,7 +37,7 @@ use adapter::Adapter;
 pub use catalog::{
     ColumnInfo, ForeignKeyInfo, IndexInfo, MAX_LISTED, ObjectInfo, ObjectKind, ObjectRef, Structure,
 };
-pub use class::{ColumnClass, column_class};
+pub use class::{ColumnClass, Temporal, column_class, temporal};
 pub use dialect::{
     Dialect, InsertParts, InsertStatement, RowUpdate, Sql, UpdateParts, escape_like, quote_literal,
 };

@@ -923,7 +923,12 @@ impl App {
                 }
             }
             Action::FormatEditor { tab, id } => self.format_editor(tab, id),
-            Action::SetNull { tab, id } => self.set_null(tab, id),
+            Action::SetNull { tab, id } => self.set_null(tab, id, EditorPlace::Grid),
+            Action::SetFieldNull { tab, id } => self.set_null(tab, id, EditorPlace::Panel),
+            Action::SetDefault { tab, id } => self.set_default(tab, id),
+            Action::CycleBoolean { tab, id } => self.cycle_boolean(tab, id),
+            Action::SetBoolean { tab, id, value } => self.set_boolean(tab, id, value),
+            Action::SetNow { tab, id } => self.set_now(tab, id),
             Action::AddRow { tab, id, place } => self.add_row(tab, id, place),
             Action::DropRow { tab, id } => self.drop_row(tab, id),
             Action::RevertCell { tab, id, cell } => {
@@ -3758,16 +3763,13 @@ impl App {
     /// What the grid shows: a pending cell gives its new value, as the row
     /// panel's copy does.
     pub fn copy_text(&self, whole_row: bool) -> Option<String> {
-        use tabletist_db::{NewValue, Value};
+        use tabletist_db::Value;
         let (tab, id) = self.active_object()?;
         let object = self.workspace(tab)?.object_tab(id)?;
         let cell = object.selection?;
         let row = object.page()?.rows.get(cell.row)?;
         let shown = |col: usize, loaded: &Value| match object.edits.cells.get(&(cell.row, col)) {
-            Some(pending) => match &pending.new {
-                NewValue::Text(text) => Value::Text(text.as_str().into()),
-                NewValue::Null => Value::Null,
-            },
+            Some(pending) => crate::edit::shown_value(&pending.new),
             None => loaded.clone(),
         };
         Some(if whole_row {
@@ -4033,16 +4035,12 @@ fn row_fields(
     cells: &std::collections::BTreeMap<(usize, usize), crate::edit::Pending>,
 ) -> crate::model::RowFields {
     use crate::ui::format::{cell_text, field_text};
-    use tabletist_db::{NewValue, Value};
     let pending: Vec<Option<crate::model::PendingField>> = values
         .iter()
         .enumerate()
         .map(|(col, loaded)| {
             let pending = cells.get(&(row, col))?;
-            let new = match &pending.new {
-                NewValue::Text(text) => Value::Text(text.as_str().into()),
-                NewValue::Null => Value::Null,
-            };
+            let new = crate::edit::shown_value(&pending.new);
             Some(crate::model::PendingField {
                 new,
                 was: cell_text(loaded).into_owned(),
@@ -10974,6 +10972,316 @@ mod tests {
             let place = Place::Top;
             harness.app.apply(Action::AddRow { tab, id, place });
             assert_eq!(object(&harness, tab, id).edits.added.len(), 1);
+        }
+
+        /// The covers with `kind` a flag: 1, 0 and NULL in its three rows,
+        /// as SQLite keeps a boolean.
+        fn with_a_flag(nullable: bool) -> (Harness, ConnTabId, TabId) {
+            let mut harness = Harness::new();
+            let (tab, id) = harness.book_covers();
+            let object = tab_mut(&mut harness, tab, id);
+            let column = &mut object.structure.value.as_mut().unwrap().columns[2];
+            column.type_name = "BOOLEAN".into();
+            column.allowed_values = None;
+            column.default = None;
+            column.nullable = nullable;
+            let page = object.rows.value.as_mut().unwrap();
+            page.columns[2].type_name = "BOOLEAN".into();
+            for (row, flag) in [Value::Int(1), Value::Int(0), Value::Null]
+                .into_iter()
+                .enumerate()
+            {
+                page.rows[row][2] = flag;
+            }
+            (harness, tab, id)
+        }
+
+        /// Flips the cell, and says what is pending in it afterwards.
+        fn flip(harness: &mut Harness, tab: ConnTabId, id: TabId, cell: CellPos) -> Option<String> {
+            harness.app.apply(Action::SelectCell { tab, id, cell });
+            harness.app.apply(Action::CycleBoolean { tab, id });
+            let pending = object(harness, tab, id)
+                .edits
+                .cells
+                .get(&(cell.row, cell.col))?;
+            Some(match &pending.new {
+                NewValue::Text(text) => text.clone(),
+                NewValue::Null => "NULL".into(),
+                other => format!("{other:?}"),
+            })
+        }
+
+        #[test]
+        fn a_boolean_cell_cycles_true_false_and_null() {
+            let (mut harness, tab, id) = with_a_flag(true);
+            let mut flips = |cell: CellPos, times: usize| -> Vec<Option<String>> {
+                (0..times)
+                    .map(|_| flip(&mut harness, tab, id, cell))
+                    .collect()
+            };
+            let said = |list: &[Option<&str>]| -> Vec<Option<String>> {
+                list.iter().map(|text| text.map(str::to_owned)).collect()
+            };
+            // From true: false, NULL, and back to what it loaded, which is
+            // no change.
+            assert_eq!(
+                flips(at(0, 2), 3),
+                said(&[Some("false"), Some("NULL"), None])
+            );
+            // From false: NULL, true, and back.
+            assert_eq!(
+                flips(at(1, 2), 3),
+                said(&[Some("NULL"), Some("true"), None])
+            );
+            // From NULL: true, false, and back.
+            assert_eq!(
+                flips(at(2, 2), 3),
+                said(&[Some("true"), Some("false"), None])
+            );
+            // A cell of another class, and a locked one: nothing.
+            assert_eq!(flips(at(0, 1), 1), said(&[None]));
+            assert_eq!(flips(at(0, 0), 1), said(&[None]));
+            assert!(object(&harness, tab, id).edits.cells.is_empty());
+            // A new row's cell is never unset by flipping.
+            let place = Place::Top;
+            harness.app.apply(Action::AddRow { tab, id, place });
+            harness.app.apply(Action::CancelEdit { tab, id });
+            let new = object(&harness, tab, id).edits.added[0].id;
+            let cell = at(new_row(new), 2);
+            let flipped: Vec<Option<String>> =
+                (0..4).map(|_| flip(&mut harness, tab, id, cell)).collect();
+            let cycle = [Some("true"), Some("false"), Some("NULL"), Some("true")];
+            assert_eq!(flipped, said(&cycle));
+            // With an editor open the key is the editor's.
+            harness.app.apply(Action::EditCell {
+                tab,
+                id,
+                cell: at(0, 2),
+                start: EditStart::Value,
+            });
+            harness.app.apply(Action::CycleBoolean { tab, id });
+            assert!(!object(&harness, tab, id).edits.cells.contains_key(&(0, 2)));
+        }
+
+        #[test]
+        fn a_flag_that_cannot_be_null_goes_between_true_and_false() {
+            let (mut harness, tab, id) = with_a_flag(false);
+            let first = flip(&mut harness, tab, id, at(0, 2));
+            assert_eq!(first.as_deref(), Some("false"));
+            // Back to true, which it loaded: nothing is pending.
+            assert_eq!(flip(&mut harness, tab, id, at(0, 2)), None);
+            assert_eq!(
+                flip(&mut harness, tab, id, at(1, 2)).as_deref(),
+                Some("true")
+            );
+        }
+
+        #[test]
+        fn t_and_f_set_a_boolean_cell() {
+            let (mut harness, tab, id) = with_a_flag(true);
+            let mut set = |cell: CellPos, value: bool| {
+                harness.app.apply(Action::SelectCell { tab, id, cell });
+                harness.app.apply(Action::SetBoolean { tab, id, value });
+                let pending = object(&harness, tab, id)
+                    .edits
+                    .cells
+                    .get(&(cell.row, cell.col));
+                pending.map(|pending| pending.new.clone())
+            };
+            let text = |text: &str| Some(NewValue::Text(text.into()));
+            // What the cell loaded is no change; the other value is.
+            assert_eq!(set(at(0, 2), true), None);
+            assert_eq!(set(at(0, 2), false), text("false"));
+            assert_eq!(set(at(0, 2), true), None);
+            // On a NULL either is a value.
+            assert_eq!(set(at(2, 2), false), text("false"));
+            // A cell that is no flag's takes neither.
+            assert_eq!(set(at(0, 1), true), None);
+        }
+
+        #[test]
+        fn now_takes_the_place_of_the_text_being_typed() {
+            let mut harness = Harness::new();
+            let (tab, id) = harness.book_covers();
+            let structure = tab_mut(&mut harness, tab, id).structure.value.as_mut();
+            structure.unwrap().columns[4].type_name = "timestamp".into();
+            // An editor with something typed: the text is dropped for it.
+            typing(&mut harness, tab, id, at(1, 4), "2026-10");
+            assert_eq!(harness.app.stamps(tab, id), Some(at(1, 4)));
+            harness.app.apply(Action::SetNow { tab, id });
+            let edits = &object(&harness, tab, id).edits;
+            assert!(edits.editor.is_none());
+            assert_eq!(edits.cells[&(1, 4)].new, NewValue::Now);
+            assert_eq!(edits.cells[&(1, 4)].state, State::Ready);
+            // With no editor open, and in an editor of a column that keeps
+            // no time, there is nothing for it to set.
+            harness.app.apply(Action::SetNow { tab, id });
+            typing(&mut harness, tab, id, at(1, 2), "ebook");
+            assert_eq!(harness.app.stamps(tab, id), None);
+            harness.app.apply(Action::SetNow { tab, id });
+            let edits = &object(&harness, tab, id).edits;
+            assert!(edits.editor.is_some());
+            assert_eq!(edits.cells.len(), 1);
+        }
+
+        #[test]
+        fn set_null_on_a_column_that_takes_none_says_why() {
+            let mut harness = Harness::new();
+            let (tab, id) = harness.book_covers();
+            // `publisher_id` is NOT NULL.
+            let cell = at(0, 1);
+            harness.app.apply(Action::SelectCell { tab, id, cell });
+            harness.app.apply(Action::SetNull { tab, id });
+            let edits = &object(&harness, tab, id).edits;
+            assert!(edits.cells.is_empty());
+            assert_eq!(edits.why, Some((cell, Lock::NotNull)));
+            assert_eq!(edits.why_place, EditorPlace::Grid);
+            // Asked for on the row panel's field, it is said there.
+            harness.app.apply(Action::SetFieldNull { tab, id });
+            let edits = &object(&harness, tab, id).edits;
+            assert_eq!(edits.why, Some((cell, Lock::NotNull)));
+            assert_eq!(edits.why_place, EditorPlace::Panel);
+            // Where the column takes one, the reason goes with the NULL.
+            let cell = at(0, 3);
+            harness.app.apply(Action::SelectCell { tab, id, cell });
+            harness.app.apply(Action::SetNull { tab, id });
+            assert_eq!(object(&harness, tab, id).edits.why, None);
+        }
+
+        #[test]
+        fn set_default_gives_a_cell_its_columns_default() {
+            let mut harness = Harness::new();
+            let (tab, id) = harness.book_covers();
+            // `kind` has one: text or not, the key sets it.
+            let cell = at(1, 2);
+            harness.app.apply(Action::SelectCell { tab, id, cell });
+            // It takes no NULL, and the reason for that goes with the default.
+            harness.app.apply(Action::SetNull { tab, id });
+            let why = Some((cell, Lock::NotNull));
+            assert_eq!(object(&harness, tab, id).edits.why, why);
+            harness.app.apply(Action::SetDefault { tab, id });
+            let default = NewValue::Default {
+                expression: Some("'print'".into()),
+            };
+            let edits = &object(&harness, tab, id).edits;
+            assert_eq!(edits.cells[&(1, 2)].new, default);
+            assert_eq!(edits.cells[&(1, 2)].state, State::Ready);
+            assert_eq!(edits.why, None);
+            // `publisher_id` has none, and `id` is locked: nothing happens.
+            for col in [1, 0] {
+                let cell = at(1, col);
+                harness.app.apply(Action::SelectCell { tab, id, cell });
+                harness.app.apply(Action::SetDefault { tab, id });
+            }
+            assert_eq!(object(&harness, tab, id).edits.cells.len(), 1);
+            // In a new row it unsets the cell: unset is its default.
+            let place = Place::Top;
+            harness.app.apply(Action::AddRow { tab, id, place });
+            let new = object(&harness, tab, id).edits.added[0].id;
+            let cell = at(new_row(new), 2);
+            type_into(&mut harness, tab, id, cell, "ebook");
+            assert!(
+                object(&harness, tab, id)
+                    .edits
+                    .cells
+                    .contains_key(&(cell.row, 2))
+            );
+            harness.app.apply(Action::SetDefault { tab, id });
+            assert!(
+                !object(&harness, tab, id)
+                    .edits
+                    .cells
+                    .contains_key(&(cell.row, 2))
+            );
+            // Not under a question about the changes.
+            harness.app.apply(Action::CloseTab { tab, id });
+            let cell = at(0, 2);
+            harness.app.apply(Action::SelectCell { tab, id, cell });
+            harness.app.apply(Action::SetDefault { tab, id });
+            assert!(!object(&harness, tab, id).edits.cells.contains_key(&(0, 2)));
+        }
+
+        #[test]
+        fn a_keyword_typed_into_a_cell_is_pending_as_one() {
+            let mut harness = Harness::new();
+            let (tab, id) = harness.book_covers();
+            // `created_at` as a database that names its types would have it.
+            let structure = tab_mut(&mut harness, tab, id).structure.value.as_mut();
+            let structure = structure.unwrap();
+            structure.columns[4].type_name = "timestamp".into();
+            structure.columns[4].nullable = true;
+            type_into(&mut harness, tab, id, at(0, 4), "now()");
+            type_into(&mut harness, tab, id, at(1, 4), "null");
+            type_into(&mut harness, tab, id, at(2, 4), "default");
+            let default = NewValue::Default {
+                expression: Some("CURRENT_TIMESTAMP".into()),
+            };
+            let edits = &object(&harness, tab, id).edits;
+            assert_eq!(edits.cells[&(0, 4)].new, NewValue::Now);
+            assert_eq!(edits.cells[&(1, 4)].new, NewValue::Null);
+            assert_eq!(edits.cells[&(2, 4)].new, default);
+            assert!(edits.cells.values().all(|cell| cell.state == State::Ready));
+            assert!(edits.editor.is_none());
+            // `kind` is text: the same word is a value there, and one the
+            // column, which takes only three, refuses.
+            type_into(&mut harness, tab, id, at(0, 2), "null");
+            let edits = &object(&harness, tab, id).edits;
+            assert!(edits.editor.is_some(), "refused, and still open");
+            assert!(!edits.cells.contains_key(&(0, 2)));
+            // The save carries the three as they are.
+            harness.app.apply(Action::CancelEdit { tab, id });
+            let before = harness.app.backend.sent.len();
+            harness.app.apply(Action::WriteEdits { tab, id });
+            let changes = write_since(&harness, before).expect("a Write");
+            let sent: Vec<&NewValue> = changes.rows.iter().map(|row| &row.set[0].new).collect();
+            assert_eq!(sent, [&NewValue::Now, &NewValue::Null, &default]);
+            // An editor opened on one of them starts from nothing, and
+            // closed untouched leaves it as it is.
+            harness.answer_written(Err(tabletist_db::Error::Cancelled));
+            harness.app.apply(Action::EditCell {
+                tab,
+                id,
+                cell: at(0, 4),
+                start: EditStart::Value,
+            });
+            let editor = object(&harness, tab, id).edits.editor.as_ref().unwrap();
+            assert_eq!((editor.text.as_str(), editor.touched), ("", false));
+            harness.app.apply(Action::CommitEdit {
+                tab,
+                id,
+                then: Advance::Stay,
+            });
+            assert_eq!(
+                object(&harness, tab, id).edits.cells[&(0, 4)].new,
+                NewValue::Now
+            );
+        }
+
+        #[test]
+        fn default_typed_into_a_new_row_unsets_the_cell() {
+            let (mut harness, tab, id, new) = with_new_row();
+            let row = new_row(new);
+            // `kind` is text, so the word is typed where words are read:
+            // `created_at` has a default, once it is a column of times.
+            let structure = tab_mut(&mut harness, tab, id).structure.value.as_mut();
+            structure.unwrap().columns[4].type_name = "timestamp".into();
+            type_into(&mut harness, tab, id, at(row, 4), "now()");
+            let set = &object(&harness, tab, id).edits.cells[&(row, 4)];
+            assert_eq!(set.new, NewValue::Now);
+            type_into(&mut harness, tab, id, at(row, 4), "DEFAULT");
+            let edits = &object(&harness, tab, id).edits;
+            assert!(!edits.cells.contains_key(&(row, 4)));
+            // The time of the save goes out in the row's INSERT.
+            type_into(&mut harness, tab, id, at(row, 4), "now");
+            type_into(&mut harness, tab, id, at(row, 1), "9100000000000000004");
+            let before = harness.app.backend.sent.len();
+            harness.app.apply(Action::WriteEdits { tab, id });
+            let changes = write_since(&harness, before).expect("a Write");
+            let made = changes.inserts[0]
+                .set
+                .iter()
+                .find(|value| value.column == "created_at");
+            assert_eq!(made.map(|value| &value.new), Some(&NewValue::Now));
         }
 
         /// A row of `book_covers` as the database stores one.
