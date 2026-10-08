@@ -162,13 +162,17 @@ fn note_said(
 /// What a save that wrote says once it is done: `written 2 changes · 1 row
 /// · 14 ms`.
 pub fn written_text(saved: &Saved, locale: Locale) -> String {
-    format!(
-        "{} {} · {} · {}",
-        gettext(locale, "written"),
-        counted(locale, saved.changes, "change", "changes"),
-        counted(locale, saved.rows, "row", "rows"),
-        format::elapsed(saved.elapsed)
-    )
+    let mut parts = Vec::new();
+    if saved.added > 0 {
+        parts.push(counted(locale, saved.added, "new row", "new rows"));
+    }
+    // A save of new rows alone changed none.
+    if saved.changes > 0 || saved.added == 0 {
+        parts.push(counted(locale, saved.changes, "change", "changes"));
+        parts.push(counted(locale, saved.rows, "row", "rows"));
+    }
+    parts.push(format::elapsed(saved.elapsed));
+    format!("{} {}", gettext(locale, "written"), parts.join(" · "))
 }
 
 /// Why Save cannot be pressed, as its tooltip says it, and the terminal's
@@ -241,6 +245,17 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, id: TabId) {
     let blocked = app
         .save_blocked(tab, id)
         .map(|block| block_text(block, counts.to_fix, locale));
+    // What the tab's new rows still need: the column, or how many.
+    let lacking = app.lacking(tab, id);
+    let needs = match lacking.as_slice() {
+        [] => None,
+        [one] => Some(format!("{one} {}", gettext(locale, "is required"))),
+        more => Some(format!(
+            "{} {}",
+            more.len(),
+            gettext(locale, "values are required")
+        )),
+    };
     let mut actions = Vec::new();
     egui::Panel::bottom(Id::new(("pending-bar", tab.0, id.0)))
         .exact_size(HEIGHT)
@@ -276,8 +291,14 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, id: TabId) {
             // What the bar says, and the room each part of it asks for.
             let whole = pending.then(|| counts_text(counts, false, locale));
             let short = pending.then(|| counts_text(counts, true, locale));
+            // What stands against a save, in one place: the values to fix,
+            // and what a new row still needs.
             let fix = (counts.to_fix > 0)
                 .then(|| format!("{} {}", counts.to_fix, gettext(locale, "to fix")));
+            let fix = match (fix, &needs) {
+                (Some(fix), Some(needs)) => Some(format!("{fix} · {needs}")),
+                (fix, needs) => fix.or_else(|| needs.clone()),
+            };
             let fix_width = fix.as_ref().map(|fix| MARK + 5.0 + width(body, fix));
             let busy_width = saving.then(|| RING + 6.0 + width(body, &busy));
             let note_width = note.as_ref().map(|note| width(body, note));

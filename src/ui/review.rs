@@ -334,7 +334,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, id: TabId) {
             widgets::hline(ui, head.x_range(), head.top() + 0.5, palette.outline);
             widgets::hline(ui, head.x_range(), head.bottom() - 0.5, palette.outline);
             if look.terminal {
-                let counts = (review.changes, review.rows);
+                let counts = (review.added, review.changes, review.rows);
                 terminal_head(ui, head, side, counts, typing, skin);
                 let foot = Rect::from_min_max(pos2(full.left(), full.bottom() - FOOT), full.max);
                 asked = terminal_foot(ui, foot, side, read_only, skin);
@@ -467,7 +467,7 @@ fn terminal_head(
     ui: &egui::Ui,
     head: Rect,
     side: f32,
-    (changes, rows): (usize, usize),
+    (added, changes, rows): (usize, usize, usize),
     typing: bool,
     skin: Skin<'_>,
 ) {
@@ -477,12 +477,17 @@ fn terminal_head(
         locale,
     } = skin;
     let y = head.center().y;
-    let counts = format!(
-        "{} · {} · {}",
-        skin.say("pending"),
-        look.label(&counted(locale, changes, "change", "changes")),
-        look.label(&counted(locale, rows, "row", "rows"))
-    );
+    // The new rows, then the changes and their rows, each where there is
+    // any: "pending · 1 new row · 2 changes · 1 row".
+    let mut counts = vec![skin.say("pending")];
+    if added > 0 {
+        counts.push(look.label(&counted(locale, added, "new row", "new rows")));
+    }
+    if changes > 0 || added == 0 {
+        counts.push(look.label(&counted(locale, changes, "change", "changes")));
+        counts.push(look.label(&counted(locale, rows, "row", "rows")));
+    }
+    let counts = counts.join(" · ");
     let counts = Text::one(look, TextRole::OGroup, &counts, palette.text);
     let left = head.left() + side;
     let end = left + widgets::paint_label(ui, left, y, counts);

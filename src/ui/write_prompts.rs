@@ -444,9 +444,10 @@ struct Asked {
 struct Facts {
     /// The connection's name and where it points.
     connection: String,
-    /// "2 changes".
+    /// "2 changes", "1 new row and 2 changes", "1 new row".
     changes: String,
-    /// "1 row in book_covers".
+    /// "1 row in book_covers", or the table alone where the save changes
+    /// none of its rows.
     rows: String,
     /// The columns the save sets, in the order it first names them.
     columns: Vec<String>,
@@ -482,25 +483,43 @@ fn confirm_write(app: &mut App, ctx: &egui::Context) {
     // of the terminal's box.
     let early = pressed_early(ctx, Id::new("write-prompt-pressed"), ripe);
     let table = format::display_safe(&prompt.changeset.object.name).into_owned();
+    // The columns the save sets, the new rows' first as they are written
+    // first.
+    let set = prompt.changeset.inserts.iter().flat_map(|row| &row.set);
+    let set = set.map(|value| &value.column);
+    let changed = prompt.changeset.rows.iter().flat_map(|row| &row.set);
     let mut columns: Vec<String> = Vec::new();
-    for change in prompt.changeset.rows.iter().flat_map(|row| &row.set) {
-        let name = format::display_safe(&change.column);
+    for column in set.chain(changed.map(|change| &change.column)) {
+        let name = format::display_safe(column);
         if !columns.iter().any(|column| *column == name) {
             columns.push(name.into_owned());
         }
     }
+    // What the save comes to: "1 new row and 2 changes".
+    let changed = counted(locale, prompt.changes, "change", "changes");
+    let added = counted(locale, prompt.added, "new row", "new rows");
+    let what = match (prompt.added, prompt.changes) {
+        (0, _) => changed,
+        (_, 0) => added,
+        _ => format!("{added} {} {changed}", gettext(locale, "and")),
+    };
     let facts = Facts {
         connection: format!(
             "{} · {}",
             workspace.name,
             format::display_safe(&super::workspace::target(workspace))
         ),
-        changes: counted(locale, prompt.changes, "change", "changes"),
-        rows: format!(
-            "{} {} {table}",
-            counted(locale, prompt.rows, "row", "rows"),
-            gettext(locale, "in")
-        ),
+        changes: what,
+        // A save that only adds rows changes none of the table's.
+        rows: if prompt.rows == 0 && prompt.added > 0 {
+            table.clone()
+        } else {
+            format!(
+                "{} {} {table}",
+                counted(locale, prompt.rows, "row", "rows"),
+                gettext(locale, "in")
+            )
+        },
         columns,
         tag: workspace.environment.label(crate::env::Platform::of(&look)),
     };

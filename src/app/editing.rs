@@ -358,6 +358,25 @@ impl App {
         unsendable.then_some(SaveBlock::Unsendable)
     }
 
+    /// The columns the tab's new rows still need a value in, by name, each
+    /// once, in the page's order: what the bar and the terminal's line say
+    /// a save waits for.
+    pub fn lacking(&self, tab: ConnTabId, id: TabId) -> Vec<String> {
+        self.table(tab, id, |table, object| {
+            let added = object.edits.added.iter();
+            let mut cols: Vec<usize> = added
+                .flat_map(|new| table.missing(new.id, &object.edits.cells))
+                .collect();
+            cols.sort_unstable();
+            cols.dedup();
+            cols.into_iter()
+                .filter_map(|col| table.page.columns.get(col))
+                .map(|column| crate::ui::format::display_safe(&column.name).into_owned())
+                .collect()
+        })
+        .unwrap_or_default()
+    }
+
     /// Saves the tab's pending changes, and does `then` once everything
     /// is written. A save that is not sent, or that writes nothing, drops
     /// `then`.

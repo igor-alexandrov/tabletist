@@ -11461,6 +11461,140 @@ mod tests {
         assert!(line.starts_with("! new:publisher_id  "), "{line}");
     }
 
+    #[test]
+    fn the_bar_counts_new_rows_and_says_what_one_still_needs() {
+        use egui::accesskit::Role;
+        let (mut harness, tab, id) = covers_in(Look::macos());
+        let place = crate::edit::Place::Top;
+        harness.app.apply(Action::AddRow { tab, id, place });
+        harness.app.apply(Action::CancelEdit { tab, id });
+        assert!(harness.has("1 new row"));
+        assert!(harness.has("publisher_id is required"));
+        // Save is there and cannot be pressed, and says why.
+        let tree = harness.settle();
+        let save = crate::testing::node(&tree, "Save", Role::Button).expect("Save");
+        let (_, node) = tree.nodes.iter().find(|(id, _)| *id == save).unwrap();
+        assert!(node.is_disabled());
+        assert_eq!(node.description(), Some("Fill required fields to save"));
+        // Filled, and with a changed cell beside it.
+        let new = crate::edit::new_row(0);
+        make_pending(&mut harness, tab, id, (new, 1), "9100000000000000004");
+        make_pending(&mut harness, tab, id, (1, 2), "audio");
+        assert!(harness.has("1 new row · 1 change in 1 row"));
+        assert!(!harness.has("publisher_id is required"));
+        // Its statements are there to review, the INSERT first.
+        harness.click("Review SQL");
+        assert!(harness.has("-- new row"));
+        assert!(harness.has("VALUES (9100000000000000004)"));
+    }
+
+    #[test]
+    fn a_save_says_how_many_rows_it_added() {
+        use egui::accesskit::Role;
+        use tabletist_db::Value;
+        let (mut harness, tab, id) = covers_in(Look::macos());
+        let place = crate::edit::Place::Top;
+        harness.app.apply(Action::AddRow { tab, id, place });
+        let cell = (crate::edit::new_row(0), 1);
+        make_pending(&mut harness, tab, id, cell, "9100000000000000004");
+        harness.click("Save");
+        let stored = vec![
+            Value::Int(15),
+            Value::Int(9_100_000_000_000_000_004),
+            Value::Text("print".into()),
+            Value::Null,
+            Value::Text("2026-10-07 10:42:09".into()),
+        ];
+        harness.answer_written(Ok(tabletist_db::WriteOutcome::Written {
+            inserted: vec![Some(stored)],
+            rows: Vec::new(),
+            elapsed: std::time::Duration::from_millis(5),
+        }));
+        assert!(harness.has("written 1 new row · 5 ms"));
+        // The row is the table's now, with the id the database gave it.
+        assert!(painted(&harness, "15"));
+        assert!(harness.has("4 rows · 5 columns · main"));
+        let tree = harness.settle();
+        let new = crate::testing::node(&tree, "New row, not saved", Role::Button);
+        assert!(new.is_none());
+    }
+
+    #[test]
+    fn a_failed_insert_says_that_nothing_was_saved() {
+        use egui::accesskit::Role;
+        let (mut harness, tab, id) = covers_in(Look::macos());
+        let place = crate::edit::Place::Top;
+        harness.app.apply(Action::AddRow { tab, id, place });
+        let cell = (crate::edit::new_row(0), 1);
+        make_pending(&mut harness, tab, id, cell, "9100000000000000099");
+        harness.click("Save");
+        harness.answer_written(Ok(tabletist_db::WriteOutcome::FailedInsert {
+            insert: 0,
+            error: tabletist_db::Error::query("FOREIGN KEY constraint failed"),
+        }));
+        let said = "Nothing was saved. 1 new row failed, so the whole transaction rolled back. \
+                    FOREIGN KEY constraint failed.";
+        assert!(harness.has(said), "{:?}", harness.painted);
+        // The row is still there to fix, and still counted.
+        assert!(harness.has("1 new row"));
+        let tree = harness.settle();
+        let new = crate::testing::node(&tree, "New row, not saved", Role::Button);
+        assert!(new.is_some());
+    }
+
+    #[test]
+    fn the_terminals_line_counts_new_rows_and_says_what_one_needs() {
+        let (mut harness, tab, id) = covers_in(Look::omarchy());
+        harness.app.workspace_mut(tab).unwrap().row_panel = false;
+        let palette = harness.app.palette;
+        select(&mut harness, tab, id, (0, 1));
+        type_key(&mut harness, Key::O, "o");
+        harness.press(Key::Escape, Modifiers::NONE);
+        assert!(
+            painted_in(&harness, "+1 new", palette.success),
+            "{:?}",
+            harness.painted
+        );
+        // Asked to write, the line says what the row still needs.
+        harness.app.apply(Action::OpenCommand(tab));
+        harness.app.workspace_mut(tab).unwrap().command = Some("w".into());
+        harness.app.apply(Action::RunCommand(tab));
+        harness.settle();
+        assert!(
+            painted_in(&harness, "publisher_id required", palette.danger),
+            "{:?}",
+            harness.painted
+        );
+        // `:diff` has something to show with nothing but a new row.
+        harness.app.apply(Action::ReviewEdits {
+            tab,
+            id,
+            show: true,
+        });
+        harness.settle();
+        assert!(
+            painted(&harness, "pending · 1 new row"),
+            "{:?}",
+            harness.painted
+        );
+    }
+
+    #[test]
+    fn the_confirmation_counts_new_rows() {
+        let (mut harness, tab, id) = covers_in(Look::macos());
+        harness.app.workspace_mut(tab).unwrap().environment = crate::env::Environment::Production;
+        let place = crate::edit::Place::Top;
+        harness.app.apply(Action::AddRow { tab, id, place });
+        let cell = (crate::edit::new_row(0), 1);
+        make_pending(&mut harness, tab, id, cell, "9100000000000000004");
+        harness.app.apply(Action::WriteEdits { tab, id });
+        assert!(harness.has("Save 1 new row to production?"));
+        harness.app.apply(Action::CancelWrite);
+        make_pending(&mut harness, tab, id, (1, 2), "audio");
+        harness.app.apply(Action::WriteEdits { tab, id });
+        assert!(harness.has("Save 1 new row and 1 change to production?"));
+    }
+
     /// The middle of the cell that shows `text`.
     fn cell_of(harness: &Harness, text: &str) -> egui::Pos2 {
         harness
@@ -14797,12 +14931,28 @@ mod tests {
         // alone are looked at.
         harness.app.workspace_mut(tab).unwrap().row_panel = false;
         harness.settle();
-        for hint in ["o new row", "dd delete"] {
-            assert!(painted(&harness, hint), "{hint}: {:?}", harness.painted);
-        }
-        // `i edit` is live now, and the struck `e edit` is gone.
+        let palette = harness.app.palette;
+        // No row of the table is deleted yet.
+        assert!(painted(&harness, "dd delete"), "{:?}", harness.painted);
+        assert!(!painted_in(&harness, "dd delete", palette.text));
+        // `i edit` and `o new row` are live now, and the struck `e edit`
+        // is gone.
         assert!(!painted(&harness, "e edit"));
         assert!(painted(&harness, "i edit"));
+        assert!(
+            painted_in(&harness, "o new row", palette.text),
+            "{:?}",
+            harness.painted
+        );
+        // On a connection that only reads no row is added: the key is
+        // struck through still.
+        let mut harness = Harness::new();
+        harness.set_look(Look::omarchy());
+        let tab = with_page(&mut harness);
+        harness.app.workspace_mut(tab).unwrap().row_panel = false;
+        harness.settle();
+        assert!(painted(&harness, "o new row"));
+        assert!(!painted_in(&harness, "o new row", palette.text));
     }
 
     #[test]
