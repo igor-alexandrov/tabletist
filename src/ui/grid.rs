@@ -58,6 +58,17 @@ pub struct Column<'a> {
     /// SQL result's) is a label: no button, no stop for the Tab key, no
     /// fill under the pointer.
     pub sortable: bool,
+    /// A new row needs a value in it: the terminal's header says so.
+    pub required: bool,
+}
+
+/// A row as the grid needs it besides its cells.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Row {
+    pub mark: RowMark,
+    /// Its number among the table's rows, from 1, for a screen reader.
+    /// `None` for a row the table does not hold yet.
+    pub number: Option<u64>,
 }
 
 /// How a cell draws its text.
@@ -100,6 +111,11 @@ pub enum Mark {
     Locked,
     /// A cell of a row a save found gone from the server.
     Gone,
+    /// The cell that marks a new row: its text in the row's tone.
+    Added,
+    /// A cell of a new row nothing is set in: what the database will fill
+    /// it with, quieter than a value.
+    Unset,
 }
 
 #[derive(Default)]
@@ -460,14 +476,13 @@ pub fn show<'a>(
     id: Id,
     columns: &[Column<'_>],
     row_count: usize,
-    first_row_number: u64,
     selection: Option<CellPos>,
     // Whether the arrow keys move in this grid.
     keys: bool,
     palette: &Palette,
     look: &crate::theme::Look,
-    // What each row's pending cells come to, for its mark.
-    rows: &dyn Fn(usize) -> RowMark,
+    // Each row's number, and what its pending cells come to, for its mark.
+    rows: &dyn Fn(usize) -> Row,
     // The cell an editor is open on, and what draws its field on the cell.
     editing: Option<CellPos>,
     mut editor: Option<Editor<'_>>,
@@ -605,8 +620,11 @@ pub fn show<'a>(
             virtual_rows(ui, row_count, row_height, |ui, row| {
                 // A row takes a click, not the Tab key: the grid is the stop.
                 let (rect, response) = ui.allocate_exact_size(vec2(full, row_height), Sense::CLICK);
-                let number = first_row_number + row as u64 + 1;
-                let label = format!("Row {number}");
+                let Row { mark, number } = rows(row);
+                let label = match number {
+                    Some(number) => format!("Row {number}"),
+                    None => "New row, not saved".to_owned(),
+                };
                 response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, &label));
                 if response.clicked() || response.double_clicked() {
                     let col = response
@@ -631,17 +649,24 @@ pub fn show<'a>(
                 }
                 let painter = ui.painter().clone();
                 // A row with pending cells is marked in their tone.
-                let row_tone = match rows(row) {
+                let row_tone = match mark {
                     RowMark::None => None,
                     RowMark::Changed => Some(Tone::Warning),
                     RowMark::Trouble => Some(Tone::Danger),
+                    RowMark::New => Some(Tone::Success),
                 };
+                let new = mark == RowMark::New;
                 let selected_row = selection.is_some_and(|cell| cell.row == row);
                 // With the keyboard in the grid the cell takes the
                 // selection's colour and its row a lighter tint of it.
                 let lit_row = selected_row && lit && !look.terminal;
                 let fill = if lit_row {
                     Some(palette.window.lerp_to_gamma(palette.selection, 0.6))
+                } else if new && !selected_row {
+                    // A new row is filled in its tone. Selected, it takes
+                    // the selection's colour, which says where the keyboard
+                    // is: its bar and its gutter still say it is new.
+                    Some(Tone::Success.fill(look, palette))
                 } else {
                     row_fill(
                         selected_row,
@@ -700,8 +725,13 @@ pub fn show<'a>(
                             }
                             if let Some(tone) = row_tone {
                                 // Beside the cursor: `~` on a changed row,
-                                // `!` when one of its cells is in trouble.
-                                let sign = if tone == Tone::Danger { "!" } else { "~" };
+                                // `!` when one of its cells is in trouble,
+                                // `+` on a new one.
+                                let sign = match mark {
+                                    RowMark::Trouble => "!",
+                                    RowMark::New => "+",
+                                    RowMark::None | RowMark::Changed => "~",
+                                };
                                 Text::one(look, TextRole::OGroup, sign, tone.color(palette))
                                     .layout(ui.ctx())
                                     .paint_center(
@@ -756,7 +786,7 @@ pub fn show<'a>(
                         Mark::Pending | Mark::Saving => Some(Tone::Warning),
                         Mark::Trouble => Some(Tone::Danger),
                         Mark::Saved => Some(Tone::Success),
-                        Mark::None | Mark::Locked | Mark::Gone => None,
+                        Mark::None | Mark::Locked | Mark::Gone | Mark::Added | Mark::Unset => None,
                     };
                     let locked = content.mark == Mark::Locked && !look.terminal;
                     if here && lit && look.terminal && tone.is_none() && !edited {
@@ -831,6 +861,15 @@ pub fn show<'a>(
                     // on its key, and a computed column a step quieter.
                     let written = match (tone, row_tone) {
                         _ if content.mark == Mark::Gone => written_in(palette, palette.dim),
+                        // A new row's marker in the row's tone; the
+                        // terminal writes it dimmed, as it does what a
+                        // cell will be filled with.
+                        _ if content.mark == Mark::Added && !look.terminal => {
+                            written_in(palette, Tone::Success.color(palette))
+                        }
+                        _ if matches!(content.mark, Mark::Unset | Mark::Added) => {
+                            written_in(palette, palette.dim)
+                        }
                         (Some(tone), _) if look.terminal && tone != Tone::Success => {
                             written_in(palette, tone.color(palette))
                         }
@@ -1219,6 +1258,22 @@ fn draw_header(
         false,
         look,
     );
+    // The terminal asks for a new row's value in its header: a star after
+    // the column's name, a piece of its own.
+    if column.required && look.terminal {
+        let gap = text_width(ui, " ", name_role, look);
+        paint(
+            &clip,
+            ui,
+            name_role,
+            "*",
+            Tone::Danger.color(palette),
+            name_x + name_width + gap,
+            name_y,
+            false,
+            look,
+        );
+    }
     if let Some(dir) = column.sort.filter(|_| !look.terminal) {
         let icon = if dir == SortDir::Asc {
             Icon::ArrowUp
@@ -1654,6 +1709,14 @@ mod tests {
         assert_eq!(row_fill(false, false, false, &terminal, &palette), None);
     }
 
+    /// A row of a page, marked `mark` and numbered from 1.
+    fn numbered(mark: RowMark, row: usize) -> Row {
+        Row {
+            mark,
+            number: Some(row as u64 + 1),
+        }
+    }
+
     /// Two columns whose headers sort, or are labels.
     fn columns_that(sortable: bool) -> Vec<Column<'static>> {
         vec![
@@ -1665,6 +1728,7 @@ mod tests {
                 key: true,
                 flexible: false,
                 sortable,
+                required: false,
             },
             Column {
                 name: "email",
@@ -1674,6 +1738,7 @@ mod tests {
                 key: false,
                 flexible: false,
                 sortable,
+                required: false,
             },
         ]
     }
@@ -1716,12 +1781,11 @@ mod tests {
                     egui::Id::new("grid"),
                     columns,
                     rows,
-                    0,
                     None,
                     false,
                     &palette,
                     &crate::theme::Look::standard(),
-                    &|_| RowMark::None,
+                    &|row| numbered(RowMark::None, row),
                     None,
                     None,
                     |row, col| Cell {
@@ -1772,12 +1836,11 @@ mod tests {
                 egui::Id::new("grid"),
                 &columns(),
                 3,
-                0,
                 Some(CellPos { row: 1, col: 1 }),
                 keys,
                 palette,
                 look,
-                &|_| RowMark::None,
+                &|row| numbered(RowMark::None, row),
                 None,
                 None,
                 |row, col| Cell {
@@ -1889,12 +1952,11 @@ mod tests {
                 egui::Id::new("grid"),
                 &columns(),
                 3,
-                0,
                 selection,
                 true,
                 palette,
                 look,
-                &|at| if at == 1 { row } else { RowMark::None },
+                &|at| numbered(if at == 1 { row } else { RowMark::None }, at),
                 None,
                 None,
                 |row, col| Cell {
@@ -1921,6 +1983,111 @@ mod tests {
             }
         }
         (rects, texts)
+    }
+
+    #[test]
+    fn a_new_row_is_filled_and_marked_in_the_success_tone() {
+        use crate::ui::states::Tone;
+        for look in Look::ALL {
+            for palette in [Palette::light(), Palette::dark()] {
+                let said = format!("{}, dark: {}", look.name, palette.dark);
+                let ctx = egui::Context::default();
+                crate::theme::install(&ctx, false, &look);
+                crate::theme::apply(&ctx, &palette, &look);
+                // The columns are fitted on the first frame.
+                marked(&ctx, &look, &palette, Mark::None, RowMark::None);
+                let (rects, texts) = marked(&ctx, &look, &palette, Mark::Added, RowMark::New);
+                let (fill, color) = (
+                    Tone::Success.fill(&look, &palette),
+                    Tone::Success.color(&palette),
+                );
+                // The row's own fill, as wide as the grid: no cell's tint.
+                let filled = rects
+                    .iter()
+                    .any(|rect| rect.fill == fill && rect.rect.width() > 400.0);
+                assert!(filled, "{said}: the row's fill");
+                let bar = rects.iter().any(|rect| {
+                    rect.fill == color
+                        && rect.rect.width() == 3.0
+                        && rect.rect.height() == look.grid_row
+                });
+                let signed = texts
+                    .iter()
+                    .any(|(text, painted, _)| text == "+" && *painted == color);
+                let marker = texts.iter().find(|(text, ..)| text == "r1c1");
+                let marker = marker.map(|(_, color, _)| *color);
+                if look.terminal {
+                    // `+` in the gutter, and the marker dimmed.
+                    assert!(signed && !bar, "{said}");
+                    assert_eq!(marker, Some(palette.dim), "{said}");
+                } else {
+                    // The bar at the row's left, and the marker in the tone.
+                    assert!(bar && !signed, "{said}");
+                    assert_eq!(marker, Some(color), "{said}");
+                }
+                // A cell nothing is set in is written quieter than a value.
+                let (_, texts) = marked(&ctx, &look, &palette, Mark::Unset, RowMark::New);
+                let unset = texts.iter().find(|(text, ..)| text == "r1c1");
+                assert_eq!(
+                    unset.map(|(_, color, _)| *color),
+                    Some(palette.dim),
+                    "{said}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_new_row_is_read_as_one_and_the_others_by_their_numbers() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        let (look, palette) = (Look::standard(), Palette::dark());
+        crate::theme::install(&ctx, false, &look);
+        crate::theme::apply(&ctx, &palette, &look);
+        let rows = |row: usize| match row {
+            0 => Row {
+                mark: RowMark::New,
+                number: None,
+            },
+            // The page's rows keep their numbers under it.
+            row => numbered(RowMark::None, row - 1),
+        };
+        let mut tree = None;
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(800.0, 400.0),
+                )),
+                ..Default::default()
+            },
+            |ui| {
+                show(
+                    ui,
+                    egui::Id::new("grid"),
+                    &columns(),
+                    3,
+                    None,
+                    false,
+                    &palette,
+                    &look,
+                    &rows,
+                    None,
+                    None,
+                    |row, col| Cell {
+                        text: format!("r{row}c{col}").into(),
+                        ..Default::default()
+                    },
+                );
+            },
+        );
+        output.textures_delta.clear();
+        tree.replace(output.platform_output.accesskit_update.expect("accesskit"));
+        let names = crate::testing::labels(&tree.unwrap());
+        for name in ["New row, not saved", "Row 1", "Row 2"] {
+            assert!(names.iter().any(|label| label == name), "{name}: {names:?}");
+        }
+        assert!(!names.iter().any(|label| label == "Row 3"), "{names:?}");
     }
 
     #[test]
@@ -2171,6 +2338,7 @@ mod tests {
                 key: col == 0,
                 flexible: false,
                 sortable: true,
+                required: false,
             })
             .collect();
         // One frame of a 320 pt wide grid: its output, where each cell's
@@ -2191,12 +2359,11 @@ mod tests {
                     id,
                     &columns,
                     3,
-                    0,
                     None,
                     false,
                     &Palette::light(),
                     &Look::standard(),
-                    &|_| RowMark::None,
+                    &|row| numbered(RowMark::None, row),
                     None,
                     None,
                     |row, col| Cell {

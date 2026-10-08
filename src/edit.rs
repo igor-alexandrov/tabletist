@@ -966,6 +966,8 @@ pub enum RowMark {
     #[default]
     None,
     Changed,
+    /// A row the table does not hold yet.
+    New,
     /// One of its cells is to fix or failed.
     Trouble,
 }

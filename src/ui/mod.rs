@@ -11377,6 +11377,90 @@ mod tests {
         assert_eq!(object.edits.added.len(), 1);
     }
 
+    #[test]
+    fn a_new_rows_cells_say_what_the_database_will_do() {
+        use egui::accesskit::Role;
+        for look in Look::ALL {
+            let (mut harness, tab, id) = covers_in(look);
+            harness.app.workspace_mut(tab).unwrap().row_panel = false;
+            let place = crate::edit::Place::Top;
+            harness.app.apply(Action::AddRow { tab, id, place });
+            harness.app.apply(Action::CancelEdit { tab, id });
+            let tree = harness.settle();
+            // The row is one a screen reader finds, by what it is.
+            let new = crate::testing::node(&tree, "New row, not saved", Role::Button);
+            assert!(new.is_some(), "{}", look.name);
+            // And the page's rows keep their numbers under it.
+            assert!(crate::testing::node(&tree, "Row 1", Role::Button).is_some());
+            assert!(crate::testing::node(&tree, "Row 4", Role::Button).is_none());
+            let marker = if look.terminal { "new" } else { "+ new" };
+            assert!(
+                painted(&harness, marker),
+                "{}: {:?}",
+                look.name,
+                harness.painted
+            );
+            // `created_at`'s default, as the database writes it.
+            assert!(painted(&harness, "CURRENT_TIMESTAMP"), "{}", look.name);
+            // `publisher_id` is asked for: in words, or by the header's star.
+            assert_eq!(
+                painted(&harness, "required"),
+                !look.terminal,
+                "{}",
+                look.name
+            );
+            assert_eq!(painted(&harness, "*"), look.terminal, "{}", look.name);
+            // The count says it.
+            let summary = if look.terminal {
+                "3 rows + 1 new · 5 cols"
+            } else {
+                "3 rows + 1 new · 5 columns · main"
+            };
+            assert!(harness.has(summary), "{}", look.name);
+            // The footer says what is selected, and what it still needs.
+            if !look.terminal {
+                assert!(harness.has("New row · 1 required field"), "{}", look.name);
+            }
+            // Set, the cell shows its value and asks for nothing more.
+            let cell = (crate::edit::new_row(0), 1);
+            make_pending(&mut harness, tab, id, cell, "9100000000000000004");
+            harness.settle();
+            assert!(painted(&harness, "9100000000000000004"), "{}", look.name);
+            assert!(!painted(&harness, "required"), "{}", look.name);
+            assert!(!painted(&harness, "*"), "{}", look.name);
+            if !look.terminal {
+                assert!(harness.has("New row"), "{}", look.name);
+            }
+        }
+    }
+
+    #[test]
+    fn the_row_panel_says_a_new_row_is_edited_in_the_grid() {
+        let (mut harness, tab, id) = covers_in(Look::macos());
+        let place = crate::edit::Place::Top;
+        harness.app.apply(Action::AddRow { tab, id, place });
+        assert!(harness.has("New row, not saved. Its values are edited in the grid."));
+        // And Mod+I, which puts the keyboard on a row's fields, leaves it.
+        harness.app.apply(Action::CancelEdit { tab, id });
+        harness.settle();
+        harness.press(Key::I, Modifiers::COMMAND);
+        assert!(!harness.ctx.text_edit_focused());
+        assert!(edits(&harness, tab, id).why.is_none());
+    }
+
+    #[test]
+    fn the_terminals_error_line_names_a_new_row_by_what_it_is() {
+        let (mut harness, tab, id) = covers_in(Look::omarchy());
+        let place = crate::edit::Place::Top;
+        harness.app.apply(Action::AddRow { tab, id, place });
+        // A publisher that is no number, left to fix.
+        let cell = (crate::edit::new_row(0), 1);
+        leave_pending(&mut harness, tab, id, cell, "harbor");
+        harness.settle();
+        let (line, _) = error_line(&harness).expect("the error line");
+        assert!(line.starts_with("! new:publisher_id  "), "{line}");
+    }
+
     /// The middle of the cell that shows `text`.
     fn cell_of(harness: &Harness, text: &str) -> egui::Pos2 {
         harness

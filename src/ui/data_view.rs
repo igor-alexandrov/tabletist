@@ -11,8 +11,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use tabletist_db::{NewValue, SortDir, Value, ValueKind};
 
 use crate::app::App;
-use crate::edit::{EditorPlace, Pending, State, Table};
-use crate::i18n::gettext;
+use crate::edit::{EditorPlace, Pending, RowMark, State, Table, Unset};
+use crate::i18n::{gettext, ngettext};
 use crate::model::{Action, CellPos, ConnTabId, EditStart, ObjectTab, ObjectView, TabId};
 use crate::theme::{Icon, Look, Palette};
 use crate::typography::{Text, TextRole};
@@ -40,17 +40,37 @@ fn note(ui: &mut egui::Ui, text: &str, color: egui::Color32, look: &Look) -> egu
         .label(ui)
 }
 
-/// What the footer says of the selection and of a read-only connection;
-/// empty when there is nothing to say.
-fn state_note(selected: bool, read_only: bool, locale: crate::i18n::Locale) -> String {
+/// What the footer says of the selection (`selected`, where there is one)
+/// and of a read-only connection; empty when there is nothing to say.
+fn state_note(selected: Option<String>, read_only: bool, locale: crate::i18n::Locale) -> String {
     let mut parts = Vec::new();
-    if selected {
-        parts.push(gettext(locale, "1 row selected"));
-    }
+    parts.extend(selected);
     if read_only {
-        parts.push(gettext(locale, "read-only"));
+        parts.push(gettext(locale, "read-only").into_owned());
     }
     parts.join(" · ")
+}
+
+/// What the footer says of the tab's selection: that a row is selected,
+/// or, on a new row, that it is one and how many values it still needs.
+fn selection_note(
+    workspace: &crate::model::Workspace,
+    object: &ObjectTab,
+    locale: crate::i18n::Locale,
+) -> Option<String> {
+    let cell = object.selection?;
+    let Some(id) = crate::edit::new_id(cell.row) else {
+        return Some(gettext(locale, "1 row selected").into_owned());
+    };
+    let new = gettext(locale, "New row");
+    let missing = Table::of(workspace, object)
+        .map_or(0, |table| table.missing(id, &object.edits.cells).len());
+    if missing == 0 {
+        return Some(new.into_owned());
+    }
+    let plural = u32::try_from(missing).unwrap_or(u32::MAX);
+    let fields = ngettext(locale, "required field", "required fields", plural);
+    Some(format!("{new} · {missing} {fields}"))
 }
 
 /// The parts of "13 rows · 6 columns · public", as far as it is known.
@@ -63,13 +83,17 @@ fn subtitle(object: &ObjectTab, look: &Look, locale: crate::i18n::Locale) -> Vec
             .map(|page| page.rows.len() as u64)
             .or(object.estimated_rows.filter(|_| !filtered))
     });
-    if let Some(rows) = rows {
+    let rows = rows.map(|rows| {
         let noun = if rows == 1 { "row" } else { "rows" };
-        parts.push(format!(
-            "{} {}",
-            format::group_digits(rows),
-            gettext(locale, noun)
-        ));
+        format!("{} {}", format::group_digits(rows), gettext(locale, noun))
+    });
+    // The rows to add, beside the table's own: "13 rows + 1 new".
+    let added = object.edits.added.len();
+    let new = (added > 0).then(|| format!("{added} {}", gettext(locale, "new")));
+    match (rows, new) {
+        (Some(rows), Some(new)) => parts.push(format!("{rows} + {new}")),
+        (Some(one), None) | (None, Some(one)) => parts.push(one),
+        (None, None) => {}
     }
     if let Some(page) = page {
         let count = page.columns.len();
@@ -920,7 +944,9 @@ pub fn footer(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabI
         })
     });
     let unordered = page.is_some_and(|page| !page.ordered_by_key) && object.query.sort.is_empty();
-    let selected = object.selection.is_some();
+    let selected = app
+        .workspace(tab)
+        .and_then(|workspace| selection_note(workspace, object, locale));
     let read_only = app
         .workspace(tab)
         .is_some_and(|workspace| workspace.access == tabletist_db::Access::ReadOnly);
@@ -1157,11 +1183,16 @@ fn error_line(app: &App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId) {
                 }
                 State::Failed(error) => failure_text(error),
             };
+            // A new row has no number among the table's: it is named by
+            // what it is.
+            let row = match crate::edit::new_id(row) {
+                Some(_) => look.label(&gettext(locale, "new")),
+                None => (object.query.offset + row as u64 + 1).to_string(),
+            };
             // The database's words and the column's values as they are:
             // the look's lower case is for the app's own.
             Some(format!(
-                "! {}:{}  {message}",
-                object.query.offset + row as u64 + 1,
+                "! {row}:{}  {message}",
                 format::display_safe(&column.name)
             ))
         });
@@ -1217,6 +1248,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
     // What editing asks of the workspace and the tab together, read before
     // the tab is taken for its editor's text.
     let computed = computed_columns(workspace, object);
+    let (unset, lacking) = new_row_columns(workspace, object);
     let target = object
         .edits
         .editor
@@ -1264,7 +1296,13 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
                     key,
                     flexible: column.kind == ValueKind::Json,
                     sortable: true,
+                    required: false,
                 }
+            })
+            .enumerate()
+            .map(|(col, column)| Column {
+                required: lacking.contains(&col),
+                ..column
             })
             .collect();
         let ctx = ui.ctx().clone();
@@ -1291,6 +1329,15 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
             computed,
             &ctx,
         );
+        // The column a new row's marker stands in: the first the database
+        // assigns.
+        changes.marker = unset.iter().position(|unset| *unset == Unset::Assigned);
+        changes.unset = unset;
+        // Whether the `INSERT` of the new row `id` failed in the last save.
+        let failed = |id: usize| {
+            let mut added = object.edits.added.iter();
+            added.any(|new| new.id == id && new.failed.is_some())
+        };
         // The rows as the grid shows them: the page's, and the new ones
         // among them. A place is the grid's; a row is the set's and the
         // page's, and the reducer's.
@@ -1346,14 +1393,28 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
             id,
             &columns,
             order.len(),
-            object.query.offset,
             object.selection.and_then(placed),
             keys,
             &palette,
             &look,
             &|place| match order.row(place) {
-                Some(row) => crate::edit::row_mark(changes.cells, row),
-                None => crate::edit::RowMark::None,
+                Some(row) => match crate::edit::new_id(row) {
+                    Some(id) => grid::Row {
+                        // In trouble where a value of it is, or its
+                        // `INSERT` failed.
+                        mark: match crate::edit::row_mark(changes.cells, row) {
+                            RowMark::Trouble => RowMark::Trouble,
+                            _ if failed(id) => RowMark::Trouble,
+                            _ => RowMark::New,
+                        },
+                        number: None,
+                    },
+                    None => grid::Row {
+                        mark: crate::edit::row_mark(changes.cells, row),
+                        number: Some(object.query.offset + row as u64 + 1),
+                    },
+                },
+                None => grid::Row::default(),
             },
             editing.and_then(placed),
             if large { None } else { Some(&mut field) },
@@ -1363,14 +1424,10 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
                 };
                 let column = &page.columns[col];
                 if crate::edit::new_id(row).is_some() {
-                    // A new row: what was set in the cell, or nothing yet.
-                    return match changes.cells.get(&(row, col)) {
-                        Some(pending) => {
-                            let value = drawn(&pending.new);
-                            kept(cell(&ctx, &value, column, &tags[col], &look, fits[col]))
-                        }
-                        None => Cell::default(),
+                    let value = |value: &Value| {
+                        kept(cell(&ctx, value, column, &tags[col], &look, fits[col]))
                     };
+                    return changes.new_cell((row, col), value, column, &look, locale);
                 }
                 let loaded = &page.rows[row][col];
                 // A pending cell shows its new value, drawn as any value.
@@ -1501,6 +1558,38 @@ struct Changes<'a> {
     gone: &'a BTreeSet<usize>,
     /// The cell that was asked for and cannot be edited, and why.
     why: Option<(CellPos, String)>,
+    /// What each column holds in a new row nothing is set in, by the
+    /// page's columns. Empty where the tab holds no new row.
+    unset: Vec<Unset>,
+    /// The column a new row's marker stands in.
+    marker: Option<usize>,
+}
+
+/// What a new row shows in each of the page's columns while nothing is set
+/// there, and the columns some new row of the tab still needs a value in.
+/// Both empty where the tab holds no new row.
+fn new_row_columns(
+    workspace: &crate::model::Workspace,
+    object: &ObjectTab,
+) -> (Vec<Unset>, Vec<usize>) {
+    if object.edits.added.is_empty() {
+        return (Vec::new(), Vec::new());
+    }
+    let Some(table) = Table::of(workspace, object) else {
+        return (Vec::new(), Vec::new());
+    };
+    let unset = (0..table.page.columns.len())
+        .map(|col| match table.column(col) {
+            Some(column) => crate::edit::unset(table.dialect, column),
+            // A column the structure does not list is left to the database.
+            None => Unset::Assigned,
+        })
+        .collect();
+    let added = object.edits.added.iter();
+    let lacking = added
+        .flat_map(|new| table.missing(new.id, &object.edits.cells))
+        .collect();
+    (unset, lacking)
 }
 
 /// The page's columns that the database computes, in a table that can be
@@ -1601,6 +1690,8 @@ impl<'a> Changes<'a> {
             saved: saved.unwrap_or_default(),
             gone,
             why: None,
+            unset: Vec::new(),
+            marker: None,
         }
     }
 
@@ -1627,13 +1718,7 @@ impl<'a> Changes<'a> {
         locale: crate::i18n::Locale,
     ) {
         let (row, col) = at;
-        // A cell that is not there has no reason to give.
-        if let Some((asked, why)) = &self.why
-            && *asked == (CellPos { row, col })
-            && !why.is_empty()
-        {
-            cell.note = Some(why.clone());
-        }
+        self.say_why(cell, at);
         // A row a save found gone is that and nothing else, whatever its
         // column is. It has no hint: why a cell is locked is said only
         // when it is asked for. Asked of the set for the one cell drawn:
@@ -1652,13 +1737,45 @@ impl<'a> Changes<'a> {
             };
             return;
         };
+        self.mark_state(cell, pending, Some(loaded), column, look, locale);
+    }
+
+    /// Says on `cell`, the cell `at` (row, column), why it cannot be
+    /// edited, where that was asked of it. A cell that is not there has no
+    /// reason to give.
+    fn say_why(&self, cell: &mut Cell<'_>, at: (usize, usize)) {
+        let (row, col) = at;
+        if let Some((asked, why)) = &self.why
+            && *asked == (CellPos { row, col })
+            && !why.is_empty()
+        {
+            cell.note = Some(why.clone());
+        }
+    }
+
+    /// Marks `cell` by the state of what is pending in it. `loaded` is
+    /// what the cell held, and `None` for a new row's cell, which held
+    /// nothing: on its row's own fill a value that waits needs no tint,
+    /// the row says it is pending.
+    fn mark_state(
+        &self,
+        cell: &mut Cell<'_>,
+        pending: &Pending,
+        loaded: Option<&Value>,
+        column: &tabletist_db::ColumnMeta,
+        look: &Look,
+        locale: crate::i18n::Locale,
+    ) {
         let saving = self.saving;
         match &pending.state {
-            State::Ready => {
-                cell.mark = if saving { Mark::Saving } else { Mark::Pending };
-                let was = format::cell_text(loaded);
-                cell.hint = Some(format!("{} {was}", gettext(locale, "was")));
-            }
+            State::Ready => match loaded {
+                Some(loaded) => {
+                    cell.mark = if saving { Mark::Saving } else { Mark::Pending };
+                    let was = format::cell_text(loaded);
+                    cell.hint = Some(format!("{} {was}", gettext(locale, "was")));
+                }
+                None => cell.mark = if saving { Mark::Saving } else { Mark::None },
+            },
             State::ToFix(problem) => {
                 cell.mark = Mark::Trouble;
                 let typed = match &pending.new {
@@ -1687,6 +1804,70 @@ impl<'a> Changes<'a> {
                 cell.hint = Some(failure_text(error));
             }
         }
+    }
+}
+
+impl Changes<'_> {
+    /// The cell `at` (row, column) of a new row: what is set in it, as
+    /// `value` draws it, or what the database will do with it.
+    fn new_cell<'c>(
+        &self,
+        at: (usize, usize),
+        value: impl Fn(&Value) -> Cell<'c>,
+        column: &tabletist_db::ColumnMeta,
+        look: &Look,
+        locale: crate::i18n::Locale,
+    ) -> Cell<'c> {
+        let say = |text: &'static str| gettext(locale, text).into_owned();
+        let mut cell = match self.cells.get(&at) {
+            Some(pending) => {
+                let mut cell = value(&drawn(&pending.new));
+                self.mark_state(&mut cell, pending, None, column, look, locale);
+                cell
+            }
+            None => match self.unset.get(at.1) {
+                Some(Unset::Assigned) if self.marker == Some(at.1) => {
+                    let new = say("new");
+                    Cell {
+                        text: if look.terminal {
+                            new
+                        } else {
+                            format!("+ {new}")
+                        }
+                        .into(),
+                        mark: Mark::Added,
+                        ..Cell::default()
+                    }
+                }
+                Some(Unset::Assigned) | None => Cell {
+                    mark: Mark::Unset,
+                    hint: Some(say("Assigned by the database on save")),
+                    ..Cell::default()
+                },
+                Some(Unset::Default(text)) => Cell {
+                    text: format::cell_line(text, format::Marks::PLAIN)
+                        .into_owned()
+                        .into(),
+                    mark: Mark::Unset,
+                    hint: Some(say("from DEFAULT")),
+                    ..Cell::default()
+                },
+                Some(Unset::Null) => Cell {
+                    mark: Mark::Unset,
+                    ..value(&Value::Null)
+                },
+                // The terminal asks in its header and its status line.
+                Some(Unset::Required) if look.terminal => Cell::default(),
+                Some(Unset::Required) => Cell {
+                    text: say("required").into(),
+                    mark: Mark::Trouble,
+                    hint: Some(say("A save needs a value here")),
+                    ..Cell::default()
+                },
+            },
+        };
+        self.say_why(&mut cell, at);
+        cell
     }
 }
 
