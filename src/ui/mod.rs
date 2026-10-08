@@ -11439,7 +11439,7 @@ mod tests {
         let (mut harness, tab, id) = covers_in(Look::macos());
         let place = crate::edit::Place::Top;
         harness.app.apply(Action::AddRow { tab, id, place });
-        assert!(harness.has("New row, not saved. Its values are edited in the grid."));
+        assert!(harness.has("A new row is edited in the grid"));
         // And Mod+I, which puts the keyboard on a row's fields, leaves it.
         harness.app.apply(Action::CancelEdit { tab, id });
         harness.settle();

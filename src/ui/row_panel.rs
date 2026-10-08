@@ -385,7 +385,7 @@ fn draw(
                     .selection
                     .is_some_and(|cell| source.table && crate::edit::new_id(cell.row).is_some());
                 let says = if on_new {
-                    "New row, not saved. Its values are edited in the grid."
+                    "A new row is edited in the grid"
                 } else {
                     "Select a row to see its fields"
                 };

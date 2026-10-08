@@ -1227,10 +1227,18 @@ fn draw_header(
     } else {
         0.0
     };
-    // Numbers sit at the right, their header with them.
+    // The terminal asks for a new row's value in its header: a star a
+    // space after the column's name, a piece of its own.
+    let star = column.required && look.terminal;
+    let star_room = if star {
+        text_width(ui, " *", name_role, look)
+    } else {
+        0.0
+    };
+    // Numbers sit at the right, their header with them: the star too.
     let (name_x, type_x) = if column.numeric {
         (
-            rect.right() - pad - arrow - name_width,
+            rect.right() - pad - arrow - star_room - name_width,
             rect.right() - pad - type_width,
         )
     } else {
@@ -1258,19 +1266,16 @@ fn draw_header(
         false,
         look,
     );
-    // The terminal asks for a new row's value in its header: a star after
-    // the column's name, a piece of its own.
-    if column.required && look.terminal {
-        let gap = text_width(ui, " ", name_role, look);
+    if star {
         paint(
             &clip,
             ui,
             name_role,
             "*",
             Tone::Danger.color(palette),
-            name_x + name_width + gap,
+            name_x + name_width + star_room,
             name_y,
-            false,
+            true,
             look,
         );
     }
