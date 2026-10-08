@@ -225,18 +225,13 @@ fn pasted_rows_open_a_preview() {
     assert!(harness.has("Add 2 pasted rows to book_covers?"));
 }
 
-/// INS-03b. A plain paste on the grid does nothing yet: not the block of
-/// cells the editing design gives Mod+V, and no rows. In an open editor it
-/// is text, as the spec keeps it.
+/// Spec 1: a paste inside an open cell editor is text in that cell, as
+/// it was before rows could be pasted.
 #[test]
-fn a_paste_on_the_grid_changes_nothing_and_one_in_an_editor_is_its_text() {
+fn a_paste_in_an_open_editor_is_its_text() {
     for look in [Look::macos(), Look::omarchy()] {
         let (mut harness, tab, id) = covers_in(look);
         select(&mut harness, tab, id, (0, 2));
-        harness.frame(vec![egui::Event::Paste(PASTED.into())]);
-        harness.settle();
-        assert!(!edits(&harness, tab, id).pending(), "{}", look.name);
-        assert!(harness.app.dialog.is_none(), "{}", look.name);
         // The cell's editor, with `print` in it.
         harness.press(Key::Enter, Modifiers::NONE);
         assert!(harness.ctx.text_edit_focused(), "{}", look.name);
@@ -244,7 +239,26 @@ fn a_paste_on_the_grid_changes_nothing_and_one_in_an_editor_is_its_text() {
         harness.settle();
         let editor = edits(&harness, tab, id).editor.as_ref().expect("an editor");
         assert_eq!(editor.text, "printed", "{}", look.name);
+        // The paste was the editor's: no row came of it, and no dialog.
+        assert!(edits(&harness, tab, id).added.is_empty(), "{}", look.name);
+        assert!(harness.app.dialog.is_none(), "{}", look.name);
     }
+}
+
+/// INS-03b. The audit's item 3, and the editing design's "Paste a TSV
+/// block across cells": a plain paste on the grid goes over the cells from
+/// the selected one, and adds no row.
+#[test]
+#[ignore = "INS-03b: a paste on the grid does not go over its cells yet"]
+fn a_paste_on_the_grid_goes_over_its_cells() {
+    let (mut harness, tab, id) = covers_in(Look::macos());
+    // `kind` of the first two covers: `print` and `ebook`.
+    select(&mut harness, tab, id, (0, 2));
+    harness.frame(vec![egui::Event::Paste("audio\naudio".into())]);
+    harness.settle();
+    let pending: Vec<(usize, usize)> = edits(&harness, tab, id).cells.keys().copied().collect();
+    assert_eq!(pending, [(0, 2), (1, 2)]);
+    assert!(edits(&harness, tab, id).added.is_empty());
 }
 
 /// Spec 1: where no row can be added the button cannot be pressed, and
@@ -553,11 +567,12 @@ const NO_PUBLISHER_MESSAGE: &str = "insert or update on table \"book_covers\" vi
 const NO_PUBLISHER_DETAIL: &str =
     "Key (publisher_id)=(9100000000000000099) is not present in table \"publishers\".";
 
-/// INS-31c. What a failed new row says today: the database's code and
-/// message, on the row. The detail, which is where PostgreSQL names the
-/// value, is not shown.
+/// Spec 9: after a failed save the new row stays pending, its set cell is
+/// the one that failed, and the row says the database's code and message.
+/// (INS-31c: PostgreSQL names the value only in the error's detail, which
+/// is shown nowhere yet. The test under this one asks for it.)
 #[test]
-fn a_failed_row_says_the_databases_code_and_message_and_not_its_detail() {
+fn a_failed_row_stays_pending_and_says_the_databases_code_and_message() {
     let (mut harness, tab, id) = saving_a_cover_without_its_publisher(Look::omarchy());
     fails(
         &mut harness,
@@ -565,7 +580,6 @@ fn a_failed_row_says_the_databases_code_and_message_and_not_its_detail() {
         NO_PUBLISHER_MESSAGE,
         NO_PUBLISHER_DETAIL,
     );
-    // The row is still pending, and its set cell failed.
     assert_eq!(edits(&harness, tab, id).counts().added, 1);
     assert_eq!(edits(&harness, tab, id).counts().failed, 1);
     // The terminal's error line names the row and the column, then says
@@ -577,19 +591,12 @@ fn a_failed_row_says_the_databases_code_and_message_and_not_its_detail() {
     assert_eq!(lines.len(), 1, "{:?}", harness.painted);
     let says = "! new:publisher_id  23503 insert or update on table \"book_covers\" violates";
     assert!(lines[0].starts_with(says), "{lines:?}");
-    let said = |text: &str| {
-        harness
-            .painted
-            .iter()
-            .any(|(piece, _)| piece.contains(text))
-    };
-    assert!(!said("is not present in table"));
 }
 
-/// INS-31b. Spec 9: a foreign key that fails says "No publisher with id
-/// ...".
+/// INS-31b, INS-31c. Spec 9: a foreign key that fails says "No publisher
+/// with id ...". The id is in the error's detail.
 #[test]
-#[ignore = "INS-31b: a failed foreign key says the server's message, not the spec's"]
+#[ignore = "INS-31b, INS-31c: a failed foreign key says the server's message, without the value"]
 fn a_publisher_that_is_not_there_is_said_in_the_specs_words() {
     let (mut harness, _, _) = saving_a_cover_without_its_publisher(Look::macos());
     fails(
@@ -601,21 +608,65 @@ fn a_publisher_that_is_not_there_is_said_in_the_specs_words() {
     assert!(harness.has("No publisher with id 9100000000000000099"));
 }
 
-/// INS-31a. Spec 9: a value that is taken says by which row, and opens it.
+/// INS-31a. Spec 9: a value that is taken says by which row, found with
+/// one `SELECT pk ... WHERE col = $1 LIMIT 1` after the rollback, and opens
+/// it. Here a publisher has one cover: `publisher_id` is unique, and the
+/// new row is given the publisher of the cover with id 1.
 #[test]
 #[ignore = "INS-31a: a unique violation does not look up or offer the row that has the value"]
 fn a_taken_value_offers_the_row_that_has_it() {
-    let (mut harness, _, _) = saving_a_cover_without_its_publisher(Look::macos());
+    use tabletist_db::{Filter, FilterOp, IndexInfo};
+    const TAKEN: &str = "9100000000000000001";
+    let (mut harness, tab, id) = covers_in(Look::macos());
+    harness.app.workspace_mut(tab).unwrap().row_panel = false;
+    {
+        let workspace = harness.app.workspace_mut(tab).unwrap();
+        let object = workspace.object_tab_mut(id).unwrap();
+        let structure = object.structure.value.as_mut().unwrap();
+        structure.indexes.push(IndexInfo {
+            name: "book_covers_publisher_id_key".into(),
+            columns: vec!["publisher_id".into()],
+            key_columns: Some(vec!["publisher_id".into()]),
+            unique: true,
+            ..IndexInfo::default()
+        });
+    }
+    let new = add(&mut harness, tab, id);
+    set(&mut harness, tab, id, (new_row(new), 1), TAKEN);
+    harness.app.apply(Action::WriteEdits { tab, id });
     let sent = harness.app.backend.sent.len();
     fails(
         &mut harness,
         "23505",
-        "duplicate key value violates unique constraint \"books_isbn_key\"",
-        "Key (isbn)=(978-1-4028-9462-6) already exists.",
+        "duplicate key value violates unique constraint \"book_covers_publisher_id_key\"",
+        "Key (publisher_id)=(9100000000000000001) already exists.",
     );
-    // One lookup after the rollback, for the row that holds the value.
-    assert!(harness.app.backend.sent.len() > sent);
-    assert!(harness.has("Open row"));
+    // One read after the rollback: the row of this table that holds the
+    // value in the column that failed.
+    let after = harness.app.backend.sent[sent..].iter();
+    let lookups: Vec<&tabletist_db::RowQuery> = after
+        .filter_map(|command| match command {
+            Command::FetchRows { query, .. } => Some(query),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        lookups.len(),
+        1,
+        "one lookup for the row that has the value"
+    );
+    assert_eq!(lookups[0].object.name, "book_covers");
+    assert_eq!(lookups[0].limit, 1);
+    let by_the_value = Filter {
+        column: "publisher_id".into(),
+        op: FilterOp::Eq,
+        value: TAKEN.into(),
+    };
+    assert_eq!(lookups[0].filters, [by_the_value]);
+    // The cover that has the publisher is the page's first, with id 1.
+    harness.answer_rows(crate::testing::book_covers_page(1));
+    harness.settle();
+    assert!(harness.has("Already used by row id 1 · Open row"));
 }
 
 /// INS-30c. Spec 9: after a save the row stays where it was, and "Show in

@@ -13,6 +13,7 @@
 //! PostgreSQL and MySQL need their servers (see compose.yaml). Without the
 //! variables those tests print "skipped" and pass.
 
+// `allow-unwrap-in-tests` does not cover helpers in an integration-test crate.
 #![allow(clippy::unwrap_used)]
 
 use std::time::Duration;
