@@ -17527,7 +17527,7 @@ mod tests {
             harness.click("Copy SQL");
             let expected = format!(
                 "-- What Tabletist runs to save these changes, in one transaction. \
-                 Each statement runs only while its row is still as the comment above it says.\n\
+                 Each UPDATE runs only while its row is still as the comment above it says.\n\
                  -- row id 2\n\
                  -- only if email is still 'user2@example.com'\n\
                  UPDATE \"main\".\"users\"\n   \
@@ -18673,7 +18673,7 @@ mod tests {
         let copied = harness.copied.clone().expect("the SQL was copied");
         let whole = format!(
             "-- What Tabletist runs to save these changes, in one transaction. \
-             Each statement runs only while its row is still as the comment above it says.\n\
+             Each UPDATE runs only while its row is still as the comment above it says.\n\
              -- row id 2\n\
              -- only if email is still 'user2@example.com'\n\
              UPDATE \"main\".\"users\"\n   \
@@ -18740,7 +18740,7 @@ mod tests {
     fn copied_text(value: &str) -> String {
         format!(
             "-- What Tabletist runs to save these changes, in one transaction. \
-             Each statement runs only while its row is still as the comment above it says.\n\
+             Each UPDATE runs only while its row is still as the comment above it says.\n\
              -- row id 2\n\
              -- only if email is still 'user2@example.com'\n\
              UPDATE \"main\".\"users\"\n   \

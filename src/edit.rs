@@ -7,8 +7,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
 
 use tabletist_db::{
-    Access, CellChange, ChangeSet, ColumnClass, ColumnInfo, Conflict, Dialect, Error, NewValue,
-    ObjectKind, ObjectRef, RowChange, RowPage, Structure, Value, column_class,
+    Access, CellChange, ChangeSet, ColumnClass, ColumnInfo, Conflict, Dialect, Error, InsertValue,
+    NewValue, ObjectKind, ObjectRef, RowChange, RowInsert, RowPage, Structure, Value, column_class,
 };
 
 use crate::backend::RequestId;
@@ -1541,23 +1541,57 @@ pub fn shown_lines(
         .collect()
 }
 
-/// The change set a save sends for the pending `cells`, and the page's row
-/// of each of its rows. `None` when nothing is pending or the table has no
-/// key.
+/// Where each part of a change set came from. An answer names a part by
+/// its place in the set.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Sent {
+    /// The id of the new row of each of the set's `inserts`, in its order.
+    pub inserts: Vec<usize>,
+    /// The page's row of each of the set's `rows`.
+    pub rows: Vec<usize>,
+}
+
+/// The change set a save sends for the table's new rows and the pending
+/// `cells`, and where each part of it came from. `None` when nothing is
+/// pending, or a row is changed in a table that has no key.
 pub fn change_set(
     object: &ObjectRef,
     table: &Table<'_>,
     cells: &BTreeMap<(usize, usize), Pending>,
-) -> Option<(ChangeSet, Vec<usize>)> {
-    let key = table.key()?;
+) -> Option<(ChangeSet, Sent)> {
+    let mut sent = Sent::default();
+    // The new rows as they stand, each with what was set in it, by column.
+    let mut inserts = Vec::new();
+    for new in table.added {
+        let row = new_row(new.id);
+        let set = cells
+            .range((row, 0)..=(row, usize::MAX))
+            .map(|(&(_, col), pending)| {
+                let column = table.column(col)?;
+                Some(InsertValue {
+                    column: column.name.clone(),
+                    type_name: column.type_name.clone(),
+                    new: pending.new.clone(),
+                })
+            })
+            .collect::<Option<Vec<_>>>()?;
+        inserts.push(RowInsert { set });
+        sent.inserts.push(new.id);
+    }
+    // The cells of the page's rows: every row below the new ones'.
+    let changed = cells.range(..(NEW_ROWS, 0));
+    // The key only where a row is changed: a new row is found by none.
+    let key = match changed.clone().next() {
+        Some(_) => table.key()?,
+        None => Vec::new(),
+    };
     let mut rows: Vec<RowChange> = Vec::new();
-    let mut places = Vec::new();
     // The map is ordered by row, then column, so a row's cells are together.
-    for (&(row, col), pending) in cells {
+    for (&(row, col), pending) in changed {
         let values = table.page.rows.get(row)?;
         let column = table.column(col)?;
-        if places.last() != Some(&row) {
-            places.push(row);
+        if sent.rows.last() != Some(&row) {
+            sent.rows.push(row);
             rows.push(RowChange {
                 key: key
                     .iter()
@@ -1576,14 +1610,14 @@ pub fn change_set(
             new: pending.new.clone(),
         });
     }
-    (!rows.is_empty()).then(|| {
+    (!rows.is_empty() || !inserts.is_empty()).then(|| {
         (
             ChangeSet {
                 object: object.clone(),
-                inserts: Vec::new(),
+                inserts,
                 rows,
             },
-            places,
+            sent,
         )
     })
 }
@@ -3044,6 +3078,7 @@ mod tests {
         let made = || crate::review::Review {
             changes: 1,
             rows: 1,
+            added: 0,
             lines: Vec::new(),
             refused: None,
         };
@@ -3085,10 +3120,10 @@ mod tests {
         cells.insert((1, 2), ready(NewValue::Null));
         cells.insert((1, 1), ready(NewValue::Text("b@example.com".into())));
         cells.insert((0, 1), ready(NewValue::Text("a@example.com".into())));
-        let (changes, places) =
-            change_set(&ObjectRef::new("main", "users"), &table, &cells).unwrap();
+        let (changes, sent) = change_set(&ObjectRef::new("main", "users"), &table, &cells).unwrap();
         // One change per row, in the page's order, and where each came from.
-        assert_eq!(places, [0, 1]);
+        assert_eq!(sent.rows, [0, 1]);
+        assert!(sent.inserts.is_empty() && changes.inserts.is_empty());
         assert_eq!(changes.rows.len(), 2);
         assert_eq!(changes.rows[0].key, [("id".to_owned(), Value::Int(1))]);
         let second = &changes.rows[1];

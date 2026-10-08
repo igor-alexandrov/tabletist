@@ -15,7 +15,7 @@ use crate::model::{
     Action, Advance, CellPos, ConflictPrompt, ConnTabId, Dialog, EditStart, Held, LeavePrompt,
     ObjectTab, Pane, SaveBlock, SessionStatus, TabId, WritePrompt,
 };
-use crate::review::Values;
+use crate::review::{Part, Values};
 
 /// Whether `action` is dropped while a prompt about pending changes is up:
 /// what edits, saves or discards, what moves the selection (it closes an
@@ -370,9 +370,10 @@ impl App {
                 change_set(&object.object, table, &object.edits.cells)
             })
             .flatten();
-        let Some((changes, rows)) = built else {
+        let Some((changes, sent)) = built else {
             return;
         };
+        let rows = sent.rows;
         let confirm = self
             .workspace(tab)
             .is_some_and(|workspace| workspace.environment.confirms_writes());
@@ -390,11 +391,18 @@ impl App {
             // No save is offered with a statement that cannot be shown:
             // its row fails here as it would in the save, with the
             // builder's reason. No cell is to fix: Save was not disabled.
-            let review = crate::review::of(dialect, &changes, &[], Values::Shown);
-            if let Some((index, error)) = review.refused.clone() {
+            let blocked = crate::review::Blocked::default();
+            let review = crate::review::of(dialect, &changes, blocked, Values::Shown);
+            if let Some((part, error)) = review.refused.clone() {
                 if let Some(object) = self.object_tab_mut(tab, id) {
                     object.edits.saved = None;
-                    object.edits.fail(rows.get(index).copied(), error);
+                    // No new row is sent yet: one that was refused is a
+                    // save the app refused.
+                    let row = match part {
+                        Part::Row(index) => rows.get(index).copied(),
+                        Part::Insert(_) => None,
+                    };
+                    object.edits.fail(row, error);
                     // The row panel says what stands against a cell.
                     object.fields = None;
                 }
@@ -472,10 +480,10 @@ impl App {
             .flatten();
         // By the bits of its floats: a NaN the page loaded is the same
         // NaN now, and a set that holds one is still the set that was shown.
-        if let Some((changes, rows)) = now
+        if let Some((changes, sent)) = now
             && same_changes(&changes, &changeset)
         {
-            self.send_write(tab, id, changes, rows, then);
+            self.send_write(tab, id, changes, sent.rows, then);
         }
     }
 
