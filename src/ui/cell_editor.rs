@@ -33,6 +33,9 @@ pub struct Outcome {
     pub kept: bool,
     /// Alt+Enter.
     pub large: bool,
+    /// The now button: the cell takes the time of the save, and the text
+    /// is dropped.
+    pub now: bool,
 }
 
 /// The cell an editor is open on, as its field needs it.
@@ -50,6 +53,51 @@ pub struct Target {
     pub json: bool,
     /// No dialog is up: an editor that is open has the keyboard.
     pub hold: bool,
+    /// The column keeps a date or a time: the editor offers now.
+    pub now: bool,
+}
+
+/// The now button beside a date or time cell's editor, at `place`, in the
+/// looks that have one: the terminal look's is a key. Says whether it was
+/// pressed, and keeps the press from reading as the keyboard gone
+/// elsewhere: the button is the editor's own, and the field `id` has the
+/// keyboard through the press.
+fn now_button(
+    ui: &mut Ui,
+    place: Rect,
+    id: Id,
+    (look, palette, locale): (&Look, &Palette, Locale),
+    outcome: &mut Outcome,
+) {
+    let label = gettext(locale, "now");
+    let hint = gettext(locale, "The time of the save, by the database's clock");
+    let response = widgets::ButtonSpec::new(&label)
+        .padding(8.0)
+        .role(widgets::secondary(look))
+        .show_at(ui, place, look, palette)
+        .on_hover_text(hint);
+    if response.clicked() {
+        outcome.now = true;
+    } else if response.is_pointer_button_down_on() {
+        // Between the press and its release the edit is not left.
+        ui.memory_mut(|memory| memory.request_focus(id));
+        outcome.left = false;
+        outcome.kept = false;
+    }
+    if outcome.now {
+        outcome.left = false;
+        outcome.kept = false;
+    }
+}
+
+/// How wide the now button is, and the gap before it.
+fn now_room(ui: &Ui, look: &Look, locale: Locale) -> (f32, f32) {
+    let label = gettext(locale, "now");
+    let width = widgets::ButtonSpec::new(&label)
+        .padding(8.0)
+        .role(widgets::secondary(look))
+        .width(ui, look);
+    (width, 6.0)
 }
 
 /// The id of the field that edits a cell of the table `id` shows.
@@ -258,6 +306,24 @@ pub fn field(
     // Over the cell: the row's fill would show through a field with none.
     ui.painter()
         .rect_filled(rect, CornerRadius::ZERO, palette.window);
+    // A date or time cell offers now at its right end, where the cell has
+    // the room for it beside some of its text: the field is that much
+    // narrower.
+    let cell = rect;
+    let now = (target.now && !look.terminal)
+        .then(|| now_room(ui, look, locale))
+        .filter(|(width, gap)| cell.width() >= 2.0 * (width + gap))
+        .map(|(width, _)| {
+            let height = (cell.height() - 8.0).max(0.0);
+            Rect::from_center_size(
+                pos2(cell.right() - 4.0 - width / 2.0, cell.center().y),
+                vec2(width, height),
+            )
+        });
+    let rect = match now {
+        Some(button) => Rect::from_min_max(cell.min, pos2(button.left() - 2.0, cell.bottom())),
+        None => cell,
+    };
     let role = grid::data_role(look);
     let pad = grid::cell_pad(look);
     let center = rect.center().y;
@@ -293,7 +359,12 @@ pub fn field(
         inner.max + vec2(f32::from(right), f32::from(bottom)),
     );
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(place));
-    let mut layouter = crate::typography::layouter(look, role, palette.text);
+    // One line, whatever its length: a text wider than the cell (a time
+    // with all its digits in a column sized for the second) is scrolled in
+    // the field, not wrapped under the row.
+    let mut laid = crate::typography::layouter(look, role, palette.text);
+    let mut layouter =
+        |ui: &Ui, text: &dyn egui::TextBuffer, _wrap: f32| laid(ui, text, f32::INFINITY);
     let output = egui::TextEdit::singleline(&mut editor.text)
         .id(id)
         .font(role.font_id(look.faces))
@@ -350,6 +421,9 @@ pub fn field(
     }
     outcome.changed = response.changed();
     keyboard_after(ui.ctx(), target, has, had, &mut outcome);
+    if let Some(place) = now {
+        now_button(ui, place, id, (look, palette, locale), &mut outcome);
+    }
     outcome
 }
 
@@ -420,7 +494,10 @@ pub fn in_panel(
     // A click on the value's text asked for it: the cursor goes under the
     // pointer, once the text is laid out.
     let at = opened.then(|| asked_at(ui.ctx(), id)).flatten();
-    let width = ui.available_width();
+    // A date or time field offers now beside it, as the design's row has
+    // it: the field is that much narrower.
+    let now = (target.now && !look.terminal).then(|| now_room(ui, look, locale));
+    let width = ui.available_width() - now.map_or(0.0, |(width, gap)| width + gap);
     let mut layouter = crate::typography::layouter(look, role, palette.text);
     // The text wraps where its value wrapped, at the room's width, and
     // the field is a line taller for each line it wraps to: nothing of
@@ -431,6 +508,9 @@ pub fn in_panel(
     // them at both sides, and its text is as far in as it stands out.
     let (line, _) = ui.allocate_exact_size(vec2(width, grown), egui::Sense::hover());
     let place = line.expand2(vec2(outset, 0.0));
+    let now = now.map(|(width, gap)| {
+        Rect::from_min_size(pos2(place.right() + gap, line.top()), vec2(width, height))
+    });
     let mut within = ui.new_child(egui::UiBuilder::new().max_rect(place));
     // On the panel's own tone, as the design's field is: the panel is the
     // window's colour, and a field's usual fill would read as the tint of
@@ -520,6 +600,9 @@ pub fn in_panel(
     }
     outcome.changed = response.changed();
     keyboard_after(ui.ctx(), target, has, had, &mut outcome);
+    if let Some(place) = now {
+        now_button(ui, place, id, (look, palette, locale), &mut outcome);
+    }
     outcome
 }
 
@@ -1139,6 +1222,7 @@ pub fn lock_text(lock: Lock, table: &str, locale: Locale) -> String {
         Lock::KeyColumn => say("Part of the row's key"),
         Lock::Binary => say("Binary values cannot be edited yet"),
         Lock::TooLarge => say("Values over 256 KiB cannot be edited yet"),
+        Lock::NotNull => say("This column cannot be NULL"),
         Lock::NoSuchCell => String::new(),
     }
 }
@@ -1336,6 +1420,7 @@ mod tests {
         assert_eq!(why(Lock::Gone), "This row no longer exists on the server");
         assert_eq!(why(Lock::Generated), "Computed by the database");
         assert_eq!(why(Lock::Assigned), "Assigned by the database on save");
+        assert_eq!(why(Lock::NotNull), "This column cannot be NULL");
         assert_eq!(why(Lock::KeyColumn), "Part of the row's key");
         // A cell that is not there has nothing to say; every other has.
         assert_eq!(why(Lock::NoSuchCell), "");
@@ -1353,6 +1438,7 @@ mod tests {
             Lock::UnknownColumn,
             Lock::Generated,
             Lock::Assigned,
+            Lock::NotNull,
             Lock::KeyColumn,
             Lock::Binary,
             Lock::TooLarge,

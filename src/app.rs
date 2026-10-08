@@ -926,6 +926,8 @@ impl App {
             Action::SetNull { tab, id } => self.set_null(tab, id),
             Action::SetDefault { tab, id } => self.set_default(tab, id),
             Action::CycleBoolean { tab, id } => self.cycle_boolean(tab, id),
+            Action::SetBoolean { tab, id, value } => self.set_boolean(tab, id, value),
+            Action::SetNow { tab, id } => self.set_now(tab, id),
             Action::AddRow { tab, id, place } => self.add_row(tab, id, place),
             Action::DropRow { tab, id } => self.drop_row(tab, id),
             Action::RevertCell { tab, id, cell } => {
@@ -11071,6 +11073,72 @@ mod tests {
                 flip(&mut harness, tab, id, at(1, 2)).as_deref(),
                 Some("true")
             );
+        }
+
+        #[test]
+        fn t_and_f_set_a_boolean_cell() {
+            let (mut harness, tab, id) = with_a_flag(true);
+            let mut set = |cell: CellPos, value: bool| {
+                harness.app.apply(Action::SelectCell { tab, id, cell });
+                harness.app.apply(Action::SetBoolean { tab, id, value });
+                let pending = object(&harness, tab, id)
+                    .edits
+                    .cells
+                    .get(&(cell.row, cell.col));
+                pending.map(|pending| pending.new.clone())
+            };
+            let text = |text: &str| Some(NewValue::Text(text.into()));
+            // What the cell loaded is no change; the other value is.
+            assert_eq!(set(at(0, 2), true), None);
+            assert_eq!(set(at(0, 2), false), text("false"));
+            assert_eq!(set(at(0, 2), true), None);
+            // On a NULL either is a value.
+            assert_eq!(set(at(2, 2), false), text("false"));
+            // A cell that is no flag's takes neither.
+            assert_eq!(set(at(0, 1), true), None);
+        }
+
+        #[test]
+        fn now_takes_the_place_of_the_text_being_typed() {
+            let mut harness = Harness::new();
+            let (tab, id) = harness.book_covers();
+            let structure = tab_mut(&mut harness, tab, id).structure.value.as_mut();
+            structure.unwrap().columns[4].type_name = "timestamp".into();
+            // An editor with something typed: the text is dropped for it.
+            typing(&mut harness, tab, id, at(1, 4), "2026-10");
+            assert_eq!(harness.app.stamps(tab, id), Some(at(1, 4)));
+            harness.app.apply(Action::SetNow { tab, id });
+            let edits = &object(&harness, tab, id).edits;
+            assert!(edits.editor.is_none());
+            assert_eq!(edits.cells[&(1, 4)].new, NewValue::Now);
+            assert_eq!(edits.cells[&(1, 4)].state, State::Ready);
+            // With no editor open, and in an editor of a column that keeps
+            // no time, there is nothing for it to set.
+            harness.app.apply(Action::SetNow { tab, id });
+            typing(&mut harness, tab, id, at(1, 2), "ebook");
+            assert_eq!(harness.app.stamps(tab, id), None);
+            harness.app.apply(Action::SetNow { tab, id });
+            let edits = &object(&harness, tab, id).edits;
+            assert!(edits.editor.is_some());
+            assert_eq!(edits.cells.len(), 1);
+        }
+
+        #[test]
+        fn set_null_on_a_column_that_takes_none_says_why() {
+            let mut harness = Harness::new();
+            let (tab, id) = harness.book_covers();
+            // `publisher_id` is NOT NULL.
+            let cell = at(0, 1);
+            harness.app.apply(Action::SelectCell { tab, id, cell });
+            harness.app.apply(Action::SetNull { tab, id });
+            let edits = &object(&harness, tab, id).edits;
+            assert!(edits.cells.is_empty());
+            assert_eq!(edits.why, Some((cell, Lock::NotNull)));
+            // Where the column takes one, the reason goes with the NULL.
+            let cell = at(0, 3);
+            harness.app.apply(Action::SelectCell { tab, id, cell });
+            harness.app.apply(Action::SetNull { tab, id });
+            assert_eq!(object(&harness, tab, id).edits.why, None);
         }
 
         #[test]

@@ -75,6 +75,8 @@ pub const SHORTCUTS: &[(&str, &str, Holds)] = &[
     ("Esc", "Cancel connecting", ALL),
     ("Space, Mod+Shift+R", "Toggle row panel", ALL),
     ("Space", "Flip a boolean cell", ALL),
+    ("t, f", "Set a boolean cell true or false", TERMINAL),
+    ("Ctrl+T", "Now, in a date or time cell's editor", TERMINAL),
     ("Mod+C, Mod+Shift+C", "Copy cell / copy row", ALL),
     (
         "Arrows, Enter, Shift+Enter, Mod+E, Mod+D, Mod+Backspace",
@@ -126,7 +128,7 @@ pub const SHORTCUTS: &[(&str, &str, Holds)] = &[
     ("Esc", "Close the SQL of the pending changes", TERMINAL),
     ("Y", "Copy the SQL of the pending changes", TERMINAL),
     (
-        "j/k, h/l, Ctrl+H/L, [ ], i, Enter, cc, x, D, u, o, O, dd, Mod+S, :w, :e!, :diff, Y, Space, Esc, /, y, s, d, gd, za, t, 1…9",
+        "j/k, h/l, Ctrl+H/L, [ ], i, Enter, cc, x, D, u, o, O, dd, f, Mod+S, :w, :e!, :diff, Y, Space, Esc, /, y, s, d, gd, za, t, 1…9",
         "Omarchy: vim keys (shown in the status line)",
         ALL,
     ),
@@ -306,6 +308,11 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
             enter_breaks: list.enter_is_a_line_break(&sql.text),
         })
     });
+    // In the terminal look Ctrl+T in a date or time cell's editor is "now",
+    // as the design has it. Everywhere else it opens a SQL editor.
+    let stamps = object
+        .filter(|_| terminal && open)
+        .filter(|&(tab, id)| app.stamps(tab, id).is_some());
     // Space flips a boolean cell where the grid has the keys and the cell
     // can be edited, as the design has it. Everywhere else it shows the
     // row panel.
@@ -365,6 +372,13 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
         {
             let place = crate::edit::Place::Top;
             actions.push(Action::AddRow { tab, id, place });
+        }
+        // Taken here for the same reason: the chord is a new SQL editor's
+        // below.
+        if let Some((tab, id)) = stamps
+            && consume_press(input, Modifiers::CTRL, Key::T)
+        {
+            actions.push(Action::SetNow { tab, id });
         }
         let mut key = |modifiers: Modifiers, key: Key, action: Action| {
             if input.consume_key(modifiers, key) {
@@ -1428,6 +1442,18 @@ fn letters(app: &mut App, ctx: &egui::Context, field: Option<usize>, actions: &m
             && let Some(id) = tabs.get(index)
         {
             actions.push(Action::ActivateTab { tab, id: *id });
+        }
+    }
+    // On a boolean cell that can be edited `t` and `f` set it true and
+    // false, as the design has it. Anywhere else `t` is the tree's.
+    let flag = active
+        .filter(|_| !tree && field.is_none() && !crate::ui::focus::on_control(ctx))
+        .filter(|id| app.flips(tab, *id));
+    if let Some(id) = flag {
+        for (key, value) in [(Key::T, true), (Key::F, false)] {
+            if ctx.input_mut(|input| take_press(input, Modifiers::NONE, key)) > 0 {
+                actions.push(Action::SetBoolean { tab, id, value });
+            }
         }
     }
     if pressed(Key::T) {

@@ -41,6 +41,8 @@ pub(super) fn dropped_under_a_prompt(action: &Action) -> bool {
             | Action::SetNull { .. }
             | Action::SetDefault { .. }
             | Action::CycleBoolean { .. }
+            | Action::SetBoolean { .. }
+            | Action::SetNow { .. }
             | Action::AddRow { .. }
             | Action::DropRow { .. }
             | Action::RevertCell { .. }
@@ -957,18 +959,28 @@ impl App {
             }
             let column = table.column(cell.col)?;
             if !column.nullable {
-                return None;
+                // Refused, and the cell says why.
+                return Some((cell, Err(Lock::NotNull)));
             }
             // A new row's cell loaded nothing: NULL is a value set in it.
             let changed = table.loaded(cell).is_none_or(|loaded| !loaded.is_null());
-            Some((cell, changed))
+            Some((cell, Ok(changed)))
         });
-        let Some(Some((cell, changed))) = verdict else {
+        let Some(Some((cell, verdict))) = verdict else {
             return;
         };
         let Some(object) = self.object_tab_mut(tab, id) else {
             return;
         };
+        let changed = match verdict {
+            Ok(changed) => changed,
+            Err(lock) => {
+                object.edits.why = Some((cell, lock));
+                object.edits.why_place = EditorPlace::Grid;
+                return;
+            }
+        };
+        object.edits.why = None;
         let key = (cell.row, cell.col);
         if changed {
             let null = Pending {
@@ -1073,6 +1085,19 @@ impl App {
         let Some(Some((cell, new, changed))) = next else {
             return;
         };
+        self.put_value(tab, id, cell, new, changed);
+    }
+
+    /// Makes `new` the pending value of `cell`, or takes what was pending
+    /// there out where `new` is no change of what the cell loaded.
+    fn put_value(
+        &mut self,
+        tab: ConnTabId,
+        id: TabId,
+        cell: CellPos,
+        new: NewValue,
+        changed: bool,
+    ) {
         let Some(object) = self.object_tab_mut(tab, id) else {
             return;
         };
@@ -1080,11 +1105,61 @@ impl App {
         if changed {
             let state = State::Ready;
             object.edits.put(key, Pending { new, state });
+            // As opening an editor does: a tab with a pending cell is no
+            // preview for the next single click to replace.
             object.pinned = true;
         } else {
             object.edits.revert(key);
         }
+        object.edits.why = None;
         object.fields = None;
+    }
+
+    /// Sets the selected boolean cell to `value`: the terminal's `t` and
+    /// `f`. A value that is what the cell loaded is no change.
+    pub(super) fn set_boolean(&mut self, tab: ConnTabId, id: TabId, value: bool) {
+        if !self.flips(tab, id) {
+            return;
+        }
+        let set = self.table(tab, id, |table, object| {
+            let cell = object.selection?;
+            let new = NewValue::Text(value.to_string());
+            let loaded = table.loaded(cell);
+            let changed = loaded.is_none_or(|loaded| is_change(loaded, &new, ColumnClass::Boolean));
+            Some((cell, new, changed))
+        });
+        if let Some(Some((cell, new, changed))) = set {
+            self.put_value(tab, id, cell, new, changed);
+        }
+    }
+
+    /// The cell of the tab's open editor, where it is one of a column that
+    /// keeps a date or a time: where "now" is offered, and what it sets.
+    pub fn stamps(&self, tab: ConnTabId, id: TabId) -> Option<CellPos> {
+        self.table(tab, id, |table, object| {
+            let cell = object.edits.editor.as_ref()?.cell;
+            let column = table.column(cell.col)?;
+            tabletist_db::temporal(&column.type_name).map(|_| cell)
+        })
+        .flatten()
+    }
+
+    /// Gives the cell of the open editor the time of the save, where its
+    /// column keeps a date or a time. The editor closes without its text:
+    /// the value is the database's to make.
+    pub(super) fn set_now(&mut self, tab: ConnTabId, id: TabId) {
+        let Some(cell) = self.stamps(tab, id) else {
+            return;
+        };
+        let field = self.panel_field(tab, id);
+        if let Some(object) = self.object_tab_mut(tab, id) {
+            object.edits.editor = None;
+        }
+        self.put_value(tab, id, cell, NewValue::Now, true);
+        // In the panel the keyboard goes back to the field that was edited.
+        if let Some(col) = field {
+            self.back_to_field(tab, id, col);
+        }
     }
 
     /// Runs what the terminal's `:` prompt holds, and closes it: `w` saves

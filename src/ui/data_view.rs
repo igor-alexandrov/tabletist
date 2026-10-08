@@ -1458,7 +1458,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, tab: ConnTabId, object_tab: TabId)
         if outcome.changed {
             actions.push(Action::EditorTyped { tab, id });
         }
-        if outcome.large {
+        if outcome.now {
+            actions.push(Action::SetNow { tab, id });
+        } else if outcome.large {
             actions.push(Action::EditorBreak { tab, id });
         } else if let Some(then) = outcome.commit {
             actions.push(Action::CommitEdit { tab, id, then });
@@ -1635,6 +1637,9 @@ pub(super) fn editor_target(
         max_chars,
         json: class == Some(tabletist_db::ColumnClass::Json),
         hold,
+        now: table
+            .column(cell.col)
+            .is_some_and(|column| tabletist_db::temporal(&column.type_name).is_some()),
     })
 }
 

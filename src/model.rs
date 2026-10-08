@@ -324,6 +324,18 @@ pub enum Action {
         tab: ConnTabId,
         id: TabId,
     },
+    /// Set the active boolean cell to `value`.
+    SetBoolean {
+        tab: ConnTabId,
+        id: TabId,
+        value: bool,
+    },
+    /// Give a date or time cell the time of the save: the cell the open
+    /// editor is on, whose text is dropped.
+    SetNow {
+        tab: ConnTabId,
+        id: TabId,
+    },
     /// Give the active cell its column's default, where it has one.
     SetDefault {
         tab: ConnTabId,

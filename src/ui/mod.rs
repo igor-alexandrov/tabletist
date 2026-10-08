@@ -11623,6 +11623,150 @@ mod tests {
         }
     }
 
+    /// The covers with `created_at` a column of times, in `look`.
+    fn stamped_in(look: Look) -> (Harness, ConnTabId, TabId) {
+        let (mut harness, tab, id) = covers_in(look);
+        let workspace = harness.app.workspace_mut(tab).unwrap();
+        let object = workspace.object_tab_mut(id).unwrap();
+        let structure = object.structure.value.as_mut().unwrap();
+        structure.columns[4].type_name = "timestamp".into();
+        (harness, tab, id)
+    }
+
+    #[test]
+    fn a_date_or_time_cells_editor_offers_now() {
+        use egui::accesskit::Role;
+        for look in desktop_looks() {
+            let (mut harness, tab, id) = stamped_in(look);
+            // In the grid, and in the row panel's field.
+            for panel in [false, true] {
+                harness.app.workspace_mut(tab).unwrap().row_panel = panel;
+                harness.app.apply(Action::DiscardEdits { tab, id });
+                let cell = CellPos { row: 1, col: 4 };
+                let start = EditStart::Value;
+                let action = if panel {
+                    harness.app.apply(Action::SelectCell { tab, id, cell });
+                    Action::EditField {
+                        tab,
+                        id,
+                        cell,
+                        start,
+                    }
+                } else {
+                    Action::EditCell {
+                        tab,
+                        id,
+                        cell,
+                        start,
+                    }
+                };
+                harness.app.apply(action);
+                harness.settle();
+                let tree = harness.settle();
+                let said = format!("{}, panel: {panel}", look.name);
+                assert!(
+                    crate::testing::node(&tree, "now", Role::Button).is_some(),
+                    "{said}"
+                );
+                harness.click("now");
+                assert!(edits(&harness, tab, id).editor.is_none(), "{said}");
+                let pending = pending_text(&harness, tab, id, (1, 4));
+                assert_eq!(pending.as_deref(), Some("now()"), "{said}");
+            }
+            // A column that keeps no time has no such button.
+            harness.app.workspace_mut(tab).unwrap().row_panel = false;
+            open_editor(&mut harness, tab, id, (1, 2));
+            let tree = harness.settle();
+            assert!(
+                crate::testing::node(&tree, "now", Role::Button).is_none(),
+                "{}",
+                look.name
+            );
+        }
+        // The terminal look has a key for it, and no button.
+        let (mut harness, tab, id) = stamped_in(Look::omarchy());
+        open_editor(&mut harness, tab, id, (1, 4));
+        let tree = harness.settle();
+        assert!(crate::testing::node(&tree, "now", Role::Button).is_none());
+        // As the keyboard sends Ctrl+T where Ctrl is the command key: both
+        // are held.
+        let ctrl_t = Modifiers::CTRL | Modifiers::COMMAND;
+        harness.press(Key::T, ctrl_t);
+        assert!(edits(&harness, tab, id).editor.is_none());
+        let pending = pending_text(&harness, tab, id, (1, 4));
+        assert_eq!(pending.as_deref(), Some("now()"));
+        assert!(
+            harness
+                .app
+                .workspace(tab)
+                .unwrap()
+                .active_sql_tab()
+                .is_none()
+        );
+        // Anywhere else the chord opens a SQL editor, as it did: in an
+        // editor of another column too.
+        open_editor(&mut harness, tab, id, (1, 2));
+        harness.press(Key::T, ctrl_t);
+        let workspace = harness.app.workspace(tab).unwrap();
+        assert!(workspace.active_sql_tab().is_some());
+        assert_eq!(edits(&harness, tab, id).cells.len(), 1);
+    }
+
+    #[test]
+    fn t_and_f_set_a_boolean_and_t_is_the_trees_elsewhere() {
+        let (mut harness, tab, id) = covers_in(Look::omarchy());
+        let workspace = harness.app.workspace_mut(tab).unwrap();
+        let object = workspace.object_tab_mut(id).unwrap();
+        let column = &mut object.structure.value.as_mut().unwrap().columns[2];
+        column.type_name = "BOOLEAN".into();
+        column.allowed_values = None;
+        let page = object.rows.value.as_mut().unwrap();
+        page.columns[2].type_name = "BOOLEAN".into();
+        page.rows[0][2] = tabletist_db::Value::Int(1);
+        let flat = |harness: &Harness| harness.app.workspace(tab).unwrap().tree.flat;
+        let was = flat(&harness);
+        select(&mut harness, tab, id, (0, 2));
+        type_key(&mut harness, Key::F, "f");
+        let pending = pending_text(&harness, tab, id, (0, 2));
+        assert_eq!(pending.as_deref(), Some("false"));
+        type_key(&mut harness, Key::T, "t");
+        // True is what it loaded: nothing is pending, and the tree is as
+        // it was.
+        assert!(edits(&harness, tab, id).cells.is_empty());
+        assert_eq!(flat(&harness), was);
+        // On any other cell `t` is the tree's, and `f` is no key.
+        select(&mut harness, tab, id, (0, 1));
+        type_key(&mut harness, Key::F, "f");
+        type_key(&mut harness, Key::T, "t");
+        assert!(edits(&harness, tab, id).cells.is_empty());
+        assert_eq!(flat(&harness), !was);
+    }
+
+    #[test]
+    fn set_null_says_why_where_the_column_takes_none() {
+        // The terminal look says it in its line.
+        let (mut harness, tab, id) = covers_in(Look::omarchy());
+        harness.app.workspace_mut(tab).unwrap().row_panel = false;
+        select(&mut harness, tab, id, (0, 1));
+        type_key(&mut harness, Key::X, "x");
+        assert!(edits(&harness, tab, id).cells.is_empty());
+        assert!(
+            painted(&harness, "this column cannot be null"),
+            "{:?}",
+            harness.painted
+        );
+        // The other looks hang it on the cell.
+        let (mut harness, tab, id) = covers_in(Look::macos());
+        select(&mut harness, tab, id, (0, 1));
+        harness.press(Key::Backspace, Modifiers::COMMAND);
+        assert!(edits(&harness, tab, id).cells.is_empty());
+        assert!(
+            painted(&harness, "This column cannot be NULL"),
+            "{:?}",
+            harness.painted
+        );
+    }
+
     /// A capital letter typed on the grid: its key with Shift, and its text.
     fn type_capital(harness: &mut Harness, key: Key, text: &str) {
         harness.settle();

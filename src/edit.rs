@@ -57,6 +57,9 @@ pub enum Lock {
     Binary,
     /// Over `MAX_EDIT_BYTES`.
     TooLarge,
+    /// Asked to be NULL, in a column that takes none. No cell is locked by
+    /// it: it is why Set NULL did nothing.
+    NotNull,
 }
 
 /// A table's page as editing sees it.

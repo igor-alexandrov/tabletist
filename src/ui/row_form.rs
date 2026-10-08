@@ -214,7 +214,9 @@ impl<'a> Form<'a> {
         if outcome.changed {
             self.ending.push(Action::EditorTyped { tab, id });
         }
-        if outcome.large {
+        if outcome.now {
+            self.ending.push(Action::SetNow { tab, id });
+        } else if outcome.large {
             self.ending.push(Action::EditorBreak { tab, id });
         } else if let Some(then) = outcome.commit {
             self.ending.push(Action::CommitEdit { tab, id, then });

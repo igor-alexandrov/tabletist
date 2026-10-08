@@ -27,6 +27,9 @@ double-click the value there.
 | Put the cell back as it was | Cmd/Ctrl+Z |
 | Leave the editor without the change | Esc |
 
+Set NULL on a column that cannot be NULL does nothing, and the cell says
+why.
+
 The Omarchy look uses vim keys for these. They are in
 [The Omarchy Look]({% link _guide/omarchy.md %}#editing).
 
@@ -57,6 +60,8 @@ after. Review SQL shows the keyword as it is sent.
   default, `now()` outside date and time columns.
 - A date column gets the date and a time column the time of day. On
   SQLite the time is UTC, to the second.
+- While a date or time value is being edited, the **now** button beside
+  it sets the same thing. In the Omarchy look the key is Ctrl+T.
 - In a new row, a cell you leave alone is its default already, so
   `DEFAULT` there takes the value out again.
 

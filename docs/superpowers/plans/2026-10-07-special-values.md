@@ -958,7 +958,7 @@ git add src && git commit -m "Offer now beside a date or time cell's editor"
 
 ## As built
 
-Tasks 1 to 6 are built. Task 7, the now button, is not: it is a follow-up of its own.
+Tasks 1 to 7 are built. Task 7 grew by what the board "Omarchy – Editing values, editors by type" brought on 2026-10-08, with the user's answers of that day: see the end of this section.
 
 - **Names.** The reader of typed text is `edit::typed_as`, not `read`: `edit.rs` has a `read` already. `edit::problem` is the check of typed text that knows a keyword has none, and `edit::shown_value` is a pending value as a value to show; the editor, the grid, the row panel and the clipboard go through them.
 - **Task 1 and the app.** `NewValue`'s two variants leave every `match` over it in `src/` without arms, so the commit of task 1 gives the app's readers theirs (the word, as text). The refusal of now in a column that keeps no time reads "… expects a value, not the time of the save".
@@ -966,3 +966,13 @@ Tasks 1 to 6 are built. Task 7, the now button, is not: it is a follow-up of its
 - **Task 4.** The terminal's plain `d` is read by its own modifiers (`take_press`), not by the keyboard's state: a test's key event carries Shift without a change of modifiers before it, and a real one may too.
 - **Task 3.** A pending keyword is written in the grid's faint colour in the desktop looks; the terminal writes every pending cell in its tone, this one too.
 - **Seen in a scene.** `now()` and `DEFAULT` on the pending tint, and `SET "created_at" = now()` in Review SQL with the keyword's ink. A `NULL` typed into a NOT NULL timestamp stays the text `NULL` and is the database's to refuse, as row d has it.
+
+**Task 7 and the Omarchy board (2026-10-08).** The user added "Omarchy – Editing values, editors by type" to the canvas and chose three of its points for this pull request:
+
+- **now.** The desktop looks get the button beside a date or time cell's editor, in the grid and in the row panel's field (`cell_editor::now_button`, `Target::now`, `Outcome::now`). The Omarchy look gets the board's key: `Ctrl+T` while such a cell is being edited. Both are `Action::SetNow`: the editor closes without its text and the cell is pending `NewValue::Now`, the SQL function, as the user chose for the typed word. `Ctrl+T` is a new SQL editor everywhere else, an editor of another column included (the user's answer).
+- **`t` and `f`.** On a boolean cell that can be edited they set true and false (`Action::SetBoolean`). Anywhere else `t` still switches the tree between tree and flat (the user's answer), and `f` is no key.
+- **Set NULL says why.** On a column that takes no NULL the cell is given `Lock::NotNull` as its reason ("This column cannot be NULL"): hung on the cell in the desktop looks, said in the status line in the terminal's. It locks no cell.
+- **The button is the pointer's.** Tab ends the edit and moves to the next cell, as it did: the button is no Tab stop. A screen reader finds it by its name, "now". A press on it does not read as the keyboard gone elsewhere.
+- **Found on the way.** The one-line field on a cell wrapped a text wider than the cell under the row (a timestamp with all its digits, in a column sized for the second). It is kept on one line now and scrolls, in every look.
+- **Seen in a scene.** The button in the grid's editor, in the three looks. The row panel's was not looked at: the field is below the scene's fold. Its test presses it.
+- **Not taken from the board:** the vim float for long text, the enum's picker, the foreign key's search, the calendar and its keys, the array's preview, `Ctrl+A` and `Ctrl+X` on a number, replacing a binary value from a file, and `Esc` refused while a number does not parse. Those are the editors by type.
